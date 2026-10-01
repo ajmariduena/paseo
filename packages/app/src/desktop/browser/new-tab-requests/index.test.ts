@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { WorkspaceLayout } from "@/stores/workspace-layout-store";
 import { createDefaultLayout } from "@/stores/workspace-layout-store";
 import { FOCUSED_PANE_PLACEMENT, openTabInLayoutFocused } from "@/stores/workspace-layout-actions";
-import { resolveBrowserNewTabRequest, type BrowserNewTabRequest } from ".";
+import { collectAllPanes } from "@/stores/workspace-layout-actions";
+import { resolveBrowserNewTabRequest } from ".";
 
 function createLayoutWithBrowser(browserId: string): WorkspaceLayout {
   return openTabInLayoutFocused({
@@ -24,10 +25,26 @@ describe("browser new-tab requests", () => {
       workspaceLayout: createLayoutWithBrowser("browser-1"),
     });
 
-    expect(request).toEqual<BrowserNewTabRequest>({
-      sourceBrowserId: "browser-1",
+    const layout = createLayoutWithBrowser("browser-1");
+    const [pane] = collectAllPanes(layout.root);
+    expect(request).toEqual({
       url: "https://example.com/target",
+      background: false,
+      opener: { paneId: pane.id, tabId: pane.tabIds[0] },
     });
+  });
+
+  it("keeps background intent from middle and modifier clicks", () => {
+    const request = resolveBrowserNewTabRequest({
+      payload: {
+        sourceBrowserId: "browser-1",
+        url: "https://example.com/target",
+        background: true,
+      },
+      workspaceLayout: createLayoutWithBrowser("browser-1"),
+    });
+
+    expect(request?.background).toBe(true);
   });
 
   it("ignores desktop requests from another workspace", () => {

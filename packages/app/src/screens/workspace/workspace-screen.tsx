@@ -1,4 +1,5 @@
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { WebLinkOpenInAppProvider } from "@/web-links/context";
 import type { JsonValue } from "@getpaseo/protocol/agent-types";
 import { getOpenAgentTabLabel } from "@getpaseo/protocol/agent-labels";
 import {
@@ -134,7 +135,10 @@ import {
   buildWorkspaceTabMenuEntries,
   type WorkspaceTabMenuLabels,
 } from "@/screens/workspace/workspace-tab-menu";
-import { useDesktopBrowserNewTabRequests } from "@/desktop/browser/new-tab-requests";
+import {
+  useDesktopBrowserNewTabRequests,
+  type ResolvedBrowserNewTabRequest,
+} from "@/desktop/browser/new-tab-requests";
 import type { WorkspaceTabDescriptor } from "@/screens/workspace/workspace-tabs-types";
 import {
   resolveWorkspaceExplorerToggleOwner,
@@ -1302,13 +1306,17 @@ function WorkspaceScreenGateFrame({ children }: { children: ReactNode }) {
 function WorkspaceContentProviders({
   children,
   workspaceKey,
+  openWebLinkInApp,
 }: {
   children: ReactNode;
   workspaceKey: string | null;
+  openWebLinkInApp: (url: string) => void;
 }) {
   return (
     <WorkspaceFocusProvider workspaceKey={workspaceKey}>
-      <DiffDocumentWorkspaceCacheProvider>{children}</DiffDocumentWorkspaceCacheProvider>
+      <WebLinkOpenInAppProvider openInApp={openWebLinkInApp}>
+        <DiffDocumentWorkspaceCacheProvider>{children}</DiffDocumentWorkspaceCacheProvider>
+      </WebLinkOpenInAppProvider>
     </WorkspaceFocusProvider>
   );
 }
@@ -2475,10 +2483,27 @@ function WorkspaceScreenContent({
     [openWorkspaceTabFocused, persistenceKey],
   );
 
+  const handleBrowserNewTabRequest = useCallback(
+    (request: ResolvedBrowserNewTabRequest) => {
+      if (!persistenceKey || !getIsElectron()) {
+        return;
+      }
+      const { browserId } = createWorkspaceBrowser({ initialUrl: request.url });
+      openTab({
+        workspaceKey: persistenceKey,
+        target: { kind: "browser", browserId },
+        intent: request.background ? "background" : "reveal",
+        placement: { mode: "pane", paneId: request.opener.paneId },
+        insertionPosition: { afterTabId: request.opener.tabId },
+      });
+    },
+    [openTab, persistenceKey],
+  );
+
   useDesktopBrowserNewTabRequests({
     enabled: Boolean(persistenceKey),
     workspaceLayout,
-    openUrl: handleOpenUrlInBrowserTab,
+    openRequest: handleBrowserNewTabRequest,
   });
 
   const handleSelectSwitcherTab = useCallback(
@@ -4132,7 +4157,11 @@ function WorkspaceScreenContent({
     return gatedWorkspaceScreen;
   }
   return (
-    <WorkspaceContentProviders key={persistenceKey} workspaceKey={persistenceKey}>
+    <WorkspaceContentProviders
+      key={persistenceKey}
+      workspaceKey={persistenceKey}
+      openWebLinkInApp={handleOpenUrlInBrowserTab}
+    >
       {renderedWorkspaceScreen}
     </WorkspaceContentProviders>
   );

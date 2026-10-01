@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { BrowserKeyboardPolicy } from "./features/browser-keyboard/index.js";
+import type { BrowserCookieImportRequest } from "./features/browser-cookie-import/types.js";
 import type { DesktopWindowChromeMode } from "./window/chrome.js";
 
 // This preload runs in Electron's sandbox and is tsc-compiled (not bundled), so it MUST
@@ -128,6 +129,11 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
       ipcRenderer.invoke("paseo:browser:open-devtools", browserId),
     clearProfile: (legacyBrowserIds: string[]) =>
       ipcRenderer.invoke("paseo:browser:clear-profile", legacyBrowserIds),
+    detectCookieImportSources: () => ipcRenderer.invoke("paseo:browser:cookie-import:detect"),
+    importCookies: (request: BrowserCookieImportRequest) =>
+      ipcRenderer.invoke("paseo:browser:cookie-import:run", request),
+    getCookieImportReceipt: () => ipcRenderer.invoke("paseo:browser:cookie-import:receipt"),
+    reloadBrowserGuests: () => ipcRenderer.invoke("paseo:browser:reload-guests"),
     executeAutomationCommand: (request: Record<string, unknown>) =>
       ipcRenderer.invoke("paseo:browser:execute-automation-command", request),
     captureElement: (

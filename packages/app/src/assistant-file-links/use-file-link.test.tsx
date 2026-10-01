@@ -16,6 +16,11 @@ vi.mock("@/utils/open-external-url", () => ({
   openExternalUrl: vi.fn(async () => {}),
 }));
 
+const openContentWebLinkMock = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock("@/web-links/open-content-web-link", () => ({
+  openContentWebLink: openContentWebLinkMock,
+}));
+
 const SOURCE = {
   href: "http://dumm.md",
   text: "dumm.md",
@@ -99,6 +104,26 @@ function createWrapper(input: { client: TestClient; openedFiles: OpenedFile[]; t
 }
 
 describe("useFileLink", () => {
+  it("routes web links through the content link opener with the click modifiers", async () => {
+    const getDirectorySuggestions = vi.fn(async () => resolvedSuggestions([]));
+    const { result } = renderHook(
+      () => useFileLink({ href: "https://example.com/docs", text: "docs" }),
+      { wrapper: createWrapper({ client: { getDirectorySuggestions }, openedFiles: [] }) },
+    );
+
+    act(() => {
+      result.current.onPress({ nativeEvent: { shiftKey: true, metaKey: true, ctrlKey: false } });
+    });
+
+    await waitFor(() => {
+      expect(openContentWebLinkMock).toHaveBeenCalledWith("https://example.com/docs", {
+        openInApp: undefined,
+        modifiers: { shiftKey: true, metaKey: true, ctrlKey: false },
+      });
+    });
+    expect(getDirectorySuggestions).not.toHaveBeenCalled();
+  });
+
   it("returns the same object across no-op parent rerenders", () => {
     const getDirectorySuggestions = vi.fn(async () => resolvedSuggestions([]));
     const queryClient = createQueryClient();

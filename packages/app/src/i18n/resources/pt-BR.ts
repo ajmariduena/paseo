@@ -1823,6 +1823,13 @@ export const ptBR: TranslationResources = {
     externalBrowser: "Navegador externo",
     dontAskAgain: "Não perguntar novamente",
   },
+  webLink: {
+    title: "Abrir link",
+    message: "Abrir {{url}} no Paseo?",
+    inPaseo: "No Paseo",
+    externalBrowser: "Navegador do sistema",
+    dontAskAgain: "Não perguntar novamente",
+  },
   downloads: {
     requestTokenFailed: "Falha ao solicitar token de download.",
     hostUnavailable: "Host de download indisponível.",
@@ -2053,6 +2060,74 @@ export const ptBR: TranslationResources = {
       fallbackHint: "Se ele não estiver disponível, o Paseo usa outro modelo disponível",
       docs: "Documentação",
       saveError: "Não foi possível atualizar a geração de metadados",
+    },
+    browser: {
+      links: {
+        title: "Abrir links",
+        webLinks: {
+          label: "Links da web",
+          hint: "Links do terminal, do chat e do markdown",
+        },
+        serviceUrls: {
+          label: "URLs de scripts",
+          hint: "Serviços iniciados pelos scripts do workspace",
+        },
+        invert: {
+          label: "Inverter com {{shortcut}}-clique",
+          hint: "Esse clique abre o link no outro navegador",
+          hintAsk: "Esse clique abre o link no Paseo sem perguntar",
+        },
+      },
+      cookieImport: {
+        title: "Logins",
+        emptyTitle: "Importar de outro navegador",
+        emptyHint: "Use no navegador do Paseo os logins que você já tem",
+        receipt_one: "{{count}} cookie importado · {{timeAgo}}",
+        receipt_other: "{{count}} cookies importados · {{timeAgo}}",
+        importFrom: "Importar de…",
+        importing: "Importando…",
+        onThisComputer: "Neste computador",
+        detecting: "Procurando navegadores…",
+        detectFailed: "Não foi possível procurar navegadores",
+        noBrowsers: "Nenhum navegador compatível encontrado",
+        profileCount_one: "{{count}} perfil",
+        profileCount_other: "{{count}} perfis",
+        requiresFullDiskAccess: "Requer acesso total ao disco",
+        fromFile: "De arquivo JSON…",
+        fileSource: "Arquivo JSON",
+        footnote:
+          "Somente cookies são copiados, não senhas, histórico ou extensões. Logins do Google não são importados: entre no Google dentro do Paseo. Agentes com ferramentas de navegador podem usar essas sessões.",
+        reload: {
+          label: "Recarregar abas abertas",
+          hint: "As páginas abertas usam os logins importados depois de recarregar",
+          action: "Recarregar abas",
+        },
+        result: {
+          imported_one: "{{count}} cookie importado de {{source}}",
+          imported_other: "{{count}} cookies importados de {{source}}",
+          importedWithSkipped_one:
+            "{{count}} cookie importado de {{source}} · {{skipped}} ignorados",
+          importedWithSkipped_other:
+            "{{count}} cookies importados de {{source}} · {{skipped}} ignorados",
+          partial_one:
+            "{{count}} cookie importado de {{source}} · {{failed}} não puderam ser carregados",
+          partial_other:
+            "{{count}} cookies importados de {{source}} · {{failed}} não puderam ser carregados",
+          none: "Nenhum cookie foi importado de {{source}}",
+        },
+        errors: {
+          keychainDenied:
+            "O Paseo não conseguiu ler a chave do {{source}} no Keychain. Tente novamente e escolha Permitir.",
+          fullDiskAccess:
+            "O Safari requer acesso total ao disco. Ative-o para o Paseo em Ajustes do Sistema › Privacidade e Segurança.",
+          sourceBusy: "O {{source}} está usando o banco de cookies. Feche-o e tente novamente.",
+          sourceNotFound: "Esse perfil do navegador não está mais disponível.",
+          invalidFile: "Esse arquivo não é uma exportação JSON de cookies válida.",
+          noCookies: "Não há cookies para importar.",
+          unsupportedPlatform: "Importar deste navegador não é compatível com este computador.",
+          failed: "Não foi possível importar os cookies.",
+        },
+      },
     },
     general: {
       title: "Geral",

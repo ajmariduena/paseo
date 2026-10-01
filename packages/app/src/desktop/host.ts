@@ -136,12 +136,63 @@ export type DesktopBrowserShortcutEvent =
 export interface DesktopBrowserNewTabRequestEvent {
   sourceBrowserId: string;
   url: string;
+  background?: boolean;
 }
 
 export interface DesktopAttachedBrowserRegistration {
   browserId: string;
   workspaceId: string;
   webContentsId: number;
+}
+
+export type BrowserCookieImportFamily =
+  | "chrome"
+  | "edge"
+  | "arc"
+  | "brave"
+  | "comet"
+  | "helium"
+  | "chromium"
+  | "firefox"
+  | "safari";
+export interface BrowserCookieImportSource {
+  family: BrowserCookieImportFamily;
+  label: string;
+  profiles: Array<{ id: string; label: string }>;
+  requiresFullDiskAccess?: boolean;
+}
+export type BrowserCookieImportRequest =
+  | { kind: "browser"; family: BrowserCookieImportFamily; profileId?: string }
+  | { kind: "file" };
+export type BrowserCookieImportErrorCode =
+  | "keychain_denied"
+  | "full_disk_access"
+  | "source_busy"
+  | "source_not_found"
+  | "invalid_file"
+  | "no_cookies"
+  | "unsupported_platform"
+  | "failed";
+export type BrowserCookieImportResult =
+  | {
+      status: "imported";
+      sourceLabel: string;
+      profileLabel?: string;
+      imported: number;
+      skipped: number;
+      googleSkipped: number;
+      partitionSkipped: number;
+      failed: number;
+      importedAt: string;
+    }
+  | { status: "canceled" }
+  | { status: "error"; code: BrowserCookieImportErrorCode; message?: string };
+export interface BrowserCookieImportReceipt {
+  sourceLabel: string;
+  profileLabel?: string;
+  importedAt: string;
+  imported: number;
+  skipped: number;
 }
 
 export interface DesktopBrowserBridge {
@@ -156,6 +207,10 @@ export interface DesktopBrowserBridge {
   focus?: (browserId: string) => Promise<boolean>;
   openDevTools?: (browserId: string) => Promise<unknown>;
   clearProfile?: (legacyBrowserIds: string[]) => Promise<void>;
+  detectCookieImportSources?: () => Promise<BrowserCookieImportSource[]>;
+  importCookies?: (request: BrowserCookieImportRequest) => Promise<BrowserCookieImportResult>;
+  getCookieImportReceipt?: () => Promise<BrowserCookieImportReceipt | null>;
+  reloadBrowserGuests?: () => Promise<void>;
   executeAutomationCommand?: (
     request: BrowserAutomationExecuteRequest,
   ) => Promise<BrowserAutomationExecuteResponse["payload"]>;

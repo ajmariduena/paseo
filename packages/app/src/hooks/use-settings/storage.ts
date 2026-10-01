@@ -80,6 +80,10 @@ export interface AppSettings {
   language: AppLanguage;
   sendBehavior: SendBehavior;
   serviceUrlBehavior: ServiceUrlBehavior;
+  /** Where web links clicked in the terminal, chat and markdown open. Desktop only. */
+  webLinkBehavior: ServiceUrlBehavior;
+  /** Shift+Cmd/Ctrl-click opens a web link in the other browser. */
+  invertWebLinkModifier: boolean;
   terminalScrollbackLines: number;
   useLegacyTerminalRenderer: boolean;
   uiFontFamily: string; // "" = platform default UI stack
@@ -140,6 +144,8 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   language: "system",
   sendBehavior: "steer",
   serviceUrlBehavior: "ask",
+  webLinkBehavior: "ask",
+  invertWebLinkModifier: false,
   terminalScrollbackLines: DEFAULT_TERMINAL_SCROLLBACK_LINES,
   useLegacyTerminalRenderer: false,
   uiFontFamily: "",
@@ -218,6 +224,8 @@ const StoredAppSettingsSchema = z
       .catch("system"),
     sendBehavior: z.enum(["interrupt", "steer", "queue"]).catch("steer"),
     serviceUrlBehavior: z.enum(["ask", "in-app", "external"]).catch("ask"),
+    webLinkBehavior: z.enum(["ask", "in-app", "external"]).catch("ask"),
+    invertWebLinkModifier: z.boolean().catch(false),
     terminalScrollbackLines: clampedNumber(
       MIN_TERMINAL_SCROLLBACK_LINES,
       MAX_TERMINAL_SCROLLBACK_LINES,

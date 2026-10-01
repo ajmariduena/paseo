@@ -42,6 +42,34 @@ const NON_POPUP_WINDOW_FEATURE_NAMES = new Set([
   "popup",
 ]);
 
+const PAGE_TAB_BUDGET_LIMIT = 4;
+const PAGE_TAB_BUDGET_WINDOW_MS = 2000;
+
+/**
+ * Caps how many workspace tabs one page (and the popups it opened) can create, so a
+ * `window.open` loop cannot flood the workspace with persistent tabs.
+ */
+export class PageInitiatedTabBudget {
+  private readonly grantsByOpenerId = new Map<number, number[]>();
+
+  public tryTake(openerId: number, now: number = Date.now()): boolean {
+    const recent = (this.grantsByOpenerId.get(openerId) ?? []).filter(
+      (grantedAt) => now - grantedAt < PAGE_TAB_BUDGET_WINDOW_MS,
+    );
+    if (recent.length >= PAGE_TAB_BUDGET_LIMIT) {
+      this.grantsByOpenerId.set(openerId, recent);
+      return false;
+    }
+    recent.push(now);
+    this.grantsByOpenerId.set(openerId, recent);
+    return true;
+  }
+
+  public delete(openerId: number): void {
+    this.grantsByOpenerId.delete(openerId);
+  }
+}
+
 export class PendingBrowserWindowOpenRequests {
   private readonly urlsByWebContentsId = new Map<number, string[]>();
 

@@ -1842,6 +1842,13 @@ export const fr: TranslationResources = {
     externalBrowser: "Navigateur externe",
     dontAskAgain: "Ne demande plus",
   },
+  webLink: {
+    title: "Ouvrir le lien",
+    message: "Ouvrir {{url}} dans Paseo ?",
+    inPaseo: "Dans Paseo",
+    externalBrowser: "Navigateur du système",
+    dontAskAgain: "Ne plus demander",
+  },
   downloads: {
     requestTokenFailed: "Échec de la demande du jeton de téléchargement.",
     hostUnavailable: "L'hôte de téléchargement n'est pas disponible.",
@@ -2073,6 +2080,73 @@ export const fr: TranslationResources = {
       fallbackHint: "S’il est indisponible, Paseo utilise un autre modèle disponible",
       docs: "Documentation",
       saveError: "Impossible de mettre à jour la génération de métadonnées",
+    },
+    browser: {
+      links: {
+        title: "Ouverture des liens",
+        webLinks: {
+          label: "Liens web",
+          hint: "Liens du terminal, du chat et du markdown",
+        },
+        serviceUrls: {
+          label: "URL des scripts",
+          hint: "Services lancés par les scripts de l'espace de travail",
+        },
+        invert: {
+          label: "Inverser avec {{shortcut}}-clic",
+          hint: "Ce clic ouvre le lien dans l'autre navigateur",
+          hintAsk: "Ce clic ouvre le lien dans Paseo sans demander",
+        },
+      },
+      cookieImport: {
+        title: "Connexions",
+        emptyTitle: "Importer depuis un autre navigateur",
+        emptyHint: "Utilisez vos connexions existantes dans le navigateur de Paseo",
+        receipt_one: "{{count}} cookie importé · {{timeAgo}}",
+        receipt_other: "{{count}} cookies importés · {{timeAgo}}",
+        importFrom: "Importer depuis…",
+        importing: "Importation…",
+        onThisComputer: "Sur cet ordinateur",
+        detecting: "Recherche des navigateurs…",
+        detectFailed: "Impossible de rechercher les navigateurs",
+        noBrowsers: "Aucun navigateur compatible trouvé",
+        profileCount_one: "{{count}} profil",
+        profileCount_other: "{{count}} profils",
+        requiresFullDiskAccess: "Nécessite l'accès complet au disque",
+        fromFile: "Depuis un fichier JSON…",
+        fileSource: "Fichier JSON",
+        footnote:
+          "Seuls les cookies sont copiés, pas les mots de passe, l'historique ni les extensions. Les connexions Google ne sont pas importées : connectez-vous à Google dans Paseo. Les agents dotés d'outils de navigateur peuvent utiliser ces sessions.",
+        reload: {
+          label: "Recharger les onglets ouverts",
+          hint: "Les pages ouvertes utilisent les connexions importées après rechargement",
+          action: "Recharger les onglets",
+        },
+        result: {
+          imported_one: "{{count}} cookie importé depuis {{source}}",
+          imported_other: "{{count}} cookies importés depuis {{source}}",
+          importedWithSkipped_one:
+            "{{count}} cookie importé depuis {{source}} · {{skipped}} ignorés",
+          importedWithSkipped_other:
+            "{{count}} cookies importés depuis {{source}} · {{skipped}} ignorés",
+          partial_one: "{{count}} cookie importé depuis {{source}} · {{failed}} non chargés",
+          partial_other: "{{count}} cookies importés depuis {{source}} · {{failed}} non chargés",
+          none: "Aucun cookie importé depuis {{source}}",
+        },
+        errors: {
+          keychainDenied:
+            "Paseo n'a pas pu lire la clé de {{source}} dans le trousseau. Réessayez et choisissez Autoriser.",
+          fullDiskAccess:
+            "Safari nécessite l'accès complet au disque. Activez-le pour Paseo dans Réglages Système › Confidentialité et sécurité.",
+          sourceBusy: "{{source}} utilise sa base de cookies. Quittez-le et réessayez.",
+          sourceNotFound: "Ce profil de navigateur n'est plus disponible.",
+          invalidFile: "Ce fichier n'est pas un export JSON de cookies valide.",
+          noCookies: "Aucun cookie à importer.",
+          unsupportedPlatform:
+            "L'import depuis ce navigateur n'est pas pris en charge sur cet ordinateur.",
+          failed: "Impossible d'importer les cookies.",
+        },
+      },
     },
     general: {
       title: "Général",

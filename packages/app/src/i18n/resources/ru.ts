@@ -1822,6 +1822,13 @@ export const ru: TranslationResources = {
     externalBrowser: "Внешний браузер",
     dontAskAgain: "Больше не спрашивать",
   },
+  webLink: {
+    title: "Открыть ссылку",
+    message: "Открыть {{url}} в Paseo?",
+    inPaseo: "В Paseo",
+    externalBrowser: "Системный браузер",
+    dontAskAgain: "Больше не спрашивать",
+  },
   downloads: {
     requestTokenFailed: "Не удалось запросить токен загрузки.",
     hostUnavailable: "Хост загрузки недоступен.",
@@ -2053,6 +2060,72 @@ export const ru: TranslationResources = {
       fallbackHint: "Если она недоступна, Paseo использует другую доступную модель",
       docs: "Документация",
       saveError: "Не удалось обновить настройки генерации метаданных",
+    },
+    browser: {
+      links: {
+        title: "Открытие ссылок",
+        webLinks: {
+          label: "Веб-ссылки",
+          hint: "Ссылки в терминале, чате и Markdown",
+        },
+        serviceUrls: {
+          label: "URL скриптов",
+          hint: "Сервисы, запущенные скриптами рабочего пространства",
+        },
+        invert: {
+          label: "Инвертировать по {{shortcut}}-клику",
+          hint: "Такой клик открывает ссылку в другом браузере",
+          hintAsk: "Такой клик открывает ссылку в Paseo без вопроса",
+        },
+      },
+      cookieImport: {
+        title: "Входы в аккаунты",
+        emptyTitle: "Импорт из другого браузера",
+        emptyHint: "Используйте текущие входы в браузере Paseo",
+        receipt_one: "Импортирован {{count}} cookie · {{timeAgo}}",
+        receipt_other: "Импортировано cookie: {{count}} · {{timeAgo}}",
+        importFrom: "Импорт из…",
+        importing: "Импорт…",
+        onThisComputer: "На этом компьютере",
+        detecting: "Поиск браузеров…",
+        detectFailed: "Не удалось найти браузеры",
+        noBrowsers: "Поддерживаемые браузеры не найдены",
+        profileCount_one: "{{count}} профиль",
+        profileCount_other: "Профилей: {{count}}",
+        requiresFullDiskAccess: "Нужен полный доступ к диску",
+        fromFile: "Из JSON-файла…",
+        fileSource: "JSON-файл",
+        footnote:
+          "Копируются только cookie, без паролей, истории и расширений. Входы Google не импортируются, поэтому войдите в Google внутри Paseo. Агенты с инструментами браузера могут использовать эти сессии.",
+        reload: {
+          label: "Перезагрузить открытые вкладки",
+          hint: "Открытые страницы используют импортированные входы после перезагрузки",
+          action: "Перезагрузить вкладки",
+        },
+        result: {
+          imported_one: "Импортирован {{count}} cookie из {{source}}",
+          imported_other: "Импортировано cookie из {{source}}: {{count}}",
+          importedWithSkipped_one:
+            "Импортирован {{count}} cookie из {{source}} · пропущено: {{skipped}}",
+          importedWithSkipped_other:
+            "Импортировано cookie из {{source}}: {{count}} · пропущено: {{skipped}}",
+          partial_one: "Импортирован {{count}} cookie из {{source}} · не загружено: {{failed}}",
+          partial_other: "Импортировано cookie из {{source}}: {{count}} · не загружено: {{failed}}",
+          none: "Из {{source}} не импортировано ни одного cookie",
+        },
+        errors: {
+          keychainDenied:
+            "Paseo не удалось прочитать ключ {{source}} из связки ключей. Повторите и выберите «Разрешить».",
+          fullDiskAccess:
+            "Safari нужен полный доступ к диску. Включите его для Paseo в «Системных настройках» › «Конфиденциальность и безопасность».",
+          sourceBusy: "{{source}} использует свою базу cookie. Закройте его и повторите попытку.",
+          sourceNotFound: "Этот профиль браузера больше недоступен.",
+          invalidFile: "Этот файл не является корректным JSON-экспортом cookie.",
+          noCookies: "Нет cookie для импорта.",
+          unsupportedPlatform: "Импорт из этого браузера не поддерживается на этом компьютере.",
+          failed: "Не удалось импортировать cookie.",
+        },
+      },
     },
     general: {
       title: "Основные",

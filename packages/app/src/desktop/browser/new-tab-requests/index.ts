@@ -1,10 +1,20 @@
 import { useEffect } from "react";
 import { getDesktopHost, type DesktopBrowserNewTabRequestEvent } from "@/desktop/host";
-import { collectAllTabs, type WorkspaceLayout } from "@/stores/workspace-layout-store";
+import {
+  collectAllTabs,
+  findPaneContainingTab,
+  type WorkspaceLayout,
+} from "@/stores/workspace-layout-store";
 import { getIsElectron } from "@/constants/platform";
 import { useStableEvent } from "@/hooks/use-stable-event";
 
 export type BrowserNewTabRequest = DesktopBrowserNewTabRequestEvent;
+
+export interface ResolvedBrowserNewTabRequest {
+  url: string;
+  background: boolean;
+  opener: { paneId: string; tabId: string };
+}
 
 function isAllowedBrowserNewTabUrl(value: string): boolean {
   try {
@@ -31,44 +41,48 @@ function readDesktopBrowserNewTabRequest(payload: unknown): BrowserNewTabRequest
   return {
     sourceBrowserId: candidate.sourceBrowserId,
     url: candidate.url,
+    background: candidate.background === true,
   };
 }
 
-function workspaceContainsBrowser(input: {
+function findOpenerTab(input: {
   workspaceLayout: WorkspaceLayout | null | undefined;
   browserId: string;
-}): boolean {
+}): { paneId: string; tabId: string } | null {
   if (!input.workspaceLayout) {
-    return false;
+    return null;
   }
-  return collectAllTabs(input.workspaceLayout.root).some((tab) => {
-    return tab.target.kind === "browser" && tab.target.browserId === input.browserId;
-  });
+  const root = input.workspaceLayout.root;
+  const tab = collectAllTabs(root).find(
+    (candidate) =>
+      candidate.target.kind === "browser" && candidate.target.browserId === input.browserId,
+  );
+  const pane = tab ? findPaneContainingTab(root, tab.tabId) : null;
+  return tab && pane ? { paneId: pane.id, tabId: tab.tabId } : null;
 }
 
 export function resolveBrowserNewTabRequest(input: {
   payload: unknown;
   workspaceLayout: WorkspaceLayout | null | undefined;
-}): BrowserNewTabRequest | null {
+}): ResolvedBrowserNewTabRequest | null {
   const request = readDesktopBrowserNewTabRequest(input.payload);
   if (!request) {
     return null;
   }
-  if (
-    !workspaceContainsBrowser({
-      workspaceLayout: input.workspaceLayout,
-      browserId: request.sourceBrowserId,
-    })
-  ) {
+  const opener = findOpenerTab({
+    workspaceLayout: input.workspaceLayout,
+    browserId: request.sourceBrowserId,
+  });
+  if (!opener) {
     return null;
   }
-  return request;
+  return { url: request.url, background: request.background === true, opener };
 }
 
 export function useDesktopBrowserNewTabRequests(input: {
   enabled: boolean;
   workspaceLayout: WorkspaceLayout | null | undefined;
-  openUrl: (url: string) => void;
+  openRequest: (request: ResolvedBrowserNewTabRequest) => void;
 }): void {
   const handleNewTabRequest = useStableEvent((payload: unknown) => {
     const request = resolveBrowserNewTabRequest({
@@ -78,7 +92,7 @@ export function useDesktopBrowserNewTabRequests(input: {
     if (!request) {
       return;
     }
-    input.openUrl(request.url);
+    input.openRequest(request);
   });
 
   useEffect(() => {

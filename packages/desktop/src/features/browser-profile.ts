@@ -47,7 +47,9 @@ interface ElectronSessions {
   fromPartition(partition: string): BrowserProfileSession;
 }
 
-export function getPaseoBrowserProfileSession(sessions: ElectronSessions): BrowserProfileSession {
+export function getPaseoBrowserProfileSession<S extends BrowserProfileSession>(sessions: {
+  fromPartition(partition: string): S;
+}): S {
   return sessions.fromPartition(PASEO_BROWSER_PROFILE_PARTITION);
 }
 

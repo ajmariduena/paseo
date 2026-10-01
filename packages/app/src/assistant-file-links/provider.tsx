@@ -10,6 +10,7 @@ import {
 import React from "react";
 import type { ToastApi } from "@/components/toast-host";
 import type { OpenFileDisposition } from "@/workspace/file-open";
+import { useOpenContentWebLink, type OpenContentWebLink } from "@/web-links/context";
 import type { InlinePathTarget } from "./parse";
 import type { AssistantFileLinkContext, GetDirectorySuggestions } from "./resolver";
 
@@ -23,6 +24,7 @@ export interface AssistantFileLinkResolverConfig {
   workspaceRoot?: string;
   onOpenWorkspaceFile?: (target: InlinePathTarget, disposition: OpenFileDisposition) => void;
   toast?: ToastApi | null;
+  openWebLink?: OpenContentWebLink;
 }
 
 export interface AssistantFileLinkResolverProviderProps extends AssistantFileLinkResolverConfig {
@@ -45,14 +47,16 @@ export function AssistantFileLinkResolverProvider({
   toast,
   children,
 }: AssistantFileLinkResolverProviderProps) {
+  const openWebLink = useOpenContentWebLink();
   const configRef = useRef<AssistantFileLinkResolverConfig>({
     client,
     serverId,
     workspaceRoot,
     onOpenWorkspaceFile,
     toast,
+    openWebLink,
   });
-  configRef.current = { client, serverId, workspaceRoot, onOpenWorkspaceFile, toast };
+  configRef.current = { client, serverId, workspaceRoot, onOpenWorkspaceFile, toast, openWebLink };
 
   const getDirectorySuggestions = useCallback<GetDirectorySuggestions>(async (input) => {
     const activeClient = configRef.current.client;

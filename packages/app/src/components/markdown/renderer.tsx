@@ -11,6 +11,7 @@ import {
   Pressable,
   Text,
   View,
+  type GestureResponderEvent,
   type TextProps,
   type TextStyle,
   type ViewStyle,
@@ -31,7 +32,8 @@ import { markdownNodeContainsType } from "@/utils/markdown-ast";
 import { createMarkdownParser } from "@/utils/markdown-parser";
 import { createCompactMarkdownStyles, createMarkdownStyles } from "@/styles/markdown-styles";
 import type { Theme } from "@/styles/theme";
-import { openExternalUrl } from "@/utils/open-external-url";
+import { useOpenContentWebLink } from "@/web-links/context";
+import { readWebLinkModifiers, type WebLinkModifiers } from "@/web-links/routing";
 import { isNative } from "@/constants/platform";
 import {
   splitHtmlishMarkdown,
@@ -50,7 +52,7 @@ interface MarkdownWithStableRendererProps {
   style: ReturnType<typeof createMarkdownStyles> | ReturnType<typeof createCompactMarkdownStyles>;
   rules?: RenderRules;
   markdownit?: ReturnType<typeof MarkdownIt>;
-  onLinkPress?: (url: string) => boolean;
+  onLinkPress?: (url: string, modifiers?: WebLinkModifiers) => boolean;
   allowedImageHandlers?: readonly string[];
   topLevelMaxExceededItem?: ReactNode;
 }
@@ -76,7 +78,7 @@ export interface MarkdownRendererProps {
   compact?: boolean;
   rules?: RenderRules;
   markdownit?: ReturnType<typeof MarkdownIt>;
-  onLinkPress?: (url: string) => boolean;
+  onLinkPress?: (url: string, modifiers?: WebLinkModifiers) => boolean;
   allowedImageHandlers?: readonly string[];
   topLevelMaxExceededItem?: ReactNode;
   enableHtmlish?: boolean;
@@ -237,18 +239,23 @@ function MarkdownInlineImage({
   onLinkPress,
 }: {
   part: Extract<MarkdownDisplayPart, { kind: "inlineImage" }>;
-  onLinkPress?: (url: string) => boolean;
+  onLinkPress?: (url: string, modifiers?: WebLinkModifiers) => boolean;
 }) {
   const { natural: naturalDimensions } = useNaturalImageDimensions(part);
   const explicitDimensions = useMemo(
     () => ({ width: part.width, height: part.height }),
     [part.height, part.width],
   );
-  const handlePress = useCallback(() => {
-    if (!part.href) return;
-    if (onLinkPress?.(part.href) === false) return;
-    void openExternalUrl(part.href);
-  }, [onLinkPress, part.href]);
+  const openWebLink = useOpenContentWebLink();
+  const handlePress = useCallback(
+    (event: GestureResponderEvent) => {
+      if (!part.href) return;
+      const modifiers = readWebLinkModifiers(event);
+      if (onLinkPress?.(part.href, modifiers) === false) return;
+      void openWebLink(part.href, modifiers);
+    },
+    [onLinkPress, openWebLink, part.href],
+  );
   const source = useMemo(() => ({ uri: part.src }), [part.src]);
   const imageSize = useMemo(
     () => resolveInlineImageSize({ explicit: explicitDimensions, natural: naturalDimensions }),
@@ -283,14 +290,19 @@ function MarkdownFlowImage({
   onLinkPress,
 }: {
   part: MarkdownInlineImagePart;
-  onLinkPress?: (url: string) => boolean;
+  onLinkPress?: (url: string, modifiers?: WebLinkModifiers) => boolean;
 }) {
   const { natural, failed, setFailed } = useNaturalImageDimensions(part);
-  const handlePress = useCallback(() => {
-    if (!part.href) return;
-    if (onLinkPress?.(part.href) === false) return;
-    void openExternalUrl(part.href);
-  }, [onLinkPress, part.href]);
+  const openWebLink = useOpenContentWebLink();
+  const handlePress = useCallback(
+    (event: GestureResponderEvent) => {
+      if (!part.href) return;
+      const modifiers = readWebLinkModifiers(event);
+      if (onLinkPress?.(part.href, modifiers) === false) return;
+      void openWebLink(part.href, modifiers);
+    },
+    [onLinkPress, openWebLink, part.href],
+  );
   const handleError = useCallback(() => setFailed(true), [setFailed]);
   const source = useMemo(() => ({ uri: part.src }), [part.src]);
   const imageSize = useMemo(() => {
@@ -449,7 +461,7 @@ interface SharedMarkdownLinkProps {
   href: string;
   inheritedStyles: TextStyle;
   linkStyle: TextStyle;
-  onLinkPress?: (url: string) => boolean;
+  onLinkPress?: (url: string, modifiers?: WebLinkModifiers) => boolean;
   children: ReactNode;
 }
 
@@ -460,11 +472,16 @@ function SharedMarkdownLink({
   onLinkPress,
   children,
 }: SharedMarkdownLinkProps) {
-  const handlePress = useCallback(() => {
-    if (!href) return;
-    if (onLinkPress?.(href) === false) return;
-    void openExternalUrl(href);
-  }, [href, onLinkPress]);
+  const openWebLink = useOpenContentWebLink();
+  const handlePress = useCallback(
+    (event: GestureResponderEvent) => {
+      if (!href) return;
+      const modifiers = readWebLinkModifiers(event);
+      if (onLinkPress?.(href, modifiers) === false) return;
+      void openWebLink(href, modifiers);
+    },
+    [href, onLinkPress, openWebLink],
+  );
   const style = useMemo(() => [inheritedStyles, linkStyle], [inheritedStyles, linkStyle]);
 
   if (!isNative) {
@@ -702,7 +719,7 @@ export function createSharedMarkdownRules(): RenderRules {
       children: ReactNode[],
       _parent: ASTNode[],
       styles: MarkdownStyles,
-      onLinkPress?: (url: string) => boolean,
+      onLinkPress?: (url: string, modifiers?: WebLinkModifiers) => boolean,
     ) => (
       <SharedMarkdownLink
         key={node.key}

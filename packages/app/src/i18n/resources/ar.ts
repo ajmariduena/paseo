@@ -1790,6 +1790,13 @@ export const ar: TranslationResources = {
     externalBrowser: "متصفح خارجي",
     dontAskAgain: "لا تسأل مرة أخرى",
   },
+  webLink: {
+    title: "فتح الرابط",
+    message: "هل تريد فتح {{url}} في Paseo؟",
+    inPaseo: "في Paseo",
+    externalBrowser: "متصفح النظام",
+    dontAskAgain: "عدم السؤال مرة أخرى",
+  },
   downloads: {
     requestTokenFailed: "فشل طلب رمز التنزيل.",
     hostUnavailable: "مضيف التنزيل غير متاح.",
@@ -2020,6 +2027,74 @@ export const ar: TranslationResources = {
       fallbackHint: "إذا لم يكن متاحًا، يستخدم Paseo نموذجًا آخر متاحًا",
       docs: "الوثائق",
       saveError: "تعذر تحديث إنشاء البيانات الوصفية",
+    },
+    browser: {
+      links: {
+        title: "فتح الروابط",
+        webLinks: {
+          label: "روابط الويب",
+          hint: "الروابط في الطرفية والدردشة وMarkdown",
+        },
+        serviceUrls: {
+          label: "عناوين URL للبرامج النصية",
+          hint: "الخدمات التي تشغّلها البرامج النصية لمساحة العمل",
+        },
+        invert: {
+          label: "عكس بالنقر مع {{shortcut}}",
+          hint: "تفتح هذه النقرة الرابط في المتصفح الآخر",
+          hintAsk: "تفتح هذه النقرة الرابط في Paseo دون سؤال",
+        },
+      },
+      cookieImport: {
+        title: "تسجيلات الدخول",
+        emptyTitle: "استيراد من متصفح آخر",
+        emptyHint: "استخدم تسجيلات دخولك الحالية في متصفح Paseo",
+        receipt_one: "تم استيراد {{count}} ملف تعريف ارتباط · {{timeAgo}}",
+        receipt_other: "تم استيراد {{count}} من ملفات تعريف الارتباط · {{timeAgo}}",
+        importFrom: "استيراد من…",
+        importing: "جارٍ الاستيراد…",
+        onThisComputer: "على هذا الكمبيوتر",
+        detecting: "جارٍ البحث عن المتصفحات…",
+        detectFailed: "تعذّر البحث عن المتصفحات",
+        noBrowsers: "لم يُعثر على متصفح مدعوم",
+        profileCount_one: "{{count}} ملف شخصي",
+        profileCount_other: "{{count}} ملفات شخصية",
+        requiresFullDiskAccess: "يتطلب الوصول الكامل إلى القرص",
+        fromFile: "من ملف JSON…",
+        fileSource: "ملف JSON",
+        footnote:
+          "تُنسخ ملفات تعريف الارتباط فقط، وليس كلمات المرور أو السجل أو الإضافات. لا تُستورد تسجيلات دخول Google، لذا سجّل الدخول إلى Google داخل Paseo. يمكن للوكلاء الذين لديهم أدوات المتصفح استخدام هذه الجلسات.",
+        reload: {
+          label: "إعادة تحميل علامات التبويب المفتوحة",
+          hint: "تستخدم الصفحات المفتوحة تسجيلات الدخول المستوردة بعد إعادة التحميل",
+          action: "إعادة تحميل علامات التبويب",
+        },
+        result: {
+          imported_one: "تم استيراد {{count}} ملف تعريف ارتباط من {{source}}",
+          imported_other: "تم استيراد {{count}} من ملفات تعريف الارتباط من {{source}}",
+          importedWithSkipped_one:
+            "تم استيراد {{count}} ملف تعريف ارتباط من {{source}} · تم تخطي {{skipped}}",
+          importedWithSkipped_other:
+            "تم استيراد {{count}} من ملفات تعريف الارتباط من {{source}} · تم تخطي {{skipped}}",
+          partial_one:
+            "تم استيراد {{count}} ملف تعريف ارتباط من {{source}} · تعذّر تحميل {{failed}}",
+          partial_other:
+            "تم استيراد {{count}} من ملفات تعريف الارتباط من {{source}} · تعذّر تحميل {{failed}}",
+          none: "لم يُستورد أي ملف تعريف ارتباط من {{source}}",
+        },
+        errors: {
+          keychainDenied:
+            "تعذّر على Paseo قراءة مفتاح {{source}} من سلسلة المفاتيح. حاول مرة أخرى واختر السماح.",
+          fullDiskAccess:
+            "يحتاج Safari إلى الوصول الكامل إلى القرص. فعّله لـ Paseo في إعدادات النظام › الخصوصية والأمن.",
+          sourceBusy: "يستخدم {{source}} قاعدة بيانات ملفات تعريف الارتباط. أغلقه وحاول مرة أخرى.",
+          sourceNotFound: "لم يعد ملف تعريف المتصفح هذا متاحًا.",
+          invalidFile: "هذا الملف ليس تصديرًا صالحًا لملفات تعريف الارتباط بتنسيق JSON.",
+          noCookies: "لا توجد ملفات تعريف ارتباط لاستيرادها.",
+          unsupportedPlatform: "الاستيراد من هذا المتصفح غير مدعوم على هذا الكمبيوتر.",
+          failed: "تعذّر استيراد ملفات تعريف الارتباط.",
+        },
+      },
     },
     general: {
       title: "عام",

@@ -112,6 +112,7 @@ import {
   type MarkdownCopyInlineTag,
 } from "@/assistant-selection-copy/markup";
 import { capAssistantMessageForRender, getUtf8ByteLength } from "./assistant-message-render-limit";
+import type { WebLinkModifiers } from "@/web-links/routing";
 export type { InlinePathTarget } from "@/assistant-file-links";
 export type { AssistantForkTarget };
 
@@ -1393,7 +1394,7 @@ interface MemoizedMarkdownBlockProps {
   text: string;
   rules: RenderRules;
   parser: MarkdownIt;
-  onLinkPress: (url: string) => boolean;
+  onLinkPress: (url: string, modifiers?: WebLinkModifiers) => boolean;
 }
 
 const MemoizedMarkdownBlock = React.memo(function MemoizedMarkdownBlock({
@@ -1522,8 +1523,8 @@ export const AssistantMessage = memo(function AssistantMessage({
   );
 
   const fileLinkActions = useAssistantFileLinkActions();
-  const handleMarkdownLinkPress = useStableEvent((url: string) => {
-    fileLinkActions.open({ href: url }, "preferred");
+  const handleMarkdownLinkPress = useStableEvent((url: string, modifiers?: WebLinkModifiers) => {
+    fileLinkActions.open({ href: url }, "preferred", modifiers);
     // react-native-markdown-display opens the link itself when this returns true.
     // We already handled it above, so return false to avoid duplicate opens.
     return false;
