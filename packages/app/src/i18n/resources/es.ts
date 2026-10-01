@@ -576,6 +576,22 @@ export const es: TranslationResources = {
         subtitle: "Abra este espacio de trabajo en Electron para usar el navegador integrado.",
       },
       session: "Sesión de navegador{{browserId}}",
+      remote: {
+        connecting: "Conectando con el navegador de la computadora…",
+        keyboard: "Teclado",
+        retry: "Reintentar",
+        mobileView: "Vista móvil",
+        desktopView: "Vista de escritorio",
+        newTabFailed: "No se pudo abrir una pestaña del navegador en la computadora",
+        errors: {
+          disconnected: "El host no está conectado",
+          updateDaemon: "Actualiza el host para abrir pestañas del navegador de la computadora",
+          updateDesktop: "Actualiza Paseo en la computadora para ver sus pestañas del navegador",
+          noDesktop: "Abre Paseo en tu computadora para usar su navegador",
+          tabClosed: "Esta pestaña ya no está abierta en la computadora",
+          unknown: "El navegador de la computadora dejó de responder",
+        },
+      },
       controls: {
         back: "Atrás",
         forward: "Adelante",
@@ -1835,11 +1851,18 @@ export const es: TranslationResources = {
     empty: "No hay cambios para mostrar",
   },
   serviceUrl: {
-    title: "Servicio abiertoURL",
-    message: "¿Abrir{{url}}?",
-    inPaseo: "EnPaseo",
+    title: "Abrir URL del servicio",
+    message: "¿Abrir {{url}}?",
+    inPaseo: "En Paseo",
     externalBrowser: "Navegador externo",
-    dontAskAgain: "no vuelvas a preguntar",
+    dontAskAgain: "No volver a preguntar",
+  },
+  webLink: {
+    title: "Abrir link",
+    message: "¿Abrir {{url}} en Paseo?",
+    inPaseo: "En Paseo",
+    externalBrowser: "Navegador del sistema",
+    dontAskAgain: "No volver a preguntar",
   },
   downloads: {
     requestTokenFailed: "No se pudo solicitar el token de descarga.",
@@ -2104,6 +2127,75 @@ export const es: TranslationResources = {
       docs: "Documentación",
       saveError: "No se pudo actualizar la generación de metadatos",
     },
+    browser: {
+      links: {
+        title: "Abrir links",
+        webLinks: {
+          label: "Links web",
+          hint: "Links de la terminal, el chat y el markdown",
+        },
+        serviceUrls: {
+          label: "URLs de scripts",
+          hint: "Servicios que levantan los scripts del workspace",
+        },
+        invert: {
+          label: "Invertir con {{shortcut}}-clic",
+          hint: "Ese clic abre el link en el otro navegador",
+          hintAsk: "Ese clic abre el link en Paseo sin preguntar",
+        },
+      },
+      cookieImport: {
+        title: "Inicios de sesión",
+        emptyTitle: "Importar de otro navegador",
+        emptyHint: "Usa en el navegador de Paseo las sesiones que ya tienes abiertas",
+        receipt_one: "{{count}} cookie importada · {{timeAgo}}",
+        receipt_other: "{{count}} cookies importadas · {{timeAgo}}",
+        importFrom: "Importar desde…",
+        importing: "Importando…",
+        onThisComputer: "En esta computadora",
+        detecting: "Buscando navegadores…",
+        detectFailed: "No se pudieron buscar navegadores",
+        noBrowsers: "No se encontró ningún navegador compatible",
+        profileCount_one: "{{count}} perfil",
+        profileCount_other: "{{count}} perfiles",
+        requiresFullDiskAccess: "Requiere acceso total al disco",
+        fromFile: "Desde archivo JSON…",
+        fileSource: "Archivo JSON",
+        footnote:
+          "Solo se copian cookies, no contraseñas, historial ni extensiones. Las sesiones de Google no se importan: inicia sesión en Google dentro de Paseo. Los agentes con herramientas de navegador pueden usar estas sesiones.",
+        reload: {
+          label: "Recargar pestañas abiertas",
+          hint: "Las páginas abiertas usan las sesiones importadas después de recargar",
+          action: "Recargar pestañas",
+        },
+        result: {
+          imported_one: "Se importó {{count}} cookie de {{source}}",
+          imported_other: "Se importaron {{count}} cookies de {{source}}",
+          importedWithSkipped_one:
+            "Se importó {{count}} cookie de {{source}} · {{skipped}} omitidas",
+          importedWithSkipped_other:
+            "Se importaron {{count}} cookies de {{source}} · {{skipped}} omitidas",
+          partial_one:
+            "Se importó {{count}} cookie de {{source}} · {{failed}} no se pudieron cargar",
+          partial_other:
+            "Se importaron {{count}} cookies de {{source}} · {{failed}} no se pudieron cargar",
+          none: "No se importó ninguna cookie de {{source}}",
+        },
+        errors: {
+          keychainDenied:
+            "Paseo no pudo leer la clave de {{source}} en el llavero. Vuelve a intentarlo y elige Permitir.",
+          fullDiskAccess:
+            "Safari requiere acceso total al disco. Actívalo para Paseo en Ajustes del Sistema › Privacidad y seguridad.",
+          sourceBusy: "{{source}} está usando su base de cookies. Ciérralo y vuelve a intentarlo.",
+          sourceNotFound: "Ese perfil del navegador ya no está disponible.",
+          invalidFile: "Ese archivo no es una exportación de cookies JSON válida.",
+          noCookies: "No hay cookies para importar.",
+          unsupportedPlatform:
+            "Importar desde este navegador no está disponible en esta computadora.",
+          failed: "No se pudieron importar las cookies.",
+        },
+      },
+    },
     general: {
       title: "General",
       sending: "Envío",
@@ -2139,7 +2231,7 @@ export const es: TranslationResources = {
       serviceUrls: {
         options: {
           ask: "Preguntar",
-          inApp: "EnPaseo",
+          inApp: "En Paseo",
           external: "Navegador externo",
         },
       },

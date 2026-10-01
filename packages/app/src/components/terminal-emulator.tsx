@@ -35,7 +35,7 @@ import type {
 } from "../terminal/local-links/terminal-local-link-provider";
 import type { TerminalClipboardWriter } from "../terminal/native-renderer/terminal-selection";
 import type { TerminalRendererReadyChange } from "../utils/terminal-renderer-readiness";
-import { openExternalUrl } from "../utils/open-external-url";
+import { useOpenContentWebLink } from "@/web-links/context";
 import { focusWithRetries } from "../utils/web-focus";
 import {
   extractTerminalDropPaths,
@@ -210,6 +210,9 @@ export default function TerminalEmulator({
   xtermThemeRef.current = xtermTheme;
   const onRendererReadyChangeRef = useRef(onRendererReadyChange);
   onRendererReadyChangeRef.current = onRendererReadyChange;
+  const openWebLink = useOpenContentWebLink();
+  const openWebLinkRef = useRef(openWebLink);
+  openWebLinkRef.current = openWebLink;
   const mountCallbacksRef = useRef({
     onFindRequest,
     onFindResult,
@@ -470,7 +473,7 @@ export default function TerminalEmulator({
     runtime.setCallbacks({
       callbacks: {
         ...mountCallbacksRef.current,
-        onOpenExternalUrl: openExternalUrl,
+        onOpenExternalUrl: (url, modifiers) => openWebLinkRef.current(url, modifiers),
       },
     });
     runtime.setPendingModifiers({ pendingModifiers: pendingModifiersRef.current });
@@ -506,10 +509,11 @@ export default function TerminalEmulator({
         onInputModeChange,
         onResolveLocalFileLink,
         onOpenLocalFileLink,
-        onOpenExternalUrl: openExternalUrl,
+        onOpenExternalUrl: openWebLink,
       },
     });
   }, [
+    openWebLink,
     onFindRequest,
     onFindResult,
     onInput,

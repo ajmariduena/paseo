@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { Text, View } from "react-native";
+import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/contexts/toast-context";
@@ -8,10 +9,12 @@ import { SettingsSection } from "@/components/settings/headings/settings-section
 import { useBrowserStore } from "@/desktop/browser/store";
 import { settingsStyles } from "@/styles/settings";
 import { confirmDialog } from "@/utils/confirm-dialog";
+import { BROWSER_COOKIE_IMPORT_RECEIPT_QUERY_KEY } from "./browser-cookie-import-result";
 
 export function BrowserDataSection() {
   const { t } = useTranslation();
   const toast = useToast();
+  const queryClient = useQueryClient();
   const clearInFlightRef = useRef(false);
   const [isClearing, setIsClearing] = useState(false);
 
@@ -40,6 +43,7 @@ export function BrowserDataSection() {
       }
 
       await clearProfile(Object.keys(useBrowserStore.getState().browsersById));
+      await queryClient.invalidateQueries({ queryKey: BROWSER_COOKIE_IMPORT_RECEIPT_QUERY_KEY });
       toast.show(t("settings.general.browserData.success"), { variant: "success" });
     } catch {
       toast.error(t("settings.general.browserData.error"));
@@ -47,7 +51,7 @@ export function BrowserDataSection() {
       clearInFlightRef.current = false;
       setIsClearing(false);
     }
-  }, [t, toast]);
+  }, [queryClient, t, toast]);
   const clearButtonLabel = isClearing
     ? t("settings.general.browserData.clearing")
     : t("settings.general.browserData.clear");

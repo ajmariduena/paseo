@@ -1,5 +1,6 @@
 import { searchTimeline } from "./agent/chat-search/index.js";
 import type { BrowserToolsBroker } from "./browser-tools/broker.js";
+import type { BrowserScreencastBroker } from "./browser-screencast/stream-broker.js";
 import { BrowserAutomationHostCapabilitySchema } from "@getpaseo/protocol/browser-automation/capabilities";
 import type {
   SessionEventSubscription,
@@ -440,6 +441,7 @@ type AgentMcpTransportFactory = () => Promise<unknown>;
 
 export interface SessionOptions {
   browserToolsBroker?: BrowserToolsBroker | null;
+  browserScreencastBroker?: BrowserScreencastBroker | null;
   clientId: string;
   permissions: readonly DaemonPermission[];
   appVersion?: string | null;
@@ -700,6 +702,7 @@ export class Session {
       ),
   );
   private readonly browserToolsBroker: SessionOptions["browserToolsBroker"];
+  private readonly browserScreencastBroker: SessionOptions["browserScreencastBroker"];
   private readonly clientId: string;
   private readonly authorization: SessionAuthorization;
   private appVersion: string | null;
@@ -862,6 +865,7 @@ export class Session {
       getWebSocketRuntimeMetrics,
     } = options;
     this.browserToolsBroker = options.browserToolsBroker;
+    this.browserScreencastBroker = options.browserScreencastBroker;
     this.clientId = clientId;
     this.authorization = new SessionAuthorization(permissions);
     this.appVersion = appVersion ?? null;
@@ -2254,6 +2258,7 @@ export class Session {
         hostKind: request.hostKind,
         supportedCommands: request.supportedCommands,
         sendBrowserAutomationRequest: (message) => owner.emit(message),
+        ...(request.screencast ? { screencast: { send: (message) => owner.emit(message) } } : {}),
       });
       if (respond)
         this.emit({
@@ -2266,11 +2271,183 @@ export class Session {
     }
   }
 
+  private dispatchBrowserRemoteMessage(
+    msg: SessionInboundMessage,
+    source?: object,
+  ): Promise<void> | undefined {
+    switch (msg.type) {
+      case "browser.remote.list_hosts.request":
+        this.emit({
+          type: "browser.remote.list_hosts.response",
+          payload: {
+            requestId: msg.requestId,
+            hosts: this.browserToolsBroker?.listHosts() ?? [],
+          },
+        });
+        return Promise.resolve();
+      case "browser.remote.execute.request":
+        return this.executeBrowserRemoteCommand(msg);
+      case "browser.remote.screencast.subscribe.request":
+        return this.subscribeBrowserScreencast(msg);
+      case "browser.remote.screencast.ack_frame.request":
+        if (source && this.ownsBrowserScreencast(source, msg.subscriptionId)) {
+          this.browserScreencastBroker?.ackViewerFrame(msg.subscriptionId);
+        }
+        return Promise.resolve();
+      case "browser.remote.input.request":
+        return this.sendBrowserScreencastInput(msg, source);
+      case "browser.host.screencast.start.response":
+      case "browser.host.screencast.input.response":
+        if (source) {
+          this.browserScreencastBroker?.receiveHostReply(
+            msg.payload,
+            this.delivery.subscriptionIds(source, "browser-host"),
+          );
+        }
+        return Promise.resolve();
+      case "browser.host.screencast.report.request":
+        if (source) {
+          this.browserScreencastBroker?.receiveHostReport(
+            msg,
+            this.delivery.subscriptionIds(source, "browser-host"),
+          );
+        }
+        return Promise.resolve();
+      default:
+        return undefined;
+    }
+  }
+
+  private ownsBrowserScreencast(source: object, subscriptionId: string): boolean {
+    return this.delivery.subscriptionIds(source, "browser-screencast").includes(subscriptionId);
+  }
+
+  private async executeBrowserRemoteCommand(
+    msg: Extract<SessionInboundMessage, { type: "browser.remote.execute.request" }>,
+  ): Promise<void> {
+    const payload = this.browserToolsBroker
+      ? await this.browserToolsBroker.execute({
+          command: msg.command,
+          workspaceId: msg.workspaceId,
+          requestId: msg.requestId,
+          ...(msg.hostId ? { hostId: msg.hostId } : {}),
+        })
+      : {
+          requestId: msg.requestId,
+          ok: false as const,
+          error: {
+            code: "browser_no_host" as const,
+            message: "Browser hosting is unavailable.",
+            retryable: false,
+          },
+        };
+    this.emit({
+      type: "browser.remote.execute.response",
+      payload: payload.ok
+        ? { requestId: msg.requestId, ok: true, result: payload.result }
+        : { requestId: msg.requestId, ok: false, error: payload.error },
+    });
+  }
+
+  private async subscribeBrowserScreencast(
+    msg: Extract<SessionInboundMessage, { type: "browser.remote.screencast.subscribe.request" }>,
+  ): Promise<void> {
+    const broker = this.browserScreencastBroker;
+    if (!broker) {
+      this.emit({
+        type: "browser.remote.screencast.subscribe.response",
+        payload: {
+          requestId: msg.requestId,
+          error: "Browser hosting is unavailable.",
+          code: "browser_no_host",
+        },
+      });
+      return;
+    }
+    const owner = this.delivery.begin("browser-screencast", undefined, (id) =>
+      broker.removeViewer(id),
+    );
+    try {
+      const result = await broker.addViewer({
+        workspaceId: msg.workspaceId,
+        browserId: msg.browserId,
+        capture: msg.capture,
+        sink: {
+          id: owner.id,
+          sendFrame: (frame) => owner.emitBinary(frame),
+          sendPage: (page) =>
+            owner.emit({
+              type: "browser.remote.screencast.update",
+              payload: { subscriptionId: owner.responseId, event: { kind: "page", page } },
+            }),
+          end: (error) => {
+            owner.emit({
+              type: "browser.remote.screencast.update",
+              payload: { subscriptionId: owner.responseId, event: { kind: "ended", error } },
+            });
+            void owner.release();
+          },
+        },
+      });
+      if (!result.ok) {
+        await owner.release();
+        this.emit({
+          type: "browser.remote.screencast.subscribe.response",
+          payload: {
+            requestId: msg.requestId,
+            error: result.error.message,
+            code: result.error.code,
+          },
+        });
+        return;
+      }
+      this.emit({
+        type: "browser.remote.screencast.subscribe.response",
+        payload: {
+          requestId: msg.requestId,
+          subscriptionId: owner.responseId,
+          ...(result.page ? { page: result.page } : {}),
+        },
+      });
+      broker.activateViewer(owner.id);
+    } catch (error) {
+      await owner.release();
+      throw error;
+    }
+  }
+
+  private async sendBrowserScreencastInput(
+    msg: Extract<SessionInboundMessage, { type: "browser.remote.input.request" }>,
+    source: object | undefined,
+  ): Promise<void> {
+    const broker = this.browserScreencastBroker;
+    const reply =
+      broker && source && this.ownsBrowserScreencast(source, msg.subscriptionId)
+        ? await broker.sendInput(msg.subscriptionId, msg.input)
+        : {
+            ok: false,
+            error: {
+              code: "browser_tab_closed" as const,
+              message: "The browser stream ended.",
+            },
+          };
+    this.emit({
+      type: "browser.remote.input.response",
+      payload: {
+        requestId: msg.requestId,
+        ok: reply.ok,
+        ...(reply.error ? { error: reply.error } : {}),
+      },
+    });
+  }
+
   private dispatchSubscriptionMessage(
     msg: SessionInboundMessage,
     source?: object,
   ): Promise<void> | undefined {
     if (msg.type === "browser.host.register.request") return this.registerBrowserHost(msg);
+    const browserRemote = this.dispatchBrowserRemoteMessage(msg, source);
+    if (browserRemote) return browserRemote;
     if (msg.type === "browser.automation.execute.response") {
       if (source)
         this.browserToolsBroker?.receiveResponse(
@@ -3177,6 +3354,14 @@ export class Session {
     }
     if (binaryFrame.kind === "file_transfer") {
       await this.workspaceFilesSession.handleFileTransferFrame(binaryFrame.frame, source);
+      return;
+    }
+    if (binaryFrame.kind === "browser_screencast") {
+      this.browserScreencastBroker?.receiveHostFrame(
+        binaryFrame.frame,
+        binaryFrame.bytes,
+        this.delivery.subscriptionIds(source, "browser-host"),
+      );
       return;
     }
     this.terminalController.handleBinaryFrame(binaryFrame.frame, source);

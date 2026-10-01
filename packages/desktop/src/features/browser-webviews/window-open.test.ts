@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { decideBrowserWindowOpenRequest, PendingBrowserWindowOpenRequests } from ".";
+import {
+  decideBrowserWindowOpenRequest,
+  PageInitiatedTabBudget,
+  PendingBrowserWindowOpenRequests,
+} from ".";
 
 describe("browser webview window-open requests", () => {
   it("routes foreground tabs to a Paseo workspace tab", () => {
@@ -172,5 +176,30 @@ describe("pending browser window-open requests", () => {
     pending.delete(202);
 
     expect(pending.take(202)).toEqual([]);
+  });
+});
+
+describe("PageInitiatedTabBudget", () => {
+  it("grants four tabs per opener within two seconds", () => {
+    const budget = new PageInitiatedTabBudget();
+    const grants = [0, 10, 20, 30, 40].map((now) => budget.tryTake(1, now));
+    expect(grants).toEqual([true, true, true, true, false]);
+  });
+
+  it("refills once the window passes", () => {
+    const budget = new PageInitiatedTabBudget();
+    for (const now of [0, 1, 2, 3]) {
+      budget.tryTake(1, now);
+    }
+    expect(budget.tryTake(1, 1999)).toBe(false);
+    expect(budget.tryTake(1, 2001)).toBe(true);
+  });
+
+  it("keeps separate budgets per opener", () => {
+    const budget = new PageInitiatedTabBudget();
+    for (const now of [0, 1, 2, 3]) {
+      budget.tryTake(1, now);
+    }
+    expect(budget.tryTake(2, 4)).toBe(true);
   });
 });

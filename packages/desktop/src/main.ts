@@ -16,6 +16,7 @@ import {
   BrowserWindow,
   ClipboardItem,
   clipboard,
+  dialog,
   Menu,
   ipcMain,
   nativeImage,
@@ -63,6 +64,7 @@ import {
   listRegisteredPaseoBrowserIds,
   isPaseoBrowserWebviewAttach,
   preparePaseoBrowserWebContents,
+  PageInitiatedTabBudget,
   PendingBrowserWindowOpenRequests,
   registerBrowserWebviewNavigationGuards,
   unregisterPaseoBrowserFromHost,
@@ -79,6 +81,17 @@ import {
   listPaseoBrowserProfileGuests,
   readLegacyPaseoBrowserIds,
 } from "./features/browser-profile.js";
+import { detectSources } from "./features/browser-cookie-import/sources.js";
+import {
+  deleteReceipt,
+  getReceipt,
+  importCookies,
+  withCookieImportLock,
+} from "./features/browser-cookie-import/service.js";
+import {
+  parseRequest,
+  type BrowserCookieImportSource,
+} from "./features/browser-cookie-import/types.js";
 import { parseOpenProjectPathFromArgv } from "./open-project-routing.js";
 import {
   createDesktopWindowOwner,
@@ -98,6 +111,7 @@ import {
 } from "./daemon/quit-lifecycle.js";
 import { runDesktopStartup } from "./desktop-startup.js";
 import { registerBrowserAutomationIpc } from "./features/browser-automation/ipc.js";
+import { registerBrowserScreencastIpc } from "./features/browser-screencast/ipc.js";
 import { BrowserKeyboard } from "./features/browser-keyboard/index.js";
 import { installAppUpdateOnQuit } from "./features/auto-updater.js";
 import {
@@ -119,6 +133,7 @@ const DESKTOP_WINDOW_CHROME_MODE = resolveDesktopWindowChromeMode({
 });
 const UPDATE_QUIT_DEADLINE_MS = 5_000;
 const pendingBrowserWindowOpenRequests = new PendingBrowserWindowOpenRequests();
+const pageInitiatedTabBudget = new PageInitiatedTabBudget();
 const agentNavigationInbox = new AgentNavigationInbox();
 
 // A second-instance launch can arrive before the packaged protocol handler,
@@ -191,7 +206,23 @@ function showBrowserWebviewContextMenu(
   contents: Electron.WebContents,
   params: Electron.ContextMenuParams,
 ): void {
+  const sourceBrowserId = getPaseoBrowserIdForWebContents(contents);
+  const linkURL = params.linkURL;
   const menu = Menu.buildFromTemplate([
+    ...(sourceBrowserId && linkURL && /^https?:/i.test(linkURL)
+      ? [
+          {
+            label: "Open Link in New Tab",
+            click: () => {
+              win.webContents.send(BROWSER_NEW_TAB_REQUEST_EVENT, {
+                sourceBrowserId,
+                url: linkURL,
+                background: false,
+              });
+            },
+          },
+        ]
+      : []),
     ...buildStandardContextMenuItems(contents, params),
     ...(app.isPackaged
       ? []
@@ -267,11 +298,15 @@ function installBrowserWindowOpenHandler(input: {
       };
     }
 
+    if (!pageInitiatedTabBudget.tryTake(sourceContents.id)) {
+      return { action: "deny" };
+    }
     const sourceBrowserId = getPaseoBrowserIdForWebContents(sourceContents);
     if (sourceBrowserId) {
       mainWindow.webContents.send(BROWSER_NEW_TAB_REQUEST_EVENT, {
         sourceBrowserId,
         url: decision.url,
+        background: disposition === "background-tab",
       });
     } else {
       pendingBrowserWindowOpenRequests.add(sourceContents.id, decision.url);
@@ -513,17 +548,81 @@ ipcMain.handle("paseo:browser:clear-profile", async (_event, rawLegacyBrowserIds
     readLegacyPaseoBrowserIds(rawLegacyBrowserIds),
   );
   const profileSession = profileSessions[0];
-  await clearPaseoBrowserProfile({
-    profileSessions,
-    listGuests: () =>
-      listPaseoBrowserProfileGuests({
-        profileSession,
-        webContents: webContents.getAllWebContents(),
-      }),
-    logReloadError: (webContentsId, error) => {
-      log.warn("[browser-profile] failed to reload guest", { webContentsId, error });
-    },
+  await withCookieImportLock(profileSession, async () => {
+    await clearPaseoBrowserProfile({
+      profileSessions,
+      listGuests: () =>
+        listPaseoBrowserProfileGuests({
+          profileSession,
+          webContents: webContents.getAllWebContents(),
+        }),
+      logReloadError: (webContentsId, error) => {
+        log.warn("[browser-profile] failed to reload guest", { webContentsId, error });
+      },
+    });
+    deleteReceipt(app.getPath("userData"));
   });
+});
+
+ipcMain.handle("paseo:browser:cookie-import:detect", (_event, ...args: unknown[]) => {
+  if (args.length) return [];
+  return detectSources().map(({ family, label, profiles, requiresFullDiskAccess }) => {
+    const source: BrowserCookieImportSource = {
+      family,
+      label,
+      profiles: profiles.map(({ id, label: profileLabel }) => ({ id, label: profileLabel })),
+    };
+    if (requiresFullDiskAccess) source.requiresFullDiskAccess = true;
+    return source;
+  });
+});
+
+ipcMain.handle(
+  "paseo:browser:cookie-import:run",
+  async (event, rawRequest: unknown, ...args: unknown[]) => {
+    const request = args.length ? null : parseRequest(rawRequest);
+    if (!request) return { status: "error", code: "failed" };
+    let filePath: string | undefined;
+    if (request.kind === "file") {
+      const owner = BrowserWindow.fromWebContents(event.sender);
+      const options = {
+        title: "Import Cookies",
+        filters: [{ name: "JSON", extensions: ["json"] }],
+        properties: ["openFile" as const],
+      };
+      const selection = owner
+        ? await dialog.showOpenDialog(owner, options)
+        : await dialog.showOpenDialog(options);
+      if (selection.canceled || selection.filePaths.length !== 1) return { status: "canceled" };
+      filePath = selection.filePaths[0];
+    }
+    return importCookies(request, {
+      session: getPaseoBrowserProfileSession(session),
+      userData: app.getPath("userData"),
+      filePath,
+      log: (stage, fields) => log.info("[browser-cookie-import]", { stage, ...fields }),
+    });
+  },
+);
+
+ipcMain.handle("paseo:browser:cookie-import:receipt", (_event, ...args: unknown[]) =>
+  args.length ? null : getReceipt(app.getPath("userData")),
+);
+
+ipcMain.handle("paseo:browser:reload-guests", (_event, ...args: unknown[]) => {
+  if (args.length) return;
+  const profileSession = getPaseoBrowserProfileSession(session);
+  for (const guest of listPaseoBrowserProfileGuests({
+    profileSession,
+    webContents: webContents.getAllWebContents(),
+  })) {
+    if (guest.isDestroyed()) continue;
+    try {
+      guest.reload();
+    } catch {
+      log.warn("[browser-cookie-import] reload-error", { code: "failed" });
+    }
+  }
 });
 
 const browserCapture = createBrowserCaptureService<Electron.NativeImage>({
@@ -761,6 +860,7 @@ async function createWindow(
     preparePaseoBrowserWebContents(contents);
     contents.once("destroyed", () => {
       pendingBrowserWindowOpenRequests.delete(contents.id);
+      pageInitiatedTabBudget.delete(contents.id);
     });
     installBrowserWindowOpenHandler({
       contents,
@@ -969,6 +1069,7 @@ async function bootstrap(): Promise<void> {
   ipcMain.handle("paseo:opener:openUrl", (_event, value: unknown) => openExternalUrl(value));
   registerEditorTargetHandlers();
   registerBrowserAutomationIpc();
+  registerBrowserScreencastIpc();
 
   // In-app "Open in new window": opens a window that lands on the given project
   // via the same open-project flow as a CLI launch (no move, no ownership).

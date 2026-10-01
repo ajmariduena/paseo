@@ -567,6 +567,22 @@ export const en = {
         subtitle: "Open this workspace in Electron to use the built-in browser.",
       },
       session: "Browser session {{browserId}}",
+      remote: {
+        connecting: "Connecting to the desktop browser…",
+        keyboard: "Keyboard",
+        retry: "Retry",
+        mobileView: "Mobile view",
+        desktopView: "Desktop view",
+        newTabFailed: "Couldn't open a browser tab on the desktop",
+        errors: {
+          disconnected: "The host is not connected",
+          updateDaemon: "Update the host to open desktop browser tabs",
+          updateDesktop: "Update Paseo on the desktop to view its browser tabs",
+          noDesktop: "Open Paseo on your computer to use its browser",
+          tabClosed: "This tab is no longer open on the desktop",
+          unknown: "The desktop browser stopped responding",
+        },
+      },
       controls: {
         back: "Back",
         forward: "Forward",
@@ -1818,6 +1834,13 @@ export const en = {
     externalBrowser: "External browser",
     dontAskAgain: "Don't ask again",
   },
+  webLink: {
+    title: "Open link",
+    message: "Open {{url}} in Paseo?",
+    inPaseo: "In Paseo",
+    externalBrowser: "System browser",
+    dontAskAgain: "Don't ask again",
+  },
   downloads: {
     requestTokenFailed: "Failed to request download token.",
     hostUnavailable: "Download host is unavailable.",
@@ -2180,6 +2203,73 @@ export const en = {
       fallbackHint: "If it is unavailable, Paseo falls back to another available model",
       docs: "Docs",
       saveError: "Unable to update metadata generation",
+    },
+    browser: {
+      links: {
+        title: "Opening links",
+        webLinks: {
+          label: "Web links",
+          hint: "Links in the terminal, chat and markdown",
+        },
+        serviceUrls: {
+          label: "Script URLs",
+          hint: "Services started by workspace scripts",
+        },
+        invert: {
+          label: "Invert with {{shortcut}}-click",
+          hint: "That click opens the link in the other browser",
+          hintAsk: "That click opens the link in Paseo without asking",
+        },
+      },
+      cookieImport: {
+        title: "Sign-ins",
+        emptyTitle: "Import from another browser",
+        emptyHint: "Use your existing sign-ins in Paseo's browser",
+        receipt_one: "{{count}} cookie imported · {{timeAgo}}",
+        receipt_other: "{{count}} cookies imported · {{timeAgo}}",
+        importFrom: "Import from…",
+        importing: "Importing…",
+        onThisComputer: "On this computer",
+        detecting: "Looking for browsers…",
+        detectFailed: "Couldn't look for browsers",
+        noBrowsers: "No supported browser found",
+        profileCount_one: "{{count}} profile",
+        profileCount_other: "{{count}} profiles",
+        requiresFullDiskAccess: "Needs Full Disk Access",
+        fromFile: "From JSON file…",
+        fileSource: "JSON file",
+        footnote:
+          "Only cookies are copied, not passwords, history or extensions. Google sign-ins aren't imported, so sign in to Google inside Paseo. Agents with browser tools can use these sessions.",
+        reload: {
+          label: "Reload open tabs",
+          hint: "Open pages pick up the imported sign-ins after a reload",
+          action: "Reload tabs",
+        },
+        result: {
+          imported_one: "Imported {{count}} cookie from {{source}}",
+          imported_other: "Imported {{count}} cookies from {{source}}",
+          importedWithSkipped_one:
+            "Imported {{count}} cookie from {{source}} · {{skipped}} skipped",
+          importedWithSkipped_other:
+            "Imported {{count}} cookies from {{source}} · {{skipped}} skipped",
+          partial_one: "Imported {{count}} cookie from {{source}} · {{failed}} couldn't be loaded",
+          partial_other:
+            "Imported {{count}} cookies from {{source}} · {{failed}} couldn't be loaded",
+          none: "No cookies were imported from {{source}}",
+        },
+        errors: {
+          keychainDenied:
+            "Paseo couldn't read {{source}}'s key from the keychain. Try again and choose Allow.",
+          fullDiskAccess:
+            "Safari needs Full Disk Access. Turn it on for Paseo in System Settings › Privacy & Security.",
+          sourceBusy: "{{source}} is using its cookie database. Quit it and try again.",
+          sourceNotFound: "That browser profile is no longer available.",
+          invalidFile: "That file isn't a valid cookie JSON export.",
+          noCookies: "There are no cookies to import.",
+          unsupportedPlatform: "Importing from this browser isn't supported on this computer.",
+          failed: "Couldn't import cookies.",
+        },
+      },
     },
     general: {
       title: "General",

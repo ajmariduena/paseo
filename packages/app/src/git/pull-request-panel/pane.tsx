@@ -18,6 +18,7 @@ import {
 import type { PressableStateCallbackType } from "react-native";
 import { useTranslation } from "react-i18next";
 import { openExternalUrl } from "@/utils/open-external-url";
+import { useMarkdownWebLinkPress } from "@/web-links/context";
 import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -135,11 +136,6 @@ const ADD_TO_CHAT_MENU_ICON = (
 );
 const COPY_MENU_ICON = <ThemedCopy size={14} uniProps={foregroundMutedColorMapping} />;
 const OPEN_MENU_ICON = <ThemedExternalLink size={14} uniProps={foregroundMutedColorMapping} />;
-
-function handleMarkdownLinkPress(url: string): boolean {
-  void openExternalUrl(url);
-  return false;
-}
 
 function entryHeaderPressableStyle({ hovered }: { hovered?: boolean }) {
   return [styles.entryHeaderPressable, Boolean(hovered) && styles.hoverable];
@@ -818,6 +814,7 @@ function SingleActivityCard({
   const { activity } = entry;
   const { actionsVisible, handlePointerEnter, handlePointerLeave, setMenuOpen } =
     useRevealOnHover();
+  const markdownLinkPress = useMarkdownWebLinkPress();
   const hasBody = activity.body.trim() !== "";
   const handleAddToChat = useCallback(() => onAddToChat(activity), [activity, onAddToChat]);
   const handleHeaderPress = useCallback(() => {
@@ -874,7 +871,7 @@ function SingleActivityCard({
       {collapsed ? null : (
         <>
           <View style={styles.cardBody}>
-            <MarkdownRenderer text={activity.body} compact onLinkPress={handleMarkdownLinkPress} />
+            <MarkdownRenderer text={activity.body} compact onLinkPress={markdownLinkPress} />
           </View>
           {attachEnabled && canAddPullRequestActivityToChat(activity) ? (
             <View style={styles.cardFooter}>
@@ -938,6 +935,7 @@ function ReviewCard({
   const { review, threads } = entry;
   const { actionsVisible, handlePointerEnter, handlePointerLeave, setMenuOpen } =
     useRevealOnHover();
+  const markdownLinkPress = useMarkdownWebLinkPress();
   const hasBody = review.body.trim() !== "";
   const handleAddToChat = useCallback(() => onAddToChat(review), [onAddToChat, review]);
   const handleHeaderPress = useCallback(() => {
@@ -984,7 +982,7 @@ function ReviewCard({
         <>
           {hasBody ? (
             <View style={styles.cardBody}>
-              <MarkdownRenderer text={review.body} compact onLinkPress={handleMarkdownLinkPress} />
+              <MarkdownRenderer text={review.body} compact onLinkPress={markdownLinkPress} />
             </View>
           ) : null}
           {attachEnabled && canAddPullRequestActivityToChat(review) ? (
@@ -1157,6 +1155,7 @@ function ThreadComment({
 }) {
   const { actionsVisible, handlePointerEnter, handlePointerLeave, setMenuOpen } =
     useRevealOnHover();
+  const markdownLinkPress = useMarkdownWebLinkPress();
   return (
     <View
       style={threadCommentStyle(contentStyle)}
@@ -1177,7 +1176,7 @@ function ThreadComment({
       </View>
       {comment.body.trim() !== "" ? (
         <View style={styles.threadCommentBody}>
-          <MarkdownRenderer text={comment.body} compact onLinkPress={handleMarkdownLinkPress} />
+          <MarkdownRenderer text={comment.body} compact onLinkPress={markdownLinkPress} />
         </View>
       ) : null}
     </View>

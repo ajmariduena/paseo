@@ -1,6 +1,12 @@
 import { Platform } from "react-native";
 import { getElectronHost } from "@/desktop/electron/host";
 import type { BrowserKeyboardPolicy } from "@/desktop/browser/shortcuts";
+import type {
+  BrowserScreencastCapture,
+  BrowserScreencastError,
+  BrowserScreencastInput,
+  BrowserScreencastPageState,
+} from "@getpaseo/protocol/browser-screencast/rpc-schemas";
 import type { SessionInboundMessage, SessionOutboundMessage } from "@getpaseo/protocol/messages";
 
 type BrowserAutomationExecuteRequest = Extract<
@@ -136,12 +142,63 @@ export type DesktopBrowserShortcutEvent =
 export interface DesktopBrowserNewTabRequestEvent {
   sourceBrowserId: string;
   url: string;
+  background?: boolean;
 }
 
 export interface DesktopAttachedBrowserRegistration {
   browserId: string;
   workspaceId: string;
   webContentsId: number;
+}
+
+export type BrowserCookieImportFamily =
+  | "chrome"
+  | "edge"
+  | "arc"
+  | "brave"
+  | "comet"
+  | "helium"
+  | "chromium"
+  | "firefox"
+  | "safari";
+export interface BrowserCookieImportSource {
+  family: BrowserCookieImportFamily;
+  label: string;
+  profiles: Array<{ id: string; label: string }>;
+  requiresFullDiskAccess?: boolean;
+}
+export type BrowserCookieImportRequest =
+  | { kind: "browser"; family: BrowserCookieImportFamily; profileId?: string }
+  | { kind: "file" };
+export type BrowserCookieImportErrorCode =
+  | "keychain_denied"
+  | "full_disk_access"
+  | "source_busy"
+  | "source_not_found"
+  | "invalid_file"
+  | "no_cookies"
+  | "unsupported_platform"
+  | "failed";
+export type BrowserCookieImportResult =
+  | {
+      status: "imported";
+      sourceLabel: string;
+      profileLabel?: string;
+      imported: number;
+      skipped: number;
+      googleSkipped: number;
+      partitionSkipped: number;
+      failed: number;
+      importedAt: string;
+    }
+  | { status: "canceled" }
+  | { status: "error"; code: BrowserCookieImportErrorCode; message?: string };
+export interface BrowserCookieImportReceipt {
+  sourceLabel: string;
+  profileLabel?: string;
+  importedAt: string;
+  imported: number;
+  skipped: number;
 }
 
 export interface DesktopBrowserBridge {
@@ -156,6 +213,10 @@ export interface DesktopBrowserBridge {
   focus?: (browserId: string) => Promise<boolean>;
   openDevTools?: (browserId: string) => Promise<unknown>;
   clearProfile?: (legacyBrowserIds: string[]) => Promise<void>;
+  detectCookieImportSources?: () => Promise<BrowserCookieImportSource[]>;
+  importCookies?: (request: BrowserCookieImportRequest) => Promise<BrowserCookieImportResult>;
+  getCookieImportReceipt?: () => Promise<BrowserCookieImportReceipt | null>;
+  reloadBrowserGuests?: () => Promise<void>;
   executeAutomationCommand?: (
     request: BrowserAutomationExecuteRequest,
   ) => Promise<BrowserAutomationExecuteResponse["payload"]>;
@@ -166,6 +227,32 @@ export interface DesktopBrowserBridge {
   ) => Promise<string | null>;
   /** Copy element text and/or an image to the system clipboard from main. */
   copyElement?: (payload: { text?: string; imageDataUrl?: string }) => Promise<boolean>;
+  screencast?: DesktopBrowserScreencastBridge;
+}
+
+export type DesktopBrowserScreencastEvent =
+  | { kind: "page"; page: BrowserScreencastPageState }
+  | { kind: "ended"; error: BrowserScreencastError };
+
+export interface DesktopBrowserScreencastBridge {
+  start: (request: {
+    streamId: string;
+    browserId: string;
+    workspaceId: string;
+    capture: BrowserScreencastCapture;
+  }) => Promise<
+    { ok: true; page: BrowserScreencastPageState } | { ok: false; error: BrowserScreencastError }
+  >;
+  stop: (streamId: string) => Promise<void>;
+  ack: (streamId: string) => void;
+  input: (
+    streamId: string,
+    input: BrowserScreencastInput,
+  ) => Promise<{ ok: boolean; error?: BrowserScreencastError }>;
+  onFrame: (handler: (streamId: string, frame: Uint8Array) => void) => () => void;
+  onEvent: (
+    handler: (streamId: string, event: DesktopBrowserScreencastEvent) => void,
+  ) => () => void;
 }
 
 export interface DesktopInvokeBridge {

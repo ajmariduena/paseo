@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import type { OpenFileDisposition } from "@/workspace/file-open";
 import { openExternalUrl } from "@/utils/open-external-url";
+import { readWebLinkModifiers, type WebLinkModifiers } from "@/web-links/routing";
 import type { InlinePathTarget } from "./parse";
 import {
   useAssistantFileLinkResolverContext,
@@ -19,12 +20,20 @@ import {
 export interface UseFileLinkResult {
   target: InlinePathTarget | null;
   onHoverIn: () => void;
-  onPress: () => void;
-  open: (source: AssistantFileLinkSource, disposition: OpenFileDisposition) => void;
+  onPress: (event?: unknown) => void;
+  open: (
+    source: AssistantFileLinkSource,
+    disposition: OpenFileDisposition,
+    modifiers?: WebLinkModifiers,
+  ) => void;
 }
 
 export interface AssistantFileLinkActions {
-  open(source: AssistantFileLinkSource, disposition: OpenFileDisposition): void;
+  open(
+    source: AssistantFileLinkSource,
+    disposition: OpenFileDisposition,
+    modifiers?: WebLinkModifiers,
+  ): void;
   canOpen(source: AssistantFileLinkSource): boolean;
   canResolveFile(source: AssistantFileLinkSource): boolean;
 }
@@ -85,10 +94,15 @@ export function useFileLink(source: AssistantFileLinkSource): UseFileLinkResult 
   });
 
   const open = useStableEvent(
-    (nextSource: AssistantFileLinkSource, disposition: OpenFileDisposition) => {
+    (
+      nextSource: AssistantFileLinkSource,
+      disposition: OpenFileDisposition,
+      modifiers?: WebLinkModifiers,
+    ) => {
       openAssistantFileLink({
         source: nextSource,
         disposition,
+        modifiers,
         context,
         queryClient,
         formatNoFileFoundMessage: (token) => t("common.errors.noFileFound", { token }),
@@ -116,8 +130,8 @@ export function useFileLink(source: AssistantFileLinkSource): UseFileLinkResult 
     });
   });
 
-  const onPress = useStableEvent(() => {
-    open(stableSource, "preferred");
+  const onPress = useStableEvent((event?: unknown) => {
+    open(stableSource, "preferred", readWebLinkModifiers(event));
   });
 
   const target = useMemo(() => {
@@ -135,8 +149,12 @@ export function useAssistantFileLinkActions(): AssistantFileLinkActions {
   const actionLink = useFileLink(ACTION_LINK_SOURCE);
 
   const open = useStableEvent(
-    (source: AssistantFileLinkSource, disposition: OpenFileDisposition) => {
-      actionLink.open(source, disposition);
+    (
+      source: AssistantFileLinkSource,
+      disposition: OpenFileDisposition,
+      modifiers?: WebLinkModifiers,
+    ) => {
+      actionLink.open(source, disposition, modifiers);
     },
   );
   const canOpen = useCallback(
@@ -156,6 +174,7 @@ export function useAssistantFileLinkActions(): AssistantFileLinkActions {
 function openAssistantFileLink(input: {
   source: AssistantFileLinkSource;
   disposition: OpenFileDisposition;
+  modifiers?: WebLinkModifiers;
   context: AssistantFileLinkResolverContextValue;
   queryClient: ReturnType<typeof useQueryClient>;
   formatNoFileFoundMessage: (token: string) => string;
@@ -169,6 +188,7 @@ function openAssistantFileLink(input: {
     void dispatchResolvedLink({
       resolution: capturedResolution,
       disposition: input.disposition,
+      modifiers: input.modifiers,
       capturedServerId: capturedConfig.serverId,
       capturedWorkspaceRoot: capturedConfig.workspaceRoot,
       context: input.context,
@@ -258,6 +278,7 @@ function assistantFileLinkQueryKey(input: {
 async function dispatchResolvedLink(input: {
   resolution: Extract<AssistantFileLinkResolution, { kind: "resolved" }>;
   disposition: OpenFileDisposition;
+  modifiers?: WebLinkModifiers;
   capturedServerId?: string;
   capturedWorkspaceRoot?: string;
   context: AssistantFileLinkResolverContextValue;
@@ -276,6 +297,7 @@ async function dispatchResolvedLink(input: {
   if (value.kind === "external") {
     await dispatchExternalUrl({
       url: value.url,
+      modifiers: input.modifiers,
       capturedServerId: input.capturedServerId,
       capturedWorkspaceRoot: input.capturedWorkspaceRoot,
       context: input.context,
@@ -302,6 +324,7 @@ async function dispatchFileTarget(input: {
 
 async function dispatchExternalUrl(input: {
   url: string;
+  modifiers?: WebLinkModifiers;
   capturedServerId?: string;
   capturedWorkspaceRoot?: string;
   context: AssistantFileLinkResolverContextValue;
@@ -311,6 +334,10 @@ async function dispatchExternalUrl(input: {
     current.serverId !== input.capturedServerId ||
     current.workspaceRoot !== input.capturedWorkspaceRoot
   ) {
+    return;
+  }
+  if (current.openWebLink) {
+    await current.openWebLink(input.url, input.modifiers);
     return;
   }
   await openExternalUrl(input.url);

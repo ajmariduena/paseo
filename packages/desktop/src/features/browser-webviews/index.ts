@@ -4,6 +4,7 @@ import {
   BROWSER_NEW_TAB_REQUEST_EVENT,
   decideBrowserWindowOpenRequest,
   isAllowedBrowserWebviewUrl,
+  PageInitiatedTabBudget,
   PendingBrowserWindowOpenRequests,
 } from "./window-open.js";
 import { PaseoBrowserWebviewRegistry } from "./registry.js";
@@ -11,6 +12,7 @@ import { PaseoBrowserWebviewRegistry } from "./registry.js";
 export {
   BROWSER_NEW_TAB_REQUEST_EVENT,
   decideBrowserWindowOpenRequest,
+  PageInitiatedTabBudget,
   PendingBrowserWindowOpenRequests,
 };
 

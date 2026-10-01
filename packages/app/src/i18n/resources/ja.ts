@@ -576,6 +576,22 @@ export const ja: TranslationResources = {
         subtitle: "組み込みブラウザを使用するには、このワークスペースをElectronで開いてください。",
       },
       session: "ブラウザセッション{{browserId}}",
+      remote: {
+        connecting: "パソコンのブラウザに接続しています…",
+        keyboard: "キーボード",
+        retry: "再試行",
+        mobileView: "モバイル表示",
+        desktopView: "デスクトップ表示",
+        newTabFailed: "パソコンでブラウザタブを開けませんでした",
+        errors: {
+          disconnected: "ホストに接続されていません",
+          updateDaemon: "パソコンのブラウザタブを開くにはホストを更新してください",
+          updateDesktop: "ブラウザタブを表示するにはパソコンの Paseo を更新してください",
+          noDesktop: "ブラウザを使うにはパソコンで Paseo を開いてください",
+          tabClosed: "このタブはパソコンで開かれていません",
+          unknown: "パソコンのブラウザが応答しなくなりました",
+        },
+      },
       controls: {
         back: "戻る",
         forward: "進む",
@@ -1812,6 +1828,13 @@ export const ja: TranslationResources = {
     externalBrowser: "外部ブラウザ",
     dontAskAgain: "次回から確認しない",
   },
+  webLink: {
+    title: "リンクを開く",
+    message: "{{url}} を Paseo で開きますか？",
+    inPaseo: "Paseo で開く",
+    externalBrowser: "システムのブラウザ",
+    dontAskAgain: "今後は確認しない",
+  },
   downloads: {
     requestTokenFailed: "ダウンロードトークンのリクエストに失敗しました。",
     hostUnavailable: "ダウンロードホストが利用できません。",
@@ -2075,6 +2098,75 @@ export const ja: TranslationResources = {
       fallbackHint: "利用できない場合、Paseo は別の利用可能なモデルを使用します",
       docs: "ドキュメント",
       saveError: "メタデータ生成を更新できません",
+    },
+    browser: {
+      links: {
+        title: "リンクの開き方",
+        webLinks: {
+          label: "Web リンク",
+          hint: "ターミナル、チャット、Markdown のリンク",
+        },
+        serviceUrls: {
+          label: "スクリプトの URL",
+          hint: "ワークスペースのスクリプトが起動したサービス",
+        },
+        invert: {
+          label: "{{shortcut}}-クリックで反転",
+          hint: "そのクリックでもう一方のブラウザで開きます",
+          hintAsk: "そのクリックで確認せずに Paseo で開きます",
+        },
+      },
+      cookieImport: {
+        title: "ログイン情報",
+        emptyTitle: "ほかのブラウザから読み込む",
+        emptyHint: "今のログイン状態を Paseo のブラウザでも使えます",
+        receipt_one: "{{count}} 件の Cookie を読み込み済み · {{timeAgo}}",
+        receipt_other: "{{count}} 件の Cookie を読み込み済み · {{timeAgo}}",
+        importFrom: "読み込み元…",
+        importing: "読み込み中…",
+        onThisComputer: "このコンピュータ",
+        detecting: "ブラウザを検索中…",
+        detectFailed: "ブラウザを検索できませんでした",
+        noBrowsers: "対応するブラウザが見つかりません",
+        profileCount_one: "{{count}} 個のプロファイル",
+        profileCount_other: "{{count}} 個のプロファイル",
+        requiresFullDiskAccess: "フルディスクアクセスが必要です",
+        fromFile: "JSON ファイルから…",
+        fileSource: "JSON ファイル",
+        footnote:
+          "コピーされるのは Cookie だけで、パスワード、履歴、拡張機能はコピーされません。Google のログインは読み込まれないため、Paseo 内で Google にログインしてください。ブラウザツールを持つエージェントはこれらのセッションを使用できます。",
+        reload: {
+          label: "開いているタブを再読み込み",
+          hint: "開いているページは再読み込み後に読み込んだログイン情報を使います",
+          action: "タブを再読み込み",
+        },
+        result: {
+          imported_one: "{{source}} から {{count}} 件の Cookie を読み込みました",
+          imported_other: "{{source}} から {{count}} 件の Cookie を読み込みました",
+          importedWithSkipped_one:
+            "{{source}} から {{count}} 件の Cookie を読み込みました · {{skipped}} 件をスキップ",
+          importedWithSkipped_other:
+            "{{source}} から {{count}} 件の Cookie を読み込みました · {{skipped}} 件をスキップ",
+          partial_one:
+            "{{source}} から {{count}} 件の Cookie を読み込みました · {{failed}} 件は読み込めませんでした",
+          partial_other:
+            "{{source}} から {{count}} 件の Cookie を読み込みました · {{failed}} 件は読み込めませんでした",
+          none: "{{source}} から Cookie を読み込めませんでした",
+        },
+        errors: {
+          keychainDenied:
+            "Paseo はキーチェーンから {{source}} の鍵を読み取れませんでした。もう一度試して「許可」を選んでください。",
+          fullDiskAccess:
+            "Safari にはフルディスクアクセスが必要です。システム設定 › プライバシーとセキュリティで Paseo に許可してください。",
+          sourceBusy:
+            "{{source}} が Cookie データベースを使用中です。終了してからもう一度お試しください。",
+          sourceNotFound: "そのブラウザプロファイルは利用できなくなりました。",
+          invalidFile: "そのファイルは有効な Cookie の JSON エクスポートではありません。",
+          noCookies: "読み込む Cookie がありません。",
+          unsupportedPlatform: "このコンピュータではこのブラウザからの読み込みに対応していません。",
+          failed: "Cookie を読み込めませんでした。",
+        },
+      },
     },
     general: {
       title: "一般",

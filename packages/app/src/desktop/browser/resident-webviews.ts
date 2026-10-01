@@ -11,6 +11,10 @@ const BROWSER_ID_ATTRIBUTE = "data-paseo-browser-id";
 const BROWSER_SURFACE_ATTRIBUTE = "data-paseo-browser-surface";
 const RESIDENT_VIEWPORT_WIDTH = 1280;
 const RESIDENT_VIEWPORT_HEIGHT = 800;
+export const RESIDENT_BROWSER_VIEWPORT_SIZE = {
+  width: RESIDENT_VIEWPORT_WIDTH,
+  height: RESIDENT_VIEWPORT_HEIGHT,
+} as const;
 
 const residentWebviewsByBrowserId = new Map<string, HTMLElement>();
 const residentSurfacesByBrowserId = new Map<string, HTMLElement>();
@@ -60,7 +64,7 @@ function registerBrowserWhenAttached(
 ): void {
   // Reparenting a webview can replace its guest WebContents without replacing
   // this DOM element, so every attachment needs a fresh main-process registration.
-  webview.addEventListener("did-attach", () => {
+  const register = () => {
     const webContentsId = webview.getWebContentsId();
     void browser
       .registerAttachedBrowser({
@@ -71,6 +75,24 @@ function registerBrowserWhenAttached(
       .catch((error) => {
         console.error("[browser-webview] attached registration failed", error);
       });
+  };
+  webview.addEventListener("did-attach", () => {
+    try {
+      register();
+    } catch {
+      // A guest attached while parked can report did-attach before it accepts calls.
+      webview.addEventListener(
+        "dom-ready",
+        () => {
+          try {
+            register();
+          } catch (error) {
+            console.error("[browser-webview] attached registration failed", error);
+          }
+        },
+        { once: true },
+      );
+    }
   });
 }
 

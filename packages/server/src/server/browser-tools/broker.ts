@@ -7,13 +7,37 @@ import {
   type BrowserAutomationExecuteRequest,
   type BrowserAutomationExecuteResponse,
 } from "@getpaseo/protocol/browser-automation/rpc-schemas";
+import type {
+  BrowserHostScreencastAckFrameRequestSchema,
+  BrowserHostScreencastInputRequestSchema,
+  BrowserHostScreencastStartRequestSchema,
+  BrowserHostScreencastStopRequestSchema,
+} from "@getpaseo/protocol/browser-screencast/rpc-schemas";
+import type { z } from "zod";
 import { browserToolsFailure, type BrowserToolsResponsePayload } from "./errors.js";
+
+export type BrowserHostDirectedScreencastMessage =
+  | z.infer<typeof BrowserHostScreencastStartRequestSchema>
+  | z.infer<typeof BrowserHostScreencastStopRequestSchema>
+  | z.infer<typeof BrowserHostScreencastAckFrameRequestSchema>
+  | z.infer<typeof BrowserHostScreencastInputRequestSchema>;
 
 export interface BrowserHostClient {
   id: string;
   hostKind: string;
   supportedCommands: readonly BrowserAutomationCommandName[];
   sendBrowserAutomationRequest(request: BrowserAutomationExecuteRequest): void | Promise<void>;
+  screencast?: BrowserScreencastHostChannel;
+}
+
+export interface BrowserScreencastHostChannel {
+  send(message: BrowserHostDirectedScreencastMessage): void;
+}
+
+export interface BrowserHostSummary {
+  hostId: string;
+  hostKind: string;
+  screencast: boolean;
 }
 
 export interface BrowserToolsExecuteInput {
@@ -23,6 +47,8 @@ export interface BrowserToolsExecuteInput {
   workspaceId?: string;
   requestId?: string;
   timeoutMs?: number;
+  /** Routes to exactly this host; a different connected host is never substituted. */
+  hostId?: string;
 }
 
 interface PendingBrowserToolsRequest {
@@ -53,6 +79,7 @@ export class BrowserToolsBroker {
   private readonly browserHostByBrowserId = new Map<string, string>();
   private readonly strandedBrowserHostByBrowserId = new Map<string, string>();
   private registrationSequence = 0;
+  private readonly unregisterListeners = new Set<(clientId: string) => void>();
 
   public constructor(options: BrowserToolsBrokerOptions) {
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? DEFAULT_BROWSER_TOOLS_TIMEOUT_MS;
@@ -76,6 +103,7 @@ export class BrowserToolsBroker {
       return;
     }
     this.clients.delete(clientId);
+    for (const listener of this.unregisterListeners) listener(clientId);
 
     for (const [browserId, ownerClientId] of this.browserHostByBrowserId) {
       if (ownerClientId !== clientId) {
@@ -110,6 +138,46 @@ export class BrowserToolsBroker {
     return this.clients.size;
   }
 
+  public listHosts(): BrowserHostSummary[] {
+    return Array.from(this.clients.values(), (host) => ({
+      hostId: host.client.id,
+      hostKind: host.client.hostKind,
+      screencast: host.client.screencast !== undefined,
+    }));
+  }
+
+  public getScreencastChannel(hostId: string): BrowserScreencastHostChannel | null {
+    return this.clients.get(hostId)?.client.screencast ?? null;
+  }
+
+  public onHostUnregistered(listener: (hostId: string) => void): () => void {
+    this.unregisterListeners.add(listener);
+    return () => this.unregisterListeners.delete(listener);
+  }
+
+  /** Finds the connected host that owns a browser tab, asking every host when it is not yet known. */
+  public async resolveBrowserHost(input: {
+    browserId: string;
+    workspaceId: string;
+    timeoutMs?: number;
+  }): Promise<string | null> {
+    const known = this.browserHostByBrowserId.get(input.browserId);
+    if (known && this.clients.has(known)) return known;
+    const stranded = this.strandedBrowserHostByBrowserId.get(input.browserId);
+    if (stranded && this.clients.has(stranded)) return stranded;
+    if (this.clients.size === 0) return null;
+    const listed = await this.execute({
+      command: { command: "list_tabs", args: {} },
+      workspaceId: input.workspaceId,
+      ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+    });
+    const owner = listed.ok ? this.browserHostByBrowserId.get(input.browserId) : undefined;
+    if (owner && this.clients.has(owner)) return owner;
+    // A desktop restores saved tabs lazily, so a lone host may still own a tab it has not listed.
+    const screencastHosts = this.listHosts().filter((host) => host.screencast);
+    return screencastHosts.length === 1 ? screencastHosts[0]!.hostId : null;
+  }
+
   public async execute(input: BrowserToolsExecuteInput): Promise<BrowserToolsResponsePayload> {
     const requestId = input.requestId ?? this.createRequestId();
 
@@ -130,14 +198,17 @@ export class BrowserToolsBroker {
       });
     }
 
-    if (request.data.command.command === "list_tabs") {
+    if (request.data.command.command === "list_tabs" && input.hostId === undefined) {
       return this.executeListTabs({
         request: request.data,
         timeoutMs: input.timeoutMs ?? this.defaultTimeoutMs,
       });
     }
 
-    const host = this.selectHostForCommand(request.data.command, requestId);
+    const host =
+      input.hostId === undefined
+        ? this.selectHostForCommand(request.data.command, requestId)
+        : this.selectExplicitHost(input.hostId, requestId);
     if (!host.ok) {
       return host.payload;
     }
@@ -328,6 +399,25 @@ export class BrowserToolsBroker {
         requestId,
         code: "browser_tab_not_found",
         message: `Browser tab ${browserId} is not associated with a connected browser automation host. Call browser_list_tabs and use one of the returned browserId values.`,
+      }),
+    };
+  }
+
+  private selectExplicitHost(
+    hostId: string,
+    requestId: string,
+  ):
+    | { ok: true; value: RegisteredBrowserHost }
+    | { ok: false; payload: BrowserToolsResponsePayload } {
+    const host = this.clients.get(hostId);
+    if (host) return { ok: true, value: host };
+    return {
+      ok: false,
+      payload: browserToolsFailure({
+        requestId,
+        code: "browser_no_host",
+        message: "The selected browser host is not connected.",
+        retryable: true,
       }),
     };
   }

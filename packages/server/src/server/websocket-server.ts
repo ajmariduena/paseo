@@ -102,6 +102,13 @@ import type { BrowserToolsBroker } from "./browser-tools/broker.js";
 import type { DaemonRuntimeConfig } from "./session/daemon/daemon-session.js";
 import { DirectorySyncService } from "./directory-sync/index.js";
 import { OWNER_PERMISSIONS, type DaemonPermission } from "./authorization/index.js";
+import { BrowserScreencastBroker } from "./browser-screencast/stream-broker.js";
+
+function createBrowserScreencastBroker(
+  hosts: BrowserToolsBroker | null,
+): BrowserScreencastBroker | null {
+  return hosts ? new BrowserScreencastBroker({ hosts }) : null;
+}
 import type { WorkspaceLabelService } from "./workspace-labels/index.js";
 import {
   APPLICATION_SOCKET_LEASE_CHECK_INTERVAL_MS,
@@ -591,6 +598,7 @@ export class VoiceAssistantWebSocketServer {
   private unsubscribeDaemonConfigChange: (() => void) | null = null;
   private unsubscribeTerminalActivity: (() => void) | null = null;
   private readonly browserToolsBroker: BrowserToolsBroker | null;
+  private readonly browserScreencastBroker: BrowserScreencastBroker | null;
   private readonly hubRelationships: HubRelationshipManagement | null;
   private connectionLifecycle: "starting" | "accepting" | "stopping" = "accepting";
   private readonly advertiseDaemonStatusRpc: boolean;
@@ -679,6 +687,7 @@ export class VoiceAssistantWebSocketServer {
     this.credentialSource = auth;
     this.daemonRuntimeConfig = daemonRuntimeConfig;
     this.browserToolsBroker = browserToolsBroker ?? null;
+    this.browserScreencastBroker = createBrowserScreencastBroker(this.browserToolsBroker);
     this.hubRelationships = hubRelationships ?? null;
     this.pluginRuntime = pluginRuntime;
     this.orchestrationSkills = orchestrationSkills;
@@ -1466,6 +1475,7 @@ export class VoiceAssistantWebSocketServer {
   private createSocketSession(options: SocketSessionOptions): Session {
     return new Session({
       browserToolsBroker: this.browserToolsBroker,
+      browserScreencastBroker: this.browserScreencastBroker,
       clientId: options.clientId,
       appVersion: options.appVersion,
       clientCapabilities: options.clientCapabilities,
@@ -1877,6 +1887,8 @@ export class VoiceAssistantWebSocketServer {
         checkoutRefresh: true,
         // COMPAT(workspaceMultiplicity): added in v0.1.97, drop the gate when floor >= v0.1.97
         workspaceMultiplicity: true,
+        // COMPAT(browserScreencast): added in v0.10.1, remove gate after 2027-04-01.
+        browserScreencast: this.browserToolsBroker !== null,
         // COMPAT(projectRemove): added in v0.1.97, drop the gate when floor >= v0.1.97.
         projectRemove: true,
         // COMPAT(projectAdd): added in v0.1.97, drop the gate when floor >= v0.1.97.

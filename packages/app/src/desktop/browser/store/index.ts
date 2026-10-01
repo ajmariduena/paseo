@@ -27,6 +27,8 @@ export {
 
 interface BrowserStoreState extends BrowserIndexState {
   createBrowser: (input?: { initialUrl?: string }) => string;
+  /** Records a tab that another device created, keeping the ID that device assigned. */
+  adoptBrowser: (browserId: string, input?: { initialUrl?: string }) => void;
   updateBrowser: (browserId: string, patch: BrowserRecordPatch) => void;
   setBrowserViewport: (browserId: string, viewport: BrowserViewport) => void;
   removeBrowser: (browserId: string) => void;
@@ -63,6 +65,22 @@ export const useBrowserStore = create<BrowserStoreState>()(
         }));
 
         return browserId;
+      },
+      adoptBrowser: (browserId, input) => {
+        set((state) =>
+          state.browsersById[browserId]
+            ? state
+            : {
+                browsersById: {
+                  ...state.browsersById,
+                  [browserId]: createBrowserRecord({
+                    browserId,
+                    initialUrl: input?.initialUrl,
+                    now: Date.now(),
+                  }),
+                },
+              },
+        );
       },
       updateBrowser: (browserId, patch) => {
         set((state) => applyBrowserPatch(state, browserId, patch));

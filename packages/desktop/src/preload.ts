@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { BrowserKeyboardPolicy } from "./features/browser-keyboard/index.js";
+import type { BrowserCookieImportRequest } from "./features/browser-cookie-import/types.js";
 import type { DesktopWindowChromeMode } from "./window/chrome.js";
 
 // This preload runs in Electron's sandbox and is tsc-compiled (not bundled), so it MUST
@@ -128,6 +129,11 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
       ipcRenderer.invoke("paseo:browser:open-devtools", browserId),
     clearProfile: (legacyBrowserIds: string[]) =>
       ipcRenderer.invoke("paseo:browser:clear-profile", legacyBrowserIds),
+    detectCookieImportSources: () => ipcRenderer.invoke("paseo:browser:cookie-import:detect"),
+    importCookies: (request: BrowserCookieImportRequest) =>
+      ipcRenderer.invoke("paseo:browser:cookie-import:run", request),
+    getCookieImportReceipt: () => ipcRenderer.invoke("paseo:browser:cookie-import:receipt"),
+    reloadBrowserGuests: () => ipcRenderer.invoke("paseo:browser:reload-guests"),
     executeAutomationCommand: (request: Record<string, unknown>) =>
       ipcRenderer.invoke("paseo:browser:execute-automation-command", request),
     captureElement: (
@@ -136,5 +142,29 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
     ) => ipcRenderer.invoke("paseo:browser:capture-element", browserId, rect),
     copyElement: (payload: { text?: string; imageDataUrl?: string }) =>
       ipcRenderer.invoke("paseo:browser:copy-element", payload),
+    screencast: {
+      start: (request: Record<string, unknown>) =>
+        ipcRenderer.invoke("paseo:browser:screencast:start", request),
+      stop: (streamId: string) => ipcRenderer.invoke("paseo:browser:screencast:stop", streamId),
+      ack: (streamId: string) => ipcRenderer.send("paseo:browser:screencast:ack", streamId),
+      input: (streamId: string, input: Record<string, unknown>) =>
+        ipcRenderer.invoke("paseo:browser:screencast:input", streamId, input),
+      onFrame: (handler: (streamId: string, frame: Uint8Array) => void): (() => void) => {
+        const listener = (_event: Electron.IpcRendererEvent, streamId: string, frame: Uint8Array) =>
+          handler(streamId, frame);
+        ipcRenderer.on("paseo:browser:screencast:frame", listener);
+        return () => {
+          ipcRenderer.removeListener("paseo:browser:screencast:frame", listener);
+        };
+      },
+      onEvent: (handler: (streamId: string, event: unknown) => void): (() => void) => {
+        const listener = (_event: Electron.IpcRendererEvent, streamId: string, event: unknown) =>
+          handler(streamId, event);
+        ipcRenderer.on("paseo:browser:screencast:event", listener);
+        return () => {
+          ipcRenderer.removeListener("paseo:browser:screencast:event", listener);
+        };
+      },
+    },
   },
 });

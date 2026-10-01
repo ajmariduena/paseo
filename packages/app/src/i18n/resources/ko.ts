@@ -571,6 +571,22 @@ export const ko: TranslationResources = {
         subtitle: "내장 브라우저를 사용하려면 이 워크스페이스를 Electron에서 여세요.",
       },
       session: "브라우저 세션 {{browserId}}",
+      remote: {
+        connecting: "컴퓨터 브라우저에 연결하는 중…",
+        keyboard: "키보드",
+        retry: "다시 시도",
+        mobileView: "모바일 보기",
+        desktopView: "데스크톱 보기",
+        newTabFailed: "컴퓨터에서 브라우저 탭을 열 수 없습니다",
+        errors: {
+          disconnected: "호스트가 연결되어 있지 않습니다",
+          updateDaemon: "컴퓨터 브라우저 탭을 열려면 호스트를 업데이트하세요",
+          updateDesktop: "브라우저 탭을 보려면 컴퓨터의 Paseo를 업데이트하세요",
+          noDesktop: "브라우저를 사용하려면 컴퓨터에서 Paseo를 여세요",
+          tabClosed: "이 탭은 더 이상 컴퓨터에서 열려 있지 않습니다",
+          unknown: "컴퓨터 브라우저가 응답하지 않습니다",
+        },
+      },
       controls: {
         back: "뒤로",
         forward: "앞으로",
@@ -1803,6 +1819,13 @@ export const ko: TranslationResources = {
     externalBrowser: "외부 브라우저",
     dontAskAgain: "다시 묻지 않기",
   },
+  webLink: {
+    title: "링크 열기",
+    message: "{{url}}을(를) Paseo에서 열까요?",
+    inPaseo: "Paseo에서",
+    externalBrowser: "시스템 브라우저",
+    dontAskAgain: "다시 묻지 않기",
+  },
   downloads: {
     requestTokenFailed: "다운로드 토큰을 요청하지 못했습니다.",
     hostUnavailable: "다운로드 호스트를 사용할 수 없습니다.",
@@ -2065,6 +2088,75 @@ export const ko: TranslationResources = {
       fallbackHint: "사용할 수 없으면 Paseo가 다른 사용 가능한 모델을 사용합니다",
       docs: "문서",
       saveError: "메타데이터 생성을 업데이트할 수 없습니다",
+    },
+    browser: {
+      links: {
+        title: "링크 열기",
+        webLinks: {
+          label: "웹 링크",
+          hint: "터미널, 채팅, 마크다운의 링크",
+        },
+        serviceUrls: {
+          label: "스크립트 URL",
+          hint: "워크스페이스 스크립트가 시작한 서비스",
+        },
+        invert: {
+          label: "{{shortcut}}-클릭으로 반전",
+          hint: "이 클릭은 다른 브라우저에서 링크를 엽니다",
+          hintAsk: "이 클릭은 묻지 않고 Paseo에서 링크를 엽니다",
+        },
+      },
+      cookieImport: {
+        title: "로그인",
+        emptyTitle: "다른 브라우저에서 가져오기",
+        emptyHint: "기존 로그인을 Paseo 브라우저에서 사용하세요",
+        receipt_one: "쿠키 {{count}}개 가져옴 · {{timeAgo}}",
+        receipt_other: "쿠키 {{count}}개 가져옴 · {{timeAgo}}",
+        importFrom: "가져올 위치…",
+        importing: "가져오는 중…",
+        onThisComputer: "이 컴퓨터",
+        detecting: "브라우저를 찾는 중…",
+        detectFailed: "브라우저를 찾을 수 없습니다",
+        noBrowsers: "지원되는 브라우저가 없습니다",
+        profileCount_one: "프로필 {{count}}개",
+        profileCount_other: "프로필 {{count}}개",
+        requiresFullDiskAccess: "전체 디스크 접근 권한 필요",
+        fromFile: "JSON 파일에서…",
+        fileSource: "JSON 파일",
+        footnote:
+          "쿠키만 복사되며 비밀번호, 기록, 확장 프로그램은 복사되지 않습니다. Google 로그인은 가져오지 않으므로 Paseo 안에서 Google에 로그인하세요. 브라우저 도구가 있는 에이전트는 이 세션을 사용할 수 있습니다.",
+        reload: {
+          label: "열린 탭 새로고침",
+          hint: "열린 페이지는 새로고침 후 가져온 로그인을 사용합니다",
+          action: "탭 새로고침",
+        },
+        result: {
+          imported_one: "{{source}}에서 쿠키 {{count}}개를 가져왔습니다",
+          imported_other: "{{source}}에서 쿠키 {{count}}개를 가져왔습니다",
+          importedWithSkipped_one:
+            "{{source}}에서 쿠키 {{count}}개를 가져왔습니다 · {{skipped}}개 건너뜀",
+          importedWithSkipped_other:
+            "{{source}}에서 쿠키 {{count}}개를 가져왔습니다 · {{skipped}}개 건너뜀",
+          partial_one:
+            "{{source}}에서 쿠키 {{count}}개를 가져왔습니다 · {{failed}}개를 불러오지 못함",
+          partial_other:
+            "{{source}}에서 쿠키 {{count}}개를 가져왔습니다 · {{failed}}개를 불러오지 못함",
+          none: "{{source}}에서 가져온 쿠키가 없습니다",
+        },
+        errors: {
+          keychainDenied:
+            "Paseo가 키체인에서 {{source}}의 키를 읽지 못했습니다. 다시 시도하고 허용을 선택하세요.",
+          fullDiskAccess:
+            "Safari에는 전체 디스크 접근 권한이 필요합니다. 시스템 설정 › 개인정보 보호 및 보안에서 Paseo에 허용하세요.",
+          sourceBusy:
+            "{{source}}에서 쿠키 데이터베이스를 사용 중입니다. 종료한 후 다시 시도하세요.",
+          sourceNotFound: "해당 브라우저 프로필을 더 이상 사용할 수 없습니다.",
+          invalidFile: "유효한 쿠키 JSON 내보내기 파일이 아닙니다.",
+          noCookies: "가져올 쿠키가 없습니다.",
+          unsupportedPlatform: "이 컴퓨터에서는 이 브라우저에서 가져오기를 지원하지 않습니다.",
+          failed: "쿠키를 가져오지 못했습니다.",
+        },
+      },
     },
     general: {
       title: "일반",

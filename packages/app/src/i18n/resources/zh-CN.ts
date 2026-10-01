@@ -570,6 +570,22 @@ export const zhCN: TranslationResources = {
         subtitle: "在 Electron 中打开此 workspace 以使用内置浏览器。",
       },
       session: "浏览器会话 {{browserId}}",
+      remote: {
+        connecting: "正在连接电脑上的浏览器…",
+        keyboard: "键盘",
+        retry: "重试",
+        mobileView: "移动版视图",
+        desktopView: "桌面版视图",
+        newTabFailed: "无法在电脑上打开浏览器标签页",
+        errors: {
+          disconnected: "主机未连接",
+          updateDaemon: "请更新主机以打开电脑上的浏览器标签页",
+          updateDesktop: "请更新电脑上的 Paseo 以查看其浏览器标签页",
+          noDesktop: "请在电脑上打开 Paseo 以使用其浏览器",
+          tabClosed: "此标签页已不在电脑上打开",
+          unknown: "电脑上的浏览器已停止响应",
+        },
+      },
       controls: {
         back: "后退",
         forward: "前进",
@@ -1772,6 +1788,13 @@ export const zhCN: TranslationResources = {
     externalBrowser: "外部浏览器",
     dontAskAgain: "不再询问",
   },
+  webLink: {
+    title: "打开链接",
+    message: "在 Paseo 中打开 {{url}}？",
+    inPaseo: "在 Paseo 中",
+    externalBrowser: "系统浏览器",
+    dontAskAgain: "不再询问",
+  },
   downloads: {
     requestTokenFailed: "请求下载 token 失败。",
     hostUnavailable: "下载 Host 不可用。",
@@ -2033,6 +2056,70 @@ export const zhCN: TranslationResources = {
       fallbackHint: "如果不可用，Paseo 会改用其他可用模型",
       docs: "文档",
       saveError: "无法更新元数据生成设置",
+    },
+    browser: {
+      links: {
+        title: "打开链接",
+        webLinks: {
+          label: "网页链接",
+          hint: "终端、聊天和 Markdown 中的链接",
+        },
+        serviceUrls: {
+          label: "脚本 URL",
+          hint: "工作区脚本启动的服务",
+        },
+        invert: {
+          label: "{{shortcut}}-点击时反转",
+          hint: "该点击会在另一个浏览器中打开链接",
+          hintAsk: "该点击会直接在 Paseo 中打开链接，不再询问",
+        },
+      },
+      cookieImport: {
+        title: "登录信息",
+        emptyTitle: "从其他浏览器导入",
+        emptyHint: "在 Paseo 浏览器中使用你现有的登录状态",
+        receipt_one: "已导入 {{count}} 个 Cookie · {{timeAgo}}",
+        receipt_other: "已导入 {{count}} 个 Cookie · {{timeAgo}}",
+        importFrom: "导入自…",
+        importing: "正在导入…",
+        onThisComputer: "在这台电脑上",
+        detecting: "正在查找浏览器…",
+        detectFailed: "无法查找浏览器",
+        noBrowsers: "未找到受支持的浏览器",
+        profileCount_one: "{{count}} 个配置文件",
+        profileCount_other: "{{count}} 个配置文件",
+        requiresFullDiskAccess: "需要完全磁盘访问权限",
+        fromFile: "从 JSON 文件…",
+        fileSource: "JSON 文件",
+        footnote:
+          "只复制 Cookie，不复制密码、历史记录或扩展。Google 登录不会被导入，请在 Paseo 中登录 Google。拥有浏览器工具的代理可以使用这些会话。",
+        reload: {
+          label: "重新加载已打开的标签页",
+          hint: "已打开的页面在重新加载后使用导入的登录信息",
+          action: "重新加载标签页",
+        },
+        result: {
+          imported_one: "已从 {{source}} 导入 {{count}} 个 Cookie",
+          imported_other: "已从 {{source}} 导入 {{count}} 个 Cookie",
+          importedWithSkipped_one: "已从 {{source}} 导入 {{count}} 个 Cookie · 跳过 {{skipped}} 个",
+          importedWithSkipped_other:
+            "已从 {{source}} 导入 {{count}} 个 Cookie · 跳过 {{skipped}} 个",
+          partial_one: "已从 {{source}} 导入 {{count}} 个 Cookie · {{failed}} 个无法加载",
+          partial_other: "已从 {{source}} 导入 {{count}} 个 Cookie · {{failed}} 个无法加载",
+          none: "未从 {{source}} 导入任何 Cookie",
+        },
+        errors: {
+          keychainDenied: "Paseo 无法从钥匙串读取 {{source}} 的密钥。请重试并选择“允许”。",
+          fullDiskAccess:
+            "Safari 需要完全磁盘访问权限。请在“系统设置 › 隐私与安全性”中为 Paseo 开启。",
+          sourceBusy: "{{source}} 正在使用其 Cookie 数据库。请退出后重试。",
+          sourceNotFound: "该浏览器配置文件已不可用。",
+          invalidFile: "该文件不是有效的 Cookie JSON 导出文件。",
+          noCookies: "没有可导入的 Cookie。",
+          unsupportedPlatform: "此电脑不支持从该浏览器导入。",
+          failed: "无法导入 Cookie。",
+        },
+      },
     },
     general: {
       title: "通用",
