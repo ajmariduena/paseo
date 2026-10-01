@@ -14,13 +14,28 @@ export const builtinPlugins = [
   "zai-usage-source",
 ] as const;
 
-export function resolveBuiltinPluginsRoot(moduleUrl: string | URL = import.meta.url): string {
+// Plugins compile with esbuild's native binary, which cannot read inside app.asar. The
+// desktop build unpacks built-ins next to it, so prefer that real directory.
+function asarUnpackedPath(candidate: string): string | null {
+  const asarSegment = `${path.sep}app.asar${path.sep}`;
+  return candidate.includes(asarSegment)
+    ? candidate.replace(asarSegment, `${path.sep}app.asar.unpacked${path.sep}`)
+    : null;
+}
+
+export function resolveBuiltinPluginsRoot(
+  moduleUrl: string | URL = import.meta.url,
+  exists: (candidate: string) => boolean = existsSync,
+): string {
   const moduleDir = path.dirname(fileURLToPath(moduleUrl));
+  const packaged = path.resolve(moduleDir, "..", "..", "..", "builtin-plugins");
+  const unpacked = asarUnpackedPath(packaged);
   const candidates = [
-    path.resolve(moduleDir, "..", "..", "..", "builtin-plugins"),
+    ...(unpacked ? [unpacked] : []),
+    packaged,
     path.resolve(moduleDir, "..", "..", "..", "..", "..", "..", "plugins"),
   ];
-  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0]!;
+  return candidates.find((candidate) => exists(candidate)) ?? packaged;
 }
 
 export interface BuiltinPlugin {

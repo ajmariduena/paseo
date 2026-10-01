@@ -83,6 +83,7 @@ import {
   DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
 import { ProjectLeadingVisual } from "@/components/sidebar/project-leading-visual";
+import { isScratchStructureProject } from "@/projects/workspace-structure";
 import { useToast } from "@/contexts/toast-context";
 import { getForgePresentation, normalizeForge } from "@/git/forge";
 import { toWorktreeArchiveRisk } from "@/git/worktree-archive-warning";
@@ -952,6 +953,7 @@ function ProjectHeaderRow({
           chevron={chevron}
           showChevron={isHovered && chevron !== null}
           isArchiving={isArchiving}
+          isScratch={isScratchStructureProject(project)}
         />
 
         <View style={styles.projectTitleGroup}>
@@ -1811,7 +1813,7 @@ function ProjectBlock({
         isDragging={isDragging}
         isArchiving={isRemovingProject}
         menuController={null}
-        onRemoveProject={handleRemoveProject}
+        onRemoveProject={isScratchStructureProject(project) ? undefined : handleRemoveProject}
         removeProjectStatus={isRemovingProject ? "pending" : "idle"}
         dragHandleProps={dragHandleProps}
       />

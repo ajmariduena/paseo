@@ -6,6 +6,7 @@ import { PaneContentToolbar } from "@/components/ui/pane-content-toolbar";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import type { Theme } from "@/styles/theme";
 import { FileConflictAlert, type FileConflictAlertState } from "./conflict-alert";
+import { FileCopyButton } from "./copy-button";
 import type { FileEditorStatus } from "./editor/model";
 
 const ThemedSpinner = withUnistyles(LoadingSpinner);
@@ -20,6 +21,7 @@ export function FilePanelBar({
   cursor,
   vimMode,
   conflict,
+  getCopyText,
 }: {
   size: number;
   lineCount?: number;
@@ -29,6 +31,7 @@ export function FilePanelBar({
   cursor?: { line: number; column: number };
   vimMode?: string | null;
   conflict?: FileConflictAlertState;
+  getCopyText?: () => string;
 }) {
   const { t } = useTranslation();
   const previewModes = [
@@ -99,6 +102,7 @@ export function FilePanelBar({
               </Text>
             ) : null}
           </View>
+          {getCopyText ? <FileCopyButton getText={getCopyText} /> : null}
           {mode && onModeChange ? (
             <SegmentedControl
               size="xs"

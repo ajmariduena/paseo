@@ -233,6 +233,20 @@
                 }
               },
               "additionalProperties": false
+            },
+            "elevenlabs": {
+              "type": "object",
+              "properties": {
+                "apiKey": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "baseUrl": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false
@@ -355,6 +369,19 @@
               "type": "integer",
               "exclusiveMinimum": 0,
               "maximum": 2147483647
+            },
+            "idleRuntimeTimeoutMs": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "const": 0
+                },
+                {
+                  "type": "integer",
+                  "minimum": 60000,
+                  "maximum": 2147483647
+                }
+              ]
             }
           },
           "additionalProperties": false
@@ -463,6 +490,84 @@
                     },
                     "speed": {
                       "type": "number"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            "readAloud": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "tts": {
+                  "type": "object",
+                  "properties": {
+                    "provider": {
+                      "type": "string",
+                      "const": "elevenlabs"
+                    },
+                    "model": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "voiceId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "speed": {
+                      "type": "number",
+                      "minimum": 0.7,
+                      "maximum": 1.2
+                    },
+                    "stability": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "similarityBoost": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "style": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "rewrite": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "providers": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "provider": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "model": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "thinkingOptionId": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": ["provider"],
+                        "additionalProperties": false
+                      }
                     }
                   },
                   "additionalProperties": false

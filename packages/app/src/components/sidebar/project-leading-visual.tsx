@@ -1,6 +1,6 @@
 import { ActivityIndicator, View, type ViewStyle } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { ChevronDown, ChevronRight, CircleAlert } from "lucide-react-native";
+import { ChevronDown, ChevronRight, CircleAlert, SquareDashed } from "lucide-react-native";
 import { ProjectIconView } from "@/components/project-icon-view";
 import { STATUS_BUCKET_LABELS } from "@/hooks/sidebar-status-view-model";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
@@ -40,6 +40,7 @@ const LEADING_SLOT_HEIGHT = 20;
 
 const ThemedActivityIndicator = withUnistyles(ActivityIndicator);
 const ThemedCircleAlert = withUnistyles(CircleAlert);
+const ThemedSquareDashed = withUnistyles(SquareDashed);
 
 const foregroundMutedColorMapping = (theme: Theme) => ({
   color: theme.colors.foregroundMuted,
@@ -62,6 +63,7 @@ export function ProjectLeadingVisual({
   chevron = null,
   showChevron = false,
   isArchiving = false,
+  isScratch = false,
 }: {
   displayName: string;
   iconDataUri: string | null;
@@ -73,6 +75,7 @@ export function ProjectLeadingVisual({
   chevron?: "expand" | "collapse" | null;
   showChevron?: boolean;
   isArchiving?: boolean;
+  isScratch?: boolean;
 }) {
   if (showChevron && chevron !== null) {
     return (
@@ -97,6 +100,7 @@ export function ProjectLeadingVisual({
       projectViewKey={projectViewKey}
       statusBucket={statusBucket}
       backdrop={backdrop}
+      isScratch={isScratch}
     />
   );
 }
@@ -114,6 +118,7 @@ export function ProjectStatusIndicator({
   backdrop,
   loading = false,
   testID,
+  isScratch = false,
 }: {
   iconDataUri: string | null;
   displayName: string;
@@ -123,6 +128,7 @@ export function ProjectStatusIndicator({
   backdrop: SidebarSurfaceBackdrop;
   loading?: boolean;
   testID?: string;
+  isScratch?: boolean;
 }) {
   const placeholderInitial = projectIconPlaceholderLabelFromDisplayName(displayName)
     .charAt(0)
@@ -144,11 +150,15 @@ export function ProjectStatusIndicator({
       }
     >
       <View style={styles.projectIconBox}>
-        <ProjectIcon
-          iconDataUri={iconDataUri}
-          placeholderInitial={placeholderInitial}
-          projectViewKey={projectViewKey}
-        />
+        {isScratch ? (
+          <ScratchProjectIcon />
+        ) : (
+          <ProjectIcon
+            iconDataUri={iconDataUri}
+            placeholderInitial={placeholderInitial}
+            projectViewKey={projectViewKey}
+          />
+        )}
         {badgeContent === null || badgeBucket === null ? null : (
           <ProjectStatusBadge
             content={badgeContent}
@@ -236,6 +246,11 @@ function ProjectIcon({
       textStyle={styles.projectIconFallbackText}
     />
   );
+}
+
+/** The "No project" parent: an empty slot instead of a lettered project box. */
+export function ScratchProjectIcon({ size = ICON_SIZE.md }: { size?: number }) {
+  return <ThemedSquareDashed size={size} uniProps={foregroundMutedColorMapping} />;
 }
 
 function ProjectInlineChevron({ chevron }: { chevron: "expand" | "collapse" | null }) {

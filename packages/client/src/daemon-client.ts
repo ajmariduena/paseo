@@ -68,6 +68,8 @@ import type {
   ValidateBranchResponse,
   BranchSuggestionsResponse,
   ForgeSearchResponse,
+  ForgeLinkRef,
+  ForgeLinkSummary,
   ForgeSearchRequest,
   GitHubSearchResponse,
   GitHubSearchRequest,
@@ -1042,6 +1044,8 @@ const DEFAULT_RECONNECT_BASE_DELAY_MS = 1500;
 const DEFAULT_RECONNECT_MAX_DELAY_MS = 30000;
 const DEFAULT_SESSION_RPC_TIMEOUT_MS = 60_000;
 const PUSH_TOKEN_REVOCATION_TIMEOUT_MS = 2_000;
+const READ_ALOUD_PREPARE_TIMEOUT_MS = 2 * 60 * 1000;
+const READ_ALOUD_SYNTHESIZE_TIMEOUT_MS = 90_000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 const DEFAULT_LIVENESS_TIMEOUT_MS = 5000;
 const LIVENESS_HEARTBEAT_INTERVAL_MS = 10_000;
@@ -2081,6 +2085,54 @@ export class DaemonClient {
     if (!response.success) {
       throw new Error(response.error ?? "Failed to mark workspace unread");
     }
+  }
+
+  async prepareReadAloud(params: {
+    text: string;
+    agentId?: string;
+    requestId?: string;
+  }): Promise<string[]> {
+    const response =
+      await this.sendNamespacedCorrelatedSessionRequest<"speech.read_aloud.prepare.response">({
+        requestId: params.requestId,
+        message: {
+          type: "speech.read_aloud.prepare.request",
+          text: params.text,
+          ...(params.agentId ? { agentId: params.agentId } : {}),
+        },
+        timeout: READ_ALOUD_PREPARE_TIMEOUT_MS,
+      });
+    if (response.error) {
+      throw new Error(response.error);
+    }
+    return response.segments;
+  }
+
+  async synthesizeReadAloud(params: {
+    text: string;
+    previousRequestIds?: string[];
+    requestId?: string;
+  }): Promise<{ audio: string; format: string; providerRequestId: string | null }> {
+    const response =
+      await this.sendNamespacedCorrelatedSessionRequest<"speech.read_aloud.synthesize.response">({
+        requestId: params.requestId,
+        message: {
+          type: "speech.read_aloud.synthesize.request",
+          text: params.text,
+          ...(params.previousRequestIds?.length
+            ? { previousRequestIds: params.previousRequestIds }
+            : {}),
+        },
+        timeout: READ_ALOUD_SYNTHESIZE_TIMEOUT_MS,
+      });
+    if (response.error || !response.audio || !response.format) {
+      throw new Error(response.error ?? "Speech synthesis returned no audio");
+    }
+    return {
+      audio: response.audio,
+      format: response.format,
+      providerRequestId: response.providerRequestId,
+    };
   }
 
   sendHeartbeat(params: {
@@ -4634,6 +4686,22 @@ export class DaemonClient {
       responseType: "forge.search.response",
       timeout: 15000,
     });
+  }
+
+  async getForgeLinkSummaries(params: {
+    refs: ForgeLinkRef[];
+    requestId?: string;
+  }): Promise<ForgeLinkSummary[]> {
+    const response =
+      await this.sendNamespacedCorrelatedSessionRequest<"forge.link.get_summaries.response">({
+        requestId: params.requestId,
+        message: { type: "forge.link.get_summaries.request", refs: params.refs },
+        timeout: 20_000,
+      });
+    if (response.error) {
+      throw new Error(response.error);
+    }
+    return response.summaries;
   }
 
   async searchGitHub(

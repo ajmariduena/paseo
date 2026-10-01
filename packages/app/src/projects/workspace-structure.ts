@@ -8,6 +8,8 @@ export interface WorkspaceStructureHostPlacement {
   worktreeSupport: "supported" | "unsupported" | "unknown";
   customIconRevision?: string | null;
   iconRevision?: string;
+  /** The daemon-owned "No project" parent: new workspaces get a fresh directory. */
+  isScratch?: boolean;
 }
 
 export interface WorkspaceStructureProject {
@@ -112,6 +114,16 @@ export function buildWorkspaceStructureProjects(input: {
     );
 }
 
+export function isScratchProjectOrigin(origin: string | null | undefined): boolean {
+  return origin === "scratch";
+}
+
+export function isScratchStructureProject(
+  project: Pick<WorkspaceStructureProject, "hosts">,
+): boolean {
+  return project.hosts.some((host) => host.isScratch === true);
+}
+
 export function createProjectViewKey(
   identity:
     | { kind: "equivalence"; projectKey: string }
@@ -162,6 +174,7 @@ function addProjectToView(input: {
     worktreeSupport: project.projectKind === "git" ? "supported" : "unsupported",
     customIconRevision: project.projectCustomIconRevision,
     iconRevision: project.projectIconRevision,
+    ...(isScratchProjectOrigin(project.projectOrigin) ? { isScratch: true } : {}),
   };
   const draft = byProject.get(viewKey);
   if (!draft) {

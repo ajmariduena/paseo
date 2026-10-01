@@ -922,7 +922,7 @@ function WorkspaceHeaderProjectRow({
 }) {
   const isCompact = useIsCompactFormFactor();
   const hostBadge = useHostBadges({ enabled: isCompact }).get(serverId) ?? null;
-  const showProject = isSubtitleDistinct || isCompact;
+  const showProject = subtitle.length > 0 && (isSubtitleDistinct || isCompact);
   if (!showProject && !hostBadge) {
     return null;
   }

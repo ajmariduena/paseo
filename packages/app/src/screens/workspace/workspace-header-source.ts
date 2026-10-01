@@ -1,3 +1,4 @@
+import { isScratchProjectOrigin } from "@/projects/workspace-structure";
 import type { WorkspaceDescriptor } from "@/stores/session-store";
 
 export type WorkspaceHeaderCheckoutState =
@@ -47,7 +48,9 @@ export function resolveWorkspaceHeader(input: { workspace: WorkspaceDescriptor }
 } {
   return {
     title: input.workspace.name,
-    subtitle: input.workspace.projectDisplayName,
+    subtitle: isScratchProjectOrigin(input.workspace.projectOrigin)
+      ? ""
+      : input.workspace.projectDisplayName,
   };
 }
 
@@ -70,7 +73,8 @@ export function resolveWorkspaceHeaderRenderState(input: {
     kind: "ready",
     title: header.title,
     subtitle: header.subtitle,
-    isSubtitleDistinct: !areHeaderLabelsEquivalent(header.title, header.subtitle),
+    isSubtitleDistinct:
+      header.subtitle.length > 0 && !areHeaderLabelsEquivalent(header.title, header.subtitle),
     isGitCheckout: checkout?.isGit ?? false,
     currentBranchName,
   };

@@ -9341,6 +9341,52 @@ test("checkout.rename_branch.request renames the branch without a denormalized b
   expect(persisted?.title).toBe("Refactor auth flow");
 });
 
+test("workspace.create with a scratch source creates a directory under the No project parent", async () => {
+  const paseoHome = realpathSync(mkdtempSync(path.join(tmpdir(), "paseo-scratch-workspace-")));
+  const logger = createTestLogger();
+  const projectRegistry = new FileBackedProjectRegistry(
+    path.join(paseoHome, "projects", "projects.json"),
+    logger,
+  );
+  const workspaceRegistry = new FileBackedWorkspaceRegistry(
+    path.join(paseoHome, "projects", "workspaces.json"),
+    logger,
+  );
+  await projectRegistry.initialize();
+  await workspaceRegistry.initialize();
+  const emitted: SessionOutboundMessage[] = [];
+  const session = createSessionForWorkspaceTests({
+    onMessage: (message) => emitted.push(message),
+    paseoHome,
+    projectRegistry,
+    workspaceRegistry,
+  });
+  session.listAgentPayloads = async () => [];
+
+  try {
+    await session.handleMessage({
+      type: "workspace.create.request",
+      requestId: "req-create-scratch",
+      source: { kind: "scratch" },
+      firstAgentContext: { prompt: "Compare Fly and Render pricing" },
+    });
+
+    const response = findByType(emitted, "workspace.create.response");
+    expect(response?.payload.error).toBeNull();
+    const workspace = response?.payload.workspace;
+    expect(workspace).toMatchObject({
+      projectDisplayName: "No project",
+      projectOrigin: "scratch",
+      projectRootPath: path.join(paseoHome, "scratch"),
+      workspaceDirectory: path.join(paseoHome, "scratch", workspace?.id ?? ""),
+      title: "Compare Fly and Render pricing",
+    });
+    expect(statSync(workspace?.workspaceDirectory ?? "").isDirectory()).toBe(true);
+  } finally {
+    rmSync(paseoHome, { recursive: true, force: true });
+  }
+});
+
 test("workspace.create.response persists the first prompt as the initial title", async () => {
   const emitted: SessionOutboundMessage[] = [];
   const workspaces = new Map<string, ReturnType<typeof createPersistedWorkspaceRecord>>();

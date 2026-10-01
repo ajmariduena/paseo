@@ -62,6 +62,8 @@ export class CreationClient {
     return this.start("workspace", request, onEvent, async (operation) => {
       if (request.workspaceId || request.agent?.agentId)
         throw new Error("Update the host to use caller-selected creation IDs.");
+      if (request.source.kind === "scratch")
+        throw new Error("Update the host to start a workspace with no project.");
       const { agent, ...workspaceInput } = request;
       const sourceCwd =
         request.source.kind === "directory" ? request.source.path : request.source.cwd;

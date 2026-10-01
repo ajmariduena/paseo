@@ -7,6 +7,7 @@ import {
   resolveInitialWorkspaceProject,
   type HostProjectListItem,
 } from "@/projects/host-projects";
+import { isScratchStructureProject } from "@/projects/workspace-structure";
 import {
   createManualProjectSelectionContextKey,
   createProjectSelectionContextKey,
@@ -27,6 +28,7 @@ interface NewWorkspaceProjectPickerInput {
   routeProjectContextViewKey: string | null;
   lastActiveProject: HostProjectListItem | null;
   allowAllProjects: boolean;
+  scratchProjectLabel?: string;
 }
 
 interface NewWorkspaceProjectPickerState {
@@ -37,18 +39,32 @@ interface NewWorkspaceProjectPickerState {
   selectedProjectOptionId: string;
   projectTriggerLabel: string;
   handleSelectProjectOption: (id: string) => void;
+  isScratchSelected: boolean;
+  /** The "No project" option; null when the host has no such parent. */
+  scratchOptionId: string | null;
 }
 
 function projectOptionId(projectId: string): string {
   return `${PROJECT_OPTION_PREFIX}${projectId}`;
 }
 
-function computeProjectOptionData(projects: readonly HostProjectListItem[]) {
+function projectOptionLabel(project: HostProjectListItem, scratchProjectLabel: string): string {
+  return isScratchStructureProject(project) ? scratchProjectLabel : project.projectName;
+}
+
+function computeProjectOptionData(
+  projects: readonly HostProjectListItem[],
+  scratchProjectLabel: string,
+) {
   const projectByOptionId = new Map<string, HostProjectListItem>();
-  const options = projects.map((project) => {
+  const scratchFirst = [
+    ...projects.filter(isScratchStructureProject),
+    ...projects.filter((project) => !isScratchStructureProject(project)),
+  ];
+  const options = scratchFirst.map((project) => {
     const id = projectOptionId(project.viewKey);
     projectByOptionId.set(id, project);
-    return { id, label: project.projectName };
+    return { id, label: projectOptionLabel(project, scratchProjectLabel) };
   });
   return { options, projectByOptionId };
 }
@@ -86,14 +102,22 @@ export function useNewWorkspaceProjectPicker({
   projects,
   routeProject,
   routeProjectContextViewKey,
-  lastActiveProject,
+  lastActiveProject: lastActiveProjectInput,
   allowAllProjects,
+  scratchProjectLabel = "No project",
 }: NewWorkspaceProjectPickerInput): NewWorkspaceProjectPickerState {
   const selectableProjects = useMemo(
     () =>
       filterWorkspaceProjectsForHost({ projects, serverId: selectedServerId, allowAllProjects }),
     [allowAllProjects, projects, selectedServerId],
   );
+  const scratchProject = useMemo(
+    () => selectableProjects.find(isScratchStructureProject) ?? null,
+    [selectableProjects],
+  );
+  // Opening New workspace without a project in the route starts in "No project"; the
+  // last-used project is not remembered when the host can offer that instead.
+  const lastActiveProject = scratchProject ?? lastActiveProjectInput;
   const initialProject = useMemo(
     () =>
       resolveInitialWorkspaceProject({
@@ -160,8 +184,8 @@ export function useNewWorkspaceProjectPicker({
   const activeSelection = reconcileProjectSelection(projectSelection, selectionContext);
   const selectedProject = resolveProjectSelection(activeSelection, selectionContext);
   const { options: projectPickerOptions, projectByOptionId } = useMemo(
-    () => computeProjectOptionData(selectableProjects),
-    [selectableProjects],
+    () => computeProjectOptionData(selectableProjects, scratchProjectLabel),
+    [scratchProjectLabel, selectableProjects],
   );
   const handleSelectProjectOption = useCallback(
     (id: string) => {
@@ -190,7 +214,11 @@ export function useNewWorkspaceProjectPicker({
     projectPickerOptions,
     projectByOptionId,
     selectedProjectOptionId: selectedProject ? projectOptionId(selectedProject.viewKey) : "",
-    projectTriggerLabel: selectedProject?.projectName ?? "Choose project",
+    projectTriggerLabel: selectedProject
+      ? projectOptionLabel(selectedProject, scratchProjectLabel)
+      : "Choose project",
     handleSelectProjectOption,
+    isScratchSelected: selectedProject ? isScratchStructureProject(selectedProject) : false,
+    scratchOptionId: scratchProject ? projectOptionId(scratchProject.viewKey) : null,
   };
 }

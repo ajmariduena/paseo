@@ -70,10 +70,18 @@ const LocalSpeechProviderSchema = z
   })
   .strict();
 
+const ElevenLabsProviderSchema = z
+  .object({
+    apiKey: z.string().trim().min(1).optional(),
+    baseUrl: z.string().trim().min(1).optional(),
+  })
+  .strict();
+
 const ProvidersSchema = z
   .object({
     openai: OpenAiProviderSchema.optional(),
     local: LocalSpeechProviderSchema.optional(),
+    elevenlabs: ElevenLabsProviderSchema.optional(),
   })
   .strict();
 
@@ -98,7 +106,7 @@ const SpeechProviderIdSchema = z
   .string()
   .trim()
   .toLowerCase()
-  .pipe(z.enum(["openai", "local"]));
+  .pipe(z.enum(["openai", "local", "elevenlabs"]));
 
 const FeatureDictationSchema = z
   .object({
@@ -170,6 +178,31 @@ const StructuredGenerationProviderConfigSchema = z
 const AgentMetadataGenerationSchema = z
   .object({
     providers: z.array(StructuredGenerationProviderConfigSchema).optional(),
+  })
+  .strict();
+
+const FeatureReadAloudSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    tts: z
+      .object({
+        provider: z.literal("elevenlabs").optional(),
+        model: z.string().trim().min(1).optional(),
+        voiceId: z.string().trim().min(1).optional(),
+        speed: z.number().min(0.7).max(1.2).optional(),
+        stability: z.number().min(0).max(1).optional(),
+        similarityBoost: z.number().min(0).max(1).optional(),
+        style: z.number().min(0).max(1).optional(),
+      })
+      .strict()
+      .optional(),
+    rewrite: z
+      .object({
+        enabled: z.boolean().optional(),
+        providers: z.array(StructuredGenerationProviderConfigSchema).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -313,6 +346,9 @@ export const PersistedConfigSchema = z
       .object({
         providers: z.preprocess(normalizeAgentProviders, ProviderOverridesSchema).optional(),
         catalogRefreshTimeoutMs: z.number().int().positive().max(2_147_483_647).optional(),
+        idleRuntimeTimeoutMs: z
+          .union([z.literal(0), z.number().int().min(60_000).max(2_147_483_647)])
+          .optional(),
         metadataGeneration: AgentMetadataGenerationSchema.optional(),
         skills: z.object({ selection: AgentSkillSelectionSchema.optional() }).strict().optional(),
       })
@@ -322,6 +358,7 @@ export const PersistedConfigSchema = z
       .object({
         dictation: FeatureDictationSchema.optional(),
         voiceMode: FeatureVoiceModeSchema.optional(),
+        readAloud: FeatureReadAloudSchema.optional(),
         webUi: FeatureWebUiSchema.optional(),
       })
       .strict()

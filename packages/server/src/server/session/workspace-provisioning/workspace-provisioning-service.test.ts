@@ -126,6 +126,45 @@ afterEach(() => {
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
+test("scratch workspaces get their own directory under one No project parent", async () => {
+  const scratchRoot = path.join(tmpDir, "scratch");
+  const scratch = createWorkspaceProvisioningService({
+    workspaceRegistry,
+    projectRegistry,
+    workspaceGitService: gitService(),
+    isDirectory,
+    logger,
+    scratchRoot,
+  });
+
+  const first = await scratch.createScratchWorkspace({ title: "Compare hosts" });
+  const second = await scratch.createScratchWorkspace({ workspaceId: "wks_0123456789abcdef" });
+
+  expect(first.cwd).toBe(path.join(scratchRoot, first.workspaceId));
+  expect(second.cwd).toBe(path.join(scratchRoot, "wks_0123456789abcdef"));
+  expect(statSync(first.cwd).isDirectory()).toBe(true);
+  expect(first).toMatchObject({ kind: "directory", title: "Compare hosts" });
+  expect(second.projectId).toBe(first.projectId);
+  expect(await projectRegistry.list()).toEqual([
+    expect.objectContaining({
+      projectId: first.projectId,
+      rootPath: scratchRoot,
+      origin: "scratch",
+      displayName: "No project",
+      kind: "non_git",
+    }),
+  ]);
+  await expect(scratch.createScratchWorkspace({ workspaceId: "../escape" })).rejects.toThrow(
+    "Invalid scratch workspace id",
+  );
+});
+
+test("scratch workspaces are unavailable without a scratch root", async () => {
+  await expect(provisioning.createScratchWorkspace({})).rejects.toThrow(
+    "Scratch workspaces are not available",
+  );
+});
+
 test("fresh git repo creates a workspace at the canonical worktree root", async () => {
   const repo = path.join(tmpDir, "repo");
   gitRoots.add(repo);

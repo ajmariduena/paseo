@@ -3,6 +3,7 @@ import { resolveNodeExecPath } from "./runtime-paths";
 
 const mocks = vi.hoisted(() => ({
   existsSync: vi.fn(),
+  readdirSync: vi.fn((): string[] => []),
   app: {
     isPackaged: true,
   },
@@ -10,6 +11,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("node:fs", () => ({
   existsSync: mocks.existsSync,
+  readdirSync: mocks.readdirSync,
   readFileSync: vi.fn(),
 }));
 
@@ -68,5 +70,36 @@ describe("runtime-paths", () => {
     expect(resolveNodeExecPath()).toBe(
       "/Applications/Paseo.app/Contents/Frameworks/Paseo Helper.app/Contents/MacOS/Paseo Helper",
     );
+  });
+
+  it("finds a helper named after the bundle when productName differs from the executable", () => {
+    const helper =
+      "/Applications/Paseo Canary.app/Contents/Frameworks/Paseo Canary Helper.app/Contents/MacOS/Paseo Canary Helper";
+    mocks.existsSync.mockImplementation((candidate: string) => candidate === helper);
+    setProcessRuntime({
+      platform: "darwin",
+      execPath: "/Applications/Paseo Canary.app/Contents/MacOS/Paseo",
+      resourcesPath: "/Applications/Paseo Canary.app/Contents/Resources",
+    });
+
+    expect(resolveNodeExecPath()).toBe(helper);
+  });
+
+  it("finds the product helper in a renamed copy of the bundle", () => {
+    const helper =
+      "/Applications/Paseo Canary Runtime.app/Contents/Frameworks/Paseo Canary Helper.app/Contents/MacOS/Paseo Canary Helper";
+    mocks.readdirSync.mockReturnValue([
+      "Electron Framework.framework",
+      "Paseo Canary Helper (GPU).app",
+      "Paseo Canary Helper.app",
+    ]);
+    mocks.existsSync.mockImplementation((candidate: string) => candidate === helper);
+    setProcessRuntime({
+      platform: "darwin",
+      execPath: "/Applications/Paseo Canary Runtime.app/Contents/MacOS/Paseo",
+      resourcesPath: "/Applications/Paseo Canary Runtime.app/Contents/Resources",
+    });
+
+    expect(resolveNodeExecPath()).toBe(helper);
   });
 });

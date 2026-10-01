@@ -1,6 +1,7 @@
 import type { PluginLifecycle } from "../../plugins/lifecycle/index.js";
 import { describeHookWorkspace } from "../../plugins/lifecycle/index.js";
-import { basename, resolve } from "node:path";
+import { mkdir } from "node:fs/promises";
+import { basename, join, resolve } from "node:path";
 import type { ProjectCheckoutLitePayload } from "@getpaseo/protocol/messages";
 import type { Logger } from "pino";
 import {
@@ -69,10 +70,18 @@ export interface WorkspaceProvisioningService {
     input: CreateWorktreeWorkspaceInput,
   ): Promise<PersistedWorkspaceRecord>;
   findOrCreateProjectForDirectory(cwd: string): Promise<PersistedProjectRecord>;
+  ensureScratchProject(): Promise<PersistedProjectRecord>;
+  createScratchWorkspace(input: {
+    workspaceId?: string;
+    title?: string | null;
+    expectsInitialAgent?: boolean;
+  }): Promise<PersistedWorkspaceRecord>;
   ensureWorkspaceRecordUnarchived(
     workspace: PersistedWorkspaceRecord,
   ): Promise<PersistedWorkspaceRecord>;
 }
+
+export const SCRATCH_PROJECT_DISPLAY_NAME = "No project";
 
 export type WorkspaceProvisioningErrorCode = "unknown_project" | "archived_project";
 
@@ -98,6 +107,7 @@ export function createWorkspaceProvisioningService(deps: {
   isDirectory: (path: string) => Promise<boolean>;
   logger: Logger;
   lifecycle?: PluginLifecycle;
+  scratchRoot?: string;
 }): WorkspaceProvisioningService {
   const { serverId, workspaceRegistry, projectRegistry, workspaceGitService, logger } = deps;
 
@@ -205,6 +215,63 @@ export function createWorkspaceProvisioningService(deps: {
         serverId,
       }),
       timestamp,
+    });
+  }
+
+  function requireScratchRoot(): string {
+    if (!deps.scratchRoot) throw new Error("Scratch workspaces are not available on this daemon");
+    return resolve(deps.scratchRoot);
+  }
+
+  async function ensureScratchProject(): Promise<PersistedProjectRecord> {
+    const rootPath = requireScratchRoot();
+    await mkdir(rootPath, { recursive: true, mode: 0o700 });
+    const existing = (await projectRegistry.list()).find(
+      (project) => project.origin === "scratch" && !project.archivedAt,
+    );
+    if (existing) return existing;
+    const project = await projectRegistry.getOrCreateActiveByRoot({
+      rootPath,
+      kind: "non_git",
+      displayName: SCRATCH_PROJECT_DISPLAY_NAME,
+      projectKey: deriveProjectKey({
+        rootPath,
+        remoteUrl: null,
+        worktreeRoot: null,
+        mainRepoRoot: null,
+        serverId,
+      }),
+      timestamp: new Date().toISOString(),
+    });
+    if (project.origin === "scratch") return project;
+    const marked = {
+      ...project,
+      origin: "scratch" as const,
+      displayName: SCRATCH_PROJECT_DISPLAY_NAME,
+      updatedAt: new Date().toISOString(),
+    };
+    await projectRegistry.upsert(marked);
+    return marked;
+  }
+
+  async function createScratchWorkspace(input: {
+    workspaceId?: string;
+    title?: string | null;
+    expectsInitialAgent?: boolean;
+  }): Promise<PersistedWorkspaceRecord> {
+    const project = await ensureScratchProject();
+    const workspaceId = input.workspaceId ?? generateWorkspaceId();
+    if (!/^wks_[a-f0-9]{16}$/.test(workspaceId)) {
+      throw new Error(`Invalid scratch workspace id: ${workspaceId}`);
+    }
+    const cwd = join(requireScratchRoot(), workspaceId);
+    // Creation retries reuse the reserved id, so an existing directory is that same attempt.
+    await mkdir(cwd, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "EEXIST") throw error;
+    });
+    return createWorkspaceForDirectory(cwd, input.title, project.projectId, {
+      expectsInitialAgent: input.expectsInitialAgent,
+      workspaceId,
     });
   }
 
@@ -482,6 +549,8 @@ export function createWorkspaceProvisioningService(deps: {
     createWorkspaceForDirectory,
     createWorkspaceForWorktree,
     findOrCreateProjectForDirectory,
+    ensureScratchProject,
+    createScratchWorkspace,
     ensureWorkspaceRecordUnarchived,
   };
 }

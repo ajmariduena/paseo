@@ -18,7 +18,10 @@ export function useGlobalNewWorkspaceAction() {
   const hosts = useHosts();
   const activeWorkspace = useWorkspace(serverId, workspaceId);
   const supportsWorkspaceMultiplicity = useHostFeature(serverId, "workspaceMultiplicity");
+  // Hosts with a "No project" parent open New workspace there instead of in the active project.
+  const startsWithoutProject = useHostFeature(serverId, "scratchWorkspaces");
   const canUseActiveWorkspaceContext = Boolean(
+    !startsWithoutProject &&
     activeWorkspace &&
     (supportsWorkspaceMultiplicity || canCreateWorktreeForProjectKind(activeWorkspace.projectKind)),
   );

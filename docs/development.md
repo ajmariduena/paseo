@@ -303,7 +303,17 @@ this. It polls the renderer for frame production every couple of seconds and,
 after a sustained stall while the window is visible and unlocked, restarts the
 GPU process so Chromium rebuilds the display link. The probe is skipped while
 the screen is locked or the window is hidden or minimized, since a window
-legitimately stops producing frames then.
+legitimately stops producing frames then. A probe whose deadline timer fires
+late is inconclusive: the renderer was busy, often paged out under memory
+pressure, which says nothing about the compositor.
+
+Every kill counts toward Chromium's GPU crash limit: 3 GPU-process deaths per
+GPU mode, one forgiven every 5 minutes, and the browser aborts itself with
+`IntentionallyCrashBrowserForUnusableGpuProcess` once no fallback mode is left.
+The watchdog therefore kills at most twice per 30 minutes. Do not raise that
+budget: on a memory-starved Mac, false stalls used to exhaust Chromium's limit
+and crash the app. Kills and every child-process exit are logged to `main.log`
+(`[compositor-watchdog]`, `[child-process-gone]`).
 
 The watchdog deliberately leaves background throttling **enabled**. Calling
 `webContents.setBackgroundThrottling(false)` would keep the compositor producing

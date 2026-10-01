@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { z } from "zod";
 import {
   isGitHubHost,
@@ -32,6 +33,7 @@ import type {
   CurrentPullRequestStatus,
   DisablePullRequestAutoMergeOptions,
   EnablePullRequestAutoMergeOptions,
+  ForgeLinkRef,
   ForgeReadOptions,
   ForgeService,
   IssueSummary,
@@ -54,6 +56,10 @@ import {
   isGitHubPullRequestStatusFacts,
   type GitHubPullRequestStatusFacts,
 } from "./github-facts.js";
+import {
+  createGitHubLinkSummaryLoader,
+  unavailableForgeLinkSummary,
+} from "./github-link-summaries.js";
 
 export type {
   CheckAnnotation,
@@ -1165,6 +1171,29 @@ export function createGitHubService(options: CreateGitHubServiceOptions = {}): G
   const rateLimitResetLoads = new Map<string, Promise<number | null>>();
   let githubPollTimer: NodeJS.Timeout | null = null;
   let api!: GitHubService;
+  // Links in chat point at arbitrary repositories, so the query runs from the
+  // home directory against github.com rather than a workspace's resolved host.
+  const linkSummaries = createGitHubLinkSummaryLoader({
+    now: deps.now,
+    runQuery: async (query) => {
+      const args = ["api", "graphql", "-f", `query=${query}`];
+      const runOptions = { cwd: homedir(), envOverlay: { GH_HOST: "github.com" } };
+      if (!(await deps.resolveGhPath())) {
+        throw new GitHubCliMissingError();
+      }
+      try {
+        const result = await deps.runner(args, runOptions);
+        return parseGraphqlBatchAliases(result.stdout.trim());
+      } catch (error) {
+        const normalized = githubCliRunner.normalizeError(error, { args, cwd: runOptions.cwd });
+        const partial = extractGraphqlBatchAliasesFromError(normalized);
+        if (partial) {
+          return partial;
+        }
+        throw normalized;
+      }
+    },
+  });
 
   async function cached<T>(params: {
     cwd: string;
@@ -2019,6 +2048,15 @@ export function createGitHubService(options: CreateGitHubServiceOptions = {}): G
 
   api = {
     authProbeCanThrow: true,
+
+    getLinkSummaries(refs: ForgeLinkRef[]) {
+      const supported = refs.filter((ref) => ref.host.toLowerCase() === "github.com");
+      const loaded = linkSummaries.getSummaries(supported);
+      return loaded.then((summaries) => {
+        const byRef = new Map(supported.map((ref, index) => [ref, summaries[index]]));
+        return refs.map((ref) => byRef.get(ref) ?? unavailableForgeLinkSummary(ref));
+      });
+    },
 
     listPullRequests(input) {
       return cached({

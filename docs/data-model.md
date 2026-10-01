@@ -61,6 +61,8 @@ $PASEO_HOME/
 │   ├── workspace-labels.json            # Shared host-local label catalog
 │   ├── workspace-labels.transaction.json # Recoverable catalog/assignment compound commit
 │   └── icons/                           # Host-local custom project icon images
+├── scratch/
+│   └── {workspaceId}/                   # One directory per "No project" workspace; kept on archive
 ├── runtime/
 │   └── managed-processes/
 │       └── {recordId}.json              # Helper processes owned by Paseo; reconciled on daemon bootstrap
@@ -225,7 +227,8 @@ snapshot so a mixed edit can apply its live subset and still name the paths that
       stt?: { apiKey?: string, baseUrl?: string },
       tts?: { apiKey?: string, baseUrl?: string }
     },
-    local: { modelsDir: string }
+    local: { modelsDir: string },
+    elevenlabs: { apiKey?: string, baseUrl?: string }
   },
   agents: {
     skills?: {
@@ -243,7 +246,12 @@ snapshot so a mixed edit can apply its live subset and still name the paths that
   plugins: Record<pluginId, { source: "directory", path: string, enabled?: boolean }>,
   features: {
     dictation: { enabled, stt: { provider, model, language, confidenceThreshold } },
-    voiceMode: { enabled, llm, stt: { provider, model, language }, turnDetection, tts: { provider, model, voice, speakerId, speed } }
+    voiceMode: { enabled, llm, stt: { provider, model, language }, turnDetection, tts: { provider, model, voice, speakerId, speed } },
+    readAloud: {
+      enabled,
+      tts: { provider: "elevenlabs", model, voiceId, speed, stability, similarityBoost, style },
+      rewrite: { enabled, providers: [{ provider, model?, thinkingOptionId? }] }
+    }
   },
   log: {
     level, format,
@@ -390,6 +398,14 @@ Paseo uses these paths under the configured OpenAI base URL:
 - voice mode STT: `/v1/audio/transcriptions`
 - voice mode TTS: `/v1/audio/speech`
 
+Set `features.dictation.stt.provider` (or `features.voiceMode.stt.provider`) to `"elevenlabs"` to transcribe with ElevenLabs Scribe. It reuses the ElevenLabs key from read aloud, which needs the Speech to Text permission. `stt.model` defaults to `scribe_v2` and `stt.language` is sent as `language_code`. Each committed segment, every 15 seconds and when you stop dictating, is one `/v1/speech-to-text` upload, so there are no partial results while you speak. The local default `parakeet-tdt-0.6b-v2-int8` only understands English; use `parakeet-tdt-0.6b-v3-int8` for Spanish and the other European languages.
+
+Older daemons reject `"elevenlabs"` as a speech provider, so a config that uses it does not load on a host running an older version.
+
+`features.readAloud` powers the read-aloud button on assistant replies. It is separate from voice mode and only supports ElevenLabs. The host reports it as available once it has an ElevenLabs key (`providers.elevenlabs.apiKey`, falling back to `ELEVENLABS_API_KEY`) and a `tts.voiceId`; `server_info.capabilities.readAloud.reason` says what is missing. `tts.model` defaults to `eleven_flash_v2_5`. Before speaking, the daemon rewrites the reply into a short spoken script with a structured-generation agent (`rewrite.providers`, falling back to `agents.metadataGeneration.providers`); set `rewrite.enabled: false` to read the reply with markdown stripped instead. Flash models do not normalize numbers or dates themselves, so turning the rewrite off works best with `eleven_multilingual_v2`. These settings are read at startup, so restart the daemon after changing them.
+
+A key restricted to the Text to Speech permission is enough to speak. Listing voices, models, or the account quota needs the Voices, Models, and User read permissions.
+
 ---
 
 ## 3. Schedule
@@ -455,6 +471,7 @@ Array of project records.
 | `displayName`        | `string`                    | Selected-root basename, stable across remote and Git changes                                                                               |
 | `customName`         | `string \| null`            | User-set override layered over `displayName`. Null means "use the derived name".                                                           |
 | `customIconRevision` | `string \| null`            | Identifies the host-local custom icon stored under `projects/icons/`. Null means the icon is discovered by scanning the project directory. |
+| `origin`             | `"scratch" \| null`         | `"scratch"` marks the one daemon-owned "No project" parent rooted at `$PASEO_HOME/scratch`. The daemon creates it at boot.                 |
 | `createdAt`          | `string` (ISO 8601)         |                                                                                                                                            |
 | `updatedAt`          | `string` (ISO 8601)         |                                                                                                                                            |
 | `archivedAt`         | `string \| null` (ISO 8601) | Soft-delete timestamp; required nullable                                                                                                   |

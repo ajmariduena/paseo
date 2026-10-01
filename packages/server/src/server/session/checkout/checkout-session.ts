@@ -1346,6 +1346,27 @@ export class CheckoutSession {
     }
   }
 
+  async handleForgeLinkGetSummariesRequest(
+    msg: Extract<SessionInboundMessage, { type: "forge.link.get_summaries.request" }>,
+  ): Promise<void> {
+    try {
+      const summaries = (await this.github.getLinkSummaries?.(msg.refs)) ?? [];
+      this.host.emit({
+        type: "forge.link.get_summaries.response",
+        payload: { summaries, error: null, requestId: msg.requestId },
+      });
+    } catch (error) {
+      this.host.emit({
+        type: "forge.link.get_summaries.response",
+        payload: {
+          summaries: [],
+          error: error instanceof Error ? error.message : String(error),
+          requestId: msg.requestId,
+        },
+      });
+    }
+  }
+
   async handleForgeSearchRequest(
     msg: Extract<SessionInboundMessage, { type: "forge.search.request" | "github_search_request" }>,
   ): Promise<void> {

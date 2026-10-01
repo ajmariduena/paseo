@@ -301,6 +301,7 @@ const StoredWorkspaceSchema = z.strictObject({
   projectDisplayName: z.string(),
   projectCustomName: z.string().nullable(),
   projectCustomIconRevision: z.string().nullable(),
+  projectOrigin: z.string().optional(),
   projectRootPath: z.string(),
   workspaceDirectory: z.string(),
   worktreeSlug: z.string().optional(),
@@ -331,6 +332,7 @@ const StoredProjectSchema = z.strictObject({
   projectCustomName: z.string().nullable(),
   projectCustomIconRevision: z.string().nullable(),
   projectIconRevision: z.string().optional(),
+  projectOrigin: z.string().optional(),
   projectRootPath: z.string(),
   projectKind: z.enum(["git", "non_git", "directory"]),
 });
@@ -691,6 +693,7 @@ function serializeWorkspace(workspace: WorkspaceDescriptor): StoredWorkspace {
     projectDisplayName: workspace.projectDisplayName,
     projectCustomName: workspace.projectCustomName ?? null,
     projectCustomIconRevision: workspace.projectCustomIconRevision ?? null,
+    ...(workspace.projectOrigin ? { projectOrigin: workspace.projectOrigin } : {}),
     projectRootPath: workspace.projectRootPath,
     workspaceDirectory: workspace.workspaceDirectory,
     worktreeSlug: workspace.worktreeSlug,
@@ -732,6 +735,7 @@ function serializeProject(project: ProjectDescriptor): StoredProject {
     projectCustomName: project.projectCustomName,
     projectCustomIconRevision: project.projectCustomIconRevision ?? null,
     projectIconRevision: project.projectIconRevision,
+    ...(project.projectOrigin ? { projectOrigin: project.projectOrigin } : {}),
     projectRootPath: project.projectRootPath,
     projectKind: project.projectKind,
   };

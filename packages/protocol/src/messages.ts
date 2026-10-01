@@ -2431,6 +2431,19 @@ export const ForgeSearchKindSchema = z.enum([
 
 export const GitHubSearchKindSchema = ForgeSearchKindSchema;
 
+export const ForgeLinkRefSchema = z.object({
+  host: z.string(),
+  owner: z.string(),
+  repo: z.string(),
+  number: z.number().int().positive(),
+});
+
+export const ForgeLinkGetSummariesRequestSchema = z.object({
+  type: z.literal("forge.link.get_summaries.request"),
+  refs: z.array(ForgeLinkRefSchema).max(50),
+  requestId: z.string(),
+});
+
 export const ForgeSearchRequestSchema = z.object({
   type: z.literal("forge.search.request"),
   cwd: z.string(),
@@ -2642,6 +2655,11 @@ export const WorkspaceCreateRequestSchema = z.object({
       githubPrNumber: z.number().int().positive().optional(),
       worktreeSlug: z.string().optional(),
     }),
+    // A fresh daemon-owned directory under the "No project" parent. The daemon picks
+    // the path, so the initial agent's config.cwd is ignored for this source.
+    z.object({
+      kind: z.literal("scratch"),
+    }),
   ]),
 });
 
@@ -2654,6 +2672,20 @@ export const WorkspaceClearAttentionRequestSchema = z.object({
 export const WorkspaceMarkUnreadRequestSchema = z.object({
   type: z.literal("workspace.mark_unread.request"),
   workspaceId: z.string(),
+  requestId: z.string(),
+});
+
+export const SpeechReadAloudPrepareRequestSchema = z.object({
+  type: z.literal("speech.read_aloud.prepare.request"),
+  text: z.string(),
+  agentId: z.string().optional(),
+  requestId: z.string(),
+});
+
+export const SpeechReadAloudSynthesizeRequestSchema = z.object({
+  type: z.literal("speech.read_aloud.synthesize.request"),
+  text: z.string(),
+  previousRequestIds: z.array(z.string()).optional(),
   requestId: z.string(),
 });
 
@@ -3292,6 +3324,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ValidateBranchRequestSchema,
   BranchSuggestionsRequestSchema,
   ForgeSearchRequestSchema,
+  ForgeLinkGetSummariesRequestSchema,
   GitHubSearchRequestSchema,
   DirectorySuggestionsRequestSchema,
   PaseoWorktreeListRequestSchema,
@@ -3312,6 +3345,8 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   CreationSubscribeRequestSchema,
   WorkspaceClearAttentionRequestSchema,
   WorkspaceMarkUnreadRequestSchema,
+  SpeechReadAloudPrepareRequestSchema,
+  SpeechReadAloudSynthesizeRequestSchema,
   FileExplorerRequestSchema,
   FileSubscribeRequestSchema,
   FileUnsubscribeRequestSchema,
@@ -3487,6 +3522,8 @@ export const ServerVoiceCapabilitiesSchema = z.object({
 export const ServerCapabilitiesSchema = z
   .object({
     voice: ServerVoiceCapabilitiesSchema.optional(),
+    // COMPAT(readAloud): added in v0.10.3; absent on older daemons, remove optional after 2027-09-29.
+    readAloud: ServerCapabilityStateSchema.optional(),
   })
   .passthrough();
 
@@ -3574,6 +3611,10 @@ export const ServerInfoStatusPayloadSchema = z
         // and github_search fallback after 2027-01-17 once the supported daemon
         // floor is >= v0.2.0.
         forgeSearch: z.boolean().optional(),
+        // COMPAT(forgeLinkSummaries): added in v0.10.3; remove gate after 2027-09-29.
+        forgeLinkSummaries: z.boolean().optional(),
+        // COMPAT(scratchWorkspaces): added in v0.10.3; remove gate after 2027-10-01.
+        scratchWorkspaces: z.boolean().optional(),
         // COMPAT(daemonStatusRpc): added in v0.1.76, remove gate after 2026-11-18.
         daemonStatusRpc: z.boolean().optional(),
         // COMPAT(daemonConfigReload): added in v0.4.0, remove gate after 2027-02-14.
@@ -3988,6 +4029,9 @@ export const WorkspaceDescriptorPayloadSchema = z
     // Identifies the project's stored custom icon; null means automatic.
     // COMPAT(projectCustomIcon): added in v0.2.0, remove after 2027-01-20.
     projectCustomIconRevision: z.string().nullable().optional(),
+    // COMPAT(scratchWorkspaces): added in v0.10.3, remove optional after 2027-10-01.
+    // "scratch" marks the daemon-owned "No project" parent; unknown values are plain projects.
+    projectOrigin: z.string().nullable().optional(),
     projectRootPath: z.string(),
     workspaceDirectory: z.string().optional(),
     // COMPAT(worktreeSlug): added in v0.2.6, remove optional after 2027-01-31.
@@ -4182,6 +4226,8 @@ export const WorkspaceProjectDescriptorPayloadSchema = z.object({
   // absence of an icon. Clients may persist icon results against this value.
   // COMPAT(projectIconCache): added in v0.2.7, remove optional after 2027-02-12.
   projectIconRevision: z.string().optional(),
+  // COMPAT(scratchWorkspaces): added in v0.10.3, remove optional after 2027-10-01.
+  projectOrigin: z.string().nullable().optional(),
   projectRootPath: z.string(),
   projectKind: z.enum(["git", "non_git", "directory"]),
   // COMPAT(directorySync): sequence of this latest directory projection.
@@ -4908,6 +4954,27 @@ export const WorkspaceMarkUnreadResponseSchema = z.object({
     workspaceId: z.string(),
     markedAgentId: z.string().nullable(),
     success: z.boolean(),
+    error: z.string().nullable(),
+  }),
+});
+
+export const SpeechReadAloudPrepareResponseSchema = z.object({
+  type: z.literal("speech.read_aloud.prepare.response"),
+  payload: z.object({
+    requestId: z.string(),
+    segments: z.array(z.string()),
+    error: z.string().nullable(),
+  }),
+});
+
+export const SpeechReadAloudSynthesizeResponseSchema = z.object({
+  type: z.literal("speech.read_aloud.synthesize.response"),
+  payload: z.object({
+    requestId: z.string(),
+    // Base64 audio; `format` uses the audio_output convention, e.g. "pcm;rate=24000".
+    audio: z.string().nullable(),
+    format: z.string().nullable(),
+    providerRequestId: z.string().nullable(),
     error: z.string().nullable(),
   }),
 });
@@ -5863,6 +5930,24 @@ const GitHubSearchResponsePayloadSchema = z.object({
   githubFeaturesEnabled: z.boolean().optional(),
   error: z.string().nullable(),
   requestId: z.string(),
+});
+
+export const ForgeLinkSummarySchema = ForgeLinkRefSchema.extend({
+  kind: z.enum(["pull_request", "issue"]).nullable(),
+  state: z.enum(["open", "closed", "merged"]).nullable(),
+  draft: z.boolean(),
+  title: z.string().nullable(),
+  checksStatus: z.enum(["success", "pending", "failure"]).nullable(),
+  available: z.boolean(),
+});
+
+export const ForgeLinkGetSummariesResponseSchema = z.object({
+  type: z.literal("forge.link.get_summaries.response"),
+  payload: z.object({
+    summaries: z.array(ForgeLinkSummarySchema),
+    error: z.string().nullable(),
+    requestId: z.string(),
+  }),
 });
 
 export const ForgeSearchResponseSchema = z.object({
@@ -6853,6 +6938,8 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   CreationSubscribeResponseSchema,
   WorkspaceClearAttentionResponseSchema,
   WorkspaceMarkUnreadResponseSchema,
+  SpeechReadAloudPrepareResponseSchema,
+  SpeechReadAloudSynthesizeResponseSchema,
   SendAgentMessageResponseMessageSchema,
   SetVoiceModeResponseMessageSchema,
   DaemonGetStatusResponseSchema,
@@ -6918,6 +7005,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   ValidateBranchResponseSchema,
   BranchSuggestionsResponseSchema,
   ForgeSearchResponseSchema,
+  ForgeLinkGetSummariesResponseSchema,
   GitHubSearchResponseSchema,
   DirectorySuggestionsResponseSchema,
   PaseoWorktreeListResponseSchema,
@@ -7329,6 +7417,10 @@ export type ForgeSearchItem = z.infer<typeof ForgeSearchItemSchema>;
 export type ForgeSearchKind = "issue" | "change_request";
 export type ForgeSearchRequest = z.infer<typeof ForgeSearchRequestSchema>;
 export type ForgeSearchResponse = z.infer<typeof ForgeSearchResponseSchema>;
+export type ForgeLinkRef = z.infer<typeof ForgeLinkRefSchema>;
+export type ForgeLinkSummary = z.infer<typeof ForgeLinkSummarySchema>;
+export type ForgeLinkGetSummariesRequest = z.infer<typeof ForgeLinkGetSummariesRequestSchema>;
+export type ForgeLinkGetSummariesResponse = z.infer<typeof ForgeLinkGetSummariesResponseSchema>;
 export type GitHubSearchItem = z.infer<typeof GitHubSearchItemSchema>;
 export type GitHubSearchKind = z.infer<typeof GitHubSearchKindSchema>;
 export type GitHubSearchRequest = z.infer<typeof GitHubSearchRequestSchema>;
@@ -7359,6 +7451,10 @@ export type ProjectGithubCloneProtocol = z.infer<typeof ProjectGithubCloneProtoc
 export type ArchiveWorkspaceRequest = z.infer<typeof ArchiveWorkspaceRequestSchema>;
 export type WorkspaceClearAttentionRequest = z.infer<typeof WorkspaceClearAttentionRequestSchema>;
 export type WorkspaceMarkUnreadRequest = z.infer<typeof WorkspaceMarkUnreadRequestSchema>;
+export type SpeechReadAloudPrepareRequest = z.infer<typeof SpeechReadAloudPrepareRequestSchema>;
+export type SpeechReadAloudSynthesizeRequest = z.infer<
+  typeof SpeechReadAloudSynthesizeRequestSchema
+>;
 export type FileExplorerRequest = z.infer<typeof FileExplorerRequestSchema>;
 export type FileExplorerResponse = z.infer<typeof FileExplorerResponseSchema>;
 export type FileVersion = z.infer<typeof FileVersionSchema>;

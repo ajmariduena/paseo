@@ -25,8 +25,21 @@ Reload releases the old runtime before resuming its durable session: an idle pro
 still own an exclusive writer. A close failure retains that runtime for cleanup and blocks the
 replacement. Once closure succeeds, a failed resume leaves the durable agent closed and retryable.
 
-Idle agents remain resident indefinitely. Runtime closure happens only through an explicit lifecycle
-action such as archive, replacement, reload, workspace teardown, or daemon shutdown.
+An idle agent releases its runtime after `agents.idleRuntimeTimeoutMs` (default two hours; `0`
+disables it) when its provider opts in and confirms nothing depends on the live process. The agent
+becomes `closed`, not archived, and the next open or prompt resumes the same agent and provider
+session. Otherwise runtime closure happens only through an explicit lifecycle action such as
+archive, replacement, reload, workspace teardown, or daemon shutdown.
+
+A provider opts in with `idleBackendEvictionEligible` and answers `canEvictIdleBackend()`
+immediately before the close, inside the agent's lifecycle queue. It returns `false` while work
+needs the process, and a rejection also retains the runtime: when in doubt, stay resident.
+Providers that do not opt in stay resident indefinitely. Claude opts in and releases only when the
+last Stop hook in the current CLI process reported empty `background_tasks` and `session_crons`,
+no later `background_tasks_changed` added a task, and the session holds no session-scoped
+permission grant. Neither signal is sent at process start, and older CLIs never send them, so a
+fresh process stays resident until its first turn ends. Stateful MCP servers restart on resume;
+nothing detects state they held.
 
 A provider runtime can still die on its own — crash, OOM kill, host suspend. Work the agent parked
 inside that process dies with it: Claude Code's background Bash shells, `Monitor` watches, and

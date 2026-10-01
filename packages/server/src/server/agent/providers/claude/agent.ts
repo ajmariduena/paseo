@@ -44,6 +44,7 @@ import {
 import { parsePartialJsonObject } from "./partial-json.js";
 import { ClaudeSidechainTracker } from "./sidechain-tracker.js";
 import { ClaudeTaskState } from "./task-state.js";
+import { ClaudeRuntimeResidency } from "./runtime-residency.js";
 import {
   ClaudeTaskProtocolSource,
   type ClaudeHookObservationInput,
@@ -2040,6 +2041,12 @@ class ClaudeContextUsageState {
 class ClaudeAgentSession implements AgentSession {
   readonly provider = "claude" as const;
   readonly capabilities = CLAUDE_CAPABILITIES;
+  readonly idleBackendEvictionEligible = true;
+
+  async canEvictIdleBackend(): Promise<boolean> {
+    if (!this.query && !this.childProcess) return true;
+    return this.runtimeResidency.canRelease();
+  }
 
   private readonly config: ClaudeAgentConfig;
   private readonly launchEnv?: Record<string, string>;
@@ -2078,6 +2085,7 @@ class ClaudeAgentSession implements AgentSession {
   private readonly subscribers = new Set<(event: AgentStreamEvent) => void>();
   private readonly timelineAssembler = new TimelineAssembler();
   private readonly taskState = new ClaudeTaskState();
+  private readonly runtimeResidency = new ClaudeRuntimeResidency();
   private readonly taskProtocolSource = new ClaudeTaskProtocolSource({
     getToolInput: (toolUseId) => this.toolUseCache.get(toolUseId)?.input ?? null,
     readWorkflowResult: readClaudeWorkflowResultFile,
@@ -2633,10 +2641,12 @@ class ClaudeAgentSession implements AgentSession {
               pending.request.input ?? undefined,
             )
           : (response.updatedInput ?? pending.request.input ?? {});
+      const updatedPermissions = this.normalizePermissionUpdates(response.updatedPermissions);
+      this.runtimeResidency.observePermissionUpdates(updatedPermissions);
       const result: PermissionResult = {
         behavior: "allow",
         updatedInput,
-        updatedPermissions: this.normalizePermissionUpdates(response.updatedPermissions),
+        updatedPermissions,
       };
       pending.resolve(result);
     } else {
@@ -2694,6 +2704,7 @@ class ClaudeAgentSession implements AgentSession {
     this.turnState = "idle";
     this.sidechainTracker.clear();
     this.taskProtocolSource.reset();
+    this.runtimeResidency.reset();
     this.input?.end();
     this.query?.close?.();
     await this.awaitWithTimeout(this.query?.interrupt?.(), "close query interrupt");
@@ -3151,6 +3162,7 @@ class ClaudeAgentSession implements AgentSession {
     // resume: sessionId and the new query continues the existing conversation.
     this.persistence = null;
 
+    this.runtimeResidency.reset();
     const input = createAsyncMessageInput<SDKUserMessage>();
     const options = await this.buildOptions();
     this.logger.debug({ options: summarizeClaudeOptionsForLog(options) }, "claude query");
@@ -3323,7 +3335,10 @@ class ClaudeAgentSession implements AgentSession {
       ...settingsOptions,
       // Provider subagent panes render the child's nested transcript.
       forwardSubagentText: true,
-      hooks: this.buildSubagentEffortHooks(),
+      hooks: {
+        ...this.buildSubagentEffortHooks(),
+        Stop: [{ hooks: [this.observeStopHook] }],
+      },
       ...(this.persistSession === undefined ? {} : { persistSession: this.persistSession }),
       env: sdkEnv,
     };
@@ -3689,6 +3704,7 @@ class ClaudeAgentSession implements AgentSession {
       return;
     }
     this.childProcess = null;
+    this.runtimeResidency.reset();
     this.logger.warn(
       { agentId: this.agentId, pid: child.pid, code, signal },
       "Claude runtime exited unexpectedly",
@@ -3876,6 +3892,7 @@ class ClaudeAgentSession implements AgentSession {
   }
 
   private async routeSdkMessageFromPump(message: SDKMessage): Promise<void> {
+    this.runtimeResidency.observeMessage(message);
     if (this.shouldSuppressStaleResult(message)) {
       return;
     }
@@ -4830,6 +4847,12 @@ class ClaudeAgentSession implements AgentSession {
       SubagentStop: [{ hooks: [observe] }],
     };
   }
+
+  // Observation-only, like the effort hooks: it never alters turn control.
+  private readonly observeStopHook = async (input: unknown): Promise<Record<string, never>> => {
+    this.runtimeResidency.observeStopHook(input);
+    return {};
+  };
 
   private notifySubscribers(event: AgentStreamEvent): void {
     const turnId = this.activeForegroundTurnId ?? this.autonomousTurn?.id;

@@ -266,6 +266,21 @@ describe("PersistedConfigSchema agent provider runtime settings", () => {
       PersistedConfigSchema.parse({ agents: { catalogRefreshTimeoutMs: 2_147_483_648 } }),
     ).toThrow();
   });
+
+  test("accepts a custom idle agent runtime timeout and a disabled override", () => {
+    const parsed = PersistedConfigSchema.parse({
+      agents: { idleRuntimeTimeoutMs: 900_000 },
+    });
+
+    expect(parsed.agents?.idleRuntimeTimeoutMs).toBe(900_000);
+    expect(
+      PersistedConfigSchema.parse({ agents: { idleRuntimeTimeoutMs: 0 } }).agents
+        ?.idleRuntimeTimeoutMs,
+    ).toBe(0);
+    expect(() =>
+      PersistedConfigSchema.parse({ agents: { idleRuntimeTimeoutMs: 59_999 } }),
+    ).toThrow();
+  });
 });
 
 describe("provider overrides (new format)", () => {

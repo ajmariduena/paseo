@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { useStoreWithEqualityFn } from "zustand/traditional";
 import { useCreateFlowStore } from "@/stores/create-flow-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useWorkspaceDirectoryServerIds } from "@/stores/session-store-hooks";
 import { workspaceEqualityFns } from "@/stores/session-store-hooks/selectors";
-import { useHostProjects } from "@/projects/host-projects";
+import { useHostProjects, type HostProjectListItem } from "@/projects/host-projects";
+import { isScratchStructureProject } from "@/projects/workspace-structure";
 import { getHostRuntimeStore, useHostRegistryLoaded, useHosts } from "@/runtime/host-runtime";
 import { useSidebarOrderStore } from "@/stores/sidebar-order-store";
 import { useSidebarViewStore } from "@/stores/sidebar-view-store";
@@ -94,6 +96,22 @@ export interface SidebarWorkspacesListResult {
   refreshAll: () => void;
 }
 
+// The "No project" parent exists on every capable host; it only earns a row once it holds a
+// chat, and it stays above the user-ordered projects.
+function presentScratchProjects(
+  projects: HostProjectListItem[],
+  label: string,
+): HostProjectListItem[] {
+  const scratch = projects.filter(isScratchStructureProject);
+  if (scratch.length === 0) return projects;
+  return [
+    ...scratch
+      .filter((project) => project.workspaceKeys.length > 0)
+      .map((project) => Object.assign({}, project, { projectName: label })),
+    ...projects.filter((project) => !isScratchStructureProject(project)),
+  ];
+}
+
 export function useSidebarWorkspacesList(options?: {
   hostFilters?: readonly string[];
   enabled?: boolean;
@@ -139,13 +157,15 @@ export function useSidebarWorkspacesList(options?: {
   const directoryServerIds = useWorkspaceDirectoryServerIds(serverIds);
 
   const hostProjects = useHostProjects(directoryServerIds);
+  const { t } = useTranslation();
+  const scratchProjectLabel = t("newWorkspace.fields.noProject");
 
   const sidebarModel = useMemo(
     () =>
       buildSidebarWorkspacePlacementModel({
-        projects: hostProjects,
+        projects: presentScratchProjects(hostProjects, scratchProjectLabel),
       }),
-    [hostProjects],
+    [hostProjects, scratchProjectLabel],
   );
 
   const projects = sidebarModel.projects.length > 0 ? sidebarModel.projects : EMPTY_PROJECTS;

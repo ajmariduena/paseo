@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { Logger } from "pino";
 
 import type { PaseoOpenAIConfig, PaseoSpeechConfig } from "../bootstrap.js";
+import { initializeElevenLabsSpeechServices } from "./providers/elevenlabs/runtime.js";
 import type { LocalSpeechModelId } from "./providers/local/config.js";
 import {
   ensureLocalSpeechModels,
@@ -516,12 +517,18 @@ export function createSpeechService(params: {
       },
       logger,
     });
+    const nextSpeech = initializeElevenLabsSpeechServices({
+      providers,
+      elevenlabsConfig: speechConfig?.elevenlabs,
+      existing: nextOpenAiSpeech,
+      logger,
+    });
 
     const previousLocalCleanup = localCleanup;
-    turnDetectionService = nextOpenAiSpeech.turnDetectionService;
-    sttService = nextOpenAiSpeech.sttService;
-    ttsService = nextOpenAiSpeech.ttsService;
-    dictationSttService = nextOpenAiSpeech.dictationSttService;
+    turnDetectionService = nextSpeech.turnDetectionService;
+    sttService = nextSpeech.sttService;
+    ttsService = nextSpeech.ttsService;
+    dictationSttService = nextSpeech.dictationSttService;
     localModelConfig = nextLocalSpeech.localModelConfig;
     localVoiceTtsProvider = nextLocalSpeech.localVoiceTtsProvider;
     localCleanup = nextLocalSpeech.cleanup;

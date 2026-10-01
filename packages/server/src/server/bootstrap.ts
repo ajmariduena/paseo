@@ -126,9 +126,12 @@ import { createWorkspaceProvisioningService } from "./session/workspace-provisio
 import { createPaseoWorktreeWorkflow } from "./worktree-session.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
 import type { OpenAiSpeechProviderConfig } from "./speech/providers/openai/config.js";
+import type { ElevenLabsSpeechProviderConfig } from "./speech/providers/elevenlabs/runtime.js";
 import type { LocalSpeechProviderConfig } from "./speech/providers/local/config.js";
 import type { RequestedSpeechProviders } from "./speech/speech-types.js";
 import { createSpeechService } from "./speech/speech-runtime.js";
+import type { ReadAloudConfig } from "./speech/read-aloud/config.js";
+import { ReadAloudService } from "./speech/read-aloud/service.js";
 import { AgentManager } from "./agent/agent-manager.js";
 import { AgentStorage } from "./agent/agent-storage.js";
 import { attachAgentStoragePersistence } from "./persistence-hooks.js";
@@ -370,6 +373,7 @@ export interface PaseoSpeechConfig {
   providers: RequestedSpeechProviders;
   sttLanguages?: PaseoSpeechSttLanguages;
   local?: PaseoLocalSpeechConfig;
+  elevenlabs?: ElevenLabsSpeechProviderConfig;
 }
 
 export type DaemonLifecycleIntent =
@@ -434,6 +438,7 @@ export interface PaseoDaemonConfig {
   auth?: DaemonAuthConfig;
   openai?: PaseoOpenAIConfig;
   speech?: PaseoSpeechConfig;
+  readAloud?: ReadAloudConfig;
   voiceLlmProvider?: AgentProvider | null;
   voiceLlmProviderExplicit?: boolean;
   voiceLlmModel?: string | null;
@@ -441,6 +446,7 @@ export interface PaseoDaemonConfig {
   downloadTokenTtlMs?: number;
   agentProviderSettings?: AgentProviderRuntimeSettingsMap;
   providerCatalogRefreshTimeoutMs?: number;
+  idleRuntimeTimeoutMs?: number;
   metadataGeneration?: {
     providers?: Array<{
       provider: string;
@@ -905,6 +911,7 @@ export async function createPaseoDaemon(
     workspaceGitService,
     isDirectory: async (target) => (await stat(target).catch(() => null))?.isDirectory() ?? false,
     logger,
+    scratchRoot: path.join(config.paseoHome, "scratch"),
   });
   const agentProviderRuntime = await createAgentProviderRuntime({
     paseoHome: config.paseoHome,
@@ -937,6 +944,7 @@ export async function createPaseoDaemon(
     clients: initialAgentManagerState.clients,
     providerDefinitions: initialAgentManagerState.providerDefinitions,
     registry: agentStorage,
+    idleRuntimeTimeoutMs: config.idleRuntimeTimeoutMs,
     appendSystemPrompt: config.appendSystemPrompt,
     onWorkspaceStateMayHaveChanged: ({ cwd }) => {
       workspaceGitService.onWorkspaceStateMayHaveChanged(cwd);
@@ -971,6 +979,9 @@ export async function createPaseoDaemon(
     logger,
   });
   await workspaceLabelService.initialize();
+  await workspaceProvisioning.ensureScratchProject().catch((error) => {
+    logger.warn({ err: error }, "Failed to prepare the No project parent for scratch workspaces");
+  });
   logger.info({ elapsed: elapsed() }, "Workspace registries bootstrapped");
   const teardownArchivedWorkspaceRuntime = (workspaceId: string): void => {
     scriptRuntimeStore.removeForWorkspace(workspaceId);
@@ -1580,6 +1591,14 @@ export async function createPaseoDaemon(
     speechConfig: config.speech,
   });
   logger.info({ elapsed: elapsed() }, "Speech service created");
+  const readAloudService = config.readAloud
+    ? new ReadAloudService({
+        config: config.readAloud,
+        agentManager,
+        providerSnapshotManager,
+        logger,
+      })
+    : null;
 
   logger.info({ elapsed: elapsed() }, "Bootstrap complete, ready to start listening");
 
@@ -1731,6 +1750,7 @@ export async function createPaseoDaemon(
               pluginRuntime,
               orchestrationSkills,
               workspaceLabelService,
+              readAloudService,
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();

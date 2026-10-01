@@ -1059,6 +1059,9 @@ electronAutoUpdater.on("before-quit-for-update", () => {
   quitLifecycle.handleBeforeQuitForUpdate();
 });
 app.on("before-quit", quitLifecycle.handleBeforeQuit);
+app.on("child-process-gone", (_event, details) => {
+  log.warn("[child-process-gone]", details);
+});
 registerExternalQuitSignals({ signals: process, quit: () => app.quit() });
 
 app.on("window-all-closed", () => {

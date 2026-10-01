@@ -45,6 +45,7 @@ import {
 } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
+import { ReadAloudButton } from "@/read-aloud/button";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import Animated, {
   Easing,
@@ -91,6 +92,8 @@ import {
   useAssistantLinkPress,
 } from "@/assistant-file-links";
 import { getCompactionMarkerLabel } from "./message-compaction-label";
+import { ForgeLinkChip } from "@/components/markdown/forge-link-chip";
+import { parseForgeLink } from "@/git/forge-link-ref";
 import { useAssistantImage } from "@/assistant-image/use-assistant-image";
 import {
   AttachmentFrame,
@@ -579,6 +582,7 @@ export const UserMessage = memo(function UserMessage({
 
 interface AssistantTurnFooterProps {
   getContent: () => string;
+  readAloudKey?: string;
   completedAt?: Date;
   durationMs?: number | null;
   onFork?: (target: AssistantForkTarget) => Promise<void> | void;
@@ -623,6 +627,7 @@ const TIMESTAMP_REVEAL_MS = 3000;
  */
 export const AssistantTurnFooter = memo(function AssistantTurnFooter({
   getContent,
+  readAloudKey,
   completedAt,
   durationMs,
   onFork,
@@ -683,6 +688,7 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
         getContent={getContent}
         containerStyle={assistantTurnFooterStylesheet.copyButton}
       />
+      {readAloudKey ? <ReadAloudButton turnKey={readAloudKey} getContent={getContent} /> : null}
       {canFork ? <AssistantForkMenu onFork={handleFork} /> : null}
       {primaryLabel ? (
         <Pressable
@@ -1918,15 +1924,27 @@ export const AssistantMessage = memo(function AssistantMessage({
           {children}
         </MarkdownParagraphView>
       ),
-      link: (node: ASTNode, children: ReactNode[], _parent: ASTNode[], styles: MarkdownStyles) => (
-        <AssistantMarkdownLink
-          key={node.key}
-          source={getMarkdownLinkSource(node)}
-          style={styles.link}
-        >
-          {colorMarkdownLinkChildren(children, styles.link.color)}
-        </AssistantMarkdownLink>
-      ),
+      link: (node: ASTNode, children: ReactNode[], _parent: ASTNode[], styles: MarkdownStyles) => {
+        const source = getMarkdownLinkSource(node);
+        const forgeLink = parseForgeLink(source.href);
+        if (forgeLink) {
+          return (
+            <ForgeLinkChip
+              key={node.key}
+              source={source}
+              link={forgeLink}
+              serverId={serverId ?? null}
+              fetchEnabled={phase === "complete"}
+              linkStyle={styles.link}
+            />
+          );
+        }
+        return (
+          <AssistantMarkdownLink key={node.key} source={source} style={styles.link}>
+            {colorMarkdownLinkChildren(children, styles.link.color)}
+          </AssistantMarkdownLink>
+        );
+      },
       image: (
         node: ASTNode,
         _children: ReactNode[],

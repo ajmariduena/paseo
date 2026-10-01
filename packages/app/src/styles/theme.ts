@@ -167,6 +167,7 @@ function statusTints(colors: typeof lightStatusColors, alphaHex: string) {
     statusSuccessTint: `${colors.statusSuccess}${alphaHex}`,
     statusDangerTint: `${colors.statusDanger}${alphaHex}`,
     statusWarningTint: `${colors.statusWarning}${alphaHex}`,
+    statusMergedTint: `${colors.statusMerged}${alphaHex}`,
   };
 }
 

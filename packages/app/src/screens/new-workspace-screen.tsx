@@ -14,7 +14,9 @@ import type { PressableStateCallbackType } from "react-native";
 import { StyleSheet, useUnistyles, withUnistyles } from "react-native-unistyles";
 import { createNameId } from "mnemonic-id";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, Folder, FolderPlus, GitBranch, GitPullRequest } from "lucide-react-native";
+import { ChevronDown, Folder, FolderPlus, GitBranch, GitPullRequest, X } from "lucide-react-native";
+import { ScratchProjectIcon } from "@/components/sidebar/project-leading-visual";
+import { isScratchStructureProject } from "@/projects/workspace-structure";
 import { Composer } from "@/composer";
 import { ComposerDock } from "@/composer/dock";
 import { FileDropZone } from "@/components/file-drop/file-drop-zone";
@@ -308,6 +310,9 @@ function ProjectPickerTrigger({
   iconDataUri,
   iconColor,
   iconSize,
+  isScratch,
+  onClear,
+  clearLabel,
 }: {
   pickerAnchorRef: React.RefObject<View | null>;
   onPress: () => void;
@@ -319,9 +324,93 @@ function ProjectPickerTrigger({
   iconDataUri: string | null;
   iconColor: string;
   iconSize: number;
+  isScratch: boolean;
+  onClear: (() => void) | null;
+  clearLabel: string;
 }) {
   const placeholderLabel = projectIconPlaceholderLabelFromDisplayName(label);
   const placeholderInitial = placeholderLabel.charAt(0).toUpperCase() || "?";
+  return (
+    <View style={styles.projectChipRow}>
+      <ProjectPickerTriggerButton
+        pickerAnchorRef={pickerAnchorRef}
+        onPress={onPress}
+        disabled={disabled}
+        badgePressableStyle={badgePressableStyle}
+        label={label}
+        tooltipLabel={tooltipLabel}
+      >
+        <ProjectPickerTriggerIcon
+          isScratch={isScratch}
+          projectViewKey={projectViewKey}
+          iconDataUri={iconDataUri}
+          placeholderInitial={placeholderInitial}
+          iconColor={iconColor}
+          iconSize={iconSize}
+        />
+      </ProjectPickerTriggerButton>
+      {onClear && !isScratch ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={clearLabel}
+          testID="new-workspace-project-clear"
+          onPress={onClear}
+          disabled={disabled}
+          hitSlop={6}
+          style={styles.projectClearButton}
+        >
+          <X size={12} color={iconColor} />
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
+function ProjectPickerTriggerIcon({
+  isScratch,
+  projectViewKey,
+  iconDataUri,
+  placeholderInitial,
+  iconColor,
+  iconSize,
+}: {
+  isScratch: boolean;
+  projectViewKey: string | null;
+  iconDataUri: string | null;
+  placeholderInitial: string;
+  iconColor: string;
+  iconSize: number;
+}) {
+  if (isScratch) return <ScratchProjectIcon />;
+  if (!projectViewKey) return <Folder size={iconSize} color={iconColor} />;
+  return (
+    <ProjectIconView
+      iconDataUri={iconDataUri}
+      initial={placeholderInitial}
+      projectViewKey={projectViewKey}
+      size={ICON_SIZE.md}
+      textStyle={styles.projectIconFallbackText}
+    />
+  );
+}
+
+function ProjectPickerTriggerButton({
+  pickerAnchorRef,
+  onPress,
+  disabled,
+  badgePressableStyle,
+  label,
+  tooltipLabel,
+  children,
+}: {
+  pickerAnchorRef: React.RefObject<View | null>;
+  onPress: () => void;
+  disabled: boolean;
+  badgePressableStyle: React.ComponentProps<typeof Pressable>["style"];
+  label: string;
+  tooltipLabel: string;
+  children: ReactNode;
+}) {
   return (
     <Tooltip>
       <TooltipTrigger asChild triggerRefProp="ref">
@@ -335,19 +424,7 @@ function ProjectPickerTrigger({
           accessibilityRole="button"
           accessibilityLabel="Workspace project"
         >
-          <View style={styles.badgeIconBox}>
-            {projectViewKey ? (
-              <ProjectIconView
-                iconDataUri={iconDataUri}
-                initial={placeholderInitial}
-                projectViewKey={projectViewKey}
-                size={ICON_SIZE.md}
-                textStyle={styles.projectIconFallbackText}
-              />
-            ) : (
-              <Folder size={iconSize} color={iconColor} />
-            )}
-          </View>
+          <View style={styles.badgeIconBox}>{children}</View>
           <Text style={styles.badgeText} numberOfLines={1}>
             {label}
           </Text>
@@ -563,6 +640,40 @@ function NewWorkspacePickerOption({
   );
 }
 
+function ScratchProjectOptionItem({
+  label,
+  selected,
+  active,
+  disabled,
+  onPress,
+}: {
+  label: string;
+  selected: boolean;
+  active: boolean;
+  disabled: boolean;
+  onPress: () => void;
+}) {
+  const leadingSlot = useMemo(
+    () => (
+      <View style={styles.rowIconBox}>
+        <ScratchProjectIcon />
+      </View>
+    ),
+    [],
+  );
+  return (
+    <ComboboxItem
+      testID="new-workspace-project-picker-option-no-project"
+      label={label}
+      selected={selected}
+      active={active}
+      disabled={disabled}
+      onPress={onPress}
+      leadingSlot={leadingSlot}
+    />
+  );
+}
+
 function NewWorkspaceProjectPickerOption({
   option,
   selected,
@@ -586,6 +697,17 @@ function NewWorkspaceProjectPickerOption({
 }) {
   const project = projectByOptionId.get(option.id);
   if (!project) return <View key={option.id} />;
+  if (isScratchStructureProject(project)) {
+    return (
+      <ScratchProjectOptionItem
+        label={option.label}
+        selected={selected}
+        active={active}
+        disabled={isPending}
+        onPress={onPress}
+      />
+    );
+  }
   const sourceDirectory =
     getHostProjectSourceDirectory(project, selectedServerId) ?? project.iconWorkingDir;
 
@@ -799,6 +921,31 @@ interface WorkspaceCreationResult {
   agent?: AgentSnapshotPayload;
 }
 
+function resolveWorkspaceCreateSource(input: {
+  project: HostProjectListItem;
+  serverId: string;
+  projectId: string;
+  isolation: "local" | "worktree";
+  sourceDirectory: string;
+  worktreeSlug: string;
+  checkoutRequest: PickerCheckoutRequest | undefined;
+}): CreateWorkspaceRequestOptions["source"] {
+  const isScratch = input.project.hosts.some(
+    (host) => host.serverId === input.serverId && host.isScratch === true,
+  );
+  if (isScratch) return { kind: "scratch" };
+  if (input.isolation === "worktree") {
+    return {
+      kind: "worktree",
+      cwd: input.sourceDirectory,
+      projectId: input.projectId,
+      worktreeSlug: input.worktreeSlug,
+      ...input.checkoutRequest,
+    };
+  }
+  return { kind: "directory", path: input.sourceDirectory, projectId: input.projectId };
+}
+
 async function createMultiplicityWorkspace(input: {
   idempotencyKey: string;
   worktreeSlug: string;
@@ -821,7 +968,6 @@ async function createMultiplicityWorkspace(input: {
 }): Promise<WorkspaceCreationResult> {
   const projectId = getHostProjectId(input.project, input.serverId);
   if (!projectId) throw new Error("Project is not available on the selected host");
-  const isWorktree = input.isolation === "worktree";
   const firstAgentContext = buildFirstAgentContext({
     prompt: input.prompt,
     attachments: input.attachments,
@@ -830,19 +976,7 @@ async function createMultiplicityWorkspace(input: {
     idempotencyKey: input.idempotencyKey,
     agent: input.agent,
     onEvent: input.onEvent,
-    source: isWorktree
-      ? {
-          kind: "worktree",
-          cwd: input.sourceDirectory,
-          projectId,
-          worktreeSlug: input.worktreeSlug,
-          ...input.checkoutRequest,
-        }
-      : {
-          kind: "directory",
-          path: input.sourceDirectory,
-          projectId,
-        },
+    source: resolveWorkspaceCreateSource({ ...input, projectId }),
     ...(firstAgentContext ? { firstAgentContext } : {}),
   });
   if (payload.error || !payload.workspace) {
@@ -1386,6 +1520,8 @@ interface NewWorkspaceFormStackInput {
     onSelect: (id: string) => void;
     onAddProject: () => void;
     renderOption: RefPickerRenderOption;
+    isScratchSelected: boolean;
+    onClear: (() => void) | null;
   };
   host: FormPickerControl & {
     allHosts: HostProfile[];
@@ -1463,6 +1599,9 @@ function useNewWorkspaceFormStack(input: NewWorkspaceFormStackInput): ReactEleme
         }
         iconColor={theme.colors.foregroundMuted}
         iconSize={theme.iconSize.sm}
+        isScratch={project.isScratchSelected}
+        onClear={project.onClear}
+        clearLabel={t("newWorkspace.fields.noProject")}
       />
       <Combobox
         options={project.options}
@@ -1743,6 +1882,8 @@ export function NewWorkspaceScreen({
     selectedProjectOptionId,
     projectTriggerLabel,
     handleSelectProjectOption: selectProjectOption,
+    isScratchSelected,
+    scratchOptionId,
   } = useNewWorkspaceProjectPicker({
     selectedServerId,
     projects,
@@ -1750,6 +1891,7 @@ export function NewWorkspaceScreen({
     routeProjectContextViewKey,
     lastActiveProject,
     allowAllProjects: supportsWorkspaceMultiplicity,
+    scratchProjectLabel: t("newWorkspace.fields.noProject"),
   });
   const projectIconTargets = useMemo(
     () => buildNewWorkspaceProjectIconTargets(projects, selectedServerId),
@@ -1927,6 +2069,10 @@ export function NewWorkspaceScreen({
       clearPickerSelectionForTargetChange(selectedProjectOptionId, id);
     },
     [clearPickerSelectionForTargetChange, selectProjectOption, selectedProjectOptionId],
+  );
+  const handleClearProject = useMemo(
+    () => (scratchOptionId ? () => handleSelectProjectOption(scratchOptionId) : null),
+    [handleSelectProjectOption, scratchOptionId],
   );
 
   const handleSelectWorkspaceHost = useCallback(
@@ -2320,6 +2466,8 @@ export function NewWorkspaceScreen({
       openState: projectPickerOpen,
       onOpenChange: handleProjectPickerOpenChange,
       renderOption: renderProjectOption,
+      isScratchSelected,
+      onClear: handleClearProject,
     },
     host: {
       allHosts,
@@ -2571,6 +2719,19 @@ const styles = StyleSheet.create((theme) => ({
   chevronContainer: {
     flexShrink: 0,
     transform: [{ translateY: 1 }],
+  },
+  projectChipRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+  },
+  projectClearButton: {
+    width: 20,
+    height: 20,
+    borderRadius: theme.borderRadius.full,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: theme.colors.surface2,
   },
   badgeIconBox: {
     width: theme.iconSize.md,

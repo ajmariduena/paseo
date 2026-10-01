@@ -577,6 +577,7 @@ export class WorkspaceDirectory {
         projectDisplayName: resolveProjectDisplayName(project),
         projectCustomName: project.customName ?? null,
         projectCustomIconRevision: project.customIconRevision ?? null,
+        projectOrigin: project.origin ?? undefined,
         projectRootPath: project.rootPath,
         projectKind: project.kind,
       }));

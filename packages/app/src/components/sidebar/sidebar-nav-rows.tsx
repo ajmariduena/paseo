@@ -78,7 +78,10 @@ const SidebarNewWorkspaceRow = memo(function SidebarNewWorkspaceRow({
     activeWorkspaceServerId,
     "workspaceMultiplicity",
   );
+  // Hosts with a "No project" parent open New workspace there instead of in the active project.
+  const startsWithoutProject = useHostFeature(activeWorkspaceServerId, "scratchWorkspaces");
   const canUseActiveWorkspaceContext = Boolean(
+    !startsWithoutProject &&
     activeWorkspace &&
     (supportsWorkspaceMultiplicity || canCreateWorktreeForProjectKind(activeWorkspace.projectKind)),
   );

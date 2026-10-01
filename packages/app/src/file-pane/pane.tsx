@@ -379,6 +379,10 @@ function FilePanePresentation({
   navigationRevision: number;
   imagePreviewUri: string | null;
 }) {
+  const getPreviewCopyText = useCallback(
+    () => (preview?.kind === "text" ? (preview.content ?? "") : ""),
+    [preview],
+  );
   if (!client && readTarget) {
     return (
       <View style={styles.container} testID="workspace-file-pane">
@@ -439,6 +443,7 @@ function FilePanePresentation({
           lineCount={lineCount}
           mode={previewMode}
           onModeChange={onPreviewModeChange}
+          getCopyText={preview.kind === "text" ? getPreviewCopyText : undefined}
         />
       ) : null}
       <FilePreviewBody
@@ -576,6 +581,7 @@ function EditableFilePane({
     retrying: retryingRead,
   });
   const handleVimModeChange = useCallback((nextMode: string | null) => setVimMode(nextMode), []);
+  const getCopyText = useCallback(() => snapshot.content, [snapshot.content]);
   const renderedPreview = useMemo<ExplorerFile>(
     () => ({
       ...preview,
@@ -601,6 +607,7 @@ function EditableFilePane({
         conflict={conflict}
         mode={mode}
         onModeChange={onModeChange}
+        getCopyText={getCopyText}
       />
       {showSource ? (
         <FileEditorView

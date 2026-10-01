@@ -79,4 +79,49 @@ describe("useNewWorkspaceProjectPicker", () => {
 
     expect(result.current.selectedProject).toEqual(manualProject);
   });
+
+  it("starts in No project and lists it first under its localized label", () => {
+    const repo = project({
+      viewKey: "remote:github.com/acme/app",
+      projectKey: "remote:github.com/acme/app",
+      projectId: "app",
+      projectName: "app",
+    });
+    const scratch: HostProjectListItem = {
+      ...project({
+        viewKey: '["host","scratch"]',
+        projectKey: null,
+        projectId: "scratch",
+        projectName: "No project",
+      }),
+      projectKind: "non_git",
+    };
+    scratch.hosts = [{ ...scratch.hosts[0]!, worktreeSupport: "unsupported", isScratch: true }];
+    const projects = [repo, scratch];
+    const { result } = renderHook(() =>
+      useNewWorkspaceProjectPicker({
+        selectedServerId: "host",
+        projects,
+        routeProject: null,
+        routeProjectContextViewKey: null,
+        lastActiveProject: repo,
+        allowAllProjects: true,
+        scratchProjectLabel: "Sin proyecto",
+      }),
+    );
+
+    expect(result.current.selectedProject).toEqual(scratch);
+    expect(result.current.isScratchSelected).toBe(true);
+    act(() => result.current.handleSelectProjectOption(result.current.projectPickerOptions[1]!.id));
+    expect(result.current.selectedProject).toEqual(repo);
+    expect(result.current.scratchOptionId).toBe(result.current.projectPickerOptions[0]!.id);
+
+    expect(result.current.projectPickerOptions.map((option) => option.label)).toEqual([
+      "Sin proyecto",
+      "app",
+    ]);
+    act(() => result.current.handleSelectProjectOption(result.current.projectPickerOptions[0]!.id));
+    expect(result.current.selectedProject).toEqual(scratch);
+    expect(result.current.projectTriggerLabel).toBe("Sin proyecto");
+  });
 });

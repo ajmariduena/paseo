@@ -433,7 +433,25 @@ export interface CreatePullRequestOptions {
   body?: string;
 }
 
+export interface ForgeLinkRef {
+  host: string;
+  owner: string;
+  repo: string;
+  number: number;
+}
+
+export interface ForgeLinkSummary extends ForgeLinkRef {
+  kind: "pull_request" | "issue" | null;
+  state: "open" | "closed" | "merged" | null;
+  draft: boolean;
+  title: string | null;
+  checksStatus: "success" | "pending" | "failure" | null;
+  available: boolean;
+}
+
 export interface ForgeService {
+  /** Adapters that can resolve arbitrary change-request links (GitHub) implement this. */
+  getLinkSummaries?(refs: ForgeLinkRef[]): Promise<ForgeLinkSummary[]>;
   listPullRequests(options: ListPullRequestsOptions): Promise<PullRequestSummary[]>;
   listIssues(options: ListIssuesOptions): Promise<IssueSummary[]>;
   getPullRequest(options: GetPullRequestOptions): Promise<PullRequestSummary>;

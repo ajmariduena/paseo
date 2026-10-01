@@ -65,6 +65,7 @@ import type { ScriptHealthState } from "./script-health-monitor.js";
 import type { ServiceProxySubsystem } from "./service-proxy.js";
 import type { WorkspaceScriptRuntimeStore } from "./workspace-script-runtime-store.js";
 import type { SpeechReadinessSnapshot, SpeechService } from "./speech/speech-runtime.js";
+import type { ReadAloudService } from "./speech/read-aloud/service.js";
 import type { VoiceCallerContext, VoiceSpeakHandler } from "./voice-types.js";
 import {
   computeNotificationPlan,
@@ -320,6 +321,7 @@ function createNoopProjectRegistry(): ProjectRegistry {
       projectKey: input.projectKey ?? null,
       customName: null,
       customIconRevision: null,
+      origin: null,
       createdAt: input.timestamp,
       updatedAt: input.timestamp,
       archivedAt: null,
@@ -377,12 +379,15 @@ function resolveCapabilityReason(params: {
 
 function buildServerCapabilities(params: {
   readiness: SpeechReadinessSnapshot | null;
+  readAloud: ServerCapabilityState | null;
 }): ServerCapabilities | undefined {
   const readiness = params.readiness;
+  const readAloud = params.readAloud ? { readAloud: params.readAloud } : {};
   if (!readiness) {
-    return undefined;
+    return params.readAloud ? readAloud : undefined;
   }
   return {
+    ...readAloud,
     voice: {
       dictation: toServerCapabilityState({
         state: readiness.dictation,
@@ -540,6 +545,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly projectRegistry: ProjectRegistry;
   private readonly workspaceRegistry: WorkspaceRegistry;
   private readonly workspaceLabelService: WorkspaceLabelService | null;
+  private readAloudService!: ReadAloudService | null;
   private readonly scheduleService: ScheduleService;
   private readonly checkoutDiffManager: CheckoutDiffManager;
   private readonly github: ForgeService;
@@ -658,6 +664,7 @@ export class VoiceAssistantWebSocketServer {
     pluginRuntime?: SessionOptions["pluginRuntime"],
     orchestrationSkills?: SessionOptions["orchestrationSkills"],
     workspaceLabelService?: WorkspaceLabelService,
+    readAloudService?: ReadAloudService | null,
   ) {
     this.logger = logger.child({ module: "websocket-server" });
     this.workspaceSetupRuntime = workspaceSetupRuntime;
@@ -714,14 +721,15 @@ export class VoiceAssistantWebSocketServer {
       getDaemonTcpHost,
       serviceProxyPublicBaseUrl,
       resolveScriptHealth,
+      readAloudService,
     });
     if (!providerSnapshotManager) {
       throw new Error("providerSnapshotManager is required");
     }
     this.providerSnapshotManager = providerSnapshotManager;
-    this.serverCapabilities = buildServerCapabilities({
-      readiness: this.speech?.getReadiness() ?? null,
-    });
+    this.serverCapabilities = this.buildCurrentServerCapabilities(
+      this.speech?.getReadiness() ?? null,
+    );
     this.unsubscribeSpeechReadiness =
       this.speech?.onReadinessChange((snapshot) => {
         this.publishSpeechReadiness(snapshot);
@@ -773,8 +781,10 @@ export class VoiceAssistantWebSocketServer {
     getDaemonTcpHost: (() => string | null) | undefined;
     serviceProxyPublicBaseUrl: string | null | undefined;
     resolveScriptHealth: ((hostname: string) => ScriptHealthState | null) | undefined;
+    readAloudService: ReadAloudService | null | undefined;
   }): void {
     this.speech = params.speech ?? null;
+    this.readAloudService = params.readAloudService ?? null;
     this.terminalManager = params.terminalManager ?? null;
     if (this.terminalManager) {
       this.unsubscribeTerminalActivity = this.terminalManager.subscribeTerminalActivity((event) => {
@@ -979,7 +989,16 @@ export class VoiceAssistantWebSocketServer {
   }
 
   public publishSpeechReadiness(readiness: SpeechReadinessSnapshot | null): void {
-    this.updateServerCapabilities(buildServerCapabilities({ readiness }));
+    this.updateServerCapabilities(this.buildCurrentServerCapabilities(readiness));
+  }
+
+  private buildCurrentServerCapabilities(
+    readiness: SpeechReadinessSnapshot | null,
+  ): ServerCapabilities | undefined {
+    return buildServerCapabilities({
+      readiness,
+      readAloud: this.readAloudService?.getCapability() ?? null,
+    });
   }
 
   public updateServerCapabilities(capabilities: ServerCapabilities | null | undefined): void {
@@ -1476,6 +1495,7 @@ export class VoiceAssistantWebSocketServer {
       projectRegistry: this.projectRegistry,
       workspaceRegistry: this.workspaceRegistry,
       workspaceLabelService: this.workspaceLabelService ?? undefined,
+      readAloud: this.readAloudService ?? undefined,
       directorySync: this.directorySync,
       scheduleService: this.scheduleService,
       checkoutDiffManager: this.checkoutDiffManager,
@@ -1815,6 +1835,10 @@ export class VoiceAssistantWebSocketServer {
         // and legacy fallback after 2027-01-17 once the supported daemon floor
         // is >= v0.2.0.
         forgeSearch: true,
+        // COMPAT(forgeLinkSummaries): added in v0.10.3; remove gate after 2027-09-29.
+        forgeLinkSummaries: true,
+        // COMPAT(scratchWorkspaces): added in v0.10.3; remove gate after 2027-10-01.
+        scratchWorkspaces: true,
         // COMPAT(daemonStatusRpc): added in v0.1.76, remove gate after 2026-11-18.
         ...(this.advertiseDaemonStatusRpc ? { daemonStatusRpc: true } : {}),
         // COMPAT(daemonConfigReload): added in v0.4.0, remove gate after 2027-02-14.

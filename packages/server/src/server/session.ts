@@ -15,7 +15,7 @@ import equal from "fast-deep-equal";
 import { SessionDelivery, type OwnedSubscription } from "./session/owned-subscriptions/index.js";
 import { v4 as uuidv4 } from "uuid";
 import { lstat, mkdir, mkdtemp, rename, rm, stat } from "node:fs/promises";
-import { basename, resolve, sep } from "path";
+import { basename, join, resolve, sep } from "path";
 import { homedir } from "node:os";
 import { CLIENT_CAPS, type ClientCapability } from "@getpaseo/protocol/client-capabilities";
 import { formatPluginSourceReference } from "@getpaseo/protocol/plugin-source-reference";
@@ -221,6 +221,7 @@ import {
 import type { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import type { Resolvable } from "./speech/provider-resolver.js";
 import type { SpeechReadinessSnapshot } from "./speech/speech-runtime.js";
+import type { ReadAloudService } from "./speech/read-aloud/service.js";
 import type pino from "pino";
 import { ScheduleService } from "./schedule/service.js";
 import {
@@ -463,6 +464,7 @@ export interface SessionOptions {
   workspaceRegistry: WorkspaceRegistry;
   directorySync?: DirectorySyncService;
   workspaceLabelService?: WorkspaceLabelService;
+  readAloud?: ReadAloudService;
   filesystem?: SessionFileSystem;
   scheduleService: ScheduleService;
   checkoutDiffManager: CheckoutDiffManager;
@@ -668,6 +670,10 @@ interface ClientActivity {
   appVisibilityChangedAt: Date;
 }
 
+function projectOriginOf(project: PersistedProjectRecord | null | undefined): string | undefined {
+  return project?.origin ?? undefined;
+}
+
 export class Session {
   readonly delivery = new SessionDelivery(
     (source, message) => {
@@ -762,6 +768,7 @@ export class Session {
     WorkspaceUpdatesSubscriptionState
   >();
   private readonly workspaceLabelService: WorkspaceLabelService | null;
+  private readonly readAloud: ReadAloudService | undefined;
   private readonly eventSubscriptions = new Map<
     string,
     { owner: OwnedSubscription; events: Set<SessionEventSubscription>; notifications: boolean }
@@ -821,6 +828,7 @@ export class Session {
       workspaceRegistry,
       directorySync,
       workspaceLabelService,
+      readAloud,
       filesystem,
       scheduleService,
       checkoutDiffManager,
@@ -895,6 +903,7 @@ export class Session {
     this.workspaceRegistry = workspaceRegistry;
     this.directorySync = resolveDirectorySync(directorySync);
     this.workspaceLabelService = resolveWorkspaceLabelService(workspaceLabelService);
+    this.readAloud = readAloud;
     this.filesystem = filesystem ?? nodeSessionFileSystem;
     this.github = github ?? createGitHubService();
     this.renameCurrentBranch = renameCurrentBranch ?? renameCurrentBranchDefault;
@@ -912,6 +921,7 @@ export class Session {
       workspaceGitService: this.workspaceGitService,
       isDirectory: (path) => this.filesystem.isDirectory(path),
       logger: this.sessionLogger,
+      scratchRoot: join(this.paseoHome, "scratch"),
     });
     this.workspaceRecovery = createWorkspaceRecoveryService({
       paseoHome: this.paseoHome,
@@ -2560,6 +2570,76 @@ export class Session {
     };
   }
 
+  private async handleReadAloudPrepareRequest(
+    request: Extract<SessionInboundMessage, { type: "speech.read_aloud.prepare.request" }>,
+  ): Promise<void> {
+    const { requestId, text, agentId } = request;
+    try {
+      const readAloud = this.requireReadAloud();
+      const agent = agentId ? this.agentManager.getAgent(agentId) : null;
+      const segments = await readAloud.prepare({
+        text,
+        cwd: agent?.cwd ?? homedir(),
+        currentSelection: agent
+          ? {
+              provider: agent.provider,
+              model: agent.runtimeInfo?.model ?? agent.config.model ?? null,
+              thinkingOptionId:
+                agent.runtimeInfo?.thinkingOptionId ?? agent.config.thinkingOptionId ?? null,
+            }
+          : undefined,
+      });
+      this.emit({
+        type: "speech.read_aloud.prepare.response",
+        payload: { requestId, segments, error: null },
+      });
+    } catch (error) {
+      this.sessionLogger.warn({ err: error, agentId }, "Failed to prepare read aloud script");
+      this.emit({
+        type: "speech.read_aloud.prepare.response",
+        payload: { requestId, segments: [], error: getErrorMessage(error) },
+      });
+    }
+  }
+
+  private async handleReadAloudSynthesizeRequest(
+    request: Extract<SessionInboundMessage, { type: "speech.read_aloud.synthesize.request" }>,
+  ): Promise<void> {
+    const { requestId, text, previousRequestIds } = request;
+    try {
+      const result = await this.requireReadAloud().synthesize({ text, previousRequestIds });
+      this.emit({
+        type: "speech.read_aloud.synthesize.response",
+        payload: {
+          requestId,
+          audio: result.audio.toString("base64"),
+          format: result.format,
+          providerRequestId: result.requestId,
+          error: null,
+        },
+      });
+    } catch (error) {
+      this.sessionLogger.warn({ err: error }, "Failed to synthesize read aloud audio");
+      this.emit({
+        type: "speech.read_aloud.synthesize.response",
+        payload: {
+          requestId,
+          audio: null,
+          format: null,
+          providerRequestId: null,
+          error: getErrorMessage(error),
+        },
+      });
+    }
+  }
+
+  private requireReadAloud(): ReadAloudService {
+    if (!this.readAloud) {
+      throw new Error("Read aloud is not available on this host.");
+    }
+    return this.readAloud;
+  }
+
   private dispatchVoiceAndControlMessage(msg: SessionInboundMessage): Promise<void> | undefined {
     switch (msg.type) {
       case "voice_audio_chunk":
@@ -2571,6 +2651,10 @@ export class Session {
       case "dictation_stream_finish":
       case "dictation_stream_cancel":
         return this.voiceSessions.handleMessage(msg);
+      case "speech.read_aloud.prepare.request":
+        return this.handleReadAloudPrepareRequest(msg);
+      case "speech.read_aloud.synthesize.request":
+        return this.handleReadAloudSynthesizeRequest(msg);
       case "restart_server_request":
         return this.handleRestartServerRequest(msg.requestId, msg.reason);
       case "shutdown_server_request":
@@ -2861,6 +2945,8 @@ export class Session {
       case "forge.search.request":
       case "github_search_request":
         return this.checkoutSession.handleForgeSearchRequest(msg);
+      case "forge.link.get_summaries.request":
+        return this.checkoutSession.handleForgeLinkGetSummariesRequest(msg);
       case "stash_save_request":
         return this.checkoutSession.handleStashSaveRequest(msg);
       case "stash_pop_request":
@@ -4082,6 +4168,19 @@ export class Session {
             ? async (id, workspace, onReady) => {
                 if (!workspace?.workspaceDirectory)
                   throw new Error("Created workspace has no directory");
+                if (request.source.kind === "scratch") {
+                  return this.createSessionAgent(
+                    {
+                      ...agentInput,
+                      type: "create_agent_request",
+                      requestId,
+                      config: { ...agentInput.config, cwd: workspace.workspaceDirectory },
+                      workspaceId: workspace.id,
+                    },
+                    id,
+                    onReady,
+                  );
+                }
                 const sourceCwd =
                   request.source.kind === "directory"
                     ? request.source.path
@@ -5530,6 +5629,7 @@ export class Session {
         : workspace.projectId,
       projectCustomName: resolvedProjectRecord?.customName ?? null,
       projectCustomIconRevision: resolvedProjectRecord?.customIconRevision ?? null,
+      projectOrigin: projectOriginOf(resolvedProjectRecord),
       projectRootPath: resolvedProjectRecord?.rootPath ?? workspace.cwd,
       workspaceDirectory: workspace.cwd,
       worktreeSlug,
@@ -5797,6 +5897,7 @@ export class Session {
       projectDisplayName: resolveProjectDisplayName(project),
       projectCustomName: project.customName ?? null,
       projectCustomIconRevision: project.customIconRevision ?? null,
+      projectOrigin: projectOriginOf(project),
       projectIconRevision: icon.revision,
       projectRootPath: project.rootPath,
       projectKind: project.kind,
@@ -6620,9 +6721,14 @@ export class Session {
       const transformed = await this.pluginRuntime.before("workspace.create", input);
       creationRequest = { ...transformed, type, requestId };
     }
-    return creationRequest.source.kind === "directory"
-      ? this.handleWorkspaceCreateLocal(creationRequest, workspaceId)
-      : this.handleWorkspaceCreateWorktree(creationRequest, workspaceId);
+    switch (creationRequest.source.kind) {
+      case "directory":
+        return this.handleWorkspaceCreateLocal(creationRequest, workspaceId);
+      case "scratch":
+        return this.handleWorkspaceCreateScratch(creationRequest, workspaceId);
+      case "worktree":
+        return this.handleWorkspaceCreateWorktree(creationRequest, workspaceId);
+    }
   }
 
   private async handleWorkspaceCreateLocal(
@@ -6647,6 +6753,27 @@ export class Session {
       request.source.projectId,
       { expectsInitialAgent: Boolean(request.firstAgentContext), workspaceId },
     );
+    return this.finishDirectoryWorkspaceCreation(request, workspace);
+  }
+
+  private async handleWorkspaceCreateScratch(
+    request: Extract<SessionInboundMessage, { type: "workspace.create.request" }>,
+    workspaceId?: string,
+  ): Promise<WorkspaceDescriptorPayload> {
+    const explicitTitle = request.title?.trim() || null;
+    const promptTitle = resolveFirstAgentPromptTitle(request.firstAgentContext);
+    const workspace = await this.workspaceProvisioning.createScratchWorkspace({
+      workspaceId,
+      title: explicitTitle ?? promptTitle,
+      expectsInitialAgent: Boolean(request.firstAgentContext),
+    });
+    return this.finishDirectoryWorkspaceCreation(request, workspace);
+  }
+
+  private async finishDirectoryWorkspaceCreation(
+    request: Extract<SessionInboundMessage, { type: "workspace.create.request" }>,
+    workspace: PersistedWorkspaceRecord,
+  ): Promise<WorkspaceDescriptorPayload> {
     await this.syncWorkspaceGitObserverForWorkspace(workspace);
     const descriptor = await this.describeWorkspaceRecord(workspace);
     await this.emitCreatedWorkspaceUpdate(

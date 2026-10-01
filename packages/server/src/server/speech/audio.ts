@@ -117,3 +117,22 @@ export function chunkBuffer(buffer: Buffer, chunkBytes: number): Buffer[] {
   }
   return out;
 }
+
+export function pcm16MonoToWav(pcm16le: Buffer, sampleRate: number): Buffer {
+  const wav = Buffer.alloc(44 + pcm16le.length);
+  wav.write("RIFF", 0);
+  wav.writeUInt32LE(36 + pcm16le.length, 4);
+  wav.write("WAVE", 8);
+  wav.write("fmt ", 12);
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20);
+  wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(sampleRate, 24);
+  wav.writeUInt32LE(sampleRate * 2, 28);
+  wav.writeUInt16LE(2, 32);
+  wav.writeUInt16LE(16, 34);
+  wav.write("data", 36);
+  wav.writeUInt32LE(pcm16le.length, 40);
+  pcm16le.copy(wav, 44);
+  return wav;
+}

@@ -200,4 +200,32 @@ describe("resolveSpeechConfig", () => {
       enabled: false,
     });
   });
+
+  test("routes dictation to ElevenLabs Scribe with the shared ElevenLabs key", () => {
+    const persisted = PersistedConfigSchema.parse({
+      providers: { elevenlabs: { apiKey: "xi-test" } },
+      features: {
+        dictation: { stt: { provider: "elevenlabs", model: "scribe_v2", language: "es" } },
+      },
+    });
+
+    const result = resolveSpeechConfig({
+      paseoHome: "/tmp/paseo-home",
+      env: {} as NodeJS.ProcessEnv,
+      persisted,
+    });
+
+    expect(result.speech.providers.dictationStt).toEqual({
+      provider: "elevenlabs",
+      explicit: true,
+      enabled: true,
+    });
+    expect(result.speech.elevenlabs).toEqual({
+      apiKey: "xi-test",
+      baseUrl: "https://api.elevenlabs.io",
+      dictationSttModel: "scribe_v2",
+    });
+    expect(result.speech.local?.models.dictationStt).toBe("parakeet-tdt-0.6b-v2-int8");
+    expect(result.speech.sttLanguages?.dictation).toBe("es");
+  });
 });

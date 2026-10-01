@@ -43,6 +43,12 @@ const PersistedProjectRecordSchema = z.object({
     .nullable()
     .optional()
     .transform((value) => value ?? null),
+  // The daemon-owned "No project" parent of scratch workspaces.
+  origin: z
+    .enum(["scratch"])
+    .nullable()
+    .optional()
+    .transform((value) => value ?? null),
   createdAt: z.string(),
   updatedAt: z.string(),
   archivedAt: z.string().nullable(),
@@ -648,6 +654,7 @@ export function createPersistedProjectRecord(input: {
   customName?: string | null;
   projectKey?: string | null;
   customIconRevision?: string | null;
+  origin?: PersistedProjectRecord["origin"];
   createdAt: string;
   updatedAt: string;
   archivedAt?: string | null;
@@ -657,6 +664,7 @@ export function createPersistedProjectRecord(input: {
     customName: input.customName ?? null,
     projectKey: input.projectKey ?? null,
     customIconRevision: input.customIconRevision ?? null,
+    origin: input.origin ?? null,
     archivedAt: input.archivedAt ?? null,
   });
 }
