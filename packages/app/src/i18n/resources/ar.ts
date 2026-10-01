@@ -568,6 +568,22 @@ export const ar: TranslationResources = {
         subtitle: "افتح مساحة العمل هذه في Electron لاستخدام المتصفح المدمج.",
       },
       session: "جلسة المتصفح{{browserId}}",
+      remote: {
+        connecting: "جارٍ الاتصال بمتصفح الكمبيوتر…",
+        keyboard: "لوحة المفاتيح",
+        retry: "إعادة المحاولة",
+        mobileView: "عرض الجوال",
+        desktopView: "عرض سطح المكتب",
+        newTabFailed: "تعذّر فتح علامة تبويب في متصفح الكمبيوتر",
+        errors: {
+          disconnected: "المضيف غير متصل",
+          updateDaemon: "حدّث المضيف لفتح علامات تبويب متصفح الكمبيوتر",
+          updateDesktop: "حدّث Paseo على الكمبيوتر لعرض علامات تبويب متصفحه",
+          noDesktop: "افتح Paseo على الكمبيوتر لاستخدام متصفحه",
+          tabClosed: "لم تعد علامة التبويب هذه مفتوحة على الكمبيوتر",
+          unknown: "توقف متصفح الكمبيوتر عن الاستجابة",
+        },
+      },
       controls: {
         back: "خلف",
         forward: "إلى الأمام",

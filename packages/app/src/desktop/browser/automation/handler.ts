@@ -4,9 +4,11 @@ import { getDesktopHost, type DesktopHostBridge } from "@/desktop/host";
 import {
   ensureResidentBrowserWebview as ensureResidentBrowserWebviewDefault,
   removeResidentBrowserWebview,
+  RESIDENT_BROWSER_VIEWPORT_SIZE,
   resizeResidentBrowserWebview,
 } from "@/desktop/browser/resident-webviews";
 import {
+  type BrowserViewport,
   createFixedBrowserViewport,
   createWorkspaceBrowser,
   getBrowserRecord,
@@ -14,6 +16,10 @@ import {
 } from "@/desktop/browser/store";
 import { collectAllTabs, useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
+import {
+  createBrowserScreencastHostHandler,
+  isHostScreencastRequest,
+} from "@/desktop/browser/screencast/host-handler";
 
 type BrowserAutomationExecuteRequest = Extract<
   SessionOutboundMessage,
@@ -73,17 +79,29 @@ export function mountBrowserAutomationDaemonClientHandler(
   client: import("@getpaseo/client/internal/daemon-client").DaemonClient,
   options?: { serverId?: string },
 ): () => void {
+  const screencastBridge = getDesktopHost()?.browser?.screencast;
+  const screencast = screencastBridge
+    ? createBrowserScreencastHostHandler({
+        client,
+        bridge: screencastBridge,
+        prepareGuest: (input) =>
+          prepareBrowserGuestForScreencast({ ...input, serverId: options?.serverId }),
+        sizeGuest: sizeBrowserGuestForScreencast,
+      })
+    : null;
   const observation = client.registerBrowserHost({
     hostKind: "desktop app",
     supportedCommands: [...BROWSER_AUTOMATION_COMMAND_NAMES],
+    ...(screencast ? { screencast: true } : {}),
   });
   const unmount = mountBrowserAutomationHandler({
     client: {
       on: (_type, handler) =>
         observation.subscribe({
-          snapshot: () => {},
+          snapshot: () => screencast?.reset(),
           update: (message) => {
             if (message.type === "browser.automation.execute.request") handler(message);
+            else if (screencast && isHostScreencastRequest(message)) screencast.handle(message);
           },
         }),
       sendBrowserAutomationExecuteResponse: (response) =>
@@ -93,10 +111,89 @@ export function mountBrowserAutomationDaemonClientHandler(
   });
   return () => {
     unmount();
+    screencast?.dispose();
     void observation
       .release()
       .catch((error) => console.warn("Failed to release browser host", error));
   };
+}
+
+const viewportsBeforeScreencast = new Map<string, BrowserViewport>();
+
+/**
+ * Phone emulation only changes layout; the captured surface is the guest's own size. Give the
+ * guest the phone's size while a viewer is in mobile view, and restore the desktop's choice after.
+ */
+function sizeBrowserGuestForScreencast(
+  browserId: string,
+  size: { width: number; height: number } | null,
+): void {
+  const record = getBrowserRecord(browserId);
+  if (!record) return;
+  const store = useBrowserStore.getState();
+  if (size) {
+    if (!viewportsBeforeScreencast.has(browserId)) {
+      viewportsBeforeScreencast.set(browserId, record.viewport);
+    }
+    const dimensions = resizeResidentBrowserWebview({ browserId, ...size });
+    store.setBrowserViewport(
+      browserId,
+      createFixedBrowserViewport(
+        dimensions?.width ?? size.width,
+        dimensions?.height ?? size.height,
+      ),
+    );
+    return;
+  }
+  const previous = viewportsBeforeScreencast.get(browserId);
+  if (!previous) return;
+  viewportsBeforeScreencast.delete(browserId);
+  store.setBrowserViewport(browserId, previous);
+  resizeResidentBrowserWebview(
+    previous.mode === "fixed"
+      ? { browserId, width: previous.width, height: previous.height }
+      : { browserId, ...RESIDENT_BROWSER_VIEWPORT_SIZE },
+  );
+}
+
+/**
+ * A tab restored from the desktop's saved layout has no guest until it is shown. A remote viewer
+ * may open it first, so create its resident guest and wait for main to register it.
+ */
+async function prepareBrowserGuestForScreencast(input: {
+  serverId?: string;
+  browserId: string;
+  workspaceId: string;
+  requestId: string;
+}): Promise<boolean> {
+  const record = getBrowserRecord(input.browserId);
+  const executeAutomationCommand = getDesktopHost()?.browser?.executeAutomationCommand;
+  if (!record || !input.serverId || !executeAutomationCommand) return false;
+  if (
+    !findWorkspaceBrowserTab({
+      serverId: input.serverId,
+      workspaceId: input.workspaceId,
+      browserId: input.browserId,
+    })
+  ) {
+    return false;
+  }
+  ensureResidentBrowserWebviewDefault({
+    browserId: input.browserId,
+    workspaceId: input.workspaceId,
+    url: record.url,
+  });
+  return waitForBrowserRegistration({
+    request: {
+      type: "browser.automation.execute.request",
+      requestId: input.requestId,
+      workspaceId: input.workspaceId,
+      command: { command: "list_tabs", args: {} },
+    },
+    browserId: input.browserId,
+    workspaceId: input.workspaceId,
+    executeAutomationCommand,
+  });
 }
 
 async function handleBrowserAutomationRequest(params: {

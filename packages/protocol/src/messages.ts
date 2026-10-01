@@ -80,6 +80,25 @@ import {
 } from "./browser-automation/rpc-schemas.js";
 import { BrowserAutomationHostCapabilitySchema } from "./browser-automation/capabilities.js";
 import {
+  BrowserHostScreencastAckFrameRequestSchema,
+  BrowserHostScreencastInputRequestSchema,
+  BrowserHostScreencastInputResponseSchema,
+  BrowserHostScreencastReportRequestSchema,
+  BrowserHostScreencastStartRequestSchema,
+  BrowserHostScreencastStartResponseSchema,
+  BrowserHostScreencastStopRequestSchema,
+  BrowserRemoteExecuteRequestSchema,
+  BrowserRemoteExecuteResponseSchema,
+  BrowserRemoteInputRequestSchema,
+  BrowserRemoteInputResponseSchema,
+  BrowserRemoteListHostsRequestSchema,
+  BrowserRemoteListHostsResponseSchema,
+  BrowserRemoteScreencastAckFrameRequestSchema,
+  BrowserRemoteScreencastSubscribeRequestSchema,
+  BrowserRemoteScreencastSubscribeResponseSchema,
+  BrowserRemoteScreencastUpdateSchema,
+} from "./browser-screencast/rpc-schemas.js";
+import {
   PaseoConfigRawSchema,
   PaseoLifecycleCommandRawSchema,
   PaseoMetadataGenerationEntrySchema,
@@ -123,6 +142,8 @@ export const DAEMON_PERMISSIONS = [
   "workspace.manage",
   "automation.manage",
   "hub.execute",
+  "browser.view",
+  "browser.control",
 ] as const;
 export const DaemonPermissionSchema = z.enum(DAEMON_PERMISSIONS);
 export type DaemonPermission = z.infer<typeof DaemonPermissionSchema>;
@@ -3142,6 +3163,8 @@ export const BrowserHostRegisterRequestSchema = z.object({
   requestId: z.string(),
   hostKind: z.string().min(1),
   supportedCommands: z.array(z.enum(BROWSER_AUTOMATION_COMMAND_NAMES)).min(1),
+  // COMPAT(browserScreencast): added in v0.10.1, optional for hosts that predate screencasts.
+  screencast: z.boolean().optional(),
 });
 export const BrowserHostRegisterResponseSchema = z.object({
   type: z.literal("browser.host.register.response"),
@@ -3166,6 +3189,14 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   HubExecutionAgentValidateRequestSchema,
   HubExecutionControlRequestSchema,
   BrowserAutomationExecuteResponseSchema,
+  BrowserRemoteListHostsRequestSchema,
+  BrowserRemoteExecuteRequestSchema,
+  BrowserRemoteScreencastSubscribeRequestSchema,
+  BrowserRemoteScreencastAckFrameRequestSchema,
+  BrowserRemoteInputRequestSchema,
+  BrowserHostScreencastStartResponseSchema,
+  BrowserHostScreencastInputResponseSchema,
+  BrowserHostScreencastReportRequestSchema,
   VoiceAudioChunkMessageSchema,
   AbortRequestMessageSchema,
   AudioPlayedMessageSchema,
@@ -3618,6 +3649,8 @@ export const ServerInfoStatusPayloadSchema = z
         checkoutRefresh: z.boolean().optional(),
         // COMPAT(workspaceMultiplicity): added in v0.1.97, drop the gate when floor >= v0.1.97
         workspaceMultiplicity: z.boolean().optional(),
+        // COMPAT(browserScreencast): added in v0.10.1, remove gate after 2027-04-01.
+        browserScreencast: z.boolean().optional(),
         // COMPAT(projectRemove): added in v0.1.97, drop the gate when floor >= v0.1.97.
         projectRemove: z.boolean().optional(),
         // COMPAT(projectAdd): added in v0.1.97, drop the gate when floor >= v0.1.97.
@@ -6765,6 +6798,15 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   HubExecutionAgentUpdateSchema,
   HubExecutionAgentStreamSchema,
   BrowserAutomationExecuteRequestSchema,
+  BrowserRemoteListHostsResponseSchema,
+  BrowserRemoteExecuteResponseSchema,
+  BrowserRemoteScreencastSubscribeResponseSchema,
+  BrowserRemoteScreencastUpdateSchema,
+  BrowserRemoteInputResponseSchema,
+  BrowserHostScreencastStartRequestSchema,
+  BrowserHostScreencastStopRequestSchema,
+  BrowserHostScreencastAckFrameRequestSchema,
+  BrowserHostScreencastInputRequestSchema,
   PluginCatalogGetResponseSchema,
   PluginListResponseSchema,
   PluginLogsGetResponseSchema,

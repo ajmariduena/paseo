@@ -111,6 +111,11 @@ import { useArchiveAgent } from "@/hooks/use-archive-agent";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import { removeResidentBrowserWebview } from "@/desktop/browser/resident-webviews";
 import { createWorkspaceBrowser, useBrowserStore } from "@/desktop/browser/store";
+import {
+  useCanCreateBrowserTab,
+  useCreateRemoteBrowserTab,
+  useRemoteBrowserTabsSupported,
+} from "@/desktop/browser/remote/use-create-remote-browser-tab";
 import { getDesktopHost } from "@/desktop/host";
 import { buildProviderCommand } from "@/utils/provider-command-templates";
 import { generateDraftId } from "@/stores/draft-keys";
@@ -2407,9 +2412,22 @@ function WorkspaceScreenContent({
     [createTerminal],
   );
 
+  const remoteBrowserTabsSupported = useRemoteBrowserTabsSupported(normalizedServerId);
+  const createRemoteBrowserTab = useCreateRemoteBrowserTab({
+    serverId: normalizedServerId,
+    workspaceId: normalizedWorkspaceId,
+  });
+
   const handleCreateBrowserTab = useCallback(
     (input?: { paneId?: string }) => {
-      if (!persistenceKey || !getIsElectron()) {
+      if (!persistenceKey) {
+        return;
+      }
+      if (!getIsElectron()) {
+        if (!remoteBrowserTabsSupported) return;
+        void createRemoteBrowserTab((target) =>
+          openWorkspaceTabFocused(persistenceKey, target, paneLocalPlacement(input?.paneId)),
+        );
         return;
       }
       const { browserId } = createWorkspaceBrowser();
@@ -2419,7 +2437,7 @@ function WorkspaceScreenContent({
         paneLocalPlacement(input?.paneId),
       );
     },
-    [openWorkspaceTabFocused, persistenceKey],
+    [createRemoteBrowserTab, openWorkspaceTabFocused, persistenceKey, remoteBrowserTabsSupported],
   );
 
   const handleCreateNewTab = useCallback(
@@ -2462,10 +2480,20 @@ function WorkspaceScreenContent({
         });
         return;
       }
+      if (!getIsElectron()) {
+        void createRemoteBrowserTab(openTarget);
+        return;
+      }
       const { browserId } = createWorkspaceBrowser();
       openTarget({ kind: "browser", browserId });
     },
-    [createTerminal, createWorkspaceTab, persistenceKey, replaceWorkspaceTabTarget],
+    [
+      createRemoteBrowserTab,
+      createTerminal,
+      createWorkspaceTab,
+      persistenceKey,
+      replaceWorkspaceTabTarget,
+    ],
   );
 
   const handleOpenUrlInBrowserTab = useCallback(
@@ -3876,7 +3904,7 @@ function WorkspaceScreenContent({
     () => createTerminalMutation.isPending || pendingTerminalCreateInput !== null,
     [createTerminalMutation.isPending, pendingTerminalCreateInput],
   );
-  const showCreateBrowserTab = getIsElectron();
+  const showCreateBrowserTab = useCanCreateBrowserTab(normalizedServerId);
   const newTabLauncher = useMemo<NewTabLauncher>(
     () => ({
       showChanges: isGitCheckout,

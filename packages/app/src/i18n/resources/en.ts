@@ -565,6 +565,22 @@ export const en = {
         subtitle: "Open this workspace in Electron to use the built-in browser.",
       },
       session: "Browser session {{browserId}}",
+      remote: {
+        connecting: "Connecting to the desktop browser…",
+        keyboard: "Keyboard",
+        retry: "Retry",
+        mobileView: "Mobile view",
+        desktopView: "Desktop view",
+        newTabFailed: "Couldn't open a browser tab on the desktop",
+        errors: {
+          disconnected: "The host is not connected",
+          updateDaemon: "Update the host to open desktop browser tabs",
+          updateDesktop: "Update Paseo on the desktop to view its browser tabs",
+          noDesktop: "Open Paseo on your computer to use its browser",
+          tabClosed: "This tab is no longer open on the desktop",
+          unknown: "The desktop browser stopped responding",
+        },
+      },
       controls: {
         back: "Back",
         forward: "Forward",

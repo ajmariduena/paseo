@@ -28,6 +28,8 @@ A pairing invitation is neither. It is an expiring, single-use exchange that cre
 | `workspace.manage`  | Create, rename, archive, and remove projects and workspaces                |
 | `automation.manage` | Schedules, heartbeats, and loops                                           |
 | `hub.execute`       | Agent lifecycle, workspace titling, observation, and recovery              |
+| `browser.view`      | List desktop browser hosts and watch a streamed desktop browser tab        |
+| `browser.control`   | Open, navigate, and send input to a desktop browser tab                    |
 
 Agents and terminals use workspace authority. Both can execute code and mutate the workspace, so separate write permissions would claim an isolation boundary the daemon cannot enforce.
 

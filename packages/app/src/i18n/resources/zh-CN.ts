@@ -568,6 +568,22 @@ export const zhCN: TranslationResources = {
         subtitle: "在 Electron 中打开此 workspace 以使用内置浏览器。",
       },
       session: "浏览器会话 {{browserId}}",
+      remote: {
+        connecting: "正在连接电脑上的浏览器…",
+        keyboard: "键盘",
+        retry: "重试",
+        mobileView: "移动版视图",
+        desktopView: "桌面版视图",
+        newTabFailed: "无法在电脑上打开浏览器标签页",
+        errors: {
+          disconnected: "主机未连接",
+          updateDaemon: "请更新主机以打开电脑上的浏览器标签页",
+          updateDesktop: "请更新电脑上的 Paseo 以查看其浏览器标签页",
+          noDesktop: "请在电脑上打开 Paseo 以使用其浏览器",
+          tabClosed: "此标签页已不在电脑上打开",
+          unknown: "电脑上的浏览器已停止响应",
+        },
+      },
       controls: {
         back: "后退",
         forward: "前进",

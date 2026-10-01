@@ -1,4 +1,9 @@
 import {
+  BrowserScreencastOpcode,
+  decodeBrowserScreencastFrame,
+  type BrowserScreencastFrame,
+} from "./browser-screencast.js";
+import {
   decodeFileTransferFrame,
   FileTransferOpcode,
   type FileTransferFrame,
@@ -11,7 +16,8 @@ import {
 
 export type BinaryFrame =
   | { kind: "terminal"; frame: TerminalStreamFrame }
-  | { kind: "file_transfer"; frame: FileTransferFrame };
+  | { kind: "file_transfer"; frame: FileTransferFrame }
+  | { kind: "browser_screencast"; frame: BrowserScreencastFrame; bytes: Uint8Array };
 
 export function decodeBinaryFrame(bytes: Uint8Array): BinaryFrame | null {
   switch (bytes[0]) {
@@ -28,6 +34,10 @@ export function decodeBinaryFrame(bytes: Uint8Array): BinaryFrame | null {
     case FileTransferOpcode.FileEnd: {
       const frame = decodeFileTransferFrame(bytes);
       return frame ? { kind: "file_transfer", frame } : null;
+    }
+    case BrowserScreencastOpcode.Frame: {
+      const frame = decodeBrowserScreencastFrame(bytes);
+      return frame ? { kind: "browser_screencast", frame, bytes } : null;
     }
     default:
       return null;

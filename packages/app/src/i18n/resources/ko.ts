@@ -569,6 +569,22 @@ export const ko: TranslationResources = {
         subtitle: "내장 브라우저를 사용하려면 이 워크스페이스를 Electron에서 여세요.",
       },
       session: "브라우저 세션 {{browserId}}",
+      remote: {
+        connecting: "컴퓨터 브라우저에 연결하는 중…",
+        keyboard: "키보드",
+        retry: "다시 시도",
+        mobileView: "모바일 보기",
+        desktopView: "데스크톱 보기",
+        newTabFailed: "컴퓨터에서 브라우저 탭을 열 수 없습니다",
+        errors: {
+          disconnected: "호스트가 연결되어 있지 않습니다",
+          updateDaemon: "컴퓨터 브라우저 탭을 열려면 호스트를 업데이트하세요",
+          updateDesktop: "브라우저 탭을 보려면 컴퓨터의 Paseo를 업데이트하세요",
+          noDesktop: "브라우저를 사용하려면 컴퓨터에서 Paseo를 여세요",
+          tabClosed: "이 탭은 더 이상 컴퓨터에서 열려 있지 않습니다",
+          unknown: "컴퓨터 브라우저가 응답하지 않습니다",
+        },
+      },
       controls: {
         back: "뒤로",
         forward: "앞으로",

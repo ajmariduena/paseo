@@ -261,6 +261,36 @@ const SourceSchema = z.object({
     });
   });
 
+  it("accepts remote browser replies, including failures", () => {
+    const envelope = (payload: unknown) => ({
+      type: "session",
+      message: { type: "browser.remote.execute.response", payload },
+    });
+    expect(
+      GeneratedWSOutboundMessageSchema.safeParse(
+        envelope({
+          requestId: "req-1",
+          ok: false,
+          error: { code: "browser_no_host", message: "No host", retryable: true },
+        }),
+      ).success,
+    ).toBe(true);
+    expect(
+      GeneratedWSOutboundMessageSchema.safeParse(
+        envelope({
+          requestId: "req-1",
+          ok: true,
+          result: {
+            command: "new_tab",
+            browserId: "11111111-1111-4111-8111-111111111111",
+            workspaceId: "workspace-1",
+            url: "https://example.com",
+          },
+        }),
+      ).success,
+    ).toBe(true);
+  });
+
   it("emits runtime imports with .js extensions", async () => {
     const generated = await readFile(generatedWSOutboundPath, "utf8");
     expect(generated).toContain('from "../../validation/ws-outbound-schema-metadata.js"');

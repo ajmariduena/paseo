@@ -573,6 +573,22 @@ export const ptBR: TranslationResources = {
         subtitle: "Abra este workspace no Electron para usar o navegador integrado.",
       },
       session: "Sessão do navegador {{browserId}}",
+      remote: {
+        connecting: "Conectando ao navegador do computador…",
+        keyboard: "Teclado",
+        retry: "Tentar novamente",
+        mobileView: "Visualização móvel",
+        desktopView: "Visualização de computador",
+        newTabFailed: "Não foi possível abrir uma aba do navegador no computador",
+        errors: {
+          disconnected: "O host não está conectado",
+          updateDaemon: "Atualize o host para abrir abas do navegador do computador",
+          updateDesktop: "Atualize o Paseo no computador para ver as abas do navegador",
+          noDesktop: "Abra o Paseo no seu computador para usar o navegador dele",
+          tabClosed: "Esta aba não está mais aberta no computador",
+          unknown: "O navegador do computador parou de responder",
+        },
+      },
       controls: {
         back: "Voltar",
         forward: "Avançar",

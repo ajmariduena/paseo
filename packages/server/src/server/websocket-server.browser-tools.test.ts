@@ -8,6 +8,11 @@ import type {
 } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import { BROWSER_AUTOMATION_COMMAND_NAMES } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import { CLIENT_CAPS } from "@getpaseo/protocol/client-capabilities";
+import {
+  encodeBrowserScreencastFrame,
+  type BrowserScreencastFrame,
+} from "@getpaseo/protocol/binary-frames/index";
+import type { SessionOutboundMessage } from "@getpaseo/protocol/messages";
 import type pino from "pino";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -26,6 +31,8 @@ import type { WorkspaceAutoName } from "./workspace-auto-name.js";
 
 interface BrowserToolsDaemonHarness {
   broker: BrowserToolsBroker;
+  url: string;
+  track(client: DaemonClient): void;
   connectBrowserHostClient(
     options?: ConnectBrowserHostClientOptions,
   ): Promise<BrowserHostClientHandle>;
@@ -198,6 +205,236 @@ describe("WebSocketServer browser tools wiring", () => {
   });
 });
 
+const WORKSPACE_ID = "workspace-1";
+const PAGE = {
+  url: "https://example.com/",
+  title: "Example",
+  isLoading: false,
+  canGoBack: false,
+  canGoForward: false,
+};
+
+interface ScreencastHost {
+  client: DaemonClient;
+  next<T extends SessionOutboundMessage["type"]>(
+    type: T,
+  ): Promise<Extract<SessionOutboundMessage, { type: T }>>;
+  disconnect(): Promise<void>;
+}
+
+async function connectScreencastHost(harness: BrowserToolsDaemonHarness): Promise<ScreencastHost> {
+  const client = new DaemonClient({
+    url: harness.url,
+    clientType: "browser",
+    connectTimeoutMs: 500,
+    reconnect: { enabled: false },
+  });
+  harness.track(client);
+  await client.connect();
+  const received: SessionOutboundMessage[] = [];
+  const waiters = new Set<() => void>();
+  const observation = client.registerBrowserHost({
+    hostKind: "desktop app",
+    supportedCommands: [...BROWSER_AUTOMATION_COMMAND_NAMES],
+    screencast: true,
+  });
+  observation.subscribe({
+    snapshot: () => {},
+    update: (message) => {
+      if (message.type === "browser.automation.execute.request") {
+        client.sendBrowserAutomationExecuteResponse({
+          type: "browser.automation.execute.response",
+          payload: {
+            requestId: message.requestId,
+            ok: true,
+            result: {
+              command: "list_tabs",
+              tabs: [
+                {
+                  browserId: BROWSER_ID,
+                  workspaceId: WORKSPACE_ID,
+                  url: PAGE.url,
+                  title: PAGE.title,
+                  isActive: true,
+                  isLoading: false,
+                },
+              ],
+            },
+          },
+        });
+        return;
+      }
+      received.push(message);
+      for (const wake of waiters) wake();
+    },
+  });
+  await observation.ready;
+  return {
+    client,
+    async next(type) {
+      const startedAt = Date.now();
+      for (;;) {
+        const index = received.findIndex((message) => message.type === type);
+        if (index !== -1) {
+          return received.splice(index, 1)[0] as never;
+        }
+        if (Date.now() - startedAt > 1_000) throw new Error(`Timed out waiting for ${type}`);
+        await new Promise<void>((resolve) => {
+          const wake = () => {
+            waiters.delete(wake);
+            resolve();
+          };
+          waiters.add(wake);
+          setTimeout(wake, 20);
+        });
+      }
+    },
+    async disconnect() {
+      await client.close();
+      await waitFor(() => harness.broker.getRegisteredClientCount() === 0);
+    },
+  };
+}
+
+async function connectViewer(harness: BrowserToolsDaemonHarness): Promise<DaemonClient> {
+  const viewer = new DaemonClient({
+    url: harness.url,
+    clientType: "mobile",
+    connectTimeoutMs: 500,
+    reconnect: { enabled: false },
+  });
+  harness.track(viewer);
+  await viewer.connect();
+  return viewer;
+}
+
+function hostFrame(streamId: string, sequence: number): Uint8Array {
+  return encodeBrowserScreencastFrame({
+    id: streamId,
+    sequence,
+    format: "jpeg",
+    snapshot: false,
+    metadata: { deviceWidth: 1280, deviceHeight: 800 },
+    image: new Uint8Array([0xff, 0xd8, sequence]),
+  });
+}
+
+describe("WebSocketServer browser screencast", () => {
+  it("streams a desktop tab to a viewer and routes its input back to the host", async () => {
+    const harness = await startBrowserToolsDaemonHarness();
+    const host = await connectScreencastHost(harness);
+    const viewer = await connectViewer(harness);
+
+    expect(viewer.supportsBrowserScreencast()).toBe(true);
+    await expect(viewer.listBrowserHosts()).resolves.toEqual([
+      { hostId: expect.any(String), hostKind: "desktop app", screencast: true },
+    ]);
+
+    const frames: BrowserScreencastFrame[] = [];
+    viewer.onBrowserScreencastFrame((frame) => frames.push(frame));
+    const updates: SessionOutboundMessage[] = [];
+    const observation = viewer.observeBrowserScreencast({
+      workspaceId: WORKSPACE_ID,
+      browserId: BROWSER_ID,
+      capture: { maxWidth: 800, maxHeight: 800 },
+    });
+    observation.subscribe({ snapshot: () => {}, update: (message) => updates.push(message) });
+
+    const start = await host.next("browser.host.screencast.start.request");
+    expect(start).toMatchObject({ browserId: BROWSER_ID, workspaceId: WORKSPACE_ID });
+    host.client.sendBrowserScreencastHostMessage({
+      type: "browser.host.screencast.start.response",
+      payload: { requestId: start.requestId, ok: true, page: PAGE },
+    });
+    const snapshot = await observation.ready;
+    expect(snapshot.page).toEqual(PAGE);
+
+    host.client.sendBrowserScreencastHostFrame(hostFrame(start.streamId, 1));
+    await waitFor(() => frames.length === 1);
+    expect(frames[0]).toMatchObject({ id: snapshot.subscriptionId, sequence: 1 });
+    await expect(host.next("browser.host.screencast.ack_frame.request")).resolves.toMatchObject({
+      streamId: start.streamId,
+      sequence: 1,
+    });
+
+    const reply = viewer.sendBrowserScreencastInput(snapshot.subscriptionId, {
+      kind: "click",
+      x: 10,
+      y: 20,
+    });
+    const input = await host.next("browser.host.screencast.input.request");
+    expect(input).toMatchObject({
+      streamId: start.streamId,
+      input: { kind: "click", x: 10, y: 20 },
+    });
+    host.client.sendBrowserScreencastHostMessage({
+      type: "browser.host.screencast.input.response",
+      payload: { requestId: input.requestId, ok: true },
+    });
+    await expect(reply).resolves.toMatchObject({ ok: true });
+
+    host.client.sendBrowserScreencastHostMessage({
+      type: "browser.host.screencast.report.request",
+      streamId: start.streamId,
+      event: { kind: "page", page: { ...PAGE, title: "Next" } },
+    });
+    await waitFor(() => updates.length === 1);
+    expect(updates[0]).toMatchObject({
+      type: "browser.remote.screencast.update",
+      payload: { event: { kind: "page", page: { title: "Next" } } },
+    });
+
+    await observation.release();
+    await expect(host.next("browser.host.screencast.stop.request")).resolves.toMatchObject({
+      streamId: start.streamId,
+    });
+  });
+
+  it("ends the viewer's stream when the desktop host disconnects", async () => {
+    const harness = await startBrowserToolsDaemonHarness();
+    const host = await connectScreencastHost(harness);
+    const viewer = await connectViewer(harness);
+    const updates: SessionOutboundMessage[] = [];
+    const observation = viewer.observeBrowserScreencast({
+      workspaceId: WORKSPACE_ID,
+      browserId: BROWSER_ID,
+      capture: { maxWidth: 800, maxHeight: 800 },
+    });
+    observation.subscribe({ snapshot: () => {}, update: (message) => updates.push(message) });
+    const start = await host.next("browser.host.screencast.start.request");
+    host.client.sendBrowserScreencastHostMessage({
+      type: "browser.host.screencast.start.response",
+      payload: { requestId: start.requestId, ok: true, page: PAGE },
+    });
+    await observation.ready;
+
+    await host.disconnect();
+
+    await waitFor(() => updates.length === 1);
+    expect(updates[0]).toMatchObject({
+      type: "browser.remote.screencast.update",
+      payload: { event: { kind: "ended", error: { code: "browser_no_host" } } },
+    });
+  });
+
+  it("rejects a remote command for a tab when no desktop host is connected", async () => {
+    const harness = await startBrowserToolsDaemonHarness();
+    const viewer = await connectViewer(harness);
+    await expect(
+      viewer.executeBrowserRemoteCommand({
+        workspaceId: WORKSPACE_ID,
+        command: { command: "new_tab", args: {} },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "browser_no_host" } });
+    const observation = viewer.observeBrowserScreencast({
+      workspaceId: WORKSPACE_ID,
+      browserId: BROWSER_ID,
+      capture: { maxWidth: 800, maxHeight: 800 },
+    });
+    await expect(observation.ready).rejects.toMatchObject({ code: "browser_no_host" });
+  });
+});
+
 async function startBrowserToolsDaemonHarness(): Promise<BrowserToolsDaemonHarness> {
   const httpServer = createServer();
   const broker = createBroker();
@@ -209,6 +446,8 @@ async function startBrowserToolsDaemonHarness(): Promise<BrowserToolsDaemonHarne
 
   const harness: BrowserToolsDaemonHarness = {
     broker,
+    url,
+    track: (client) => clients.add(client),
     async connectBrowserHostClient(options = {}) {
       const clientId = options.clientId;
       const client = new DaemonClient({

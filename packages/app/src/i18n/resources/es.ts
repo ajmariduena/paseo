@@ -574,6 +574,22 @@ export const es: TranslationResources = {
         subtitle: "Abra este espacio de trabajo en Electron para usar el navegador integrado.",
       },
       session: "Sesión de navegador{{browserId}}",
+      remote: {
+        connecting: "Conectando con el navegador de la computadora…",
+        keyboard: "Teclado",
+        retry: "Reintentar",
+        mobileView: "Vista móvil",
+        desktopView: "Vista de escritorio",
+        newTabFailed: "No se pudo abrir una pestaña del navegador en la computadora",
+        errors: {
+          disconnected: "El host no está conectado",
+          updateDaemon: "Actualiza el host para abrir pestañas del navegador de la computadora",
+          updateDesktop: "Actualiza Paseo en la computadora para ver sus pestañas del navegador",
+          noDesktop: "Abre Paseo en tu computadora para usar su navegador",
+          tabClosed: "Esta pestaña ya no está abierta en la computadora",
+          unknown: "El navegador de la computadora dejó de responder",
+        },
+      },
       controls: {
         back: "Atrás",
         forward: "Adelante",

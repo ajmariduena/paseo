@@ -574,6 +574,23 @@ export const fr: TranslationResources = {
         subtitle: "Ouvrez cet espace de travail dans Electron pour utiliser le navigateur intégré.",
       },
       session: "Session de navigateur{{browserId}}",
+      remote: {
+        connecting: "Connexion au navigateur de l'ordinateur…",
+        keyboard: "Clavier",
+        retry: "Réessayer",
+        mobileView: "Vue mobile",
+        desktopView: "Vue ordinateur",
+        newTabFailed: "Impossible d'ouvrir un onglet de navigateur sur l'ordinateur",
+        errors: {
+          disconnected: "L'hôte n'est pas connecté",
+          updateDaemon:
+            "Mettez à jour l'hôte pour ouvrir les onglets du navigateur de l'ordinateur",
+          updateDesktop: "Mettez à jour Paseo sur l'ordinateur pour voir ses onglets de navigateur",
+          noDesktop: "Ouvrez Paseo sur votre ordinateur pour utiliser son navigateur",
+          tabClosed: "Cet onglet n'est plus ouvert sur l'ordinateur",
+          unknown: "Le navigateur de l'ordinateur ne répond plus",
+        },
+      },
       controls: {
         back: "Dos",
         forward: "Avant",

@@ -143,6 +143,9 @@ import type {
 import { isRelayClientWebSocketUrl } from "@getpaseo/protocol/daemon-endpoints";
 import {
   asUint8Array,
+  BrowserScreencastOpcode,
+  decodeBrowserScreencastFrame,
+  type BrowserScreencastFrame,
   decodeFileTransferFrame,
   encodeFileTransferFrame,
   decodeTerminalStreamFrame,
@@ -173,6 +176,12 @@ import type {
   BrowserAutomationExecuteRequest,
   BrowserAutomationExecuteResponse,
 } from "@getpaseo/protocol/browser-automation/rpc-schemas";
+import type {
+  BrowserRemoteCommand,
+  BrowserRemoteHost,
+  BrowserScreencastCapture,
+  BrowserScreencastInput,
+} from "@getpaseo/protocol/browser-screencast/rpc-schemas";
 
 export interface Logger {
   debug(obj: object, msg?: string): void;
@@ -1242,6 +1251,9 @@ export class DaemonClient {
   private authFailureReasonValue: DaemonAuthFailureReason | null = null;
   private connectionState: ConnectionState = { status: "idle" };
   private readonly terminalStreams = new TerminalStreamRouter();
+  private readonly browserScreencastFrameListeners = new Set<
+    (frame: BrowserScreencastFrame) => void
+  >();
   private pendingBinaryFileReads = new Map<string, PendingBinaryFileRead>();
   private activeBinaryFileTransfers = new Map<string, BinaryFileTransferState>();
   private completedBinaryFileReads = new Map<string, FileReadResult>();
@@ -2283,6 +2295,9 @@ export class DaemonClient {
                   requestId: payload.requestId,
                   requestType: message.type,
                   error: payload.error,
+                  ...("code" in payload && typeof payload.code === "string"
+                    ? { code: payload.code }
+                    : {}),
                 });
               accept(payload);
               return payload;
@@ -5193,6 +5208,102 @@ export class DaemonClient {
     this.sendSessionMessageStrict(response);
   }
 
+  // COMPAT(browserScreencast): added in v0.10.1, remove gate after 2027-04-01.
+  supportsBrowserScreencast(): boolean {
+    return this.lastServerInfoMessage?.features?.browserScreencast === true;
+  }
+
+  private requireBrowserScreencast(): void {
+    if (!this.supportsBrowserScreencast()) {
+      throw new Error("Update the host to open desktop browser tabs.");
+    }
+  }
+
+  async listBrowserHosts(): Promise<BrowserRemoteHost[]> {
+    this.requireBrowserScreencast();
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"browser.remote.list_hosts.response">({
+        message: { type: "browser.remote.list_hosts.request" },
+      });
+    return payload.hosts;
+  }
+
+  async executeBrowserRemoteCommand(input: {
+    workspaceId: string;
+    hostId?: string;
+    command: BrowserRemoteCommand;
+    timeout?: number;
+  }): Promise<CorrelatedResponsePayload<"browser.remote.execute.response">> {
+    this.requireBrowserScreencast();
+    return this.sendNamespacedCorrelatedSessionRequest<"browser.remote.execute.response">({
+      message: {
+        type: "browser.remote.execute.request",
+        workspaceId: input.workspaceId,
+        ...(input.hostId ? { hostId: input.hostId } : {}),
+        command: input.command,
+      },
+      timeout: input.timeout,
+    });
+  }
+
+  observeBrowserScreencast(
+    input: { workspaceId: string; browserId: string; capture: BrowserScreencastCapture },
+    options?: { signal?: AbortSignal },
+  ): OwnedSubscription<CorrelatedResponsePayload<"browser.remote.screencast.subscribe.response">> {
+    this.requireBrowserScreencast();
+    return this.observe(
+      "browser.remote.screencast.subscribe.response",
+      { type: "browser.remote.screencast.subscribe.request", ...input },
+      options,
+    );
+  }
+
+  /** Receives every browser screencast frame; filter by the frame's subscription ID. */
+  onBrowserScreencastFrame(listener: (frame: BrowserScreencastFrame) => void): () => void {
+    this.browserScreencastFrameListeners.add(listener);
+    return () => {
+      this.browserScreencastFrameListeners.delete(listener);
+    };
+  }
+
+  ackBrowserScreencastFrame(subscriptionId: string, sequence: number): void {
+    this.sendSessionMessage({
+      type: "browser.remote.screencast.ack_frame.request",
+      subscriptionId,
+      sequence,
+    });
+  }
+
+  async sendBrowserScreencastInput(
+    subscriptionId: string,
+    input: BrowserScreencastInput,
+    options?: { timeout?: number },
+  ): Promise<CorrelatedResponsePayload<"browser.remote.input.response">> {
+    return this.sendNamespacedCorrelatedSessionRequest<"browser.remote.input.response">({
+      message: { type: "browser.remote.input.request", subscriptionId, input },
+      timeout: options?.timeout,
+    });
+  }
+
+  /** Browser hosts only: forwards one encoded frame of a stream the daemon started. */
+  sendBrowserScreencastHostFrame(frame: Uint8Array): void {
+    this.sendBinaryFrame(frame);
+  }
+
+  sendBrowserScreencastHostMessage(
+    message: Extract<
+      SessionInboundMessage,
+      {
+        type:
+          | "browser.host.screencast.start.response"
+          | "browser.host.screencast.input.response"
+          | "browser.host.screencast.report.request";
+      }
+    >,
+  ): void {
+    this.sendSessionMessage(message);
+  }
+
   async readProjectConfig(repoRoot: string, requestId?: string): Promise<ReadProjectConfigPayload> {
     return this.sendCorrelatedSessionRequest({
       requestId,
@@ -6327,6 +6438,23 @@ export class DaemonClient {
   }
 
   private tryHandleBinaryFrame(rawBytes: Uint8Array): boolean {
+    if (rawBytes[0] === BrowserScreencastOpcode.Frame) {
+      const screencastFrame = decodeBrowserScreencastFrame(rawBytes);
+      if (!screencastFrame) return false;
+      this.consecutiveLivenessFailures = 0;
+      if (this.browserScreencastFrameListeners.size === 0) {
+        this.ackBrowserScreencastFrame(screencastFrame.id, screencastFrame.sequence);
+      }
+      for (const listener of this.browserScreencastFrameListeners) {
+        try {
+          listener(screencastFrame);
+        } catch (error) {
+          this.logger.warn({ err: error }, "Browser screencast frame listener failed");
+        }
+      }
+      this.runtimeMetrics?.recordBinaryFrame("other", rawBytes.byteLength, 0);
+      return true;
+    }
     const fileFrame = decodeFileTransferFrame(rawBytes);
     if (fileFrame) {
       this.traceInstant("paseo.ws.message.inbound", {

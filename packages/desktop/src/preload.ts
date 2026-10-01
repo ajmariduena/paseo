@@ -142,5 +142,29 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
     ) => ipcRenderer.invoke("paseo:browser:capture-element", browserId, rect),
     copyElement: (payload: { text?: string; imageDataUrl?: string }) =>
       ipcRenderer.invoke("paseo:browser:copy-element", payload),
+    screencast: {
+      start: (request: Record<string, unknown>) =>
+        ipcRenderer.invoke("paseo:browser:screencast:start", request),
+      stop: (streamId: string) => ipcRenderer.invoke("paseo:browser:screencast:stop", streamId),
+      ack: (streamId: string) => ipcRenderer.send("paseo:browser:screencast:ack", streamId),
+      input: (streamId: string, input: Record<string, unknown>) =>
+        ipcRenderer.invoke("paseo:browser:screencast:input", streamId, input),
+      onFrame: (handler: (streamId: string, frame: Uint8Array) => void): (() => void) => {
+        const listener = (_event: Electron.IpcRendererEvent, streamId: string, frame: Uint8Array) =>
+          handler(streamId, frame);
+        ipcRenderer.on("paseo:browser:screencast:frame", listener);
+        return () => {
+          ipcRenderer.removeListener("paseo:browser:screencast:frame", listener);
+        };
+      },
+      onEvent: (handler: (streamId: string, event: unknown) => void): (() => void) => {
+        const listener = (_event: Electron.IpcRendererEvent, streamId: string, event: unknown) =>
+          handler(streamId, event);
+        ipcRenderer.on("paseo:browser:screencast:event", listener);
+        return () => {
+          ipcRenderer.removeListener("paseo:browser:screencast:event", listener);
+        };
+      },
+    },
   },
 });

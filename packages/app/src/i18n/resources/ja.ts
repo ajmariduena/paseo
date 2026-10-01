@@ -574,6 +574,22 @@ export const ja: TranslationResources = {
         subtitle: "組み込みブラウザを使用するには、このワークスペースをElectronで開いてください。",
       },
       session: "ブラウザセッション{{browserId}}",
+      remote: {
+        connecting: "パソコンのブラウザに接続しています…",
+        keyboard: "キーボード",
+        retry: "再試行",
+        mobileView: "モバイル表示",
+        desktopView: "デスクトップ表示",
+        newTabFailed: "パソコンでブラウザタブを開けませんでした",
+        errors: {
+          disconnected: "ホストに接続されていません",
+          updateDaemon: "パソコンのブラウザタブを開くにはホストを更新してください",
+          updateDesktop: "ブラウザタブを表示するにはパソコンの Paseo を更新してください",
+          noDesktop: "ブラウザを使うにはパソコンで Paseo を開いてください",
+          tabClosed: "このタブはパソコンで開かれていません",
+          unknown: "パソコンのブラウザが応答しなくなりました",
+        },
+      },
       controls: {
         back: "戻る",
         forward: "進む",
