@@ -10,6 +10,10 @@ import { setImmediate as nextTurn } from "node:timers/promises";
 import { describe, expect, test } from "vitest";
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import type { AgentClient, AgentStreamEvent } from "./agent-sdk-types.js";
+import { toStoredAgentRecord } from "./agent-projections.js";
+import { AgentManager } from "./agent-manager.js";
+import { buildProviderRegistry } from "./provider-registry.js";
+import { ProviderOverrideSchema } from "@getpaseo/protocol/provider-config";
 import { PluginAgentClientRegistry } from "./plugin-provider.js";
 import {
   isStaleProviderSessionError,
@@ -283,6 +287,109 @@ function expectNestedChildren(events: AgentStreamEvent[]) {
 }
 
 describe("PluginAgentClientRegistry", () => {
+  test("stores only agent options while the plugin receives merged defaults", async () => {
+    const logger = createTestLogger();
+    const harness = createProviderHarness();
+    const plugins = new PluginAgentClientRegistry(logger);
+    plugins.replace([harness.registration]);
+    const registry = buildProviderRegistry(logger, {
+      pluginProviders: plugins.definitions(),
+      providerOverrides: {
+        "plugin-direct": { options: { nested: { base: true, replace: "config" } } },
+      },
+    });
+    const manager = new AgentManager({
+      logger,
+      clients: { "plugin-direct": registry["plugin-direct"].createClient(logger) },
+      providerDefinitions: { "plugin-direct": registry["plugin-direct"] },
+    });
+    const own = { nested: { replace: "agent" } };
+    const agent = await manager.createAgent(
+      { provider: "plugin-direct", cwd: "/tmp", providerOptions: own },
+      undefined,
+      { workspaceId: undefined },
+    );
+    expect(toStoredAgentRecord(agent).config?.providerOptions).toEqual(own);
+    expect(harness.inputs.find((input) => input.type === "session.open")).toMatchObject({
+      config: { providerOptions: { nested: { base: true, replace: "agent" } } },
+    });
+    await agent.session?.close();
+  });
+
+  test.each([
+    { options: { nested: { base: true, replace: "config" }, list: [1, 2], scalar: "config" } },
+    { params: { nested: { base: true, replace: "config" }, list: [1, 2], scalar: "config" } },
+    {
+      params: { ignored: true },
+      options: { nested: { base: true, replace: "config" }, list: [1, 2], scalar: "config" },
+    },
+  ])(
+    "merges configured options into plugin session.open, preserving caller input: %j",
+    async (override) => {
+      const logger = createTestLogger();
+      const harness = createProviderHarness();
+      const plugins = new PluginAgentClientRegistry(logger);
+      plugins.replace([harness.registration]);
+      const registry = buildProviderRegistry(logger, {
+        pluginProviders: plugins.definitions(),
+        providerOverrides: { "plugin-direct": ProviderOverrideSchema.parse(override) },
+      });
+      const client = registry["plugin-direct"].createClient(logger);
+      const defaultsSession = await client.createSession({
+        provider: "plugin-direct",
+        cwd: "/tmp",
+      });
+      const defaultsOpen = harness.inputs.findLast((input) => input.type === "session.open")!;
+      expect(defaultsOpen.config.providerOptions).toEqual({
+        nested: { base: true, replace: "config" },
+        list: [1, 2],
+        scalar: "config",
+      });
+      await defaultsSession.close();
+      const config = {
+        provider: "plugin-direct",
+        cwd: "/tmp",
+        providerOptions: { nested: { replace: "agent" }, list: [3], scalar: null },
+      };
+      const session = await client.createSession(config);
+      const open = harness.inputs.findLast((input) => input.type === "session.open")!;
+      expect(open.config.providerOptions).toEqual({
+        nested: { base: true, replace: "agent" },
+        list: [3],
+        scalar: null,
+      });
+      expect(config.providerOptions).toEqual({
+        nested: { replace: "agent" },
+        list: [3],
+        scalar: null,
+      });
+      const handle = session.describePersistence()!;
+      await session.close();
+      const updatedRegistry = buildProviderRegistry(logger, {
+        pluginProviders: plugins.definitions(),
+        providerOverrides: {
+          "plugin-direct": {
+            options: {
+              nested: { base: false, replace: "new-config" },
+              list: [4],
+              scalar: "new-config",
+            },
+          },
+        },
+      });
+      const resumed = await updatedRegistry["plugin-direct"]
+        .createClient(logger)
+        .resumeSession(handle, config);
+      const resumedOpen = harness.inputs.findLast((input) => input.type === "session.open")!;
+      expect(resumedOpen.config.providerOptions).toEqual({
+        nested: { base: false, replace: "agent" },
+        list: [3],
+        scalar: null,
+      });
+      await resumed.close();
+    },
+  );
+
   test.each([false, true])(
     "contains a failed session open while send is pending: %s",
     async (pendingSend) => {
@@ -686,6 +793,56 @@ async function withObservedProvider(
     process.off("unhandledRejection", observe);
   }
 }
+
+test("commits notices emitted during session open as the initial timeline with stable history timestamps", async () => {
+  await withObservedProvider(
+    {
+      openChildren(sessionId, emit) {
+        emit({
+          type: "session.notice",
+          sessionId,
+          notice: {
+            id: "startup",
+            severity: "warning",
+            title: "Full access",
+            description: "Tools run without asking.",
+          },
+        });
+        emit({
+          type: "session.notice",
+          sessionId,
+          notice: { id: "dismissed", severity: "info", title: "Hidden", dismissed: true },
+        });
+      },
+    },
+    async (client) => {
+      const session = await client.createSession({ provider: client.provider, cwd: "/workspace" });
+      try {
+        expect(session.initialTimeline).toEqual([
+          {
+            timestamp: expect.any(String),
+            item: {
+              type: "notification",
+              level: "warning",
+              message: "Full access\nTools run without asking.",
+            },
+          },
+        ]);
+        const history: AgentStreamEvent[] = [];
+        for await (const event of session.streamHistory()) history.push(event);
+        expect(
+          history.filter(
+            (event) => event.type === "timeline" && event.item.type === "notification",
+          ),
+        ).toEqual([
+          { type: "timeline", provider: client.provider, ...session.initialTimeline![0] },
+        ]);
+      } finally {
+        await session.close();
+      }
+    },
+  );
+});
 
 describe("pending provider responses", () => {
   test.each<RequestKind>(["session.open", "catalog", "session.configure", "session.prompt"])(

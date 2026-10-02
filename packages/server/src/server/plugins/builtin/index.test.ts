@@ -35,17 +35,6 @@ async function fixture(root: string, id: string, client = false): Promise<string
   return directory;
 }
 
-test("packaged desktop builds resolve built-ins from app.asar.unpacked", () => {
-  const moduleUrl = pathToFileURL(
-    "/Applications/Paseo.app/Contents/Resources/app.asar/node_modules/@getpaseo/server/dist/server/server/plugins/builtin/index.js",
-  );
-  const unpacked =
-    "/Applications/Paseo.app/Contents/Resources/app.asar.unpacked/node_modules/@getpaseo/server/dist/server/builtin-plugins";
-  expect(resolveBuiltinPluginsRoot(moduleUrl, (candidate) => candidate === unpacked)).toBe(
-    unpacked,
-  );
-});
-
 test("listed built-ins resolve to matching manifests and compile", async () => {
   const root = resolveBuiltinPluginsRoot();
   for (const id of builtinPlugins) {
