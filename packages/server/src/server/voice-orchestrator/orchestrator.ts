@@ -53,8 +53,13 @@ export interface GptLiveEngineConfig {
 
 export interface VoiceOrchestratorCall {
   isUserSpeaking(): boolean;
-  /** Speaks notice lines directly. Without it, notices go through the orchestrator agent. */
-  announce?(lines: string[]): void;
+  /** Updates wait while the assistant is still talking instead of cutting it off. */
+  isAssistantSpeaking?(): boolean;
+  /**
+   * Speaks notice lines directly. Without it, notices go through the orchestrator agent.
+   * `urgent` (permissions, failures) may take the next short pause; the rest wait for a lull.
+   */
+  announce?(lines: string[], options?: { urgent: boolean }): void;
   /** Called (debounced) whenever an agent's state changes during the call. */
   onFleetChanged?(): void;
 }
@@ -545,7 +550,7 @@ export class VoiceOrchestrator {
   }
 
   private isBusy(): boolean {
-    if (this.call?.isUserSpeaking()) return true;
+    if (this.call?.isUserSpeaking() || this.call?.isAssistantSpeaking?.()) return true;
     return !this.call?.announce && this.isOrchestratorRunning();
   }
 
@@ -584,7 +589,10 @@ export class VoiceOrchestrator {
     }
     if (lines.length === 0) return;
     if (this.call?.announce) {
-      this.call.announce(lines);
+      const urgent = notices.some(
+        (notice) => notice.reason === "permission" || notice.reason === "error",
+      );
+      this.call.announce(lines, { urgent });
       return;
     }
     if (!this.knownAgentId) return;

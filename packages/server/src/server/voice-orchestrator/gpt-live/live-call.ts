@@ -14,6 +14,7 @@ import {
   describeError,
   type GptLiveServerEvent,
 } from "./live-connection.js";
+import { FloorQueue, SpeechFloor, isEchoOfAssistant } from "./speech-floor.js";
 
 const OUTPUT_FORMAT = `pcm;rate=${GPT_LIVE_SAMPLE_RATE}`;
 const BYTES_PER_MS = (GPT_LIVE_SAMPLE_RATE * 2) / 1000;
@@ -24,6 +25,10 @@ const CHUNK_MS = 600;
 const UTTERANCE_GAP_MS = 350;
 const USER_SPEECH_IDLE_MS = 900;
 const HISTORY_LIMIT = 24;
+// The sideband's reflected output audio is always 24 kHz PCM16, whatever the transport uses.
+const REFLECTED_BYTES_PER_MS = (24_000 * 2) / 1000;
+// While the assistant is audible, a transcript must be at least this long to count as the user.
+const BARGE_IN_MIN_WORDS = 3;
 // Over WebRTC the session runs before the phone's media connects; greet once its audio arrives.
 const GREETING_FALLBACK_MS = 6_000;
 
@@ -57,12 +62,18 @@ export class GptLiveCall {
   private sinceLastDelegation = "";
   private assistantTurn = "";
   private readonly history: string[] = [];
-  private lastUserSpeechAt = 0;
+  private unconfirmedSpeechTimer: ReturnType<typeof setTimeout> | null = null;
   private userSpeakingSignalled = false;
   private userIdleTimer: ReturnType<typeof setTimeout> | null = null;
   private assistantIdleTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingGreeting: string | null = null;
   private greetingTimer: ReturnType<typeof setTimeout> | null = null;
+  private recentAssistantText = "";
+  private pendingDelegations = 0;
+  private readonly floor = new SpeechFloor();
+  private readonly outbox = new FloorQueue(this.floor, {
+    isAwaitingResult: () => this.pendingDelegations > 0,
+  });
 
   constructor(private readonly options: GptLiveCallOptions) {
     this.connection = options.createConnection?.() ?? new GptLiveConnection();
@@ -96,8 +107,12 @@ export class GptLiveCall {
       });
     }
     this.detach = orchestrator.attachCall({
-      isUserSpeaking: () => Date.now() - this.lastUserSpeechAt < USER_SPEECH_IDLE_MS,
-      announce: (lines) => this.connection.append("commentary", lines.join("\n"), null),
+      isUserSpeaking: () => this.floor.isUserSpeaking(),
+      isAssistantSpeaking: () => this.floor.isAssistantSpeaking(),
+      announce: (lines, options) =>
+        this.outbox.push(options?.urgent ? "urgent" : "routine", () =>
+          this.connection.append("commentary", lines.join("\n"), null),
+        ),
       onFleetChanged: () => void this.pushFleetSnapshot(),
     });
     this.unregister = orchestrator.registerLiveCall(this);
@@ -147,26 +162,37 @@ export class GptLiveCall {
     if (this.userIdleTimer) clearTimeout(this.userIdleTimer);
     if (this.assistantIdleTimer) clearTimeout(this.assistantIdleTimer);
     if (this.greetingTimer) clearTimeout(this.greetingTimer);
+    if (this.unconfirmedSpeechTimer) clearTimeout(this.unconfirmedSpeechTimer);
+    this.outbox.close();
     this.connection.close();
   }
 
   private handleEvent(event: GptLiveServerEvent): void {
     switch (event.type) {
-      case "session.output_audio.delta":
+      case "session.output_audio.delta": {
+        const audio = Buffer.from((event as { delta: string }).delta, "base64");
         // A sideband only gets reflected copies; the phone already hears it over WebRTC.
-        if (this.options.sidebandSessionId) return;
-        this.handleOutputAudio(Buffer.from((event as { delta: string }).delta, "base64"));
+        if (this.options.sidebandSessionId) {
+          this.floor.noteAssistantAudio(audio.length / REFLECTED_BYTES_PER_MS);
+          return;
+        }
+        this.handleOutputAudio(audio);
         return;
+      }
       case "session.input_audio.append":
         if (this.pendingGreeting) this.sendPendingGreeting();
         return;
       case "session.input_transcript.delta":
         this.handleUserSpeech((event as { delta: string }).delta);
         return;
-      case "session.output_transcript.delta":
-        this.assistantTurn += (event as { delta: string }).delta;
+      case "session.output_transcript.delta": {
+        const delta = (event as { delta: string }).delta;
+        this.assistantTurn += delta;
+        this.recentAssistantText = `${this.recentAssistantText}${delta}`.slice(-600);
+        this.floor.noteAssistantText();
         if (this.options.sidebandSessionId) this.scheduleAssistantCommit();
         return;
+      }
       case "session.delegation.created":
         void this.handleDelegation((event as { delegation: { id: string } }).delegation.id);
         return;
@@ -190,6 +216,7 @@ export class GptLiveCall {
 
   private handleOutputAudio(audio: Buffer): void {
     if (this.closed || audio.length === 0) return;
+    this.floor.noteAssistantAudio(audio.length / BYTES_PER_MS);
     if (this.userTurn) this.commitUserTurn();
     this.groupId ??= uuidv4();
     this.pendingAudio.push(audio);
@@ -233,8 +260,24 @@ export class GptLiveCall {
 
   private handleUserSpeech(delta: string): void {
     this.userTurn += delta;
+    if (
+      !this.userSpeakingSignalled &&
+      this.floor.isAssistantSpeaking() &&
+      !this.isRealUserSpeech()
+    ) {
+      // The assistant hearing itself (or a short noise) must not cut its own reply; text
+      // that never grows into real speech is dropped.
+      if (this.unconfirmedSpeechTimer) clearTimeout(this.unconfirmedSpeechTimer);
+      this.unconfirmedSpeechTimer = setTimeout(() => {
+        this.unconfirmedSpeechTimer = null;
+        if (!this.userSpeakingSignalled) this.userTurn = "";
+      }, USER_SPEECH_IDLE_MS);
+      return;
+    }
+    if (this.unconfirmedSpeechTimer) clearTimeout(this.unconfirmedSpeechTimer);
+    this.unconfirmedSpeechTimer = null;
     this.sinceLastDelegation += delta;
-    this.lastUserSpeechAt = Date.now();
+    this.floor.noteUserSpeech();
     const relaysAudio = !this.options.sidebandSessionId;
     if (!this.userSpeakingSignalled) {
       this.userSpeakingSignalled = true;
@@ -252,6 +295,12 @@ export class GptLiveCall {
       }
       this.commitUserTurn();
     }, USER_SPEECH_IDLE_MS);
+  }
+
+  private isRealUserSpeech(): boolean {
+    const heard = this.userTurn.trim();
+    if (isEchoOfAssistant(heard, this.recentAssistantText)) return false;
+    return heard.split(/\s+/).length >= BARGE_IN_MIN_WORDS;
   }
 
   private discardPendingAudio(): void {
@@ -283,6 +332,7 @@ export class GptLiveCall {
     this.commitUserTurn();
     const request = this.sinceLastDelegation.trim();
     this.sinceLastDelegation = "";
+    this.pendingDelegations += 1;
     try {
       const result = await this.options.orchestrator.runDelegation({
         request,
@@ -293,15 +343,19 @@ export class GptLiveCall {
         this.options.orchestrator.deliverLateReply(result);
         return;
       }
-      this.connection.append("commentary", result, delegationId);
+      this.outbox.push("result", () => this.connection.append("commentary", result, delegationId));
     } catch (error) {
       this.options.logger.warn({ err: error }, "GPT-Live delegation failed");
       if (this.closed) return;
-      this.connection.append(
-        "commentary",
-        "The request could not be completed because the backend failed. Tell the user briefly.",
-        delegationId,
+      this.outbox.push("result", () =>
+        this.connection.append(
+          "commentary",
+          "The request could not be completed because the backend failed. Tell the user briefly.",
+          delegationId,
+        ),
       );
+    } finally {
+      this.pendingDelegations = Math.max(0, this.pendingDelegations - 1);
     }
   }
 }
