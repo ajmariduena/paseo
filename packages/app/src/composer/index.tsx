@@ -109,6 +109,8 @@ import { resolveAgentControlsMode } from "@/composer/agent-controls/mode";
 import { resolveComposerInputMode, type ComposerInputMode } from "@/composer/input-mode";
 import { resolveActiveSendBehavior } from "./input/state";
 import { useKeyboardActionHandler } from "@/hooks/use-keyboard-action-handler";
+import { useNativeKeyCommandLayer } from "@/hooks/use-native-key-command-layer";
+import { nativeNavigationKeyCommands } from "@/keyboard/native-key-commands";
 import type { KeyboardActionDefinition } from "@/keyboard/keyboard-action-dispatcher";
 import type { MessageInputKeyboardActionKind } from "@/keyboard/actions";
 import { submitAgentInput } from "@/composer/submit";
@@ -1012,6 +1014,13 @@ function resolveContextWindowValues(
   return { contextWindowMaxTokens: null, contextWindowUsedTokens: null };
 }
 
+const AUTOCOMPLETE_KEY_COMMANDS = nativeNavigationKeyCommands([
+  "ArrowUp",
+  "ArrowDown",
+  "Tab",
+  "Escape",
+]);
+
 interface ComposerAutocompleteHandle {
   onKeyPress: (event: ComposerKeyPressEvent) => boolean;
 }
@@ -1047,6 +1056,16 @@ function ComposerAutocompleteBinding({
   useImperativeHandle(ref, () => ({ onKeyPress: autocomplete.onKeyPress }), [
     autocomplete.onKeyPress,
   ]);
+  useNativeKeyCommandLayer({
+    enabled: autocomplete.isVisible && show,
+    commands: AUTOCOMPLETE_KEY_COMMANDS,
+    priority: 2,
+    handle: (event) => {
+      const input = inputRef.current?.getInputSnapshot();
+      if (!input) return false;
+      return autocomplete.onKeyPress({ key: event.id, preventDefault: () => {}, input });
+    },
+  });
   const selectOption = autocomplete.onSelectOption;
   const onSelect = useCallback(
     (option: AutocompleteOption) => selectOption(option, inputRef.current?.getInputSnapshot()),

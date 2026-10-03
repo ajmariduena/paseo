@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { usePathname, useRouter } from "expo-router";
 import { getIsElectronRuntime } from "@/constants/layout";
 import { useKeyboardShortcutsStore } from "@/stores/keyboard-shortcuts-store";
@@ -11,8 +12,18 @@ import {
   type KeyboardShortcutInput,
   resolveKeyboardShortcut,
   buildEffectiveBindings,
+  getShortcutHelpLabelKey,
   getWorkspaceIndexJumpModifierKey,
 } from "@/keyboard/keyboard-shortcuts";
+import {
+  buildNativeKeyCommands,
+  resolveNativeKeyboardFocusScope,
+  shortcutInputForNativeKeyCommand,
+  type NativeKeyCommandEvent,
+} from "@/keyboard/native-key-commands";
+import { nativeKeyCommandRegistry } from "@/keyboard/native-key-command-registry";
+import { useNativeKeyCommandLayer } from "@/hooks/use-native-key-command-layer";
+import { useHardwareKeyboardConnected } from "@/hooks/use-hardware-keyboard-connected";
 import { resolveKeyboardFocusScope } from "@/keyboard/focus-scope";
 import {
   buildBrowserKeyboardPolicy,
@@ -25,7 +36,7 @@ import {
   type ShortcutAction,
   type ShortcutCallbackName,
 } from "@/keyboard/route-shortcut";
-import { getShortcutOs } from "@/utils/shortcut-platform";
+import { getShortcutPlatform } from "@/utils/shortcut-platform";
 import { useOpenAddProject } from "@/hooks/use-open-add-project";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import { useKeyboardShortcutOverrides } from "@/hooks/use-keyboard-shortcut-overrides";
@@ -60,14 +71,20 @@ export function useKeyboardShortcuts({
   cycleTheme?: () => void;
 }) {
   const keyboardActionDispatcher = useKeyboardActionDispatcher();
+  const { t } = useTranslation();
   const pathname = usePathname();
   const router = useRouter();
   const resetModifiers = useKeyboardShortcutsStore((s) => s.resetModifiers);
   const { overrides } = useKeyboardShortcutOverrides();
   const bindings = useMemo(() => buildEffectiveBindings(overrides), [overrides]);
-  const shortcutsAvailable = keyboardShortcutsAvailable({ isNative, isCompact: isMobile });
+  const hasHardwareKeyboard = useHardwareKeyboardConnected();
+  const shortcutsAvailable = keyboardShortcutsAvailable({
+    isNative,
+    isCompact: isMobile,
+    hasHardwareKeyboard,
+  });
   const isDesktopApp = getIsElectronRuntime();
-  const isMac = getShortcutOs() === "mac";
+  const { isMac, isDesktop } = getShortcutPlatform();
   const chordStateRef = useRef<ChordState>({
     candidateIndices: [],
     step: 0,
@@ -256,7 +273,7 @@ export function useKeyboardShortcuts({
       event: input.event,
       context: {
         isMac,
-        isDesktop: isDesktopApp,
+        isDesktop,
         focusScope: input.focusScope,
         commandCenterOpen: store.commandCenterOpen,
       },
@@ -382,9 +399,47 @@ export function useKeyboardShortcuts({
     });
   });
 
+  const nativeKeyCommands = useMemo(
+    () =>
+      buildNativeKeyCommands({
+        bindings,
+        platform: { isMac, isDesktop },
+        titleForHelp: ({ helpId, label, digit }) => {
+          const title = t(getShortcutHelpLabelKey(helpId) ?? label);
+          return digit === null ? title : `${title} ${digit}`;
+        },
+      }),
+    [bindings, isDesktop, isMac, t],
+  );
+
+  const handleNativeKeyCommand = useStableEvent((event: NativeKeyCommandEvent): boolean => {
+    const focusScope = resolveNativeKeyboardFocusScope({
+      textInputFocused: event.textInputFocused,
+      messageInputFocused: nativeKeyCommandRegistry.activeFocusScope() === "message-input",
+      commandCenterOpen: useKeyboardShortcutsStore.getState().commandCenterOpen,
+    });
+    resolveAndPerformShortcut({
+      event: shortcutInputForNativeKeyCommand(event.id),
+      focusScope,
+      domEvent: null,
+    });
+    return true;
+  });
+
+  // UIKit only consults key commands while a hardware keyboard is attached, so
+  // registering them unconditionally costs nothing and survives a keyboard the
+  // connection notifications missed.
+  useNativeKeyCommandLayer({
+    enabled: enabled && !isMobile,
+    commands: nativeKeyCommands,
+    priority: 0,
+    handle: handleNativeKeyCommand,
+  });
+
   useEffect(() => {
     if (!enabled) return;
     if (!shortcutsAvailable) return;
+    if (isNative) return;
 
     const handleBlurOrHide = () => {
       resetModifiers();

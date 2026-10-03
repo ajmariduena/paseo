@@ -30,8 +30,7 @@ import {
 } from "@/keyboard/shortcut-string";
 import type { ShortcutKey } from "@/utils/format-shortcut";
 import { useKeyboardShortcutsStore } from "@/stores/keyboard-shortcuts-store";
-import { getShortcutOs } from "@/utils/shortcut-platform";
-import { getIsElectronRuntime } from "@/constants/layout";
+import { getShortcutPlatform } from "@/utils/shortcut-platform";
 import { isNative } from "@/constants/platform";
 import { getDesktopHost } from "@/desktop/host";
 
@@ -334,9 +333,8 @@ export function KeyboardShortcutsSection() {
   const capturing = useKeyboardShortcutsStore((s) => s.capturingShortcut);
 
   const isFocused = useIsFocused();
-  const isMac = getShortcutOs() === "mac";
-  const isDesktopApp = getIsElectronRuntime();
-  const sections = buildKeyboardShortcutHelpSections({ isMac, isDesktop: isDesktopApp });
+  const platform = getShortcutPlatform();
+  const sections = buildKeyboardShortcutHelpSections(platform);
 
   const cancelCapture = useCallback(() => {
     setCapturedCombos([]);
@@ -452,7 +450,6 @@ export function KeyboardShortcutsSection() {
           >
             <View style={settingsStyles.card}>
               {section.rows.map(function (row, index) {
-                const platform = { isMac, isDesktop: isDesktopApp };
                 const bindingId = getBindingIdForAction(row.id, platform);
                 const displayChord = resolveShortcutKeysForAction(row.id, overrides, platform);
                 // `in`, not a truthiness check: an unassigned shortcut stores

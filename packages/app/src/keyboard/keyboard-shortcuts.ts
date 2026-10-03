@@ -1550,6 +1550,10 @@ export function resolveKeyboardShortcut(input: {
   return resolveAdvancingChordStep({ event, context, chordState, onChordReset, bindings });
 }
 
+export function getShortcutHelpLabelKey(helpId: string): string | null {
+  return SHORTCUT_HELP_LABEL_KEYS[helpId] ?? null;
+}
+
 export function getBindingIdForAction(
   actionId: string,
   platform: { isMac: boolean; isDesktop: boolean },

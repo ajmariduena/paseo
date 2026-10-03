@@ -56,6 +56,7 @@ import { useIsCompactFormFactor } from "@/constants/layout";
 import { useComposerKeyboardScope } from "@/composer/keyboard-scope";
 import { RenderProfile } from "@/utils/render-profiler";
 import { useComposerHeight } from "./height";
+import { useMessageInputKeyCommands } from "./key-commands";
 import { resolveComposerInputMode, type ComposerInputMode } from "@/composer/input-mode";
 import type { NativePastedFile } from "@/composer/native-pasted-image";
 import {
@@ -1638,6 +1639,16 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     useIosHardwareKeyboardSubmit({
       isEnabled: isInputFocused && !isSendButtonDisabled,
       onSubmit: handleDefaultSendAction,
+    });
+    useMessageInputKeyCommands({
+      isFocused: isInputFocused,
+      isSubmitDisabled,
+      isSubmitLoading,
+      disabled,
+      isAgentRunning,
+      onQueue,
+      sendDefault: handleDefaultSendAction,
+      sendAlternate: handleAlternateSendAction,
     });
     const submitAccessibilityLabel = resolveSubmitAccessibilityLabel({
       submitButtonAccessibilityLabel,
