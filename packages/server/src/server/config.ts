@@ -1,4 +1,5 @@
 import { configurationEnvironment } from "./config-environment.js";
+import type { GptLiveEngineConfig } from "./voice-orchestrator/orchestrator.js";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -421,6 +422,24 @@ function resolveVoiceLlmConfig(
   };
 }
 
+const DEFAULT_GPT_LIVE_MODEL = "gpt-live-1";
+const DEFAULT_GPT_LIVE_VOICE = "marin";
+
+function resolveVoiceLiveConfig(
+  env: NodeJS.ProcessEnv,
+  persisted: ReturnType<typeof loadPersistedConfig>,
+): GptLiveEngineConfig | null {
+  const voiceMode = persisted.features?.voiceMode;
+  if (voiceMode?.engine !== "gpt-live") return null;
+  const apiKey = persisted.providers?.openai?.apiKey ?? env.OPENAI_API_KEY?.trim();
+  if (!apiKey) return null;
+  return {
+    apiKey,
+    model: voiceMode.live?.model ?? DEFAULT_GPT_LIVE_MODEL,
+    voice: voiceMode.live?.voice ?? DEFAULT_GPT_LIVE_VOICE,
+  };
+}
+
 function resolveCorsAllowedOrigins(
   env: NodeJS.ProcessEnv,
   persisted: ReturnType<typeof loadPersistedConfig>,
@@ -649,6 +668,7 @@ export function resolveConfigFromPersisted(
     voiceLlmProvider: voiceLlm.provider,
     voiceLlmProviderExplicit: voiceLlm.providerExplicit,
     voiceLlmModel: voiceLlm.model,
+    voiceLive: resolveVoiceLiveConfig(env, persisted),
     agentProviderSettings: extractAgentProviderSettings(providerOverrides),
     providerCatalogRefreshTimeoutMs: persisted.agents?.catalogRefreshTimeoutMs,
     idleRuntimeTimeoutMs: persisted.agents?.idleRuntimeTimeoutMs ?? DEFAULT_IDLE_RUNTIME_TIMEOUT_MS,

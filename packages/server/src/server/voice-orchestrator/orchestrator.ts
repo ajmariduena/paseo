@@ -12,8 +12,10 @@ import { sendPromptToAgent } from "../agent/agent-prompt.js";
 import type { WorkspaceRegistry } from "../workspace-registry.js";
 import { VoiceNoticeQueue, type VoiceNotice, type VoiceNoticeReason } from "./notice-queue.js";
 import {
+  VOICE_BACKEND_SYSTEM_PROMPT,
   VOICE_ORCHESTRATOR_SYSTEM_PROMPT,
   buildCallStartPrompt,
+  buildDelegationPrompt,
   buildNoticePrompt,
   clipForSpeech,
   type VoiceFleetEntry,
@@ -25,11 +27,22 @@ const STATE_FILENAME = "orchestrator.json";
 const FLEET_LIMIT = 12;
 const FLEET_RECENT_MS = 12 * 60 * 60 * 1000;
 const APPROVAL_WINDOW_MS = 90_000;
+const PROGRESS_CHECK_MS = 45_000;
+const PROGRESS_MIN_INTERVAL_MS = 120_000;
+const DELEGATION_MAX_WAITS = 6;
 
 const OrchestratorStateSchema = z.object({ agentId: z.guid() });
 
+export interface GptLiveEngineConfig {
+  apiKey: string;
+  model: string;
+  voice: string;
+}
+
 export interface VoiceOrchestratorCall {
   isUserSpeaking(): boolean;
+  /** Speaks notice lines directly. Without it, notices go through the orchestrator agent. */
+  announce?(lines: string[]): void;
 }
 
 export interface VoiceOrchestratorOptions {
@@ -39,6 +52,7 @@ export interface VoiceOrchestratorOptions {
   workspaceRegistry: WorkspaceRegistry | null;
   provider?: AgentProvider | null;
   model?: string | null;
+  live?: GptLiveEngineConfig | null;
   logger: pino.Logger;
 }
 
@@ -55,6 +69,10 @@ export class VoiceOrchestrator {
   private call: VoiceOrchestratorCall | null = null;
   private queue: VoiceNoticeQueue | null = null;
   private unsubscribeSelf: (() => void) | null = null;
+  private unsubscribeFleet: (() => void) | null = null;
+  private progressTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly lifecycles = new Map<string, string>();
+  private readonly progressAnnounced = new Map<string, { step: string; at: number }>();
   private lastUtterance: { text: string; at: number; approvalUsed: boolean } | null = null;
   private preferredLanguage: string | null = null;
 
@@ -64,6 +82,14 @@ export class VoiceOrchestrator {
       this.agentIdPromise = null;
       this.logger.warn({ err: error }, "Failed to load voice orchestrator id");
     });
+  }
+
+  get liveEngine(): GptLiveEngineConfig | null {
+    return this.options.live ?? null;
+  }
+
+  get language(): string | null {
+    return this.preferredLanguage;
   }
 
   isOrchestrator(agentId: string): boolean {
@@ -99,7 +125,7 @@ export class VoiceOrchestrator {
     this.detachCurrentCall();
     this.call = call;
     this.lastUtterance = null;
-    const queue = new VoiceNoticeQueue({
+    this.queue = new VoiceNoticeQueue({
       batchWindowMs: 4_000,
       urgentDelayMs: 750,
       busyRetryMs: 1_000,
@@ -107,8 +133,8 @@ export class VoiceOrchestrator {
       isStale: (notice) => this.isNoticeStale(notice),
       deliver: (notices) => this.deliverNotices(notices),
     });
-    this.queue = queue;
-    void this.sendCallStart(call);
+    this.watchFleet();
+    if (!call.announce) void this.sendCallStart(call);
     return () => {
       if (this.call !== call) return;
       this.detachCurrentCall();
@@ -139,6 +165,44 @@ export class VoiceOrchestrator {
     return null;
   }
 
+  /** Runs one delegated voice request on the orchestrator agent and returns its reply. */
+  async runDelegation(params: { request: string; history: string[] }): Promise<string> {
+    const agentId = await this.ensureAgent();
+    if (params.request.trim()) this.noteUserUtterance(params.request);
+    await this.sendPrompt(agentId, buildDelegationPrompt(params));
+    const { agentManager } = this.options;
+    let result = await agentManager.waitForAgentEvent(agentId, { waitForActive: true });
+    for (let attempt = 0; result.permission && attempt < DELEGATION_MAX_WAITS; attempt += 1) {
+      result = await agentManager.waitForAgentEvent(agentId);
+    }
+    return result.lastMessage?.trim() || "No result from the backend.";
+  }
+
+  async describeFleet(): Promise<VoiceFleetEntry[]> {
+    const now = Date.now();
+    const candidates = this.options.agentManager
+      .listAgents()
+      .filter(
+        (agent) =>
+          !this.isOrchestrator(agent.id) &&
+          agent.lifecycle !== "closed" &&
+          !isDelegatedAgent(agent) &&
+          (agent.lifecycle === "running" ||
+            agent.attention.requiresAttention ||
+            agent.pendingPermissions.size > 0 ||
+            now - agent.updatedAt.getTime() < FLEET_RECENT_MS),
+      )
+      .sort((left, right) => fleetRank(left) - fleetRank(right))
+      .slice(0, FLEET_LIMIT);
+    return Promise.all(
+      candidates.map(async (agent) => ({
+        workspace: await this.describeWorkspace(agent),
+        title: agent.config.title?.trim() || "Untitled agent",
+        status: this.describeStatus(agent),
+      })),
+    );
+  }
+
   dispose(): void {
     this.detachCurrentCall();
   }
@@ -148,6 +212,57 @@ export class VoiceOrchestrator {
     this.queue = null;
     this.call = null;
     this.lastUtterance = null;
+    this.unsubscribeFleet?.();
+    this.unsubscribeFleet = null;
+    if (this.progressTimer) clearInterval(this.progressTimer);
+    this.progressTimer = null;
+    this.lifecycles.clear();
+    this.progressAnnounced.clear();
+  }
+
+  private watchFleet(): void {
+    const { agentManager } = this.options;
+    for (const agent of agentManager.listAgents()) this.lifecycles.set(agent.id, agent.lifecycle);
+    this.unsubscribeFleet = agentManager.subscribe(
+      (event) => {
+        if (event.type !== "agent_state") return;
+        const agent = event.agent;
+        const previous = this.lifecycles.get(agent.id);
+        this.lifecycles.set(agent.id, agent.lifecycle);
+        if (
+          agent.lifecycle === "running" &&
+          previous !== "running" &&
+          previous !== "initializing" &&
+          !this.isOrchestrator(agent.id) &&
+          !isDelegatedAgent(agent) &&
+          !this.isOrchestratorRunning()
+        ) {
+          this.queue?.push({ agentId: agent.id, reason: "started" });
+        }
+      },
+      { replayState: false },
+    );
+    this.progressTimer = setInterval(() => this.checkProgress(), PROGRESS_CHECK_MS);
+    this.progressTimer.unref?.();
+  }
+
+  private checkProgress(): void {
+    const now = Date.now();
+    for (const agent of this.options.agentManager.listAgents()) {
+      if (
+        agent.lifecycle !== "running" ||
+        this.isOrchestrator(agent.id) ||
+        isDelegatedAgent(agent)
+      ) {
+        continue;
+      }
+      const step = this.options.agentManager.getLiveWorkSummary(agent.id).currentStep;
+      if (!step) continue;
+      const last = this.progressAnnounced.get(agent.id);
+      if (last && (last.step === step || now - last.at < PROGRESS_MIN_INTERVAL_MS)) continue;
+      this.progressAnnounced.set(agent.id, { step, at: now });
+      this.queue?.push({ agentId: agent.id, reason: "progress" });
+    }
   }
 
   private async resolveAgentId(): Promise<string> {
@@ -180,7 +295,7 @@ export class VoiceOrchestrator {
     const cwd = this.orchestratorDir();
     await mkdir(cwd, { recursive: true });
     const provider = this.options.provider ?? "claude";
-    const model = this.options.model ?? (provider === "claude" ? "sonnet" : undefined);
+    const model = this.options.model ?? (provider === "claude" ? "haiku" : undefined);
     this.logger.info({ agentId, provider, model }, "Creating voice orchestrator agent");
     await this.options.agentManager.createAgent(
       {
@@ -188,7 +303,9 @@ export class VoiceOrchestrator {
         cwd,
         ...(model ? { model } : {}),
         title: "Voice",
-        systemPrompt: VOICE_ORCHESTRATOR_SYSTEM_PROMPT,
+        systemPrompt: this.options.live
+          ? VOICE_BACKEND_SYSTEM_PROMPT
+          : VOICE_ORCHESTRATOR_SYSTEM_PROMPT,
         internal: true,
       },
       agentId,
@@ -228,11 +345,15 @@ export class VoiceOrchestrator {
     }
   }
 
-  private isBusy(): boolean {
-    if (this.call?.isUserSpeaking()) return true;
+  private isOrchestratorRunning(): boolean {
     const agentId = this.knownAgentId;
     const agent = agentId ? this.options.agentManager.getAgent(agentId) : null;
     return agent?.lifecycle === "running" || agent?.lifecycle === "initializing";
+  }
+
+  private isBusy(): boolean {
+    if (this.call?.isUserSpeaking()) return true;
+    return !this.call?.announce && this.isOrchestratorRunning();
   }
 
   private isNoticeStale(notice: VoiceNotice): boolean {
@@ -245,6 +366,9 @@ export class VoiceOrchestrator {
         return agent.lifecycle !== "error";
       case "finished":
         return agent.lifecycle === "running";
+      case "started":
+      case "progress":
+        return agent.lifecycle !== "running";
     }
   }
 
@@ -268,7 +392,12 @@ export class VoiceOrchestrator {
       const line = await this.describeNotice(notice);
       if (line) lines.push(line);
     }
-    if (lines.length === 0 || !this.knownAgentId) return;
+    if (lines.length === 0) return;
+    if (this.call?.announce) {
+      this.call.announce(lines);
+      return;
+    }
+    if (!this.knownAgentId) return;
     try {
       await this.sendPrompt(this.knownAgentId, buildNoticePrompt(lines));
     } catch (error) {
@@ -288,55 +417,48 @@ export class VoiceOrchestrator {
   }
 
   private async describeNotice(notice: VoiceNotice): Promise<string | null> {
-    const agent = this.options.agentManager.getAgent(notice.agentId);
+    const { agentManager } = this.options;
+    const agent = agentManager.getAgent(notice.agentId);
     if (!agent) return null;
     const name = await this.describeAgentName(agent);
+    const work = agentManager.getLiveWorkSummary(agent.id);
+    const task = work.request ? ` Its task: ${clipForSpeech(work.request, 200)}` : "";
     switch (notice.reason) {
       case "permission": {
         const request = [...agent.pendingPermissions.values()].at(-1);
         if (!request) return null;
         const what = clipForSpeech(
           [request.title ?? request.name, request.description].filter(Boolean).join(": "),
-          200,
+          240,
         );
-        return `${name} is waiting for permission: ${what}`;
+        return `${name} is waiting for permission: ${what}.${task}`;
       }
       case "error":
-        return `${name} failed: ${clipForSpeech(agent.lastError ?? "unknown error", 200)}`;
+        return `${name} failed: ${clipForSpeech(agent.lastError ?? "unknown error", 240)}.${task}`;
       case "finished": {
-        const message = await this.options.agentManager
-          .getLastAssistantMessage(agent.id)
-          .catch(() => null);
-        return message
-          ? `${name} finished. Its last message: ${clipForSpeech(message, 320)}`
-          : `${name} finished.`;
+        const message = await agentManager.getLastAssistantMessage(agent.id).catch(() => null);
+        const result = message ? ` Its final message: ${clipForSpeech(message, 700)}` : "";
+        return `${name} finished.${task}${result}`;
       }
+      case "started":
+        return `${name} started working.${task}`;
+      case "progress":
+        return work.currentStep ? `${name} is now: ${clipForSpeech(work.currentStep, 160)}.` : null;
     }
   }
 
-  private async describeFleet(): Promise<VoiceFleetEntry[]> {
-    const now = Date.now();
-    const candidates = this.options.agentManager
-      .listAgents()
-      .filter(
-        (agent) =>
-          !this.isOrchestrator(agent.id) &&
-          agent.lifecycle !== "closed" &&
-          !isDelegatedAgent(agent) &&
-          (agent.lifecycle === "running" ||
-            agent.attention.requiresAttention ||
-            agent.pendingPermissions.size > 0 ||
-            now - agent.updatedAt.getTime() < FLEET_RECENT_MS),
-      )
-      .sort((left, right) => fleetRank(left) - fleetRank(right))
-      .slice(0, FLEET_LIMIT);
-    return Promise.all(
-      candidates.map(async (agent) => ({
-        workspace: await this.describeWorkspace(agent),
-        title: agent.config.title?.trim() || "Untitled agent",
-        status: describeStatus(agent),
-      })),
-    );
+  private describeStatus(agent: ManagedAgent): string {
+    if (agent.pendingPermissions.size > 0) return "waiting for permission";
+    if (agent.lifecycle === "error") return "failed";
+    if (agent.lifecycle === "running") {
+      const work = this.options.agentManager.getLiveWorkSummary(agent.id);
+      const detail = work.currentStep ?? work.request;
+      return detail ? `working on: ${clipForSpeech(detail, 140)}` : "working";
+    }
+    if (agent.attention.requiresAttention && agent.attention.attentionReason === "finished") {
+      return "finished, not reviewed yet";
+    }
+    return "idle";
   }
 
   private async describeAgentName(agent: ManagedAgent): Promise<string> {
@@ -359,14 +481,4 @@ function fleetRank(agent: ManagedAgent): number {
   if (agent.attention.requiresAttention) return 2;
   if (agent.lifecycle === "running") return 3;
   return 4;
-}
-
-function describeStatus(agent: ManagedAgent): string {
-  if (agent.pendingPermissions.size > 0) return "waiting for permission";
-  if (agent.lifecycle === "error") return "failed";
-  if (agent.lifecycle === "running") return "working";
-  if (agent.attention.requiresAttention && agent.attention.attentionReason === "finished") {
-    return "finished, not reviewed yet";
-  }
-  return "idle";
 }

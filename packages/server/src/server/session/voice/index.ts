@@ -103,7 +103,7 @@ export class VoiceSessions {
   private async dispatch(voice: VoiceSession, message: VoiceMessage): Promise<void> {
     switch (message.type) {
       case "voice_audio_chunk":
-        return voice.handleAudioChunk(message);
+        return voice.handleVoiceAudio(message);
       case "abort_request":
         return voice.handleAbort();
       case "audio_played":

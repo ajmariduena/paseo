@@ -1,14 +1,20 @@
-export type VoiceNoticeReason = "permission" | "error" | "finished";
+export type VoiceNoticeReason = "permission" | "error" | "finished" | "started" | "progress";
 
 export interface VoiceNotice {
   agentId: string;
   reason: VoiceNoticeReason;
 }
 
-const PRIORITY: Record<VoiceNoticeReason, number> = { permission: 0, error: 1, finished: 2 };
+const PRIORITY: Record<VoiceNoticeReason, number> = {
+  permission: 0,
+  error: 1,
+  finished: 2,
+  started: 3,
+  progress: 4,
+};
 
 export interface VoiceNoticeQueueOptions {
-  /** Finished notices wait this long so agents finishing together are announced together. */
+  /** Routine notices wait this long so agents finishing together are announced together. */
   batchWindowMs: number;
   urgentDelayMs: number;
   busyRetryMs: number;
@@ -47,8 +53,8 @@ export class VoiceNoticeQueue {
     if (!existing || PRIORITY[notice.reason] <= PRIORITY[existing.reason]) {
       this.pending.set(notice.agentId, notice);
     }
-    const delay =
-      notice.reason === "finished" ? this.options.batchWindowMs : this.options.urgentDelayMs;
+    const urgent = notice.reason === "permission" || notice.reason === "error";
+    const delay = urgent ? this.options.urgentDelayMs : this.options.batchWindowMs;
     this.schedule(delay);
   }
 

@@ -3344,6 +3344,30 @@ export class AgentManager {
     return await this.getLastAssistantMessageFromStores(agentId);
   }
 
+  /** The latest user message and in-progress todo from the live timeline, for status narration. */
+  getLiveWorkSummary(agentId: string): { request: string | null; currentStep: string | null } {
+    const timeline = this.timelineStore.getItems(agentId);
+    let request: string | null = null;
+    let currentStep: string | null = null;
+    for (let i = timeline.length - 1; i >= 0 && (request === null || currentStep === null); i--) {
+      const item = timeline[i];
+      if (
+        request === null &&
+        item.type === "user_message" &&
+        !isSystemInjectedEnvelope(item.text)
+      ) {
+        request = item.text;
+      }
+      if (currentStep === null && item.type === "todo") {
+        const active =
+          item.items.find((todo) => todo.status === "in_progress") ??
+          item.items.find((todo) => !todo.completed);
+        currentStep = active ? (active.activeForm ?? active.text) : null;
+      }
+    }
+    return { request, currentStep };
+  }
+
   private getLastAssistantMessageFromTimeline(
     timeline: readonly AgentTimelineItem[],
   ): string | null {

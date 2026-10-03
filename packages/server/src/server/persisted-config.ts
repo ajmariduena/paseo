@@ -126,6 +126,14 @@ const FeatureDictationSchema = z
 const FeatureVoiceModeSchema = z
   .object({
     enabled: z.boolean().optional(),
+    engine: z.enum(["chained", "gpt-live"]).optional(),
+    live: z
+      .object({
+        model: z.string().trim().min(1).optional(),
+        voice: z.string().trim().min(1).optional(),
+      })
+      .strict()
+      .optional(),
     llm: z
       .object({
         provider: z.string().optional(),

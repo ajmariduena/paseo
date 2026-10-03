@@ -132,7 +132,7 @@ import type { RequestedSpeechProviders } from "./speech/speech-types.js";
 import { createSpeechService } from "./speech/speech-runtime.js";
 import type { ReadAloudConfig } from "./speech/read-aloud/config.js";
 import { ReadAloudService } from "./speech/read-aloud/service.js";
-import { VoiceOrchestrator } from "./voice-orchestrator/orchestrator.js";
+import { VoiceOrchestrator, type GptLiveEngineConfig } from "./voice-orchestrator/orchestrator.js";
 import { AgentManager } from "./agent/agent-manager.js";
 import { AgentStorage } from "./agent/agent-storage.js";
 import { attachAgentStoragePersistence } from "./persistence-hooks.js";
@@ -443,6 +443,7 @@ export interface PaseoDaemonConfig {
   voiceLlmProvider?: AgentProvider | null;
   voiceLlmProviderExplicit?: boolean;
   voiceLlmModel?: string | null;
+  voiceLive?: GptLiveEngineConfig | null;
   dictationFinalTimeoutMs?: number;
   downloadTokenTtlMs?: number;
   agentProviderSettings?: AgentProviderRuntimeSettingsMap;
@@ -1608,6 +1609,7 @@ export async function createPaseoDaemon(
     workspaceRegistry,
     provider: config.voiceLlmProvider,
     model: config.voiceLlmModel,
+    live: config.voiceLive,
     logger,
   });
 

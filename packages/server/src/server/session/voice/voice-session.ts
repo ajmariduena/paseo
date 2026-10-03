@@ -22,6 +22,7 @@ import type { LocalSpeechModelId } from "../../speech/providers/local/models.js"
 import { toResolver, type Resolvable } from "../../speech/provider-resolver.js";
 import type { SpeechReadinessSnapshot, SpeechReadinessState } from "../../speech/speech-runtime.js";
 import type { VoiceOrchestrator } from "../../voice-orchestrator/orchestrator.js";
+import { GptLiveCall } from "../../voice-orchestrator/gpt-live/live-call.js";
 
 const PCM_SAMPLE_RATE = 16000;
 const PCM_CHANNELS = 1;
@@ -213,6 +214,7 @@ export class VoiceSession {
   private voiceModeBaseConfig: VoiceModeBaseConfig | null = null;
   private readonly orchestrator: VoiceOrchestrator | null;
   private detachOrchestratorCall: (() => void) | null = null;
+  private liveCall: GptLiveCall | null = null;
 
   constructor(options: VoiceSessionOptions) {
     const { host, logger, sessionId, sttLanguage, tts, stt, voice, voiceBridge, dictation } =
@@ -363,6 +365,9 @@ export class VoiceSession {
         { enabled, requestedAgentId: agentId ?? null, requestId: requestId ?? null },
         "set_voice_mode started",
       );
+      if (enabled && (await this.tryEnableLiveCall(agentId, requestId))) {
+        return;
+      }
       if (enabled) {
         const unavailable = this.resolveVoiceFeatureUnavailableContext("voice_mode");
         if (unavailable) {
@@ -533,6 +538,63 @@ export class VoiceSession {
     }
   }
 
+  /** Global voice on GPT-Live: no turn detection, STT or TTS on the daemon. */
+  private async tryEnableLiveCall(
+    rawAgentId: string | undefined,
+    requestId: string | undefined,
+  ): Promise<boolean> {
+    const orchestrator = this.orchestrator;
+    const engine = orchestrator?.liveEngine;
+    if (!orchestrator || !engine) return false;
+    const agentId = this.parseVoiceTargetAgentId(rawAgentId ?? "", "set_voice_mode");
+    if (!(await orchestrator.matches(agentId))) return false;
+
+    if (this.isVoiceMode && this.voiceModeAgentId === agentId && this.liveCall) {
+      this.emitVoiceModeAccepted(agentId, requestId);
+      return true;
+    }
+    if (this.isVoiceMode) await this.disableVoiceModeForActiveAgent(true);
+
+    await this.host.loadAgent(agentId);
+    this.registerVoiceCallerContext?.(agentId, {
+      childAgentDefaultLabels: {},
+      allowCustomCwd: true,
+      authorizePermissionApproval: () => orchestrator.authorizePermissionApproval(),
+    });
+    const call = new GptLiveCall({
+      engine,
+      orchestrator,
+      emit: (message) => this.emit(message),
+      logger: this.sessionLogger.child({ component: "gpt-live" }),
+    });
+    try {
+      await call.start();
+    } catch (error) {
+      call.close();
+      this.unregisterVoiceCallerContext?.(agentId);
+      throw error;
+    }
+    if (this.closed) {
+      call.close();
+      this.unregisterVoiceCallerContext?.(agentId);
+      return true;
+    }
+    this.liveCall = call;
+    this.voiceModeAgentId = agentId;
+    this.isVoiceMode = true;
+    this.sessionLogger.info({ agentId }, "Global voice call started on GPT-Live");
+    this.emitVoiceModeAccepted(agentId, requestId);
+    return true;
+  }
+
+  private emitVoiceModeAccepted(agentId: string, requestId: string | undefined): void {
+    if (!requestId) return;
+    this.emit({
+      type: "set_voice_mode_response",
+      payload: { requestId, enabled: true, agentId, accepted: true, error: null },
+    });
+  }
+
   private attachOrchestratorCall(): void {
     const agentId = this.voiceModeAgentId;
     if (!this.isVoiceMode || !agentId || !this.orchestrator?.isOrchestrator(agentId)) return;
@@ -545,6 +607,14 @@ export class VoiceSession {
   private async disableVoiceModeForActiveAgent(restoreAgentConfig: boolean): Promise<void> {
     this.detachOrchestratorCall?.();
     this.detachOrchestratorCall = null;
+    if (this.liveCall) {
+      this.liveCall.close();
+      this.liveCall = null;
+      if (this.voiceModeAgentId) this.unregisterVoiceCallerContext?.(this.voiceModeAgentId);
+      this.voiceModeAgentId = null;
+      this.voiceModeBaseConfig = null;
+      return;
+    }
     await this.stopVoiceTurnController();
 
     const agentId = this.voiceModeAgentId;
@@ -769,6 +839,16 @@ export class VoiceSession {
       audioBase64: msg.audio,
       format: chunkFormat,
     });
+  }
+
+  async handleVoiceAudio(
+    msg: Extract<SessionInboundMessage, { type: "voice_audio_chunk" }>,
+  ): Promise<void> {
+    if (this.liveCall) {
+      this.liveCall.appendAudio(Buffer.from(msg.audio, "base64"));
+      return;
+    }
+    await this.handleAudioChunk(msg);
   }
 
   async handleAudioChunk(
