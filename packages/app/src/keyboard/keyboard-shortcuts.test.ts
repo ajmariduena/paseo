@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { formatShortcut } from "@/utils/format-shortcut";
+import { keyComboToString } from "./shortcut-string";
 import {
   buildKeyboardShortcutHelpSections,
   buildEffectiveBindings,
+  DEFAULT_BINDINGS,
+  matchesKeyboardShortcutContext,
   getBindingIdForAction,
   getDefaultKeysForAction,
   getWorkspaceIndexJumpModifierKey,
@@ -210,11 +213,58 @@ describe("keyboard-shortcuts", () => {
       payload: { delta: -1 },
     },
     {
-      name: "matches workspace relative navigation on desktop via Mod+]",
-      event: { key: "]", code: "BracketRight", ctrlKey: true },
+      name: "matches workspace relative navigation on desktop via Mod+Shift+]",
+      event: { key: "}", code: "BracketRight", ctrlKey: true, shiftKey: true },
       context: { isDesktop: true },
       action: "workspace.navigate.relative",
       payload: { delta: 1 },
+    },
+    {
+      name: "matches workspace relative navigation on mac desktop via Cmd+Shift+[",
+      event: { key: "{", code: "BracketLeft", metaKey: true, shiftKey: true },
+      context: { isMac: true, isDesktop: true },
+      action: "workspace.navigate.relative",
+      payload: { delta: -1 },
+    },
+    {
+      name: "matches history back on mac desktop via Cmd+[",
+      event: { key: "[", code: "BracketLeft", metaKey: true },
+      context: { isMac: true, isDesktop: true },
+      action: "navigation.history.relative",
+      payload: { delta: -1 },
+    },
+    {
+      name: "matches history forward on non-mac desktop via Ctrl+]",
+      event: { key: "]", code: "BracketRight", ctrlKey: true },
+      context: { isDesktop: true },
+      action: "navigation.history.relative",
+      payload: { delta: 1 },
+    },
+    {
+      name: "matches the next agent that needs attention via Cmd+Alt+A on mac",
+      event: { key: "å", code: "KeyA", metaKey: true, altKey: true },
+      context: { isMac: true },
+      action: "agent.attention.next",
+    },
+    {
+      name: "matches the next agent that needs attention via Ctrl+Alt+A off mac",
+      event: { key: "a", code: "KeyA", ctrlKey: true, altKey: true },
+      context: { isMac: false },
+      action: "agent.attention.next",
+    },
+    {
+      name: "matches recent agent switching via Ctrl+Tab on desktop",
+      event: { key: "Tab", code: "Tab", ctrlKey: true },
+      context: { isMac: true, isDesktop: true, focusScope: "message-input" },
+      action: "agent.recent.relative",
+      payload: { delta: 1 },
+    },
+    {
+      name: "matches reverse recent agent switching via Ctrl+Shift+Tab on desktop",
+      event: { key: "Tab", code: "Tab", ctrlKey: true, shiftKey: true },
+      context: { isDesktop: true },
+      action: "agent.recent.relative",
+      payload: { delta: -1 },
     },
     {
       name: "matches tab relative navigation via Alt+Shift+]",
@@ -682,6 +732,56 @@ describe("keyboard-shortcuts", () => {
 
     expect(onChordReset).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
+  });
+});
+
+describe("default binding conflicts", () => {
+  const platforms = [
+    { isMac: true, isDesktop: true },
+    { isMac: true, isDesktop: false },
+    { isMac: false, isDesktop: true },
+    { isMac: false, isDesktop: false },
+  ];
+  const focusScopes = ["other", "message-input", "editable", "terminal", "browser"] as const;
+
+  function actionsByCombo(platform: { isMac: boolean; isDesktop: boolean }) {
+    const actions = new Map<string, Set<string>>();
+    for (const binding of DEFAULT_BINDINGS) {
+      const [first, ...rest] = binding.parsedChord;
+      if (!first || rest.length > 0) continue;
+      const reachable = focusScopes.some((focusScope) =>
+        matchesKeyboardShortcutContext(binding.when, {
+          ...platform,
+          focusScope,
+          commandCenterOpen: false,
+        }),
+      );
+      if (!reachable) continue;
+      const { mod, ...combo } = first;
+      const resolved = mod ? { ...combo, [platform.isMac ? "meta" : "ctrl"]: true } : combo;
+      const key = keyComboToString(resolved);
+      actions.set(key, new Set([...(actions.get(key) ?? []), binding.action]));
+    }
+    return actions;
+  }
+
+  it.each(platforms)(
+    "gives every combo one action (mac: $isMac, desktop: $isDesktop)",
+    (platform) => {
+      const conflicts = Array.from(actionsByCombo(platform)).filter(
+        ([, actions]) => actions.size > 1,
+      );
+      expect(conflicts).toEqual([]);
+    },
+  );
+
+  it("keeps the agent navigation combos distinct from the workspace ones on mac desktop", () => {
+    const actions = actionsByCombo({ isMac: true, isDesktop: true });
+    expect(actions.get("Alt+Cmd+A")).toEqual(new Set(["agent.attention.next"]));
+    expect(actions.get("Ctrl+Tab")).toEqual(new Set(["agent.recent.relative"]));
+    expect(actions.get("Cmd+[")).toEqual(new Set(["navigation.history.relative"]));
+    expect(actions.get("Cmd+]")).toEqual(new Set(["navigation.history.relative"]));
+    expect(actions.get("Shift+Cmd+[")).toEqual(new Set(["workspace.navigate.relative"]));
   });
 });
 

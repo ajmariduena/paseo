@@ -77,6 +77,7 @@ export const ar: TranslationResources = {
     },
   },
   shell: {
+    nothingNeedsAttention: "لا شيء يحتاج إلى انتباهك",
     menu: {
       toggleSidebar: "تبديل الشريط الجانبي",
       open: "فتح القائمة",
@@ -2425,6 +2426,11 @@ export const ar: TranslationResources = {
         jumpToTab: "انتقل إلى علامة التبويب",
         previousWorkspace: "مساحة العمل السابقة",
         nextWorkspace: "مساحة العمل التالية",
+        nextAttentionAgent: "الانتقال إلى الوكيل التالي الذي يحتاجك",
+        recentAgentNext: "التبديل إلى وكيل حديث",
+        recentAgentPrevious: "التبديل إلى وكيل حديث (عكسيًا)",
+        navigateBack: "رجوع",
+        navigateForward: "تقدّم",
         previousTab: "علامة التبويب السابقة",
         nextTab: "علامة التبويب التالية",
         splitPaneRight: "تقسيم الجزء الأيمن",

@@ -77,6 +77,7 @@ export const zhCN: TranslationResources = {
     },
   },
   shell: {
+    nothingNeedsAttention: "没有需要你处理的内容",
     menu: {
       toggleSidebar: "切换侧边栏",
       open: "打开菜单",
@@ -2393,6 +2394,11 @@ export const zhCN: TranslationResources = {
         jumpToTab: "跳转到标签",
         previousWorkspace: "上一个 workspace",
         nextWorkspace: "下一个 workspace",
+        nextAttentionAgent: "前往下一个需要你处理的 Agent",
+        recentAgentNext: "切换到最近的 Agent",
+        recentAgentPrevious: "切换到最近的 Agent（反向）",
+        navigateBack: "后退",
+        navigateForward: "前进",
         previousTab: "上一个标签",
         nextTab: "下一个标签",
         splitPaneRight: "向右拆分窗格",

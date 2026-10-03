@@ -78,6 +78,7 @@ export const ptBR: TranslationResources = {
     },
   },
   shell: {
+    nothingNeedsAttention: "Nada precisa da sua atenção",
     menu: {
       toggleSidebar: "Alternar barra lateral",
       open: "Abrir menu",
@@ -2461,6 +2462,11 @@ export const ptBR: TranslationResources = {
         jumpToTab: "Ir para aba",
         previousWorkspace: "Workspace anterior",
         nextWorkspace: "Próximo workspace",
+        nextAttentionAgent: "Ir para o próximo agente que precisa de você",
+        recentAgentNext: "Alternar para agente recente",
+        recentAgentPrevious: "Alternar para agente recente (inverso)",
+        navigateBack: "Voltar",
+        navigateForward: "Avançar",
         previousTab: "Aba anterior",
         nextTab: "Próxima aba",
         splitPaneRight: "Dividir painel à direita",

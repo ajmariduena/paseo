@@ -62,6 +62,7 @@ import { HorizontalScrollProvider } from "@/contexts/horizontal-scroll-context";
 import { SessionProvider } from "@/contexts/session-context";
 import { SidebarCalloutProvider } from "@/contexts/sidebar-callout-context";
 import { ToastProvider } from "@/contexts/toast-context";
+import { useAgentVisitTracking } from "@/navigation/agent-switching";
 import { VoiceProvider } from "@/contexts/voice-context";
 import {
   resolveStartupBlocker,
@@ -514,6 +515,7 @@ function AppContainer({ children, chromeEnabled: chromeEnabledOverride }: AppCon
 
   useActiveWorktreeNewAction();
   useGlobalNewWorkspaceAction();
+  useAgentVisitTracking();
 
   const appContentMinimumWidth = resolveDesktopAppContentMinimum({
     isSettingsRoute: pathname.includes("/settings"),

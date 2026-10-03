@@ -43,6 +43,8 @@ import {
 } from "@/stores/keyboard-shortcuts-store";
 import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
 import { useKeyboardActionDispatcher } from "@/keyboard/keyboard-action-dispatcher-context";
+import { useNativeKeyCommandLayer } from "@/hooks/use-native-key-command-layer";
+import { nativeNavigationKeyCommands } from "@/keyboard/native-key-commands";
 import {
   clearCommandCenterFocusRestoreElement,
   takeCommandCenterFocusRestoreElement,
@@ -87,6 +89,7 @@ const ThemedLoadingSpinner = withUnistyles(LoadingSpinner, (theme) => ({
   color: theme.colors.foregroundMuted,
 }));
 const COMMAND_CENTER_SNAP_POINTS = ["60%", "90%"];
+const COMMAND_CENTER_KEY_COMMANDS = nativeNavigationKeyCommands(["ArrowUp", "ArrowDown", "Escape"]);
 const KEYBOARD_SHOULD_PERSIST_TAPS = "always" as const;
 
 function sortAgents(left: AggregatedAgent, right: AggregatedAgent): number {
@@ -696,6 +699,12 @@ export function CommandCenter() {
     onScroll: handleListScroll,
     scrollEventThrottle: 16,
   };
+  useNativeKeyCommandLayer({
+    enabled: state.open,
+    commands: COMMAND_CENTER_KEY_COMMANDS,
+    priority: 2,
+    handle: (event) => state.key(event.id),
+  });
   const keyPress = useCallback(
     ({ nativeEvent: { key } }: { nativeEvent: { key: string } }) => state.key(key),
     [state],

@@ -43,7 +43,7 @@ import {
 } from "@/stores/workspace-layout-store";
 import { shouldShowWorkspaceSetup, useWorkspaceSetupStore } from "@/stores/workspace-setup-store";
 import { clearCommandCenterFocusRestoreElement } from "@/utils/command-center-focus-restore";
-import { getShortcutOs } from "@/utils/shortcut-platform";
+import { getShortcutPlatform } from "@/utils/shortcut-platform";
 import {
   buildWorkspaceLabelPickerRows,
   useWorkspaceLabelProjection,
@@ -105,8 +105,7 @@ function staticIcon(element: ReactElement | undefined): CommandCenterIcon | unde
 }
 
 function resolveWorkspaceShortcuts(overrides: ShortcutOverrides): WorkspaceCommandCenterShortcuts {
-  const platform = { isMac: getShortcutOs() === "mac", isDesktop: getIsElectron() };
-  return resolveWorkspaceCommandCenterShortcuts({ overrides, platform });
+  return resolveWorkspaceCommandCenterShortcuts({ overrides, platform: getShortcutPlatform() });
 }
 
 /**

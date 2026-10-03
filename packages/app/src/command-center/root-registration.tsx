@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { router, type Href } from "expo-router";
 import { useTranslation } from "react-i18next";
 import {
+  BellDot,
   CalendarClock,
   CircleDashed,
   Folder,
@@ -15,7 +16,7 @@ import {
   Settings,
 } from "lucide-react-native";
 import { withUnistyles } from "react-native-unistyles";
-import { getIsElectronRuntime, useIsCompactFormFactor } from "@/constants/layout";
+import { useIsCompactFormFactor } from "@/constants/layout";
 import { useKeyboardShortcutOverrides } from "@/hooks/use-keyboard-shortcut-overrides";
 import { useOpenAddProject } from "@/hooks/use-open-add-project";
 import { useImportSession } from "@/hooks/use-import-session";
@@ -32,7 +33,8 @@ import {
   buildSessionsRoute,
   buildSettingsRoute,
 } from "@/utils/host-routes";
-import { getShortcutOs } from "@/utils/shortcut-platform";
+import { getShortcutPlatform } from "@/utils/shortcut-platform";
+import { useAgentNavigation } from "@/navigation/agent-switching";
 import type { CommandCenterContribution, CommandCenterIconProps } from "./contributions";
 import { useCommandCenterActions } from "./provider";
 import { buildGroupingContribution } from "./root-contributions";
@@ -62,6 +64,13 @@ const ThemedCircleDashed = withUnistyles(CircleDashed, (theme) => ({
 const ThemedPanelLeft = withUnistyles(PanelLeft, (theme) => ({
   color: theme.colors.foregroundMuted,
 }));
+const ThemedBellDot = withUnistyles(BellDot, (theme) => ({
+  color: theme.colors.foregroundMuted,
+}));
+
+function BellDotIcon({ size }: CommandCenterIconProps) {
+  return <ThemedBellDot size={size} strokeWidth={2.2} />;
+}
 
 function PlusIcon({ size }: CommandCenterIconProps) {
   return <ThemedPlus size={size} strokeWidth={2.4} />;
@@ -113,6 +122,7 @@ export function CommandCenterRootActions() {
   const { overrides } = useKeyboardShortcutOverrides();
   const shortcutsAvailable = useKeyboardShortcutsAvailable();
   const openAddProject = useOpenAddProject();
+  const navigateAgent = useAgentNavigation();
   const { open: openImportSession, sheet: importSessionSheet } = useImportSession();
   const settingsRoute = useMemo<Href>(() => buildSettingsRoute(), []);
   const homeRoute = useMemo<Href>(() => buildOpenProjectRoute(), []);
@@ -127,10 +137,7 @@ export function CommandCenterRootActions() {
   const toggleMobileAgentList = usePanelStore((state) => state.toggleMobileAgentList);
   const toggleDesktopAgentList = usePanelStore((state) => state.toggleDesktopAgentList);
   const toggleAgentList = isCompact ? toggleMobileAgentList : toggleDesktopAgentList;
-  const shortcutPlatform = useMemo(
-    () => ({ isMac: getShortcutOs() === "mac", isDesktop: getIsElectronRuntime() }),
-    [],
-  );
+  const shortcutPlatform = useMemo(() => getShortcutPlatform(), []);
   const actions = useMemo<CommandCenterContribution[]>(() => {
     const availableActions: CommandCenterContribution[] = [
       {
@@ -171,6 +178,27 @@ export function CommandCenterRootActions() {
           icon: PlusIcon,
           shortcutKeys:
             resolveShortcutKeysForAction("new-workspace", overrides, shortcutPlatform) ?? undefined,
+        },
+      },
+      {
+        id: "next-attention-agent",
+        group: "actions",
+        groupRank: 0,
+        rank: 9,
+        keywords: ["attention", "next", "agent", "permission", "waiting", "unread"],
+        visibility: "always",
+        run: () => {
+          clearCommandCenterFocusRestoreElement();
+          navigateAgent({ type: "next-attention" });
+        },
+        presentation: {
+          kind: "action",
+          title: t("settings.shortcuts.help.nextAttentionAgent"),
+          sectionTitle: t("shell.commandCenter.actions"),
+          icon: BellDotIcon,
+          shortcutKeys:
+            resolveShortcutKeysForAction("next-attention-agent", overrides, shortcutPlatform) ??
+            undefined,
         },
       },
       {
@@ -334,6 +362,7 @@ export function CommandCenterRootActions() {
     groupMode,
     homeRoute,
     keyboardActionDispatcher,
+    navigateAgent,
     openAddProject,
     openImportSession,
     overrides,

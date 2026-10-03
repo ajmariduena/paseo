@@ -78,6 +78,7 @@ export const ru: TranslationResources = {
     },
   },
   shell: {
+    nothingNeedsAttention: "Ничто не требует вашего внимания",
     menu: {
       toggleSidebar: "Переключить боковую панель",
       open: "Открыть меню",
@@ -2464,6 +2465,11 @@ export const ru: TranslationResources = {
         jumpToTab: "Перейти на вкладку",
         previousWorkspace: "Предыдущее рабочее пространство",
         nextWorkspace: "Следующее рабочее пространство",
+        nextAttentionAgent: "Перейти к следующему агенту, которому нужны вы",
+        recentAgentNext: "Переключиться на недавний агент",
+        recentAgentPrevious: "Переключиться на недавний агент (обратно)",
+        navigateBack: "Назад",
+        navigateForward: "Вперёд",
         previousTab: "Предыдущая вкладка",
         nextTab: "Следующая вкладка",
         splitPaneRight: "Разделить панель справа",
