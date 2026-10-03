@@ -1599,6 +1599,33 @@ export const es: TranslationResources = {
   loadOlderHistory: {
     failed: "No se pudo cargar el historial anterior",
   },
+  incomingShare: {
+    title: "Compartir con Paseo",
+    steps: {
+      host: "Elige un host",
+      workspace: "Elige un espacio de trabajo",
+      agent: "Elige un agente",
+    },
+    searchWorkspaces: "Buscar espacios de trabajo",
+    newAgent: "Nuevo agente",
+    untitledAgent: "Agente sin título",
+    noWorkspaces: "No hay espacios de trabajo en este host",
+    noHosts: "Agrega un host para compartir con Paseo",
+    adding: "Agregando...",
+    summary: {
+      text: "Texto",
+      attachments_one: "{{count}} adjunto",
+      attachments_other: "{{count}} adjuntos",
+    },
+    droppedFiles_one: "Se omitió {{count}} archivo. Paseo acepta hasta 8 a la vez.",
+    droppedFiles_other: "Se omitieron {{count}} archivos. Paseo acepta hasta 8 a la vez.",
+    errors: {
+      unreadable: "No se pudo leer lo que compartiste",
+      hostDisconnected:
+        "El host no está conectado. Espera a que vuelva a estar en línea y reintenta.",
+      failed: "No se pudo agregar el contenido compartido",
+    },
+  },
   imageAttachmentPicker: {
     permissionTitle: "Permiso requerido",
     permissionMessage: "Permita el acceso a su biblioteca de fotos para adjuntar imágenes.",

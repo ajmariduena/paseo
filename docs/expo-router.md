@@ -47,6 +47,13 @@ state.
 This split is deliberate. The host layout must mount first so native local
 dynamic params exist before any nested workspace leaf is selected.
 
+The iOS share extension reopens the app with `<scheme>://dataUrl=<key>#<type>`,
+which is not a route. `src/app/+native-intent.ts` maps it to `/` on a cold
+start, so the normal restore above runs, and drops it on a warm start, so the
+current screen stays. The share listener reads the payload from the native
+module and the share sheet opens over whatever screen is up; routing never
+sees the share.
+
 ## Error Recovery
 
 The root error boundary lives above `ExpoRoot` in `src/root-app.tsx`. Reload

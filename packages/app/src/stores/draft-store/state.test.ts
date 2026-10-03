@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  appendDraftInput,
   applyClearDraftRecord,
   pruneFinalizedDraftRecords,
   toDraftInputIfReady,
@@ -8,6 +9,38 @@ import {
 } from "./state";
 
 describe("draft-store lifecycle", () => {
+  it("appends outside content after what the user already typed", () => {
+    const image = {
+      kind: "image" as const,
+      metadata: {
+        id: "att_1",
+        mimeType: "image/png",
+        storageType: "native-file" as const,
+        storageKey: "/tmp/att_1.png",
+        createdAt: 1,
+      },
+    };
+    const workspaceFile = {
+      kind: "workspace_file" as const,
+      path: "README.md",
+      selection: { kind: "whole_file" as const },
+    };
+    expect(
+      appendDraftInput(
+        { text: "look at this\n", attachments: [workspaceFile] },
+        { text: "https://example.com", attachments: [image] },
+      ),
+    ).toEqual({
+      text: "look at this\n\nhttps://example.com",
+      attachments: [workspaceFile, image],
+    });
+    expect(
+      appendDraftInput({ text: "", attachments: [] }, { text: "", attachments: [image] }),
+    ).toEqual({ text: "", attachments: [image] });
+    expect(
+      appendDraftInput({ text: "keep\n", attachments: [] }, { text: "", attachments: [] }).text,
+    ).toBe("keep\n");
+  });
   it("edits text without invalidating attachment subscribers", () => {
     const draft: DraftRecord = {
       input: {

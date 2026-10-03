@@ -111,6 +111,10 @@ export function useAgentInputDraft(input: UseAgentInputDraftInput): AgentInputDr
   const attachmentFocusRequestId = useDraftStore(
     (state) => state.attachmentFocusRequestByDraftKey[draftKey] ?? 0,
   );
+  const textImportRevision = useDraftStore(
+    (state) => state.textImportRevisionByDraftKey[draftKey] ?? 0,
+  );
+  const seenTextImportRevisionRef = useRef(textImportRevision);
   const [hydratedDraftKey, setHydratedDraftKey] = useState<string | null>(null);
   const isHydrated = hydratedDraftKey === draftKey;
   const textReplacementRevisionRef = useRef(0);
@@ -234,6 +238,16 @@ export function useAgentInputDraft(input: UseAgentInputDraftInput): AgentInputDr
       cancelled = true;
     };
   }, [draftKey, publishTextReplacement]);
+
+  // The input is uncontrolled, so text appended to the stored draft from
+  // outside the composer only shows up through a replacement.
+  useEffect(() => {
+    if (seenTextImportRevisionRef.current === textImportRevision) {
+      return;
+    }
+    seenTextImportRevisionRef.current = textImportRevision;
+    publishTextReplacement(textSource.getSnapshot());
+  }, [publishTextReplacement, textImportRevision, textSource]);
 
   const providerSelection = useMemo<ProviderSelectionState>(
     () => ({

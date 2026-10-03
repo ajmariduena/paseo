@@ -10,6 +10,7 @@ const { getNativeReleaseVersion } = require("./native-release-version");
 const appVariant = process.env.APP_VARIANT ?? "production";
 const isFdroidBuild = process.env.PASEO_FDROID_BUILD === "1";
 const isProfileBuild = process.env.PASEO_PROFILE_BUILD === "1";
+const MAX_SHARED_FILES = 8;
 
 const buildProfile = isFdroidBuild
   ? {
@@ -69,6 +70,7 @@ const variants = {
   production: {
     name: "Paseo",
     packageId: "sh.paseo",
+    scheme: "paseo",
     googleServicesFile: resolveSecretFile({
       envKey: "GOOGLE_SERVICES_FILE_PROD",
       fallbackRelativePath: "./.secrets/google-services.prod.json",
@@ -81,6 +83,10 @@ const variants = {
   development: {
     name: "Paseo Debug",
     packageId: "sh.paseo.debug",
+    // The iOS share extension reopens its host app through the first scheme. A
+    // scheme of its own keeps Paseo Debug's shares from opening Paseo when both
+    // are installed; "paseo" stays registered for existing deep links.
+    scheme: ["paseo-debug", "paseo"],
     googleServicesFile: resolveSecretFile({
       envKey: "GOOGLE_SERVICES_FILE_DEBUG",
       fallbackRelativePath: "./.secrets/google-services.debug.json",
@@ -102,7 +108,7 @@ export default {
     version: nativeReleaseVersion.appVersion,
     orientation: "portrait",
     icon: "./assets/images/icon.png",
-    scheme: "paseo",
+    scheme: variant.scheme,
     userInterfaceStyle: "automatic",
     newArchEnabled: true,
     ios: {
@@ -158,6 +164,23 @@ export default {
         },
       ],
       ...buildProfile.notificationPlugins,
+      [
+        "expo-share-intent",
+        {
+          iosActivationRules: {
+            NSExtensionActivationSupportsText: true,
+            NSExtensionActivationSupportsWebURLWithMaxCount: 1,
+            NSExtensionActivationSupportsWebPageWithMaxCount: 1,
+            NSExtensionActivationSupportsImageWithMaxCount: MAX_SHARED_FILES,
+            NSExtensionActivationSupportsMovieWithMaxCount: MAX_SHARED_FILES,
+            NSExtensionActivationSupportsFileWithMaxCount: MAX_SHARED_FILES,
+          },
+          // Also the Xcode target name, which must not collide with the app target.
+          iosShareExtensionName: `${variant.name} Share`,
+          androidIntentFilters: ["text/*", "image/*", "video/*", "*/*"],
+          androidMultiIntentFilters: ["image/*", "video/*", "*/*"],
+        },
+      ],
       "expo-audio",
       [
         "expo-gradle-jvmargs",

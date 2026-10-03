@@ -1582,6 +1582,33 @@ export const ru: TranslationResources = {
   loadOlderHistory: {
     failed: "Не удалось загрузить старую историю.",
   },
+  incomingShare: {
+    title: "Поделиться в Paseo",
+    steps: {
+      host: "Выберите хост",
+      workspace: "Выберите рабочее пространство",
+      agent: "Выберите агента",
+    },
+    searchWorkspaces: "Поиск рабочих пространств",
+    newAgent: "Новый агент",
+    untitledAgent: "Агент без названия",
+    noWorkspaces: "На этом хосте нет рабочих пространств",
+    noHosts: "Добавьте хост, чтобы делиться в Paseo",
+    adding: "Добавление...",
+    summary: {
+      text: "Текст",
+      attachments_one: "{{count}} вложение",
+      attachments_other: "Вложений: {{count}}",
+    },
+    droppedFiles_one: "{{count}} файл не добавлен. Paseo принимает до 8 за раз.",
+    droppedFiles_other: "Не добавлено файлов: {{count}}. Paseo принимает до 8 за раз.",
+    errors: {
+      unreadable: "Не удалось прочитать отправленное содержимое",
+      hostDisconnected:
+        "Хост не подключён. Дождитесь, пока он появится в сети, и повторите попытку.",
+      failed: "Не удалось добавить отправленное содержимое",
+    },
+  },
   imageAttachmentPicker: {
     permissionTitle: "Требуется разрешение",
     permissionMessage: "Разрешите доступ к медиатеке, чтобы прикреплять изображения.",

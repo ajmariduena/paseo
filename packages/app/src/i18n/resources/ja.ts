@@ -1570,6 +1570,33 @@ export const ja: TranslationResources = {
   loadOlderHistory: {
     failed: "古い履歴を読み込めませんでした",
   },
+  incomingShare: {
+    title: "Paseo で共有",
+    steps: {
+      host: "ホストを選択",
+      workspace: "ワークスペースを選択",
+      agent: "エージェントを選択",
+    },
+    searchWorkspaces: "ワークスペースを検索",
+    newAgent: "新しいエージェント",
+    untitledAgent: "無題のエージェント",
+    noWorkspaces: "このホストにワークスペースはありません",
+    noHosts: "Paseo で共有するにはホストを追加してください",
+    adding: "追加中...",
+    summary: {
+      text: "テキスト",
+      attachments_one: "添付ファイル {{count}} 件",
+      attachments_other: "添付ファイル {{count}} 件",
+    },
+    droppedFiles_one: "{{count}} 件のファイルを除外しました。Paseo は一度に 8 件まで受け付けます。",
+    droppedFiles_other:
+      "{{count}} 件のファイルを除外しました。Paseo は一度に 8 件まで受け付けます。",
+    errors: {
+      unreadable: "共有された内容を読み取れませんでした",
+      hostDisconnected: "ホストが接続されていません。オンラインになってから再試行してください。",
+      failed: "共有された内容を追加できませんでした",
+    },
+  },
   imageAttachmentPicker: {
     permissionTitle: "権限が必要です",
     permissionMessage: "画像を添付するにはフォトライブラリへのアクセスを許可してください。",

@@ -13,6 +13,7 @@ import { useCreateFlowStore } from "@/stores/create-flow-store";
 import { useSessionStore, type SessionState } from "@/stores/session-store";
 import { useWorkspaceAttachmentsStore } from "@/attachments/workspace-attachments-store";
 import {
+  appendDraftInput,
   applyClearDraftRecord,
   editDraftRecordText,
   collectReferencedAttachmentIdsFromState,
@@ -53,6 +54,7 @@ interface DraftStoreActions {
     draftKey: string;
     attachment: WorkspaceFileComposerAttachment;
   }) => Promise<void>;
+  appendDraftContent: (input: { draftKey: string; addition: DraftInput }) => Promise<void>;
   getCreateModalDraft: () => DraftInput | null;
   saveCreateModalDraft: (draft: DraftInput | null) => void;
   collectActiveAttachmentIds: () => string[];
@@ -60,6 +62,7 @@ interface DraftStoreActions {
 
 interface DraftStoreRuntimeState {
   attachmentFocusRequestByDraftKey: Record<string, number>;
+  textImportRevisionByDraftKey: Record<string, number>;
 }
 
 type DraftStore = DraftStoreState & DraftStoreRuntimeState & DraftStoreActions;
@@ -256,6 +259,7 @@ export const useDraftStore = create<DraftStore>()(
       drafts: {},
       createModalDraft: null,
       attachmentFocusRequestByDraftKey: {},
+      textImportRevisionByDraftKey: {},
 
       getDraftInput: (draftKey) => {
         const record = get().drafts[draftKey];
@@ -394,6 +398,33 @@ export const useDraftStore = create<DraftStore>()(
             attachmentFocusRequestByDraftKey: {
               ...state.attachmentFocusRequestByDraftKey,
               [draftKey]: (state.attachmentFocusRequestByDraftKey[draftKey] ?? 0) + 1,
+            },
+          };
+        });
+        scheduleAttachmentGc();
+      },
+
+      appendDraftContent: async ({ draftKey, addition }) => {
+        await get().hydrateDraftInput({ draftKey });
+        set((state) => {
+          const existing = state.drafts[draftKey];
+          const draft = toDraftInputIfReady(existing) ?? { text: "", attachments: [] };
+          return {
+            drafts: {
+              ...state.drafts,
+              [draftKey]: createDraftRecord({
+                draft: appendDraftInput(draft, addition),
+                lifecycle: "active",
+                previousVersion: existing?.version,
+              }),
+            },
+            attachmentFocusRequestByDraftKey: {
+              ...state.attachmentFocusRequestByDraftKey,
+              [draftKey]: (state.attachmentFocusRequestByDraftKey[draftKey] ?? 0) + 1,
+            },
+            textImportRevisionByDraftKey: {
+              ...state.textImportRevisionByDraftKey,
+              [draftKey]: (state.textImportRevisionByDraftKey[draftKey] ?? 0) + 1,
             },
           };
         });
