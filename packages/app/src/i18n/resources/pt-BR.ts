@@ -2234,6 +2234,22 @@ export const ptBR: TranslationResources = {
         description: "Linhas mantidas no buffer do terminal integrado",
         accessibilityLabel: "Linhas do scrollback do terminal",
       },
+      terminalFontSize: {
+        label: "Tamanho da fonte do terminal",
+        description: "Tamanho do texto no terminal integrado, separado do tamanho do código",
+        accessibilityLabel: "Tamanho da fonte do terminal",
+      },
+      terminalOptionAsMeta: {
+        label: "Option como Meta",
+        description:
+          "Quais teclas Option enviam Meta (Esc+tecla) para atalhos do shell; o outro lado continua digitando acentos e símbolos",
+        options: {
+          both: "Ambas",
+          left: "Esquerda",
+          right: "Direita",
+          off: "Nenhuma",
+        },
+      },
       autoExpandReasoning: {
         label: "Sempre expandir raciocínio",
         description:

@@ -1076,7 +1076,8 @@ export function TerminalPane({
             xtermTheme={xtermTheme}
             scrollbackLines={settings.terminalScrollbackLines}
             fontFamily={terminalFontFamily}
-            fontSize={settings.codeFontSize}
+            fontSize={settings.terminalFontSize}
+            macOptionAsMeta={settings.terminalMacOptionAsMeta}
             keyboardInset={keyboardInset}
             isKeyboardVisible={isKeyboardVisible}
             swipeGesturesEnabled={swipeGesturesEnabled}

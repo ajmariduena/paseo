@@ -2171,6 +2171,22 @@ export const zhCN: TranslationResources = {
         description: "内置终端缓冲区保留的行数",
         accessibilityLabel: "终端回滚行数",
       },
+      terminalFontSize: {
+        label: "终端字体大小",
+        description: "内置终端的文字大小，与代码字号分开",
+        accessibilityLabel: "终端字体大小",
+      },
+      terminalOptionAsMeta: {
+        label: "Option 作为 Meta",
+        description:
+          "哪些 Option 键为 Shell 快捷键发送 Meta（Esc+键）；另一侧仍可输入重音字符和符号",
+        options: {
+          both: "两侧",
+          left: "左侧",
+          right: "右侧",
+          off: "关闭",
+        },
+      },
       autoExpandReasoning: {
         label: "始终展开推理过程",
         description: "默认情况下完全展开 AI 的思考和推理过程",

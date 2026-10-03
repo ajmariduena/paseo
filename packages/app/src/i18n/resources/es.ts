@@ -2252,6 +2252,23 @@ export const es: TranslationResources = {
         description: "Líneas mantenidas en el búfer de terminal incorporado",
         accessibilityLabel: "Líneas del historial de terminal",
       },
+      terminalFontSize: {
+        label: "Tamaño de fuente de la terminal",
+        description:
+          "Tamaño del texto en la terminal integrada, independiente del tamaño del código",
+        accessibilityLabel: "Tamaño de fuente de la terminal",
+      },
+      terminalOptionAsMeta: {
+        label: "Option como Meta",
+        description:
+          "Qué teclas Option envían Meta (Esc+tecla) para los atajos del shell; el otro lado sigue escribiendo acentos y símbolos",
+        options: {
+          both: "Ambas",
+          left: "Izquierda",
+          right: "Derecha",
+          off: "Ninguna",
+        },
+      },
       autoExpandReasoning: {
         label: "Siempre expandir razonamiento",
         description:

@@ -2323,6 +2323,22 @@ export const en = {
         description: "Lines kept in the built-in terminal buffer",
         accessibilityLabel: "Terminal scrollback lines",
       },
+      terminalFontSize: {
+        label: "Terminal font size",
+        description: "Text size in the built-in terminal, separate from the code size",
+        accessibilityLabel: "Terminal font size",
+      },
+      terminalOptionAsMeta: {
+        label: "Option as Meta",
+        description:
+          "Which Option keys send Meta (Esc+key) for shell shortcuts; the other side keeps typing accents and symbols",
+        options: {
+          both: "Both",
+          left: "Left",
+          right: "Right",
+          off: "Off",
+        },
+      },
       autoExpandReasoning: {
         label: "Always expand reasoning",
         description: "Show agent thinking and chain-of-thought blocks fully expanded by default",

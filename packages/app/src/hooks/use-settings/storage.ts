@@ -26,6 +26,12 @@ import {
   THEME_OPTIONS,
   type ThemePreference,
 } from "@/styles/theme";
+import { DEFAULT_TERMINAL_FONT_SIZE } from "@/terminal/runtime/terminal-font";
+import {
+  DEFAULT_MAC_OPTION_AS_META,
+  MAC_OPTION_AS_META_VALUES,
+  type MacOptionAsMeta,
+} from "@/terminal/runtime/terminal-mac-keys";
 import { z } from "zod";
 import { APP_SETTINGS_KEY, LEGACY_SETTINGS_KEY } from "./keys";
 import { migrateAppSettings } from "./migrations";
@@ -85,6 +91,8 @@ export interface AppSettings {
   /** Shift+Cmd/Ctrl-click opens a web link in the other browser. */
   invertWebLinkModifier: boolean;
   terminalScrollbackLines: number;
+  terminalFontSize: number; // clamped px, default 14, independent of codeFontSize
+  terminalMacOptionAsMeta: MacOptionAsMeta;
   useLegacyTerminalRenderer: boolean;
   uiFontFamily: string; // "" = platform default UI stack
   monoFontFamily: string; // "" = platform default mono stack
@@ -147,6 +155,8 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   webLinkBehavior: "ask",
   invertWebLinkModifier: false,
   terminalScrollbackLines: DEFAULT_TERMINAL_SCROLLBACK_LINES,
+  terminalFontSize: DEFAULT_TERMINAL_FONT_SIZE,
+  terminalMacOptionAsMeta: DEFAULT_MAC_OPTION_AS_META,
   useLegacyTerminalRenderer: false,
   uiFontFamily: "",
   monoFontFamily: "",
@@ -230,6 +240,10 @@ const StoredAppSettingsSchema = z
       MIN_TERMINAL_SCROLLBACK_LINES,
       MAX_TERMINAL_SCROLLBACK_LINES,
     ).catch(DEFAULT_TERMINAL_SCROLLBACK_LINES),
+    terminalFontSize: clampedNumber(MIN_CODE_FONT_SIZE, MAX_CODE_FONT_SIZE).catch(
+      DEFAULT_TERMINAL_FONT_SIZE,
+    ),
+    terminalMacOptionAsMeta: z.enum(MAC_OPTION_AS_META_VALUES).catch(DEFAULT_MAC_OPTION_AS_META),
     useLegacyTerminalRenderer: z.boolean().catch(false),
     uiFontFamily: sanitizedFontFamily().catch(""),
     monoFontFamily: sanitizedFontFamily().catch(""),

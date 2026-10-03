@@ -2200,6 +2200,22 @@ export const ar: TranslationResources = {
         description: "يتم الاحتفاظ بالخطوط في المخزن المؤقت الطرفي المدمج",
         accessibilityLabel: "خطوط التمرير Terminal",
       },
+      terminalFontSize: {
+        label: "حجم خط الطرفية",
+        description: "حجم النص في الطرفية المدمجة، منفصل عن حجم الشيفرة",
+        accessibilityLabel: "حجم خط الطرفية",
+      },
+      terminalOptionAsMeta: {
+        label: "Option كمفتاح Meta",
+        description:
+          "مفاتيح Option التي ترسل Meta (Esc+مفتاح) لاختصارات الصدفة؛ ويبقى الجانب الآخر لكتابة الحركات والرموز",
+        options: {
+          both: "كلاهما",
+          left: "الأيسر",
+          right: "الأيمن",
+          off: "إيقاف",
+        },
+      },
       autoExpandReasoning: {
         label: "عرض التفكير دائماً",
         description: "إظهار تفكير الوكيل وخطوات الاستدلال بشكل كامل بشكل افتراضي",

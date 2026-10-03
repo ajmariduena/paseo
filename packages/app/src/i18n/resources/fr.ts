@@ -2255,6 +2255,22 @@ export const fr: TranslationResources = {
         description: "Lignes conservées dans le tampon du terminal intégré",
         accessibilityLabel: "Lignes de défilementTerminal",
       },
+      terminalFontSize: {
+        label: "Taille de police du terminal",
+        description: "Taille du texte dans le terminal intégré, indépendante de la taille du code",
+        accessibilityLabel: "Taille de police du terminal",
+      },
+      terminalOptionAsMeta: {
+        label: "Option comme Méta",
+        description:
+          "Touches Option qui envoient Méta (Échap+touche) pour les raccourcis du shell ; l'autre côté continue de saisir accents et symboles",
+        options: {
+          both: "Les deux",
+          left: "Gauche",
+          right: "Droite",
+          off: "Aucune",
+        },
+      },
       autoExpandReasoning: {
         label: "Toujours afficher le raisonnement",
         description: "Afficher le raisonnement de l'agent entièrement développé par défaut",
