@@ -1,6 +1,6 @@
 import { Buffer } from "buffer";
 import type { VoiceMessagesItem } from "@getpaseo/protocol/messages";
-import type { AudioEngine } from "@/voice/audio-engine-types";
+import type { AudioEngine } from "@/audio/audio-engine-types";
 import {
   THINKING_TONE_NATIVE_PCM_BASE64,
   THINKING_TONE_NATIVE_PCM_DURATION_MS,

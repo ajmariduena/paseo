@@ -1,6 +1,6 @@
 import { Buffer } from "buffer";
 import { create } from "zustand";
-import type { AudioEngine, AudioPlaybackSource } from "@/voice/audio-engine-types";
+import type { AudioEngine, AudioPlaybackSource } from "@/audio/audio-engine-types";
 
 // Synthesizing further ahead than this spends provider credits on audio a stop would discard.
 const MAX_SEGMENTS_AHEAD = 2;

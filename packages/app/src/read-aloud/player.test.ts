@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import type { AudioEngine, AudioPlaybackSource } from "@/voice/audio-engine-types";
+import type { AudioEngine, AudioPlaybackSource } from "@/audio/audio-engine-types";
 import { startReadAloud, stopReadAloud, useReadAloudStore, type ReadAloudClient } from "./player";
 
 interface PendingPlay {

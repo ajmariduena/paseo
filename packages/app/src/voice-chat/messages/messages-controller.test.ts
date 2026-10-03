@@ -1,6 +1,6 @@
 import type { VoiceMessagesItem } from "@getpaseo/protocol/messages";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AudioEngine, AudioPlaybackSource } from "@/voice/audio-engine-types";
+import type { AudioEngine, AudioPlaybackSource } from "@/audio/audio-engine-types";
 import type { DeviceSpeech } from "./device-speech-types";
 import { createVoiceMessagesController, type VoiceMessagesTransport } from "./messages-controller";
 
