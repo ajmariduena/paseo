@@ -11,7 +11,10 @@ import { projectDisplayNameFromProjectId } from "@/utils/project-display-name";
 import { aggregateSidebarStateBuckets } from "@/utils/sidebar-agent-state";
 import { shortenPath } from "@/utils/shorten-path";
 import type { WorkspaceAgentActivity } from "@/utils/workspace-agent-activity";
-import { resolveWorkspaceMapKeyByIdentity } from "@/utils/workspace-identity";
+import {
+  normalizeWorkspaceOpaqueId,
+  resolveWorkspaceMapKeyByIdentity,
+} from "@/utils/workspace-identity";
 
 const EMPTY_PROJECTS: SidebarProjectEntry[] = [];
 
@@ -283,6 +286,39 @@ export function deriveProjectStatusBucket(input: {
   }
 
   return aggregateSidebarStateBuckets(buckets);
+}
+
+export type SidebarToggleAttentionBucket = Extract<SidebarStateBucket, "needs_input" | "failed">;
+
+export function deriveSidebarToggleAttentionBucket(input: {
+  sessions: Record<string, ProjectStatusSession | undefined>;
+  activeWorkspace: { serverId: string; workspaceId: string } | null;
+  isSidebarOpen: boolean;
+}): SidebarToggleAttentionBucket | null {
+  if (input.isSidebarOpen) return null;
+  const activeServerId = input.activeWorkspace?.serverId ?? null;
+  const activeWorkspaceId = normalizeWorkspaceOpaqueId(input.activeWorkspace?.workspaceId);
+  let result: SidebarToggleAttentionBucket | null = null;
+  for (const serverId in input.sessions) {
+    const session = input.sessions[serverId];
+    if (!session) continue;
+    for (const workspace of session.workspaces.values()) {
+      if (
+        serverId === activeServerId &&
+        normalizeWorkspaceOpaqueId(workspace.id) === activeWorkspaceId
+      ) {
+        continue;
+      }
+      const { status } = deriveEffectiveWorkspaceStatus({
+        serverId,
+        workspace,
+        workspaceAgentActivity: session.workspaceAgentActivity,
+      });
+      if (status === "needs_input") return status;
+      if (status === "failed") result = status;
+    }
+  }
+  return result;
 }
 
 export function buildSidebarWorkspacePlacementModel(input: {
