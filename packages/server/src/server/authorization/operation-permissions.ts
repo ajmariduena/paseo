@@ -7,6 +7,7 @@ export type PermissionRequirement = DaemonPermission | readonly DaemonPermission
 
 const INBOUND_PERMISSION = {
   abort_request: "workspace.write",
+  "agent.background_task.stop.request": ["workspace.write", "hub.execute"],
   "agent.config.apply.request": ["workspace.write", "hub.execute"],
   "agent.detach.request": "workspace.write",
   "agent.fork_context.request": "workspace.read",
@@ -240,6 +241,7 @@ const OUTBOUND_PERMISSION = {
   "workspace.create.update": "workspace.manage",
   "creation.subscribe.response": "workspace.read",
   activity_log: "workspace.read",
+  "agent.background_task.stop.response": ["workspace.write", "hub.execute"],
   "agent.config.apply.response": ["workspace.write", "hub.execute"],
   "agent.detach.response": "workspace.write",
   "agent.fork_context.response": "workspace.read",

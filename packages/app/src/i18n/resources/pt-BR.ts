@@ -1933,6 +1933,12 @@ export const ptBR: TranslationResources = {
   menu: {
     backdrop: "Fundo do menu",
   },
+  backgroundTasks: {
+    title: "Tarefas em segundo plano",
+    pillLabel: "{{count}} em segundo plano",
+    stopAction: "Parar {{label}}",
+    stopTooltip: "Parar tarefa",
+  },
   subagents: {
     title: "Subagentes",
     pillLabelOne: "1 subagente",

@@ -1878,6 +1878,12 @@ export const zhCN: TranslationResources = {
   menu: {
     backdrop: "菜单背景",
   },
+  backgroundTasks: {
+    title: "后台任务",
+    pillLabel: "{{count}} 个后台任务",
+    stopAction: "停止 {{label}}",
+    stopTooltip: "停止任务",
+  },
   subagents: {
     title: "Subagent",
     pillLabelOne: "1 个 subagent",

@@ -10,6 +10,7 @@ export interface WorkspaceAgentActivity {
 
 function workspaceAgentStatus(agent: Agent): Agent["status"] {
   if (agent.turn.phase === "open") return "running";
+  if (agent.status === "idle" && agent.backgroundTasks?.length) return "running";
   return agent.status === "running" ? "idle" : agent.status;
 }
 

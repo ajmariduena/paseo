@@ -1949,6 +1949,12 @@ export const es: TranslationResources = {
   menu: {
     backdrop: "Fondo del menú",
   },
+  backgroundTasks: {
+    title: "Tareas en background",
+    pillLabel: "{{count}} en background",
+    stopAction: "Detener {{label}}",
+    stopTooltip: "Detener tarea",
+  },
   subagents: {
     title: "Subagentes",
     pillLabelOne: "1 subagente",

@@ -1953,6 +1953,12 @@ export const fr: TranslationResources = {
   menu: {
     backdrop: "Toile de fond du menu",
   },
+  backgroundTasks: {
+    title: "Tâches en arrière-plan",
+    pillLabel: "{{count}} en arrière-plan",
+    stopAction: "Arrêter {{label}}",
+    stopTooltip: "Arrêter la tâche",
+  },
   subagents: {
     title: "Sous-agents",
     pillLabelOne: "1 sous-agent",

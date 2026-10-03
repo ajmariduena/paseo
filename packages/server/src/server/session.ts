@@ -2920,6 +2920,8 @@ export class Session {
     switch (msg.type) {
       case "agent.detach.request":
         return this.handleDetachAgentRequest(msg.agentId, msg.requestId);
+      case "agent.background_task.stop.request":
+        return this.handleAgentBackgroundTaskStopRequest(msg);
       default:
         return undefined;
     }
@@ -4986,6 +4988,23 @@ export class Session {
         this.handleAgentRunError(agentId, error, "Failed to cancel running agent on request");
       }
     }
+  }
+
+  private async handleAgentBackgroundTaskStopRequest(
+    msg: Extract<SessionInboundMessage, { type: "agent.background_task.stop.request" }>,
+  ): Promise<void> {
+    const { agentId, taskId, requestId } = msg;
+    let error: string | null = null;
+    try {
+      await this.agentManager.stopBackgroundTask(agentId, taskId);
+    } catch (err) {
+      this.sessionLogger.error({ err, agentId, taskId }, "Failed to stop background task");
+      error = errorToFriendlyMessage(err);
+    }
+    this.emit({
+      type: "agent.background_task.stop.response",
+      payload: { requestId, agentId, taskId, error },
+    });
   }
 
   private async handleAgentRewindRequest(

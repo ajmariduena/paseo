@@ -7515,6 +7515,62 @@ test("applies live autonomous events and preserves usage omitted from completion
   expect(lifecycleUpdates).toContain("idle");
 });
 
+test("publishes live background tasks on an idle agent and forwards stop requests", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-background-tasks-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const stoppedTaskIds: string[] = [];
+  let capturedSession: TestAgentSession | null = null;
+
+  class BackgroundTaskSession extends TestAgentSession {
+    async stopBackgroundTask(taskId: string): Promise<void> {
+      stoppedTaskIds.push(taskId);
+    }
+  }
+
+  class BackgroundTaskClient extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      capturedSession = new BackgroundTaskSession(config);
+      return capturedSession;
+    }
+  }
+
+  const manager = new AgentManager({
+    clients: { codex: new BackgroundTaskClient() },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000126",
+  });
+  const snapshot = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+    workspaceId: undefined,
+  });
+  const task = {
+    id: "task-1",
+    taskType: "local_bash",
+    description: "Watch canary run",
+    startedAt: "2026-10-03T16:00:00.000Z",
+  };
+
+  capturedSession!.pushEvent({
+    type: "background_tasks_changed",
+    provider: "codex",
+    tasks: [task],
+  });
+  await vi.waitFor(() => {
+    const agent = manager.getAgent(snapshot.id);
+    expect(agent ? toAgentPayload(agent).backgroundTasks : undefined).toEqual([task]);
+  });
+  expect(manager.getAgent(snapshot.id)?.lifecycle).toBe("idle");
+
+  await manager.stopBackgroundTask(snapshot.id, "task-1");
+  expect(stoppedTaskIds).toEqual(["task-1"]);
+
+  capturedSession!.pushEvent({ type: "background_tasks_changed", provider: "codex", tasks: [] });
+  await vi.waitFor(() => {
+    const agent = manager.getAgent(snapshot.id);
+    expect(agent ? toAgentPayload(agent) : null).not.toHaveProperty("backgroundTasks");
+  });
+});
+
 test("ignores stale autonomous terminals without lowering the active turn lifecycle", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-stale-autonomous-terminal-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);

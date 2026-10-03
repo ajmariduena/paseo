@@ -197,6 +197,13 @@ export interface AgentUsage {
   contextWindowUsedTokens?: number;
 }
 
+export interface AgentBackgroundTask {
+  id: string;
+  taskType: string;
+  description: string;
+  startedAt: string;
+}
+
 export const TOOL_CALL_ICON_NAMES = [
   "wrench",
   "square_terminal",

@@ -14,6 +14,7 @@ function agent(input: {
   pendingPermissionCount?: number;
   archivedAt?: string | null;
   parentAgentId?: string | null;
+  backgroundTasks?: Agent["backgroundTasks"];
 }): Agent {
   return {
     serverId: "host-a",
@@ -62,10 +63,46 @@ function agent(input: {
     archivedAt: input.archivedAt ? new Date(input.archivedAt) : null,
     parentAgentId: input.parentAgentId ?? null,
     labels: {},
+    backgroundTasks: input.backgroundTasks,
   };
 }
 
 describe("workspace agent activity index", () => {
+  it("shows an idle agent with live background tasks as running", () => {
+    const backgroundTasks = [
+      {
+        id: "task-1",
+        taskType: "local_bash",
+        description: "Watch canary run",
+        startedAt: "2026-01-01T00:00:00.000Z",
+      },
+    ];
+    const result = buildWorkspaceAgentActivityIndex(
+      new Map([
+        [
+          "watching",
+          agent({
+            id: "watching",
+            workspaceId: "workspace-watching",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            backgroundTasks,
+          }),
+        ],
+        [
+          "quiet",
+          agent({
+            id: "quiet",
+            workspaceId: "workspace-quiet",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          }),
+        ],
+      ]),
+    );
+
+    expect(result.get("workspace-watching")?.status).toBe("running");
+    expect(result.get("workspace-quiet")?.status).toBe("done");
+  });
+
   it("uses turn liveness for running while preserving protocol lifecycle states", () => {
     const result = buildWorkspaceAgentActivityIndex(
       new Map([

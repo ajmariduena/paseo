@@ -121,6 +121,7 @@ import {
   type AgentStreamEvent,
   type AgentTimelineItem,
   type AgentUsage,
+  type AgentBackgroundTask,
   type AgentRuntimeInfo,
   type FetchCatalogOptions,
   type ImportableProviderSession,
@@ -2040,6 +2041,9 @@ class ClaudeContextUsageState {
   }
 }
 
+// Task and workflow children already surface as provider subagents with their own status.
+const PROVIDER_SUBAGENT_TASK_TYPES = new Set(["local_agent", "local_workflow"]);
+
 class ClaudeAgentSession implements AgentSession {
   readonly provider = "claude" as const;
   readonly capabilities = CLAUDE_CAPABILITIES;
@@ -2088,6 +2092,7 @@ class ClaudeAgentSession implements AgentSession {
   private readonly timelineAssembler = new TimelineAssembler();
   private readonly taskState = new ClaudeTaskState();
   private readonly runtimeResidency = new ClaudeRuntimeResidency();
+  private backgroundTasks: AgentBackgroundTask[] = [];
   private readonly taskProtocolSource = new ClaudeTaskProtocolSource({
     getToolInput: (toolUseId) => this.toolUseCache.get(toolUseId)?.input ?? null,
     readWorkflowResult: readClaudeWorkflowResultFile,
@@ -2519,6 +2524,38 @@ class ClaudeAgentSession implements AgentSession {
     await this.applyFastModeFeature(enabled);
   }
 
+  async stopBackgroundTask(taskId: string): Promise<void> {
+    if (!this.query) {
+      throw new Error("Claude runtime is not running");
+    }
+    await this.query.stopTask(taskId);
+  }
+
+  private observeBackgroundTasksChanged(message: SDKMessage): void {
+    if (message.type !== "system" || message.subtype !== "background_tasks_changed") return;
+    const previous = new Map(this.backgroundTasks.map((task) => [task.id, task]));
+    const now = new Date().toISOString();
+    const next = message.tasks
+      .filter((task) => !PROVIDER_SUBAGENT_TASK_TYPES.has(task.task_type))
+      .map((task) => ({
+        id: task.task_id,
+        taskType: task.task_type,
+        description: task.description,
+        startedAt: previous.get(task.task_id)?.startedAt ?? now,
+      }));
+    if (next.length === previous.size && next.every((task) => previous.has(task.id))) return;
+    this.backgroundTasks = next;
+    this.pushEvent({ type: "background_tasks_changed", provider: "claude", tasks: next });
+  }
+
+  // The CLI reports the task set per process and sends nothing at startup, so a restarted runtime
+  // must drop the old set itself.
+  private clearBackgroundTasks(): void {
+    if (this.backgroundTasks.length === 0) return;
+    this.backgroundTasks = [];
+    this.pushEvent({ type: "background_tasks_changed", provider: "claude", tasks: [] });
+  }
+
   private async applyFastModeFeature(enabled: boolean, query?: Query): Promise<void> {
     this.config.featureValues = {
       ...this.config.featureValues,
@@ -2708,6 +2745,7 @@ class ClaudeAgentSession implements AgentSession {
     this.sidechainTracker.clear();
     this.taskProtocolSource.reset();
     this.runtimeResidency.reset();
+    this.backgroundTasks = [];
     this.input?.end();
     this.query?.close?.();
     await this.awaitWithTimeout(this.query?.interrupt?.(), "close query interrupt");
@@ -3168,6 +3206,7 @@ class ClaudeAgentSession implements AgentSession {
     this.persistence = null;
 
     this.runtimeResidency.reset();
+    this.clearBackgroundTasks();
     const input = createAsyncMessageInput<SDKUserMessage>();
     const options = await this.buildOptions();
     this.logger.debug({ options: summarizeClaudeOptionsForLog(options) }, "claude query");
@@ -3710,6 +3749,7 @@ class ClaudeAgentSession implements AgentSession {
     }
     this.childProcess = null;
     this.runtimeResidency.reset();
+    this.clearBackgroundTasks();
     this.logger.warn(
       { agentId: this.agentId, pid: child.pid, code, signal },
       "Claude runtime exited unexpectedly",
@@ -3898,6 +3938,7 @@ class ClaudeAgentSession implements AgentSession {
 
   private async routeSdkMessageFromPump(message: SDKMessage): Promise<void> {
     this.runtimeResidency.observeMessage(message);
+    this.observeBackgroundTasksChanged(message);
     if (this.shouldSuppressStaleResult(message)) {
       return;
     }

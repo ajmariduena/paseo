@@ -1,4 +1,5 @@
 import type {
+  AgentBackgroundTask,
   AgentFeature,
   AgentFeatureSelect,
   AgentFeatureToggle,
@@ -12,6 +13,7 @@ import type { AgentAttachment } from "@getpaseo/protocol/messages";
 import type { PaseoToolCatalog } from "./tools/types.js";
 
 export type {
+  AgentBackgroundTask,
   AgentFeature,
   AgentFeatureSelect,
   AgentFeatureToggle,
@@ -407,6 +409,7 @@ export type AgentStreamEvent =
   | { type: "turn_started"; provider: AgentProvider; turnId?: string }
   | { type: "turn_completed"; provider: AgentProvider; usage?: AgentUsage; turnId?: string }
   | { type: "usage_updated"; provider: AgentProvider; usage: AgentUsage; turnId?: string }
+  | { type: "background_tasks_changed"; provider: AgentProvider; tasks: AgentBackgroundTask[] }
   | {
       type: "mode_changed";
       provider: AgentProvider;
@@ -686,6 +689,7 @@ export interface AgentSession {
   setModel?(modelId: string | null): Promise<void>;
   setThinkingOption?(thinkingOptionId: string | null): Promise<void | AgentProviderNotice>;
   setFeature?(featureId: string, value: unknown): Promise<void>;
+  stopBackgroundTask?(taskId: string): Promise<void>;
   revertConversation?(input: { messageId: string }): Promise<void>;
   revertFiles?(input: { messageId: string }): Promise<void>;
   revertBoth?(input: { messageId: string }): Promise<void>;

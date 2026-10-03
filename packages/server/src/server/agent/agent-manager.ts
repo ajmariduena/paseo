@@ -49,6 +49,7 @@ import {
   type AgentStreamEvent,
   type AgentTimelineItem,
   type AgentUsage,
+  type AgentBackgroundTask,
   type AgentRuntimeInfo,
   type ImportedTimelineEntry,
   type ImportableProviderSession,
@@ -425,6 +426,7 @@ interface ManagedAgentBase {
   activeTurnId: string | null;
   activeTurnStartedAt: Date | null;
   lastUsage?: AgentUsage;
+  backgroundTasks: AgentBackgroundTask[];
   lastError?: string;
   attention: AttentionState;
   foregroundTurnWaiters: Set<ForegroundTurnWaiter>;
@@ -2027,6 +2029,7 @@ export class AgentManager {
         historyPrimed: true,
         lastUserMessageAt: record.lastUserMessageAt ? new Date(record.lastUserMessageAt) : null,
         lastUsage: undefined,
+        backgroundTasks: [],
         lastError: record.lastError ?? undefined,
         attention,
         internal: record.internal,
@@ -2116,6 +2119,14 @@ export class AgentManager {
     agent.config.featureValues = { ...agent.config.featureValues, [featureId]: value };
     this.touchUpdatedAt(agent);
     this.emitState(agent);
+  }
+
+  async stopBackgroundTask(agentId: string, taskId: string): Promise<void> {
+    const agent = this.requireAgent(agentId);
+    if (!agent.session.stopBackgroundTask) {
+      throw new Error("Agent session does not support stopping background tasks");
+    }
+    await agent.session.stopBackgroundTask(taskId);
   }
 
   async setTitle(agentId: string, title: string): Promise<void> {
@@ -3827,6 +3838,7 @@ export class AgentManager {
       historyPrimed: options?.historyPrimed ?? durableTimelineHasRows,
       lastUserMessageAt: options?.lastUserMessageAt ?? null,
       lastUsage: options?.lastUsage,
+      backgroundTasks: [],
       lastError: options?.lastError,
       attention: resolveInitialAttention(options?.attention),
       internal: config.internal ?? false,
@@ -3880,6 +3892,7 @@ export class AgentManager {
       foregroundTurnWaiters: new Set(),
       finalizedForegroundTurnIds: new Set(),
       unsubscribeSession: null,
+      backgroundTasks: [],
     };
   }
 
@@ -4457,6 +4470,11 @@ export class AgentManager {
         return undefined;
       case "usage_updated":
         agent.lastUsage = event.usage;
+        this.emitState(agent);
+        return undefined;
+      case "background_tasks_changed":
+        agent.backgroundTasks = event.tasks;
+        flags.shouldDispatchEvent = false;
         this.emitState(agent);
         return undefined;
       case "mode_changed":

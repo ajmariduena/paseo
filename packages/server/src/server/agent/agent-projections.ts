@@ -146,6 +146,10 @@ export function toAgentPayload(
     payload.lastUsage = usage;
   }
 
+  if (agent.backgroundTasks.length > 0) {
+    payload.backgroundTasks = agent.backgroundTasks.map((task) => ({ ...task }));
+  }
+
   if (agent.lastError !== undefined) {
     payload.lastError = agent.lastError;
   }

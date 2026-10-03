@@ -1933,6 +1933,12 @@ export const ru: TranslationResources = {
   menu: {
     backdrop: "Фон меню",
   },
+  backgroundTasks: {
+    title: "Фоновые задачи",
+    pillLabel: "В фоне: {{count}}",
+    stopAction: "Остановить {{label}}",
+    stopTooltip: "Остановить задачу",
+  },
   subagents: {
     title: "Субагенты",
     pillLabelOne: "1 субагент",

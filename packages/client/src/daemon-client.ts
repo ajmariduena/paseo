@@ -3300,6 +3300,25 @@ export class DaemonClient {
     return { pinnedAt: payload.pinnedAt };
   }
 
+  async stopAgentBackgroundTask(
+    agentId: string,
+    taskId: string,
+    requestId?: string,
+  ): Promise<void> {
+    const payload = await this.sendCorrelatedSessionRequest({
+      requestId,
+      message: {
+        type: "agent.background_task.stop.request",
+        agentId,
+        taskId,
+      },
+      responseType: "agent.background_task.stop.response",
+    });
+    if (payload.error) {
+      throw new Error(payload.error);
+    }
+  }
+
   async inspectWorkspaceRecovery(
     workspaceId: string,
     requestId?: string,

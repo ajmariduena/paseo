@@ -1157,6 +1157,9 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
   const tasks = useSessionStore((state): TodoEntry[] | undefined =>
     state.sessions[serverId]?.agentTasks.get(agentId),
   );
+  const backgroundTasks = useSessionStore(
+    (state) => state.sessions[serverId]?.agents.get(agentId)?.backgroundTasks,
+  );
   const archiveFinishedSubagents = useArchiveFinishedSubagents({
     serverId,
     parentAgentId: agentId,
@@ -1167,6 +1170,7 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
   const hasVisibleAgentTracks = hasAgentTracks({
     subagentRows,
     tasks,
+    backgroundTasks,
     archiveFinishedStatus: archiveFinishedSubagents.status,
     hasPluginComposerPills,
   });
@@ -1259,6 +1263,7 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
           cwd={cwd}
           subagentRows={subagentRows}
           tasks={tasks}
+          backgroundTasks={backgroundTasks}
           archiveFinishedStatus={archiveFinishedSubagents.status}
           onArchiveFinished={archiveFinishedSubagents.archiveFinished}
           hasPluginComposerPills={hasPluginComposerPills}

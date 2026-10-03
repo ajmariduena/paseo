@@ -265,6 +265,7 @@ import type {
   ToolCallDetail,
   ToolCallTimelineItem,
   AgentUsage,
+  AgentBackgroundTask,
   JsonValue,
 } from "./agent-types.js";
 
@@ -407,6 +408,13 @@ const AgentUsageSchema: z.ZodType<AgentUsage> = z.object({
   totalCostUsd: z.number().optional(),
   contextWindowMaxTokens: z.number().optional(),
   contextWindowUsedTokens: z.number().optional(),
+});
+
+const AgentBackgroundTaskSchema: z.ZodType<AgentBackgroundTask> = z.object({
+  id: z.string(),
+  taskType: z.string(),
+  description: z.string(),
+  startedAt: z.string(),
 });
 
 const McpStdioServerConfigSchema = z.object({
@@ -847,6 +855,7 @@ export const AgentSnapshotPayloadSchema = z.object({
   persistence: AgentPersistenceHandleSchema.nullable(),
   runtimeInfo: AgentRuntimeInfoSchema.optional(),
   lastUsage: AgentUsageSchema.optional(),
+  backgroundTasks: z.array(AgentBackgroundTaskSchema).optional(),
   lastError: z.string().optional(),
   title: z.string().nullable(),
   labels: z.record(z.string(), z.string()).default({}),
@@ -1826,6 +1835,13 @@ export const RefreshAgentRequestMessageSchema = z.object({
   requestId: z.string(),
 });
 
+export const AgentBackgroundTaskStopRequestSchema = z.object({
+  type: z.literal("agent.background_task.stop.request"),
+  agentId: z.string(),
+  taskId: z.string(),
+  requestId: z.string(),
+});
+
 export const CancelAgentRequestMessageSchema = z.object({
   type: z.literal("cancel_agent_request"),
   agentId: z.string(),
@@ -2096,6 +2112,16 @@ export const WorkspacePinSetResponsePayloadSchema = z.object({
 export const WorkspacePinSetResponseSchema = z.object({
   type: z.literal("workspace.pin.set.response"),
   payload: WorkspacePinSetResponsePayloadSchema,
+});
+
+export const AgentBackgroundTaskStopResponseSchema = z.object({
+  type: z.literal("agent.background_task.stop.response"),
+  payload: z.object({
+    requestId: z.string(),
+    agentId: z.string(),
+    taskId: z.string(),
+    error: z.string().nullable(),
+  }),
 });
 
 export const WorkspaceRecoveryStateSchema = z.discriminatedUnion("kind", [
@@ -3386,6 +3412,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ImportAgentRequestMessageSchema,
   RefreshAgentRequestMessageSchema,
   CancelAgentRequestMessageSchema,
+  AgentBackgroundTaskStopRequestSchema,
   ShutdownServerRequestMessageSchema,
   RestartServerRequestMessageSchema,
   DaemonUpdateRequestMessageSchema,
@@ -7249,6 +7276,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   ProjectRemoveResponseSchema,
   WorkspaceTitleSetResponseSchema,
   WorkspacePinSetResponseSchema,
+  AgentBackgroundTaskStopResponseSchema,
   WorkspaceRecoveryInspectResponseSchema,
   WorkspaceRecoveryRestoreResponseSchema,
   WaitForFinishResponseMessageSchema,
@@ -7453,6 +7481,7 @@ export type WorkspaceTitleSetResponsePayload = z.infer<
   typeof WorkspaceTitleSetResponsePayloadSchema
 >;
 export type WorkspacePinSetResponse = z.infer<typeof WorkspacePinSetResponseSchema>;
+export type AgentBackgroundTaskStopResponse = z.infer<typeof AgentBackgroundTaskStopResponseSchema>;
 export type WorkspacePinSetResponsePayload = z.infer<typeof WorkspacePinSetResponsePayloadSchema>;
 export type WorkspaceRecoveryState = z.infer<typeof WorkspaceRecoveryStateSchema>;
 export type WorkspaceRecoveryInspectResponse = z.infer<
@@ -7604,6 +7633,7 @@ export type ProjectIconSetRequest = z.infer<typeof ProjectIconSetRequestSchema>;
 export type ProjectRemoveRequest = z.infer<typeof ProjectRemoveRequestSchema>;
 export type WorkspaceTitleSetRequest = z.infer<typeof WorkspaceTitleSetRequestSchema>;
 export type WorkspacePinSetRequest = z.infer<typeof WorkspacePinSetRequestSchema>;
+export type AgentBackgroundTaskStopRequest = z.infer<typeof AgentBackgroundTaskStopRequestSchema>;
 export type WorkspaceRecoveryInspectRequest = z.infer<typeof WorkspaceRecoveryInspectRequestSchema>;
 export type WorkspaceRecoveryRestoreRequest = z.infer<typeof WorkspaceRecoveryRestoreRequestSchema>;
 export type SetAgentModeRequestMessage = z.infer<typeof SetAgentModeRequestMessageSchema>;

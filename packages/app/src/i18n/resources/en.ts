@@ -1925,6 +1925,12 @@ export const en = {
   menu: {
     backdrop: "Menu backdrop",
   },
+  backgroundTasks: {
+    title: "Background tasks",
+    pillLabel: "{{count}} in background",
+    stopAction: "Stop {{label}}",
+    stopTooltip: "Stop task",
+  },
   subagents: {
     title: "Subagents",
     pillLabelOne: "1 subagent",
