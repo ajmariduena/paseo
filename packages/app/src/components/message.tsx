@@ -94,7 +94,7 @@ import {
   useAssistantLinkPress,
 } from "@/assistant-file-links";
 import { getCompactionMarkerLabel } from "./message-compaction-label";
-import { ForgeLinkChip } from "@/components/markdown/forge-link-chip";
+import { ForgeLinkChip, StandaloneForgeLinkChip } from "@/components/markdown/forge-link-chip";
 import { parseForgeLink } from "@/git/forge-link-ref";
 import { useAssistantImage } from "@/assistant-image/use-assistant-image";
 import {
@@ -1001,6 +1001,25 @@ function getMarkdownNodeText(node: ASTNode): string {
   }
 
   return node.children.map(getMarkdownNodeText).join("");
+}
+
+function getStandaloneForgeLink(node: ASTNode): {
+  source: AssistantFileLinkSource;
+  link: NonNullable<ReturnType<typeof parseForgeLink>>;
+} | null {
+  if (markdownNodeContainsType(node, "image")) return null;
+  const links: ASTNode[] = [];
+  const collectLinks = (current: ASTNode) => {
+    if (current.type === "link") links.push(current);
+    for (const child of current.children) collectLinks(child);
+  };
+  collectLinks(node);
+  if (links.length !== 1) return null;
+  const linkNode = links[0]!;
+  if (getMarkdownNodeText(node).trim() !== getMarkdownNodeText(linkNode).trim()) return null;
+  const source = getMarkdownLinkSource(linkNode);
+  const link = parseForgeLink(source.href);
+  return link ? { source, link } : null;
 }
 
 function nodeHasParentType(parent: unknown, type: string): boolean {
@@ -1920,15 +1939,31 @@ export const AssistantMessage = memo(function AssistantMessage({
         children: ReactNode[],
         _parent: ASTNode[],
         styles: MarkdownStyles,
-      ) => (
-        <MarkdownParagraphView
-          key={node.key}
-          paragraphStyle={styles.paragraph}
-          containsImage={markdownNodeContainsType(node, "image")}
-        >
-          {children}
-        </MarkdownParagraphView>
-      ),
+      ) => {
+        const standaloneForgeLink = Platform.OS === "ios" ? getStandaloneForgeLink(node) : null;
+        if (standaloneForgeLink) {
+          return (
+            <View key={node.key} style={styles.paragraph}>
+              <StandaloneForgeLinkChip
+                source={standaloneForgeLink.source}
+                link={standaloneForgeLink.link}
+                serverId={serverId ?? null}
+                fetchEnabled={phase === "complete"}
+                linkStyle={styles.link}
+              />
+            </View>
+          );
+        }
+        return (
+          <MarkdownParagraphView
+            key={node.key}
+            paragraphStyle={styles.paragraph}
+            containsImage={markdownNodeContainsType(node, "image")}
+          >
+            {children}
+          </MarkdownParagraphView>
+        );
+      },
       link: (node: ASTNode, children: ReactNode[], _parent: ASTNode[], styles: MarkdownStyles) => {
         const source = getMarkdownLinkSource(node);
         const forgeLink = parseForgeLink(source.href);

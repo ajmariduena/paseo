@@ -1,5 +1,5 @@
 import { memo, useMemo } from "react";
-import type { TextStyle } from "react-native";
+import { View, type TextStyle } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { AssistantMarkdownLink } from "@/assistant-file-links/link";
 import type { AssistantFileLinkSource } from "@/assistant-file-links/resolver";
@@ -49,9 +49,60 @@ export const ForgeLinkChip = memo(function ForgeLinkChip({
   );
 });
 
+// A lone forge link can leave the paragraph UITextView and use a real rounded
+// surface. Inline links stay as text so the surrounding paragraph remains selectable.
+export const StandaloneForgeLinkChip = memo(function StandaloneForgeLinkChip({
+  source,
+  link,
+  serverId,
+  fetchEnabled,
+  linkStyle,
+}: ForgeLinkChipProps) {
+  const summary = useForgeLinkSummary({ serverId, link, enabled: fetchEnabled });
+  const presentation = presentForgeLinkChip(link, summary);
+  const background = standaloneBackgrounds[presentation.tone];
+  const chipStyle = useMemo(() => [linkStyle, styles.chip, styles.standaloneText], [linkStyle]);
+  const labelStyle = useMemo(() => [chipStyle, styles.standaloneLabel], [chipStyle]);
+  const titleStyle = useMemo(() => [chipStyle, styles.standaloneTitle], [chipStyle]);
+  const checksStyle = useMemo(
+    () => (presentation.checks ? [chipStyle, checkStyles[presentation.checks]] : null),
+    [chipStyle, presentation.checks],
+  );
+
+  return (
+    <View style={[styles.standaloneChip, background]}>
+      <AssistantMarkdownLink source={source} style={chipStyle}>
+        <MarkdownTextSpan style={labelStyle}>{presentation.label}</MarkdownTextSpan>
+        {presentation.title ? (
+          <MarkdownTextSpan style={titleStyle}> {presentation.title}</MarkdownTextSpan>
+        ) : null}
+        {checksStyle ? <MarkdownTextSpan style={checksStyle}> ●</MarkdownTextSpan> : null}
+      </AssistantMarkdownLink>
+    </View>
+  );
+});
+
 const styles = StyleSheet.create((theme) => ({
   chip: {
     fontSize: theme.fontSize.sm,
+  },
+  standaloneChip: {
+    alignSelf: "flex-start",
+    maxWidth: "100%",
+    borderRadius: theme.borderRadius.full,
+    paddingHorizontal: 7,
+    paddingVertical: 1,
+  },
+  standaloneText: {
+    lineHeight: 20,
+  },
+  standaloneLabel: {
+    color: theme.colors.foreground,
+    fontWeight: theme.fontWeight.semibold,
+    fontVariant: ["tabular-nums"],
+  },
+  standaloneTitle: {
+    color: theme.colors.foregroundMuted,
   },
   neutral: {
     color: theme.colors.accentBright,
@@ -78,6 +129,14 @@ const styles = StyleSheet.create((theme) => ({
   title: {
     color: theme.colors.foregroundMuted,
   },
+}));
+
+const standaloneBackgrounds = StyleSheet.create((theme) => ({
+  neutral: { backgroundColor: theme.colors.surface2 },
+  open: { backgroundColor: theme.colors.statusSuccessTint },
+  merged: { backgroundColor: theme.colors.statusMergedTint },
+  closed: { backgroundColor: theme.colors.statusDangerTint },
+  draft: { backgroundColor: theme.colors.surface2 },
 }));
 
 const checkStyles = StyleSheet.create((theme) => ({
