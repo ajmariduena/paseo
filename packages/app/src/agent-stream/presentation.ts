@@ -7,7 +7,9 @@ import {
   projectToolCallDetailLevel,
   type PreparedToolCallHistory,
   type ToolCallDetailLevel,
+  type ToolCallDetailProjection,
 } from "@/tool-calls/detail-level/projection";
+import { createTurnFolding, type LatestTurnPhase, type TurnFoldProjection } from "./turn-fold";
 
 interface PresentationInput {
   tail: StreamItem[];
@@ -15,7 +17,14 @@ interface PresentationInput {
   transform: TimelineItemTransform | undefined;
   level: ToolCallDetailLevel;
   isTurnActive: boolean;
+  expandedTurnFoldKeys?: ReadonlySet<string>;
 }
+
+export interface StreamPresentation extends ToolCallDetailProjection {
+  turnFolds: TurnFoldProjection;
+}
+
+const NO_EXPANDED_TURN_FOLDS: ReadonlySet<string> = new Set();
 
 function retainItems(previous: StreamItem[], next: StreamItem[]): StreamItem[] {
   return previous.length === next.length && previous.every((item, index) => item === next[index])
@@ -23,14 +32,7 @@ function retainItems(previous: StreamItem[], next: StreamItem[]): StreamItem[] {
     : next;
 }
 
-/**
- * The source message a display row belongs to. Every assistant message is split into
- * Markdown blocks, so an assistant row id never equals its message id; anything that
- * addresses a message — find, scroll-to-message, history reveal — asks for this.
- */
-export function getStreamItemMessageId(item: StreamItem): string {
-  return item.kind === "assistant_message" ? (item.blockGroupId ?? item.id) : item.id;
-}
+export { getStreamItemMessageId } from "./message-id";
 
 /**
  * A block is reusable only when it still stands for the same source state. Text and
@@ -78,6 +80,11 @@ export function createStreamPresentation() {
   let preparedTail: StreamItem[] | undefined;
   let preparedLevel: ToolCallDetailLevel | undefined;
   let preparedHistory: PreparedToolCallHistory | null = null;
+  const foldTurns = createTurnFolding();
+  let foldedSource: StreamItem[] | undefined;
+  let foldedExpandedKeys: ReadonlySet<string> | undefined;
+  let foldedLatestTurn: LatestTurnPhase | undefined;
+  let turnFolds: TurnFoldProjection | undefined;
 
   /**
    * One display row per Markdown block. Each block renders on its own, so a construct
@@ -135,7 +142,7 @@ export function createStreamPresentation() {
     return blocks;
   }
 
-  return (input: PresentationInput) => {
+  return (input: PresentationInput): StreamPresentation => {
     // Retained history is not reprojected or regrouped on each live text update.
     if (historySource !== input.tail || historyTransform !== input.transform) {
       // One rendering path: history splits the same way the live head does, and
@@ -173,12 +180,34 @@ export function createStreamPresentation() {
       preparedTail = displayTail;
       preparedLevel = input.level;
     }
-    return projectToolCallDetailLevel({
+    const projected = projectToolCallDetailLevel({
       level: input.level,
       tail: displayTail,
       head,
       preparedHistory,
       isTurnActive: input.isTurnActive,
     });
+    const expandedKeys = input.expandedTurnFoldKeys ?? NO_EXPANDED_TURN_FOLDS;
+    let latestTurn: LatestTurnPhase = "complete";
+    if (input.isTurnActive) latestTurn = "running";
+    else if (input.head.length > 0) latestTurn = "settling";
+    // Folding reads only retained history, so live text updates reuse the last fold.
+    if (
+      !turnFolds ||
+      foldedSource !== projected.tail ||
+      foldedExpandedKeys !== expandedKeys ||
+      foldedLatestTurn !== latestTurn
+    ) {
+      turnFolds = foldTurns({
+        tail: projected.tail,
+        latestTurn,
+        expandedKeys,
+        getToolCalls: (item) => projected.groupsByHostId.get(item.id)?.run.calls ?? [item],
+      });
+      foldedSource = projected.tail;
+      foldedExpandedKeys = expandedKeys;
+      foldedLatestTurn = latestTurn;
+    }
+    return { ...projected, tail: turnFolds.tail, turnFolds };
   };
 }

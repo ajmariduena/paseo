@@ -28,7 +28,10 @@ import { useMutation } from "@tanstack/react-query";
 import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
 import { Check, ChevronDown, X } from "lucide-react-native";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
-import { openExplorerSidebarView } from "@/workspace-tabs/explorer-sidebar";
+import {
+  openExplorerSidebarView,
+  type ExplorerSidebarView,
+} from "@/workspace-tabs/explorer-sidebar";
 import {
   AssistantMessage,
   SpeakMessage,
@@ -63,6 +66,9 @@ import { ToolCallDetailsContent } from "@/components/tool-call-details";
 import { QuestionFormCard } from "@/components/question-form-card";
 import { ToolCallSheetProvider } from "@/components/tool-call-sheet";
 import { createStreamPresentation, getStreamItemMessageId } from "./presentation";
+import { findCollapsedTurnFoldKey } from "./turn-fold";
+import { TurnFilesCard, TurnFoldHeader } from "./turn-fold-view";
+import { buildTurnFoldAgentKey, useTurnFoldStore } from "@/stores/turn-fold-store";
 import { OverviewToolCallGroupView } from "@/tool-calls/detail-level/overview/view";
 import { type AgentStreamRenderModel, buildAgentStreamRenderModel } from "./model";
 import { resolveStreamRenderStrategy } from "./strategy-resolver";
@@ -376,6 +382,20 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     // Get serverId (fallback to agent's serverId if not provided)
     const resolvedServerId = serverId ?? context.serverId ?? "";
     const transformTimelineItem = useInstalledTimelineTransform(resolvedServerId);
+    const turnFoldAgentKey = buildTurnFoldAgentKey(resolvedServerId, agentId);
+    const expandedTurnFoldKeyList = useTurnFoldStore(
+      (state) => state.expandedByAgent[turnFoldAgentKey],
+    );
+    const expandedTurnFoldKeys = useMemo(
+      () => new Set(expandedTurnFoldKeyList ?? []),
+      [expandedTurnFoldKeyList],
+    );
+    const setTurnFoldExpanded = useCallback(
+      (foldKey: string, expanded: boolean) => {
+        useTurnFoldStore.getState().setExpanded(turnFoldAgentKey, foldKey, expanded);
+      },
+      [turnFoldAgentKey],
+    );
 
     const client = useSessionStore((state) => state.sessions[resolvedServerId]?.client ?? null);
     const sessionStreamHead = useSessionStore((state) =>
@@ -438,6 +458,22 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       setExpandedToolCallGroupIds(new Set());
     }, [agentId]);
 
+    const openExplorerView = useStableEvent((view: ExplorerSidebarView) => {
+      openExplorerSidebarView({
+        isCompact: isMobile,
+        workspaceKey: buildWorkspaceTabPersistenceKey({
+          serverId: resolvedServerId,
+          workspaceId: context.workspaceId ?? "",
+        }),
+        checkout: {
+          serverId: resolvedServerId,
+          cwd: context.cwd,
+          isGit: context.projectPlacement?.checkout?.isGit ?? true,
+        },
+        view,
+      });
+    });
+
     const handleInlinePathPress = useStableEvent(
       (target: InlinePathTarget, disposition: OpenFileDisposition) => {
         if (!target.path) {
@@ -482,21 +518,13 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           setCurrentPath: false,
         });
 
-        openExplorerSidebarView({
-          isCompact: isMobile,
-          workspaceKey: buildWorkspaceTabPersistenceKey({
-            serverId: resolvedServerId,
-            workspaceId: context.workspaceId ?? "",
-          }),
-          checkout: {
-            serverId: resolvedServerId,
-            cwd: context.cwd,
-            isGit: context.projectPlacement?.checkout?.isGit ?? true,
-          },
-          view: "files",
-        });
+        openExplorerView("files");
       },
     );
+
+    const handleOpenTurnChanges = useStableEvent(() => {
+      openExplorerView("changes");
+    });
 
     const handleToolCallOpenFile = useStableEvent((filePath: string) => {
       handleInlinePathPress({ raw: filePath, path: filePath }, "preferred");
@@ -545,6 +573,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           transform: transformTimelineItem,
           level: toolCallDetailLevel,
           isTurnActive,
+          expandedTurnFoldKeys,
         }),
       [
         presentStream,
@@ -553,6 +582,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         transformTimelineItem,
         toolCallDetailLevel,
         isTurnActive,
+        expandedTurnFoldKeys,
       ],
     );
     const {
@@ -607,6 +637,15 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     const handleTimelineHistoryLoadError = useCallback(() => {
       toast?.error(t("agentStream.historyLoadFailed"));
     }, [t, toast]);
+    // A message a collapsed turn hides is revealed by opening that turn first.
+    const revealLoadedMessage = useStableEvent((messageId: string): boolean => {
+      const foldKey = findCollapsedTurnFoldKey(presentation.turnFolds, messageId);
+      if (foldKey) {
+        setTurnFoldExpanded(foldKey, true);
+        return true;
+      }
+      return revealLoadedHistory(messageId);
+    });
     // Chat find and the chat outline address messages, and an assistant message is a
     // group of block rows, so this is a set of message ids and never of row ids.
     const visibleMessageIds = useMemo(
@@ -628,7 +667,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       viewportRef,
       onJumpError: handleTimelineHistoryLoadError,
       visibleMessageIds,
-      revealLoadedMessage: revealLoadedHistory,
+      revealLoadedMessage,
     });
 
     useImperativeHandle(
@@ -823,8 +862,37 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     const getToolCallGroup = useStableEvent((hostId: string) =>
       presentation.groupsByHostId.get(hostId),
     );
+    // Fold rows change identity whenever what they show changes, so reading them through a
+    // stable event does not leave a memoized history row stale.
+    const getTurnFoldRow = useStableEvent((rowId: string) =>
+      presentation.turnFolds.rowsById.get(rowId),
+    );
+    const getRunningTurnStartedAt = useStableEvent(
+      () => baseRenderModel.turnTiming.runningStartedAt,
+    );
     const renderToolCallItem = useCallback(
       (layoutItem: StreamLayoutItem, item: Extract<StreamItem, { kind: "tool_call" }>) => {
+        const foldRow = getTurnFoldRow(item.id);
+        if (foldRow?.role === "header") {
+          return (
+            <TurnFoldHeader
+              fold={foldRow.fold}
+              runningStartedAt={getRunningTurnStartedAt()}
+              isLastInSequence={layoutItem.isLastInToolSequence}
+              onExpandedChange={setTurnFoldExpanded}
+            />
+          );
+        }
+        if (foldRow?.role === "files") {
+          return (
+            <TurnFilesCard
+              files={foldRow.fold.files}
+              cwd={context.cwd}
+              onOpenChanges={handleOpenTurnChanges}
+              onOpenFile={handleToolCallOpenFile}
+            />
+          );
+        }
         const group = getToolCallGroup(item.id);
         if (!group) {
           return renderSingleToolCallItem(item, layoutItem.isLastInToolSequence);
@@ -852,10 +920,16 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         );
       },
       [
+        context.cwd,
         expandedToolCallGroupIds,
+        getRunningTurnStartedAt,
         getToolCallGroup,
+        getTurnFoldRow,
+        handleOpenTurnChanges,
+        handleToolCallOpenFile,
         renderSingleToolCallItem,
         setToolCallGroupExpanded,
+        setTurnFoldExpanded,
       ],
     );
 
@@ -1108,7 +1182,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         epoch={timelineEpoch}
         items={findItems}
         viewportRef={viewportRef}
-        revealLoadedMessage={revealLoadedHistory}
+        revealLoadedMessage={revealLoadedMessage}
         visibleMessageIds={visibleMessageIds}
       >
         <ToolCallSheetProvider>

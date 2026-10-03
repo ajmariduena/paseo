@@ -1952,6 +1952,22 @@ export const ar: TranslationResources = {
     },
     and: "و",
   },
+  turnFold: {
+    worked: "عمل لمدة {{duration}}",
+    working: "يعمل",
+    steps: {
+      one: "{{count}} خطوة",
+      other: "{{count}} خطوات",
+    },
+  },
+  turnFiles: {
+    changed: {
+      one: "تم تغيير {{count}} ملف",
+      other: "تم تغيير {{count}} ملفات",
+    },
+    more: "+{{count}} أخرى",
+    openDiff: "فتح الفرق",
+  },
   renameModal: {
     rename: "إعادة تسمية",
     saving: "جارٍ الحفظ...",

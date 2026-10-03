@@ -1985,6 +1985,22 @@ export const ru: TranslationResources = {
     },
     and: "и",
   },
+  turnFold: {
+    worked: "Работал {{duration}}",
+    working: "Работает",
+    steps: {
+      one: "{{count}} шаг",
+      other: "Шагов: {{count}}",
+    },
+  },
+  turnFiles: {
+    changed: {
+      one: "Изменён {{count}} файл",
+      other: "Изменено файлов: {{count}}",
+    },
+    more: "Ещё {{count}}",
+    openDiff: "Открыть diff",
+  },
   renameModal: {
     rename: "Переименовать",
     saving: "Сохранение...",

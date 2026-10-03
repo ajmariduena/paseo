@@ -32,7 +32,7 @@ function joinSummaryParts(parts: string[], conjunction: string): string {
   return firstCharacter ? `${firstCharacter.toLocaleUpperCase()}${joined.slice(1)}` : joined;
 }
 
-function useOverviewSummary(summary: OverviewSummary): string {
+export function useOverviewSummary(summary: OverviewSummary): string {
   const { t } = useTranslation();
   return useMemo(() => {
     const parts: string[] = [];

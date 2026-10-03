@@ -1977,6 +1977,22 @@ export const en = {
     },
     and: "and",
   },
+  turnFold: {
+    worked: "Worked {{duration}}",
+    working: "Working",
+    steps: {
+      one: "{{count}} step",
+      other: "{{count}} steps",
+    },
+  },
+  turnFiles: {
+    changed: {
+      one: "{{count}} file changed",
+      other: "{{count}} files changed",
+    },
+    more: "+{{count}} more",
+    openDiff: "Open diff",
+  },
   renameModal: {
     rename: "Rename",
     saving: "Saving...",

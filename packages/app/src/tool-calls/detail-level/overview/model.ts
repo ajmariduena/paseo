@@ -1,4 +1,5 @@
 import { isPaseoToolName } from "@getpaseo/protocol/tool-name-normalization";
+import type { ToolCallItem } from "@/types/stream";
 import { describeToolCall, type ToolCallRun } from "../grouping";
 
 const DIRECT_PASEO_TOOL_PREFIX = "paseo_";
@@ -28,7 +29,10 @@ function isSearchCall(name: string): boolean {
   return DIRECT_SEARCH_TOOL_SUFFIX_PATTERN.test(name);
 }
 
-export function buildOverviewGroup(run: ToolCallRun): OverviewToolCallGroup {
+export function summarizeOverviewToolCalls(calls: readonly ToolCallItem[]): {
+  summary: OverviewSummary;
+  isLoading: boolean;
+} {
   const editedFiles = new Set<string>();
   const readFiles = new Set<string>();
   let isLoading = false;
@@ -37,7 +41,7 @@ export function buildOverviewGroup(run: ToolCallRun): OverviewToolCallGroup {
   let otherToolCount = 0;
   let paseoCallCount = 0;
 
-  for (const call of run.calls) {
+  for (const call of calls) {
     const descriptor = describeToolCall(call);
     const normalizedName = descriptor.name.trim().toLowerCase();
     isLoading ||= descriptor.status === "running" || descriptor.status === "executing";
@@ -56,14 +60,21 @@ export function buildOverviewGroup(run: ToolCallRun): OverviewToolCallGroup {
     }
   }
 
-  const summary = {
-    editedFileCount: editedFiles.size,
-    commandCount,
-    readFileCount: readFiles.size,
-    searchCount,
-    otherToolCount,
-    paseoCallCount,
+  return {
+    summary: {
+      editedFileCount: editedFiles.size,
+      commandCount,
+      readFileCount: readFiles.size,
+      searchCount,
+      otherToolCount,
+      paseoCallCount,
+    },
+    isLoading,
   };
+}
+
+export function buildOverviewGroup(run: ToolCallRun): OverviewToolCallGroup {
+  const { summary, isLoading } = summarizeOverviewToolCalls(run.calls);
   return {
     mode: "overview",
     run,
