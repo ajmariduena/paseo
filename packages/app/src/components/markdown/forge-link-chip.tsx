@@ -29,16 +29,22 @@ export const ForgeLinkChip = memo(function ForgeLinkChip({
   const presentation = presentForgeLinkChip(link, summary);
   const tone = styles[presentation.tone];
   const chipStyle = useMemo(() => [linkStyle, styles.chip, tone], [linkStyle, tone]);
+  // iOS spans inherit only the paragraph root's style, not the link's, so each one restates it.
+  const labelStyle = useMemo(() => [chipStyle, styles.label], [chipStyle]);
+  const titleStyle = useMemo(() => [chipStyle, styles.title], [chipStyle]);
+  const checks = presentation.checks;
+  const checksStyle = useMemo(
+    () => (checks ? [chipStyle, checkStyles[checks]] : null),
+    [checks, chipStyle],
+  );
 
   return (
     <AssistantMarkdownLink source={source} style={chipStyle}>
-      <MarkdownTextSpan style={styles.label}>{presentation.label}</MarkdownTextSpan>
+      <MarkdownTextSpan style={labelStyle}>{presentation.label}</MarkdownTextSpan>
       {presentation.title ? (
-        <MarkdownTextSpan style={styles.title}> {presentation.title}</MarkdownTextSpan>
+        <MarkdownTextSpan style={titleStyle}> {presentation.title}</MarkdownTextSpan>
       ) : null}
-      {presentation.checks ? (
-        <MarkdownTextSpan style={checkStyles[presentation.checks]}> ●</MarkdownTextSpan>
-      ) : null}
+      {checksStyle ? <MarkdownTextSpan style={checksStyle}> ●</MarkdownTextSpan> : null}
     </AssistantMarkdownLink>
   );
 });
