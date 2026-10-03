@@ -1929,6 +1929,22 @@ export const zhCN: TranslationResources = {
     },
     and: "并",
   },
+  turnFold: {
+    worked: "已工作 {{duration}}",
+    working: "工作中",
+    steps: {
+      one: "{{count}} 个步骤",
+      other: "{{count}} 个步骤",
+    },
+  },
+  turnFiles: {
+    changed: {
+      one: "已更改 {{count}} 个文件",
+      other: "已更改 {{count}} 个文件",
+    },
+    more: "还有 {{count}} 个",
+    openDiff: "打开 diff",
+  },
   renameModal: {
     rename: "重命名",
     saving: "正在保存...",

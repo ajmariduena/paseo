@@ -1,17 +1,20 @@
 import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import type { AgentStreamEventPayload } from "@getpaseo/protocol/messages";
+import type { ToolCallDetail } from "@getpaseo/protocol/agent-types";
 import { runPluginClientBundle, type PluginClientRuntime } from "@/plugins/evaluate";
 import type { InstalledPlugin } from "@/plugins/types";
 import {
   applyStreamEvent,
   hydrateStreamState,
+  type AgentToolCallStatus,
   type StreamItem,
   type ToolCallItem,
   type UserMessageItem,
 } from "@/types/stream";
 import { transformTimelineItem, type TimelineItemTransform } from "@/plugins/timeline/model";
 import { createStreamPresentation } from "./presentation";
+import { findCollapsedTurnFoldKey } from "./turn-fold";
 import { buildAgentStreamRenderModel } from "./model";
 
 const runtime = {
@@ -484,8 +487,9 @@ function assistantMessage(
 
 describe("timeline presentation", () => {
   const present = createStreamPresentation();
+  const idleOptions = { ...presentationOptions, isTurnActive: false };
   function projectTimelineItems(items: StreamItem[], transform?: TimelineItemTransform) {
-    return present({ ...presentationOptions, tail: items, head: [], transform }).tail;
+    return present({ ...idleOptions, tail: items, head: [], transform }).tail;
   }
   const envelope =
     "<spoken-input>\nPlease fix the voice chat.\n</spoken-input>\n<instruction>This message was spoken by the user. Respond using the speak tool only, not normal messages, because the user may not be looking at the chat.</instruction>";
@@ -503,7 +507,7 @@ describe("timeline presentation", () => {
       });
       const presentMessage = () =>
         present({
-          ...presentationOptions,
+          ...idleOptions,
           tail: source === "history" ? [item] : [],
           head: source === "live" ? [item] : [],
           transform: undefined,
@@ -578,5 +582,207 @@ describe("timeline presentation", () => {
       { ...source, text: "Please fix the voice chat." },
     ]);
     expect(projectTimelineItems([source], () => [])).toEqual([]);
+  });
+});
+
+describe("turn folding", () => {
+  function workCall(
+    id: string,
+    seed: number,
+    detail: ToolCallDetail,
+    options: { name?: string; status?: AgentToolCallStatus } = {},
+  ): ToolCallItem {
+    return {
+      kind: "tool_call",
+      id,
+      timestamp: createTimestamp(seed),
+      payload: {
+        source: "agent",
+        data: {
+          provider: "claude",
+          callId: id,
+          name: options.name ?? detail.type,
+          status: options.status ?? "completed",
+          error: null,
+          detail,
+        },
+      },
+    };
+  }
+
+  function notification(id: string, seed: number): Extract<StreamItem, { kind: "notification" }> {
+    return {
+      kind: "notification",
+      sourceType: "notification",
+      id,
+      timestamp: createTimestamp(seed),
+      level: "info",
+      message: id,
+    };
+  }
+
+  function thought(id: string, seed: number): StreamItem {
+    return { kind: "thought", id, text: id, timestamp: createTimestamp(seed), status: "ready" };
+  }
+
+  function present(input: {
+    tail: StreamItem[];
+    head?: StreamItem[];
+    isTurnActive?: boolean;
+    expanded?: ReadonlySet<string>;
+    level?: "overview" | "detailed";
+    presentation?: ReturnType<typeof createStreamPresentation>;
+  }) {
+    return (input.presentation ?? createStreamPresentation())({
+      level: input.level ?? "detailed",
+      tail: input.tail,
+      head: input.head ?? [],
+      transform: undefined,
+      isTurnActive: input.isTurnActive ?? false,
+      expandedTurnFoldKeys: input.expanded,
+    });
+  }
+
+  const ids = (items: StreamItem[]) => items.map((item) => item.id);
+  const prompt = userMessage("prompt", 0);
+  const work: StreamItem[] = [
+    assistantMessage("note", 1),
+    thought("thinking", 2),
+    workCall("read", 3, { type: "read", filePath: "/repo/src/a.ts" }),
+    workCall("edit", 4, {
+      type: "edit",
+      filePath: "/repo/src/a.ts",
+      unifiedDiff: "@@ -1 +1,2 @@\n-old\n+new\n+added",
+    }),
+    workCall("shell", 5, { type: "shell", command: "npm test" }),
+  ];
+  const answer = assistantMessage("answer", 43);
+  const turn = [prompt, ...work, answer];
+
+  it("folds a finished turn into a header above its answer and a files card", () => {
+    const result = present({ tail: turn });
+
+    expect(ids(result.tail)).toEqual([
+      "prompt",
+      "prompt:turn-fold",
+      "answer:block:0",
+      "prompt:turn-files",
+    ]);
+    expect(result.turnFolds.rowsById.get("prompt:turn-fold")).toMatchObject({
+      role: "header",
+      fold: {
+        key: "prompt",
+        state: "complete",
+        expanded: false,
+        durationMs: 43_000,
+        stepCount: 3,
+        summary: { editedFileCount: 1, commandCount: 1, readFileCount: 1 },
+        files: [{ path: "/repo/src/a.ts", additions: 2, deletions: 1 }],
+      },
+    });
+    expect(result.turnFolds.rowsById.get("prompt:turn-files")?.role).toBe("files");
+  });
+
+  it.each(["detailed", "overview"] as const)(
+    "shows exactly the unfolded %s rows once expanded",
+    (level) => {
+      const expanded = present({ tail: turn, level, expanded: new Set(["prompt"]) });
+      const unfolded = present({ tail: turn, level, isTurnActive: true });
+      const withoutFoldRows = (items: StreamItem[]) =>
+        ids(items).filter((id) => !id.endsWith(":turn-fold") && !id.endsWith(":turn-files"));
+
+      expect(withoutFoldRows(expanded.tail)).toEqual(withoutFoldRows(unfolded.tail));
+      expect(ids(expanded.tail).slice(0, 2)).toEqual(["prompt", "prompt:turn-fold"]);
+      expect(ids(expanded.tail).at(-1)).toBe("prompt:turn-files");
+    },
+  );
+
+  it.each([
+    ["an error notification", { ...notification("failed", 6), level: "error" as const }],
+    ["a system error message", { ...assistantMessage("failure", 44), text: "[System Error] boom" }],
+    [
+      "a canceled tool call",
+      workCall("canceled", 6, { type: "shell", command: "sleep" }, { status: "canceled" }),
+    ],
+  ])("leaves a turn that ended with %s unfolded", (_, row) => {
+    const tail = [prompt, ...work, row, answer];
+
+    const result = present({ tail });
+
+    const running = ids(present({ tail, isTurnActive: true }).tail);
+    expect(ids(result.tail)).toEqual(running.filter((id) => id !== "prompt:turn-fold"));
+    expect(result.turnFolds.folds).toEqual([]);
+  });
+
+  it("shows a live header above a running turn and folds it once the turn ends", () => {
+    const running = present({ tail: turn, isTurnActive: true });
+
+    const workRows = ["note:block:0", "thinking", "read", "edit", "shell"];
+    expect(ids(running.tail)).toEqual([
+      "prompt",
+      "prompt:turn-fold",
+      ...workRows,
+      "answer:block:0",
+    ]);
+    expect(running.turnFolds.rowsById.get("prompt:turn-fold")?.fold.state).toBe("running");
+
+    const streaming = present({ tail: turn.slice(0, -1), head: [answer] });
+    expect(ids(streaming.tail)).toEqual(["prompt", ...workRows]);
+  });
+
+  it("keeps plans and warnings visible in a collapsed turn", () => {
+    const plan = workCall("plan", 6, { type: "plan", text: "1. Fix it" }, { name: "update_plan" });
+    const warning = { ...notification("careful", 7), level: "warning" as const };
+    const tail = [prompt, ...work, plan, warning, answer];
+
+    const result = present({ tail });
+
+    expect(ids(result.tail)).toEqual([
+      "prompt",
+      "prompt:turn-fold",
+      "plan",
+      "careful",
+      "answer:block:0",
+      "prompt:turn-files",
+    ]);
+  });
+
+  it("lets chat find open the fold that hides a message", () => {
+    const collapsed = present({ tail: turn });
+    expect(findCollapsedTurnFoldKey(collapsed.turnFolds, "note")).toBe("prompt");
+    expect(findCollapsedTurnFoldKey(collapsed.turnFolds, "answer")).toBeNull();
+
+    const expanded = present({ tail: turn, expanded: new Set(["prompt"]) });
+    expect(findCollapsedTurnFoldKey(expanded.turnFolds, "note")).toBeNull();
+    expect(ids(expanded.tail)).toContain("note:block:0");
+  });
+
+  it("remembers a fold under its timeline position", () => {
+    const anchored = { ...prompt, timelineCursor: { epoch: "epoch-1", seq: 12 } };
+    const tail = [anchored, ...work, answer];
+
+    const result = present({ tail, expanded: new Set(["epoch-1:12"]) });
+
+    expect(result.turnFolds.rowsById.get("prompt:turn-fold")?.fold).toMatchObject({
+      key: "epoch-1:12",
+      expanded: true,
+    });
+  });
+
+  it("keeps fold row identity until what the fold shows changes", () => {
+    const presentation = createStreamPresentation();
+    const first = present({ tail: turn, presentation });
+    const next = present({ tail: [...turn, userMessage("follow-up", 50)], presentation });
+    const header = (result: typeof first) =>
+      result.tail.find((item) => item.id === "prompt:turn-fold");
+
+    expect(header(next)).toBe(header(first));
+
+    const opened = present({
+      tail: [...turn, userMessage("follow-up", 50)],
+      expanded: new Set(["prompt"]),
+      presentation,
+    });
+    expect(header(opened)).not.toBe(header(next));
   });
 });

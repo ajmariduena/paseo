@@ -2005,6 +2005,22 @@ export const fr: TranslationResources = {
     },
     and: "et",
   },
+  turnFold: {
+    worked: "A travaillé {{duration}}",
+    working: "En cours",
+    steps: {
+      one: "{{count}} étape",
+      other: "{{count}} étapes",
+    },
+  },
+  turnFiles: {
+    changed: {
+      one: "{{count}} fichier modifié",
+      other: "{{count}} fichiers modifiés",
+    },
+    more: "+{{count}} de plus",
+    openDiff: "Ouvrir le diff",
+  },
   renameModal: {
     rename: "Rebaptiser",
     saving: "Sauvegarde...",

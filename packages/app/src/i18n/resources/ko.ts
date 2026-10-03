@@ -1961,6 +1961,22 @@ export const ko: TranslationResources = {
     },
     and: "그리고",
   },
+  turnFold: {
+    worked: "{{duration}} 동안 작업함",
+    working: "작업 중",
+    steps: {
+      one: "{{count}}단계",
+      other: "{{count}}단계",
+    },
+  },
+  turnFiles: {
+    changed: {
+      one: "파일 {{count}}개 변경됨",
+      other: "파일 {{count}}개 변경됨",
+    },
+    more: "+{{count}}개 더",
+    openDiff: "diff 열기",
+  },
   renameModal: {
     rename: "이름 변경",
     saving: "저장하는 중...",

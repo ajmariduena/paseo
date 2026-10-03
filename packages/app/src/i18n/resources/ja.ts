@@ -1971,6 +1971,22 @@ export const ja: TranslationResources = {
     },
     and: "および",
   },
+  turnFold: {
+    worked: "{{duration}} 作業",
+    working: "作業中",
+    steps: {
+      one: "{{count}} ステップ",
+      other: "{{count}} ステップ",
+    },
+  },
+  turnFiles: {
+    changed: {
+      one: "{{count}} 件のファイルを変更",
+      other: "{{count}} 件のファイルを変更",
+    },
+    more: "ほか {{count}} 件",
+    openDiff: "差分を開く",
+  },
   renameModal: {
     rename: "名前を変更",
     saving: "保存中...",

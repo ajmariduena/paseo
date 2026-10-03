@@ -1984,6 +1984,22 @@ export const ptBR: TranslationResources = {
     },
     and: "e",
   },
+  turnFold: {
+    worked: "Trabalhou {{duration}}",
+    working: "Trabalhando",
+    steps: {
+      one: "{{count}} etapa",
+      other: "{{count}} etapas",
+    },
+  },
+  turnFiles: {
+    changed: {
+      one: "{{count}} arquivo alterado",
+      other: "{{count}} arquivos alterados",
+    },
+    more: "+{{count}} mais",
+    openDiff: "Abrir diff",
+  },
   renameModal: {
     rename: "Renomear",
     saving: "Salvando...",

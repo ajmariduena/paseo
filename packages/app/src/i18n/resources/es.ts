@@ -1999,6 +1999,22 @@ export const es: TranslationResources = {
     },
     and: "y",
   },
+  turnFold: {
+    worked: "Trabajó {{duration}}",
+    working: "Trabajando",
+    steps: {
+      one: "{{count}} paso",
+      other: "{{count}} pasos",
+    },
+  },
+  turnFiles: {
+    changed: {
+      one: "{{count}} archivo cambiado",
+      other: "{{count}} archivos cambiados",
+    },
+    more: "+{{count}} más",
+    openDiff: "Abrir diff",
+  },
   renameModal: {
     rename: "Rebautizar",
     saving: "Guardando...",

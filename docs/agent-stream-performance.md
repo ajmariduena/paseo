@@ -43,7 +43,9 @@ So arrival sets a _target_ and the reveal rate is derived from the backlog inste
   being equal. `getStreamItemMessageId` in `presentation.ts` is the only way to go from a row to its
   message, and web rows carry it as `data-message-id` alongside `data-history-row-id`. Anything
   addressing a message — chat find, scroll-to-message, history reveal, the find expansion that lifts
-  the render cap — uses the message id and must expect several rows to answer to it. Row ids stay for
+  the render cap — uses the message id and must expect several rows to answer to it. A message
+  inside a collapsed turn has no row at all until the turn opens, so reveal goes through
+  `findCollapsedTurnFoldKey` in `turn-fold.ts` before history reveal. Row ids stay for
   React keys, virtualizer measurement, scroll anchors, and per-row caches like assistant image
   occurrence keys.
 - **First sight of a text is revealed whole.** Only growth is paced. This is what makes history hydration, timeline replay, a virtualized row remounting on scroll, and an already-finished message all render complete on first paint without a special case for each.
