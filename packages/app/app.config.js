@@ -69,7 +69,7 @@ function resolveSecretFile(params) {
 const variants = {
   production: {
     name: "Paseo",
-    packageId: "sh.paseo",
+    packageId: "com.ajmariduena.paseo",
     scheme: "paseo",
     googleServicesFile: resolveSecretFile({
       envKey: "GOOGLE_SERVICES_FILE_PROD",
@@ -213,9 +213,9 @@ export default {
       profileBuild: isProfileBuild,
       router: {},
       eas: {
-        projectId: "0e7f65ce-0367-46c8-a238-2b65963d235a",
+        projectId: "8d393def-6df0-4e28-aab3-6e96609bad32",
       },
     },
-    owner: "getpaseo",
+    owner: "alexandermariduena",
   },
 };
