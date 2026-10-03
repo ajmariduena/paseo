@@ -19,9 +19,13 @@ import {
 } from "@/components/ui/context-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { titlebarDragSurfaceStyle } from "@/components/desktop/titlebar-drag-region";
-import { WORKSPACE_SECONDARY_HEADER_HEIGHT } from "@/constants/layout";
+import {
+  WORKSPACE_SECONDARY_HEADER_HEIGHT,
+  WORKSPACE_SECONDARY_HEADER_HEIGHT_TOUCH,
+  useControlDensity,
+} from "@/constants/layout";
 import { iconButtonChromeGlyphSize } from "@/components/ui/icon-button-chrome";
-import { HEADER_CONTROL_HEIGHT } from "@/components/ui/control-geometry";
+import { HEADER_CONTROL_HEIGHT, TOUCH_ROW_HEIGHT } from "@/components/ui/control-geometry";
 import {
   WorkspaceTabIcon,
   WorkspaceTabPresentationResolver,
@@ -92,6 +96,7 @@ function ExplorerSidebarTab({
 }) {
   const { t } = useTranslation();
   const [hovered, setHovered] = useState(false);
+  const isTouchDensity = useControlDensity() === "touch";
   const handlePress = useCallback(
     () => onNavigateTab(item.tab.tabId),
     [item.tab.tabId, onNavigateTab],
@@ -130,6 +135,7 @@ function ExplorerSidebarTab({
               onHoverOut={handleHoverOut}
               style={[
                 styles.tab,
+                isTouchDensity ? styles.tabTouch : null,
                 hovered ? styles.tabHovered : null,
                 item.isActive ? styles.tabActive : null,
                 isDragging ? styles.tabDragging : null,
@@ -179,6 +185,7 @@ function ExplorerSidebarTab({
       handlePress,
       hovered,
       isDragging,
+      isTouchDensity,
       item,
       canMoveToMain,
       closeLeading,
@@ -267,6 +274,7 @@ export function ExplorerSidebarTabRail({
   trailingAccessory,
 }: ExplorerSidebarTabRailProps) {
   const scrollBoundary = useHorizontalScrollBoundary();
+  const isTouchDensity = useControlDensity() === "touch";
   const { t } = useTranslation();
   const groups = useWorkspaceTabLaunchCatalog({
     serverId: normalizedServerId,
@@ -335,7 +343,11 @@ export function ExplorerSidebarTabRail({
     <ContextMenu>
       <ContextMenuTrigger
         contextOnly
-        style={[styles.track, titlebarDragSurfaceStyle as never]}
+        style={[
+          styles.track,
+          isTouchDensity ? styles.trackTouch : null,
+          titlebarDragSurfaceStyle as never,
+        ]}
         testID="explorer-sidebar-tab-rail"
       >
         <View style={styles.scrollContainer}>
@@ -398,6 +410,9 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "center",
   },
+  trackTouch: {
+    height: WORKSPACE_SECONDARY_HEADER_HEIGHT_TOUCH,
+  },
   scrollContainer: {
     flex: 1,
     minWidth: 0,
@@ -424,6 +439,9 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[1],
     userSelect: "none",
+  },
+  tabTouch: {
+    height: TOUCH_ROW_HEIGHT,
   },
   tabHovered: {
     backgroundColor: theme.colors.interactionHighlight,

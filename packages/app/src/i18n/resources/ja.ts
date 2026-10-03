@@ -1984,6 +1984,23 @@ export const ja: TranslationResources = {
     tokens: "{{used}} / {{max}}トークン",
     sessionCost: "セッションコスト: {{cost}}",
     accessibility: "コンテキストウィンドウ{{percentage}}%使用",
+    panel: {
+      title: "コンテキスト",
+      used: "使用量",
+      usedValue: "{{used}} / {{max}} トークン · {{percentage}}%",
+      sessionCost: "セッションコスト",
+      hint: "エージェントが会話を要約して空きを作り、同じ作業を続けます。",
+      accessibility: "コンテキストウィンドウ {{percentage}}% 使用。圧縮を開く",
+    },
+    compact: {
+      action: "会話を圧縮",
+      actionAfterTurn: "完了後に圧縮",
+      confirmTitle: "会話を圧縮しますか？",
+      confirmMessage:
+        "{{agent}} がコンテキストの {{tokens}} トークンを要約します。この操作は元に戻せません。",
+      confirm: "圧縮",
+      failed: "会話を圧縮できませんでした",
+    },
   },
   review: {
     comment: {

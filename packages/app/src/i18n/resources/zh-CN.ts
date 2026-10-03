@@ -1942,6 +1942,22 @@ export const zhCN: TranslationResources = {
     tokens: "{{used}} / {{max}} tokens",
     sessionCost: "会话费用 {{cost}}",
     accessibility: "上下文窗口已使用 {{percentage}}%",
+    panel: {
+      title: "上下文",
+      used: "已使用",
+      usedValue: "{{used}} / {{max}} tokens · {{percentage}}%",
+      sessionCost: "会话费用",
+      hint: "智能体会总结对话以释放空间，并继续当前工作。",
+      accessibility: "上下文窗口已使用 {{percentage}}%。打开压缩",
+    },
+    compact: {
+      action: "压缩对话",
+      actionAfterTurn: "完成后压缩",
+      confirmTitle: "压缩对话？",
+      confirmMessage: "{{agent}} 将总结 {{tokens}} 个上下文 token。此操作无法撤销。",
+      confirm: "压缩",
+      failed: "无法压缩对话",
+    },
   },
   review: {
     comment: {

@@ -41,7 +41,7 @@ export const AgentControlTrigger = forwardRef<View, AgentControlTriggerProps>(
     },
     ref,
   ) {
-    const { glyphSize } = useComposerControlLayout();
+    const { glyphSize, hitSlop } = useComposerControlLayout();
     const isSheet = surface === "sheet";
     const resolvedGlyphSize = isSheet ? 16 : glyphSize;
     const resolvedIconColor = iconColor ?? styles.iconColor.color;
@@ -64,6 +64,7 @@ export const AgentControlTrigger = forwardRef<View, AgentControlTriggerProps>(
         collapsable={false}
         disabled={disabled}
         onPress={onPress}
+        hitSlop={isSheet ? undefined : hitSlop}
         style={triggerStyle}
         accessibilityRole="button"
         accessibilityLabel={accessibilityLabel}

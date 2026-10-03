@@ -17,7 +17,12 @@ import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
 import type { ShortcutKey } from "@/utils/format-shortcut";
 import type { GitAction, GitActions } from "@/git/policy";
 import { useGitActionRunner } from "@/git/use-actions";
-import { buttonControlHeight, HEADER_CONTROL_HEIGHT } from "@/components/ui/control-geometry";
+import {
+  buttonControlHeight,
+  HEADER_CONTROL_HEIGHT,
+  TOUCH_HEADER_CONTROL_HEIGHT,
+} from "@/components/ui/control-geometry";
+import { useControlDensity } from "@/constants/layout";
 
 interface GitActionsSplitButtonProps {
   gitActions: GitActions;
@@ -84,6 +89,7 @@ export function GitActionsSplitButton({
   const { t } = useTranslation();
   const runGitAction = useGitActionRunner();
   const archiveShortcutKeys = useShortcutKeys("archive-workspace");
+  const isTouchDensity = useControlDensity() === "touch";
 
   const getActionDisplayLabel = useCallback((action: GitAction): string => {
     if (action.status === "pending") return action.pendingLabel;
@@ -98,7 +104,14 @@ export function GitActionsSplitButton({
     runGitAction(gitActions.primary);
   }, [gitActions.primary, runGitAction]);
 
-  const overflowMenuButtonStyle = useMemo(() => [styles.iconButton, styles.overflowMenuButton], []);
+  const overflowMenuButtonStyle = useMemo(
+    () => [styles.iconButton, isTouchDensity && styles.iconButtonTouch, styles.overflowMenuButton],
+    [isTouchDensity],
+  );
+  const splitButtonStyle = useMemo(
+    () => [styles.splitButton, isTouchDensity && styles.controlHeightTouch],
+    [isTouchDensity],
+  );
 
   const primaryDisabled = gitActions.primary?.disabled;
   const primaryPressableStyle = useCallback(
@@ -114,19 +127,21 @@ export function GitActionsSplitButton({
   const caretTriggerStyle = useCallback(
     ({ hovered, pressed, open }: { hovered: boolean; pressed: boolean; open: boolean }) => [
       styles.splitButtonCaret,
+      isTouchDensity && styles.splitButtonCaretTouch,
       (hovered || pressed || open) &&
         inlineUnistylesStyle({ backgroundColor: theme.colors.surface2 }),
     ],
-    [theme.colors.surface2],
+    [isTouchDensity, theme.colors.surface2],
   );
 
   const menuOnlyTriggerStyle = useCallback(
     ({ hovered, pressed, open }: { hovered: boolean; pressed: boolean; open: boolean }) => [
       styles.menuOnlyTrigger,
+      isTouchDensity && styles.controlHeightTouch,
       (hovered || pressed || open) &&
         inlineUnistylesStyle({ backgroundColor: theme.colors.surface2 }),
     ],
-    [theme.colors.surface2],
+    [isTouchDensity, theme.colors.surface2],
   );
 
   const menuOnlyActions = useMemo(
@@ -183,7 +198,7 @@ export function GitActionsSplitButton({
   return (
     <View style={styles.row}>
       {gitActions.primary ? (
-        <View style={styles.splitButton}>
+        <View style={splitButtonStyle}>
           <Pressable
             testID="changes-primary-cta"
             style={primaryPressableStyle}
@@ -355,6 +370,16 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "center",
     borderRadius: theme.borderRadius.md,
+  },
+  controlHeightTouch: {
+    height: TOUCH_HEADER_CONTROL_HEIGHT,
+  },
+  splitButtonCaretTouch: {
+    width: TOUCH_HEADER_CONTROL_HEIGHT,
+  },
+  iconButtonTouch: {
+    width: TOUCH_HEADER_CONTROL_HEIGHT,
+    height: TOUCH_HEADER_CONTROL_HEIGHT,
   },
   overflowMenuButton: {
     marginRight: -theme.spacing[2],

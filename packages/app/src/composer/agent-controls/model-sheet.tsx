@@ -11,6 +11,7 @@ import { ModelBrowser, useModelBrowser } from "@/components/model-browser";
 import { resolveModelBrowserScrolling } from "@/components/model-browser-view";
 import { AgentControlTrigger } from "@/composer/agent-controls/control";
 import { ComposerToolbarGlyph } from "@/composer/agent-controls/glyph";
+import { useComposerControlLayout } from "@/composer/agent-controls/layout-context";
 import { resolveModelSheetOpening } from "@/composer/agent-controls/model-sheet-flow";
 import type { ProviderSelectorProvider } from "@/provider-selection/provider-selection";
 import { useIsCompactFormFactor } from "@/constants/layout";
@@ -98,6 +99,7 @@ export function CompactModelSheet({
   children,
 }: CompactModelSheetProps) {
   const { t } = useTranslation();
+  const { hitSlop } = useComposerControlLayout();
   const usesBottomSheet = useIsCompactFormFactor();
   const modelBrowserScrolling = resolveModelBrowserScrolling({
     isNative,
@@ -267,6 +269,7 @@ export function CompactModelSheet({
         collapsable={false}
         disabled={disabled}
         onPress={toggle}
+        hitSlop={hitSlop}
         style={triggerStyle}
         accessibilityRole="button"
         accessibilityLabel={t("modelSelector.selectedModel", {

@@ -36,7 +36,12 @@ import {
 } from "@/utils/workspace-script-links";
 import type { Theme } from "@/styles/theme";
 import { useWorkspaceServiceRoutePreferencesStore } from "@/workspace-service-routes/store";
-import { buttonControlHeight, HEADER_CONTROL_HEIGHT } from "@/components/ui/control-geometry";
+import {
+  buttonControlHeight,
+  HEADER_CONTROL_HEIGHT,
+  TOUCH_HEADER_CONTROL_HEIGHT,
+} from "@/components/ui/control-geometry";
+import { useControlDensity } from "@/constants/layout";
 import { extraMutedIconColorMapping } from "@/components/ui/icon-color";
 
 type RowActionIcon = "copy" | "open" | "restart" | "start" | "stop" | "terminal";
@@ -547,6 +552,7 @@ export function WorkspaceScriptsButton({
 }: WorkspaceScriptsButtonProps): ReactElement | null {
   const { t } = useTranslation();
   const toast = useToast();
+  const isTouchDensity = useControlDensity() === "touch";
   const client = useSessionStore((state) => state.sessions[serverId]?.client ?? null);
   const activeConnection = useHostRuntimeSnapshot(serverId)?.activeConnection ?? null;
   const preferredRouteKind = useWorkspaceServiceRoutePreferencesStore(
@@ -678,7 +684,13 @@ export function WorkspaceScriptsButton({
 
   return (
     <View style={styles.row}>
-      <View style={presentation === "ghost" ? styles.ghostButtonFrame : styles.splitButton}>
+      <View
+        style={
+          presentation === "ghost"
+            ? styles.ghostButtonFrame
+            : [styles.splitButton, isTouchDensity && styles.splitButtonTouch]
+        }
+      >
         <DropdownMenu>
           <DropdownMenuTrigger
             testID="workspace-scripts-button"
@@ -749,6 +761,9 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: theme.borderWidth[1],
     borderColor: theme.colors.borderAccent,
     overflow: "hidden",
+  },
+  splitButtonTouch: {
+    height: TOUCH_HEADER_CONTROL_HEIGHT,
   },
   ghostButtonFrame: {
     flexDirection: "row",

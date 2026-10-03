@@ -21,6 +21,8 @@ import { useHostRuntimeIsConnected, useHosts } from "@/runtime/host-runtime";
 import { useKeyboardShortcutsStore } from "@/stores/keyboard-shortcuts-store";
 import { useSessionStore } from "@/stores/session-store";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
+import { TOUCH_ROW_HEIGHT } from "@/components/ui/control-geometry";
+import { useControlDensity } from "@/constants/layout";
 import type { HostProfile } from "@/types/host-connection";
 import { formatVersionWithPrefix } from "@/desktop/updates/desktop-updates";
 import { resolveAppVersion } from "@/utils/app-version";
@@ -82,6 +84,7 @@ export function SidebarHelpMenu() {
   const openAppDiagnostic = useAppDiagnosticStore((state) => state.open);
   const setShortcutsDialogOpen = useKeyboardShortcutsStore((state) => state.setShortcutsDialogOpen);
   const [open, setOpen] = useState(false);
+  const isTouchDensity = useControlDensity() === "touch";
   const version = formatVersionWithPrefix(resolveAppVersion());
   const hosts = useHosts();
 
@@ -103,7 +106,7 @@ export function SidebarHelpMenu() {
         <TooltipTrigger asChild>
           <View>
             <DropdownMenuTrigger
-              style={styles.trigger}
+              style={isTouchDensity ? [styles.trigger, styles.triggerTouch] : styles.trigger}
               testID="sidebar-help"
               accessibilityRole="button"
               accessibilityLabel={t("sidebar.help.trigger")}
@@ -181,6 +184,10 @@ export function SidebarHelpMenu() {
 }
 
 const styles = StyleSheet.create((theme) => ({
+  triggerTouch: {
+    width: TOUCH_ROW_HEIGHT,
+    height: TOUCH_ROW_HEIGHT,
+  },
   trigger: {
     width: 28,
     height: 28,

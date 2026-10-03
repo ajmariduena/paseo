@@ -1989,6 +1989,23 @@ export const en = {
     tokens: "{{used}} / {{max}} tokens",
     sessionCost: "Session cost {{cost}}",
     accessibility: "Context window {{percentage}}% used",
+    panel: {
+      title: "Context",
+      used: "Used",
+      usedValue: "{{used}} / {{max}} tokens · {{percentage}}%",
+      sessionCost: "Session cost",
+      hint: "The agent summarizes the conversation to free up space and keeps working on the same task.",
+      accessibility: "Context window {{percentage}}% used. Open compaction",
+    },
+    compact: {
+      action: "Compact conversation",
+      actionAfterTurn: "Compact when done",
+      confirmTitle: "Compact the conversation?",
+      confirmMessage:
+        "{{agent}} will summarize {{tokens}} tokens of context. This can't be undone.",
+      confirm: "Compact",
+      failed: "Unable to compact the conversation",
+    },
   },
   review: {
     comment: {

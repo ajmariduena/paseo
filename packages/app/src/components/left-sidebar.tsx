@@ -28,7 +28,8 @@ import { SidebarHelpMenu } from "@/components/sidebar/sidebar-help-menu";
 import { SidebarResizeHandle } from "@/components/sidebar-resize-handle";
 import { Shortcut } from "@/components/ui/shortcut";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { HEADER_INNER_HEIGHT, useIsCompactFormFactor } from "@/constants/layout";
+import { HEADER_INNER_HEIGHT, useControlDensity, useIsCompactFormFactor } from "@/constants/layout";
+import { TOUCH_ROW_HEIGHT } from "@/components/ui/control-geometry";
 import { useOpenAddProject } from "@/hooks/use-open-add-project";
 import { useImportSession } from "@/hooks/use-import-session";
 import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
@@ -289,12 +290,13 @@ function FooterIconButton({
   theme: SidebarTheme;
   buttonRef?: RefObject<View | null>;
 }) {
+  const isTouchDensity = useControlDensity() === "touch";
   return (
     <Tooltip delayDuration={300}>
       <TooltipTrigger asChild>
         <Pressable
           ref={buttonRef}
-          style={styles.footerIconButton}
+          style={[styles.footerIconButton, isTouchDensity && styles.footerIconButtonTouch]}
           testID={testID}
           nativeID={testID}
           collapsable={false}
@@ -923,7 +925,7 @@ const styles = StyleSheet.create((theme) => ({
     borderTopWidth: 1,
     borderTopColor: theme.colors.border,
   },
-  // The icons' 28pt buttons sit edge to edge; their own inset spaces the glyphs.
+  // The icon buttons sit edge to edge; their own inset spaces the glyphs.
   sidebarFooter: {
     flexDirection: "row",
     alignItems: "center",
@@ -947,6 +949,10 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: "center",
     paddingVertical: theme.spacing[1],
     paddingHorizontal: theme.spacing[1],
+  },
+  footerIconButtonTouch: {
+    width: TOUCH_ROW_HEIGHT,
+    height: TOUCH_ROW_HEIGHT,
   },
   tooltipRow: {
     flexDirection: "row",

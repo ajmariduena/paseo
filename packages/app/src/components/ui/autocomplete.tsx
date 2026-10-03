@@ -14,6 +14,8 @@ import { useTranslation } from "react-i18next";
 import { File, Folder } from "lucide-react-native";
 import type { Theme } from "@/styles/theme";
 import { getAutocompleteScrollOffset } from "./autocomplete-utils";
+import { TOUCH_TARGET_SIZE } from "@/components/ui/control-geometry";
+import { useControlDensity } from "@/constants/layout";
 
 export interface AutocompleteOption {
   id: string;
@@ -64,6 +66,7 @@ function AutocompleteRow({
   const optionLabel = removeBoltGlyphs(option.label) ?? option.label;
   const optionDescription = removeBoltGlyphs(option.description);
   const isFileOrDir = option.kind === "directory" || option.kind === "file";
+  const isTouchDensity = useControlDensity() === "touch";
 
   const handleLayout = useCallback(
     (event: LayoutChangeEvent) => onRowLayout(index, event),
@@ -73,9 +76,10 @@ function AutocompleteRow({
   const pressableStyle = useCallback(
     ({ hovered = false, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
       styles.item,
+      isTouchDensity && styles.itemTouch,
       (hovered || pressed || isSelected) && styles.itemActive,
     ],
-    [isSelected],
+    [isSelected, isTouchDensity],
   );
 
   return (
@@ -339,6 +343,9 @@ const styles = StyleSheet.create((theme: Theme) => ({
     minHeight: 36,
     paddingHorizontal: theme.spacing[3],
     paddingVertical: theme.spacing[2],
+  },
+  itemTouch: {
+    minHeight: TOUCH_TARGET_SIZE,
   },
   itemLeading: {
     width: 18,

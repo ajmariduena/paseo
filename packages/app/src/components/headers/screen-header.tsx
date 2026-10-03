@@ -7,7 +7,9 @@ import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import {
   HEADER_INNER_HEIGHT,
   HEADER_INNER_HEIGHT_MOBILE,
+  HEADER_INNER_HEIGHT_TOUCH,
   HEADER_TOP_PADDING_MOBILE,
+  useControlDensity,
   useIsCompactFormFactor,
 } from "@/constants/layout";
 import { WindowChromeSafeArea } from "@/utils/desktop-window";
@@ -37,6 +39,7 @@ export function ScreenHeader({
   const { theme } = useUnistyles();
   const insets = useSafeAreaInsets();
   const isMobile = useIsCompactFormFactor();
+  const isTouchDensity = useControlDensity() === "touch";
   // Only add extra padding on mobile for better touch targets; on desktop, only use safe area insets
   const topPadding = isMobile ? HEADER_TOP_PADDING_MOBILE : 0;
   const baseHorizontalPadding = isMobile ? theme.spacing[2] : theme.spacing[3];
@@ -45,7 +48,10 @@ export function ScreenHeader({
     () => [styles.inner, { paddingTop: insets.top + topPadding }],
     [insets.top, topPadding],
   );
-  const rowStyle = useMemo(() => [styles.row, borderless && styles.borderless], [borderless]);
+  const rowStyle = useMemo(
+    () => [styles.row, isTouchDensity && styles.rowTouch, borderless && styles.borderless],
+    [borderless, isTouchDensity],
+  );
   const leftCombinedStyle = useMemo(() => [styles.left, leftStyle], [leftStyle]);
   const rightCombinedStyle = useMemo(() => [styles.right, rightStyle], [rightStyle]);
 
@@ -84,6 +90,12 @@ const styles = StyleSheet.create((theme) => ({
     borderBottomWidth: theme.borderWidth[1],
     borderBottomColor: theme.colors.border,
     userSelect: "none",
+  },
+  rowTouch: {
+    height: {
+      xs: HEADER_INNER_HEIGHT_MOBILE,
+      md: HEADER_INNER_HEIGHT_TOUCH,
+    },
   },
   left: {
     flex: 1,

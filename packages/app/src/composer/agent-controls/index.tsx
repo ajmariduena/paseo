@@ -59,7 +59,7 @@ import {
   getAgentControlHintKey,
   resolveAgentModelSelection,
 } from "@/composer/agent-controls/utils";
-import { useIsCompactFormFactor } from "@/constants/layout";
+import { useControlDensity, useIsCompactFormFactor } from "@/constants/layout";
 import { readMeasuredWidth } from "@/hooks/use-container-width";
 import { useToast } from "@/contexts/toast-context";
 import { toErrorMessage } from "@/utils/error-messages";
@@ -71,13 +71,18 @@ import {
 import { useComposerKeyboardScope } from "@/composer/keyboard-scope";
 import { isNative } from "@/constants/platform";
 import {
+  COMPOSER_TOOLBAR_GEOMETRY,
+  COMPOSER_TOOLBAR_TOUCH_HIT_SLOP,
   resolveComposerControlDensity,
   resolveComposerControlPresentation,
   resolveComposerToolbarGlyphSize,
   type ComposerControlDensity,
   type ComposerControlPresentation,
 } from "@/composer/agent-controls/layout";
-import { ComposerControlLayoutProvider } from "@/composer/agent-controls/layout-context";
+import {
+  ComposerControlLayoutProvider,
+  useComposerControlLayout,
+} from "@/composer/agent-controls/layout-context";
 import { ComposerToolbarGlyph } from "@/composer/agent-controls/glyph";
 import { AgentControlTrigger } from "@/composer/agent-controls/control";
 import { CompactModelSheet } from "@/composer/agent-controls/model-sheet";
@@ -507,6 +512,10 @@ function ControlledAgentControls({
   const { t } = useTranslation();
   const isCompactFormFactor = useIsCompactFormFactor();
   const isCompact = isCompactLayout ?? isCompactFormFactor;
+  const isTouchDensity = useControlDensity() === "touch";
+  const controlGap = isTouchDensity
+    ? COMPOSER_TOOLBAR_GEOMETRY.touchControlGap
+    : COMPOSER_TOOLBAR_GEOMETRY.controlGap;
   const { fontScale } = useWindowDimensions();
   const [activeSheet, setActiveSheet] = useState<ActiveSheet>(null);
   const [openSelector, setOpenSelector] = useState<AgentControlSelector | null>(null);
@@ -576,8 +585,9 @@ function ControlledAgentControls({
     () => ({
       glyphSize: resolveComposerToolbarGlyphSize(isNative ? "native" : "web"),
       presentation,
+      hitSlop: isTouchDensity ? COMPOSER_TOOLBAR_TOUCH_HIT_SLOP : undefined,
     }),
-    [presentation],
+    [isTouchDensity, presentation],
   );
 
   const updateDensityForWidth = useCallback(
@@ -586,12 +596,13 @@ function ControlledAgentControls({
         availableWidth,
         currentDensity: densityRef.current,
         controls: controlPresence,
+        controlGap,
       });
       if (nextDensity === densityRef.current) return;
       densityRef.current = nextDensity;
       setDensity(nextDensity);
     },
-    [controlPresence],
+    [controlGap, controlPresence],
   );
 
   const handleLayout = useCallback(
@@ -611,6 +622,7 @@ function ControlledAgentControls({
   }, [updateDensityForWidth]);
 
   const modelDisabled = disabled;
+  const touchContainerStyle = useMemo(() => [styles.container, styles.containerTouch], []);
 
   const comboboxProviderOptions = useMemo<ComboboxOption[]>(
     () => toComboboxOptions(providerOptions),
@@ -733,7 +745,7 @@ function ControlledAgentControls({
 
   return (
     <ComposerControlLayoutProvider value={layoutContextValue}>
-      <View style={styles.container} onLayout={handleLayout}>
+      <View style={isTouchDensity ? touchContainerStyle : styles.container} onLayout={handleLayout}>
         {!isCompact ? (
           <DesktopAgentControlsContent
             provider={provider}
@@ -944,9 +956,10 @@ function DesktopAgentControlsContent(props: DesktopAgentControlsContentProps) {
     handleCloseSheet,
     modelSelectorServerId,
   } = props;
+  const { hitSlop } = useComposerControlLayout();
   const modelToolbar = useMemo(
-    () => ({ glyphSize, showCaret: presentation.showCarets }),
-    [glyphSize, presentation.showCarets],
+    () => ({ glyphSize, showCaret: presentation.showCarets, hitSlop }),
+    [glyphSize, hitSlop, presentation.showCarets],
   );
   const featuresSheetHeader = useMemo<SheetHeader>(
     () => ({ title: t("agentControls.features.title") }),
@@ -962,6 +975,7 @@ function DesktopAgentControlsContent(props: DesktopAgentControlsContentProps) {
             collapsable={false}
             disabled={disabled || !canSelectProvider}
             onPress={handleProviderPress}
+            hitSlop={hitSlop}
             style={providerPressableStyle}
             accessibilityRole="button"
             accessibilityLabel={t("agentControls.provider.select")}
@@ -1062,6 +1076,7 @@ function DesktopAgentControlsContent(props: DesktopAgentControlsContentProps) {
           <Pressable
             onPress={handleOpenFeatures}
             disabled={disabled}
+            hitSlop={hitSlop}
             style={styles.modeIconBadge}
             accessibilityRole="button"
             accessibilityLabel={t("agentControls.features.open")}
@@ -1943,6 +1958,13 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[1],
     overflow: "hidden",
+  },
+  // The container clips, so it carries the triggers' vertical hit slop inside its own frame
+  // without taking more height in the composer.
+  containerTouch: {
+    gap: COMPOSER_TOOLBAR_GEOMETRY.touchControlGap,
+    paddingVertical: COMPOSER_TOOLBAR_TOUCH_HIT_SLOP.top,
+    marginVertical: -COMPOSER_TOOLBAR_TOUCH_HIT_SLOP.top,
   },
   modeBadge: {
     height: 28,

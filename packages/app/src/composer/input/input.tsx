@@ -52,7 +52,9 @@ import { getShortcutOs } from "@/utils/shortcut-platform";
 import type { MessageInputKeyboardActionKind } from "@/keyboard/actions";
 import { isImeComposingKeyboardEvent } from "@/utils/keyboard-ime";
 import { isWeb } from "@/constants/platform";
-import { useIsCompactFormFactor } from "@/constants/layout";
+import { useControlDensity, useIsCompactFormFactor } from "@/constants/layout";
+import { TouchTarget, useTouchHitSlop } from "@/components/ui/touch-target";
+import { COMPOSER_TOOLBAR_GEOMETRY } from "@/composer/agent-controls/layout";
 import { useComposerKeyboardScope } from "@/composer/keyboard-scope";
 import { RenderProfile } from "@/utils/render-profiler";
 import { useComposerHeight } from "./height";
@@ -271,36 +273,40 @@ function AttachmentDropdown({
   addAttachmentLabel: string;
 }) {
   const isButtonDisabled = !isConnected || disabled;
+  const hitSlop = useTouchHitSlop(COMPOSER_TOOLBAR_GEOMETRY.controlSize);
   if (!visible) return null;
   return (
-    <DropdownMenu compactMode="sheet">
-      <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
-        <TooltipTrigger asChild>
-          <DropdownMenuTrigger
-            disabled={isButtonDisabled}
-            accessibilityLabel={addAttachmentLabel}
-            accessibilityRole="button"
-            testID="message-input-attach-button"
-            style={attachButtonStyle}
-          >
-            {renderAttachButtonIcon}
-          </DropdownMenuTrigger>
-        </TooltipTrigger>
-        <TooltipContent side="top" align="center" offset={8}>
-          <Text style={styles.tooltipText}>{addAttachmentLabel}</Text>
-        </TooltipContent>
-      </Tooltip>
-      <DropdownMenuContent
-        side="top"
-        align="start"
-        offset={8}
-        minWidth={220}
-        testID="message-input-attachment-menu"
-        sheetTitle={addAttachmentLabel}
-      >
-        <AttachmentMenuList items={attachmentMenuItems} />
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <TouchTarget slotSize={COMPOSER_TOOLBAR_GEOMETRY.controlSize}>
+      <DropdownMenu compactMode="sheet">
+        <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
+          <TooltipTrigger asChild>
+            <DropdownMenuTrigger
+              disabled={isButtonDisabled}
+              accessibilityLabel={addAttachmentLabel}
+              accessibilityRole="button"
+              testID="message-input-attach-button"
+              hitSlop={hitSlop}
+              style={attachButtonStyle}
+            >
+              {renderAttachButtonIcon}
+            </DropdownMenuTrigger>
+          </TooltipTrigger>
+          <TooltipContent side="top" align="center" offset={8}>
+            <Text style={styles.tooltipText}>{addAttachmentLabel}</Text>
+          </TooltipContent>
+        </Tooltip>
+        <DropdownMenuContent
+          side="top"
+          align="start"
+          offset={8}
+          minWidth={220}
+          testID="message-input-attachment-menu"
+          sheetTitle={addAttachmentLabel}
+        >
+          <AttachmentMenuList items={attachmentMenuItems} />
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </TouchTarget>
   );
 }
 
@@ -717,22 +723,26 @@ function VoiceButtonTooltip({
   dictationToggleKeys: ShortcutChord | null | undefined;
 }) {
   const shortcut = isRealtimeVoiceForCurrentAgent ? voiceMuteToggleKeys : dictationToggleKeys;
+  const hitSlop = useTouchHitSlop(COMPOSER_TOOLBAR_GEOMETRY.controlSize);
   if (!visible) return null;
   return (
-    <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
-      <TooltipTrigger
-        onPress={onVoicePress}
-        disabled={!isDictationStartEnabled}
-        accessibilityRole="button"
-        accessibilityLabel={voiceButtonAccessibilityLabel}
-        style={voiceButtonStyle}
-      >
-        {renderVoiceButtonIcon}
-      </TooltipTrigger>
-      <TooltipContent side="top" align="center" offset={8}>
-        <VoiceTooltipBody voiceTooltipText={voiceTooltipText} shortcut={shortcut} />
-      </TooltipContent>
-    </Tooltip>
+    <TouchTarget slotSize={COMPOSER_TOOLBAR_GEOMETRY.controlSize}>
+      <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
+        <TooltipTrigger
+          onPress={onVoicePress}
+          disabled={!isDictationStartEnabled}
+          accessibilityRole="button"
+          accessibilityLabel={voiceButtonAccessibilityLabel}
+          hitSlop={hitSlop}
+          style={voiceButtonStyle}
+        >
+          {renderVoiceButtonIcon}
+        </TooltipTrigger>
+        <TooltipContent side="top" align="center" offset={8}>
+          <VoiceTooltipBody voiceTooltipText={voiceTooltipText} shortcut={shortcut} />
+        </TooltipContent>
+      </Tooltip>
+    </TouchTarget>
   );
 }
 
@@ -767,28 +777,32 @@ function SendButtonTooltip({
   sendKeys: ShortcutChord | null | undefined;
   sendTooltipLabel: string;
 }) {
+  const hitSlop = useTouchHitSlop(COMPOSER_TOOLBAR_GEOMETRY.primaryTouchSize);
   if (!shouldShow) return null;
   return (
-    <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
-      <TooltipTrigger
-        onPress={canPressLoadingButton ? onSubmitLoadingPress : onDefaultSendAction}
-        disabled={isSendButtonDisabled}
-        accessibilityLabel={submitAccessibilityLabel}
-        accessibilityRole="button"
-        testID={submitButtonTestID}
-        style={sendButtonCombinedStyle}
-      >
-        <SendButtonContent
-          isSubmitLoading={isSubmitLoading}
-          submitIcon={submitIcon}
-          submitLabel={submitLabel}
-          buttonIconSize={buttonIconSize}
-        />
-      </TooltipTrigger>
-      <TooltipContent side="top" align="center" offset={8}>
-        <SendTooltipBody label={sendTooltipLabel} sendKeys={sendKeys} />
-      </TooltipContent>
-    </Tooltip>
+    <TouchTarget slotSize={COMPOSER_TOOLBAR_GEOMETRY.controlSize}>
+      <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
+        <TooltipTrigger
+          onPress={canPressLoadingButton ? onSubmitLoadingPress : onDefaultSendAction}
+          disabled={isSendButtonDisabled}
+          accessibilityLabel={submitAccessibilityLabel}
+          accessibilityRole="button"
+          testID={submitButtonTestID}
+          hitSlop={hitSlop}
+          style={sendButtonCombinedStyle}
+        >
+          <SendButtonContent
+            isSubmitLoading={isSubmitLoading}
+            submitIcon={submitIcon}
+            submitLabel={submitLabel}
+            buttonIconSize={buttonIconSize}
+          />
+        </TooltipTrigger>
+        <TooltipContent side="top" align="center" offset={8}>
+          <SendTooltipBody label={sendTooltipLabel} sendKeys={sendKeys} />
+        </TooltipContent>
+      </Tooltip>
+    </TouchTarget>
   );
 }
 
@@ -1189,6 +1203,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const mode = resolveComposerInputMode(inputMode);
     const { t } = useTranslation();
     const isCompact = useIsCompactFormFactor();
+    const isTouchDensity = useControlDensity() === "touch";
     const { height: windowHeight } = useWindowDimensions();
     const maxInputHeight = resolveMaxInputHeight(windowHeight);
     const buttonIconSize = isWeb ? ICON_SIZE.md : ICON_SIZE.lg;
@@ -1747,10 +1762,15 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const sendButtonCombinedStyle = useMemo(
       () => [
         styles.sendButton,
+        isTouchDensity && styles.primaryButtonTouch,
         submitLabel ? styles.sendButtonLabeled : undefined,
         isSendButtonDisabled && styles.buttonDisabled,
       ],
-      [isSendButtonDisabled, submitLabel],
+      [isSendButtonDisabled, isTouchDensity, submitLabel],
+    );
+    const rightButtonGroupStyle = useMemo(
+      () => [styles.rightButtonGroup, isTouchDensity && styles.rightButtonGroupTouch],
+      [isTouchDensity],
     );
     const overlayContainerStyle = useMemo(
       () => [styles.overlayContainer, { opacity: surfacePresentation.overlay.opacity }],
@@ -1844,7 +1864,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
             </View>
 
             {/* Right: voice button, contextual button (realtime/send/cancel) */}
-            <View style={styles.rightButtonGroup}>
+            <View style={rightButtonGroupStyle}>
               {beforeVoiceContent}
               <VoiceButtonTooltip
                 visible={mode.showVoice}
@@ -2002,6 +2022,10 @@ const styles = StyleSheet.create((theme: Theme) => ({
     alignItems: "center",
     gap: theme.spacing[1],
   },
+  // Touch targets abut instead, so neighbouring buttons never share a strip of screen.
+  rightButtonGroupTouch: {
+    gap: 0,
+  },
   attachButton: {
     width: 28,
     height: 28,
@@ -2033,6 +2057,11 @@ const styles = StyleSheet.create((theme: Theme) => ({
     alignItems: "center",
     justifyContent: "center",
     marginLeft: theme.spacing[1],
+  },
+  primaryButtonTouch: {
+    width: COMPOSER_TOOLBAR_GEOMETRY.primaryTouchSize,
+    height: COMPOSER_TOOLBAR_GEOMETRY.primaryTouchSize,
+    marginLeft: 0,
   },
   sendButtonLabeled: {
     width: "auto",

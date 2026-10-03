@@ -1997,6 +1997,23 @@ export const ptBR: TranslationResources = {
     tokens: "{{used}} / {{max}} tokens",
     sessionCost: "Custo da sessão {{cost}}",
     accessibility: "Janela de contexto {{percentage}}% usada",
+    panel: {
+      title: "Contexto",
+      used: "Usado",
+      usedValue: "{{used}} / {{max}} tokens · {{percentage}}%",
+      sessionCost: "Custo da sessão",
+      hint: "O agente resume a conversa para liberar espaço e continua o mesmo trabalho.",
+      accessibility: "Janela de contexto {{percentage}}% usada. Abrir compactação",
+    },
+    compact: {
+      action: "Compactar conversa",
+      actionAfterTurn: "Compactar ao terminar",
+      confirmTitle: "Compactar a conversa?",
+      confirmMessage:
+        "{{agent}} vai resumir {{tokens}} tokens de contexto. Isso não pode ser desfeito.",
+      confirm: "Compactar",
+      failed: "Não foi possível compactar a conversa",
+    },
   },
   review: {
     comment: {

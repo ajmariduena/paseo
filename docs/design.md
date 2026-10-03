@@ -136,7 +136,7 @@ Things align to their glyphs, not to their boxes. A row's leading icon, its titl
 
 Pick the rails from the content, then hold them. A settings card establishes a leading rail at the icon's left edge and a trailing rail at the last glyph's right edge; every row in that card uses the same two. A row whose icon is absent still starts its title on the leading rail. Indentation is a new rail, not an arbitrary offset.
 
-The pressable is bigger than the glyph, and that is fine. Hit areas grow outward from the aligned content — they never move it. A button that looks two pixels off because its padding is asymmetric is misaligned even though its box is correct.
+The pressable is bigger than the glyph, and that is fine. Hit areas grow outward from the aligned content — they never move it. A button that looks two pixels off because its padding is asymmetric is misaligned even though its box is correct. Under touch density (§9) a small control grows its target with `<TouchTarget>` and `useTouchHitSlop` (`packages/app/src/components/ui/touch-target.tsx`), not with a bigger glyph or more padding.
 
 Optical alignment beats arithmetic when a glyph disagrees with its bounding box. Icons with visual weight on one side, chevrons, and single-character labels usually need a small nudge to look centered. Trust the eye, then leave a comment saying the offset is optical.
 
@@ -147,6 +147,20 @@ One row off the rail makes the whole card look unconsidered.
 ## 9. Responsiveness
 
 Compact-first. The small case is designed; the large case adds chrome around it.
+
+Two axes, decided separately. **Width** decides the layout: `useIsCompactFormFactor()` picks sheet or popover, overlaid or pinned sidebar, stacked or split panes. **Density** decides how big a control's target is: `useControlDensity()` (`packages/app/src/constants/layout.ts`) returns `"touch"` on native and on web without a fine pointer, `"pointer"` otherwise. A wide iPad keeps the desktop layout with touch-sized targets; a Mac with a mouse in a narrow window keeps pointer sizes. Never derive one axis from the other.
+
+| Control                             | Pointer (wide)    | Touch                           |
+| ----------------------------------- | ----------------- | ------------------------------- |
+| Header row / header controls        | 36 / 26           | 44 / 32                         |
+| Workspace tab row / tab / tab close | 36 / 28 / 18      | 44 / 40 / 28                    |
+| Menu row, sidebar row, footer icon  | 28                | 40                              |
+| Autocomplete row                    | 36                | 44                              |
+| Composer buttons                    | 28 visual, 28 hit | 28 visual, 44 hit; send/stop 32 |
+
+The touch numbers live in `control-geometry.ts` (`TOUCH_TARGET_SIZE`, `TOUCH_ROW_HEIGHT`, `TOUCH_HEADER_CONTROL_HEIGHT`). A component applies them as an override on top of its pointer style, so the pointer path renders exactly what it did before density existed.
+
+`hitSlop` alone does not grow a target past its row: iOS and Android hit-test a child only inside its parent's frame unless something in the parent lays out beyond it. `<TouchTarget>` is that something — a 44pt frame with negative margins, so the row keeps its height. `hitSlop` is a no-op on web, so web touch gets the spacing and not the larger target.
 
 The list+detail pattern is canonical and reused across surfaces. The settings shell (`packages/app/src/screens/settings-screen.tsx`) and the projects screen (`packages/app/src/screens/projects-screen.tsx`) implement it identically:
 

@@ -1,6 +1,10 @@
 import type { StyleProp, ViewStyle } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
-import { HEADER_CONTROL_HEIGHT } from "@/components/ui/control-geometry";
+import {
+  HEADER_CONTROL_HEIGHT,
+  TOUCH_HEADER_CONTROL_HEIGHT,
+  type ControlDensity,
+} from "@/components/ui/control-geometry";
 import { ICON_SIZE } from "@/styles/theme";
 
 export { extraMutedIconColorMapping, mutedIconColorMapping } from "@/components/ui/icon-color";
@@ -17,8 +21,13 @@ export interface IconButtonChromeState {
   active?: boolean;
 }
 
-function resolveIconButtonFrame(size: IconButtonChromeSize, compact: boolean) {
-  if (size === "large") return styles.large;
+function resolveIconButtonFrame(
+  size: IconButtonChromeSize,
+  compact: boolean,
+  density: ControlDensity,
+): StyleProp<ViewStyle> {
+  if (size === "large")
+    return density === "touch" ? [styles.large, styles.largeTouch] : styles.large;
   return compact ? styles.smallCompact : styles.small;
 }
 
@@ -26,6 +35,7 @@ interface IconButtonChromeOptions {
   size: IconButtonChromeSize;
   state?: IconButtonChromeState;
   compact?: boolean;
+  density?: ControlDensity;
   disabled?: boolean;
   style?: StyleProp<ViewStyle>;
 }
@@ -35,12 +45,13 @@ export function iconButtonChromeStyle({
   size,
   state,
   compact = false,
+  density = "pointer",
   disabled = false,
   style,
 }: IconButtonChromeOptions): StyleProp<ViewStyle> {
   const highlighted = state?.active || state?.hovered || state?.pressed || state?.open;
   return [
-    resolveIconButtonFrame(size, compact),
+    resolveIconButtonFrame(size, compact, density),
     style,
     highlighted ? styles.highlighted : null,
     disabled ? styles.disabled : null,
@@ -52,7 +63,7 @@ export function iconButtonChromeFrameStyle(
   size: IconButtonChromeSize,
   compact = false,
 ): StyleProp<ViewStyle> {
-  return resolveIconButtonFrame(size, compact);
+  return resolveIconButtonFrame(size, compact, "pointer");
 }
 
 export function iconButtonChromeGlyphSize(size: IconButtonChromeSize, compact = false): number {
@@ -81,6 +92,10 @@ const styles = StyleSheet.create((theme) => ({
     flexShrink: 0,
     outlineWidth: 0,
     outlineColor: "transparent",
+  },
+  largeTouch: {
+    width: TOUCH_HEADER_CONTROL_HEIGHT,
+    height: TOUCH_HEADER_CONTROL_HEIGHT,
   },
   small: {
     width: SMALL_ICON_BUTTON_SIZE,

@@ -1997,6 +1997,23 @@ export const ru: TranslationResources = {
     tokens: "Токены: {{used}} / {{max}}",
     sessionCost: "Стоимость сессии: {{cost}}",
     accessibility: "Использовано {{percentage}}% контекстного окна",
+    panel: {
+      title: "Контекст",
+      used: "Использовано",
+      usedValue: "{{used}} / {{max}} токенов · {{percentage}}%",
+      sessionCost: "Стоимость сессии",
+      hint: "Агент кратко пересказывает разговор, чтобы освободить место, и продолжает ту же работу.",
+      accessibility: "Использовано {{percentage}}% контекстного окна. Открыть сжатие",
+    },
+    compact: {
+      action: "Сжать разговор",
+      actionAfterTurn: "Сжать по завершении",
+      confirmTitle: "Сжать разговор?",
+      confirmMessage:
+        "{{agent}} сожмёт {{tokens}} токенов контекста. Это действие нельзя отменить.",
+      confirm: "Сжать",
+      failed: "Не удалось сжать разговор",
+    },
   },
   review: {
     comment: {

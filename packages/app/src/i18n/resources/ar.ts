@@ -1964,6 +1964,22 @@ export const ar: TranslationResources = {
     tokens: "رموز{{used}}/{{max}}",
     sessionCost: "تكلفة الجلسة{{cost}}",
     accessibility: "تم استخدام نافذة السياق{{percentage}}%",
+    panel: {
+      title: "السياق",
+      used: "المستخدم",
+      usedValue: "{{used}} / {{max}} رمز · {{percentage}}%",
+      sessionCost: "تكلفة الجلسة",
+      hint: "يلخص الوكيل المحادثة لتحرير المساحة ويواصل العمل نفسه.",
+      accessibility: "تم استخدام {{percentage}}% من نافذة السياق. فتح الضغط",
+    },
+    compact: {
+      action: "ضغط المحادثة",
+      actionAfterTurn: "الضغط عند الانتهاء",
+      confirmTitle: "ضغط المحادثة؟",
+      confirmMessage: "سيلخص {{agent}} {{tokens}} رمزًا من السياق. لا يمكن التراجع عن ذلك.",
+      confirm: "ضغط",
+      failed: "تعذر ضغط المحادثة",
+    },
   },
   review: {
     comment: {

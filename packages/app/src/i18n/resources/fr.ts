@@ -2018,6 +2018,23 @@ export const fr: TranslationResources = {
     tokens: "Jetons{{used}}/{{max}}",
     sessionCost: "Coût de la séance{{cost}}",
     accessibility: "Fenêtre contextuelle{{percentage}}% utilisé",
+    panel: {
+      title: "Contexte",
+      used: "Utilisé",
+      usedValue: "{{used}} / {{max}} jetons · {{percentage}} %",
+      sessionCost: "Coût de la session",
+      hint: "L'agent résume la conversation pour libérer de l'espace et poursuit la même tâche.",
+      accessibility: "Fenêtre contextuelle utilisée à {{percentage}} %. Ouvrir la compaction",
+    },
+    compact: {
+      action: "Compacter la conversation",
+      actionAfterTurn: "Compacter à la fin",
+      confirmTitle: "Compacter la conversation ?",
+      confirmMessage:
+        "{{agent}} va résumer {{tokens}} jetons de contexte. Cette action est irréversible.",
+      confirm: "Compacter",
+      failed: "Impossible de compacter la conversation",
+    },
   },
   review: {
     comment: {

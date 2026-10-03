@@ -1974,6 +1974,23 @@ export const ko: TranslationResources = {
     tokens: "{{used}} / {{max}} 토큰",
     sessionCost: "세션 비용 {{cost}}",
     accessibility: "컨텍스트 윈도우 {{percentage}}% 사용됨",
+    panel: {
+      title: "컨텍스트",
+      used: "사용량",
+      usedValue: "{{used}} / {{max}} 토큰 · {{percentage}}%",
+      sessionCost: "세션 비용",
+      hint: "에이전트가 대화를 요약해 공간을 확보하고 같은 작업을 계속합니다.",
+      accessibility: "컨텍스트 윈도우 {{percentage}}% 사용됨. 압축 열기",
+    },
+    compact: {
+      action: "대화 압축",
+      actionAfterTurn: "완료 후 압축",
+      confirmTitle: "대화를 압축할까요?",
+      confirmMessage:
+        "{{agent}}이(가) 컨텍스트 {{tokens}} 토큰을 요약합니다. 이 작업은 되돌릴 수 없습니다.",
+      confirm: "압축",
+      failed: "대화를 압축할 수 없습니다",
+    },
   },
   review: {
     comment: {
