@@ -266,6 +266,8 @@ export interface GlobalVoice {
   mode: GlobalVoiceMode;
   isAutoMode: boolean;
   isSwitching: boolean;
+  /** False when the host predates messages mode; the UI offers it but explains the update. */
+  canUseWeakSignal: boolean;
   messages: VoiceMessagesSnapshot;
   start: () => void;
   stop: () => void;
@@ -292,6 +294,12 @@ export function useGlobalVoice(): GlobalVoice {
   const mode = useGlobalVoiceStore((state) => state.mode);
   const isAutoMode = useGlobalVoiceStore((state) => state.isAutoMode);
   const isCallMuted = useGlobalVoiceStore((state) => state.isMuted);
+  const callServerId = useGlobalVoiceStore((state) => state.callServerId);
+  const canUseWeakSignal = useSessionStore((state) =>
+    callServerId
+      ? state.getSession(callServerId)?.serverInfo?.features?.voiceMessages === true
+      : false,
+  );
   const orchestratorAgentIds = useGlobalVoiceStore((state) => state.orchestratorAgentIds);
   const activeServerId = voice?.activeServerId ?? null;
   const activeAgentId = voice?.activeAgentId ?? null;
@@ -443,6 +451,7 @@ export function useGlobalVoice(): GlobalVoice {
     mode,
     isAutoMode,
     isSwitching,
+    canUseWeakSignal,
     messages,
     start,
     stop,

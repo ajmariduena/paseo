@@ -1860,8 +1860,12 @@ export const ko: TranslationResources = {
       muted: "음소거됨",
     },
     mode: {
-      weak: "약한 신호 모드",
-      weakAuto: "약한 신호 모드(자동)",
+      live: "실시간",
+      weakShort: "약한 신호",
+      liveHint: "실시간 대화. 신호가 끊기면 자동으로 전환돼요.",
+      weakHint: "답변이 메시지로 오고 신호가 끊겨도 계속돼요.",
+      weakAutoHint: "신호가 약해서 자동으로 전환했어요. 연결이 안정되면 실시간으로 돌아가요.",
+      weakUnavailable: "약한 신호 모드를 쓰려면 컴퓨터의 Paseo를 업데이트하세요.",
     },
     spoken: {
       notHeard: "잘 못 들었어요. 다시 말해 주세요.",

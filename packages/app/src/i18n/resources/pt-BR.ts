@@ -1883,8 +1883,13 @@ export const ptBR: TranslationResources = {
       muted: "Silenciado",
     },
     mode: {
-      weak: "Modo de sinal fraco",
-      weakAuto: "Modo de sinal fraco (automático)",
+      live: "Ao vivo",
+      weakShort: "Sinal fraco",
+      liveHint: "Tempo real. Muda sozinho se o sinal cair.",
+      weakHint: "As respostas chegam como mensagens e continuam mesmo se o sinal cair.",
+      weakAutoHint:
+        "Mudou sozinho porque o sinal está fraco. Volta ao vivo quando a conexão estabilizar.",
+      weakUnavailable: "Atualize o Paseo no seu computador para usar o modo de sinal fraco.",
     },
     spoken: {
       notHeard: "Não entendi. Pode repetir?",

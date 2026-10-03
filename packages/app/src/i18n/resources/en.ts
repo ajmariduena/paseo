@@ -1875,8 +1875,13 @@ export const en = {
       muted: "Muted",
     },
     mode: {
-      weak: "Weak signal mode",
-      weakAuto: "Weak signal mode (automatic)",
+      live: "Live",
+      weakShort: "Weak signal",
+      liveHint: "Real time. Switches by itself if the signal drops.",
+      weakHint: "Replies arrive as messages and keep working when the signal cuts out.",
+      weakAutoHint:
+        "Switched by itself because the signal is weak. It goes back to live when the connection holds.",
+      weakUnavailable: "Update Paseo on your computer to use weak signal mode.",
     },
     spoken: {
       notHeard: "I didn't catch that. Can you say it again?",

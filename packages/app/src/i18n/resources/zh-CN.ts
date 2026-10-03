@@ -1828,8 +1828,12 @@ export const zhCN: TranslationResources = {
       muted: "已静音",
     },
     mode: {
-      weak: "弱信号模式",
-      weakAuto: "弱信号模式（自动）",
+      live: "实时",
+      weakShort: "弱信号",
+      liveHint: "实时对话。信号中断时会自动切换。",
+      weakHint: "回复以消息形式送达，信号中断也不会丢失。",
+      weakAutoHint: "因信号较弱已自动切换。连接稳定后会回到实时模式。",
+      weakUnavailable: "请在电脑上更新 Paseo 以使用弱信号模式。",
     },
     spoken: {
       notHeard: "我没听清，请再说一遍。",

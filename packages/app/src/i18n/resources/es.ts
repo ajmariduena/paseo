@@ -1899,8 +1899,13 @@ export const es: TranslationResources = {
       muted: "Silenciado",
     },
     mode: {
-      weak: "Modo señal débil",
-      weakAuto: "Modo señal débil (automático)",
+      live: "En vivo",
+      weakShort: "Señal débil",
+      liveHint: "Tiempo real. Cambia solo si se cae la señal.",
+      weakHint: "Las respuestas llegan como mensajes y siguen aunque se corte la señal.",
+      weakAutoHint:
+        "Cambió solo porque la señal está débil. Vuelve a en vivo cuando la conexión se estabilice.",
+      weakUnavailable: "Actualiza Paseo en tu computadora para usar el modo señal débil.",
     },
     spoken: {
       notHeard: "No te escuché bien. ¿Me lo repites?",

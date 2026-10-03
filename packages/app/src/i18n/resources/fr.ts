@@ -1903,8 +1903,14 @@ export const fr: TranslationResources = {
       muted: "Micro coupé",
     },
     mode: {
-      weak: "Mode signal faible",
-      weakAuto: "Mode signal faible (automatique)",
+      live: "En direct",
+      weakShort: "Signal faible",
+      liveHint: "Temps réel. Bascule seul si le signal faiblit.",
+      weakHint: "Les réponses arrivent en messages et continuent même si le signal coupe.",
+      weakAutoHint:
+        "Basculé automatiquement car le signal est faible. Repasse en direct quand la connexion tient.",
+      weakUnavailable:
+        "Mettez à jour Paseo sur votre ordinateur pour utiliser le mode signal faible.",
     },
     spoken: {
       notHeard: "Je n'ai pas bien entendu. Pouvez-vous répéter ?",

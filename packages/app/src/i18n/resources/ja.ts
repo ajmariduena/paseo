@@ -1870,8 +1870,12 @@ export const ja: TranslationResources = {
       muted: "ミュート中",
     },
     mode: {
-      weak: "弱い電波モード",
-      weakAuto: "弱い電波モード（自動）",
+      live: "ライブ",
+      weakShort: "弱い電波",
+      liveHint: "リアルタイム。電波が落ちると自動で切り替わります。",
+      weakHint: "返答はメッセージで届き、電波が途切れても続きます。",
+      weakAutoHint: "電波が弱いため自動で切り替えました。接続が安定するとライブに戻ります。",
+      weakUnavailable: "弱い電波モードを使うには、パソコンの Paseo を更新してください。",
     },
     spoken: {
       notHeard: "聞き取れませんでした。もう一度お願いします。",

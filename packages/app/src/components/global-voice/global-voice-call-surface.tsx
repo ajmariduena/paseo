@@ -104,11 +104,6 @@ function CarModeScreen({ call }: { call: GlobalVoice }) {
           <Text style={styles.carStatus} testID="global-voice-status">
             {t(`globalVoice.status.${statusKey}`, { count: call.messages.pendingSends })}
           </Text>
-          {call.mode === "messages" ? (
-            <Text style={styles.carMode} testID="global-voice-mode">
-              {call.isAutoMode ? t("globalVoice.mode.weakAuto") : t("globalVoice.mode.weak")}
-            </Text>
-          ) : null}
           <View style={styles.carMeter}>
             {call.isStarting ? (
               <ThemedSpinner uniProps={mutedColorMapping} size="large" />
@@ -129,7 +124,7 @@ function CarModeScreen({ call }: { call: GlobalVoice }) {
         </View>
 
         <View style={styles.carModeRow}>
-          <WeakSignalToggle call={call} />
+          <ModeSelector call={call} />
         </View>
 
         <View style={styles.carActions}>
@@ -171,25 +166,64 @@ function CarModeScreen({ call }: { call: GlobalVoice }) {
   );
 }
 
-function WeakSignalToggle({ call }: { call: GlobalVoice }) {
+function resolveModeHintKey(call: GlobalVoice): string {
+  if (!call.canUseWeakSignal) return "globalVoice.mode.weakUnavailable";
+  if (call.mode === "live") return "globalVoice.mode.liveHint";
+  return call.isAutoMode ? "globalVoice.mode.weakAutoHint" : "globalVoice.mode.weakHint";
+}
+
+/** Two explicit choices instead of a switch, so the active mode is always visible. */
+function ModeSelector({ call }: { call: GlobalVoice }) {
   const { t } = useTranslation();
-  const enabled = call.mode === "messages";
-  const toggle = useCallback(() => call.setWeakSignalMode(!enabled), [call, enabled]);
+  const isWeak = call.mode === "messages";
+  const disabled = !call.isActive || call.isSwitching;
+  const chooseLive = useCallback(() => {
+    if (isWeak) call.setWeakSignalMode(false);
+  }, [call, isWeak]);
+  const chooseWeak = useCallback(() => {
+    if (!isWeak && call.canUseWeakSignal) call.setWeakSignalMode(true);
+  }, [call, isWeak]);
   return (
-    <Pressable
-      onPress={toggle}
-      disabled={!call.isActive || call.isSwitching}
-      accessibilityRole="switch"
-      accessibilityState={enabled ? SWITCH_ON : SWITCH_OFF}
-      accessibilityLabel={t("globalVoice.actions.weakSignal")}
-      testID="global-voice-weak-signal"
-      style={[styles.modeToggle, enabled ? styles.modeToggleOn : null]}
-    >
-      <ThemedSignalLow uniProps={enabled ? foregroundColorMapping : mutedColorMapping} size={20} />
-      <Text style={enabled ? styles.modeToggleTextOn : styles.modeToggleText}>
-        {t("globalVoice.actions.weakSignal")}
+    <View style={styles.modeSelector}>
+      <View style={styles.modeSegments} accessibilityRole="radiogroup">
+        <Pressable
+          onPress={chooseLive}
+          disabled={disabled}
+          accessibilityRole="radio"
+          accessibilityState={isWeak ? SWITCH_OFF : SWITCH_ON}
+          testID="global-voice-mode-live"
+          style={[styles.modeSegment, isWeak ? null : styles.modeSegmentActive]}
+        >
+          <ThemedMic uniProps={isWeak ? mutedColorMapping : foregroundColorMapping} size={18} />
+          <Text style={isWeak ? styles.modeToggleText : styles.modeToggleTextOn}>
+            {t("globalVoice.mode.live")}
+          </Text>
+        </Pressable>
+        <Pressable
+          onPress={chooseWeak}
+          disabled={disabled || !call.canUseWeakSignal}
+          accessibilityRole="radio"
+          accessibilityState={isWeak ? SWITCH_ON : SWITCH_OFF}
+          testID="global-voice-weak-signal"
+          style={[
+            styles.modeSegment,
+            isWeak ? styles.modeSegmentActive : null,
+            call.canUseWeakSignal ? null : styles.modeSegmentUnavailable,
+          ]}
+        >
+          <ThemedSignalLow
+            uniProps={isWeak ? foregroundColorMapping : mutedColorMapping}
+            size={18}
+          />
+          <Text style={isWeak ? styles.modeToggleTextOn : styles.modeToggleText}>
+            {t("globalVoice.mode.weakShort")}
+          </Text>
+        </Pressable>
+      </View>
+      <Text style={styles.modeHint} testID="global-voice-mode-hint">
+        {t(resolveModeHintKey(call))}
       </Text>
-    </Pressable>
+    </View>
   );
 }
 
@@ -238,7 +272,7 @@ function CallPill({ call, isCompact }: { call: GlobalVoice; isCompact: boolean }
         </Text>
         <Pressable
           onPress={toggleWeakSignal}
-          disabled={!call.isActive || call.isSwitching}
+          disabled={!call.isActive || call.isSwitching || !call.canUseWeakSignal}
           accessibilityRole="switch"
           accessibilityState={call.mode === "messages" ? SWITCH_ON : SWITCH_OFF}
           accessibilityLabel={t("globalVoice.actions.weakSignal")}
@@ -317,10 +351,6 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: 22,
     color: theme.colors.foregroundMuted,
   },
-  carMode: {
-    fontSize: theme.fontSize.base,
-    color: theme.colors.foregroundMuted,
-  },
   carTranscript: {
     fontSize: theme.fontSize.lg,
     color: theme.colors.foreground,
@@ -330,19 +360,37 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     paddingBottom: theme.spacing[6],
   },
-  modeToggle: {
+  modeSelector: {
+    alignItems: "center",
+    gap: theme.spacing[2],
+    paddingHorizontal: theme.spacing[6],
+  },
+  modeSegments: {
+    flexDirection: "row",
+    padding: 4,
+    gap: 4,
+    borderRadius: theme.borderRadius.full,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.border,
+  },
+  modeSegment: {
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[2],
     paddingHorizontal: theme.spacing[4],
     paddingVertical: theme.spacing[3],
     borderRadius: theme.borderRadius.full,
-    borderWidth: theme.borderWidth[1],
-    borderColor: theme.colors.border,
   },
-  modeToggleOn: {
+  modeSegmentActive: {
     backgroundColor: theme.colors.surface2,
-    borderColor: theme.colors.foregroundMuted,
+  },
+  modeSegmentUnavailable: {
+    opacity: 0.45,
+  },
+  modeHint: {
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foregroundMuted,
+    textAlign: "center",
   },
   modeToggleText: {
     fontSize: theme.fontSize.base,
