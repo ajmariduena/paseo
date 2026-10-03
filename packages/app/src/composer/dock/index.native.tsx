@@ -5,7 +5,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { HEADER_INNER_HEIGHT } from "@/constants/layout";
 import { resolveContentMaxWidth, useAppSettings } from "@/hooks/use-settings";
 import { KeyboardTranslateView } from "@/keyboard/shift";
-import { createContext, useCallback, useContext, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
 import { View, type LayoutChangeEvent, type ViewProps, StyleSheet } from "react-native";
 import Animated, {
   useAnimatedStyle,
@@ -15,7 +15,11 @@ import Animated, {
   type SharedValue,
 } from "react-native-reanimated";
 import { useKeyboardShift } from "@/keyboard/shift";
-import { updateComposerCapacity, type ComposerCapacity } from "./internal/capacity";
+import {
+  CENTERED_KEYBOARD_GAP,
+  updateComposerCapacity,
+  type ComposerCapacity,
+} from "./internal/capacity";
 
 const ViewportCapacity = createContext<SharedValue<number | undefined> | null>(null);
 
@@ -35,12 +39,14 @@ function ComposerViewport({
   const measuredHeight = useSharedValue(0);
   const sizing = useSharedValue<ComposerCapacity | undefined>(undefined);
   const { layoutShift } = useKeyboardShift();
+  const safeAreaBottom = useSafeAreaInsets().bottom;
   useAnimatedReaction(
     () => ({
       height: measuredHeight.value,
       bottomInset,
       keyboardShift: layoutShift.value,
       centered,
+      safeAreaBottom,
     }),
     (geometry) => {
       if (geometry.height <= 0) return;
@@ -93,14 +99,30 @@ export function ComposerDock({
   const contentMaxWidth = resolveContentMaxWidth(useAppSettings().settings);
   // Preserve the existing centered form's visual balance on tablets.
   const bottomInset = centered ? HEADER_INNER_HEIGHT + 24 : 0;
+  const [viewportHeight, setViewportHeight] = useState(0);
+  const [formBottom, setFormBottom] = useState(0);
+  const measureViewport = useCallback(
+    (event: LayoutChangeEvent) => setViewportHeight(event.nativeEvent.layout.height),
+    [],
+  );
+  const measureForm = useCallback((event: LayoutChangeEvent) => {
+    const { y, height } = event.nativeEvent.layout;
+    setFormBottom(y + height);
+  }, []);
   if (centered) {
+    const spaceBelow = Math.max(0, viewportHeight - formBottom - CENTERED_KEYBOARD_GAP);
     return (
       <ComposerViewport
         style={[dockStyles.centeredViewport, { paddingBottom: bottomInset }]}
         bottomInset={bottomInset}
         centered
+        onLayout={measureViewport}
       >
-        <KeyboardTranslateView style={[dockStyles.centered, { maxWidth: contentMaxWidth }]}>
+        <KeyboardTranslateView
+          style={[dockStyles.centered, { maxWidth: contentMaxWidth }]}
+          spaceBelow={spaceBelow}
+          onLayout={measureForm}
+        >
           <ComposerViewportContent style={dockStyles.composer}>
             <ScrollView style={dockStyles.setup} keyboardShouldPersistTaps="handled">
               {content}

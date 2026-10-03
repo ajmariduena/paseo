@@ -59,6 +59,12 @@ export function resolveKeyboardShift(input: {
   return Math.max(0, input.rawKeyboardHeight - input.bottomInset);
 }
 
+/** How far a view with `spaceBelow` points under it must rise to clear a keyboard of `keyboardHeight`. */
+export function resolveKeyboardRise(input: { keyboardHeight: number; spaceBelow: number }): number {
+  "worklet";
+  return Math.max(0, input.keyboardHeight - input.spaceBelow);
+}
+
 export function shouldReconcileHiddenKeyboardEnd(input: {
   height: number;
   progress: number;

@@ -3,6 +3,7 @@ interface ComposerGeometry {
   bottomInset: number;
   keyboardShift: number;
   centered: boolean;
+  safeAreaBottom: number;
 }
 
 export interface ComposerCapacity {
@@ -10,13 +11,22 @@ export interface ComposerCapacity {
   capacity: number;
 }
 
+/** Space a centered form keeps between its bottom edge and the keyboard. */
+export const CENTERED_KEYBOARD_GAP = 12;
+
 export function resolveComposerCapacity(input: ComposerGeometry): number {
   "worklet";
-  // A centered form grows upward by half its height. Reserve both halves so
-  // translating it still leaves five layout points below the header.
-  const clearance = input.keyboardShift + 5;
-  const reservedSpace = input.centered ? clearance * 2 : clearance;
-  return Math.max(0, input.height - input.bottomInset - reservedSpace);
+  if (!input.centered) {
+    return Math.max(0, input.height - input.bottomInset - input.keyboardShift - 5);
+  }
+  // A centered form rises only until it clears the keyboard, so with the keyboard open it has to
+  // fit between the header and the keyboard on its own. A tablet keyboard can cover more than
+  // half the viewport, which rules out keeping it centered in the space that is left.
+  const keyboardTop =
+    input.keyboardShift > 0
+      ? input.height - input.keyboardShift - input.safeAreaBottom - CENTERED_KEYBOARD_GAP
+      : Number.POSITIVE_INFINITY;
+  return Math.max(0, Math.min(input.height - input.bottomInset, keyboardTop) - 5);
 }
 
 export function updateComposerCapacity(

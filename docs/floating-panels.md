@@ -141,7 +141,10 @@ The fix for transforms is Gotcha 3. The fix for context is Gotcha 7.
 capacity, and keyboard motion for chat, workspace draft tabs, and New workspace.
 Render `<ComposerDock>{contentAbove}{composer}</ComposerDock>` below the header.
 The optional third child is an overlay that moves with the surface. New workspace
-uses `centered` for its existing desktop/tablet form. Hosts never reserve keyboard
+uses `centered` for its existing desktop/tablet form. A centered form rises only
+until it clears the keyboard, and its capacity is the space between the header and
+the keyboard: an iPad keyboard can cover more than half the viewport, so rising by
+the full keyboard height pushes the form under the status bar. Hosts never reserve keyboard
 space or translate the composer themselves. Put the dismiss surface behind content
 as a sibling, with `pointerEvents="box-none"` on its content wrapper. A Pressable
 ancestor takes the JS responder on idle Android Fabric and intercepts the stream's

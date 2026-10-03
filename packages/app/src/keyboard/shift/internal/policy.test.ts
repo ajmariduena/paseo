@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   resolveStreamKeyboardInset,
   shouldReconcileHiddenKeyboardEnd,
+  resolveKeyboardRise,
   resolveKeyboardShift,
   reserveKeyboardLayoutShift,
   shouldUseCompactExplorerKeyboardPadding,
@@ -118,5 +119,13 @@ describe("shouldUseCompactExplorerKeyboardPadding", () => {
     expect(shouldUseCompactExplorerKeyboardPadding({ isGit: false, explorerTab: "changes" })).toBe(
       true,
     );
+  });
+});
+
+describe("keyboard rise for a view with space below it", () => {
+  it("rises only by the part of the keyboard that reaches past the space below", () => {
+    expect(resolveKeyboardRise({ keyboardHeight: 590, spaceBelow: 300 })).toBe(290);
+    expect(resolveKeyboardRise({ keyboardHeight: 250, spaceBelow: 300 })).toBe(0);
+    expect(resolveKeyboardRise({ keyboardHeight: 0, spaceBelow: 300 })).toBe(0);
   });
 });
