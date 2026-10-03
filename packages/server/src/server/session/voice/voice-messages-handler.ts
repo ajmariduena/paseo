@@ -21,7 +21,8 @@ export type VoiceMessagesRequest = Extract<
       | "voice.messages.end.request"
       | "voice.call.log_events.request"
       | "voice.live.connect.request"
-      | "voice.live.end.request";
+      | "voice.live.end.request"
+      | "voice.call.set_mute.request";
   }
 >;
 
@@ -29,7 +30,8 @@ export function isVoiceMessagesRequest(msg: SessionInboundMessage): msg is Voice
   return (
     msg.type.startsWith("voice.messages.") ||
     msg.type.startsWith("voice.live.") ||
-    msg.type === "voice.call.log_events.request"
+    msg.type === "voice.call.log_events.request" ||
+    msg.type === "voice.call.set_mute.request"
   );
 }
 
@@ -85,6 +87,10 @@ export class VoiceMessagesSessionHandler {
         return this.handleLiveConnect(msg);
       case "voice.live.end.request":
         return this.handleLiveEnd(msg);
+      case "voice.call.set_mute.request":
+        this.options.orchestrator?.setCallMuted(msg.muted);
+        this.emit({ type: "voice.call.set_mute.response", payload: { requestId: msg.requestId } });
+        return;
     }
   }
 

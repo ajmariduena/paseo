@@ -2800,6 +2800,12 @@ export const VoiceLiveConnectRequestSchema = z.object({
   requestId: z.string(),
 });
 
+export const VoiceCallSetMuteRequestSchema = z.object({
+  type: z.literal("voice.call.set_mute.request"),
+  muted: z.boolean(),
+  requestId: z.string(),
+});
+
 export const VoiceLiveEndRequestSchema = z.object({
   type: z.literal("voice.live.end.request"),
   sessionId: z.string(),
@@ -3503,6 +3509,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   VoiceCallLogEventsRequestSchema,
   VoiceLiveConnectRequestSchema,
   VoiceLiveEndRequestSchema,
+  VoiceCallSetMuteRequestSchema,
   FileExplorerRequestSchema,
   FileSubscribeRequestSchema,
   FileUnsubscribeRequestSchema,
@@ -3823,6 +3830,8 @@ export const ServerInfoStatusPayloadSchema = z
         voiceMessages: z.boolean().optional(),
         // COMPAT(voiceLiveWebrtc): added in v0.11.0, remove gate after 2027-10-03.
         voiceLiveWebrtc: z.boolean().optional(),
+        // COMPAT(voiceCallMute): added in v0.11.0, remove gate after 2027-10-03.
+        voiceCallMute: z.boolean().optional(),
         // COMPAT(projectRemove): added in v0.1.97, drop the gate when floor >= v0.1.97.
         projectRemove: z.boolean().optional(),
         // COMPAT(projectAdd): added in v0.1.97, drop the gate when floor >= v0.1.97.
@@ -5226,6 +5235,13 @@ export const VoiceLiveConnectResponseSchema = z.object({
     sessionId: z.string().nullable(),
     sdp: z.string().nullable(),
     error: z.string().nullable(),
+  }),
+});
+
+export const VoiceCallSetMuteResponseSchema = z.object({
+  type: z.literal("voice.call.set_mute.response"),
+  payload: z.object({
+    requestId: z.string(),
   }),
 });
 
@@ -7260,6 +7276,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   VoiceMessagesUpdateMessageSchema,
   VoiceLiveConnectResponseSchema,
   VoiceLiveEndResponseSchema,
+  VoiceCallSetMuteResponseSchema,
   SendAgentMessageResponseMessageSchema,
   SetVoiceModeResponseMessageSchema,
   DaemonGetStatusResponseSchema,

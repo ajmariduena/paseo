@@ -103,9 +103,23 @@ async function teardownCall(deps: CallDeps): Promise<void> {
   await deps.runtime.stopVoice().catch(() => undefined);
 }
 
+function supportsCallMute(serverId: string): boolean {
+  const serverInfo = useSessionStore.getState().getSession(serverId)?.serverInfo;
+  return serverInfo?.features?.voiceCallMute === true;
+}
+
+/** GPT-Live's own input mute, on top of the silence the phone keeps streaming. */
+function syncLiveMute(muted: boolean): void {
+  const { callServerId, mode } = useGlobalVoiceStore.getState();
+  if (!callServerId || mode !== "live" || !supportsCallMute(callServerId)) return;
+  const client = getHostRuntimeStore().getClient(callServerId);
+  void client?.setVoiceCallMute({ muted }).catch(() => undefined);
+}
+
 /** Mute belongs to the call, not to a mode: a muted user must stay muted across a switch. */
 function applyCallMute(deps: CallDeps): void {
   const muted = useGlobalVoiceStore.getState().isMuted;
+  syncLiveMute(muted);
   if (deps.messages.isActive()) {
     if (deps.messages.getSnapshot().isMuted !== muted) deps.messages.toggleMute();
     return;

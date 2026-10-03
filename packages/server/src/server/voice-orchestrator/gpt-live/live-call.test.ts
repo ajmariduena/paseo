@@ -77,7 +77,7 @@ function hasOutput(
   );
 }
 
-function createOrchestratorStub() {
+function createOrchestratorStub(history: string[] = []) {
   const calls: Array<{ request: string; history: string[] }> = [];
   const utterances: string[] = [];
   let announce: ((lines: string[]) => void) | undefined;
@@ -91,7 +91,7 @@ function createOrchestratorStub() {
       };
     },
     noteUserUtterance: (text: string) => utterances.push(text),
-    takeRecentHistory: () => [],
+    takeRecentHistory: () => history,
     saveCallHistory: () => undefined,
     registerLiveCall: () => () => undefined,
     runDelegation: async (params: { request: string; history: string[] }) => {
@@ -126,10 +126,10 @@ describe("GptLiveCall", () => {
     activeLive = null;
   });
 
-  async function startCall() {
+  async function startCall(history: string[] = []) {
     const live = await startFakeLive();
     activeLive = live;
-    const stub = createOrchestratorStub();
+    const stub = createOrchestratorStub(history);
     const emitted: SessionOutboundMessage[] = [];
     call = new GptLiveCall({
       engine: { apiKey: "test-key", model: "gpt-live-1", voice: "marin" },
@@ -155,6 +155,28 @@ describe("GptLiveCall", () => {
     );
     expect(findMessage(live, "session.thinking.append")?.content).toContain(
       "auth · Login fix: working",
+    );
+  });
+
+  it("resumes a switched call with its history as session input instead of a new greeting", async () => {
+    const { live } = await startCall(["User: ¿Cómo va auth?", "Assistant: Auth sigue trabajando."]);
+    expect(findMessage(live, "session.start")?.session).toMatchObject({
+      input: [
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "¿Cómo va auth?" }],
+        },
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Auth sigue trabajando." }],
+        },
+      ],
+    });
+    await waitFor(() => findMessage(live, "session.instructions.append") !== undefined);
+    expect(findMessage(live, "session.instructions.append")?.content).toContain(
+      "Do not greet again",
     );
   });
 

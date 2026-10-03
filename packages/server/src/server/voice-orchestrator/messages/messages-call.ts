@@ -5,6 +5,7 @@ import type {
   SpeechToTextProvider,
   TextToSpeechProvider,
 } from "../../speech/speech-provider.js";
+import type { CallTranscript } from "../call-transcript.js";
 import type { VoiceOrchestrator } from "../orchestrator.js";
 import {
   UtteranceAssembler,
@@ -78,6 +79,7 @@ export class VoiceMessagesCall {
   private closed = false;
   private lastContactAt = Date.now();
   private pendingUtterances = 0;
+  private transcript: CallTranscript | null = null;
 
   constructor(private readonly options: VoiceMessagesCallOptions) {
     this.callId = options.callId;
@@ -98,9 +100,19 @@ export class VoiceMessagesCall {
   }
 
   start(): void {
+    this.transcript =
+      this.options.orchestrator.openTranscript?.({
+        callId: this.callId,
+        mode: "messages",
+      }) ?? null;
     this.detach = this.options.orchestrator.attachCall({
       isUserSpeaking: () => this.pendingUtterances > 0,
-      announce: (lines) => this.enqueue(() => this.narrateNotices(lines)),
+      announce: (lines, options) => {
+        this.transcript?.record("notice", lines.join(" · "), {
+          urgent: options?.urgent ?? false,
+        });
+        this.enqueue(() => this.narrateNotices(lines));
+      },
     });
     if (this.options.greet) this.enqueue(() => this.narrateCallStart());
   }
@@ -171,6 +183,7 @@ export class VoiceMessagesCall {
     this.detach = null;
     this.listener = null;
     if (options.handoff) this.options.orchestrator.saveCallHistory(this.history, "messages");
+    void this.transcript?.close({ handoff: options.handoff ?? false });
     for (const timer of this.graceTimers.values()) clearTimeout(timer);
     this.graceTimers.clear();
     for (const stored of this.outbox) {
@@ -203,6 +216,7 @@ export class VoiceMessagesCall {
         const transcript = await this.transcribe(utterance.audio, utterance.deviceText);
         if (!transcript) {
           this.addItem({ kind: "status", text: "", code: "not_heard", utteranceId });
+          this.transcript?.record("status", "not_heard");
           return;
         }
         this.addItem({ kind: "heard", text: transcript, utteranceId });
@@ -216,6 +230,7 @@ export class VoiceMessagesCall {
       } catch (error) {
         this.logger.warn({ err: error, utteranceId }, "Voice message failed");
         this.addItem({ kind: "status", text: "", code: "backend_failed", utteranceId });
+        this.transcript?.record("status", "backend_failed");
       } finally {
         this.pendingUtterances = Math.max(0, this.pendingUtterances - 1);
       }
@@ -345,6 +360,8 @@ export class VoiceMessagesCall {
   }
 
   private pushHistory(line: string): void {
+    const match = /^(User|Assistant):\s*([\s\S]*)$/.exec(line);
+    if (match) this.transcript?.record(match[1] === "User" ? "user" : "assistant", match[2]);
     this.history.push(line);
     if (this.history.length > HISTORY_LIMIT) {
       this.history.splice(0, this.history.length - HISTORY_LIMIT);

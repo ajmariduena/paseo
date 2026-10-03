@@ -30,6 +30,7 @@ export class LiveWebrtcHub {
     if (!engine) throw new Error("GPT-Live is not configured on this host.");
     await orchestrator.ensureAgent();
     this.endAll();
+    const history = orchestrator.takeRecentHistory("messages");
     const createSession = this.options.createSession ?? createGptLiveWebrtcSession;
     const answer = await createSession({
       apiKey: engine.apiKey,
@@ -37,6 +38,7 @@ export class LiveWebrtcHub {
       voice: engine.voice,
       instructions: buildLiveInstructions(orchestrator.language),
       sdp: params.sdp,
+      history,
     });
     const call = new GptLiveCall({
       engine,
@@ -44,6 +46,7 @@ export class LiveWebrtcHub {
       emit: () => undefined,
       logger: logger.child({ component: "gpt-live-webrtc", sessionId: answer.sessionId }),
       sidebandSessionId: answer.sessionId,
+      previousHistory: history,
     });
     try {
       await call.start();

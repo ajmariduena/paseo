@@ -15,6 +15,7 @@ import type { WorkspaceRegistry } from "../workspace-registry.js";
 import type { VoiceMessagesSpeech } from "./messages/messages-call.js";
 import { VoiceMessagesHub } from "./messages/messages-hub.js";
 import { LiveWebrtcHub } from "./gpt-live/webrtc-hub.js";
+import { CallTranscript } from "./call-transcript.js";
 import { VoiceNoticeQueue, type VoiceNotice, type VoiceNoticeReason } from "./notice-queue.js";
 import {
   VOICE_BACKEND_SYSTEM_PROMPT,
@@ -103,7 +104,7 @@ export class VoiceOrchestrator {
   private preferredLanguage: string | null = null;
   private turnChain: Promise<unknown> = Promise.resolve();
   private narrating = false;
-  private liveCall: { close(): void } | null = null;
+  private liveCall: { close(): void; setInputMuted(muted: boolean): void } | null = null;
   private handoffHistory: { lines: string[]; at: number; mode: "live" | "messages" } | null = null;
 
   constructor(private readonly options: VoiceOrchestratorOptions) {
@@ -218,11 +219,26 @@ export class VoiceOrchestrator {
     );
   }
 
-  registerLiveCall(call: { close(): void }): () => void {
+  registerLiveCall(call: { close(): void; setInputMuted(muted: boolean): void }): () => void {
     this.liveCall = call;
     return () => {
       if (this.liveCall === call) this.liveCall = null;
     };
+  }
+
+  /** GPT-Live's own input mute; the phone also keeps streaming silence so the session runs. */
+  setCallMuted(muted: boolean): void {
+    this.liveCall?.setInputMuted(muted);
+  }
+
+  /** Every call is recorded under $PASEO_HOME/voice/calls so it can be read back later. */
+  openTranscript(params: { callId: string; mode: string }): CallTranscript {
+    return new CallTranscript({
+      directory: join(this.orchestratorDir(), "calls"),
+      callId: params.callId,
+      mode: params.mode,
+      logger: this.logger,
+    });
   }
 
   /** Messages mode replaces a live call; GPT-Live bills per minute while its session is open. */

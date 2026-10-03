@@ -15,6 +15,7 @@ import {
   type GptLiveServerEvent,
 } from "./live-connection.js";
 import { FloorQueue, SpeechFloor, isEchoOfAssistant } from "./speech-floor.js";
+import type { CallTranscript } from "../call-transcript.js";
 
 const OUTPUT_FORMAT = `pcm;rate=${GPT_LIVE_SAMPLE_RATE}`;
 const BYTES_PER_MS = (GPT_LIVE_SAMPLE_RATE * 2) / 1000;
@@ -39,6 +40,8 @@ export interface GptLiveCallOptions {
   logger: pino.Logger;
   /** Attach as a sideband to this WebRTC session instead of carrying the audio. */
   sidebandSessionId?: string;
+  /** History already given to the session at creation (WebRTC); otherwise taken at start. */
+  previousHistory?: string[];
   createConnection?: () => GptLiveConnection;
 }
 
@@ -71,6 +74,7 @@ export class GptLiveCall {
   private recentAssistantText = "";
   private pendingDelegations = 0;
   private readonly floor = new SpeechFloor();
+  private transcript: CallTranscript | null = null;
   private readonly outbox = new FloorQueue(this.floor, {
     isAwaitingResult: () => this.pendingDelegations > 0,
   });
@@ -85,8 +89,12 @@ export class GptLiveCall {
 
   async start(): Promise<void> {
     const { engine, orchestrator } = this.options;
-    const previous = orchestrator.takeRecentHistory("messages");
+    const previous = this.options.previousHistory ?? orchestrator.takeRecentHistory("messages");
     this.history.push(...previous);
+    this.transcript = orchestrator.openTranscript?.({
+      callId: this.options.sidebandSessionId ?? uuidv4(),
+      mode: this.options.sidebandSessionId ? "live-webrtc" : "live-relay",
+    });
     this.connection.on("event", (event) => this.handleEvent(event));
     this.connection.on("close", () => {
       if (this.closed) return;
@@ -104,15 +112,18 @@ export class GptLiveCall {
         model: engine.model,
         voice: engine.voice,
         instructions: buildLiveInstructions(orchestrator.language),
+        history: previous,
       });
     }
     this.detach = orchestrator.attachCall({
       isUserSpeaking: () => this.floor.isUserSpeaking(),
       isAssistantSpeaking: () => this.floor.isAssistantSpeaking(),
-      announce: (lines, options) =>
+      announce: (lines, options) => {
+        this.transcript?.record("notice", lines.join(" · "), { urgent: options?.urgent ?? false });
         this.outbox.push(options?.urgent ? "urgent" : "routine", () =>
           this.connection.append("commentary", lines.join("\n"), null),
-        ),
+        );
+      },
       onFleetChanged: () => void this.pushFleetSnapshot(),
     });
     this.unregister = orchestrator.registerLiveCall(this);
@@ -120,7 +131,7 @@ export class GptLiveCall {
     this.connection.append("thinking", buildLiveFleetSnapshot(fleet), null);
     const greeting =
       previous.length > 0
-        ? buildLiveResume(previous, orchestrator.language)
+        ? buildLiveResume(orchestrator.language)
         : buildLiveGreeting(fleet, orchestrator.language);
     if (!this.options.sidebandSessionId) {
       this.connection.append("instructions", greeting, null);
@@ -144,6 +155,12 @@ export class GptLiveCall {
     this.connection.append("thinking", buildLiveFleetSnapshot(fleet), null);
   }
 
+  setInputMuted(muted: boolean): void {
+    if (this.closed) return;
+    this.connection.setInputMuted(muted);
+    this.transcript?.record(muted ? "muted" : "unmuted", "");
+  }
+
   appendAudio(pcm16: Buffer): void {
     if (this.closed) return;
     this.connection.appendAudio(pcm16);
@@ -164,6 +181,7 @@ export class GptLiveCall {
     if (this.greetingTimer) clearTimeout(this.greetingTimer);
     if (this.unconfirmedSpeechTimer) clearTimeout(this.unconfirmedSpeechTimer);
     this.outbox.close();
+    void this.transcript?.close();
     this.connection.close();
   }
 
@@ -323,6 +341,8 @@ export class GptLiveCall {
   }
 
   private pushHistory(line: string): void {
+    const match = /^(User|Assistant):\s*([\s\S]*)$/.exec(line);
+    if (match) this.transcript?.record(match[1] === "User" ? "user" : "assistant", match[2]);
     this.history.push(line);
     if (this.history.length > HISTORY_LIMIT)
       this.history.splice(0, this.history.length - HISTORY_LIMIT);
@@ -333,11 +353,13 @@ export class GptLiveCall {
     const request = this.sinceLastDelegation.trim();
     this.sinceLastDelegation = "";
     this.pendingDelegations += 1;
+    this.transcript?.record("delegation", request);
     try {
       const result = await this.options.orchestrator.runDelegation({
         request,
         history: [...this.history],
       });
+      this.transcript?.record("result", result);
       if (this.closed) {
         // The call switched to messages mode while the agent worked; say it there.
         this.options.orchestrator.deliverLateReply(result);

@@ -13,6 +13,28 @@ export interface GptLiveSessionOptions {
   model: string;
   voice: string;
   instructions: string;
+  /** Prior conversation, so a session that takes over a call starts with it as real history. */
+  history?: string[];
+}
+
+export interface GptLiveInputItem {
+  type: "message";
+  role: "user" | "assistant";
+  content: Array<{ type: "input_text" | "output_text"; text: string }>;
+}
+
+const HISTORY_ITEM_MAX_CHARS = 600;
+
+/** "User: …" / "Assistant: …" lines as Live startup messages (max 128, one text part each). */
+export function historyToInput(lines: readonly string[]): GptLiveInputItem[] {
+  return lines.slice(-24).flatMap((line): GptLiveInputItem[] => {
+    const match = /^(User|Assistant):\s*(.+)$/s.exec(line.trim());
+    if (!match) return [];
+    const text = match[2].slice(0, HISTORY_ITEM_MAX_CHARS);
+    return match[1] === "User"
+      ? [{ type: "message", role: "user", content: [{ type: "input_text", text }] }]
+      : [{ type: "message", role: "assistant", content: [{ type: "output_text", text }] }];
+  });
 }
 
 export type GptLiveServerEvent =
@@ -41,6 +63,7 @@ export async function createGptLiveWebrtcSession(params: {
   voice: string;
   instructions: string;
   sdp: string;
+  history?: string[];
   baseUrl?: string;
   fetchImpl?: typeof fetch;
 }): Promise<{ sessionId: string; sdp: string }> {
@@ -57,6 +80,7 @@ export async function createGptLiveWebrtcSession(params: {
         instructions: params.instructions,
         audio: { output: { voice: params.voice } },
         delegation: { type: "client" },
+        ...(params.history?.length ? { input: historyToInput(params.history) } : {}),
       },
       transport: { type: "webrtc", sdp: params.sdp },
     }),
@@ -154,6 +178,7 @@ export class GptLiveConnection extends EventEmitter<GptLiveConnectionEvents> {
               output: { voice: options.voice },
             },
             delegation: { type: "client" },
+            ...(options.history?.length ? { input: historyToInput(options.history) } : {}),
           },
         });
       });

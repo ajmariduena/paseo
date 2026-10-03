@@ -2243,6 +2243,13 @@ export class DaemonClient {
     return { sessionId: response.sessionId, sdp: response.sdp };
   }
 
+  async setVoiceCallMute(params: { muted: boolean }): Promise<void> {
+    await this.sendNamespacedCorrelatedSessionRequest<"voice.call.set_mute.response">({
+      message: { type: "voice.call.set_mute.request", muted: params.muted },
+      timeout: VOICE_MESSAGES_TIMEOUT_MS,
+    });
+  }
+
   async endLiveVoice(params: { sessionId: string }): Promise<void> {
     await this.sendNamespacedCorrelatedSessionRequest<"voice.live.end.response">({
       message: { type: "voice.live.end.request", sessionId: params.sessionId },
