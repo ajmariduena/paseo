@@ -47,6 +47,22 @@ export function editDraftRecordText(
   };
 }
 
+function appendDraftText(text: string, addition: string): string {
+  if (!addition) {
+    return text;
+  }
+  const existing = text.trimEnd();
+  return existing ? `${existing}\n\n${addition}` : addition;
+}
+
+/** Content added from outside the composer goes after what the user already typed. */
+export function appendDraftInput(draft: DraftInput, addition: DraftInput): DraftInput {
+  return {
+    text: appendDraftText(draft.text, addition.text),
+    attachments: [...draft.attachments, ...addition.attachments],
+  };
+}
+
 export interface DraftStoreState {
   drafts: Record<string, DraftRecord>;
   createModalDraft: DraftRecord | null;

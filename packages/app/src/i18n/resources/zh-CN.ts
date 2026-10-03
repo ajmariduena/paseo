@@ -1537,6 +1537,32 @@ export const zhCN: TranslationResources = {
   loadOlderHistory: {
     failed: "无法加载更早历史",
   },
+  incomingShare: {
+    title: "分享到 Paseo",
+    steps: {
+      host: "选择 Host",
+      workspace: "选择工作区",
+      agent: "选择 Agent",
+    },
+    searchWorkspaces: "搜索工作区",
+    newAgent: "新建 Agent",
+    untitledAgent: "未命名 Agent",
+    noWorkspaces: "此 Host 上没有工作区",
+    noHosts: "添加 Host 后即可分享到 Paseo",
+    adding: "正在添加...",
+    summary: {
+      text: "文本",
+      attachments_one: "{{count}} 个附件",
+      attachments_other: "{{count}} 个附件",
+    },
+    droppedFiles_one: "有 {{count}} 个文件未添加。Paseo 每次最多接收 8 个。",
+    droppedFiles_other: "有 {{count}} 个文件未添加。Paseo 每次最多接收 8 个。",
+    errors: {
+      unreadable: "无法读取分享的内容",
+      hostDisconnected: "Host 未连接。请等待其上线后重试。",
+      failed: "无法添加分享的内容",
+    },
+  },
   imageAttachmentPicker: {
     permissionTitle: "需要权限",
     permissionMessage: "请允许访问照片图库以附加图片。",

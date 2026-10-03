@@ -45,6 +45,8 @@ import { WorkspaceSetupDialog } from "@/components/workspace-setup-dialog";
 import { WorkspaceShortcutTargetsSubscriber } from "@/components/workspace-shortcut-targets-subscriber";
 import { FloatingPanelPortalHost } from "@/components/ui/floating-panel-portal";
 import { HostChooserModal, useHostChooser } from "@/hosts/host-chooser";
+import { IncomingShareListener } from "@/incoming-share/listener";
+import { IncomingShareSheet } from "@/incoming-share/sheet";
 import { HostConfirmationSheet } from "@/hosts/host-confirmation-sheet";
 import {
   getIsElectronRuntime,
@@ -926,6 +928,8 @@ function AppShell() {
       <HorizontalScrollProvider>
         <OpenProjectListener />
         <AgentNavigationListener />
+        <IncomingShareListener />
+        <IncomingShareSheet />
         <AppWithSidebar>
           <WorkspaceRouteNavigationBridge />
           <RootStack />

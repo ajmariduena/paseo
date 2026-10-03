@@ -148,7 +148,58 @@ describe("useAgentInputDraft live contract", () => {
       drafts: {},
       createModalDraft: null,
       attachmentFocusRequestByDraftKey: {},
+      textImportRevisionByDraftKey: {},
     });
+  });
+
+  it("shows content appended from outside a mounted composer", async () => {
+    let latest: ReturnType<typeof useAgentInputDraft> | null = null;
+    const workspaceFile = createWorkspaceFileAttachment({ path: "README.md" });
+
+    function getLatest(): ReturnType<typeof useAgentInputDraft> {
+      if (!latest) {
+        throw new Error("Expected hook result");
+      }
+      return latest;
+    }
+
+    function Probe() {
+      latest = useAgentInputDraft({ draftKey: "agent:host-1:agent-1" });
+      return null;
+    }
+
+    const queryClient = new QueryClient();
+    const container = document.getElementById("root");
+    if (!container) {
+      throw new Error("Missing root container");
+    }
+
+    useDraftStore.getState().saveDraftInput({
+      draftKey: "agent:host-1:agent-1",
+      draft: { text: "typed first", attachments: [] },
+    });
+    const root = createTestRoot(container);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Probe />
+        </QueryClientProvider>,
+      );
+    });
+    const typedReplacement = getLatest().textReplacement;
+    expect(typedReplacement.text).toBe("typed first");
+
+    await act(async () => {
+      await useDraftStore.getState().appendDraftContent({
+        draftKey: "agent:host-1:agent-1",
+        addition: { text: "https://example.com", attachments: [workspaceFile] },
+      });
+    });
+
+    expect(getLatest().textReplacement).not.toBe(typedReplacement);
+    expect(getLatest().textReplacement.text).toBe("typed first\n\nhttps://example.com");
+    expect(getLatest().attachments).toEqual([workspaceFile]);
+    expect(getLatest().attachmentFocusRequestId).toBe(1);
   });
 
   it("hydrates persisted text and attachments and returns draft-mode composer state for a caller-provided key", async () => {

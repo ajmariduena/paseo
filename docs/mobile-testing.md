@@ -485,6 +485,28 @@ This is **not** a build defect. Confirm with a control: launch `com.apple.Prefer
 watch it exit identically. Headless install and launch prove the binary is valid and that startup reaches
 RN init; anything about on-screen behavior needs a human holding the phone.
 
+## Share extension
+
+Prebuild adds the share targets through `expo-share-intent`: an iOS share-extension target named
+`<app name> Share` (bundle id `<app id>.share-extension`) and Android `SEND` / `SEND_MULTIPLE` intent
+filters. Rebuild the dev client after prebuild; an older binary has no `ExpoShareIntentModule` and ignores
+shares.
+
+- The app and the extension share the App Group `group.<app id>` (`group.sh.paseo.debug` for the dev
+  client). Personal teams cannot sign App Groups. Prebuild also leaves the extension target without a
+  development team (`No DEVELOPMENT_TEAM found`); set it in Xcode before a device build.
+- The extension reopens its app through the first URL scheme. Paseo Debug lists `paseo-debug` first, so its
+  shares do not open Paseo when both are installed. `paseo://` deep links still reach both.
+- Shared images go into the app's attachment store; other files and videos upload to the host you pick,
+  under the composer's 50 MB limit. At most 8 files per share.
+
+On the simulator, share from Safari, Photos, or a screenshot and pick **Paseo Debug Share**. On Android:
+
+```bash
+adb shell am start -a android.intent.action.SEND -t text/plain \
+  --es android.intent.extra.TEXT "https://paseo.sh" sh.paseo.debug
+```
+
 ## iOS Simulator
 
 ```bash

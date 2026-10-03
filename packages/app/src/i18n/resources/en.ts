@@ -1579,6 +1579,32 @@ export const en = {
   loadOlderHistory: {
     failed: "Couldn't load older history",
   },
+  incomingShare: {
+    title: "Share to Paseo",
+    steps: {
+      host: "Choose a host",
+      workspace: "Choose a workspace",
+      agent: "Choose an agent",
+    },
+    searchWorkspaces: "Search workspaces",
+    newAgent: "New agent",
+    untitledAgent: "Untitled agent",
+    noWorkspaces: "No workspaces on this host",
+    noHosts: "Add a host to share with Paseo",
+    adding: "Adding...",
+    summary: {
+      text: "Text",
+      attachments_one: "{{count}} attachment",
+      attachments_other: "{{count}} attachments",
+    },
+    droppedFiles_one: "{{count}} file was left out. Paseo takes up to 8 at a time.",
+    droppedFiles_other: "{{count}} files were left out. Paseo takes up to 8 at a time.",
+    errors: {
+      unreadable: "Could not read what was shared",
+      hostDisconnected: "Host is not connected. Wait for it to come online and retry.",
+      failed: "Unable to add the shared content",
+    },
+  },
   imageAttachmentPicker: {
     permissionTitle: "Permission required",
     permissionMessage: "Please allow access to your photo library to attach images.",

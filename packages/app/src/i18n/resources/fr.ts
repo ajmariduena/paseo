@@ -1605,6 +1605,32 @@ export const fr: TranslationResources = {
   loadOlderHistory: {
     failed: "Impossible de charger l'ancien historique",
   },
+  incomingShare: {
+    title: "Partager avec Paseo",
+    steps: {
+      host: "Choisir un hôte",
+      workspace: "Choisir un espace de travail",
+      agent: "Choisir un agent",
+    },
+    searchWorkspaces: "Rechercher des espaces de travail",
+    newAgent: "Nouvel agent",
+    untitledAgent: "Agent sans titre",
+    noWorkspaces: "Aucun espace de travail sur cet hôte",
+    noHosts: "Ajoutez un hôte pour partager avec Paseo",
+    adding: "Ajout...",
+    summary: {
+      text: "Texte",
+      attachments_one: "{{count}} pièce jointe",
+      attachments_other: "{{count}} pièces jointes",
+    },
+    droppedFiles_one: "{{count}} fichier a été ignoré. Paseo en accepte 8 à la fois.",
+    droppedFiles_other: "{{count}} fichiers ont été ignorés. Paseo en accepte 8 à la fois.",
+    errors: {
+      unreadable: "Impossible de lire le contenu partagé",
+      hostDisconnected: "L'hôte n'est pas connecté. Attendez qu'il soit en ligne, puis réessayez.",
+      failed: "Impossible d'ajouter le contenu partagé",
+    },
+  },
   imageAttachmentPicker: {
     permissionTitle: "Autorisation requise",
     permissionMessage: "Veuillez autoriser l'accès à votre photothèque pour joindre des images.",

@@ -1554,6 +1554,32 @@ export const ar: TranslationResources = {
   loadOlderHistory: {
     failed: "تعذر تحميل السجل الأقدم",
   },
+  incomingShare: {
+    title: "المشاركة مع Paseo",
+    steps: {
+      host: "اختر Host",
+      workspace: "اختر مساحة عمل",
+      agent: "اختر وكيلًا",
+    },
+    searchWorkspaces: "البحث في مساحات العمل",
+    newAgent: "وكيل جديد",
+    untitledAgent: "وكيل بدون عنوان",
+    noWorkspaces: "لا توجد مساحات عمل على هذا Host",
+    noHosts: "أضف Host للمشاركة مع Paseo",
+    adding: "جارٍ الإضافة...",
+    summary: {
+      text: "نص",
+      attachments_one: "{{count}} مرفق",
+      attachments_other: "{{count}} من المرفقات",
+    },
+    droppedFiles_one: "تم استبعاد {{count}} ملف. يقبل Paseo حتى 8 ملفات في المرة.",
+    droppedFiles_other: "تم استبعاد {{count}} من الملفات. يقبل Paseo حتى 8 ملفات في المرة.",
+    errors: {
+      unreadable: "تعذّرت قراءة المحتوى المُشارك",
+      hostDisconnected: "Host غير متصل. انتظر حتى يصبح متصلًا ثم أعد المحاولة.",
+      failed: "تعذّرت إضافة المحتوى المُشارك",
+    },
+  },
   imageAttachmentPicker: {
     permissionTitle: "الإذن مطلوب",
     permissionMessage: "يرجى السماح بالوصول إلى مكتبة الصور الخاصة بك لإرفاق الصور.",

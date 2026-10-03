@@ -1564,6 +1564,32 @@ export const ko: TranslationResources = {
   loadOlderHistory: {
     failed: "이전 기록을 불러올 수 없습니다",
   },
+  incomingShare: {
+    title: "Paseo로 공유",
+    steps: {
+      host: "호스트 선택",
+      workspace: "워크스페이스 선택",
+      agent: "에이전트 선택",
+    },
+    searchWorkspaces: "워크스페이스 검색",
+    newAgent: "새 에이전트",
+    untitledAgent: "제목 없는 에이전트",
+    noWorkspaces: "이 호스트에 워크스페이스가 없습니다",
+    noHosts: "Paseo로 공유하려면 호스트를 추가하세요",
+    adding: "추가 중...",
+    summary: {
+      text: "텍스트",
+      attachments_one: "첨부 파일 {{count}}개",
+      attachments_other: "첨부 파일 {{count}}개",
+    },
+    droppedFiles_one: "파일 {{count}}개가 제외되었습니다. Paseo는 한 번에 최대 8개까지 받습니다.",
+    droppedFiles_other: "파일 {{count}}개가 제외되었습니다. Paseo는 한 번에 최대 8개까지 받습니다.",
+    errors: {
+      unreadable: "공유된 내용을 읽을 수 없습니다",
+      hostDisconnected: "호스트가 연결되어 있지 않습니다. 온라인 상태가 되면 다시 시도하세요.",
+      failed: "공유된 내용을 추가할 수 없습니다",
+    },
+  },
   imageAttachmentPicker: {
     permissionTitle: "권한 필요",
     permissionMessage: "이미지를 첨부하려면 사진 라이브러리 접근을 허용해 주세요.",
