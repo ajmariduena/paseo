@@ -2,7 +2,7 @@ import { v4 as uuidv4 } from "uuid";
 import type pino from "pino";
 import type { SessionOutboundMessage } from "../../messages.js";
 import type { GptLiveEngineConfig, VoiceOrchestrator } from "../orchestrator.js";
-import { buildLiveGreeting, buildLiveInstructions } from "../prompt.js";
+import { buildLiveFleetSnapshot, buildLiveGreeting, buildLiveInstructions } from "../prompt.js";
 import {
   GPT_LIVE_SAMPLE_RATE,
   GptLiveConnection,
@@ -70,9 +70,17 @@ export class GptLiveCall {
     this.detach = orchestrator.attachCall({
       isUserSpeaking: () => Date.now() - this.lastUserSpeechAt < USER_SPEECH_IDLE_MS,
       announce: (lines) => this.connection.append("commentary", lines.join("\n"), null),
+      onFleetChanged: () => void this.pushFleetSnapshot(),
     });
     const fleet = await orchestrator.describeFleet().catch(() => []);
+    this.connection.append("thinking", buildLiveFleetSnapshot(fleet), null);
     this.connection.append("instructions", buildLiveGreeting(fleet), null);
+  }
+
+  private async pushFleetSnapshot(): Promise<void> {
+    const fleet = await this.options.orchestrator.describeFleet().catch(() => null);
+    if (!fleet || this.closed) return;
+    this.connection.append("thinking", buildLiveFleetSnapshot(fleet), null);
   }
 
   appendAudio(pcm16: Buffer): void {

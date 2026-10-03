@@ -32,6 +32,7 @@ const APPROVAL_WINDOW_MS = 90_000;
 const PROGRESS_CHECK_MS = 45_000;
 const PROGRESS_MIN_INTERVAL_MS = 120_000;
 const DELEGATION_MAX_WAITS = 6;
+const FLEET_CHANGED_DEBOUNCE_MS = 500;
 
 const OrchestratorStateSchema = z.object({ agentId: z.guid() });
 
@@ -45,6 +46,8 @@ export interface VoiceOrchestratorCall {
   isUserSpeaking(): boolean;
   /** Speaks notice lines directly. Without it, notices go through the orchestrator agent. */
   announce?(lines: string[]): void;
+  /** Called (debounced) whenever an agent's state changes during the call. */
+  onFleetChanged?(): void;
 }
 
 export interface VoiceOrchestratorOptions {
@@ -76,6 +79,7 @@ export class VoiceOrchestrator {
   private progressTimer: ReturnType<typeof setInterval> | null = null;
   private readonly lifecycles = new Map<string, string>();
   private readonly progressAnnounced = new Map<string, { step: string; at: number }>();
+  private fleetChangedTimer: ReturnType<typeof setTimeout> | null = null;
   private lastUtterance: { text: string; at: number; approvalUsed: boolean } | null = null;
   private preferredLanguage: string | null = null;
 
@@ -252,6 +256,8 @@ export class VoiceOrchestrator {
     this.unsubscribeFleet = null;
     if (this.progressTimer) clearInterval(this.progressTimer);
     this.progressTimer = null;
+    if (this.fleetChangedTimer) clearTimeout(this.fleetChangedTimer);
+    this.fleetChangedTimer = null;
     this.lifecycles.clear();
     this.progressAnnounced.clear();
   }
@@ -263,6 +269,7 @@ export class VoiceOrchestrator {
       (event) => {
         if (event.type !== "agent_state") return;
         const agent = event.agent;
+        if (!this.isOrchestrator(agent.id)) this.scheduleFleetChanged();
         const previous = this.lifecycles.get(agent.id);
         this.lifecycles.set(agent.id, agent.lifecycle);
         if (
@@ -280,6 +287,15 @@ export class VoiceOrchestrator {
     );
     this.progressTimer = setInterval(() => this.checkProgress(), PROGRESS_CHECK_MS);
     this.progressTimer.unref?.();
+  }
+
+  private scheduleFleetChanged(): void {
+    const call = this.call;
+    if (!call?.onFleetChanged || this.fleetChangedTimer) return;
+    this.fleetChangedTimer = setTimeout(() => {
+      this.fleetChangedTimer = null;
+      if (this.call === call) call.onFleetChanged?.();
+    }, FLEET_CHANGED_DEBOUNCE_MS);
   }
 
   private checkProgress(): void {

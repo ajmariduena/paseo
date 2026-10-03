@@ -146,6 +146,9 @@ describe("GptLiveCall", () => {
     expect(findMessage(live, "session.instructions.append")?.content).toContain(
       "auth · Login fix: working",
     );
+    expect(findMessage(live, "session.thinking.append")?.content).toContain(
+      "auth · Login fix: working",
+    );
   });
 
   it("forwards microphone audio and returns speech as audio_output groups", async () => {
