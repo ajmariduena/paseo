@@ -142,8 +142,6 @@ export const DAEMON_PERMISSIONS = [
   "workspace.manage",
   "automation.manage",
   "hub.execute",
-  "browser.view",
-  "browser.control",
 ] as const;
 export const DaemonPermissionSchema = z.enum(DAEMON_PERMISSIONS);
 export type DaemonPermission = z.infer<typeof DaemonPermissionSchema>;

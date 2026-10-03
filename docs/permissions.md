@@ -24,16 +24,16 @@ A pairing invitation is neither. It is an expiring, single-use exchange that cre
 | `tunnel.manage`     | Relay, Hub, service tunnel, and public endpoint relationships              |
 | `access.manage`     | Pairing invitations, principals, credentials, grants, and revocation       |
 | `workspace.read`    | Projects, workspaces, agents, timelines, files, diffs, and terminal output |
-| `workspace.write`   | Prompts, agent control, files, terminals, git operations, and scripts      |
+| `workspace.write`   | Prompts, agent control, files, terminals, git operations, scripts, browser |
 | `workspace.manage`  | Create, rename, archive, and remove projects and workspaces                |
 | `automation.manage` | Schedules, heartbeats, and loops                                           |
 | `hub.execute`       | Agent lifecycle, workspace titling, observation, and recovery              |
-| `browser.view`      | List desktop browser hosts and watch a streamed desktop browser tab        |
-| `browser.control`   | Open, navigate, and send input to a desktop browser tab                    |
 
 Agents and terminals use workspace authority. Both can execute code and mutate the workspace, so separate write permissions would claim an isolation boundary the daemon cannot enforce.
 
 Owner, operator, and viewer are UI presets expanded into explicit permissions. Do not persist them as roles. Adding a permission must not silently widen an existing principal.
+
+Adding a permission name is a protocol break. Released clients validate `server_info.permissions` as a closed enum, so an unknown name makes them reject the server info and never finish connecting. Classify a new operation under an existing permission instead; the desktop browser mirror uses `workspace.write`, like agent browser automation.
 
 Permissions are additive allows. Missing authority denies the operation. Do not add deny precedence.
 

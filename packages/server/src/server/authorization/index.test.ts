@@ -145,6 +145,22 @@ describe("SessionAuthorization", () => {
     ).toBe(true);
   });
 
+  test("the permission set matches what released clients accept in server_info", () => {
+    // Released clients parse server_info.permissions as a closed enum and drop the connection
+    // on an unknown name, so this list can only change with a capability-gated protocol change.
+    expect([...DAEMON_PERMISSIONS]).toEqual([
+      "daemon.read",
+      "daemon.manage",
+      "tunnel.manage",
+      "access.manage",
+      "workspace.read",
+      "workspace.write",
+      "workspace.manage",
+      "automation.manage",
+      "hub.execute",
+    ]);
+  });
+
   test("permission parsing validates against the shared registry and removes duplicates", () => {
     expect(parseDaemonPermissions(["hub.execute", "hub.execute"])).toEqual(["hub.execute"]);
     expect(() => parseDaemonPermissions(["hub.execution.*"])).toThrow("Invalid daemon permission");
