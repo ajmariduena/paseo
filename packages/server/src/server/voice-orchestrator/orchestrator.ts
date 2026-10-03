@@ -14,6 +14,7 @@ import type { VoiceCallerContext } from "../voice-types.js";
 import type { WorkspaceRegistry } from "../workspace-registry.js";
 import type { VoiceMessagesSpeech } from "./messages/messages-call.js";
 import { VoiceMessagesHub } from "./messages/messages-hub.js";
+import { LiveWebrtcHub } from "./gpt-live/webrtc-hub.js";
 import { VoiceNoticeQueue, type VoiceNotice, type VoiceNoticeReason } from "./notice-queue.js";
 import {
   VOICE_BACKEND_SYSTEM_PROMPT,
@@ -80,6 +81,7 @@ export interface VoiceOrchestratorOptions {
  */
 export class VoiceOrchestrator {
   readonly messages: VoiceMessagesHub;
+  readonly webrtc: LiveWebrtcHub;
   private readonly logger: pino.Logger;
   private agentIdPromise: Promise<string> | null = null;
   private knownAgentId: string | null = null;
@@ -105,6 +107,7 @@ export class VoiceOrchestrator {
       speech: options.speech ?? { resolveStt: () => null, resolveTts: () => null },
       logger: this.logger,
     });
+    this.webrtc = new LiveWebrtcHub({ orchestrator: this, logger: this.logger });
     void this.resolveAgentId().catch((error) => {
       this.agentIdPromise = null;
       this.logger.warn({ err: error }, "Failed to load voice orchestrator id");
@@ -367,6 +370,7 @@ export class VoiceOrchestrator {
 
   dispose(): void {
     this.messages.dispose();
+    this.webrtc.endAll();
     this.detachCurrentCall();
   }
 

@@ -253,3 +253,31 @@ final class OnDeviceTranscriber {
     }
   }
 }
+
+/// WebRTC's voice-chat session plays through the earpiece; a hands-free call wants the
+/// loudspeaker unless a headset or car is connected, and routes change mid-call.
+final class SpeakerPreference {
+  private var observer: NSObjectProtocol?
+
+  func setEnabled(_ enabled: Bool) {
+    if let observer {
+      NotificationCenter.default.removeObserver(observer)
+      self.observer = nil
+    }
+    guard enabled else { return }
+    apply()
+    observer = NotificationCenter.default.addObserver(
+      forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      self?.apply()
+    }
+  }
+
+  private func apply() {
+    let session = AVAudioSession.sharedInstance()
+    let onReceiver = session.currentRoute.outputs.contains { $0.portType == .builtInReceiver }
+    if onReceiver {
+      try? session.overrideOutputAudioPort(.speaker)
+    }
+  }
+}

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef } from "react";
 import { AppState } from "react-native";
 import { useTranslation } from "react-i18next";
 import {
+  useLiveWebrtcController,
+  useLiveWebrtcSnapshot,
   useVoiceMessagesController,
   useVoiceMessagesSnapshot,
   useVoiceOptional,
@@ -26,6 +28,10 @@ import type {
   VoiceMessagesSnapshot,
 } from "@/voice-chat/messages/messages-controller";
 import type { VoiceRuntime } from "@/voice/voice-runtime";
+import type {
+  LiveWebrtcController,
+  LiveWebrtcSnapshot,
+} from "@/voice-chat/live/live-webrtc-controller";
 
 const CALL_DISPLAY_NAME = "Paseo";
 const QUALITY_TICK_MS = 1_000;
@@ -38,6 +44,11 @@ function supportsVoiceOrchestrator(serverId: string): boolean {
 function supportsVoiceMessages(serverId: string): boolean {
   const serverInfo = useSessionStore.getState().getSession(serverId)?.serverInfo;
   return serverInfo?.features?.voiceMessages === true;
+}
+
+function supportsLiveWebrtc(serverId: string): boolean {
+  const serverInfo = useSessionStore.getState().getSession(serverId)?.serverInfo;
+  return serverInfo?.features?.voiceLiveWebrtc === true;
 }
 
 function isConnected(serverId: string): boolean {
@@ -69,6 +80,54 @@ function spoken(key: "switchedToMessages" | "weakSignal", serverId: string): str
 interface CallDeps {
   runtime: VoiceRuntime;
   messages: VoiceMessagesController;
+  webrtc: LiveWebrtcController | null;
+}
+
+function requireHostClient(serverId: string) {
+  const client = getHostRuntimeStore().getClient(serverId);
+  if (!client) throw new Error("disconnected");
+  return client;
+}
+
+/**
+ * Live mode prefers WebRTC straight to GPT-Live, which survives a shaky link to the host;
+ * hosts or binaries without it get the audio relayed through the host as before.
+ */
+async function startLive(deps: CallDeps, serverId: string, agentId: string): Promise<void> {
+  const store = useGlobalVoiceStore.getState();
+  if (deps.webrtc && supportsLiveWebrtc(serverId)) {
+    try {
+      await deps.webrtc.start({
+        signaling: {
+          connect: (sdp) =>
+            requireHostClient(serverId).connectLiveVoice({ sdp, language: callLanguage(serverId) }),
+          end: (sessionId) => requireHostClient(serverId).endLiveVoice({ sessionId }),
+        },
+      });
+      store.setCall({ liveTransport: "webrtc" });
+      logVoiceCallEvent("live_transport", { transport: "webrtc" });
+      return;
+    } catch (error) {
+      logVoiceCallEvent("live_webrtc_fallback", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  await deps.runtime.startVoice(serverId, agentId);
+  store.setCall({ liveTransport: "relay" });
+  logVoiceCallEvent("live_transport", { transport: "relay" });
+}
+
+async function stopLive(deps: CallDeps, options: { handoff: boolean }): Promise<void> {
+  if (deps.webrtc?.isActive()) {
+    await deps.webrtc.stop(options);
+    return;
+  }
+  if (options.handoff) {
+    deps.runtime.handOffVoice();
+    return;
+  }
+  await deps.runtime.stopVoice();
 }
 
 async function startMessages(
@@ -98,7 +157,7 @@ async function switchMode(
   logVoiceCallEvent("mode_switch", { from: store.mode, to: target, reason });
   try {
     if (target === "messages") {
-      deps.runtime.handOffVoice();
+      await stopLive(deps, { handoff: true });
       await startMessages(deps, serverId, {
         greet: false,
         intro: spoken(reason === "auto" ? "weakSignal" : "switchedToMessages", serverId),
@@ -110,7 +169,7 @@ async function switchMode(
     if (!agentId) throw new Error("The voice assistant is not running on this host.");
     await deps.messages.stop({ handoff: true });
     try {
-      await deps.runtime.startVoice(serverId, agentId);
+      await startLive(deps, serverId, agentId);
       store.setCall({ mode: "live", isAutoMode: false });
     } catch (error) {
       logVoiceCallEvent("live_resume_failed", {
@@ -139,11 +198,28 @@ export interface GlobalVoice {
   setWeakSignalMode: (enabled: boolean) => void;
 }
 
+function resolveIsMuted(
+  messages: VoiceMessagesSnapshot,
+  liveWebrtc: LiveWebrtcSnapshot,
+  relayMuted: boolean,
+): boolean {
+  if (messages.active) return messages.isMuted;
+  if (liveWebrtc.active) return liveWebrtc.isMuted;
+  return relayMuted;
+}
+
+function resolveWebrtcPhase(liveWebrtc: LiveWebrtcSnapshot): string {
+  if (liveWebrtc.state === "connecting") return "starting";
+  return liveWebrtc.isAssistantSpeaking ? "playing" : "listening";
+}
+
 export function useGlobalVoice(): GlobalVoice {
   const voice = useVoiceOptional();
   const runtime = useVoiceRuntimeOptional();
   const messagesController = useVoiceMessagesController();
   const messages = useVoiceMessagesSnapshot();
+  const liveWebrtcController = useLiveWebrtcController();
+  const liveWebrtc = useLiveWebrtcSnapshot();
   const toast = useToast();
   const { t, i18n: appI18n } = useTranslation();
   const isStarting = useGlobalVoiceStore((state) => state.isStarting);
@@ -159,11 +235,13 @@ export function useGlobalVoice(): GlobalVoice {
     activeServerId !== null &&
     activeAgentId !== null &&
     orchestratorAgentIds[activeServerId] === activeAgentId;
-  const isActive = isLiveActive || messages.active;
+  const isActive = isLiveActive || liveWebrtc.active || messages.active;
 
   const depsRef = useRef<CallDeps | null>(null);
   depsRef.current =
-    runtime && messagesController ? { runtime, messages: messagesController } : null;
+    runtime && messagesController
+      ? { runtime, messages: messagesController, webrtc: liveWebrtcController }
+      : null;
   const voiceRef = useRef(voice);
   voiceRef.current = voice;
 
@@ -172,6 +250,7 @@ export function useGlobalVoice(): GlobalVoice {
       const deps = depsRef.current;
       logVoiceCallEvent("call_ended", { mode: useGlobalVoiceStore.getState().mode });
       await deps?.messages.stop().catch(() => undefined);
+      await deps?.webrtc?.stop({ handoff: false }).catch(() => undefined);
       await voiceRef.current?.stopVoice().catch((error) => {
         console.error("[GlobalVoice] Failed to stop voice", error);
       });
@@ -181,7 +260,7 @@ export function useGlobalVoice(): GlobalVoice {
       stopVoiceCallEventLog();
       const store = useGlobalVoiceStore.getState();
       store.setMinimized(false);
-      store.setCall({ callServerId: null, mode: "live", isAutoMode: false });
+      store.setCall({ callServerId: null, mode: "live", isAutoMode: false, liveTransport: null });
     })();
   }, []);
 
@@ -215,6 +294,10 @@ export function useGlobalVoice(): GlobalVoice {
                 if (current.messages.getSnapshot().isMuted !== muted) current.messages.toggleMute();
                 return;
               }
+              if (current.webrtc?.isActive()) {
+                if (current.webrtc.getSnapshot().isMuted !== muted) current.webrtc.toggleMute();
+                return;
+              }
               const live = voiceRef.current;
               if (live && live.isMuted !== muted) live.toggleMute();
             },
@@ -238,7 +321,7 @@ export function useGlobalVoice(): GlobalVoice {
         if (useMessages) {
           await startMessages(deps, serverId, { greet: true });
         } else {
-          await deps.runtime.startVoice(serverId, agentId);
+          await startLive(deps, serverId, agentId);
         }
       } catch (error) {
         if (callStarted) await endCallSession().catch(() => undefined);
@@ -257,6 +340,10 @@ export function useGlobalVoice(): GlobalVoice {
     const deps = depsRef.current;
     if (deps?.messages.isActive()) {
       deps.messages.toggleMute();
+      return;
+    }
+    if (deps?.webrtc?.isActive()) {
+      deps.webrtc.toggleMute();
       return;
     }
     voiceRef.current?.toggleMute();
@@ -284,8 +371,8 @@ export function useGlobalVoice(): GlobalVoice {
   return {
     isActive,
     isStarting,
-    isMuted: messages.active ? messages.isMuted : (voice?.isMuted ?? false),
-    phase: voice?.phase ?? "disabled",
+    isMuted: resolveIsMuted(messages, liveWebrtc, voice?.isMuted ?? false),
+    phase: liveWebrtc.active ? resolveWebrtcPhase(liveWebrtc) : (voice?.phase ?? "disabled"),
     mode,
     isAutoMode,
     isSwitching,
@@ -304,6 +391,7 @@ export function useGlobalVoice(): GlobalVoice {
 export function useGlobalVoiceSupervisor(call: GlobalVoice): void {
   const runtime = useVoiceRuntimeOptional();
   const messagesController = useVoiceMessagesController();
+  const liveWebrtcController = useLiveWebrtcController();
   const callServerId = useGlobalVoiceStore((state) => state.callServerId);
   const wasActiveRef = useRef(false);
 
@@ -314,7 +402,7 @@ export function useGlobalVoiceSupervisor(call: GlobalVoice): void {
       stopVoiceCallEventLog();
       useGlobalVoiceStore
         .getState()
-        .setCall({ callServerId: null, mode: "live", isAutoMode: false });
+        .setCall({ callServerId: null, mode: "live", isAutoMode: false, liveTransport: null });
     }
     wasActiveRef.current = call.isActive;
   }, [call.isActive, call.isStarting, call.isSwitching]);
@@ -329,7 +417,11 @@ export function useGlobalVoiceSupervisor(call: GlobalVoice): void {
 
   useEffect(() => {
     if (!call.isActive || !callServerId || !runtime || !messagesController) return;
-    const deps: CallDeps = { runtime, messages: messagesController };
+    const deps: CallDeps = {
+      runtime,
+      messages: messagesController,
+      webrtc: liveWebrtcController,
+    };
     if (!supportsVoiceMessages(callServerId)) return;
     const store = getHostRuntimeStore();
     const quality = new ConnectionQuality(isConnected(callServerId), Date.now());
@@ -354,7 +446,12 @@ export function useGlobalVoiceSupervisor(call: GlobalVoice): void {
       const state = useGlobalVoiceStore.getState();
       if (state.isSwitching) return;
       const now = Date.now();
-      if (state.mode === "live" && quality.shouldDegrade(now)) {
+      // Over WebRTC the voice doesn't need the host link, so only the voice link's own health counts.
+      const liveDegraded =
+        state.liveTransport === "webrtc"
+          ? (liveWebrtcController?.isDegraded() ?? false)
+          : quality.shouldDegrade(now);
+      if (state.mode === "live" && liveDegraded) {
         quality.noteDegraded(now);
         void switchMode(deps, "messages", "auto").catch(() => undefined);
         return;
@@ -375,5 +472,5 @@ export function useGlobalVoiceSupervisor(call: GlobalVoice): void {
       unsubscribe();
       clearInterval(timer);
     };
-  }, [call.isActive, callServerId, messagesController, runtime]);
+  }, [call.isActive, callServerId, liveWebrtcController, messagesController, runtime]);
 }

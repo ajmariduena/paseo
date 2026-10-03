@@ -19,12 +19,18 @@ export type VoiceMessagesRequest = Extract<
       | "voice.messages.sync.request"
       | "voice.messages.get_audio.request"
       | "voice.messages.end.request"
-      | "voice.call.log_events.request";
+      | "voice.call.log_events.request"
+      | "voice.live.connect.request"
+      | "voice.live.end.request";
   }
 >;
 
 export function isVoiceMessagesRequest(msg: SessionInboundMessage): msg is VoiceMessagesRequest {
-  return msg.type.startsWith("voice.messages.") || msg.type === "voice.call.log_events.request";
+  return (
+    msg.type.startsWith("voice.messages.") ||
+    msg.type.startsWith("voice.live.") ||
+    msg.type === "voice.call.log_events.request"
+  );
 }
 
 function getErrorMessage(error: unknown): string {
@@ -75,6 +81,10 @@ export class VoiceMessagesSessionHandler {
         return this.handleEnd(msg);
       case "voice.call.log_events.request":
         return this.handleLogEvents(msg);
+      case "voice.live.connect.request":
+        return this.handleLiveConnect(msg);
+      case "voice.live.end.request":
+        return this.handleLiveEnd(msg);
     }
   }
 
@@ -250,6 +260,46 @@ export class VoiceMessagesSessionHandler {
     this.options.logger.info({ callId: msg.callId }, "Voice messages call ended");
     this.emit({
       type: "voice.messages.end.response",
+      payload: { requestId: msg.requestId, error: null },
+    });
+  }
+
+  private async handleLiveConnect(
+    msg: Extract<VoiceMessagesRequest, { type: "voice.live.connect.request" }>,
+  ): Promise<void> {
+    try {
+      const orchestrator = this.requireOrchestrator();
+      orchestrator.setPreferredLanguage(msg.language ?? null);
+      const answer = await orchestrator.webrtc.connect({ sdp: msg.sdp });
+      this.emit({
+        type: "voice.live.connect.response",
+        payload: {
+          requestId: msg.requestId,
+          sessionId: answer.sessionId,
+          sdp: answer.sdp,
+          error: null,
+        },
+      });
+    } catch (error) {
+      this.options.logger.warn({ err: error }, "Failed to start a GPT-Live WebRTC call");
+      this.emit({
+        type: "voice.live.connect.response",
+        payload: {
+          requestId: msg.requestId,
+          sessionId: null,
+          sdp: null,
+          error: getErrorMessage(error),
+        },
+      });
+    }
+  }
+
+  private async handleLiveEnd(
+    msg: Extract<VoiceMessagesRequest, { type: "voice.live.end.request" }>,
+  ): Promise<void> {
+    this.options.orchestrator?.webrtc.end(msg.sessionId);
+    this.emit({
+      type: "voice.live.end.response",
       payload: { requestId: msg.requestId, error: null },
     });
   }

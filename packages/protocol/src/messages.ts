@@ -2755,6 +2755,20 @@ export const VoiceMessagesEndRequestSchema = z.object({
   requestId: z.string(),
 });
 
+export const VoiceLiveConnectRequestSchema = z.object({
+  type: z.literal("voice.live.connect.request"),
+  /** The phone's WebRTC offer; the host trades it for GPT-Live's answer. */
+  sdp: z.string(),
+  language: z.string().optional(),
+  requestId: z.string(),
+});
+
+export const VoiceLiveEndRequestSchema = z.object({
+  type: z.literal("voice.live.end.request"),
+  sessionId: z.string(),
+  requestId: z.string(),
+});
+
 export const VoiceCallLogEventsRequestSchema = z.object({
   type: z.literal("voice.call.log_events.request"),
   events: z.array(
@@ -3449,6 +3463,8 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   VoiceMessagesGetAudioRequestSchema,
   VoiceMessagesEndRequestSchema,
   VoiceCallLogEventsRequestSchema,
+  VoiceLiveConnectRequestSchema,
+  VoiceLiveEndRequestSchema,
   FileExplorerRequestSchema,
   FileSubscribeRequestSchema,
   FileUnsubscribeRequestSchema,
@@ -3767,6 +3783,8 @@ export const ServerInfoStatusPayloadSchema = z
         voiceOrchestrator: z.boolean().optional(),
         // COMPAT(voiceMessages): added in v0.11.0, remove gate after 2027-10-03.
         voiceMessages: z.boolean().optional(),
+        // COMPAT(voiceLiveWebrtc): added in v0.11.0, remove gate after 2027-10-03.
+        voiceLiveWebrtc: z.boolean().optional(),
         // COMPAT(projectRemove): added in v0.1.97, drop the gate when floor >= v0.1.97.
         projectRemove: z.boolean().optional(),
         // COMPAT(projectAdd): added in v0.1.97, drop the gate when floor >= v0.1.97.
@@ -5160,6 +5178,24 @@ export const VoiceCallLogEventsResponseSchema = z.object({
   type: z.literal("voice.call.log_events.response"),
   payload: z.object({
     requestId: z.string(),
+  }),
+});
+
+export const VoiceLiveConnectResponseSchema = z.object({
+  type: z.literal("voice.live.connect.response"),
+  payload: z.object({
+    requestId: z.string(),
+    sessionId: z.string().nullable(),
+    sdp: z.string().nullable(),
+    error: z.string().nullable(),
+  }),
+});
+
+export const VoiceLiveEndResponseSchema = z.object({
+  type: z.literal("voice.live.end.response"),
+  payload: z.object({
+    requestId: z.string(),
+    error: z.string().nullable(),
   }),
 });
 
@@ -7184,6 +7220,8 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   VoiceMessagesEndResponseSchema,
   VoiceCallLogEventsResponseSchema,
   VoiceMessagesUpdateMessageSchema,
+  VoiceLiveConnectResponseSchema,
+  VoiceLiveEndResponseSchema,
   SendAgentMessageResponseMessageSchema,
   SetVoiceModeResponseMessageSchema,
   DaemonGetStatusResponseSchema,

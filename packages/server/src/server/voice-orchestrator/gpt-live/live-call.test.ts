@@ -4,12 +4,13 @@ import { WebSocketServer, type RawData, type WebSocket } from "ws";
 import type { SessionOutboundMessage } from "../../messages.js";
 import type { VoiceOrchestrator } from "../orchestrator.js";
 import { GptLiveCall } from "./live-call.js";
-import { GptLiveConnection } from "./live-connection.js";
+import { GptLiveConnection, createGptLiveWebrtcSession } from "./live-connection.js";
 
 type LiveMessage = Record<string, unknown>;
 
 interface FakeLive {
   url: string;
+  paths: string[];
   received: LiveMessage[];
   socket: () => WebSocket;
   close: () => Promise<void>;
@@ -31,8 +32,10 @@ async function startFakeLive(): Promise<FakeLive> {
   await new Promise<void>((resolve) => server.once("listening", () => resolve()));
   const received: LiveMessage[] = [];
   let current: WebSocket | null = null;
+  const paths: string[] = [];
   server.on("connection", (socket, request) => {
     expect(request.headers.authorization).toBe("Bearer test-key");
+    paths.push(request.url ?? "");
     current = socket;
     socket.on("message", (data) => replyToClient(socket, received, data));
   });
@@ -40,6 +43,7 @@ async function startFakeLive(): Promise<FakeLive> {
   const port = typeof address === "object" && address ? address.port : 0;
   return {
     url: `ws://127.0.0.1:${port}`,
+    paths,
     received,
     socket: () => {
       if (!current) throw new Error("no connection");
@@ -194,5 +198,99 @@ describe("GptLiveCall", () => {
     const { live, stub } = await startCall();
     stub.announce(["auth · Login fix finished."]);
     await waitFor(() => findMessage(live, "session.commentary.append", null) !== undefined);
+  });
+
+  it("attaches to a WebRTC session as a sideband and greets once the phone's audio arrives", async () => {
+    const live = await startFakeLive();
+    activeLive = live;
+    const stub = createOrchestratorStub();
+    const emitted: SessionOutboundMessage[] = [];
+    call = new GptLiveCall({
+      engine: { apiKey: "test-key", model: "gpt-live-1", voice: "marin" },
+      orchestrator: stub.orchestrator,
+      emit: (message) => emitted.push(message),
+      logger: pino({ level: "silent" }),
+      sidebandSessionId: "live_123",
+      createConnection: () => new GptLiveConnection(live.url),
+    });
+    await call.start();
+
+    expect(live.paths).toEqual(["/live_123/attach"]);
+    await waitFor(() => findMessage(live, "session.thinking.append") !== undefined);
+    expect(findMessage(live, "session.start")).toBeUndefined();
+    expect(findMessage(live, "session.instructions.append")).toBeUndefined();
+
+    live.socket().send(JSON.stringify({ type: "session.input_audio.append", audio: "AAAA" }));
+    live.socket().send(
+      JSON.stringify({
+        type: "session.output_audio.delta",
+        delta: Buffer.alloc(32000).toString("base64"),
+      }),
+    );
+    await waitFor(() => findMessage(live, "session.instructions.append") !== undefined);
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    expect(hasOutput(emitted, "audio_output")).toBe(false);
+  });
+});
+
+describe("createGptLiveWebrtcSession", () => {
+  it("trades the phone's offer for the answer with a client-delegation session", async () => {
+    const requests: Array<{ url: string; body: Record<string, unknown>; auth: string | null }> = [];
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      requests.push({
+        url,
+        body: JSON.parse(String(init.body)) as Record<string, unknown>,
+        auth: new Headers(init.headers).get("authorization"),
+      });
+      return new Response(
+        JSON.stringify({
+          session: { id: "live_9" },
+          transport: { type: "webrtc", sdp: "v=0 answer" },
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+
+    const answer = await createGptLiveWebrtcSession({
+      apiKey: "test-key",
+      model: "gpt-live-1",
+      voice: "marin",
+      instructions: "Habla español.",
+      sdp: "v=0 offer",
+      fetchImpl,
+    });
+
+    expect(answer).toEqual({ sessionId: "live_9", sdp: "v=0 answer" });
+    expect(requests[0]).toEqual({
+      url: "https://api.openai.com/v1/live/sessions",
+      auth: "Bearer test-key",
+      body: {
+        session: {
+          model: "gpt-live-1",
+          instructions: "Habla español.",
+          audio: { output: { voice: "marin" } },
+          delegation: { type: "client" },
+        },
+        transport: { type: "webrtc", sdp: "v=0 offer" },
+      },
+    });
+  });
+
+  it("reports OpenAI's error", async () => {
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ error: { message: "no access" } }), {
+        status: 403,
+      })) as unknown as typeof fetch;
+
+    await expect(
+      createGptLiveWebrtcSession({
+        apiKey: "k",
+        model: "gpt-live-1",
+        voice: "marin",
+        instructions: "",
+        sdp: "v=0",
+        fetchImpl,
+      }),
+    ).rejects.toThrow("GPT-Live WebRTC session failed (403): no access");
   });
 });

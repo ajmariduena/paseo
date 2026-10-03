@@ -13,6 +13,12 @@ import { i18n } from "@/i18n/i18next";
 import { logVoiceCallEvent } from "@/voice-chat/call-event-log";
 import { createDeviceSpeech } from "@/voice-chat/messages/device-speech";
 import {
+  createLiveWebrtcController,
+  type LiveWebrtcController,
+  type LiveWebrtcSnapshot,
+} from "@/voice-chat/live/live-webrtc-controller";
+import { getLiveWebrtcRuntime } from "@/voice-chat/live/webrtc-runtime";
+import {
   createVoiceMessagesController,
   type VoiceMessagesController,
   type VoiceMessagesSnapshot,
@@ -51,6 +57,7 @@ const EMPTY_TELEMETRY: VoiceRuntimeTelemetrySnapshot = {
 
 const VoiceRuntimeContext = createContext<VoiceRuntime | null>(null);
 const VoiceMessagesContext = createContext<VoiceMessagesController | null>(null);
+const LiveWebrtcContext = createContext<LiveWebrtcController | null>(null);
 const VoiceAudioEngineContext = createContext<AudioEngine | null>(null);
 
 const noopSubscribe = () => () => {};
@@ -135,6 +142,28 @@ const INACTIVE_MESSAGES: VoiceMessagesSnapshot = {
 };
 const getInactiveMessages = () => INACTIVE_MESSAGES;
 
+export function useLiveWebrtcController(): LiveWebrtcController | null {
+  return useContext(LiveWebrtcContext);
+}
+
+const INACTIVE_LIVE_WEBRTC: LiveWebrtcSnapshot = {
+  active: false,
+  state: "idle",
+  isMuted: false,
+  isAssistantSpeaking: false,
+  isUserSpeaking: false,
+};
+const getInactiveLiveWebrtc = () => INACTIVE_LIVE_WEBRTC;
+
+export function useLiveWebrtcSnapshot(): LiveWebrtcSnapshot {
+  const controller = useContext(LiveWebrtcContext);
+  return useSyncExternalStore(
+    controller ? controller.subscribe : noopSubscribe,
+    controller ? controller.getSnapshot : getInactiveLiveWebrtc,
+    controller ? controller.getSnapshot : getInactiveLiveWebrtc,
+  );
+}
+
 export function useVoiceMessagesSnapshot(): VoiceMessagesSnapshot {
   const controller = useContext(VoiceMessagesContext);
   return useSyncExternalStore(
@@ -152,6 +181,7 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
   const engineRef = useRef<AudioEngine | null>(null);
   const runtimeRef = useRef<VoiceRuntime | null>(null);
   const messagesRef = useRef<VoiceMessagesController | null>(null);
+  const liveWebrtcRef = useRef<LiveWebrtcController | null>(null);
 
   if (!engineRef.current) {
     let runtime: VoiceRuntime | null = null;
@@ -209,6 +239,10 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
       createId: () => randomUUID(),
     });
 
+    const webrtcRuntime = getLiveWebrtcRuntime();
+    liveWebrtcRef.current = webrtcRuntime
+      ? createLiveWebrtcController({ runtime: webrtcRuntime, log: logVoiceCallEvent })
+      : null;
     engineRef.current = engine;
     runtimeRef.current = runtime;
     messagesRef.current = messages;
@@ -217,20 +251,24 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
   const engine = engineRef.current;
   const runtime = runtimeRef.current!;
   const messages = messagesRef.current!;
+  const liveWebrtc = liveWebrtcRef.current;
 
   useEffect(() => {
     return () => {
       void messages.stop().catch(() => undefined);
+      void liveWebrtc?.stop({ handoff: false }).catch(() => undefined);
       void runtime.destroy().catch((error) => {
         console.error("[VoiceProvider] Failed to destroy voice runtime", error);
       });
     };
-  }, [messages, runtime]);
+  }, [liveWebrtc, messages, runtime]);
 
   return (
     <VoiceAudioEngineContext.Provider value={engine}>
       <VoiceRuntimeContext.Provider value={runtime}>
-        <VoiceMessagesContext.Provider value={messages}>{children}</VoiceMessagesContext.Provider>
+        <VoiceMessagesContext.Provider value={messages}>
+          <LiveWebrtcContext.Provider value={liveWebrtc}>{children}</LiveWebrtcContext.Provider>
+        </VoiceMessagesContext.Provider>
       </VoiceRuntimeContext.Provider>
     </VoiceAudioEngineContext.Provider>
   );

@@ -24,12 +24,16 @@ const CHUNK_MS = 600;
 const UTTERANCE_GAP_MS = 350;
 const USER_SPEECH_IDLE_MS = 900;
 const HISTORY_LIMIT = 24;
+// Over WebRTC the session runs before the phone's media connects; greet once its audio arrives.
+const GREETING_FALLBACK_MS = 6_000;
 
 export interface GptLiveCallOptions {
   engine: GptLiveEngineConfig;
   orchestrator: VoiceOrchestrator;
   emit: (message: SessionOutboundMessage) => void;
   logger: pino.Logger;
+  /** Attach as a sideband to this WebRTC session instead of carrying the audio. */
+  sidebandSessionId?: string;
   createConnection?: () => GptLiveConnection;
 }
 
@@ -56,6 +60,9 @@ export class GptLiveCall {
   private lastUserSpeechAt = 0;
   private userSpeakingSignalled = false;
   private userIdleTimer: ReturnType<typeof setTimeout> | null = null;
+  private assistantIdleTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingGreeting: string | null = null;
+  private greetingTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly options: GptLiveCallOptions) {
     this.connection = options.createConnection?.() ?? new GptLiveConnection();
@@ -71,14 +78,23 @@ export class GptLiveCall {
     this.history.push(...previous);
     this.connection.on("event", (event) => this.handleEvent(event));
     this.connection.on("close", () => {
-      if (!this.closed) this.options.logger.warn("GPT-Live connection closed during a call");
+      if (this.closed) return;
+      this.options.logger.warn("GPT-Live connection closed during a call");
+      this.close();
     });
-    await this.connection.start({
-      apiKey: engine.apiKey,
-      model: engine.model,
-      voice: engine.voice,
-      instructions: buildLiveInstructions(orchestrator.language),
-    });
+    if (this.options.sidebandSessionId) {
+      await this.connection.attach({
+        apiKey: engine.apiKey,
+        sessionId: this.options.sidebandSessionId,
+      });
+    } else {
+      await this.connection.start({
+        apiKey: engine.apiKey,
+        model: engine.model,
+        voice: engine.voice,
+        instructions: buildLiveInstructions(orchestrator.language),
+      });
+    }
     this.detach = orchestrator.attachCall({
       isUserSpeaking: () => Date.now() - this.lastUserSpeechAt < USER_SPEECH_IDLE_MS,
       announce: (lines) => this.connection.append("commentary", lines.join("\n"), null),
@@ -87,13 +103,24 @@ export class GptLiveCall {
     this.unregister = orchestrator.registerLiveCall(this);
     const fleet = await orchestrator.describeFleet().catch(() => []);
     this.connection.append("thinking", buildLiveFleetSnapshot(fleet), null);
-    this.connection.append(
-      "instructions",
+    const greeting =
       previous.length > 0
         ? buildLiveResume(previous, orchestrator.language)
-        : buildLiveGreeting(fleet, orchestrator.language),
-      null,
-    );
+        : buildLiveGreeting(fleet, orchestrator.language);
+    if (!this.options.sidebandSessionId) {
+      this.connection.append("instructions", greeting, null);
+      return;
+    }
+    this.pendingGreeting = greeting;
+    this.greetingTimer = setTimeout(() => this.sendPendingGreeting(), GREETING_FALLBACK_MS);
+  }
+
+  private sendPendingGreeting(): void {
+    if (this.greetingTimer) clearTimeout(this.greetingTimer);
+    this.greetingTimer = null;
+    const greeting = this.pendingGreeting;
+    this.pendingGreeting = null;
+    if (greeting && !this.closed) this.connection.append("instructions", greeting, null);
   }
 
   private async pushFleetSnapshot(): Promise<void> {
@@ -118,19 +145,27 @@ export class GptLiveCall {
     this.flushAudio(true);
     if (this.gapTimer) clearTimeout(this.gapTimer);
     if (this.userIdleTimer) clearTimeout(this.userIdleTimer);
+    if (this.assistantIdleTimer) clearTimeout(this.assistantIdleTimer);
+    if (this.greetingTimer) clearTimeout(this.greetingTimer);
     this.connection.close();
   }
 
   private handleEvent(event: GptLiveServerEvent): void {
     switch (event.type) {
       case "session.output_audio.delta":
+        // A sideband only gets reflected copies; the phone already hears it over WebRTC.
+        if (this.options.sidebandSessionId) return;
         this.handleOutputAudio(Buffer.from((event as { delta: string }).delta, "base64"));
+        return;
+      case "session.input_audio.append":
+        if (this.pendingGreeting) this.sendPendingGreeting();
         return;
       case "session.input_transcript.delta":
         this.handleUserSpeech((event as { delta: string }).delta);
         return;
       case "session.output_transcript.delta":
         this.assistantTurn += (event as { delta: string }).delta;
+        if (this.options.sidebandSessionId) this.scheduleAssistantCommit();
         return;
       case "session.delegation.created":
         void this.handleDelegation((event as { delegation: { id: string } }).delegation.id);
@@ -141,6 +176,16 @@ export class GptLiveCall {
       default:
         return;
     }
+  }
+
+  /** Without audio there are no utterance gaps to end a turn, so a transcript pause ends it. */
+  private scheduleAssistantCommit(): void {
+    if (this.assistantIdleTimer) clearTimeout(this.assistantIdleTimer);
+    this.assistantIdleTimer = setTimeout(() => {
+      this.assistantIdleTimer = null;
+      if (this.assistantTurn.trim()) this.pushHistory(`Assistant: ${this.assistantTurn.trim()}`);
+      this.assistantTurn = "";
+    }, USER_SPEECH_IDLE_MS);
   }
 
   private handleOutputAudio(audio: Buffer): void {
@@ -190,16 +235,21 @@ export class GptLiveCall {
     this.userTurn += delta;
     this.sinceLastDelegation += delta;
     this.lastUserSpeechAt = Date.now();
+    const relaysAudio = !this.options.sidebandSessionId;
     if (!this.userSpeakingSignalled) {
       this.userSpeakingSignalled = true;
       // Barge-in: the app drops queued assistant audio when the user starts talking.
       this.discardPendingAudio();
-      this.options.emit({ type: "voice_input_state", payload: { isSpeaking: true } });
+      if (relaysAudio) {
+        this.options.emit({ type: "voice_input_state", payload: { isSpeaking: true } });
+      }
     }
     if (this.userIdleTimer) clearTimeout(this.userIdleTimer);
     this.userIdleTimer = setTimeout(() => {
       this.userSpeakingSignalled = false;
-      this.options.emit({ type: "voice_input_state", payload: { isSpeaking: false } });
+      if (relaysAudio) {
+        this.options.emit({ type: "voice_input_state", payload: { isSpeaking: false } });
+      }
       this.commitUserTurn();
     }, USER_SPEECH_IDLE_MS);
   }

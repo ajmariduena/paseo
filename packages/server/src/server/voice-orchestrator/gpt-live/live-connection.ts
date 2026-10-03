@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { WebSocket, type RawData } from "ws";
 
 export const GPT_LIVE_URL = "wss://api.openai.com/v1/live/sessions";
+export const GPT_LIVE_API_BASE = "https://api.openai.com/v1";
 export const GPT_LIVE_SAMPLE_RATE = 16000;
 const START_TIMEOUT_MS = 15_000;
 // The Live API rejects appends longer than this many tokens.
@@ -29,6 +30,50 @@ export type GptLiveServerEvent =
   | { type: string; [key: string]: unknown };
 
 type AppendKind = "instructions" | "thinking" | "commentary";
+
+/**
+ * Creates a GPT-Live session whose audio runs over WebRTC between the phone and OpenAI.
+ * The host keeps the API key: it trades the phone's SDP offer for the answer.
+ */
+export async function createGptLiveWebrtcSession(params: {
+  apiKey: string;
+  model: string;
+  voice: string;
+  instructions: string;
+  sdp: string;
+  baseUrl?: string;
+  fetchImpl?: typeof fetch;
+}): Promise<{ sessionId: string; sdp: string }> {
+  const fetchImpl = params.fetchImpl ?? fetch;
+  const response = await fetchImpl(`${params.baseUrl ?? GPT_LIVE_API_BASE}/live/sessions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${params.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      session: {
+        model: params.model,
+        instructions: params.instructions,
+        audio: { output: { voice: params.voice } },
+        delegation: { type: "client" },
+      },
+      transport: { type: "webrtc", sdp: params.sdp },
+    }),
+    signal: AbortSignal.timeout(START_TIMEOUT_MS),
+  });
+  const body = (await response.json().catch(() => null)) as {
+    session?: { id?: string };
+    transport?: { sdp?: string };
+    error?: { message?: string };
+  } | null;
+  if (!response.ok || !body?.session?.id || !body.transport?.sdp) {
+    throw new Error(
+      `GPT-Live WebRTC session failed (${response.status}): ${body?.error?.message ?? "no SDP answer"}`,
+    );
+  }
+  return { sessionId: body.session.id, sdp: body.transport.sdp };
+}
 
 export interface GptLiveConnectionEvents {
   event: [GptLiveServerEvent];
@@ -111,6 +156,41 @@ export class GptLiveConnection extends EventEmitter<GptLiveConnectionEvents> {
             delegation: { type: "client" },
           },
         });
+      });
+    });
+  }
+
+  /** Sideband: controls a session whose audio runs elsewhere (WebRTC). Never sends session.start. */
+  async attach(options: { apiKey: string; sessionId: string }): Promise<void> {
+    const url = `${this.url}/${encodeURIComponent(options.sessionId)}/attach`;
+    const socket = new WebSocket(url, {
+      headers: { Authorization: `Bearer ${options.apiKey}` },
+      followRedirects: false,
+    });
+    this.socket = socket;
+    socket.on("message", (data) => {
+      const event = parseEvent(data);
+      if (!event) return;
+      if (event.type === "session.closed") socket.close();
+      this.emit("event", event);
+    });
+    socket.on("close", () => {
+      this.started = false;
+      this.emit("close");
+    });
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        socket.terminate();
+        reject(new Error("GPT-Live sideband did not attach in time"));
+      }, START_TIMEOUT_MS);
+      socket.once("open", () => {
+        clearTimeout(timeout);
+        this.started = true;
+        resolve();
+      });
+      socket.once("error", (error) => {
+        clearTimeout(timeout);
+        reject(error);
       });
     });
   }

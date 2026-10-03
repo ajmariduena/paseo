@@ -2224,6 +2224,32 @@ export class DaemonClient {
     });
   }
 
+  async connectLiveVoice(params: {
+    sdp: string;
+    language?: string;
+  }): Promise<{ sessionId: string; sdp: string }> {
+    const response =
+      await this.sendNamespacedCorrelatedSessionRequest<"voice.live.connect.response">({
+        message: {
+          type: "voice.live.connect.request",
+          sdp: params.sdp,
+          ...(params.language ? { language: params.language } : {}),
+        },
+        timeout: VOICE_ORCHESTRATOR_START_TIMEOUT_MS,
+      });
+    if (response.error || !response.sessionId || !response.sdp) {
+      throw new Error(response.error ?? "The live voice session did not start");
+    }
+    return { sessionId: response.sessionId, sdp: response.sdp };
+  }
+
+  async endLiveVoice(params: { sessionId: string }): Promise<void> {
+    await this.sendNamespacedCorrelatedSessionRequest<"voice.live.end.response">({
+      message: { type: "voice.live.end.request", sessionId: params.sessionId },
+      timeout: VOICE_MESSAGES_TIMEOUT_MS,
+    });
+  }
+
   async logVoiceCallEvents(
     events: Array<{ at: string; kind: string; detail?: Record<string, unknown> }>,
   ): Promise<void> {

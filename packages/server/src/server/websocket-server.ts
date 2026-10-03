@@ -1900,6 +1900,8 @@ export class VoiceAssistantWebSocketServer {
         voiceOrchestrator: Boolean(this.voiceOrchestrator),
         // COMPAT(voiceMessages): added in v0.11.0, remove gate after 2027-10-03.
         voiceMessages: Boolean(this.voiceOrchestrator),
+        // COMPAT(voiceLiveWebrtc): added in v0.11.0, remove gate after 2027-10-03.
+        voiceLiveWebrtc: this.voiceOrchestrator?.webrtc.available ?? false,
         // COMPAT(projectRemove): added in v0.1.97, drop the gate when floor >= v0.1.97.
         projectRemove: true,
         // COMPAT(projectAdd): added in v0.1.97, drop the gate when floor >= v0.1.97.

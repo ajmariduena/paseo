@@ -185,6 +185,7 @@ export default {
         },
       ],
       "expo-audio",
+      "@config-plugins/react-native-webrtc",
       [
         "expo-gradle-jvmargs",
         {

@@ -8,9 +8,16 @@ public class PaseoSpeechModule: Module {
   // Renderers and transcribers deliver results asynchronously; they must live until then.
   private var renderers: [UUID: SystemVoiceRenderer] = [:]
   private var transcribers: [UUID: OnDeviceTranscriber] = [:]
+  private let speaker = SpeakerPreference()
 
   public func definition() -> ModuleDefinition {
     Name("PaseoSpeech")
+
+    Function("setPreferSpeaker") { (enabled: Bool) in
+      DispatchQueue.main.async {
+        self.speaker.setEnabled(enabled)
+      }
+    }
 
     AsyncFunction("transcribe") {
       (pcmBase64: String, sampleRate: Double, locale: String, promise: Promise) in
