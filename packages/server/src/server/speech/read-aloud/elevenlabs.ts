@@ -18,6 +18,8 @@ export interface ElevenLabsSpeechRequest {
   text: string;
   voiceSettings: ReadAloudVoiceSettings;
   previousRequestIds?: readonly string[];
+  /** ElevenLabs `output_format`, e.g. `mp3_22050_32`. Defaults to PCM for the native engine. */
+  outputFormat?: string;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -45,7 +47,8 @@ export async function synthesizeElevenLabsSpeech(
   const fetchImpl = request.fetchImpl ?? fetch;
   const sleep = request.sleep ?? defaultSleep;
   const url = new URL(`/v1/text-to-speech/${encodeURIComponent(request.voiceId)}`, request.baseUrl);
-  url.searchParams.set("output_format", OUTPUT_FORMAT);
+  const outputFormat = request.outputFormat ?? OUTPUT_FORMAT;
+  url.searchParams.set("output_format", outputFormat);
   const body = JSON.stringify(buildRequestBody(request));
 
   for (let attempt = 1; ; attempt += 1) {
@@ -54,7 +57,9 @@ export async function synthesizeElevenLabsSpeech(
       headers: {
         "xi-api-key": request.apiKey,
         "Content-Type": "application/json",
-        Accept: "audio/pcm, application/json",
+        Accept: outputFormat.startsWith("mp3")
+          ? "audio/mpeg, application/json"
+          : "audio/pcm, application/json",
       },
       body,
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
@@ -65,7 +70,11 @@ export async function synthesizeElevenLabsSpeech(
       if (audio.length === 0) {
         throw new ElevenLabsError("ElevenLabs returned empty audio", response.status, null);
       }
-      return { audio, format: AUDIO_FORMAT, requestId: response.headers.get("request-id") };
+      return {
+        audio,
+        format: outputFormat === OUTPUT_FORMAT ? AUDIO_FORMAT : describeOutputFormat(outputFormat),
+        requestId: response.headers.get("request-id"),
+      };
     }
 
     const error = await toElevenLabsError(response);
@@ -74,6 +83,10 @@ export async function synthesizeElevenLabsSpeech(
     }
     await sleep(resolveRetryDelayMs(response.headers.get("retry-after")));
   }
+}
+
+function describeOutputFormat(outputFormat: string): string {
+  return outputFormat.startsWith("mp3") ? "mp3" : outputFormat;
 }
 
 function buildRequestBody(request: ElevenLabsSpeechRequest): Record<string, unknown> {

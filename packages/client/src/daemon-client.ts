@@ -8,7 +8,7 @@ import {
   type TimelineSubscription,
 } from "./connection/index.js";
 import { CreationClient } from "./creation/index.js";
-import type { CreationSnapshot } from "@getpaseo/protocol/messages";
+import type { CreationSnapshot, VoiceMessagesItem } from "@getpaseo/protocol/messages";
 import type { z } from "zod";
 import type { SessionEventSubscription } from "@getpaseo/protocol/messages";
 import type { ClientCapability } from "@getpaseo/protocol/client-capabilities";
@@ -1057,6 +1057,8 @@ const PUSH_TOKEN_REVOCATION_TIMEOUT_MS = 2_000;
 const READ_ALOUD_PREPARE_TIMEOUT_MS = 2 * 60 * 1000;
 const READ_ALOUD_SYNTHESIZE_TIMEOUT_MS = 90_000;
 const VOICE_ORCHESTRATOR_START_TIMEOUT_MS = 60_000;
+// Messages mode retries on a weak link, so a lost request must fail fast instead of waiting a minute.
+const VOICE_MESSAGES_TIMEOUT_MS = 12_000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 const DEFAULT_LIVENESS_TIMEOUT_MS = 5000;
 const LIVENESS_HEARTBEAT_INTERVAL_MS = 10_000;
@@ -2125,7 +2127,7 @@ export class DaemonClient {
   async startVoiceOrchestrator(params: {
     language?: string;
     requestId?: string;
-  }): Promise<{ agentId: string }> {
+  }): Promise<{ agentId: string; language: string | null }> {
     const response =
       await this.sendNamespacedCorrelatedSessionRequest<"voice.orchestrator.start.response">({
         requestId: params.requestId,
@@ -2138,7 +2140,97 @@ export class DaemonClient {
     if (response.error || !response.agentId) {
       throw new Error(response.error ?? "The voice assistant did not start");
     }
-    return { agentId: response.agentId };
+    return { agentId: response.agentId, language: response.language ?? null };
+  }
+
+  async startVoiceMessages(params: {
+    callId: string;
+    language?: string;
+    history?: string[];
+    greet?: boolean;
+  }): Promise<{ agentId: string; lastSeq: number; language: string | null }> {
+    const response =
+      await this.sendNamespacedCorrelatedSessionRequest<"voice.messages.start.response">({
+        message: {
+          type: "voice.messages.start.request",
+          callId: params.callId,
+          ...(params.language ? { language: params.language } : {}),
+          ...(params.history ? { history: params.history } : {}),
+          ...(params.greet !== undefined ? { greet: params.greet } : {}),
+        },
+        timeout: VOICE_ORCHESTRATOR_START_TIMEOUT_MS,
+      });
+    if (response.error || !response.agentId) {
+      throw new Error(response.error ?? "The voice assistant did not start");
+    }
+    return {
+      agentId: response.agentId,
+      lastSeq: response.lastSeq,
+      language: response.language ?? null,
+    };
+  }
+
+  async sendVoiceUtterance(params: {
+    callId: string;
+    utteranceId: string;
+    text?: string;
+    chunkIndex?: number;
+    chunkCount?: number;
+    audio?: string;
+    mimeType?: string;
+  }): Promise<{ receivedChunks: number; audioComplete: boolean; error: string | null }> {
+    const response =
+      await this.sendNamespacedCorrelatedSessionRequest<"voice.messages.send_utterance.response">({
+        message: { type: "voice.messages.send_utterance.request", ...params },
+        timeout: VOICE_MESSAGES_TIMEOUT_MS,
+      });
+    return {
+      receivedChunks: response.receivedChunks,
+      audioComplete: response.audioComplete,
+      error: response.error,
+    };
+  }
+
+  async syncVoiceMessages(params: {
+    callId: string;
+    afterSeq: number;
+  }): Promise<{ active: boolean; items: VoiceMessagesItem[] }> {
+    const response =
+      await this.sendNamespacedCorrelatedSessionRequest<"voice.messages.sync.response">({
+        message: { type: "voice.messages.sync.request", ...params },
+        timeout: VOICE_MESSAGES_TIMEOUT_MS,
+      });
+    return { active: response.active, items: response.items };
+  }
+
+  async getVoiceMessageAudio(params: {
+    callId: string;
+    seq: number;
+    offset: number;
+    length: number;
+  }): Promise<{ audio: string | null; total: number; mimeType: string | null }> {
+    const response =
+      await this.sendNamespacedCorrelatedSessionRequest<"voice.messages.get_audio.response">({
+        message: { type: "voice.messages.get_audio.request", ...params },
+        timeout: VOICE_MESSAGES_TIMEOUT_MS,
+      });
+    return { audio: response.audio, total: response.total, mimeType: response.mimeType };
+  }
+
+  async endVoiceMessages(params: { callId: string; handoff?: boolean }): Promise<void> {
+    await this.sendNamespacedCorrelatedSessionRequest<"voice.messages.end.response">({
+      message: { type: "voice.messages.end.request", ...params },
+      timeout: VOICE_MESSAGES_TIMEOUT_MS,
+    });
+  }
+
+  async logVoiceCallEvents(
+    events: Array<{ at: string; kind: string; detail?: Record<string, unknown> }>,
+  ): Promise<void> {
+    await this.sendNamespacedCorrelatedSessionRequest<"voice.call.log_events.response">({
+      message: { type: "voice.call.log_events.request", events },
+      timeout: VOICE_MESSAGES_TIMEOUT_MS,
+    });
   }
 
   async synthesizeReadAloud(params: {

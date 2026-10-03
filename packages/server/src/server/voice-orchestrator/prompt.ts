@@ -122,6 +122,54 @@ export function buildLiveGreeting(fleet: VoiceFleetEntry[], language: string | n
   ].join("\n");
 }
 
+/**
+ * Messages mode has no realtime voice model, so the orchestrator writes what the phone
+ * will say. Updates are daemon data; the reply must be plain speakable text.
+ */
+export function buildNarrationPrompt(params: {
+  kind: "notices" | "call_start";
+  lines: string[];
+  history: string[];
+  fleet: VoiceFleetEntry[];
+  language: string | null;
+}): string {
+  const language = params.language ? describeLanguage(params.language) : "the user's language";
+  const fleetLines = params.fleet.map(
+    (entry) => `- ${entry.workspace} · ${entry.title}: ${entry.status}`,
+  );
+  const body =
+    params.kind === "call_start"
+      ? [
+          "The user just started a voice call in messages mode (weak signal). Greet them in one short sentence and mention only what needs their attention or is in progress, starting with the workspace name.",
+          fleetLines.length > 0
+            ? `Agents right now:\n${fleetLines.join("\n")}`
+            : "There are no active agents.",
+        ]
+      : [
+          `<${VOICE_EVENTS_TAG}>`,
+          ...params.lines.map((line) => `- ${line}`),
+          `</${VOICE_EVENTS_TAG}>`,
+          "Tell the user about these updates. Permission requests and failures first, then finished work, then progress. Start each with the workspace name. For finished work say what it did and the outcome.",
+        ];
+  return [
+    "<voice-conversation>",
+    ...params.history,
+    "</voice-conversation>",
+    ...body,
+    `Reply only with the words to say aloud, in ${language}: one to three short plain sentences, no markdown, IDs, paths or URLs. Do not call any tool for this.`,
+  ].join("\n");
+}
+
+/** A live call that picks up a conversation started in messages mode. */
+export function buildLiveResume(history: string[], language: string | null): string {
+  const inLanguage = language ? ` in ${describeLanguage(language)}` : "";
+  return [
+    `The connection improved and the call switched back from messages mode to live. Do not greet again: say${inLanguage}, in one short sentence, that you're back live, then listen.`,
+    "Conversation so far (the latest lines matter most):",
+    ...history.slice(-12),
+  ].join("\n");
+}
+
 export function buildDelegationPrompt(params: {
   request: string;
   history: string[];

@@ -766,6 +766,7 @@ export class VoiceAssistantWebSocketServer {
       filePath: join(paseoHome, "push-tokens.json"),
     });
     this.pushNotificationSender = pushNotificationSender ?? this.pushNotifications;
+    this.connectVoicePush();
 
     this.agentManager.setAgentAttentionCallback((params) => {
       this.voiceOrchestrator?.handleAttention(params);
@@ -1897,6 +1898,8 @@ export class VoiceAssistantWebSocketServer {
         browserScreencast: this.browserToolsBroker !== null,
         // COMPAT(voiceOrchestrator): added in v0.11.0, remove gate after 2027-10-03.
         voiceOrchestrator: Boolean(this.voiceOrchestrator),
+        // COMPAT(voiceMessages): added in v0.11.0, remove gate after 2027-10-03.
+        voiceMessages: Boolean(this.voiceOrchestrator),
         // COMPAT(projectRemove): added in v0.1.97, drop the gate when floor >= v0.1.97.
         projectRemove: true,
         // COMPAT(projectAdd): added in v0.1.97, drop the gate when floor >= v0.1.97.
@@ -2044,12 +2047,26 @@ export class VoiceAssistantWebSocketServer {
     });
   }
 
+  private connectVoicePush(): void {
+    this.voiceOrchestrator?.messages.setPushSender((payload) => {
+      void this.pushNotificationSender.send(payload).catch((err) => {
+        this.logger.warn({ err }, "Failed to send voice push notification");
+      });
+    });
+  }
+
   public resolveVoiceSpeakHandler(callerAgentId: string): VoiceSpeakHandler | null {
     return this.voiceSpeakHandlers.get(callerAgentId) ?? null;
   }
 
   public resolveVoiceCallerContext(callerAgentId: string): VoiceCallerContext | null {
-    return this.voiceCallerContexts.get(callerAgentId) ?? null;
+    const registered = this.voiceCallerContexts.get(callerAgentId);
+    if (registered) return registered;
+    // The orchestrator also works without a voice session (messages mode), and its
+    // spoken-approval guard must hold there too.
+    return this.voiceOrchestrator?.isOrchestrator(callerAgentId)
+      ? this.voiceOrchestrator.callerContext()
+      : null;
   }
 
   private async detachSocket(

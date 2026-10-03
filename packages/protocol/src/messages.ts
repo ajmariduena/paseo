@@ -2707,6 +2707,66 @@ export const VoiceOrchestratorStartRequestSchema = z.object({
   requestId: z.string(),
 });
 
+export const VoiceMessagesStartRequestSchema = z.object({
+  type: z.literal("voice.messages.start.request"),
+  callId: z.string(),
+  language: z.string().optional(),
+  /** Recent conversation lines from a live call that is switching to messages mode. */
+  history: z.array(z.string()).optional(),
+  greet: z.boolean().optional(),
+  requestId: z.string(),
+});
+
+export const VoiceMessagesSendUtteranceRequestSchema = z.object({
+  type: z.literal("voice.messages.send_utterance.request"),
+  callId: z.string(),
+  utteranceId: z.string(),
+  /** On-device transcript, sent first because it is tiny. */
+  text: z.string().optional(),
+  chunkIndex: z.number().int().optional(),
+  chunkCount: z.number().int().optional(),
+  /** Base64 slice of the compressed recording. */
+  audio: z.string().optional(),
+  mimeType: z.string().optional(),
+  requestId: z.string(),
+});
+
+export const VoiceMessagesSyncRequestSchema = z.object({
+  type: z.literal("voice.messages.sync.request"),
+  callId: z.string(),
+  afterSeq: z.number().int(),
+  requestId: z.string(),
+});
+
+export const VoiceMessagesGetAudioRequestSchema = z.object({
+  type: z.literal("voice.messages.get_audio.request"),
+  callId: z.string(),
+  seq: z.number().int(),
+  offset: z.number().int(),
+  length: z.number().int(),
+  requestId: z.string(),
+});
+
+export const VoiceMessagesEndRequestSchema = z.object({
+  type: z.literal("voice.messages.end.request"),
+  callId: z.string(),
+  /** The call continues in live mode, so the host keeps the conversation for it. */
+  handoff: z.boolean().optional(),
+  requestId: z.string(),
+});
+
+export const VoiceCallLogEventsRequestSchema = z.object({
+  type: z.literal("voice.call.log_events.request"),
+  events: z.array(
+    z.object({
+      at: z.string(),
+      kind: z.string(),
+      detail: z.record(z.string(), z.unknown()).optional(),
+    }),
+  ),
+  requestId: z.string(),
+});
+
 export const SpeechReadAloudSynthesizeRequestSchema = z.object({
   type: z.literal("speech.read_aloud.synthesize.request"),
   text: z.string(),
@@ -3383,6 +3443,12 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   SpeechReadAloudPrepareRequestSchema,
   SpeechReadAloudSynthesizeRequestSchema,
   VoiceOrchestratorStartRequestSchema,
+  VoiceMessagesStartRequestSchema,
+  VoiceMessagesSendUtteranceRequestSchema,
+  VoiceMessagesSyncRequestSchema,
+  VoiceMessagesGetAudioRequestSchema,
+  VoiceMessagesEndRequestSchema,
+  VoiceCallLogEventsRequestSchema,
   FileExplorerRequestSchema,
   FileSubscribeRequestSchema,
   FileUnsubscribeRequestSchema,
@@ -3699,6 +3765,8 @@ export const ServerInfoStatusPayloadSchema = z
         browserScreencast: z.boolean().optional(),
         // COMPAT(voiceOrchestrator): added in v0.11.0, remove gate after 2027-10-03.
         voiceOrchestrator: z.boolean().optional(),
+        // COMPAT(voiceMessages): added in v0.11.0, remove gate after 2027-10-03.
+        voiceMessages: z.boolean().optional(),
         // COMPAT(projectRemove): added in v0.1.97, drop the gate when floor >= v0.1.97.
         projectRemove: z.boolean().optional(),
         // COMPAT(projectAdd): added in v0.1.97, drop the gate when floor >= v0.1.97.
@@ -5012,7 +5080,94 @@ export const VoiceOrchestratorStartResponseSchema = z.object({
   payload: z.object({
     requestId: z.string(),
     agentId: z.string().nullable(),
+    /** The host's voice language, which wins over the app's UI language for the call. */
+    language: z.string().nullable().optional(),
     error: z.string().nullable(),
+  }),
+});
+
+export const VoiceMessagesItemSchema = z.object({
+  seq: z.number().int(),
+  id: z.string(),
+  /** heard: what the host transcribed; reply/notice: words to say; status: a coded event. */
+  kind: z.string(),
+  text: z.string(),
+  code: z.string().nullable(),
+  utteranceId: z.string().nullable(),
+  createdAt: z.string(),
+  audio: z.object({ mimeType: z.string(), size: z.number().int() }).nullable(),
+});
+
+export const VoiceMessagesStartResponseSchema = z.object({
+  type: z.literal("voice.messages.start.response"),
+  payload: z.object({
+    requestId: z.string(),
+    callId: z.string(),
+    agentId: z.string().nullable(),
+    lastSeq: z.number().int(),
+    /** The host's voice language, for the phone's own transcription and voice. */
+    language: z.string().nullable().optional(),
+    error: z.string().nullable(),
+  }),
+});
+
+export const VoiceMessagesSendUtteranceResponseSchema = z.object({
+  type: z.literal("voice.messages.send_utterance.response"),
+  payload: z.object({
+    requestId: z.string(),
+    callId: z.string(),
+    utteranceId: z.string(),
+    receivedChunks: z.number().int(),
+    audioComplete: z.boolean(),
+    error: z.string().nullable(),
+  }),
+});
+
+export const VoiceMessagesSyncResponseSchema = z.object({
+  type: z.literal("voice.messages.sync.response"),
+  payload: z.object({
+    requestId: z.string(),
+    callId: z.string(),
+    active: z.boolean(),
+    items: z.array(VoiceMessagesItemSchema),
+    error: z.string().nullable(),
+  }),
+});
+
+export const VoiceMessagesGetAudioResponseSchema = z.object({
+  type: z.literal("voice.messages.get_audio.response"),
+  payload: z.object({
+    requestId: z.string(),
+    callId: z.string(),
+    seq: z.number().int(),
+    offset: z.number().int(),
+    total: z.number().int(),
+    mimeType: z.string().nullable(),
+    audio: z.string().nullable(),
+    error: z.string().nullable(),
+  }),
+});
+
+export const VoiceMessagesEndResponseSchema = z.object({
+  type: z.literal("voice.messages.end.response"),
+  payload: z.object({
+    requestId: z.string(),
+    error: z.string().nullable(),
+  }),
+});
+
+export const VoiceCallLogEventsResponseSchema = z.object({
+  type: z.literal("voice.call.log_events.response"),
+  payload: z.object({
+    requestId: z.string(),
+  }),
+});
+
+export const VoiceMessagesUpdateMessageSchema = z.object({
+  type: z.literal("voice.messages.update"),
+  payload: z.object({
+    callId: z.string(),
+    item: VoiceMessagesItemSchema,
   }),
 });
 
@@ -7022,6 +7177,13 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   SpeechReadAloudPrepareResponseSchema,
   SpeechReadAloudSynthesizeResponseSchema,
   VoiceOrchestratorStartResponseSchema,
+  VoiceMessagesStartResponseSchema,
+  VoiceMessagesSendUtteranceResponseSchema,
+  VoiceMessagesSyncResponseSchema,
+  VoiceMessagesGetAudioResponseSchema,
+  VoiceMessagesEndResponseSchema,
+  VoiceCallLogEventsResponseSchema,
+  VoiceMessagesUpdateMessageSchema,
   SendAgentMessageResponseMessageSchema,
   SetVoiceModeResponseMessageSchema,
   DaemonGetStatusResponseSchema,
@@ -7539,6 +7701,7 @@ export type SpeechReadAloudSynthesizeRequest = z.infer<
   typeof SpeechReadAloudSynthesizeRequestSchema
 >;
 export type VoiceOrchestratorStartRequest = z.infer<typeof VoiceOrchestratorStartRequestSchema>;
+export type VoiceMessagesItem = z.infer<typeof VoiceMessagesItemSchema>;
 export type FileExplorerRequest = z.infer<typeof FileExplorerRequestSchema>;
 export type FileExplorerResponse = z.infer<typeof FileExplorerResponseSchema>;
 export type FileVersion = z.infer<typeof FileVersionSchema>;

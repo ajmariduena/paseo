@@ -115,6 +115,8 @@ export default {
       supportsTablet: true,
       infoPlist: {
         NSMicrophoneUsageDescription: "This app needs access to the microphone for voice commands.",
+        NSSpeechRecognitionUsageDescription:
+          "Voice calls on a weak signal transcribe what you say on this device before sending it.",
         ITSAppUsesNonExemptEncryption: false,
         UIBackgroundModes: ["audio", "voip"],
       },

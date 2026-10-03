@@ -3,14 +3,18 @@ import { useTranslation } from "react-i18next";
 import { Modal, Pressable, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { ChevronDown, Maximize2, Mic, MicOff, PhoneOff } from "lucide-react-native";
+import { ChevronDown, Maximize2, Mic, MicOff, PhoneOff, SignalLow } from "lucide-react-native";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { VolumeMeter } from "@/components/volume-meter";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useVoiceTelemetryOptional } from "@/contexts/voice-context";
 import type { Theme } from "@/styles/theme";
 import { useGlobalVoiceStore } from "@/voice-chat/global-voice-store";
-import { useGlobalVoice, type GlobalVoice } from "@/voice-chat/use-global-voice";
+import {
+  useGlobalVoice,
+  useGlobalVoiceSupervisor,
+  type GlobalVoice,
+} from "@/voice-chat/use-global-voice";
 
 const WHITE = "#ffffff";
 const CAR_BUTTON_SIZE = 88;
@@ -24,11 +28,35 @@ const ThemedMic = withUnistyles(Mic);
 const ThemedChevronDown = withUnistyles(ChevronDown);
 const ThemedMaximize = withUnistyles(Maximize2);
 const ThemedSpinner = withUnistyles(LoadingSpinner);
+const ThemedSignalLow = withUnistyles(SignalLow);
 
-type StatusKey = "connecting" | "listening" | "thinking" | "speaking" | "muted";
+const SWITCH_ON = { checked: true };
+const SWITCH_OFF = { checked: false };
+
+type StatusKey =
+  | "connecting"
+  | "listening"
+  | "recording"
+  | "sending"
+  | "offline"
+  | "thinking"
+  | "speaking"
+  | "muted";
+
+function resolveMessagesStatusKey(call: GlobalVoice): StatusKey {
+  const { messages } = call;
+  if (messages.isMuted) return "muted";
+  if (messages.phase === "speaking") return "speaking";
+  if (messages.phase === "recording") return "recording";
+  if (!messages.connected && messages.pendingSends > 0) return "offline";
+  if (messages.pendingSends > 0) return "sending";
+  if (messages.phase === "waiting") return "thinking";
+  return "listening";
+}
 
 function resolveStatusKey(call: GlobalVoice): StatusKey {
-  if (call.isStarting || call.phase === "starting") return "connecting";
+  if (call.isStarting || call.isSwitching || call.phase === "starting") return "connecting";
+  if (call.messages.active) return resolveMessagesStatusKey(call);
   if (call.phase === "playing") return "speaking";
   if (call.phase === "submitting" || call.phase === "waiting") return "thinking";
   if (call.isMuted) return "muted";
@@ -38,6 +66,7 @@ function resolveStatusKey(call: GlobalVoice): StatusKey {
 /** The global voice call UI: car-mode screen on phones, a floating pill everywhere else. */
 export function GlobalVoiceCallSurface() {
   const call = useGlobalVoice();
+  useGlobalVoiceSupervisor(call);
   const isCompact = useIsCompactFormFactor();
   const isMinimized = useGlobalVoiceStore((state) => state.isMinimized);
   if (!call.isActive && !call.isStarting) return null;
@@ -73,8 +102,13 @@ function CarModeScreen({ call }: { call: GlobalVoice }) {
         <View style={styles.carCenter}>
           <Text style={styles.carTitle}>Paseo</Text>
           <Text style={styles.carStatus} testID="global-voice-status">
-            {t(`globalVoice.status.${statusKey}`)}
+            {t(`globalVoice.status.${statusKey}`, { count: call.messages.pendingSends })}
           </Text>
+          {call.mode === "messages" ? (
+            <Text style={styles.carMode} testID="global-voice-mode">
+              {call.isAutoMode ? t("globalVoice.mode.weakAuto") : t("globalVoice.mode.weak")}
+            </Text>
+          ) : null}
           <View style={styles.carMeter}>
             {call.isStarting ? (
               <ThemedSpinner uniProps={mutedColorMapping} size="large" />
@@ -87,6 +121,15 @@ function CarModeScreen({ call }: { call: GlobalVoice }) {
               />
             )}
           </View>
+          {call.mode === "messages" && call.messages.lastSpoken ? (
+            <Text style={styles.carTranscript} numberOfLines={3}>
+              {call.messages.lastSpoken}
+            </Text>
+          ) : null}
+        </View>
+
+        <View style={styles.carModeRow}>
+          <WeakSignalToggle call={call} />
         </View>
 
         <View style={styles.carActions}>
@@ -128,12 +171,38 @@ function CarModeScreen({ call }: { call: GlobalVoice }) {
   );
 }
 
+function WeakSignalToggle({ call }: { call: GlobalVoice }) {
+  const { t } = useTranslation();
+  const enabled = call.mode === "messages";
+  const toggle = useCallback(() => call.setWeakSignalMode(!enabled), [call, enabled]);
+  return (
+    <Pressable
+      onPress={toggle}
+      disabled={!call.isActive || call.isSwitching}
+      accessibilityRole="switch"
+      accessibilityState={enabled ? SWITCH_ON : SWITCH_OFF}
+      accessibilityLabel={t("globalVoice.actions.weakSignal")}
+      testID="global-voice-weak-signal"
+      style={[styles.modeToggle, enabled ? styles.modeToggleOn : null]}
+    >
+      <ThemedSignalLow uniProps={enabled ? foregroundColorMapping : mutedColorMapping} size={20} />
+      <Text style={enabled ? styles.modeToggleTextOn : styles.modeToggleText}>
+        {t("globalVoice.actions.weakSignal")}
+      </Text>
+    </Pressable>
+  );
+}
+
 function CallPill({ call, isCompact }: { call: GlobalVoice; isCompact: boolean }) {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const telemetry = useVoiceTelemetryOptional();
   const statusKey = resolveStatusKey(call);
   const expand = useCallback(() => useGlobalVoiceStore.getState().setMinimized(false), []);
+  const toggleWeakSignal = useCallback(
+    () => call.setWeakSignalMode(call.mode !== "messages"),
+    [call],
+  );
 
   return (
     <View
@@ -165,8 +234,25 @@ function CallPill({ call, isCompact }: { call: GlobalVoice; isCompact: boolean }
           )}
         </View>
         <Text style={styles.pillStatus} numberOfLines={1}>
-          {t(`globalVoice.status.${statusKey}`)}
+          {t(`globalVoice.status.${statusKey}`, { count: call.messages.pendingSends })}
         </Text>
+        <Pressable
+          onPress={toggleWeakSignal}
+          disabled={!call.isActive || call.isSwitching}
+          accessibilityRole="switch"
+          accessibilityState={call.mode === "messages" ? SWITCH_ON : SWITCH_OFF}
+          accessibilityLabel={t("globalVoice.actions.weakSignal")}
+          testID="global-voice-pill-weak-signal"
+          style={[
+            styles.pillButton,
+            call.mode === "messages" ? styles.pillModeButtonActive : styles.pillMuteButton,
+          ]}
+        >
+          <ThemedSignalLow
+            uniProps={call.mode === "messages" ? foregroundColorMapping : mutedColorMapping}
+            size={PILL_ICON_SIZE}
+          />
+        </Pressable>
         <Pressable
           onPress={call.toggleMute}
           disabled={!call.isActive}
@@ -230,6 +316,41 @@ const styles = StyleSheet.create((theme) => ({
   carStatus: {
     fontSize: 22,
     color: theme.colors.foregroundMuted,
+  },
+  carMode: {
+    fontSize: theme.fontSize.base,
+    color: theme.colors.foregroundMuted,
+  },
+  carTranscript: {
+    fontSize: theme.fontSize.lg,
+    color: theme.colors.foreground,
+    textAlign: "center",
+  },
+  carModeRow: {
+    alignItems: "center",
+    paddingBottom: theme.spacing[6],
+  },
+  modeToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+    paddingHorizontal: theme.spacing[4],
+    paddingVertical: theme.spacing[3],
+    borderRadius: theme.borderRadius.full,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.border,
+  },
+  modeToggleOn: {
+    backgroundColor: theme.colors.surface2,
+    borderColor: theme.colors.foregroundMuted,
+  },
+  modeToggleText: {
+    fontSize: theme.fontSize.base,
+    color: theme.colors.foregroundMuted,
+  },
+  modeToggleTextOn: {
+    fontSize: theme.fontSize.base,
+    color: theme.colors.foreground,
   },
   carMeter: {
     height: 72,
@@ -314,5 +435,10 @@ const styles = StyleSheet.create((theme) => ({
   },
   pillMuteButtonActive: {
     backgroundColor: theme.colors.palette.red[600],
+  },
+  pillModeButtonActive: {
+    backgroundColor: theme.colors.surface2,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.foregroundMuted,
   },
 }));

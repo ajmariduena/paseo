@@ -10,6 +10,10 @@ interface QueuedAudio {
   reject: (error: Error) => void;
 }
 
+// The native player queues buffers, so each chunk is handed over this long before the previous one
+// ends; waiting for the exact end left an audible gap of timer and bridge latency between chunks.
+const SCHEDULE_AHEAD_MS = 180;
+
 interface AudioEngineTraceOptions {
   traceLabel?: string;
 }
@@ -85,6 +89,8 @@ export function createAudioEngine(
       settled: boolean;
     } | null;
     destroyed: boolean;
+    /** When everything already handed to the native player finishes, in Date.now() time. */
+    playheadEndsAt: number;
   } = {
     initialized: false,
     captureActive: false,
@@ -94,6 +100,7 @@ export function createAudioEngine(
     playbackTimeout: null,
     activePlayback: null,
     destroyed: false,
+    playheadEndsAt: 0,
   };
 
   const microphoneSubscription = native.addExpoTwoWayAudioEventListener(
@@ -197,6 +204,9 @@ export function createAudioEngine(
 
           native.resumePlayback();
           native.playPCMData(pcm16k);
+          const now = Date.now();
+          refs.playheadEndsAt = Math.max(now, refs.playheadEndsAt) + durationSec * 1000;
+          const settleInMs = Math.max(0, refs.playheadEndsAt - now - SCHEDULE_AHEAD_MS);
 
           clearPlaybackTimeout();
           refs.playbackTimeout = setTimeout(() => {
@@ -208,7 +218,7 @@ export function createAudioEngine(
             active.settled = true;
             refs.activePlayback = null;
             resolve(durationSec);
-          }, durationSec * 1000);
+          }, settleInMs);
           return undefined;
         })
         .catch((error: unknown) => {
@@ -325,6 +335,7 @@ export function createAudioEngine(
 
     stop() {
       native.stopPlayback();
+      refs.playheadEndsAt = 0;
       clearPlaybackTimeout();
       const active = refs.activePlayback;
       refs.activePlayback = null;

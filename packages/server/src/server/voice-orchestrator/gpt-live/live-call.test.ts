@@ -87,6 +87,9 @@ function createOrchestratorStub() {
       };
     },
     noteUserUtterance: (text: string) => utterances.push(text),
+    takeRecentHistory: () => [],
+    saveCallHistory: () => undefined,
+    registerLiveCall: () => () => undefined,
     runDelegation: async (params: { request: string; history: string[] }) => {
       calls.push(params);
       return "Auth sigue trabajando en el login.";

@@ -224,6 +224,10 @@ import type { Resolvable } from "./speech/provider-resolver.js";
 import type { SpeechReadinessSnapshot } from "./speech/speech-runtime.js";
 import type { ReadAloudService } from "./speech/read-aloud/service.js";
 import type { VoiceOrchestrator } from "./voice-orchestrator/orchestrator.js";
+import {
+  VoiceMessagesSessionHandler,
+  isVoiceMessagesRequest,
+} from "./session/voice/voice-messages-handler.js";
 import type pino from "pino";
 import { ScheduleService } from "./schedule/service.js";
 import {
@@ -775,6 +779,7 @@ export class Session {
   private readonly workspaceLabelService: WorkspaceLabelService | null;
   private readonly readAloud: ReadAloudService | undefined;
   private readonly voiceOrchestrator: VoiceOrchestrator | null | undefined;
+  private readonly voiceMessages: VoiceMessagesSessionHandler;
   private readonly eventSubscriptions = new Map<
     string,
     { owner: OwnedSubscription; events: Set<SessionEventSubscription>; notifications: boolean }
@@ -913,6 +918,12 @@ export class Session {
     this.workspaceLabelService = resolveWorkspaceLabelService(workspaceLabelService);
     this.readAloud = readAloud;
     this.voiceOrchestrator = voiceOrchestrator;
+    this.voiceMessages = new VoiceMessagesSessionHandler({
+      orchestrator: voiceOrchestrator,
+      emit: (message) => this.emit(message),
+      delivery: this.delivery,
+      logger: this.sessionLogger,
+    });
     this.filesystem = filesystem ?? nodeSessionFileSystem;
     this.github = github ?? createGitHubService();
     this.renameCurrentBranch = renameCurrentBranch ?? renameCurrentBranchDefault;
@@ -2832,7 +2843,7 @@ export class Session {
       const agentId = await this.voiceOrchestrator.ensureAgent();
       this.emit({
         type: "voice.orchestrator.start.response",
-        payload: { requestId, agentId, error: null },
+        payload: { requestId, agentId, language: this.voiceOrchestrator.language, error: null },
       });
     } catch (error) {
       this.sessionLogger.warn({ err: error }, "Failed to start the voice orchestrator");
@@ -2851,6 +2862,7 @@ export class Session {
   }
 
   private dispatchVoiceAndControlMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+    if (isVoiceMessagesRequest(msg)) return this.voiceMessages.handle(msg);
     switch (msg.type) {
       case "voice_audio_chunk":
       case "abort_request":
@@ -8769,6 +8781,7 @@ export class Session {
   public async cleanup(): Promise<void> {
     this.sessionLogger.trace({}, "agent.session.lifecycle.cleanup");
     this.isCleanedUp = true;
+    this.voiceMessages.cleanup();
     await this.delivery.close();
 
     if (this.unsubscribeAgentEvents) {

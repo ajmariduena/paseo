@@ -19,6 +19,9 @@ const THINKING_TONE_REPEAT_GAP_MS = 350;
  */
 const THINKING_TONE_MIN_SILENCE_MS = 1500;
 const DISPLAY_VOLUME_PUBLISH_INTERVAL_MS = 120;
+// Jitter buffer: a reply starts once two chunks are queued (or it's complete, or this much time
+// passed), so one late network chunk doesn't cut the voice right after it starts.
+const VOICE_PREBUFFER_MS = 300;
 const DISPLAY_VOLUME_CHANGE_EPSILON = 0.02;
 const DISPLAY_VOLUME_ATTACK = 0.35;
 const DISPLAY_VOLUME_RELEASE = 0.18;
@@ -107,6 +110,7 @@ interface StreamingPlaybackGroup {
   finalChunkIndex: number | null;
   started: boolean;
   ackedChunkIds: Set<string>;
+  firstChunkAt: number;
 }
 
 interface RuntimePlaybackState {
@@ -175,6 +179,8 @@ export interface VoiceRuntime {
   handleAudioOutput(serverId: string, payload: AudioOutputPayload): void;
   startVoice(serverId: string, agentId: string): Promise<void>;
   stopVoice(): Promise<void>;
+  /** Ends live voice locally without waiting on the host, leaving the microphone running for another mode. */
+  handOffVoice(): void;
   destroy(): Promise<void>;
   toggleMute(): void;
   isVoiceModeForAgent(serverId: string, agentId: string): boolean;
@@ -184,6 +190,12 @@ export interface VoiceRuntime {
   onTranscriptionResult(serverId: string, text: string): void;
   onServerSpeechStateChanged(serverId: string, isSpeaking: boolean): void;
   onTurnEvent(serverId: string, agentId: string, eventType: TurnEventType): void;
+}
+
+function remainingPrebufferMs(group: StreamingPlaybackGroup): number {
+  if (group.started || !group.isVoiceMode || group.finalChunkIndex !== null) return 0;
+  if (group.chunks.size >= 2) return 0;
+  return Math.max(0, VOICE_PREBUFFER_MS - (Date.now() - group.firstChunkAt));
 }
 
 export function createVoiceRuntime(deps: VoiceRuntimeDeps): VoiceRuntime {
@@ -366,6 +378,12 @@ export function createVoiceRuntime(deps: VoiceRuntimeDeps): VoiceRuntime {
           retireFinishedGroup(group, serverId);
           activateNextPlaybackGroup();
           continue;
+        }
+
+        const prebufferMs = remainingPrebufferMs(group);
+        if (prebufferMs > 0) {
+          setTimeout(() => void processPlaybackQueue(serverId), prebufferMs);
+          return;
         }
 
         group.chunks.delete(group.nextChunkToPlay);
@@ -696,6 +714,7 @@ export function createVoiceRuntime(deps: VoiceRuntimeDeps): VoiceRuntime {
           finalChunkIndex: null,
           started: false,
           ackedChunkIds: new Set(),
+          firstChunkAt: Date.now(),
         };
         playback.groups.set(groupId, group);
         playback.orderedGroupIds.push(groupId);
@@ -821,6 +840,23 @@ export function createVoiceRuntime(deps: VoiceRuntimeDeps): VoiceRuntime {
           resetToDisabledState();
         }
       }
+    },
+
+    handOffVoice() {
+      const activeSession = getActiveSession();
+      state.generation += 1;
+      stopCue();
+      uploader.reset();
+      state.transportReady = false;
+      resetPlaybackState();
+      deps.engine.stop();
+      deps.engine.clearQueue();
+      activeSession?.adapter.setAssistantAudioPlaying(false);
+      if (activeSession?.connected) {
+        void activeSession.adapter.setVoiceMode(false).catch(() => undefined);
+      }
+      void deps.deactivateKeepAwake(KEEP_AWAKE_TAG).catch(() => undefined);
+      resetToDisabledState();
     },
 
     async destroy() {

@@ -2,7 +2,12 @@ import { v4 as uuidv4 } from "uuid";
 import type pino from "pino";
 import type { SessionOutboundMessage } from "../../messages.js";
 import type { GptLiveEngineConfig, VoiceOrchestrator } from "../orchestrator.js";
-import { buildLiveFleetSnapshot, buildLiveGreeting, buildLiveInstructions } from "../prompt.js";
+import {
+  buildLiveFleetSnapshot,
+  buildLiveGreeting,
+  buildLiveInstructions,
+  buildLiveResume,
+} from "../prompt.js";
 import {
   GPT_LIVE_SAMPLE_RATE,
   GptLiveConnection,
@@ -35,6 +40,7 @@ export interface GptLiveCallOptions {
 export class GptLiveCall {
   private readonly connection: GptLiveConnection;
   private detach: (() => void) | null = null;
+  private unregister: (() => void) | null = null;
   private closed = false;
 
   private pendingAudio: Buffer[] = [];
@@ -55,8 +61,14 @@ export class GptLiveCall {
     this.connection = options.createConnection?.() ?? new GptLiveConnection();
   }
 
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
   async start(): Promise<void> {
     const { engine, orchestrator } = this.options;
+    const previous = orchestrator.takeRecentHistory("messages");
+    this.history.push(...previous);
     this.connection.on("event", (event) => this.handleEvent(event));
     this.connection.on("close", () => {
       if (!this.closed) this.options.logger.warn("GPT-Live connection closed during a call");
@@ -72,9 +84,16 @@ export class GptLiveCall {
       announce: (lines) => this.connection.append("commentary", lines.join("\n"), null),
       onFleetChanged: () => void this.pushFleetSnapshot(),
     });
+    this.unregister = orchestrator.registerLiveCall(this);
     const fleet = await orchestrator.describeFleet().catch(() => []);
     this.connection.append("thinking", buildLiveFleetSnapshot(fleet), null);
-    this.connection.append("instructions", buildLiveGreeting(fleet, orchestrator.language), null);
+    this.connection.append(
+      "instructions",
+      previous.length > 0
+        ? buildLiveResume(previous, orchestrator.language)
+        : buildLiveGreeting(fleet, orchestrator.language),
+      null,
+    );
   }
 
   private async pushFleetSnapshot(): Promise<void> {
@@ -93,6 +112,9 @@ export class GptLiveCall {
     this.closed = true;
     this.detach?.();
     this.detach = null;
+    this.unregister?.();
+    this.unregister = null;
+    this.options.orchestrator.saveCallHistory(this.history, "live");
     this.flushAudio(true);
     if (this.gapTimer) clearTimeout(this.gapTimer);
     if (this.userIdleTimer) clearTimeout(this.userIdleTimer);

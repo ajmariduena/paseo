@@ -4,6 +4,7 @@ import { v4 } from "uuid";
 
 import { pcm16MonoToWav } from "../../audio.js";
 import type {
+  SpeechClip,
   SpeechToTextProvider,
   StreamingTranscriptionSession,
   TranscriptionResult,
@@ -116,8 +117,38 @@ export class ElevenLabsSTT implements SpeechToTextProvider {
     };
   }
 
+  public async transcribeClip(clip: SpeechClip, language?: string): Promise<TranscriptionResult> {
+    const pcmRate = /^audio\/pcm/i.test(clip.mimeType)
+      ? Number(/rate=(\d+)/i.exec(clip.mimeType)?.[1] ?? SAMPLE_RATE)
+      : null;
+    if (pcmRate !== null) {
+      return this.upload(
+        new Blob([new Uint8Array(pcm16MonoToWav(clip.audio, pcmRate))], { type: "audio/wav" }),
+        "clip.wav",
+        language,
+      );
+    }
+    return this.upload(
+      new Blob([new Uint8Array(clip.audio)], { type: clip.mimeType }),
+      `clip.${clipExtension(clip.mimeType)}`,
+      language,
+    );
+  }
+
   private async transcribe(
     pcm16: Buffer,
+    language: string | undefined,
+  ): Promise<TranscriptionResult> {
+    return this.upload(
+      new Blob([new Uint8Array(pcm16MonoToWav(pcm16, SAMPLE_RATE))], { type: "audio/wav" }),
+      "dictation.wav",
+      language,
+    );
+  }
+
+  private async upload(
+    file: Blob,
+    filename: string,
     language: string | undefined,
   ): Promise<TranscriptionResult> {
     const startedAt = Date.now();
@@ -127,11 +158,7 @@ export class ElevenLabsSTT implements SpeechToTextProvider {
     if (language) {
       form.set("language_code", language);
     }
-    form.set(
-      "file",
-      new Blob([new Uint8Array(pcm16MonoToWav(pcm16, SAMPLE_RATE))], { type: "audio/wav" }),
-      "dictation.wav",
-    );
+    form.set("file", file, filename);
 
     const fetchImpl = this.config.fetchImpl ?? fetch;
     const response = await fetchImpl(new URL("/v1/speech-to-text", this.config.baseUrl), {
@@ -153,4 +180,12 @@ export class ElevenLabsSTT implements SpeechToTextProvider {
       duration: Date.now() - startedAt,
     };
   }
+}
+
+function clipExtension(mimeType: string): string {
+  if (/mp4|m4a|aac/i.test(mimeType)) return "m4a";
+  if (/mpeg|mp3/i.test(mimeType)) return "mp3";
+  if (/ogg|opus/i.test(mimeType)) return "ogg";
+  if (/webm/i.test(mimeType)) return "webm";
+  return "wav";
 }

@@ -7,7 +7,16 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
+import { randomUUID } from "expo-crypto";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
+import { i18n } from "@/i18n/i18next";
+import { logVoiceCallEvent } from "@/voice-chat/call-event-log";
+import { createDeviceSpeech } from "@/voice-chat/messages/device-speech";
+import {
+  createVoiceMessagesController,
+  type VoiceMessagesController,
+  type VoiceMessagesSnapshot,
+} from "@/voice-chat/messages/messages-controller";
 import { useSessionStore } from "@/stores/session-store";
 import { createAudioEngine } from "@/voice/audio-engine";
 import type { AudioEngine } from "@/voice/audio-engine-types";
@@ -41,6 +50,7 @@ const EMPTY_TELEMETRY: VoiceRuntimeTelemetrySnapshot = {
 };
 
 const VoiceRuntimeContext = createContext<VoiceRuntime | null>(null);
+const VoiceMessagesContext = createContext<VoiceMessagesController | null>(null);
 const VoiceAudioEngineContext = createContext<AudioEngine | null>(null);
 
 const noopSubscribe = () => () => {};
@@ -108,6 +118,32 @@ export function useVoiceAudioEngineOptional(): AudioEngine | null {
   return useContext(VoiceAudioEngineContext);
 }
 
+export function useVoiceMessagesController(): VoiceMessagesController | null {
+  return useContext(VoiceMessagesContext);
+}
+
+const INACTIVE_MESSAGES: VoiceMessagesSnapshot = {
+  active: false,
+  serverId: null,
+  callId: null,
+  phase: "idle",
+  connected: false,
+  pendingSends: 0,
+  isMuted: false,
+  lastHeard: null,
+  lastSpoken: null,
+};
+const getInactiveMessages = () => INACTIVE_MESSAGES;
+
+export function useVoiceMessagesSnapshot(): VoiceMessagesSnapshot {
+  const controller = useContext(VoiceMessagesContext);
+  return useSyncExternalStore(
+    controller ? controller.subscribe : noopSubscribe,
+    controller ? controller.getSnapshot : getInactiveMessages,
+    controller ? controller.getSnapshot : getInactiveMessages,
+  );
+}
+
 interface VoiceProviderProps {
   children: ReactNode;
 }
@@ -115,17 +151,29 @@ interface VoiceProviderProps {
 export function VoiceProvider({ children }: VoiceProviderProps) {
   const engineRef = useRef<AudioEngine | null>(null);
   const runtimeRef = useRef<VoiceRuntime | null>(null);
+  const messagesRef = useRef<VoiceMessagesController | null>(null);
 
   if (!engineRef.current) {
     let runtime: VoiceRuntime | null = null;
+    let messages: VoiceMessagesController | null = null;
     const engine = createAudioEngine({
       onCaptureData: (pcm) => {
+        if (messages?.isActive()) {
+          messages.handleCapturePcm(pcm);
+          return;
+        }
         runtime?.handleCapturePcm(pcm);
       },
       onVolumeLevel: (level) => {
+        if (messages?.isActive()) return;
         runtime?.handleCaptureVolume(level);
       },
       onInterruption: () => {
+        logVoiceCallEvent("audio_interruption");
+        if (messages?.isActive()) {
+          void messages.stop().catch(() => undefined);
+          return;
+        }
         void runtime?.stopVoice().catch((error) => {
           console.error("[VoiceEngine] Failed to stop after audio interruption:", error);
         });
@@ -147,24 +195,43 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
       },
     });
 
+    messages = createVoiceMessagesController({
+      engine,
+      speech: createDeviceSpeech(),
+      phrase: (key, language) => i18n.t(`globalVoice.spoken.${key}`, { lng: language }),
+      log: logVoiceCallEvent,
+      activateKeepAwake: async (tag) => {
+        await activateKeepAwakeAsync(tag);
+      },
+      deactivateKeepAwake: async (tag) => {
+        await deactivateKeepAwake(tag);
+      },
+      createId: () => randomUUID(),
+    });
+
     engineRef.current = engine;
     runtimeRef.current = runtime;
+    messagesRef.current = messages;
   }
 
   const engine = engineRef.current;
   const runtime = runtimeRef.current!;
+  const messages = messagesRef.current!;
 
   useEffect(() => {
     return () => {
+      void messages.stop().catch(() => undefined);
       void runtime.destroy().catch((error) => {
         console.error("[VoiceProvider] Failed to destroy voice runtime", error);
       });
     };
-  }, [runtime]);
+  }, [messages, runtime]);
 
   return (
     <VoiceAudioEngineContext.Provider value={engine}>
-      <VoiceRuntimeContext.Provider value={runtime}>{children}</VoiceRuntimeContext.Provider>
+      <VoiceRuntimeContext.Provider value={runtime}>
+        <VoiceMessagesContext.Provider value={messages}>{children}</VoiceMessagesContext.Provider>
+      </VoiceRuntimeContext.Provider>
     </VoiceAudioEngineContext.Provider>
   );
 }

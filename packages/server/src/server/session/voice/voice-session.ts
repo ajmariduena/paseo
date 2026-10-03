@@ -557,7 +557,12 @@ export class VoiceSession {
     const agentId = this.parseVoiceTargetAgentId(rawAgentId ?? "", "set_voice_mode");
     if (!(await orchestrator.matches(agentId))) return false;
 
-    if (this.isVoiceMode && this.voiceModeAgentId === agentId && this.liveCall) {
+    if (
+      this.isVoiceMode &&
+      this.voiceModeAgentId === agentId &&
+      this.liveCall &&
+      !this.liveCall.isClosed
+    ) {
       this.emitVoiceModeAccepted(agentId, requestId);
       return true;
     }
@@ -1255,6 +1260,8 @@ export class VoiceSession {
    * Handle audio playback confirmation from client
    */
   handleAudioPlayed(id: string): void {
+    // GPT-Live audio is not paced by playback acks; only the TTS manager tracks ids.
+    if (this.liveCall) return;
     this.ttsManager.confirmAudioPlayed(id);
   }
 

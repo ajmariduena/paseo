@@ -1614,6 +1614,7 @@ export async function createPaseoDaemon(
     thinking: config.voiceLlmThinking,
     language: config.voiceLanguage,
     live: config.voiceLive,
+    speech: speechService,
     logger,
   });
 

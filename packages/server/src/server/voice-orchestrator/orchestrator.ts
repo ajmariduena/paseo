@@ -10,7 +10,10 @@ import type { AgentStorage } from "../agent/agent-storage.js";
 import type { AgentPermissionRequest, AgentProvider } from "../agent/agent-sdk-types.js";
 import { sendPromptToAgent } from "../agent/agent-prompt.js";
 import { buildVoiceModeSystemPrompt, wrapSpokenInput } from "../voice-config.js";
+import type { VoiceCallerContext } from "../voice-types.js";
 import type { WorkspaceRegistry } from "../workspace-registry.js";
+import type { VoiceMessagesSpeech } from "./messages/messages-call.js";
+import { VoiceMessagesHub } from "./messages/messages-hub.js";
 import { VoiceNoticeQueue, type VoiceNotice, type VoiceNoticeReason } from "./notice-queue.js";
 import {
   VOICE_BACKEND_SYSTEM_PROMPT,
@@ -19,6 +22,7 @@ import {
   buildFleetBlock,
   buildDelegationPrompt,
   buildNoticePrompt,
+  buildNarrationPrompt,
   clipForSpeech,
   type VoiceFleetEntry,
 } from "./prompt.js";
@@ -35,6 +39,8 @@ const PROGRESS_CHECK_MS = 45_000;
 const PROGRESS_MIN_INTERVAL_MS = 120_000;
 const DELEGATION_MAX_WAITS = 6;
 const FLEET_CHANGED_DEBOUNCE_MS = 500;
+// A mode switch hands the conversation over within seconds; older history belongs to a past call.
+const HANDOFF_HISTORY_MS = 90_000;
 
 const OrchestratorStateSchema = z.object({ agentId: z.guid() });
 
@@ -62,6 +68,8 @@ export interface VoiceOrchestratorOptions {
   thinking?: string | null;
   language?: string | null;
   live?: GptLiveEngineConfig | null;
+  /** Speech providers for messages mode; without them the phone transcribes and speaks itself. */
+  speech?: VoiceMessagesSpeech | null;
   logger: pino.Logger;
 }
 
@@ -71,6 +79,7 @@ export interface VoiceOrchestratorOptions {
  * queue of agent events it announces while a call is attached.
  */
 export class VoiceOrchestrator {
+  readonly messages: VoiceMessagesHub;
   private readonly logger: pino.Logger;
   private agentIdPromise: Promise<string> | null = null;
   private knownAgentId: string | null = null;
@@ -85,9 +94,17 @@ export class VoiceOrchestrator {
   private fleetChangedTimer: ReturnType<typeof setTimeout> | null = null;
   private lastUtterance: { text: string; at: number; approvalUsed: boolean } | null = null;
   private preferredLanguage: string | null = null;
+  private turnChain: Promise<unknown> = Promise.resolve();
+  private liveCall: { close(): void } | null = null;
+  private handoffHistory: { lines: string[]; at: number; mode: "live" | "messages" } | null = null;
 
   constructor(private readonly options: VoiceOrchestratorOptions) {
     this.logger = options.logger.child({ module: "voice-orchestrator" });
+    this.messages = new VoiceMessagesHub({
+      orchestrator: this,
+      speech: options.speech ?? { resolveStt: () => null, resolveTts: () => null },
+      logger: this.logger,
+    });
     void this.resolveAgentId().catch((error) => {
       this.agentIdPromise = null;
       this.logger.warn({ err: error }, "Failed to load voice orchestrator id");
@@ -190,21 +207,80 @@ export class VoiceOrchestrator {
     );
   }
 
+  registerLiveCall(call: { close(): void }): () => void {
+    this.liveCall = call;
+    return () => {
+      if (this.liveCall === call) this.liveCall = null;
+    };
+  }
+
+  /** Messages mode replaces a live call; GPT-Live bills per minute while its session is open. */
+  closeLiveCall(): void {
+    const call = this.liveCall;
+    this.liveCall = null;
+    call?.close();
+  }
+
+  saveCallHistory(lines: string[], mode: "live" | "messages"): void {
+    this.handoffHistory = lines.length > 0 ? { lines: [...lines], at: Date.now(), mode } : null;
+  }
+
+  /** The conversation of a call in the other mode that just ended: the call is switching modes. */
+  takeRecentHistory(fromMode: "live" | "messages"): string[] {
+    const handoff = this.handoffHistory;
+    if (!handoff || handoff.mode !== fromMode) return [];
+    this.handoffHistory = null;
+    if (Date.now() - handoff.at > HANDOFF_HISTORY_MS) return [];
+    return handoff.lines;
+  }
+
+  callerContext(): VoiceCallerContext {
+    return {
+      childAgentDefaultLabels: {},
+      allowCustomCwd: true,
+      authorizePermissionApproval: () => this.authorizePermissionApproval(),
+    };
+  }
+
   /** Runs one delegated voice request on the orchestrator agent and returns its reply. */
   async runDelegation(params: { request: string; history: string[] }): Promise<string> {
-    const agentId = await this.ensureAgent();
     if (params.request.trim()) this.noteUserUtterance(params.request);
-    const [fleet, others] = await Promise.all([
-      this.describeFleetDetailed(),
-      this.describeOtherSessions(),
-    ]);
-    await this.sendPrompt(agentId, buildDelegationPrompt({ ...params, fleet, others }), true);
-    const { agentManager } = this.options;
-    let result = await agentManager.waitForAgentEvent(agentId, { waitForActive: true });
-    for (let attempt = 0; result.permission && attempt < DELEGATION_MAX_WAITS; attempt += 1) {
-      result = await agentManager.waitForAgentEvent(agentId);
-    }
-    return result.lastMessage?.trim() || "No result from the backend.";
+    return this.runTurn(async () => {
+      const [fleet, others] = await Promise.all([
+        this.describeFleetDetailed(),
+        this.describeOtherSessions(),
+      ]);
+      return buildDelegationPrompt({ ...params, fleet, others });
+    }, true);
+  }
+
+  /** Has the orchestrator turn daemon updates (or the call start) into a short spoken text. */
+  async narrate(params: {
+    kind: "notices" | "call_start";
+    lines: string[];
+    history: string[];
+  }): Promise<string> {
+    return this.runTurn(async () => {
+      const fleet = params.kind === "call_start" ? await this.describeFleet() : [];
+      return buildNarrationPrompt({ ...params, fleet, language: this.language });
+    }, false);
+  }
+
+  /** One agent turn at a time: delegations and narrations would otherwise interrupt each other. */
+  private runTurn(buildPrompt: () => Promise<string>, fromUser: boolean): Promise<string> {
+    const run = async (): Promise<string> => {
+      const agentId = await this.ensureAgent();
+      await this.sendPrompt(agentId, await buildPrompt(), fromUser);
+      const { agentManager } = this.options;
+      let result = await agentManager.waitForAgentEvent(agentId, { waitForActive: true });
+      for (let attempt = 0; result.permission && attempt < DELEGATION_MAX_WAITS; attempt += 1) {
+        result = await agentManager.waitForAgentEvent(agentId);
+      }
+      return result.lastMessage?.trim() || "No result from the backend.";
+    };
+    const turn = this.turnChain.then(run, run);
+    this.turnChain = turn.catch(() => undefined);
+    return turn;
   }
 
   async describeFleet(): Promise<VoiceFleetEntry[]> {
@@ -290,6 +366,7 @@ export class VoiceOrchestrator {
   }
 
   dispose(): void {
+    this.messages.dispose();
     this.detachCurrentCall();
   }
 
