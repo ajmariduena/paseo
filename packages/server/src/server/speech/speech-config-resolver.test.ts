@@ -228,4 +228,78 @@ describe("resolveSpeechConfig", () => {
     expect(result.speech.local?.models.dictationStt).toBe("parakeet-tdt-0.6b-v2-int8");
     expect(result.speech.sttLanguages?.dictation).toBe("es");
   });
+
+  test("routes voice TTS to ElevenLabs with the read-aloud voice as fallback", () => {
+    const persisted = PersistedConfigSchema.parse({
+      providers: { elevenlabs: { apiKey: "xi-test" } },
+      features: {
+        voiceMode: { tts: { provider: "elevenlabs" } },
+        readAloud: {
+          tts: { model: "eleven_v3", voiceId: "read-aloud-voice", speed: 1.1, stability: 0.4 },
+        },
+      },
+    });
+
+    const result = resolveSpeechConfig({
+      paseoHome: "/tmp/paseo-home",
+      env: {} as NodeJS.ProcessEnv,
+      persisted,
+    });
+
+    expect(result.speech.providers.voiceTts).toEqual({
+      provider: "elevenlabs",
+      explicit: true,
+      enabled: true,
+    });
+    expect(result.speech.elevenlabs).toEqual({
+      apiKey: "xi-test",
+      baseUrl: "https://api.elevenlabs.io",
+      voiceTts: {
+        model: "eleven_v3",
+        voiceId: "read-aloud-voice",
+        voiceSettings: { speed: 1.1, stability: 0.4 },
+      },
+    });
+  });
+
+  test("prefers voice-mode ElevenLabs voice and model over read-aloud", () => {
+    const persisted = PersistedConfigSchema.parse({
+      features: {
+        voiceMode: {
+          tts: { provider: "elevenlabs", model: "eleven_flash_v2_5", voiceId: "voice-mode-voice" },
+        },
+        readAloud: { tts: { model: "eleven_v3", voiceId: "read-aloud-voice" } },
+      },
+    });
+
+    const result = resolveSpeechConfig({
+      paseoHome: "/tmp/paseo-home",
+      env: { ELEVENLABS_API_KEY: " xi-env " } as NodeJS.ProcessEnv,
+      persisted,
+    });
+
+    expect(result.speech.elevenlabs).toEqual({
+      apiKey: "xi-env",
+      baseUrl: "https://api.elevenlabs.io",
+      voiceTts: { model: "eleven_flash_v2_5", voiceId: "voice-mode-voice", voiceSettings: {} },
+    });
+  });
+
+  test("defaults the ElevenLabs voice TTS model and leaves the voice unresolved", () => {
+    const persisted = PersistedConfigSchema.parse({
+      features: { voiceMode: { tts: { provider: "elevenlabs" } } },
+    });
+
+    const result = resolveSpeechConfig({
+      paseoHome: "/tmp/paseo-home",
+      env: {} as NodeJS.ProcessEnv,
+      persisted,
+    });
+
+    expect(result.speech.elevenlabs?.voiceTts).toEqual({
+      model: "eleven_flash_v2_5",
+      voiceId: null,
+      voiceSettings: {},
+    });
+  });
 });

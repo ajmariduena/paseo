@@ -3180,6 +3180,10 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       },
     },
     async ({ agentId, requestId, response }) => {
+      if (response.behavior === "allow") {
+        const refusal = callerContext?.authorizePermissionApproval?.();
+        if (refusal) throw new Error(refusal);
+      }
       await respondToAgentPermission({
         agentManager,
         agentId,

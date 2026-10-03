@@ -1879,6 +1879,25 @@ export const fr: TranslationResources = {
       stop: "Arrêtez la voix en temps réel et interrompez le tour",
     },
   },
+  globalVoice: {
+    label: "Voix",
+    title: "Parler à Paseo",
+    unsupported: "Mettez à jour cet hôte pour utiliser l'assistant vocal.",
+    actions: {
+      start: "Démarrer un appel vocal avec Paseo",
+      end: "Raccrocher",
+      mute: "Couper le micro",
+      unmute: "Réactiver le micro",
+      minimize: "Réduire",
+    },
+    status: {
+      connecting: "Connexion…",
+      listening: "À l'écoute",
+      thinking: "Réflexion…",
+      speaking: "Parle",
+      muted: "Micro coupé",
+    },
+  },
   rewind: {
     tooltip: "Revenez à ce message",
     warning: "Cette action ne peut pas être annulée",

@@ -9,4 +9,6 @@ export interface VoiceCallerContext {
   lockedCwd?: string;
   allowCustomCwd?: boolean;
   enableVoiceTools?: boolean;
+  /** Returns a refusal message when the caller may not approve a permission right now. */
+  authorizePermissionApproval?: () => string | null;
 }

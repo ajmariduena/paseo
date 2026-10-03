@@ -4,6 +4,7 @@ import type { Logger } from "pino";
 
 import type { PaseoOpenAIConfig, PaseoSpeechConfig } from "../bootstrap.js";
 import { initializeElevenLabsSpeechServices } from "./providers/elevenlabs/runtime.js";
+import { ElevenLabsTTS } from "./providers/elevenlabs/tts.js";
 import type { LocalSpeechModelId } from "./providers/local/config.js";
 import {
   ensureLocalSpeechModels,
@@ -315,9 +316,10 @@ function describeRequestedProviders(providers: RequestedSpeechProviders): {
 function resolveVoiceTtsLabel(
   ttsService: TextToSpeechProvider | null,
   localVoiceTtsProvider: TextToSpeechProvider | null,
-): "unavailable" | "local" | "openai" {
+): "unavailable" | "local" | "openai" | "elevenlabs" {
   if (!ttsService) return "unavailable";
   if (ttsService === localVoiceTtsProvider) return "local";
+  if (ttsService instanceof ElevenLabsTTS) return "elevenlabs";
   return "openai";
 }
 

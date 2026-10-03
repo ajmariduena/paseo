@@ -21,6 +21,7 @@ import type { AgentSessionConfig } from "../../agent/agent-sdk-types.js";
 import type { LocalSpeechModelId } from "../../speech/providers/local/models.js";
 import { toResolver, type Resolvable } from "../../speech/provider-resolver.js";
 import type { SpeechReadinessSnapshot, SpeechReadinessState } from "../../speech/speech-runtime.js";
+import type { VoiceOrchestrator } from "../../voice-orchestrator/orchestrator.js";
 
 const PCM_SAMPLE_RATE = 16000;
 const PCM_CHANNELS = 1;
@@ -154,6 +155,7 @@ export interface VoiceSessionOptions {
     sttLanguage?: string;
     getSpeechReadiness?: () => SpeechReadinessSnapshot;
   };
+  orchestrator?: VoiceOrchestrator | null;
 }
 
 /**
@@ -209,6 +211,8 @@ export class VoiceSession {
 
   private voiceModeAgentId: string | null = null;
   private voiceModeBaseConfig: VoiceModeBaseConfig | null = null;
+  private readonly orchestrator: VoiceOrchestrator | null;
+  private detachOrchestratorCall: (() => void) | null = null;
 
   constructor(options: VoiceSessionOptions) {
     const { host, logger, sessionId, sttLanguage, tts, stt, voice, voiceBridge, dictation } =
@@ -226,6 +230,7 @@ export class VoiceSession {
     this.registerVoiceCallerContext = voiceBridge?.registerVoiceCallerContext;
     this.unregisterVoiceCallerContext = voiceBridge?.unregisterVoiceCallerContext;
     this.getSpeechReadiness = dictation?.getSpeechReadiness;
+    this.orchestrator = options.orchestrator ?? null;
 
     this.ttsManager = new TTSManager(this.sessionId, this.sessionLogger, tts);
     this.sttManager = new STTManager(this.sessionId, this.sessionLogger, stt, {
@@ -409,6 +414,7 @@ export class VoiceSession {
           "set_voice_mode voice turn controller started",
         );
         this.isVoiceMode = !this.closed;
+        this.attachOrchestratorCall();
         this.sessionLogger.info(
           {
             agentId: this.voiceModeAgentId,
@@ -527,7 +533,18 @@ export class VoiceSession {
     }
   }
 
+  private attachOrchestratorCall(): void {
+    const agentId = this.voiceModeAgentId;
+    if (!this.isVoiceMode || !agentId || !this.orchestrator?.isOrchestrator(agentId)) return;
+    if (this.detachOrchestratorCall) return;
+    this.detachOrchestratorCall = this.orchestrator.attachCall({
+      isUserSpeaking: () => this.speechInProgress || this.processingPhase !== "idle",
+    });
+  }
+
   private async disableVoiceModeForActiveAgent(restoreAgentConfig: boolean): Promise<void> {
+    this.detachOrchestratorCall?.();
+    this.detachOrchestratorCall = null;
     await this.stopVoiceTurnController();
 
     const agentId = this.voiceModeAgentId;
@@ -536,7 +553,8 @@ export class VoiceSession {
       return;
     }
 
-    if (restoreAgentConfig && this.voiceModeBaseConfig) {
+    const isOrchestrator = this.orchestrator?.isOrchestrator(agentId) ?? false;
+    if (restoreAgentConfig && !isOrchestrator && this.voiceModeBaseConfig) {
       const baseConfig = this.voiceModeBaseConfig;
       try {
         await this.host.reloadAgentSession(agentId, {
@@ -1046,6 +1064,9 @@ export class VoiceSession {
       return;
     }
 
+    if (this.orchestrator?.isOrchestrator(agentId)) {
+      this.orchestrator.noteUserUtterance(result.text);
+    }
     await this.host.sendSpokenInput(agentId, result.text);
     await this.flushPendingAudioSegments("transcription complete");
   }
@@ -1084,10 +1105,14 @@ export class VoiceSession {
       });
     });
 
+    const orchestrator = this.orchestrator?.isOrchestrator(agentId) ? this.orchestrator : null;
     this.registerVoiceCallerContext?.(agentId, {
       childAgentDefaultLabels: {},
-      allowCustomCwd: false,
+      allowCustomCwd: orchestrator !== null,
       enableVoiceTools: true,
+      ...(orchestrator
+        ? { authorizePermissionApproval: () => orchestrator.authorizePermissionApproval() }
+        : {}),
     });
   }
 

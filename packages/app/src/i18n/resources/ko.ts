@@ -1836,6 +1836,25 @@ export const ko: TranslationResources = {
       stop: "실시간 음성 중지 및 턴 중단",
     },
   },
+  globalVoice: {
+    label: "음성",
+    title: "Paseo와 대화",
+    unsupported: "음성 비서를 사용하려면 이 호스트를 업데이트하세요.",
+    actions: {
+      start: "Paseo와 음성 통화 시작",
+      end: "통화 종료",
+      mute: "마이크 음소거",
+      unmute: "음소거 해제",
+      minimize: "최소화",
+    },
+    status: {
+      connecting: "연결 중…",
+      listening: "듣는 중",
+      thinking: "생각 중…",
+      speaking: "말하는 중",
+      muted: "음소거됨",
+    },
+  },
   rewind: {
     tooltip: "이 메시지로 되감기",
     warning: "이 작업은 되돌릴 수 없습니다",

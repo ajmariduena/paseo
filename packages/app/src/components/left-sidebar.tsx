@@ -1,5 +1,13 @@
 import { router } from "expo-router";
-import { CircleGauge, FolderPlus, GitBranch, Server, Settings, X } from "lucide-react-native";
+import {
+  AudioLines,
+  CircleGauge,
+  FolderPlus,
+  GitBranch,
+  Server,
+  Settings,
+  X,
+} from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
@@ -57,6 +65,8 @@ import { UsageSidebarItem, useHasUsageSummary, useOpenUsageScreen } from "@/usag
 import { SidebarAgentListSkeleton } from "./sidebar-agent-list-skeleton";
 import { SidebarCalloutSlot } from "./sidebar-callout-slot";
 import { SidebarWorkspaceList } from "./sidebar-workspace-list";
+import { useGlobalVoice } from "@/voice-chat/use-global-voice";
+import { useGlobalVoiceStore } from "@/voice-chat/global-voice-store";
 
 type SidebarTheme = ReturnType<typeof useUnistyles>["theme"];
 
@@ -376,6 +386,27 @@ function SidebarHostPicker({
   );
 }
 
+function GlobalVoiceFooterButton({ theme }: { theme: SidebarTheme }) {
+  const { t } = useTranslation();
+  const call = useGlobalVoice();
+  const handlePress = useCallback(() => {
+    if (call.isActive || call.isStarting) {
+      useGlobalVoiceStore.getState().setMinimized(false);
+      return;
+    }
+    call.start();
+  }, [call]);
+  return (
+    <FooterIconButton
+      onPress={handlePress}
+      testID="sidebar-global-voice"
+      label={t("globalVoice.actions.start")}
+      icon={AudioLines}
+      theme={theme}
+    />
+  );
+}
+
 function IconTooltipContent({
   label,
   shortcutKeys,
@@ -444,6 +475,7 @@ function SidebarFooter({
           onAddHost={handleAddHost}
           onOpenHostSettings={handleOpenHostSettings}
         />
+        <GlobalVoiceFooterButton theme={theme} />
         <View style={styles.footerSpacer} />
         <SidebarHelpMenu />
         <FooterIconButton

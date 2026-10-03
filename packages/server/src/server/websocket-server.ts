@@ -66,6 +66,7 @@ import type { ServiceProxySubsystem } from "./service-proxy.js";
 import type { WorkspaceScriptRuntimeStore } from "./workspace-script-runtime-store.js";
 import type { SpeechReadinessSnapshot, SpeechService } from "./speech/speech-runtime.js";
 import type { ReadAloudService } from "./speech/read-aloud/service.js";
+import type { VoiceOrchestrator } from "./voice-orchestrator/orchestrator.js";
 import type { VoiceCallerContext, VoiceSpeakHandler } from "./voice-types.js";
 import {
   computeNotificationPlan,
@@ -553,6 +554,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly workspaceRegistry: WorkspaceRegistry;
   private readonly workspaceLabelService: WorkspaceLabelService | null;
   private readAloudService!: ReadAloudService | null;
+  private readonly voiceOrchestrator: VoiceOrchestrator | null | undefined;
   private readonly scheduleService: ScheduleService;
   private readonly checkoutDiffManager: CheckoutDiffManager;
   private readonly github: ForgeService;
@@ -673,8 +675,10 @@ export class VoiceAssistantWebSocketServer {
     orchestrationSkills?: SessionOptions["orchestrationSkills"],
     workspaceLabelService?: WorkspaceLabelService,
     readAloudService?: ReadAloudService | null,
+    voiceOrchestrator?: VoiceOrchestrator | null,
   ) {
     this.logger = logger.child({ module: "websocket-server" });
+    this.voiceOrchestrator = voiceOrchestrator;
     this.workspaceSetupRuntime = workspaceSetupRuntime;
     this.advertiseDaemonStatusRpc = wsConfig.daemonStatusRpc !== false;
     this.advertiseRelayConfig = wsConfig.relayConfig !== false;
@@ -764,6 +768,7 @@ export class VoiceAssistantWebSocketServer {
     this.pushNotificationSender = pushNotificationSender ?? this.pushNotifications;
 
     this.agentManager.setAgentAttentionCallback((params) => {
+      this.voiceOrchestrator?.handleAttention(params);
       void this.broadcastAgentAttention(params).catch((err) => {
         this.logger.warn({ err, agentId: params.agentId }, "Failed to broadcast agent attention");
       });
@@ -1506,6 +1511,7 @@ export class VoiceAssistantWebSocketServer {
       workspaceRegistry: this.workspaceRegistry,
       workspaceLabelService: this.workspaceLabelService ?? undefined,
       readAloud: this.readAloudService ?? undefined,
+      voiceOrchestrator: this.voiceOrchestrator,
       directorySync: this.directorySync,
       scheduleService: this.scheduleService,
       checkoutDiffManager: this.checkoutDiffManager,
@@ -1889,6 +1895,8 @@ export class VoiceAssistantWebSocketServer {
         workspaceMultiplicity: true,
         // COMPAT(browserScreencast): added in v0.10.1, remove gate after 2027-04-01.
         browserScreencast: this.browserToolsBroker !== null,
+        // COMPAT(voiceOrchestrator): added in v0.11.0, remove gate after 2027-10-03.
+        voiceOrchestrator: Boolean(this.voiceOrchestrator),
         // COMPAT(projectRemove): added in v0.1.97, drop the gate when floor >= v0.1.97.
         projectRemove: true,
         // COMPAT(projectAdd): added in v0.1.97, drop the gate when floor >= v0.1.97.

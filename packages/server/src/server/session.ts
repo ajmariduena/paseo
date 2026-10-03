@@ -223,6 +223,7 @@ import type { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import type { Resolvable } from "./speech/provider-resolver.js";
 import type { SpeechReadinessSnapshot } from "./speech/speech-runtime.js";
 import type { ReadAloudService } from "./speech/read-aloud/service.js";
+import type { VoiceOrchestrator } from "./voice-orchestrator/orchestrator.js";
 import type pino from "pino";
 import { ScheduleService } from "./schedule/service.js";
 import {
@@ -467,6 +468,7 @@ export interface SessionOptions {
   directorySync?: DirectorySyncService;
   workspaceLabelService?: WorkspaceLabelService;
   readAloud?: ReadAloudService;
+  voiceOrchestrator?: VoiceOrchestrator | null;
   filesystem?: SessionFileSystem;
   scheduleService: ScheduleService;
   checkoutDiffManager: CheckoutDiffManager;
@@ -772,6 +774,7 @@ export class Session {
   >();
   private readonly workspaceLabelService: WorkspaceLabelService | null;
   private readonly readAloud: ReadAloudService | undefined;
+  private readonly voiceOrchestrator: VoiceOrchestrator | null | undefined;
   private readonly eventSubscriptions = new Map<
     string,
     { owner: OwnedSubscription; events: Set<SessionEventSubscription>; notifications: boolean }
@@ -832,6 +835,7 @@ export class Session {
       directorySync,
       workspaceLabelService,
       readAloud,
+      voiceOrchestrator,
       filesystem,
       scheduleService,
       checkoutDiffManager,
@@ -908,6 +912,7 @@ export class Session {
     this.directorySync = resolveDirectorySync(directorySync);
     this.workspaceLabelService = resolveWorkspaceLabelService(workspaceLabelService);
     this.readAloud = readAloud;
+    this.voiceOrchestrator = voiceOrchestrator;
     this.filesystem = filesystem ?? nodeSessionFileSystem;
     this.github = github ?? createGitHubService();
     this.renameCurrentBranch = renameCurrentBranch ?? renameCurrentBranchDefault;
@@ -1183,12 +1188,16 @@ export class Session {
       {
         host: {
           emit: (msg) => this.emit(msg),
-          loadAgent: (agentId) =>
-            ensureAgentLoaded(agentId, {
+          loadAgent: async (agentId) => {
+            if (await this.voiceOrchestrator?.matches(agentId)) {
+              await this.voiceOrchestrator?.ensureAgent();
+            }
+            return ensureAgentLoaded(agentId, {
               agentManager: this.agentManager,
               agentStorage: this.agentStorage,
               logger: this.sessionLogger,
-            }),
+            });
+          },
           reloadAgentSession: (agentId, overrides) =>
             this.agentManager.reloadAgentSession(agentId, overrides),
           sendSpokenInput: async (agentId, text) => {
@@ -1213,6 +1222,7 @@ export class Session {
         voice,
         voiceBridge,
         dictation,
+        orchestrator: this.voiceOrchestrator,
       },
       this.delivery,
       () => this.refreshObservationProducers(),
@@ -2810,6 +2820,29 @@ export class Session {
     }
   }
 
+  private async handleVoiceOrchestratorStartRequest(
+    request: Extract<SessionInboundMessage, { type: "voice.orchestrator.start.request" }>,
+  ): Promise<void> {
+    const { requestId } = request;
+    try {
+      if (!this.voiceOrchestrator) {
+        throw new Error("The voice assistant is not available on this host.");
+      }
+      this.voiceOrchestrator.setPreferredLanguage(request.language ?? null);
+      const agentId = await this.voiceOrchestrator.ensureAgent();
+      this.emit({
+        type: "voice.orchestrator.start.response",
+        payload: { requestId, agentId, error: null },
+      });
+    } catch (error) {
+      this.sessionLogger.warn({ err: error }, "Failed to start the voice orchestrator");
+      this.emit({
+        type: "voice.orchestrator.start.response",
+        payload: { requestId, agentId: null, error: getErrorMessage(error) },
+      });
+    }
+  }
+
   private requireReadAloud(): ReadAloudService {
     if (!this.readAloud) {
       throw new Error("Read aloud is not available on this host.");
@@ -2832,6 +2865,8 @@ export class Session {
         return this.handleReadAloudPrepareRequest(msg);
       case "speech.read_aloud.synthesize.request":
         return this.handleReadAloudSynthesizeRequest(msg);
+      case "voice.orchestrator.start.request":
+        return this.handleVoiceOrchestratorStartRequest(msg);
       case "restart_server_request":
         return this.handleRestartServerRequest(msg.requestId, msg.reason);
       case "shutdown_server_request":

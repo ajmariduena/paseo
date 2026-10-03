@@ -26,6 +26,7 @@ import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { Theme } from "@/styles/theme";
 import invariant from "tiny-invariant";
 import { SidebarMenuToggle } from "@/components/headers/menu-header";
+import { GlobalVoiceHeaderButton } from "@/components/global-voice/global-voice-header-button";
 import { ScreenHeader } from "@/components/headers/screen-header";
 import { ScreenTitle } from "@/components/headers/screen-title";
 import { HostBadge } from "@/hosts/host-badge";
@@ -3846,6 +3847,7 @@ function WorkspaceScreenContent({
             />
           </>
         ) : null}
+        {isMobile ? <GlobalVoiceHeaderButton /> : null}
         {isMobile ? (
           <WorkspaceExplorerToggle
             onPress={handleToggleExplorerSidebar}

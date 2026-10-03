@@ -1804,6 +1804,25 @@ export const zhCN: TranslationResources = {
       stop: "停止 realtime voice 并中断 turn",
     },
   },
+  globalVoice: {
+    label: "语音",
+    title: "与 Paseo 对话",
+    unsupported: "请更新此主机以使用语音助手。",
+    actions: {
+      start: "与 Paseo 开始语音通话",
+      end: "挂断",
+      mute: "静音麦克风",
+      unmute: "取消静音",
+      minimize: "最小化",
+    },
+    status: {
+      connecting: "正在连接…",
+      listening: "正在聆听",
+      thinking: "正在思考…",
+      speaking: "正在说话",
+      muted: "已静音",
+    },
+  },
   rewind: {
     tooltip: "回退到此消息",
     warning: "此操作无法撤销",

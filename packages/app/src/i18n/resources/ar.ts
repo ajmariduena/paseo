@@ -1826,6 +1826,25 @@ export const ar: TranslationResources = {
       stop: "إيقاف الصوت في الوقت الحقيقي ومقاطعة الدوران",
     },
   },
+  globalVoice: {
+    label: "الصوت",
+    title: "تحدث إلى Paseo",
+    unsupported: "حدّث هذا المضيف لاستخدام المساعد الصوتي.",
+    actions: {
+      start: "ابدأ مكالمة صوتية مع Paseo",
+      end: "إنهاء المكالمة",
+      mute: "كتم الميكروفون",
+      unmute: "إلغاء كتم الميكروفون",
+      minimize: "تصغير",
+    },
+    status: {
+      connecting: "جارٍ الاتصال…",
+      listening: "أستمع",
+      thinking: "أفكر…",
+      speaking: "أتحدث",
+      muted: "مكتوم",
+    },
+  },
   rewind: {
     tooltip: "الترجيع إلى هذه الرسالة",
     warning: "لا يمكن التراجع عن هذا الإجراء",

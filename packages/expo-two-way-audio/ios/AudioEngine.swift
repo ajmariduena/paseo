@@ -1,12 +1,30 @@
 import AVFoundation
 import Foundation
 
+/// Set by the host app's CallKit provider for the lifetime of a call. CallKit activates and
+/// deactivates the shared session at elevated priority, so while it owns the session the engine
+/// must never deactivate it or drop it to `.ambient`, or the call loses its audio.
+public enum CallKitAudioSessionOwnership {
+    static let didEndNotification = Notification.Name("ExpoTwoWayAudioCallKitOwnershipDidEnd")
+
+    public private(set) static var isOwnedByCall = false
+
+    public static func setOwnedByCall(_ owned: Bool) {
+        let wasOwned = isOwnedByCall
+        isOwnedByCall = owned
+        if wasOwned && !owned {
+            NotificationCenter.default.post(name: didEndNotification, object: nil)
+        }
+    }
+}
+
 class AudioEngine {
     private var avAudioEngine = AVAudioEngine()
     private var speechPlayer = AVAudioPlayerNode()
     private var engineConfigChangeObserver: Any?
     private var sessionInterruptionObserver: Any?
     private var mediaServicesResetObserver: Any?
+    private var callKitOwnershipObserver: Any?
     
     public private(set) var voiceIOFormat: AVAudioFormat
     public private(set) var isRecording = false
@@ -76,6 +94,12 @@ class AudioEngine {
             queue: .main) { [weak self] _ in
                 self?.handleMediaServicesWereReset()
             }
+        callKitOwnershipObserver = NotificationCenter.default.addObserver(
+            forName: CallKitAudioSessionOwnership.didEndNotification,
+            object: nil,
+            queue: .main) { [weak self] _ in
+                self?.releaseAudioSessionAfterCall()
+            }
         
         self.setupAudioSession()
         self.setup()
@@ -90,6 +114,9 @@ class AudioEngine {
             NotificationCenter.default.removeObserver(observer)
         }
         if let observer = mediaServicesResetObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = callKitOwnershipObserver {
             NotificationCenter.default.removeObserver(observer)
         }
     }
@@ -138,7 +165,18 @@ class AudioEngine {
         guard isSessionActive, !isRecording, !hasPendingPlayback else { return }
 
         avAudioEngine.pause()
+        isSessionActive = false
 
+        guard !CallKitAudioSessionOwnership.isOwnedByCall else { return }
+        deactivateAudioSession()
+    }
+
+    private func releaseAudioSessionAfterCall() {
+        guard !isSessionActive else { return }
+        deactivateAudioSession()
+    }
+
+    private func deactivateAudioSession() {
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setActive(false, options: [.notifyOthersOnDeactivation])
@@ -150,8 +188,6 @@ class AudioEngine {
         } catch {
             print("Could not reset the audio category: \(error.localizedDescription)")
         }
-
-        isSessionActive = false
     }
 
     func setup() {

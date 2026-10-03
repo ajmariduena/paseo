@@ -1056,6 +1056,7 @@ const DEFAULT_SESSION_RPC_TIMEOUT_MS = 60_000;
 const PUSH_TOKEN_REVOCATION_TIMEOUT_MS = 2_000;
 const READ_ALOUD_PREPARE_TIMEOUT_MS = 2 * 60 * 1000;
 const READ_ALOUD_SYNTHESIZE_TIMEOUT_MS = 90_000;
+const VOICE_ORCHESTRATOR_START_TIMEOUT_MS = 60_000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 const DEFAULT_LIVENESS_TIMEOUT_MS = 5000;
 const LIVENESS_HEARTBEAT_INTERVAL_MS = 10_000;
@@ -2119,6 +2120,25 @@ export class DaemonClient {
       throw new Error(response.error);
     }
     return response.segments;
+  }
+
+  async startVoiceOrchestrator(params: {
+    language?: string;
+    requestId?: string;
+  }): Promise<{ agentId: string }> {
+    const response =
+      await this.sendNamespacedCorrelatedSessionRequest<"voice.orchestrator.start.response">({
+        requestId: params.requestId,
+        message: {
+          type: "voice.orchestrator.start.request",
+          ...(params.language ? { language: params.language } : {}),
+        },
+        timeout: VOICE_ORCHESTRATOR_START_TIMEOUT_MS,
+      });
+    if (response.error || !response.agentId) {
+      throw new Error(response.error ?? "The voice assistant did not start");
+    }
+    return { agentId: response.agentId };
   }
 
   async synthesizeReadAloud(params: {

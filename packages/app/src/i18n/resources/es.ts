@@ -1875,6 +1875,25 @@ export const es: TranslationResources = {
       stop: "Detener la voz en tiempo real e interrumpir el turno.",
     },
   },
+  globalVoice: {
+    label: "Voz",
+    title: "Habla con Paseo",
+    unsupported: "Actualiza este host para usar el asistente de voz.",
+    actions: {
+      start: "Iniciar una llamada de voz con Paseo",
+      end: "Colgar",
+      mute: "Silenciar micrófono",
+      unmute: "Activar micrófono",
+      minimize: "Minimizar",
+    },
+    status: {
+      connecting: "Conectando…",
+      listening: "Escuchando",
+      thinking: "Pensando…",
+      speaking: "Hablando",
+      muted: "Silenciado",
+    },
+  },
   rewind: {
     tooltip: "Rebobinar a este mensaje",
     warning: "Esta acción no se puede deshacer.",

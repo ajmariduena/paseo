@@ -2701,6 +2701,12 @@ export const SpeechReadAloudPrepareRequestSchema = z.object({
   requestId: z.string(),
 });
 
+export const VoiceOrchestratorStartRequestSchema = z.object({
+  type: z.literal("voice.orchestrator.start.request"),
+  language: z.string().optional(),
+  requestId: z.string(),
+});
+
 export const SpeechReadAloudSynthesizeRequestSchema = z.object({
   type: z.literal("speech.read_aloud.synthesize.request"),
   text: z.string(),
@@ -3376,6 +3382,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   WorkspaceMarkUnreadRequestSchema,
   SpeechReadAloudPrepareRequestSchema,
   SpeechReadAloudSynthesizeRequestSchema,
+  VoiceOrchestratorStartRequestSchema,
   FileExplorerRequestSchema,
   FileSubscribeRequestSchema,
   FileUnsubscribeRequestSchema,
@@ -3690,6 +3697,8 @@ export const ServerInfoStatusPayloadSchema = z
         workspaceMultiplicity: z.boolean().optional(),
         // COMPAT(browserScreencast): added in v0.10.1, remove gate after 2027-04-01.
         browserScreencast: z.boolean().optional(),
+        // COMPAT(voiceOrchestrator): added in v0.11.0, remove gate after 2027-10-03.
+        voiceOrchestrator: z.boolean().optional(),
         // COMPAT(projectRemove): added in v0.1.97, drop the gate when floor >= v0.1.97.
         projectRemove: z.boolean().optional(),
         // COMPAT(projectAdd): added in v0.1.97, drop the gate when floor >= v0.1.97.
@@ -4994,6 +5003,15 @@ export const SpeechReadAloudPrepareResponseSchema = z.object({
   payload: z.object({
     requestId: z.string(),
     segments: z.array(z.string()),
+    error: z.string().nullable(),
+  }),
+});
+
+export const VoiceOrchestratorStartResponseSchema = z.object({
+  type: z.literal("voice.orchestrator.start.response"),
+  payload: z.object({
+    requestId: z.string(),
+    agentId: z.string().nullable(),
     error: z.string().nullable(),
   }),
 });
@@ -7003,6 +7021,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   WorkspaceMarkUnreadResponseSchema,
   SpeechReadAloudPrepareResponseSchema,
   SpeechReadAloudSynthesizeResponseSchema,
+  VoiceOrchestratorStartResponseSchema,
   SendAgentMessageResponseMessageSchema,
   SetVoiceModeResponseMessageSchema,
   DaemonGetStatusResponseSchema,
@@ -7519,6 +7538,7 @@ export type SpeechReadAloudPrepareRequest = z.infer<typeof SpeechReadAloudPrepar
 export type SpeechReadAloudSynthesizeRequest = z.infer<
   typeof SpeechReadAloudSynthesizeRequestSchema
 >;
+export type VoiceOrchestratorStartRequest = z.infer<typeof VoiceOrchestratorStartRequestSchema>;
 export type FileExplorerRequest = z.infer<typeof FileExplorerRequestSchema>;
 export type FileExplorerResponse = z.infer<typeof FileExplorerResponseSchema>;
 export type FileVersion = z.infer<typeof FileVersionSchema>;

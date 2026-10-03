@@ -1851,6 +1851,25 @@ export const en = {
       stop: "Stop realtime voice and interrupt turn",
     },
   },
+  globalVoice: {
+    label: "Voice",
+    title: "Talk to Paseo",
+    unsupported: "Update this host to use the voice assistant.",
+    actions: {
+      start: "Start a voice call with Paseo",
+      end: "Hang up",
+      mute: "Mute microphone",
+      unmute: "Unmute microphone",
+      minimize: "Minimize",
+    },
+    status: {
+      connecting: "Connecting…",
+      listening: "Listening",
+      thinking: "Thinking…",
+      speaking: "Speaking",
+      muted: "Muted",
+    },
+  },
   rewind: {
     tooltip: "Rewind to this message",
     warning: "This action cannot be undone",

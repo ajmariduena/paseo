@@ -1,4 +1,5 @@
 import "@/styles/unistyles";
+import { GlobalVoiceCallSurface } from "@/components/global-voice/global-voice-call-surface";
 import { BottomSheetModalProvider } from "@gorhom/bottom-sheet";
 import { PortalProvider } from "@gorhom/portal";
 import * as Linking from "expo-linking";
@@ -679,6 +680,7 @@ function ProvidersWrapper({ children }: { children: ReactNode }) {
         <HostSessionManager />
         <FaviconStatusSync />
         {children}
+        <GlobalVoiceCallSurface />
       </VoiceProvider>
     </AppearanceProvider>
   );

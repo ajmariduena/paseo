@@ -679,6 +679,22 @@ describe("PersistedConfigSchema voice mode config", () => {
     expect(parsed.features?.dictation?.stt?.language).toBe("fr");
     expect(parsed.features?.voiceMode?.stt?.language).toBe("de");
   });
+
+  test("accepts an ElevenLabs TTS voice id alongside the OpenAI voice enum", () => {
+    const parsed = PersistedConfigSchema.parse({
+      features: {
+        voiceMode: {
+          tts: { provider: "elevenlabs", model: "eleven_flash_v2_5", voiceId: " voice-123 " },
+        },
+      },
+    });
+
+    expect(parsed.features?.voiceMode?.tts).toEqual({
+      provider: "elevenlabs",
+      model: "eleven_flash_v2_5",
+      voiceId: "voice-123",
+    });
+  });
 });
 
 describe("loadPersistedConfig", () => {

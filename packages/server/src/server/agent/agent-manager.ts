@@ -868,6 +868,10 @@ export class AgentManager {
     }
   }
 
+  hasPaseoTools(): boolean {
+    return this.paseoToolsEnabled && this.mcpBaseUrl !== null;
+  }
+
   setPaseoToolsEnabled(enabled: boolean): void {
     this.paseoToolsEnabled = enabled;
   }

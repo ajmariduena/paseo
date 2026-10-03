@@ -1859,6 +1859,25 @@ export const ptBR: TranslationResources = {
       stop: "Parar voz em tempo real e interromper a resposta",
     },
   },
+  globalVoice: {
+    label: "Voz",
+    title: "Fale com o Paseo",
+    unsupported: "Atualize este host para usar o assistente de voz.",
+    actions: {
+      start: "Iniciar uma chamada de voz com o Paseo",
+      end: "Desligar",
+      mute: "Silenciar microfone",
+      unmute: "Ativar microfone",
+      minimize: "Minimizar",
+    },
+    status: {
+      connecting: "Conectando…",
+      listening: "Ouvindo",
+      thinking: "Pensando…",
+      speaking: "Falando",
+      muted: "Silenciado",
+    },
+  },
   rewind: {
     tooltip: "Voltar para esta mensagem",
     warning: "Esta ação não pode ser desfeita",

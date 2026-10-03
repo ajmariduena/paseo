@@ -1846,6 +1846,25 @@ export const ja: TranslationResources = {
       stop: "リアルタイム音声を停止してターンを中断",
     },
   },
+  globalVoice: {
+    label: "音声",
+    title: "Paseoと話す",
+    unsupported: "音声アシスタントを使うにはこのホストを更新してください。",
+    actions: {
+      start: "Paseoと音声通話を開始",
+      end: "通話を終了",
+      mute: "マイクをミュート",
+      unmute: "ミュートを解除",
+      minimize: "最小化",
+    },
+    status: {
+      connecting: "接続中…",
+      listening: "聞いています",
+      thinking: "考え中…",
+      speaking: "話しています",
+      muted: "ミュート中",
+    },
+  },
   rewind: {
     tooltip: "このメッセージに巻き戻す",
     warning: "この操作は元に戻せません",

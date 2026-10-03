@@ -132,6 +132,7 @@ import type { RequestedSpeechProviders } from "./speech/speech-types.js";
 import { createSpeechService } from "./speech/speech-runtime.js";
 import type { ReadAloudConfig } from "./speech/read-aloud/config.js";
 import { ReadAloudService } from "./speech/read-aloud/service.js";
+import { VoiceOrchestrator } from "./voice-orchestrator/orchestrator.js";
 import { AgentManager } from "./agent/agent-manager.js";
 import { AgentStorage } from "./agent/agent-storage.js";
 import { attachAgentStoragePersistence } from "./persistence-hooks.js";
@@ -1600,6 +1601,16 @@ export async function createPaseoDaemon(
       })
     : null;
 
+  const voiceOrchestrator = new VoiceOrchestrator({
+    paseoHome: config.paseoHome,
+    agentManager,
+    agentStorage,
+    workspaceRegistry,
+    provider: config.voiceLlmProvider,
+    model: config.voiceLlmModel,
+    logger,
+  });
+
   logger.info({ elapsed: elapsed() }, "Bootstrap complete, ready to start listening");
 
   const start = async () => {
@@ -1751,6 +1762,7 @@ export async function createPaseoDaemon(
               orchestrationSkills,
               workspaceLabelService,
               readAloudService,
+              voiceOrchestrator,
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();
