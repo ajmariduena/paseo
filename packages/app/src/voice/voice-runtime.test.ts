@@ -126,6 +126,28 @@ describe("voice runtime", () => {
     expect(runtime.getSnapshot().phase).toBe("waiting");
   });
 
+  it("keeps streaming silence while muted so the assistant can keep talking", async () => {
+    const adapter = createSessionAdapter();
+    const engine = createAudioEngineMock();
+    engine.toggleMute = vi.fn().mockReturnValueOnce(true).mockReturnValueOnce(false);
+    const { runtime } = createRuntime({ engine });
+    runtime.registerSession(adapter);
+    await runtime.startVoice("server-1", "agent-1");
+
+    runtime.toggleMute();
+    await vi.advanceTimersByTimeAsync(300);
+    const silent = Buffer.alloc(3200).toString("base64");
+    expect(adapter.sendVoiceAudioChunk).toHaveBeenCalledTimes(3);
+    expect(adapter.sendVoiceAudioChunk).toHaveBeenLastCalledWith(
+      silent,
+      "audio/pcm;rate=16000;bits=16",
+    );
+
+    runtime.toggleMute();
+    await vi.advanceTimersByTimeAsync(300);
+    expect(adapter.sendVoiceAudioChunk).toHaveBeenCalledTimes(3);
+  });
+
   it("moves from listening to playing on the first assistant audio", async () => {
     const adapter = createSessionAdapter();
     const { runtime, engine: _engine } = createRuntime();

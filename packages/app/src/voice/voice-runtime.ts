@@ -9,6 +9,10 @@ import {
 } from "@/utils/thinking-tone.native-pcm";
 
 const PCM_MIME_TYPE = "audio/pcm;rate=16000;bits=16";
+// Muted calls keep streaming silence: realtime models only advance their clock while input
+// audio flows, so cutting the stream silences the assistant too.
+const MUTED_SILENCE_INTERVAL_MS = 100;
+const MUTED_SILENCE_CHUNK = new Uint8Array((16000 * 2 * MUTED_SILENCE_INTERVAL_MS) / 1000);
 const KEEP_AWAKE_TAG = "paseo:voice";
 const THINKING_TONE_REPEAT_GAP_MS = 350;
 /**
@@ -528,7 +532,17 @@ export function createVoiceRuntime(deps: VoiceRuntimeDeps): VoiceRuntime {
     },
   };
 
+  let mutedSilenceTimer: ReturnType<typeof setInterval> | null = null;
+
+  function setMutedSilence(enabled: boolean): void {
+    if (mutedSilenceTimer) clearInterval(mutedSilenceTimer);
+    mutedSilenceTimer = enabled
+      ? setInterval(() => uploader.pushPcmChunk(MUTED_SILENCE_CHUNK), MUTED_SILENCE_INTERVAL_MS)
+      : null;
+  }
+
   function resetToDisabledState(): void {
+    setMutedSilence(false);
     state.transportReady = false;
     state.turnInProgress = false;
     state.serverSpeechDetected = false;
@@ -863,10 +877,12 @@ export function createVoiceRuntime(deps: VoiceRuntimeDeps): VoiceRuntime {
           ...prev,
           isMuted: true,
         }));
+        setMutedSilence(state.snapshot.isVoiceMode);
         reconcileCue();
         return;
       }
 
+      setMutedSilence(false);
       patchSnapshot((prev) => ({ ...prev, isMuted: false }));
     },
 
