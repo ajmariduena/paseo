@@ -9,12 +9,14 @@ import type { AgentManager, ManagedAgent } from "../agent/agent-manager.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
 import type { AgentPermissionRequest, AgentProvider } from "../agent/agent-sdk-types.js";
 import { sendPromptToAgent } from "../agent/agent-prompt.js";
+import { buildVoiceModeSystemPrompt, wrapSpokenInput } from "../voice-config.js";
 import type { WorkspaceRegistry } from "../workspace-registry.js";
 import { VoiceNoticeQueue, type VoiceNotice, type VoiceNoticeReason } from "./notice-queue.js";
 import {
   VOICE_BACKEND_SYSTEM_PROMPT,
   VOICE_ORCHESTRATOR_SYSTEM_PROMPT,
   buildCallStartPrompt,
+  buildFleetBlock,
   buildDelegationPrompt,
   buildNoticePrompt,
   clipForSpeech,
@@ -52,6 +54,7 @@ export interface VoiceOrchestratorOptions {
   workspaceRegistry: WorkspaceRegistry | null;
   provider?: AgentProvider | null;
   model?: string | null;
+  thinking?: string | null;
   live?: GptLiveEngineConfig | null;
   logger: pino.Logger;
 }
@@ -165,11 +168,19 @@ export class VoiceOrchestrator {
     return null;
   }
 
+  /** Sends the user's spoken words to the orchestrator with a fresh fleet snapshot. */
+  async sendSpokenRequest(text: string): Promise<void> {
+    const agentId = await this.ensureAgent();
+    const fleet = await this.describeFleetDetailed();
+    await this.sendPrompt(agentId, `${buildFleetBlock(fleet)}\n${wrapSpokenInput(text)}`, true);
+  }
+
   /** Runs one delegated voice request on the orchestrator agent and returns its reply. */
   async runDelegation(params: { request: string; history: string[] }): Promise<string> {
     const agentId = await this.ensureAgent();
     if (params.request.trim()) this.noteUserUtterance(params.request);
-    await this.sendPrompt(agentId, buildDelegationPrompt(params));
+    const fleet = await this.describeFleetDetailed();
+    await this.sendPrompt(agentId, buildDelegationPrompt({ ...params, fleet }), true);
     const { agentManager } = this.options;
     let result = await agentManager.waitForAgentEvent(agentId, { waitForActive: true });
     for (let attempt = 0; result.permission && attempt < DELEGATION_MAX_WAITS; attempt += 1) {
@@ -179,8 +190,40 @@ export class VoiceOrchestrator {
   }
 
   async describeFleet(): Promise<VoiceFleetEntry[]> {
+    return Promise.all(
+      this.listFleetAgents().map(async (agent) => ({
+        workspace: await this.describeWorkspace(agent),
+        title: agent.config.title?.trim() || "Untitled agent",
+        status: this.describeStatus(agent),
+      })),
+    );
+  }
+
+  /** One line per relevant agent with everything a status answer needs, so no tool call is required. */
+  async describeFleetDetailed(): Promise<string[]> {
+    const { agentManager } = this.options;
+    return Promise.all(
+      this.listFleetAgents().map(async (agent) => {
+        const work = agentManager.getLiveWorkSummary(agent.id);
+        const last = await agentManager.getLastAssistantMessage(agent.id).catch(() => null);
+        const permission = [...agent.pendingPermissions.values()].at(-1);
+        const parts = [
+          `- ${await this.describeWorkspace(agent)} · "${agent.config.title?.trim() || "Untitled agent"}" (id ${agent.id}, ${agent.provider})`,
+          `status: ${this.describeStatus(agent)}`,
+          work.request ? `task: ${clipForSpeech(work.request, 240)}` : null,
+          permission
+            ? `pending permission: ${clipForSpeech([permission.title ?? permission.name, permission.description].filter(Boolean).join(": "), 200)}`
+            : null,
+          last ? `last message: ${clipForSpeech(last, 400)}` : null,
+        ];
+        return parts.filter((part): part is string => part !== null).join(" | ");
+      }),
+    );
+  }
+
+  private listFleetAgents(): ManagedAgent[] {
     const now = Date.now();
-    const candidates = this.options.agentManager
+    return this.options.agentManager
       .listAgents()
       .filter(
         (agent) =>
@@ -194,13 +237,6 @@ export class VoiceOrchestrator {
       )
       .sort((left, right) => fleetRank(left) - fleetRank(right))
       .slice(0, FLEET_LIMIT);
-    return Promise.all(
-      candidates.map(async (agent) => ({
-        workspace: await this.describeWorkspace(agent),
-        title: agent.config.title?.trim() || "Untitled agent",
-        status: this.describeStatus(agent),
-      })),
-    );
   }
 
   dispose(): void {
@@ -302,10 +338,11 @@ export class VoiceOrchestrator {
         provider,
         cwd,
         ...(model ? { model } : {}),
+        ...(this.options.thinking ? { thinkingOptionId: this.options.thinking } : {}),
         title: "Voice",
         systemPrompt: this.options.live
           ? VOICE_BACKEND_SYSTEM_PROMPT
-          : VOICE_ORCHESTRATOR_SYSTEM_PROMPT,
+          : buildVoiceModeSystemPrompt(VOICE_ORCHESTRATOR_SYSTEM_PROMPT, true),
         internal: true,
       },
       agentId,
@@ -405,13 +442,14 @@ export class VoiceOrchestrator {
     }
   }
 
-  private async sendPrompt(agentId: string, text: string): Promise<void> {
+  private async sendPrompt(agentId: string, text: string, fromUser = false): Promise<void> {
     await sendPromptToAgent({
       agentManager: this.options.agentManager,
       agentStorage: this.options.agentStorage,
       agentId,
       prompt: text,
       unarchive: false,
+      clearPendingPermissions: fromUser,
       logger: this.logger,
     });
   }

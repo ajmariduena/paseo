@@ -500,6 +500,14 @@ export class VoiceSession {
   }
 
   private async enableVoiceModeForAgent(agentId: string): Promise<string> {
+    if (this.orchestrator && (await this.orchestrator.matches(agentId))) {
+      // The orchestrator is created with its voice prompt, so it needs no reload; the
+      // caller context must exist before its first MCP connection to expose speak.
+      this.registerVoiceBridgeForAgent(agentId);
+      await this.host.loadAgent(agentId);
+      this.voiceModeBaseConfig = null;
+      return agentId;
+    }
     const startedAt = Date.now();
     this.sessionLogger.info({ agentId }, "enableVoiceModeForAgent.ensureAgentLoaded.start");
     const existing = await this.host.loadAgent(agentId);
@@ -639,7 +647,7 @@ export class VoiceSession {
     }
 
     this.unregisterVoiceSpeakHandler?.(agentId);
-    this.unregisterVoiceCallerContext?.(agentId);
+    if (!isOrchestrator) this.unregisterVoiceCallerContext?.(agentId);
     this.voiceModeBaseConfig = null;
     this.voiceModeAgentId = null;
   }
@@ -1146,8 +1154,10 @@ export class VoiceSession {
 
     if (this.orchestrator?.isOrchestrator(agentId)) {
       this.orchestrator.noteUserUtterance(result.text);
+      await this.orchestrator.sendSpokenRequest(result.text);
+    } else {
+      await this.host.sendSpokenInput(agentId, result.text);
     }
-    await this.host.sendSpokenInput(agentId, result.text);
     await this.flushPendingAudioSegments("transcription complete");
   }
 

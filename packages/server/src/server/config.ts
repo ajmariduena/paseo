@@ -343,6 +343,7 @@ interface ResolvedVoiceLlm {
   provider: AgentProvider | null;
   providerExplicit: boolean;
   model: string | null;
+  thinking: string | null;
 }
 
 function resolveServiceProxyPublicBaseUrl(value: string | null): string | null {
@@ -419,6 +420,7 @@ function resolveVoiceLlmConfig(
     provider: envVoiceLlmProvider ?? persistedVoiceLlmProvider ?? null,
     providerExplicit: envVoiceLlmProvider !== null || persistedVoiceLlmProvider !== null,
     model: persisted.features?.voiceMode?.llm?.model ?? null,
+    thinking: persisted.features?.voiceMode?.llm?.thinking ?? null,
   };
 }
 
@@ -668,6 +670,7 @@ export function resolveConfigFromPersisted(
     voiceLlmProvider: voiceLlm.provider,
     voiceLlmProviderExplicit: voiceLlm.providerExplicit,
     voiceLlmModel: voiceLlm.model,
+    voiceLlmThinking: voiceLlm.thinking,
     voiceLive: resolveVoiceLiveConfig(env, persisted),
     agentProviderSettings: extractAgentProviderSettings(providerOverrides),
     providerCatalogRefreshTimeoutMs: persisted.agents?.catalogRefreshTimeoutMs,
