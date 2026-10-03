@@ -1,7 +1,7 @@
 import { useCallback, useMemo, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { View, type StyleProp, type ViewStyle } from "react-native";
-import { StyleSheet, useUnistyles } from "react-native-unistyles";
+import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { PanelLeft } from "lucide-react-native";
 import { ScreenHeader } from "./screen-header";
 import { ScreenTitle } from "./screen-title";
@@ -11,6 +11,14 @@ import { useIsCompactFormFactor } from "@/constants/layout";
 import { getShortcutOs } from "@/utils/shortcut-platform";
 import { useHasWindowChromeObstruction, useOwnsWindowChromeCorner } from "@/utils/desktop-window";
 import { iconButtonChromeGlyphSize } from "@/components/ui/icon-button-chrome";
+import { useActiveWorkspaceSelection } from "@/stores/navigation-active-workspace-store";
+import {
+  useSidebarToggleAttentionBucket,
+  type SidebarToggleAttentionBucket,
+} from "@/hooks/use-sidebar-workspaces-list";
+import type { Theme } from "@/styles/theme";
+import { getStatusDotColor } from "@/utils/status-dot-color";
+import { STATUS_INDICATOR_DOT_SIZE } from "@/utils/status-indicator-geometry";
 
 interface MenuHeaderProps {
   title?: string;
@@ -28,19 +36,40 @@ interface SidebarMenuToggleProps {
 const MOBILE_MENU_LINE_WIDTH = 16;
 const MOBILE_MENU_LINE_SHORT_WIDTH = 8;
 const MOBILE_MENU_LINE_HEIGHT = 1.5;
+const ATTENTION_DOT_INSET = 1 - STATUS_INDICATOR_DOT_SIZE / 2;
 
-function MobileMenuIcon({ color }: { color: string }) {
-  const lineStyle = useMemo(() => [styles.mobileMenuLine, { backgroundColor: color }], [color]);
-  const shortLineStyle = useMemo(
-    () => [styles.mobileMenuLine, styles.mobileMenuLineShort, { backgroundColor: color }],
-    [color],
-  );
+const foregroundMutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
+const foregroundExtraMutedColorMapping = (theme: Theme) => ({
+  color: theme.colors.foregroundExtraMuted,
+});
+const ThemedPanelLeft = withUnistyles(PanelLeft);
+
+function MobileMenuIcon({ extraMuted }: { extraMuted: boolean }) {
+  const colorStyle = extraMuted ? styles.mobileMenuLineExtraMuted : styles.mobileMenuLineMuted;
   return (
     <View style={styles.mobileMenuIcon} pointerEvents="none">
-      <View style={lineStyle} />
-      <View style={lineStyle} />
-      <View style={shortLineStyle} />
+      <View style={[styles.mobileMenuLine, colorStyle]} />
+      <View style={[styles.mobileMenuLine, colorStyle]} />
+      <View style={[styles.mobileMenuLine, styles.mobileMenuLineShort, colorStyle]} />
     </View>
+  );
+}
+
+function AttentionDot({
+  bucket,
+  testID,
+}: {
+  bucket: SidebarToggleAttentionBucket;
+  testID: string;
+}) {
+  const colorStyle =
+    bucket === "needs_input" ? styles.attentionDotNeedsInput : styles.attentionDotFailed;
+  return (
+    <View
+      pointerEvents="none"
+      testID={`${testID}-attention-${bucket}`}
+      style={[styles.attentionDot, colorStyle]}
+    />
   );
 }
 
@@ -56,9 +85,14 @@ function SidebarMenuToggleButton({
   extraMutedIdleIcon?: boolean;
   resolvedStyle: StyleProp<ViewStyle>;
 }) {
-  const { theme } = useUnistyles();
   const { t } = useTranslation();
   const isOpen = usePanelStore((state) => selectIsAgentListOpen(state, { isCompact: isMobile }));
+  const activeWorkspace = useActiveWorkspaceSelection();
+  const attentionBucket = useSidebarToggleAttentionBucket({
+    activeServerId: activeWorkspace?.serverId ?? null,
+    activeWorkspaceId: activeWorkspace?.workspaceId ?? null,
+    isSidebarOpen: isOpen,
+  });
   const toggleAgentListForLayout = usePanelStore((state) => state.toggleAgentListForLayout);
   const toggleShortcutKeys = useMemo(
     () => (getShortcutOs() === "mac" ? ["mod", "B"] : ["mod", "."]),
@@ -85,21 +119,20 @@ function SidebarMenuToggleButton({
       accessibilityLabel={isOpen ? t("shell.menu.close") : t("shell.menu.open")}
       accessibilityState={accessibilityState}
     >
-      {isMobile ? (
-        <MobileMenuIcon
-          color={
-            extraMutedIdleIcon ? theme.colors.foregroundExtraMuted : theme.colors.foregroundMuted
-          }
-        />
-      ) : (
-        <PanelLeft
-          size={iconButtonChromeGlyphSize("large")}
-          strokeWidth={1.5}
-          color={
-            extraMutedIdleIcon ? theme.colors.foregroundExtraMuted : theme.colors.foregroundMuted
-          }
-        />
-      )}
+      <View style={styles.glyphFrame} pointerEvents="none">
+        {isMobile ? (
+          <MobileMenuIcon extraMuted={extraMutedIdleIcon} />
+        ) : (
+          <ThemedPanelLeft
+            size={iconButtonChromeGlyphSize("large")}
+            strokeWidth={1.5}
+            uniProps={
+              extraMutedIdleIcon ? foregroundExtraMutedColorMapping : foregroundMutedColorMapping
+            }
+          />
+        )}
+        {attentionBucket ? <AttentionDot bucket={attentionBucket} testID={testID} /> : null}
+      </View>
     </HeaderToggleButton>
   );
 }
@@ -184,5 +217,30 @@ const styles = StyleSheet.create((theme) => ({
   },
   mobileMenuLineShort: {
     width: MOBILE_MENU_LINE_SHORT_WIDTH,
+  },
+  mobileMenuLineMuted: {
+    backgroundColor: theme.colors.foregroundMuted,
+  },
+  mobileMenuLineExtraMuted: {
+    backgroundColor: theme.colors.foregroundExtraMuted,
+  },
+  glyphFrame: {
+    position: "relative",
+  },
+  attentionDot: {
+    position: "absolute",
+    top: ATTENTION_DOT_INSET,
+    right: ATTENTION_DOT_INSET,
+    width: STATUS_INDICATOR_DOT_SIZE,
+    height: STATUS_INDICATOR_DOT_SIZE,
+    borderRadius: theme.borderRadius.full,
+    borderWidth: 1,
+    borderColor: theme.colors.surface0,
+  },
+  attentionDotNeedsInput: {
+    backgroundColor: getStatusDotColor({ theme, bucket: "needs_input" }) ?? undefined,
+  },
+  attentionDotFailed: {
+    backgroundColor: getStatusDotColor({ theme, bucket: "failed" }) ?? undefined,
   },
 }));

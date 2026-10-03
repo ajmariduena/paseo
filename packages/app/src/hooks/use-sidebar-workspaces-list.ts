@@ -16,7 +16,9 @@ import {
   createSidebarWorkspaceEntry,
   deriveProjectStatusBucket,
   deriveSidebarLoadingState,
+  deriveSidebarToggleAttentionBucket,
   type ProjectStatusSession,
+  type SidebarToggleAttentionBucket,
   type SidebarProjectEntry,
   type SidebarWorkspaceEntry,
   type SidebarWorkspacePlacement,
@@ -41,6 +43,7 @@ export {
   type SidebarWorkspacePlacementModel,
   type SidebarProjectEntry,
   type SidebarStateBucket,
+  type SidebarToggleAttentionBucket,
   type SidebarWorkspaceEntry,
 } from "./sidebar-workspaces-view-model";
 
@@ -78,6 +81,29 @@ export function useSidebarProjectStatusBucket(input: {
     [enabled, pendingCreateAttempts, workspaces],
   );
 
+  return useStoreWithEqualityFn(useSessionStore, selector, Object.is);
+}
+
+// Reads the session store rather than the sidebar model: the model stops refreshing its entries
+// while the sidebar is closed, which is exactly when this dot is shown.
+export function useSidebarToggleAttentionBucket(input: {
+  activeServerId: string | null;
+  activeWorkspaceId: string | null;
+  isSidebarOpen: boolean;
+}): SidebarToggleAttentionBucket | null {
+  const { activeServerId, activeWorkspaceId, isSidebarOpen } = input;
+  const selector = useCallback(
+    (state: { sessions: Record<string, ProjectStatusSession | undefined> }) =>
+      deriveSidebarToggleAttentionBucket({
+        sessions: state.sessions,
+        activeWorkspace:
+          activeServerId && activeWorkspaceId
+            ? { serverId: activeServerId, workspaceId: activeWorkspaceId }
+            : null,
+        isSidebarOpen,
+      }),
+    [activeServerId, activeWorkspaceId, isSidebarOpen],
+  );
   return useStoreWithEqualityFn(useSessionStore, selector, Object.is);
 }
 

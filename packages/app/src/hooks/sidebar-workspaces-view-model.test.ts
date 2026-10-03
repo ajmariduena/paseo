@@ -11,6 +11,7 @@ import {
   computeSidebarOrderUpdates,
   createSidebarWorkspaceEntry,
   deriveProjectStatusBucket,
+  deriveSidebarToggleAttentionBucket,
   deriveSidebarLoadingState,
   shouldShowSidebarHostLabels,
   type ProjectStatusSession,
@@ -940,5 +941,129 @@ describe("deriveProjectStatusBucket", () => {
         },
       }),
     ).toBe("done");
+  });
+});
+
+describe("deriveSidebarToggleAttentionBucket", () => {
+  const active = { serverId: "srv", workspaceId: "ws-active" };
+
+  it("is null when no other workspace needs you", () => {
+    expect(
+      deriveSidebarToggleAttentionBucket({
+        sessions: {
+          srv: sessionWith({
+            workspaces: [
+              projectWorkspace("ws-active", "done"),
+              projectWorkspace("ws-1", "running"),
+              projectWorkspace("ws-2", "attention"),
+            ],
+          }),
+        },
+        activeWorkspace: active,
+        isSidebarOpen: false,
+      }),
+    ).toBeNull();
+  });
+
+  it("surfaces another workspace waiting on input", () => {
+    expect(
+      deriveSidebarToggleAttentionBucket({
+        sessions: {
+          srv: sessionWith({
+            workspaces: [
+              projectWorkspace("ws-active", "done"),
+              projectWorkspace("ws-1", "needs_input"),
+            ],
+          }),
+        },
+        activeWorkspace: active,
+        isSidebarOpen: false,
+      }),
+    ).toBe("needs_input");
+  });
+
+  it("surfaces another failed workspace", () => {
+    expect(
+      deriveSidebarToggleAttentionBucket({
+        sessions: {
+          srv: sessionWith({
+            workspaces: [projectWorkspace("ws-active", "done"), projectWorkspace("ws-1", "failed")],
+          }),
+        },
+        activeWorkspace: active,
+        isSidebarOpen: false,
+      }),
+    ).toBe("failed");
+  });
+
+  it("ranks needs_input over failed", () => {
+    expect(
+      deriveSidebarToggleAttentionBucket({
+        sessions: {
+          srv: sessionWith({
+            workspaces: [
+              projectWorkspace("ws-1", "failed"),
+              projectWorkspace("ws-2", "needs_input"),
+            ],
+          }),
+        },
+        activeWorkspace: active,
+        isSidebarOpen: false,
+      }),
+    ).toBe("needs_input");
+  });
+
+  it("excludes the active workspace", () => {
+    expect(
+      deriveSidebarToggleAttentionBucket({
+        sessions: {
+          srv: sessionWith({
+            workspaces: [
+              projectWorkspace("ws-active", "needs_input"),
+              projectWorkspace("ws-1", "done"),
+            ],
+          }),
+        },
+        activeWorkspace: active,
+        isSidebarOpen: false,
+      }),
+    ).toBeNull();
+  });
+
+  it("only excludes the active workspace on its own host", () => {
+    expect(
+      deriveSidebarToggleAttentionBucket({
+        sessions: {
+          srv: sessionWith({ workspaces: [projectWorkspace("ws-active", "done")] }),
+          other: sessionWith({ workspaces: [projectWorkspace("ws-active", "failed")] }),
+        },
+        activeWorkspace: active,
+        isSidebarOpen: false,
+      }),
+    ).toBe("failed");
+  });
+
+  it("counts every workspace when none is active", () => {
+    expect(
+      deriveSidebarToggleAttentionBucket({
+        sessions: {
+          srv: sessionWith({ workspaces: [projectWorkspace("ws-active", "needs_input")] }),
+        },
+        activeWorkspace: null,
+        isSidebarOpen: false,
+      }),
+    ).toBe("needs_input");
+  });
+
+  it("is hidden while the sidebar is open", () => {
+    expect(
+      deriveSidebarToggleAttentionBucket({
+        sessions: {
+          srv: sessionWith({ workspaces: [projectWorkspace("ws-1", "needs_input")] }),
+        },
+        activeWorkspace: active,
+        isSidebarOpen: true,
+      }),
+    ).toBeNull();
   });
 });
