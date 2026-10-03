@@ -2220,6 +2220,22 @@ export const ja: TranslationResources = {
         description: "組み込みターミナルバッファに保持する行数",
         accessibilityLabel: "ターミナルスクロールバック行数",
       },
+      terminalFontSize: {
+        label: "ターミナルのフォントサイズ",
+        description: "内蔵ターミナルの文字サイズ（コードのサイズとは別）",
+        accessibilityLabel: "ターミナルのフォントサイズ",
+      },
+      terminalOptionAsMeta: {
+        label: "Option を Meta として使う",
+        description:
+          "シェルのショートカット用に Meta（Esc+キー）を送る Option キー。反対側はアクセント記号や記号の入力に使えます",
+        options: {
+          both: "両方",
+          left: "左",
+          right: "右",
+          off: "オフ",
+        },
+      },
       autoExpandReasoning: {
         label: "常に思考プロセスを展開",
         description: "デフォルトでAIのエージェント思考・推論ブロックを完全に展開して表示します",

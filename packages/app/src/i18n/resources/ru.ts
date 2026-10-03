@@ -2233,6 +2233,22 @@ export const ru: TranslationResources = {
         description: "Количество строк, сохраняемых во встроенном буфере терминала",
         accessibilityLabel: "Количество строк в буфере прокрутки терминала",
       },
+      terminalFontSize: {
+        label: "Размер шрифта терминала",
+        description: "Размер текста во встроенном терминале, отдельно от размера кода",
+        accessibilityLabel: "Размер шрифта терминала",
+      },
+      terminalOptionAsMeta: {
+        label: "Option как Meta",
+        description:
+          "Какие клавиши Option отправляют Meta (Esc+клавиша) для сочетаний оболочки; другая сторона продолжает вводить диакритику и символы",
+        options: {
+          both: "Обе",
+          left: "Левая",
+          right: "Правая",
+          off: "Выкл.",
+        },
+      },
       autoExpandReasoning: {
         label: "Всегда разворачивать размышления",
         description:

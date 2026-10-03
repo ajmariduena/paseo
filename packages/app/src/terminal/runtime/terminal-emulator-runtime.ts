@@ -31,7 +31,21 @@ import {
 import { isFindShortcut, type FindShortcutPlatform } from "@/pane-find/find-shortcut";
 import { isMacUserAgent } from "@/utils/mac-user-agent";
 import type { WebLinkModifiers } from "@/web-links/routing";
-import { resolveTerminalFontFamily, resolveTerminalFontSize } from "./terminal-font";
+import {
+  TERMINAL_FONT_WEIGHT,
+  TERMINAL_FONT_WEIGHT_BOLD,
+  loadBundledTerminalSymbolsFont,
+  resolveTerminalFontFamily,
+  resolveTerminalFontSize,
+  terminalFontHasKnownLigatures,
+} from "./terminal-font";
+import {
+  DEFAULT_MAC_OPTION_AS_META,
+  type MacOptionAsMeta,
+  type MacTerminalKeyAction,
+  nextOptionKeyLocations,
+  resolveMacTerminalKeyAction,
+} from "./terminal-mac-keys";
 
 export type TerminalOutputData = Uint8Array;
 
@@ -58,6 +72,7 @@ export interface TerminalEmulatorRuntimeMountInput {
   theme: ITheme;
   fontFamily?: string;
   fontSize?: number;
+  macOptionAsMeta?: MacOptionAsMeta;
 }
 
 export interface TerminalEmulatorRuntimeCallbacks {
@@ -154,6 +169,8 @@ const isAppleHandheld =
 const DEFAULT_TOUCH_SCROLL_LINE_HEIGHT_PX = 18;
 const FIT_TIMEOUT_DELAYS_MS = [0, 16, 48, 120, 250, 500, 1_000, 2_000];
 const OUTPUT_OPERATION_TIMEOUT_MS = 5_000;
+const MAX_WEBGL_CONTEXT_RETRIES = 3;
+const WEBGL_RETRY_DELAY_MS = 1_000;
 const EMPTY_TERMINAL_OUTPUT = new Uint8Array(0);
 const RESET_TERMINAL_OUTPUT = new Uint8Array([0x1b, 0x63]);
 const terminalOutputEncoder = new TextEncoder();
@@ -252,6 +269,9 @@ export class TerminalEmulatorRuntime {
   private readonly inputModeTracker = new TerminalInputModeTracker();
   private lastInputModeState: TerminalInputModeState = this.inputModeTracker.getState();
   private themeBackgroundElements: HTMLElement[] = [];
+  private macOptionAsMeta: MacOptionAsMeta = DEFAULT_MAC_OPTION_AS_META;
+  private ligaturesAddon: LigaturesAddon | null = null;
+  private optionKeyLocations = 0;
 
   private handleVisibilityRestore = (): void => {
     if (typeof document !== "undefined" && document.visibilityState !== "visible") {
@@ -304,41 +324,19 @@ export class TerminalEmulatorRuntime {
     >,
   ): void {
     terminal.attachCustomKeyEventHandler((event) => {
+      if (this.options.isMac) {
+        this.optionKeyLocations = nextOptionKeyLocations(this.optionKeyLocations, event);
+      }
       if (event.type !== "keydown" || event.isComposing) {
         return true;
       }
 
+      if (this.handleMacKey(event)) return false;
+
       if (this.handleFindShortcut(event)) return false;
 
-      if (
-        !this.options.isMac &&
-        event.ctrlKey &&
-        !event.shiftKey &&
-        !event.altKey &&
-        !event.metaKey
-      ) {
-        const key = event.key.toLowerCase();
-
-        // Ctrl+C: copy selection to clipboard if text is selected, otherwise let xterm send SIGINT
-        if (key === "c" && terminal.hasSelection()) {
-          void navigator.clipboard.writeText(terminal.getSelection());
-          return false;
-        }
-
-        // Ctrl+V: paste from clipboard into terminal
-        if (key === "v") {
-          event.preventDefault();
-          void navigator.clipboard.readText().then((text) => {
-            if (text) {
-              terminal.paste(text);
-            }
-            return;
-          });
-          return false;
-        }
-
-        return true;
-      }
+      const clipboardHandled = this.handleNonMacClipboardKey(event, terminal);
+      if (clipboardHandled !== null) return clipboardHandled;
 
       const normalizedKey = normalizeDomTerminalKey(event.key);
       if (!normalizedKey || isTerminalModifierDomKey(event.key)) {
@@ -380,6 +378,78 @@ export class TerminalEmulatorRuntime {
       event.stopPropagation();
       return false;
     });
+  }
+
+  /** The addon reads terminal.element, so it can only load after open(). */
+  private syncLigatures(terminal: Terminal, fontFamily: string | undefined): void {
+    const wanted = terminalFontHasKnownLigatures(fontFamily);
+    if (wanted === (this.ligaturesAddon !== null)) return;
+    if (!wanted) {
+      this.ligaturesAddon?.dispose();
+      this.ligaturesAddon = null;
+      return;
+    }
+    try {
+      const addon = new LigaturesAddon();
+      terminal.loadAddon(addon);
+      this.ligaturesAddon = addon;
+    } catch {
+      // Ligatures need the Font Access API.
+    }
+  }
+
+  /** Ctrl+C copies a selection and Ctrl+V pastes outside macOS; returns null when not a Ctrl chord. */
+  private handleNonMacClipboardKey(
+    event: KeyboardEvent,
+    terminal: Pick<Terminal, "hasSelection" | "getSelection" | "paste">,
+  ): boolean | null {
+    if (this.options.isMac || !event.ctrlKey || event.shiftKey || event.altKey || event.metaKey) {
+      return null;
+    }
+    const key = event.key.toLowerCase();
+
+    // Ctrl+C: copy selection to clipboard if text is selected, otherwise let xterm send SIGINT
+    if (key === "c" && terminal.hasSelection()) {
+      void navigator.clipboard.writeText(terminal.getSelection());
+      return false;
+    }
+
+    // Ctrl+V: paste from clipboard into terminal
+    if (key === "v") {
+      event.preventDefault();
+      void navigator.clipboard.readText().then((text) => {
+        if (text) {
+          terminal.paste(text);
+        }
+        return;
+      });
+      return false;
+    }
+
+    return true;
+  }
+
+  private handleMacKey(event: KeyboardEvent): boolean {
+    if (!this.options.isMac) return false;
+    const action = resolveMacTerminalKeyAction(event, {
+      optionAsMeta: this.macOptionAsMeta,
+      optionKeyLocations: this.optionKeyLocations,
+      kittyKeyboardFlags: this.inputModeTracker.getState().kittyKeyboardFlags,
+    });
+    if (!action) return false;
+    this.applyMacKeyAction(action);
+    event.preventDefault();
+    event.stopPropagation();
+    return true;
+  }
+
+  private applyMacKeyAction(action: MacTerminalKeyAction): void {
+    if (action.type === "scroll") {
+      if (action.position === "top") this.terminal?.scrollToTop();
+      else this.terminal?.scrollToBottom();
+      return;
+    }
+    if (!this.suppressInput) this.callbacks.onInput?.(action.data);
   }
 
   private handleFindShortcut(event: KeyboardEvent): boolean {
@@ -434,6 +504,8 @@ export class TerminalEmulatorRuntime {
     this.lastSize = null;
     this.inputModeTracker.reset();
     this.emitInputModeChange();
+    this.macOptionAsMeta = input.macOptionAsMeta ?? DEFAULT_MAC_OPTION_AS_META;
+    this.optionKeyLocations = 0;
 
     const openExternalLink = (event: MouseEvent, uri: string) => {
       event.preventDefault();
@@ -450,10 +522,12 @@ export class TerminalEmulatorRuntime {
       cursorStyle: "bar",
       fontFamily: resolveTerminalFontFamily(input.fontFamily),
       fontSize: resolveTerminalFontSize(input.fontSize),
+      fontWeight: TERMINAL_FONT_WEIGHT,
+      fontWeightBold: TERMINAL_FONT_WEIGHT_BOLD,
       // OSC 8 hyperlinks; without a handler xterm prompts and calls window.open().
       linkHandler: { activate: openExternalLink },
       lineHeight: 1.0,
-      macOptionIsMeta: true,
+      macOptionIsMeta: this.macOptionAsMeta === "both",
       minimumContrastRatio: 1,
       rescaleOverlappingGlyphs: true,
       scrollbar: {
@@ -494,12 +568,8 @@ export class TerminalEmulatorRuntime {
       if (this.findQuery) this.emitFindResult();
     });
     terminal.loadAddon(new ClipboardAddon());
-    try {
-      terminal.loadAddon(new LigaturesAddon());
-    } catch {
-      // Ligatures require Font Access API or compatible environment
-    }
     terminal.open(input.host);
+    this.syncLigatures(terminal, input.fontFamily);
     this.themeBackgroundElements = this.collectThemeBackgroundElements(input);
     this.applyThemeBackground(input.theme);
     try {
@@ -554,22 +624,52 @@ export class TerminalEmulatorRuntime {
     };
     registerProtocolQuerySuppression();
 
-    let webglAddonRaf: number | null = requestAnimationFrame(() => {
-      webglAddonRaf = null;
+    let webglContextLosses = 0;
+    let webglRetryTimeout: number | null = null;
+    const attachWebglRenderer = (): void => {
       try {
         disposeWebglRenderer();
         webglAddon = new WebglAddon();
         webglAddon.onContextLoss(() => {
           disposeWebglRenderer();
+          scheduleWebglRetry();
         });
         terminal.loadAddon(webglAddon);
-        imageAddon = new ImageAddon();
-        terminal.loadAddon(imageAddon);
-        registerProtocolQuerySuppression();
-        this.fitAndEmitResize?.({ forceRefresh: true, shouldClaim: false });
       } catch {
         disposeWebglRenderer();
+        return;
       }
+      try {
+        imageAddon = new ImageAddon();
+        terminal.loadAddon(imageAddon);
+      } catch {
+        disposeImageAddon();
+      }
+      registerProtocolQuerySuppression();
+      this.fitAndEmitResize?.({ forceRefresh: true, shouldClaim: false });
+    };
+    // A lost context (GPU reset, sleep, too many live contexts) would otherwise leave the
+    // terminal on the slower DOM renderer for good. Repeated losses mean the GPU is unusable.
+    const scheduleWebglRetry = (): void => {
+      webglContextLosses += 1;
+      if (webglContextLosses > MAX_WEBGL_CONTEXT_RETRIES || webglRetryTimeout !== null) return;
+      webglRetryTimeout = window.setTimeout(() => {
+        webglRetryTimeout = null;
+        if (this.terminal === terminal) attachWebglRenderer();
+      }, WEBGL_RETRY_DELAY_MS * webglContextLosses);
+    };
+
+    let webglAddonRaf: number | null = requestAnimationFrame(() => {
+      webglAddonRaf = null;
+      attachWebglRenderer();
+    });
+
+    void loadBundledTerminalSymbolsFont().then((loaded) => {
+      if (!loaded || this.terminal !== terminal) return;
+      // Glyphs rasterized before the face arrived are cached as missing-glyph boxes.
+      terminal.clearTextureAtlas();
+      this.refreshVisibleRows();
+      return;
     });
 
     const restoreDocumentStyles = this.applyDocumentBoundsStyles({
@@ -739,11 +839,16 @@ export class TerminalEmulatorRuntime {
           cancelAnimationFrame(webglAddonRaf);
           webglAddonRaf = null;
         }
+        if (webglRetryTimeout !== null) {
+          window.clearTimeout(webglRetryTimeout);
+          webglRetryTimeout = null;
+        }
         disposeWebglRenderer();
         disposeImageAddon();
       },
       disposeTerminal: () => {
         localFileLinkProvider.dispose();
+        this.ligaturesAddon = null;
         terminal.dispose();
       },
     };
@@ -874,6 +979,7 @@ export class TerminalEmulatorRuntime {
     try {
       terminal.options.fontFamily = resolveTerminalFontFamily(input.fontFamily);
       terminal.options.fontSize = resolveTerminalFontSize(input.fontSize);
+      this.syncLigatures(terminal, input.fontFamily);
     } catch {
       // ignore
       return;
@@ -881,6 +987,12 @@ export class TerminalEmulatorRuntime {
 
     this.fitAndEmitResize?.({ forceRefresh: true, shouldClaim: false });
     this.refreshVisibleRows();
+  }
+
+  setMacOptionAsMeta(value: MacOptionAsMeta): void {
+    this.macOptionAsMeta = value;
+    this.optionKeyLocations = 0;
+    if (this.terminal) this.terminal.options.macOptionIsMeta = value === "both";
   }
 
   focus(input?: { forceRefocus?: boolean }): void {

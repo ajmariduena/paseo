@@ -29,6 +29,7 @@ import {
   type TerminalOutputData,
 } from "../terminal/runtime/terminal-emulator-runtime";
 import { encodeTerminalPaste } from "../terminal/runtime/terminal-paste";
+import type { MacOptionAsMeta } from "../terminal/runtime/terminal-mac-keys";
 import type {
   TerminalLocalFileLinkSource,
   TerminalLocalFileLinkTarget,
@@ -111,6 +112,7 @@ interface TerminalEmulatorProps {
   scrollbackLines: number;
   fontFamily?: string;
   fontSize?: number;
+  macOptionAsMeta?: MacOptionAsMeta;
   keyboardInset?: number;
   isKeyboardVisible?: boolean;
   swipeGesturesEnabled?: boolean;
@@ -176,6 +178,7 @@ export default function TerminalEmulator({
   scrollbackLines,
   fontFamily,
   fontSize,
+  macOptionAsMeta,
   swipeGesturesEnabled = false,
   onSwipeLeft,
   onSwipeRight,
@@ -205,6 +208,8 @@ export default function TerminalEmulator({
   scrollbackLinesRef.current = scrollbackLines;
   fontFamilyRef.current = fontFamily;
   fontSizeRef.current = fontSize;
+  const macOptionAsMetaRef = useRef(macOptionAsMeta);
+  macOptionAsMetaRef.current = macOptionAsMeta;
   const themeKey = useMemo(() => buildXtermThemeKey(xtermTheme), [xtermTheme]);
   const xtermThemeRef = useRef(xtermTheme);
   xtermThemeRef.current = xtermTheme;
@@ -485,6 +490,7 @@ export default function TerminalEmulator({
       theme: mountedThemeRef.current,
       fontFamily: fontFamilyRef.current,
       fontSize: fontSizeRef.current,
+      macOptionAsMeta: macOptionAsMetaRef.current,
     });
     onRendererReadyChangeRef.current?.({ streamKey, isReady: true });
 
@@ -532,6 +538,10 @@ export default function TerminalEmulator({
   useEffect(() => {
     runtimeRef.current?.setFont({ fontFamily, fontSize });
   }, [fontFamily, fontSize]);
+
+  useEffect(() => {
+    if (macOptionAsMeta) runtimeRef.current?.setMacOptionAsMeta(macOptionAsMeta);
+  }, [macOptionAsMeta]);
 
   useEffect(() => {
     if (focusRequestToken <= 0) {

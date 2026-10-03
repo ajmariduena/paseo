@@ -83,6 +83,7 @@ import {
   encodeTerminalOutput,
   TerminalEmulatorRuntime,
 } from "./terminal-emulator-runtime";
+import { resolveTerminalFontFamily } from "./terminal-font";
 
 interface StubTerminal {
   write: (data: string | Uint8Array, callback?: () => void) => void;
@@ -649,7 +650,8 @@ describe("terminal-emulator-runtime", () => {
 
     runtime.setFont({ fontFamily: "  Menlo  ", fontSize: 18 });
 
-    expect(terminal.options?.fontFamily).toBe("Menlo");
+    expect(terminal.options?.fontFamily).toBe(resolveTerminalFontFamily("Menlo"));
+    expect(String(terminal.options?.fontFamily).startsWith("Menlo, ")).toBe(true);
     expect(terminal.options?.fontSize).toBe(18);
     expect(fitAndEmitResize).toHaveBeenCalledWith({
       forceRefresh: true,

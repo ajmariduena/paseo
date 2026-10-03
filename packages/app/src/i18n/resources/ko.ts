@@ -2212,6 +2212,22 @@ export const ko: TranslationResources = {
         description: "내장 터미널 버퍼에 보관되는 줄 수",
         accessibilityLabel: "터미널 스크롤백 줄 수",
       },
+      terminalFontSize: {
+        label: "터미널 글꼴 크기",
+        description: "내장 터미널의 글자 크기(코드 크기와 별도)",
+        accessibilityLabel: "터미널 글꼴 크기",
+      },
+      terminalOptionAsMeta: {
+        label: "Option을 Meta로 사용",
+        description:
+          "셸 단축키용 Meta(Esc+키)를 보내는 Option 키입니다. 반대쪽은 악센트와 기호 입력용으로 남습니다",
+        options: {
+          both: "양쪽",
+          left: "왼쪽",
+          right: "오른쪽",
+          off: "끄기",
+        },
+      },
       autoExpandReasoning: {
         label: "추론 항상 펼치기",
         description: "에이전트의 사고 및 추론 블록을 기본적으로 모두 펼쳐 표시합니다.",
