@@ -28,6 +28,8 @@ export const VOICE_ORCHESTRATOR_LABEL = "paseo.voice";
 const STATE_FILENAME = "orchestrator.json";
 const FLEET_LIMIT = 12;
 const FLEET_RECENT_MS = 12 * 60 * 60 * 1000;
+const SESSION_INDEX_LIMIT = 30;
+const SESSION_INDEX_RECENT_MS = 14 * 24 * 60 * 60 * 1000;
 const APPROVAL_WINDOW_MS = 90_000;
 const PROGRESS_CHECK_MS = 45_000;
 const PROGRESS_MIN_INTERVAL_MS = 120_000;
@@ -177,16 +179,26 @@ export class VoiceOrchestrator {
   /** Sends the user's spoken words to the orchestrator with a fresh fleet snapshot. */
   async sendSpokenRequest(text: string): Promise<void> {
     const agentId = await this.ensureAgent();
-    const fleet = await this.describeFleetDetailed();
-    await this.sendPrompt(agentId, `${buildFleetBlock(fleet)}\n${wrapSpokenInput(text)}`, true);
+    const [fleet, others] = await Promise.all([
+      this.describeFleetDetailed(),
+      this.describeOtherSessions(),
+    ]);
+    await this.sendPrompt(
+      agentId,
+      `${buildFleetBlock(fleet, others)}\n${wrapSpokenInput(text)}`,
+      true,
+    );
   }
 
   /** Runs one delegated voice request on the orchestrator agent and returns its reply. */
   async runDelegation(params: { request: string; history: string[] }): Promise<string> {
     const agentId = await this.ensureAgent();
     if (params.request.trim()) this.noteUserUtterance(params.request);
-    const fleet = await this.describeFleetDetailed();
-    await this.sendPrompt(agentId, buildDelegationPrompt({ ...params, fleet }), true);
+    const [fleet, others] = await Promise.all([
+      this.describeFleetDetailed(),
+      this.describeOtherSessions(),
+    ]);
+    await this.sendPrompt(agentId, buildDelegationPrompt({ ...params, fleet, others }), true);
     const { agentManager } = this.options;
     let result = await agentManager.waitForAgentEvent(agentId, { waitForActive: true });
     for (let attempt = 0; result.permission && attempt < DELEGATION_MAX_WAITS; attempt += 1) {
@@ -223,6 +235,38 @@ export class VoiceOrchestrator {
           last ? `last message: ${clipForSpeech(last, 400)}` : null,
         ];
         return parts.filter((part): part is string => part !== null).join(" | ");
+      }),
+    );
+  }
+
+  /**
+   * Compact index of other open (not archived) sessions, including ones not loaded in memory,
+   * so the user can name an older session or its workspace and the assistant can find it.
+   */
+  async describeOtherSessions(): Promise<string[]> {
+    const shown = new Set(this.listFleetAgents().map((agent) => agent.id));
+    const now = Date.now();
+    const records = (await this.options.agentStorage.list().catch(() => []))
+      .filter(
+        (record) =>
+          !record.internal &&
+          !record.archivedAt &&
+          !shown.has(record.id) &&
+          !this.isOrchestrator(record.id) &&
+          now - Date.parse(record.lastActivityAt ?? record.updatedAt) < SESSION_INDEX_RECENT_MS,
+      )
+      .sort(
+        (left, right) =>
+          Date.parse(right.lastActivityAt ?? right.updatedAt) -
+          Date.parse(left.lastActivityAt ?? left.updatedAt),
+      )
+      .slice(0, SESSION_INDEX_LIMIT);
+    return Promise.all(
+      records.map(async (record) => {
+        const workspace = await this.describeWorkspaceById(record.workspaceId, record.cwd);
+        const title = clipForSpeech(record.title?.trim() || "Untitled agent", 80);
+        const lastActive = (record.lastActivityAt ?? record.updatedAt).slice(0, 10);
+        return `- ${workspace} · "${title}" (id ${record.id}, idle since ${lastActive})`;
       }),
     );
   }
@@ -520,11 +564,18 @@ export class VoiceOrchestrator {
   }
 
   private async describeWorkspace(agent: ManagedAgent): Promise<string> {
-    if (agent.workspaceId && this.options.workspaceRegistry) {
-      const record = await this.options.workspaceRegistry.get(agent.workspaceId).catch(() => null);
+    return this.describeWorkspaceById(agent.workspaceId, agent.cwd);
+  }
+
+  private async describeWorkspaceById(
+    workspaceId: string | undefined,
+    cwd: string,
+  ): Promise<string> {
+    if (workspaceId && this.options.workspaceRegistry) {
+      const record = await this.options.workspaceRegistry.get(workspaceId).catch(() => null);
       if (record) return record.title ?? record.displayName;
     }
-    return basename(agent.cwd);
+    return basename(cwd);
   }
 }
 
