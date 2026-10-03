@@ -4,6 +4,7 @@ import {
   View,
   Text,
   Image,
+  Platform,
   Pressable,
   type GestureResponderEvent,
   type LayoutChangeEvent,
@@ -1376,6 +1377,12 @@ interface AssistantMessageBlockContainerProps {
   children: ReactNode;
 }
 
+// A paragraph's UITextView that grew while streaming can keep the frame it was first measured at and
+// stay clipped to its opening characters, so the live block gets a fresh native view once it settles.
+function isRemountedWhenSettled(phase: MarkdownPhase, index: number, blockCount: number): boolean {
+  return Platform.OS === "ios" && phase === "streaming" && index === blockCount - 1;
+}
+
 function AssistantMessageBlockContainer({
   block,
   marginBottom,
@@ -1979,8 +1986,14 @@ export const AssistantMessage = memo(function AssistantMessage({
 
   const blocks = useMemo(() => splitMarkdownBlocks(revealedMessage), [revealedMessage]);
   const keyedBlocks = useMemo(
-    () => blocks.map((block, index) => ({ key: `block:${index}`, block })),
-    [blocks],
+    () =>
+      blocks.map((block, index) => ({
+        key: isRemountedWhenSettled(phase, index, blocks.length)
+          ? `block:${index}:live`
+          : `block:${index}`,
+        block,
+      })),
+    [blocks, phase],
   );
 
   const assistantContainerStyle = useMemo(
