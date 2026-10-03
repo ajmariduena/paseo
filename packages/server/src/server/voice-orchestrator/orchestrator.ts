@@ -58,6 +58,7 @@ export interface VoiceOrchestratorOptions {
   provider?: AgentProvider | null;
   model?: string | null;
   thinking?: string | null;
+  language?: string | null;
   live?: GptLiveEngineConfig | null;
   logger: pino.Logger;
 }
@@ -95,8 +96,9 @@ export class VoiceOrchestrator {
     return this.options.live ?? null;
   }
 
+  /** The host's configured voice language wins over the app's UI language. */
   get language(): string | null {
-    return this.preferredLanguage;
+    return this.options.language ?? this.preferredLanguage;
   }
 
   isOrchestrator(agentId: string): boolean {
@@ -430,10 +432,7 @@ export class VoiceOrchestrator {
       const agentId = await this.ensureAgent();
       const fleet = await this.describeFleet();
       if (this.call !== call) return;
-      await this.sendPrompt(
-        agentId,
-        buildCallStartPrompt({ fleet, language: this.preferredLanguage }),
-      );
+      await this.sendPrompt(agentId, buildCallStartPrompt({ fleet, language: this.language }));
     } catch (error) {
       this.logger.warn({ err: error }, "Failed to start voice orchestrator call");
     }

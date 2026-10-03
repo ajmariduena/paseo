@@ -17,6 +17,20 @@ export const VOICE_ORCHESTRATOR_SYSTEM_PROMPT = [
   "Reply in the language the user speaks. The call ending does not stop any agent's work.",
 ].join("\n");
 
+/** "es" → "Spanish (español)", so the instruction names the language instead of a code. */
+export function describeLanguage(code: string): string {
+  try {
+    const english = new Intl.DisplayNames(["en"], { type: "language" }).of(code);
+    const native = new Intl.DisplayNames([code], { type: "language" }).of(code);
+    if (!english) return code;
+    return native && native.toLowerCase() !== english.toLowerCase()
+      ? `${english} (${native})`
+      : english;
+  } catch {
+    return code;
+  }
+}
+
 export interface VoiceFleetEntry {
   workspace: string;
   title: string;
@@ -30,7 +44,9 @@ export function buildCallStartPrompt(params: {
   const lines = [
     `<${VOICE_EVENTS_TAG}>`,
     "The user just started a voice call.",
-    params.language ? `The user's app language is "${params.language}".` : null,
+    params.language
+      ? `Speak ${describeLanguage(params.language)} unless the user speaks another language.`
+      : null,
     params.fleet.length > 0 ? "Agents right now:" : "There are no active agents right now.",
     ...params.fleet.map((entry) => `- ${entry.workspace} · ${entry.title}: ${entry.status}`),
     `</${VOICE_EVENTS_TAG}>`,
@@ -78,7 +94,7 @@ export function buildLiveInstructions(language: string | null): string {
   return [
     "You are Paseo, a voice assistant on a hands-free call with the user, often while they drive. You help them follow and steer their coding agents across all their workspaces.",
     language
-      ? `Speak the language with code "${language}" unless the user switches.`
+      ? `Always speak ${describeLanguage(language)}, including the greeting and every update. Switch only if the user starts speaking another language.`
       : "Speak the user's language.",
     'Keep turns short and natural. Say a quick acknowledgement like "one sec, let me check" before delegating, then keep the conversation going while the backend works.',
     "Paseo keeps you updated with a fleet snapshot in your context. Answer questions about how the agents are doing directly from the latest snapshot, without delegating. Delegate to the backend to act (send instructions, approve or deny permissions, create or cancel agents) or when the user asks for detail the snapshot lacks. Never invent agent status.",
@@ -95,10 +111,11 @@ export function buildLiveFleetSnapshot(fleet: VoiceFleetEntry[]): string {
   ].join("\n");
 }
 
-export function buildLiveGreeting(fleet: VoiceFleetEntry[]): string {
+export function buildLiveGreeting(fleet: VoiceFleetEntry[], language: string | null): string {
   const lines = fleet.map((entry) => `- ${entry.workspace} · ${entry.title}: ${entry.status}`);
+  const inLanguage = language ? ` in ${describeLanguage(language)}` : "";
   return [
-    "The call just started. Greet the user in one short sentence, then mention only what needs their attention or is in progress, starting with the workspace name. Then listen.",
+    `The call just started. Greet the user${inLanguage} in one short sentence, then mention only what needs their attention or is in progress, starting with the workspace name. Then listen.`,
     lines.length > 0 ? `Agents right now:\n${lines.join("\n")}` : "There are no active agents.",
   ].join("\n");
 }

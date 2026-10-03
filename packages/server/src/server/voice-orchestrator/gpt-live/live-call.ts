@@ -74,7 +74,7 @@ export class GptLiveCall {
     });
     const fleet = await orchestrator.describeFleet().catch(() => []);
     this.connection.append("thinking", buildLiveFleetSnapshot(fleet), null);
-    this.connection.append("instructions", buildLiveGreeting(fleet), null);
+    this.connection.append("instructions", buildLiveGreeting(fleet, orchestrator.language), null);
   }
 
   private async pushFleetSnapshot(): Promise<void> {

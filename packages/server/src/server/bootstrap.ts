@@ -445,6 +445,7 @@ export interface PaseoDaemonConfig {
   voiceLlmModel?: string | null;
   voiceLlmThinking?: string | null;
   voiceLive?: GptLiveEngineConfig | null;
+  voiceLanguage?: string | null;
   dictationFinalTimeoutMs?: number;
   downloadTokenTtlMs?: number;
   agentProviderSettings?: AgentProviderRuntimeSettingsMap;
@@ -1611,6 +1612,7 @@ export async function createPaseoDaemon(
     provider: config.voiceLlmProvider,
     model: config.voiceLlmModel,
     thinking: config.voiceLlmThinking,
+    language: config.voiceLanguage,
     live: config.voiceLive,
     logger,
   });

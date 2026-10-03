@@ -131,6 +131,7 @@ const FeatureVoiceModeSchema = z
       .object({
         model: z.string().trim().min(1).optional(),
         voice: z.string().trim().min(1).optional(),
+        language: z.string().trim().min(1).optional(),
       })
       .strict()
       .optional(),

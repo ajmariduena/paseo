@@ -424,6 +424,11 @@ function resolveVoiceLlmConfig(
   };
 }
 
+function resolveVoiceLanguage(persisted: ReturnType<typeof loadPersistedConfig>): string | null {
+  const voiceMode = persisted.features?.voiceMode;
+  return voiceMode?.live?.language ?? voiceMode?.stt?.language ?? null;
+}
+
 const DEFAULT_GPT_LIVE_MODEL = "gpt-live-1";
 const DEFAULT_GPT_LIVE_VOICE = "marin";
 
@@ -672,6 +677,7 @@ export function resolveConfigFromPersisted(
     voiceLlmModel: voiceLlm.model,
     voiceLlmThinking: voiceLlm.thinking,
     voiceLive: resolveVoiceLiveConfig(env, persisted),
+    voiceLanguage: resolveVoiceLanguage(persisted),
     agentProviderSettings: extractAgentProviderSettings(providerOverrides),
     providerCatalogRefreshTimeoutMs: persisted.agents?.catalogRefreshTimeoutMs,
     idleRuntimeTimeoutMs: persisted.agents?.idleRuntimeTimeoutMs ?? DEFAULT_IDLE_RUNTIME_TIMEOUT_MS,
