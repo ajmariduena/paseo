@@ -569,11 +569,7 @@ export class VoiceSession {
     if (this.isVoiceMode) await this.disableVoiceModeForActiveAgent(true);
 
     await this.host.loadAgent(agentId);
-    this.registerVoiceCallerContext?.(agentId, {
-      childAgentDefaultLabels: {},
-      allowCustomCwd: true,
-      authorizePermissionApproval: () => orchestrator.authorizePermissionApproval(),
-    });
+    this.registerVoiceCallerContext?.(agentId, orchestrator.callerContext());
     const call = new GptLiveCall({
       engine,
       orchestrator,
@@ -1201,14 +1197,12 @@ export class VoiceSession {
     });
 
     const orchestrator = this.orchestrator?.isOrchestrator(agentId) ? this.orchestrator : null;
-    this.registerVoiceCallerContext?.(agentId, {
-      childAgentDefaultLabels: {},
-      allowCustomCwd: orchestrator !== null,
-      enableVoiceTools: true,
-      ...(orchestrator
-        ? { authorizePermissionApproval: () => orchestrator.authorizePermissionApproval() }
-        : {}),
-    });
+    this.registerVoiceCallerContext?.(
+      agentId,
+      orchestrator
+        ? { ...orchestrator.callerContext(), enableVoiceTools: true }
+        : { childAgentDefaultLabels: {}, allowCustomCwd: false, enableVoiceTools: true },
+    );
   }
 
   /**

@@ -11,4 +11,10 @@ export interface VoiceCallerContext {
   enableVoiceTools?: boolean;
   /** Returns a refusal message when the caller may not approve a permission right now. */
   authorizePermissionApproval?: () => string | null;
+  /**
+   * The caller works for the user rather than owning its work (the voice orchestrator): agents it
+   * creates are root agents the user sees, and creation must name a real place instead of
+   * defaulting to the caller's own directory.
+   */
+  actsForUser?: boolean;
 }

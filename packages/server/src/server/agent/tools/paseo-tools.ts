@@ -673,6 +673,11 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
 
   const resolveScopedCwd = (requestedCwd?: string, opts?: { required?: boolean }): string => {
     const callerAgent = resolveCallerAgent();
+    if (callerAgent && callerContext?.actsForUser && !requestedCwd?.trim()) {
+      throw new Error(
+        "Pass path: the checkout of the project the user means (see list_workspaces). You have no workspace of your own to default to.",
+      );
+    }
     if (callerAgent) {
       return resolveChildAgentCwd({
         parentCwd: callerAgent.cwd,
@@ -1593,13 +1598,19 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         };
       }
       const parsed = agentToAgentCreateAgentArgsSchema.parse(args);
+      if (callerContext?.actsForUser && !parsed.workspaceId) {
+        throw new Error(
+          "Pass workspaceId: the workspace the user means (see list_workspaces, or create_workspace first). You have no workspace of your own to default to.",
+        );
+      }
       const { cwd, workspaceId } = await resolveCanonicalCreateAgentWorkspace(parsed.workspaceId, {
         prompt: parsed.initialPrompt,
       });
       return {
         kind: "agent-scoped",
         parsedArgs: parsed,
-        detached: false,
+        // A subagent of a hidden caller would never show up in the user's agent list.
+        detached: callerContext?.actsForUser ?? false,
         cwd,
         workspaceId,
         worktree: undefined,

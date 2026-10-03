@@ -525,6 +525,7 @@ function createManagedAgent(overrides: Partial<ManagedAgent> = {}): ManagedAgent
     availableModes: [],
     features: [],
     pendingPermissions: new Map(),
+    backgroundTasks: [],
     persistence: null,
     labels: {},
     attention: { requiresAttention: false },
@@ -3131,6 +3132,58 @@ describe("create_agent MCP tool", () => {
       },
     );
     await rm(baseDir, { recursive: true, force: true });
+  });
+
+  it("makes agents created by a caller acting for the user root agents in the named workspace", async () => {
+    const { agentManager, agentStorage, spies } = createTestDeps();
+    spies.agentManager.getAgent.mockImplementation((agentId: string) =>
+      agentId === "voice-orchestrator"
+        ? ({
+            id: "voice-orchestrator",
+            cwd: "/tmp/paseo-home/voice",
+            workspaceId: undefined,
+            provider: "claude",
+            currentModeId: null,
+          } as unknown as ManagedAgent)
+        : null,
+    );
+    spies.agentManager.createAgent.mockResolvedValue({
+      id: "user-agent",
+      cwd: existingCwd,
+      workspaceId: "wks_project",
+      lifecycle: "idle",
+      currentModeId: null,
+      availableModes: [],
+      config: { title: "CarPlay research" },
+    } as ManagedAgent);
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      callerAgentId: "voice-orchestrator",
+      resolveCallerContext: () => ({
+        childAgentDefaultLabels: {},
+        allowCustomCwd: true,
+        actsForUser: true,
+      }),
+      listActiveWorkspaces: async () => [
+        { workspaceId: "wks_project", cwd: existingCwd, kind: "worktree" },
+      ],
+      logger,
+    });
+    const tool = registeredTool(server, "create_agent");
+    const args = {
+      title: "CarPlay research",
+      provider: "claude/claude-opus-5-5",
+      initialPrompt: "Investigate CarPlay",
+    };
+
+    await expect(tool.handler(args)).rejects.toThrow(/Pass workspaceId/);
+    await tool.handler({ ...args, workspaceId: "wks_project" });
+
+    const [, , options] = spies.agentManager.createAgent.mock.calls[0] ?? [];
+    expect(options?.workspaceId).toBe("wks_project");
+    expect(options?.labels?.[PARENT_AGENT_ID_LABEL]).toBeUndefined();
   });
 
   it("rejects background from caller agents and defaults notify-on-finish on", async () => {

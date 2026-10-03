@@ -150,6 +150,7 @@ export class VoiceOrchestrator {
     const agentId = await this.resolveAgentId();
     const existing = this.options.agentManager.getAgent(agentId);
     if (existing && existing.lifecycle !== "closed") {
+      await this.refreshSystemPrompt(existing);
       return agentId;
     }
     this.ensurePromise ??= this.createAgent(agentId).finally(() => {
@@ -253,6 +254,7 @@ export class VoiceOrchestrator {
     return {
       childAgentDefaultLabels: {},
       allowCustomCwd: true,
+      actsForUser: true,
       authorizePermissionApproval: () => this.authorizePermissionApproval(),
     };
   }
@@ -488,6 +490,27 @@ export class VoiceOrchestrator {
     return join(this.options.paseoHome, "voice");
   }
 
+  private systemPrompt(): string {
+    return this.options.live
+      ? VOICE_BACKEND_SYSTEM_PROMPT
+      : buildVoiceModeSystemPrompt(VOICE_ORCHESTRATOR_SYSTEM_PROMPT, true);
+  }
+
+  /** The orchestrator outlives daemon upgrades; an older prompt would keep old behavior forever. */
+  private async refreshSystemPrompt(agent: ManagedAgent): Promise<void> {
+    const prompt = this.systemPrompt();
+    if (agent.config.systemPrompt === prompt || agent.lifecycle === "running") return;
+    try {
+      await this.options.agentManager.reloadAgentSession(agent.id, { systemPrompt: prompt });
+      this.logger.info({ agentId: agent.id }, "Refreshed the voice orchestrator prompt");
+    } catch (error) {
+      this.logger.warn(
+        { err: error, agentId: agent.id },
+        "Failed to refresh the orchestrator prompt",
+      );
+    }
+  }
+
   private async createAgent(agentId: string): Promise<string> {
     const cwd = this.orchestratorDir();
     await mkdir(cwd, { recursive: true });
@@ -501,9 +524,7 @@ export class VoiceOrchestrator {
         ...(model ? { model } : {}),
         ...(this.options.thinking ? { thinkingOptionId: this.options.thinking } : {}),
         title: "Voice",
-        systemPrompt: this.options.live
-          ? VOICE_BACKEND_SYSTEM_PROMPT
-          : buildVoiceModeSystemPrompt(VOICE_ORCHESTRATOR_SYSTEM_PROMPT, true),
+        systemPrompt: this.systemPrompt(),
         internal: true,
       },
       agentId,
