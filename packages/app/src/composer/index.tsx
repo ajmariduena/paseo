@@ -49,7 +49,11 @@ import {
   DraftAgentControls,
   type DraftAgentControlsProps,
 } from "@/composer/agent-controls";
-import { ContextWindowMeter } from "@/components/context-window-meter";
+import {
+  ContextWindowMeter,
+  type ContextWindowCompaction,
+} from "@/components/context-window-meter";
+import { useCompactConversation } from "@/composer/compaction/use-compact-conversation";
 import { useImageAttachmentPicker } from "@/hooks/use-image-attachment-picker";
 import { selectAgentTurnPresentation, useSessionStore } from "@/stores/session-store";
 import { useFilePicker } from "@/hooks/use-file-picker";
@@ -282,30 +286,31 @@ function buildAgentStateSelector(serverId: string, agentId: string) {
       contextWindowUsedTokens: agent?.lastUsage?.contextWindowUsedTokens ?? null,
       totalCostUsd: agent?.lastUsage?.totalCostUsd ?? null,
       model: agent?.model ?? null,
+      provider: agent?.provider ?? null,
     };
   };
 }
 
-function renderContextWindowMeter(
-  contextWindowMaxTokens: number | null,
-  contextWindowUsedTokens: number | null,
-  totalCostUsd: number | null,
-  showPercentage: boolean,
-  pending: boolean,
-  glyphSize: number,
-): ReactElement | null {
-  const hasData = contextWindowMaxTokens !== null && contextWindowUsedTokens !== null;
-  if (!hasData && !pending) {
+function renderContextWindowMeter(input: {
+  contextWindowMaxTokens: number | null;
+  contextWindowUsedTokens: number | null;
+  totalCostUsd: number | null;
+  pending: boolean;
+  glyphSize: number;
+  compaction: ContextWindowCompaction | null;
+}): ReactElement | null {
+  const hasData = input.contextWindowMaxTokens !== null && input.contextWindowUsedTokens !== null;
+  if (!hasData && !input.pending) {
     return null;
   }
   return (
     <ContextWindowMeter
-      maxTokens={contextWindowMaxTokens}
-      usedTokens={contextWindowUsedTokens}
-      totalCostUsd={totalCostUsd}
-      showPercentage={showPercentage}
-      pending={pending}
-      glyphSize={glyphSize}
+      maxTokens={input.contextWindowMaxTokens}
+      usedTokens={input.contextWindowUsedTokens}
+      totalCostUsd={input.totalCostUsd}
+      pending={input.pending}
+      glyphSize={input.glyphSize}
+      compaction={input.compaction}
     />
   );
 }
@@ -2094,17 +2099,28 @@ function ComposerContentImpl({
   const contextWindowPending = agentState.status === "initializing" || isAgentRunning;
   const contextWindowMeterGlyphSize = isCompactLayout ? ICON_SIZE.md : buttonIconSize;
 
+  const compaction = useCompactConversation({
+    serverId,
+    agentId,
+    provider: agentState.provider,
+    usedTokens: contextWindowUsedTokens,
+    isAgentRunning,
+    submitMessage,
+    queueWriter,
+  });
+
   const contextWindowMeter = useMemo(
     () =>
-      renderContextWindowMeter(
+      renderContextWindowMeter({
         contextWindowMaxTokens,
         contextWindowUsedTokens,
-        agentState.totalCostUsd,
-        false,
-        contextWindowPending,
-        contextWindowMeterGlyphSize,
-      ),
+        totalCostUsd: agentState.totalCostUsd,
+        pending: contextWindowPending,
+        glyphSize: contextWindowMeterGlyphSize,
+        compaction,
+      }),
     [
+      compaction,
       contextWindowMaxTokens,
       contextWindowUsedTokens,
       agentState.totalCostUsd,
@@ -2586,7 +2602,7 @@ const styles = StyleSheet.create((theme: Theme) => ({
     gap: theme.spacing[1],
   },
   contextWindowMeterSlot: {
-    width: 28,
+    minWidth: 28,
     height: 28,
     flexShrink: 0,
     alignItems: "center",

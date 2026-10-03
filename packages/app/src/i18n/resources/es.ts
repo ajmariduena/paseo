@@ -2012,6 +2012,23 @@ export const es: TranslationResources = {
     tokens: "Fichas{{used}}/{{max}}",
     sessionCost: "Costo de la sesión{{cost}}",
     accessibility: "Ventana de contexto{{percentage}}% utilizada",
+    panel: {
+      title: "Contexto",
+      used: "Usado",
+      usedValue: "{{used}} / {{max}} tokens · {{percentage}} %",
+      sessionCost: "Costo de la sesión",
+      hint: "El agente resume la conversación para liberar espacio y sigue con el mismo trabajo.",
+      accessibility: "Ventana de contexto al {{percentage}} %. Abrir compactación",
+    },
+    compact: {
+      action: "Compactar conversación",
+      actionAfterTurn: "Compactar al terminar",
+      confirmTitle: "¿Compactar la conversación?",
+      confirmMessage:
+        "{{agent}} va a resumir {{tokens}} tokens de contexto. Esto no se puede deshacer.",
+      confirm: "Compactar",
+      failed: "No se pudo compactar la conversación",
+    },
   },
   review: {
     comment: {
