@@ -5,7 +5,10 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { ChevronDown, Maximize2, Mic, MicOff, PhoneOff, SignalLow } from "lucide-react-native";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { VoiceGlow } from "@/components/global-voice/voice-glow";
+import type { VoiceGlowActivity } from "@/components/global-voice/voice-glow-types";
 import { VolumeMeter } from "@/components/volume-meter";
+import { isWeb } from "@/constants/platform";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useVoiceTelemetryOptional } from "@/contexts/voice-context";
 import type { Theme } from "@/styles/theme";
@@ -63,6 +66,14 @@ function resolveStatusKey(call: GlobalVoice): StatusKey {
   return "listening";
 }
 
+function resolveGlowActivity(statusKey: StatusKey): VoiceGlowActivity {
+  if (statusKey === "connecting") return "connecting";
+  if (statusKey === "thinking" || statusKey === "sending" || statusKey === "offline") {
+    return "processing";
+  }
+  return "conversation";
+}
+
 /** The global voice call UI: car-mode screen on phones, a floating pill everywhere else. */
 export function GlobalVoiceCallSurface() {
   const call = useGlobalVoice();
@@ -87,6 +98,7 @@ function CarModeScreen({ call }: { call: GlobalVoice }) {
         style={[styles.carScreen, { paddingTop: insets.top, paddingBottom: insets.bottom }]}
         testID="global-voice-car-mode"
       >
+        <VoiceGlow activity={resolveGlowActivity(statusKey)} />
         <View style={styles.carHeader}>
           <Pressable
             onPress={minimize}
@@ -105,16 +117,15 @@ function CarModeScreen({ call }: { call: GlobalVoice }) {
             {t(`globalVoice.status.${statusKey}`, { count: call.messages.pendingSends })}
           </Text>
           <View style={styles.carMeter}>
-            {call.isStarting ? (
-              <ThemedSpinner uniProps={mutedColorMapping} size="large" />
-            ) : (
+            {call.isStarting ? <ThemedSpinner uniProps={mutedColorMapping} size="large" /> : null}
+            {!call.isStarting && isWeb ? (
               <VolumeMeter
                 volume={telemetry?.volume ?? 0}
                 isMuted={call.isMuted}
                 isSpeaking={telemetry?.isSpeaking ?? false}
                 orientation="horizontal"
               />
-            )}
+            ) : null}
           </View>
           {call.mode === "messages" && call.messages.lastSpoken ? (
             <Text style={styles.carTranscript} numberOfLines={3}>

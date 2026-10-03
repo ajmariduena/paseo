@@ -9,6 +9,7 @@ const DATA_CHANNEL_LABEL = "oai-events";
 const ICE_GATHER_TIMEOUT_MS = 2_000;
 const CONNECT_TIMEOUT_MS = 12_000;
 const STATS_INTERVAL_MS = 2_000;
+const LEVELS_INTERVAL_MS = 100;
 const SPEAKING_IDLE_MS = 1_200;
 // A link is unusable for live voice once this much audio is lost or the round trip is this slow.
 const MAX_LOSS_RATIO = 0.1;
@@ -47,6 +48,7 @@ interface ActiveLive {
   sessionId: string | null;
   cleanups: Array<() => void>;
   statsTimer: ReturnType<typeof setInterval> | null;
+  levelsTimer: ReturnType<typeof setInterval> | null;
   disconnectedSince: number | null;
   unstableSince: number | null;
   lastLost: number;
@@ -97,6 +99,8 @@ export function createLiveWebrtcController(deps: {
   log(kind: string, detail?: Record<string, unknown>): void;
   /** Frees the app's other audio engine; two voice-processing units in one app break the mic. */
   releaseOtherAudio?: () => Promise<void>;
+  /** Microphone and assistant loudness, 0–1, a few times a second while connected. */
+  reportLevels?: (levels: { user: number; assistant: number }) => void;
   now?: () => number;
 }) {
   const now = deps.now ?? Date.now;
@@ -198,6 +202,22 @@ export function createLiveWebrtcController(deps: {
     }
   }
 
+  async function sampleLevels(active: ActiveLive, report: NonNullable<typeof deps.reportLevels>) {
+    const stats = await active.pc.getStats().catch(() => null);
+    if (!stats || live !== active) return;
+    let user = 0;
+    let assistant = 0;
+    stats.forEach((stat) => {
+      const level = Number(stat.audioLevel);
+      if (!Number.isFinite(level)) return;
+      if (stat.type === "media-source" && stat.kind === "audio") user = Math.max(user, level);
+      else if (stat.type === "inbound-rtp" && stat.kind === "audio") {
+        assistant = Math.max(assistant, level);
+      }
+    });
+    report({ user: snapshot.isMuted ? 0 : user, assistant });
+  }
+
   async function start(params: { signaling: LiveWebrtcSignaling }): Promise<void> {
     await stop({ handoff: false });
     patch({ ...INITIAL_SNAPSHOT, active: true, state: "connecting" });
@@ -212,6 +232,7 @@ export function createLiveWebrtcController(deps: {
       sessionId: null,
       cleanups: [deps.runtime.onCallAudioSession()],
       statsTimer: null,
+      levelsTimer: null,
       disconnectedSince: null,
       unstableSince: null,
       lastLost: 0,
@@ -242,6 +263,13 @@ export function createLiveWebrtcController(deps: {
       if (live !== active) return;
       deps.runtime.preferSpeakerOutput(true);
       active.statsTimer = setInterval(() => void sampleStats(active), STATS_INTERVAL_MS);
+      const { reportLevels } = deps;
+      if (reportLevels) {
+        active.levelsTimer = setInterval(
+          () => void sampleLevels(active, reportLevels),
+          LEVELS_INTERVAL_MS,
+        );
+      }
       deps.log("live_webrtc_connected", { sessionId: answer.sessionId });
       patch({ state: "connected" });
     } catch (error) {
@@ -258,6 +286,7 @@ export function createLiveWebrtcController(deps: {
     if (!active) return;
     live = null;
     if (active.statsTimer) clearInterval(active.statsTimer);
+    if (active.levelsTimer) clearInterval(active.levelsTimer);
     for (const cleanup of active.cleanups) cleanup();
     for (const track of active.microphone.getTracks()) track.stop();
     active.channel.close();

@@ -1,3 +1,5 @@
+import { clearPlaybackLevels, schedulePlaybackPcm16 } from "@/audio/audio-levels";
+
 const floatToInt16 = (sample: number): number => {
   const clamped = Math.max(-1, Math.min(1, sample));
   return clamped < 0 ? Math.round(clamped * 0x8000) : Math.round(clamped * 0x7fff);
@@ -114,6 +116,7 @@ export function playPcm16(
       clearTimeout(timeout);
       output.stopPlayback();
       playheads.delete(output);
+      clearPlaybackLevels();
       reject(new Error("Playback stopped"));
     };
     signal.addEventListener("abort", abort, { once: true });
@@ -123,6 +126,7 @@ export function playPcm16(
       const now = Date.now();
       const endsAt = Math.max(now, playheads.get(output) ?? 0) + duration * 1000;
       playheads.set(output, endsAt);
+      schedulePlaybackPcm16(pcm, 16000, endsAt - duration * 1000);
       timeout = setTimeout(
         () => {
           signal.removeEventListener("abort", abort);

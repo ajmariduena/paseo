@@ -25,6 +25,7 @@ import {
 } from "@/voice-chat/messages/messages-controller";
 import { useSessionStore } from "@/stores/session-store";
 import { createAudioEngine } from "@/audio";
+import { levelFromAmplitude, reportTransportLevels } from "@/audio/audio-levels";
 import type { AudioEngine } from "@/audio";
 import {
   createVoiceRuntime,
@@ -247,6 +248,11 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
           releaseOtherAudio: async () => {
             await engine.suspend?.();
           },
+          reportLevels: (levels) =>
+            reportTransportLevels({
+              user: levelFromAmplitude(levels.user),
+              assistant: levelFromAmplitude(levels.assistant),
+            }),
         })
       : null;
     engineRef.current = engine;

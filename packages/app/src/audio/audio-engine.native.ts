@@ -2,6 +2,7 @@ import type { AudioEngine, AudioEngineCallbacks, AudioPlaybackSource } from "./a
 
 import { createAudioPlayer, setAudioModeAsync } from "expo-audio";
 import { File, Paths } from "expo-file-system";
+import { reportCapturedPcm16 } from "./audio-levels";
 import { createPlaybackQueue } from "./playback";
 import { playFile } from "./file-playback";
 import { playPcm16 } from "./pcm";
@@ -31,6 +32,7 @@ export function createAudioEngine(
         return;
       }
       const pcm = event.data;
+      reportCapturedPcm16(pcm);
       callbacks.onCaptureData(pcm);
     },
   );
