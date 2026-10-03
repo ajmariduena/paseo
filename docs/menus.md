@@ -138,14 +138,14 @@ and a column of icons there is decoration competing with the values you actually
   band across it. The inset is taken _out of_ the row, never added to it: padding gives up what
   margin takes, so labels sit at the same 13pt they always did. Insetting by growing the row is how
   the menu ends up taller than it started.
-- **A row is as tall as what is driving it** — 28pt for a pointer, 40pt below `md` for a thumb. The
-  split is on breakpoint, not on `presentation`: the compact popover that `compactMode` defaults to
-  is worked with a thumb just as a sheet is, and sizing off the sheet would leave it at the desktop
-  height. `md` is where `useIsCompactFormFactor` divides, so row height and the popover/sheet choice
-  turn over together.
-- The desktop height only holds because the label's `lineHeight` is pinned — 18 line + 8 padding +
+- **A row is as tall as what is driving it** — 40pt under touch density at any width, 28pt for a
+  pointer. The split is on `useControlDensity`, not on `presentation` or width: a wide iPad shows
+  the desktop popover and is still worked with a thumb, and the compact popover that `compactMode`
+  defaults to is too. A pointer below `md` keeps 40pt as well, so a narrow desktop window matches
+  the phone layout it is showing.
+- The 28pt height only holds because the label's `lineHeight` is pinned — 18 line + 8 padding +
   2 border is exactly 28. Leave it to the platform and content outgrows `minHeight`, which then does
-  nothing. Compact is the other way round: `minHeight` leads and the label centres in it.
+  nothing. At 40pt it is the other way round: `minHeight` leads and the label centres in it.
 - **A row owns its fill; `MenuPage` owns the spacing between rows.** The vertical inset above the
   first row and below the last, and the gap between rows, are the page's — one knob each,
   `MENU_ROW_GAP` being the one a redesign turns. A row that carried vertical margin would be

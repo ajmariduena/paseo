@@ -26,7 +26,9 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { useIsCompactFormFactor } from "@/constants/layout";
+import { useControlDensity, useIsCompactFormFactor } from "@/constants/layout";
+import { TouchTarget, useTouchHitSlop } from "@/components/ui/touch-target";
+import { COMPOSER_TOOLBAR_GEOMETRY } from "@/composer/agent-controls/layout";
 import { useShallow } from "zustand/shallow";
 import {
   ArrowUp,
@@ -247,9 +249,15 @@ function resolveCheckoutRemoteUrl(
   return checkoutStatus?.remoteUrl ?? null;
 }
 
-function buildCancelButtonStyle(isConnected: boolean, isCancellingAgent: boolean): object[] {
-  const disabled = !isConnected || isCancellingAgent ? styles.buttonDisabled : undefined;
-  return [styles.cancelButton, disabled].filter((value): value is object => Boolean(value));
+function buildCancelButtonStyle(input: {
+  isConnected: boolean;
+  isCancellingAgent: boolean;
+  isTouchDensity: boolean;
+}): object[] {
+  const disabled =
+    !input.isConnected || input.isCancellingAgent ? styles.buttonDisabled : undefined;
+  const touch = input.isTouchDensity ? styles.cancelButtonTouch : undefined;
+  return [styles.cancelButton, touch, disabled].filter((value): value is object => Boolean(value));
 }
 
 function buildRealtimeVoiceButtonStyle(
@@ -1116,24 +1124,28 @@ function ComposerCancelButton({
     <Square size={buttonIconSize} color="white" fill="white" />
   );
   const shortcutNode = agentInterruptKeys ? <Shortcut chord={agentInterruptKeys} /> : null;
+  const hitSlop = useTouchHitSlop(COMPOSER_TOOLBAR_GEOMETRY.primaryTouchSize);
   return (
-    <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
-      <TooltipTrigger
-        onPress={handleCancelAgent}
-        disabled={!isConnected || isCancellingAgent}
-        accessibilityLabel={accessibilityLabel}
-        accessibilityRole="button"
-        style={cancelButtonStyle}
-      >
-        {icon}
-      </TooltipTrigger>
-      <TooltipContent side="top" align="center" offset={8}>
-        <View style={styles.tooltipRow}>
-          <Text style={styles.tooltipText}>{t("composer.cancel.interrupt")}</Text>
-          {shortcutNode}
-        </View>
-      </TooltipContent>
-    </Tooltip>
+    <TouchTarget slotSize={COMPOSER_TOOLBAR_GEOMETRY.controlSize}>
+      <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
+        <TooltipTrigger
+          onPress={handleCancelAgent}
+          disabled={!isConnected || isCancellingAgent}
+          accessibilityLabel={accessibilityLabel}
+          accessibilityRole="button"
+          hitSlop={hitSlop}
+          style={cancelButtonStyle}
+        >
+          {icon}
+        </TooltipTrigger>
+        <TooltipContent side="top" align="center" offset={8}>
+          <View style={styles.tooltipRow}>
+            <Text style={styles.tooltipText}>{t("composer.cancel.interrupt")}</Text>
+            {shortcutNode}
+          </View>
+        </TooltipContent>
+      </Tooltip>
+    </TouchTarget>
   );
 }
 
@@ -1198,24 +1210,28 @@ function ComposerVoiceModeButton({
     },
     [buttonIconSize, isVoiceSwitching],
   );
+  const hitSlop = useTouchHitSlop(COMPOSER_TOOLBAR_GEOMETRY.controlSize);
   return (
-    <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
-      <TooltipTrigger
-        onPress={handleToggleRealtimeVoice}
-        disabled={!isConnected || isVoiceSwitching}
-        accessibilityLabel={t("composer.voice.enableVoiceMode")}
-        accessibilityRole="button"
-        style={realtimeVoiceButtonStyle}
-      >
-        {renderTriggerContent}
-      </TooltipTrigger>
-      <TooltipContent side="top" align="center" offset={8}>
-        <View style={styles.tooltipRow}>
-          <Text style={styles.tooltipText}>{t("composer.voice.voiceMode")}</Text>
-          {shortcutNode}
-        </View>
-      </TooltipContent>
-    </Tooltip>
+    <TouchTarget slotSize={COMPOSER_TOOLBAR_GEOMETRY.controlSize}>
+      <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
+        <TooltipTrigger
+          onPress={handleToggleRealtimeVoice}
+          disabled={!isConnected || isVoiceSwitching}
+          accessibilityLabel={t("composer.voice.enableVoiceMode")}
+          accessibilityRole="button"
+          hitSlop={hitSlop}
+          style={realtimeVoiceButtonStyle}
+        >
+          {renderTriggerContent}
+        </TooltipTrigger>
+        <TooltipContent side="top" align="center" offset={8}>
+          <View style={styles.tooltipRow}>
+            <Text style={styles.tooltipText}>{t("composer.voice.voiceMode")}</Text>
+            {shortcutNode}
+          </View>
+        </TooltipContent>
+      </Tooltip>
+    </TouchTarget>
   );
 }
 
@@ -1994,17 +2010,22 @@ function ComposerContentImpl({
     [],
   );
 
+  const isTouchDensity = useControlDensity() === "touch";
   const cancelButtonStyle = useMemo(
-    () => buildCancelButtonStyle(isConnected, isCancellingAgent),
-    [isConnected, isCancellingAgent],
+    () => buildCancelButtonStyle({ isConnected, isCancellingAgent, isTouchDensity }),
+    [isConnected, isCancellingAgent, isTouchDensity],
   );
 
   const isVoiceSwitching = voice?.isVoiceSwitching ?? false;
   const voiceButtonDisabled = !isConnected || isVoiceSwitching;
   const realtimeVoiceButtonStyle = useCallback(
     (state: PressableStateCallbackType & { hovered?: boolean }) =>
-      buildRealtimeVoiceButtonStyle(state.hovered, voiceButtonDisabled, isCompactLayout),
-    [isCompactLayout, voiceButtonDisabled],
+      buildRealtimeVoiceButtonStyle(
+        state.hovered,
+        voiceButtonDisabled,
+        isCompactLayout && !isTouchDensity,
+      ),
+    [isCompactLayout, isTouchDensity, voiceButtonDisabled],
   );
 
   const activeActionContent = useMemo(
@@ -2553,6 +2574,11 @@ const styles = StyleSheet.create((theme: Theme) => ({
     alignItems: "center",
     justifyContent: "center",
     marginLeft: theme.spacing[1],
+  },
+  cancelButtonTouch: {
+    width: COMPOSER_TOOLBAR_GEOMETRY.primaryTouchSize,
+    height: COMPOSER_TOOLBAR_GEOMETRY.primaryTouchSize,
+    marginLeft: 0,
   },
   rightControls: {
     flexDirection: "row",

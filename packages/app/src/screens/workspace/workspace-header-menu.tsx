@@ -26,6 +26,7 @@ import {
   iconButtonChromeStyle,
 } from "@/components/ui/icon-button-chrome";
 import { TerminalProfileIcon } from "@/components/terminal-profile-icon";
+import { useControlDensity } from "@/constants/layout";
 import { useDaemonConfig } from "@/hooks/use-daemon-config";
 import {
   getTerminalProfileIcon,
@@ -134,6 +135,22 @@ function WorkspaceHeaderWorkspaceActionItems({
   );
 }
 
+function touchWorkspaceHeaderMenuButtonStyle({
+  hovered,
+  pressed,
+  open,
+}: {
+  hovered: boolean;
+  pressed: boolean;
+  open: boolean;
+}) {
+  return iconButtonChromeStyle({
+    size: "large",
+    state: { hovered, pressed, open },
+    density: "touch",
+  });
+}
+
 function workspaceHeaderMenuButtonStyle({
   hovered,
   pressed,
@@ -151,11 +168,14 @@ function workspaceHeaderMenuButtonStyle({
  */
 export function WorkspaceHeaderMenuDesktop(props: WorkspaceHeaderWorkspaceActions) {
   const { t } = useTranslation();
+  const isTouchDensity = useControlDensity() === "touch";
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
         testID="workspace-header-menu-trigger"
-        style={workspaceHeaderMenuButtonStyle}
+        style={
+          isTouchDensity ? touchWorkspaceHeaderMenuButtonStyle : workspaceHeaderMenuButtonStyle
+        }
         accessibilityRole="button"
         accessibilityLabel={t("workspace.header.actions.workspaceActions")}
       >

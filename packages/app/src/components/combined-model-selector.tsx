@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
+import { Pressable, Text, View, type Insets, type PressableStateCallbackType } from "react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { AgentProvider } from "@getpaseo/protocol/agent-types";
@@ -62,6 +62,7 @@ interface CombinedModelSelectorProps {
   toolbar?: {
     glyphSize: number;
     showCaret: boolean;
+    hitSlop: Insets | undefined;
   };
 }
 
@@ -243,6 +244,7 @@ export function CombinedModelSelector({
           collapsable={false}
           disabled={disabled}
           onPress={handleTriggerPress}
+          hitSlop={toolbar?.hitSlop}
           style={triggerStyle}
           accessibilityRole="button"
           accessibilityLabel={t("modelSelector.selectedModel", {

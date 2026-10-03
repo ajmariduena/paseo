@@ -44,8 +44,17 @@ import {
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
-import { WORKSPACE_SECONDARY_HEADER_HEIGHT, useIsCompactFormFactor } from "@/constants/layout";
-import { buttonControlHeight } from "@/components/ui/control-geometry";
+import {
+  WORKSPACE_SECONDARY_HEADER_HEIGHT,
+  WORKSPACE_SECONDARY_HEADER_HEIGHT_TOUCH,
+  useControlDensity,
+  useIsCompactFormFactor,
+} from "@/constants/layout";
+import {
+  buttonControlHeight,
+  TOUCH_ROW_HEIGHT,
+  TOUCH_TAB_CLOSE_TARGET_SIZE,
+} from "@/components/ui/control-geometry";
 import type { ShortcutKey } from "@/utils/format-shortcut";
 import { Shortcut } from "@/components/ui/shortcut";
 import { useWorkspaceTabLayout } from "@/screens/workspace/use-workspace-tab-layout";
@@ -87,6 +96,7 @@ import { useSessionStore } from "@/stores/session-store";
 
 const DROPDOWN_WIDTH = 220;
 const DEFAULT_INLINE_ADD_BUTTON_RESERVED_WIDTH = 36;
+const TOUCH_INLINE_ADD_BUTTON_RESERVED_WIDTH = TOUCH_ROW_HEIGHT + 8;
 const PANE_SPLIT_ACTIONS_HORIZONTAL_PADDING = 2;
 const PANE_SPLIT_ACTIONS_OUTER_MARGIN =
   paneContentToolbarTrailingPadding(false, "glyph") - PANE_SPLIT_ACTIONS_HORIZONTAL_PADDING;
@@ -223,7 +233,11 @@ function WorkspaceNewTabButton({
   placement,
 }: WorkspaceNewTabButtonProps) {
   const { t } = useTranslation();
+  const isTouchDensity = useControlDensity() === "touch";
   const tooltipText = t("workspace.tabs.actions.newTab");
+  const inlineStyle = isTouchDensity
+    ? [styles.inlineNewTabButton, styles.inlineNewTabButtonTouch]
+    : styles.inlineNewTabButton;
   const menu = (
     <DropdownMenu>
       <ToolbarButton
@@ -231,7 +245,7 @@ function WorkspaceNewTabButton({
         label={tooltipText}
         shortcut={shortcutKeys}
         testID="workspace-new-tab-button"
-        style={placement === "inline" ? styles.inlineNewTabButton : undefined}
+        style={placement === "inline" ? inlineStyle : undefined}
       >
         <ThemedPlus size={14} uniProps={extraMutedColorMapping} />
       </ToolbarButton>
@@ -740,6 +754,7 @@ function TabChip({
     useCallback(() => void onCloseTab(tab.tabId), [onCloseTab, tab.tabId]),
   );
   const isCompact = useIsCompactFormFactor();
+  const isTouchDensity = useControlDensity() === "touch";
   const [hovered, setHovered] = useState(false);
   // An active tab in a pane that does not have focus stays legible but quiet: it keeps the fill of
   // a hovered chip and the muted label, so only one chip in the window reads as the live one.
@@ -765,6 +780,7 @@ function TabChip({
   const tabChipStyle = useCallback(
     () => [
       styles.tab,
+      isTouchDensity && styles.tabTouch,
       isActiveFocused && styles.tabActive,
       isActive && !isFocused && styles.tabActiveUnfocused,
       !isActive && isHovered && styles.tabHovered,
@@ -775,7 +791,7 @@ function TabChip({
         maxWidth: resolvedTabWidth,
       },
     ],
-    [isActive, isActiveFocused, isDragging, isFocused, isHovered, resolvedTabWidth],
+    [isActive, isActiveFocused, isDragging, isFocused, isHovered, isTouchDensity, resolvedTabWidth],
   );
 
   const handleTabPointerEnter = useCallback(() => {
@@ -891,7 +907,11 @@ function TabChip({
               onHoverIn={handleCloseButtonHoverIn}
               onHoverOut={handleCloseButtonHoverOut}
               onPress={handleCloseButtonPress}
-              style={styles.tabCloseButton}
+              style={
+                isTouchDensity
+                  ? [styles.tabCloseButton, styles.tabCloseButtonTouch]
+                  : styles.tabCloseButton
+              }
             >
               {({ hovered: closeHovered, pressed }) => {
                 const highlighted = closeHovered || pressed;
@@ -1021,6 +1041,7 @@ function ResolvedWorkspaceDesktopTabsRow({
 }: ResolvedWorkspaceDesktopTabsRowProps) {
   const { t } = useTranslation();
   const newTabKeys = useShortcutKeys("workspace-tab-new");
+  const isTouchDensity = useControlDensity() === "touch";
   const [tabsContainerWidth, setTabsContainerWidth] = useState<number>(0);
   const [exitFocusModeWidth, setExitFocusModeWidth] = useState<number>(0);
   const tabScrollBoundary = useHorizontalScrollBoundary();
@@ -1042,7 +1063,9 @@ function ResolvedWorkspaceDesktopTabsRow({
       rowHorizontalInset: 0,
       actionsReservedWidth: Math.max(
         0,
-        DEFAULT_INLINE_ADD_BUTTON_RESERVED_WIDTH +
+        (isTouchDensity
+          ? TOUCH_INLINE_ADD_BUTTON_RESERVED_WIDTH
+          : DEFAULT_INLINE_ADD_BUTTON_RESERVED_WIDTH) +
           (focusModeEnabled ? exitFocusModeWidth : 0) +
           (showPaneSplitActions ? PANE_SPLIT_ACTIONS_RESERVED_WIDTH : 0) +
           (showPaneMaximizeAction ? PANE_MAXIMIZE_ACTION_RESERVED_WIDTH : 0),
@@ -1056,7 +1079,13 @@ function ResolvedWorkspaceDesktopTabsRow({
       tabHorizontalPadding: TAB_CHIP_HORIZONTAL_PADDING,
       closeButtonWidth: TAB_CLOSE_BUTTON_RESERVED_WIDTH,
     }),
-    [exitFocusModeWidth, focusModeEnabled, showPaneMaximizeAction, showPaneSplitActions],
+    [
+      exitFocusModeWidth,
+      focusModeEnabled,
+      isTouchDensity,
+      showPaneMaximizeAction,
+      showPaneSplitActions,
+    ],
   );
 
   const fallbackTabLabels = useMemo(
@@ -1310,7 +1339,9 @@ function ResolvedWorkspaceDesktopTabsRow({
 
   const row = (
     <View
-      style={styles.tabsContainer}
+      style={
+        isTouchDensity ? [styles.tabsContainer, styles.tabsContainerTouch] : styles.tabsContainer
+      }
       testID="workspace-tabs-row"
       onLayout={handleTabsContainerLayout}
     >
@@ -1537,6 +1568,9 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     overflow: "visible",
   },
+  tabsContainerTouch: {
+    height: WORKSPACE_SECONDARY_HEADER_HEIGHT_TOUCH,
+  },
   tabsScroll: {
     minWidth: 0,
   },
@@ -1573,6 +1607,10 @@ const styles = StyleSheet.create((theme) => ({
     width: buttonControlHeight.xs,
     height: buttonControlHeight.xs,
   },
+  inlineNewTabButtonTouch: {
+    width: TOUCH_ROW_HEIGHT,
+    height: TOUCH_ROW_HEIGHT,
+  },
   paneSplitActions: {
     paddingHorizontal: PANE_SPLIT_ACTIONS_HORIZONTAL_PADDING,
     marginRight: PANE_SPLIT_ACTIONS_OUTER_MARGIN,
@@ -1585,6 +1623,9 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[1],
     userSelect: "none",
+  },
+  tabTouch: {
+    height: TOUCH_ROW_HEIGHT,
   },
   tabHovered: {
     backgroundColor: theme.colors.surface1,
@@ -1696,6 +1737,11 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "center",
     zIndex: 1,
+  },
+  tabCloseButtonTouch: {
+    right: 2,
+    width: TOUCH_TAB_CLOSE_TARGET_SIZE,
+    height: TOUCH_TAB_CLOSE_TARGET_SIZE,
   },
   tabModifiedDot: {
     width: TAB_MODIFIED_DOT_SIZE,

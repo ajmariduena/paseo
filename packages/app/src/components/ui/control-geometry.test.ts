@@ -4,6 +4,9 @@ import {
   buttonIconSize,
   createControlGeometry,
   getControlInteractionPhase,
+  resolveControlDensity,
+  TOUCH_TARGET_SIZE,
+  touchTargetOutset,
 } from "@/components/ui/control-geometry";
 import type { Theme } from "@/styles/theme";
 
@@ -198,5 +201,20 @@ describe("control geometry", () => {
     for (const size of ["xs", "sm", "md", "lg"] as const) {
       expect(alert[size].container.borderRadius).toBeGreaterThanOrEqual(12);
     }
+  });
+
+  it("uses touch density on native and on web without a fine pointer", () => {
+    expect(resolveControlDensity({ isNative: false, hasFinePointer: true })).toBe("pointer");
+    expect(resolveControlDensity({ isNative: false, hasFinePointer: false })).toBe("touch");
+    expect(resolveControlDensity({ isNative: true, hasFinePointer: false })).toBe("touch");
+    expect(resolveControlDensity({ isNative: true, hasFinePointer: true })).toBe("touch");
+  });
+
+  it("grows a small visual to the touch target and never shrinks a large one", () => {
+    expect(TOUCH_TARGET_SIZE).toBe(44);
+    expect(touchTargetOutset(28)).toBe(8);
+    expect(touchTargetOutset(32)).toBe(6);
+    expect(touchTargetOutset(44)).toBe(0);
+    expect(touchTargetOutset(56)).toBe(0);
   });
 });

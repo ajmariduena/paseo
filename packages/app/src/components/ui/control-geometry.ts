@@ -48,6 +48,28 @@ export const CONTROL_HEIGHTS = {
   field: FIELD_CONTROL_HEIGHT,
 };
 
+/**
+ * What is driving the UI. Width decides the layout; density decides how big a control's target
+ * is. A wide iPad keeps the desktop layout and still gets touch-sized targets.
+ */
+export type ControlDensity = "pointer" | "touch";
+
+export function resolveControlDensity(input: {
+  isNative: boolean;
+  hasFinePointer: boolean;
+}): ControlDensity {
+  return input.isNative || !input.hasFinePointer ? "touch" : "pointer";
+}
+
+export const TOUCH_TARGET_SIZE = 44;
+export const TOUCH_ROW_HEIGHT = 40;
+export const TOUCH_HEADER_CONTROL_HEIGHT = CONTROL_HEIGHTS.compact;
+export const TOUCH_TAB_CLOSE_TARGET_SIZE = 28;
+
+export function touchTargetOutset(visualSize: number): number {
+  return Math.max(0, (TOUCH_TARGET_SIZE - visualSize) / 2);
+}
+
 export const buttonControlHeight: Record<ButtonControlSize, number> = {
   xs: CONTROL_HEIGHTS.tight,
   sm: CONTROL_HEIGHTS.compact,

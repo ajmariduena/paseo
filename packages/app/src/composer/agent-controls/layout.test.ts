@@ -41,6 +41,7 @@ describe("composer control layout", () => {
       resolveComposerControlDensity({
         availableWidth: 420,
         currentDensity: "full",
+        controlGap: COMPOSER_TOOLBAR_GEOMETRY.controlGap,
         controls,
       }),
     ).toBe("full");
@@ -48,6 +49,7 @@ describe("composer control layout", () => {
       resolveComposerControlDensity({
         availableWidth: 380,
         currentDensity: "full",
+        controlGap: COMPOSER_TOOLBAR_GEOMETRY.controlGap,
         controls,
       }),
     ).toBe("condensed");
@@ -55,6 +57,7 @@ describe("composer control layout", () => {
       resolveComposerControlDensity({
         availableWidth: 290,
         currentDensity: "condensed",
+        controlGap: COMPOSER_TOOLBAR_GEOMETRY.controlGap,
         controls,
       }),
     ).toBe("condensed");
@@ -62,6 +65,7 @@ describe("composer control layout", () => {
       resolveComposerControlDensity({
         availableWidth: 280,
         currentDensity: "condensed",
+        controlGap: COMPOSER_TOOLBAR_GEOMETRY.controlGap,
         controls,
       }),
     ).toBe("tight");
@@ -69,6 +73,7 @@ describe("composer control layout", () => {
       resolveComposerControlDensity({
         availableWidth: 300,
         currentDensity: "tight",
+        controlGap: COMPOSER_TOOLBAR_GEOMETRY.controlGap,
         controls,
       }),
     ).toBe("tight");
@@ -76,6 +81,7 @@ describe("composer control layout", () => {
       resolveComposerControlDensity({
         availableWidth: 312,
         currentDensity: "tight",
+        controlGap: COMPOSER_TOOLBAR_GEOMETRY.controlGap,
         controls,
       }),
     ).toBe("condensed");
@@ -85,6 +91,7 @@ describe("composer control layout", () => {
     const base = {
       availableWidth: 430,
       currentDensity: "condensed" as const,
+      controlGap: COMPOSER_TOOLBAR_GEOMETRY.controlGap,
     };
 
     expect(
@@ -129,6 +136,7 @@ describe("composer control layout", () => {
     const base = {
       availableWidth: 430,
       currentDensity: "full" as const,
+      controlGap: COMPOSER_TOOLBAR_GEOMETRY.controlGap,
       controls: {
         hasModel: true,
         hasThinking: true,
@@ -154,10 +162,36 @@ describe("composer control layout", () => {
     ).toBe("condensed");
   });
 
+  it("condenses earlier when touch spacing widens the gaps between controls", () => {
+    const input = {
+      availableWidth: 420,
+      currentDensity: "full" as const,
+      controls: {
+        hasModel: true,
+        hasThinking: true,
+        hasMode: true,
+        features: [{ type: "toggle" as const }],
+        fontScale: 1,
+      },
+    };
+
+    expect(
+      resolveComposerControlDensity({ ...input, controlGap: COMPOSER_TOOLBAR_GEOMETRY.controlGap }),
+    ).toBe("full");
+    expect(
+      resolveComposerControlDensity({
+        ...input,
+        controlGap: COMPOSER_TOOLBAR_GEOMETRY.touchControlGap,
+      }),
+    ).toBe("condensed");
+  });
+
   it("gives every toolbar control one shell and one platform glyph envelope", () => {
     expect(COMPOSER_TOOLBAR_GEOMETRY).toEqual({
       controlSize: 28,
       controlGap: 4,
+      touchControlGap: 12,
+      primaryTouchSize: 32,
       iconLabelGap: 4,
       labelPadding: 8,
       caretSize: 14,

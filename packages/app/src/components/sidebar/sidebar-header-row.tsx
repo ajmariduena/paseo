@@ -8,7 +8,13 @@ import {
 } from "react";
 import { Pressable, Text, View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { HEADER_INNER_HEIGHT, HEADER_INNER_HEIGHT_MOBILE } from "@/constants/layout";
+import { TOUCH_ROW_HEIGHT } from "@/components/ui/control-geometry";
+import {
+  HEADER_INNER_HEIGHT,
+  HEADER_INNER_HEIGHT_MOBILE,
+  HEADER_INNER_HEIGHT_TOUCH,
+  useControlDensity,
+} from "@/constants/layout";
 import { ICON_SIZE } from "@/styles/theme";
 import type { Theme } from "@/styles/theme";
 import { Shortcut } from "@/components/ui/shortcut";
@@ -62,6 +68,7 @@ export function SidebarHeaderRow({
   rowRef,
 }: SidebarHeaderRowProps) {
   const [isHovered, setIsHovered] = useState(false);
+  const isTouchDensity = useControlDensity() === "touch";
   const handlePointerEnter = useCallback(() => setIsHovered(true), []);
   const handlePointerLeave = useCallback(() => setIsHovered(false), []);
   const ThemedIcon = useMemo(() => (Icon ? withUnistyles(Icon) : null), [Icon]);
@@ -74,9 +81,13 @@ export function SidebarHeaderRow({
   }
 
   return (
-    <View ref={rowRef} collapsable={false} style={getContainerStyle(variant)}>
+    <View ref={rowRef} collapsable={false} style={getContainerStyle(variant, isTouchDensity)}>
       <View
-        style={[styles.row, isHighlighted && styles.rowHighlighted]}
+        style={[
+          styles.row,
+          isTouchDensity && styles.rowTouch,
+          isHighlighted && styles.rowHighlighted,
+        ]}
         onPointerEnter={handlePointerEnter}
         onPointerLeave={handlePointerLeave}
       >
@@ -89,7 +100,7 @@ export function SidebarHeaderRow({
           accessibilityLabel={accessibilityLabel ?? label}
           accessibilityState={isActive ? SELECTED_STATE : undefined}
           aria-selected={isActive}
-          style={styles.button}
+          style={[styles.button, isTouchDensity && styles.rowTouch]}
         >
           {ThemedIcon ? (
             <ThemedIcon
@@ -125,6 +136,12 @@ const styles = StyleSheet.create((theme) => ({
     borderBottomColor: theme.colors.border,
     userSelect: "none",
   },
+  containerTouch: {
+    height: {
+      xs: HEADER_INNER_HEIGHT_MOBILE,
+      md: HEADER_INNER_HEIGHT_TOUCH,
+    },
+  },
   containerCompact: {
     paddingHorizontal: theme.spacing[2],
     justifyContent: "center",
@@ -142,6 +159,9 @@ const styles = StyleSheet.create((theme) => ({
     // strip so the hover highlight clears the strip's bottom separator.
     minHeight: 28,
     borderRadius: theme.borderRadius.lg,
+  },
+  rowTouch: {
+    minHeight: TOUCH_ROW_HEIGHT,
   },
   rowHighlighted: {
     backgroundColor: theme.colors.surfaceSidebarHover,
@@ -177,10 +197,10 @@ const styles = StyleSheet.create((theme) => ({
   },
 }));
 
-function getContainerStyle(variant: SidebarHeaderRowVariant) {
+function getContainerStyle(variant: SidebarHeaderRowVariant, isTouchDensity: boolean) {
   switch (variant) {
     case "header":
-      return styles.container;
+      return isTouchDensity ? [styles.container, styles.containerTouch] : styles.container;
     case "compact":
       return styles.containerCompact;
     case "inline":

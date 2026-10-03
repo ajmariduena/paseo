@@ -21,13 +21,17 @@ import {
 } from "@/components/ui/menu";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
-import { HEADER_CONTROL_HEIGHT } from "@/components/ui/control-geometry";
+import {
+  HEADER_CONTROL_HEIGHT,
+  TOUCH_HEADER_CONTROL_HEIGHT,
+  type ControlDensity,
+} from "@/components/ui/control-geometry";
 import {
   iconButtonChromeStyle,
   type IconButtonChromeState,
 } from "@/components/ui/icon-button-chrome";
 import { composerPillStyles } from "@/composer/pill-styles";
-import { useIsCompactFormFactor } from "@/constants/layout";
+import { useControlDensity, useIsCompactFormFactor } from "@/constants/layout";
 import { useToast } from "@/contexts/toast-context";
 import { useHostRuntimeClient, useHosts } from "@/runtime/host-runtime";
 import type { Theme } from "@/styles/theme";
@@ -60,10 +64,17 @@ const errorIconMapping = (theme: Theme) => ({ color: theme.colors.statusDanger }
 const ThemedMoreIcon = withUnistyles(MoreHorizontal);
 const ThemedErrorIcon = withUnistyles(AlertCircle);
 
-function headerButtonStyle(compact: boolean, state: IconButtonChromeState, disabled = false) {
-  if (compact) return iconButtonChromeStyle({ size: "large", state, disabled });
+function headerButtonStyle(input: {
+  compact: boolean;
+  density: ControlDensity;
+  state: IconButtonChromeState;
+  disabled: boolean;
+}) {
+  const { compact, density, state, disabled } = input;
+  if (compact) return iconButtonChromeStyle({ size: "large", state, density, disabled });
   return [
     styles.headerButton,
+    density === "touch" && styles.headerButtonTouch,
     styles.button,
     (state.hovered || state.pressed || state.open) && styles.active,
     disabled && styles.disabled,
@@ -250,6 +261,7 @@ function ButtonControl({ view }: { view: ButtonView }) {
   const disabled = button.disabled || entry.pending;
   const expanded = button.behavior.kind !== "action";
   const chevron = !composer && !props.layout.compact && expanded;
+  const density = useControlDensity();
   let label = button.label;
   if (composer) label = button.label ?? button.title;
   else if (props.layout.compact) label = undefined;
@@ -267,8 +279,13 @@ function ButtonControl({ view }: { view: ButtonView }) {
             (hovered || pressed || entry.open) && styles.active,
             disabled && styles.disabled,
           ]
-        : headerButtonStyle(props.layout.compact, { hovered, pressed, open: entry.open }, disabled),
-    [composer, disabled, entry.open, props.layout.compact],
+        : headerButtonStyle({
+            compact: props.layout.compact,
+            density,
+            state: { hovered, pressed, open: entry.open },
+            disabled,
+          }),
+    [composer, density, disabled, entry.open, props.layout.compact],
   );
   const contents = (
     <>
@@ -350,13 +367,14 @@ function BrokenButton({
   error: string;
   compact: boolean;
 }) {
+  const density = useControlDensity();
   return (
     <Tooltip>
       <TooltipTrigger
         accessibilityRole="button"
         accessibilityLabel={title}
         disabled
-        style={headerButtonStyle(compact, {}, true)}
+        style={headerButtonStyle({ compact, density, state: {}, disabled: true })}
       >
         <ThemedErrorIcon size={16} uniProps={errorIconMapping} />
       </TooltipTrigger>
@@ -567,6 +585,7 @@ export function PluginHeaderButtons({
 }) {
   const entries = useButtons(serverId, workspaceId, null);
   const compact = useIsCompactFormFactor();
+  const density = useControlDensity();
   const { width } = useWindowDimensions();
   const hosts = useHosts();
   const { t } = useTranslation();
@@ -575,8 +594,9 @@ export function PluginHeaderButtons({
   const visible = entries.slice(0, limit);
   const overflow = entries.slice(limit);
   const overflowStyle = useCallback(
-    (state: IconButtonChromeState) => headerButtonStyle(compact, state),
-    [compact],
+    (state: IconButtonChromeState) =>
+      headerButtonStyle({ compact, density, state, disabled: false }),
+    [compact, density],
   );
   if (entries.length === 0) return null;
   return (
@@ -632,6 +652,10 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius.md,
     borderWidth: theme.borderWidth[1],
     borderColor: theme.colors.borderAccent,
+  },
+  headerButtonTouch: {
+    height: TOUCH_HEADER_CONTROL_HEIGHT,
+    minWidth: TOUCH_HEADER_CONTROL_HEIGHT,
   },
   button: { flexShrink: 1, minWidth: 0, maxWidth: 160 },
   active: { backgroundColor: theme.colors.surface2 },

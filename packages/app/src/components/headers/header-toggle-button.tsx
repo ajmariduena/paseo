@@ -5,6 +5,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Shortcut } from "@/components/ui/shortcut";
 import type { ShortcutKey } from "@/utils/format-shortcut";
 import { isWeb } from "@/constants/platform";
+import { useControlDensity } from "@/constants/layout";
 import {
   iconButtonChromeFrameStyle,
   iconButtonChromeStyle,
@@ -46,16 +47,18 @@ export function HeaderToggleButton({
       ? ({ "aria-expanded": expandedState } as Record<string, boolean>)
       : null;
 
+  const density = useControlDensity();
   const combinedStyle = useMemo(
     () =>
       ({ hovered, pressed }: { hovered?: boolean; pressed: boolean }) =>
         iconButtonChromeStyle({
           size: "large",
           state: { hovered: Boolean(hovered), pressed },
+          density,
           disabled: Boolean(disabled),
           style,
         }),
-    [disabled, style],
+    [density, disabled, style],
   );
 
   return (
