@@ -3135,7 +3135,6 @@ class ClaudeAgentSession implements AgentSession {
       this.query = null;
       this.input = null;
       this.queryPumpPromise = null;
-      this.queryRestartNeeded = false;
       // Ending the input retires the process on purpose. Detach first so its
       // exit is not reported as a crash.
       const retiredChild = this.childProcess;
@@ -3160,6 +3159,9 @@ class ClaudeAgentSession implements AgentSession {
         });
       }
     }
+    // Clear even when there was no query to retire: a leftover flag makes the next
+    // ensureQuery() synchronously null this.input right after a caller pushed to it.
+    this.queryRestartNeeded = false;
 
     // Preserve claudeSessionId across query recreation so buildOptions() passes
     // resume: sessionId and the new query continues the existing conversation.

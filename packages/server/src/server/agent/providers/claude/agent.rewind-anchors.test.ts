@@ -248,6 +248,28 @@ describe("Claude rewind across a turn that produced no response", () => {
   });
 });
 
+describe("Claude query restart requested before the first query exists", () => {
+  test("the first turn still reaches Claude", async () => {
+    const conversation = createConversation([{ assistantMessageId: "assistant-1" }]);
+    const session = await createSession(conversation, new FakeClaudeSdk());
+    const terminalEvents: string[] = [];
+
+    try {
+      await session.setThinkingOption?.("high");
+      for await (const event of streamSession(session, "turn 1")) {
+        if (event.type === "turn_completed" || event.type === "turn_failed") {
+          terminalEvents.push(event.type === "turn_failed" ? event.error : event.type);
+        }
+      }
+    } finally {
+      await session.close();
+    }
+
+    expect(terminalEvents).toEqual(["turn_completed"]);
+    expect(conversation.userMessageIds).toHaveLength(1);
+  });
+});
+
 describe("Claude rewind after a turn whose last assistant message came from a subagent", () => {
   test("forks at the turn's own reply, not at the subagent message", async () => {
     const conversation = createConversation([
