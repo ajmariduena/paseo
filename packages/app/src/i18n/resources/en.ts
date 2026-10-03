@@ -73,6 +73,7 @@ export const en = {
     },
   },
   shell: {
+    nothingNeedsAttention: "Nothing needs your attention",
     menu: {
       toggleSidebar: "Toggle sidebar",
       open: "Open menu",
@@ -2531,6 +2532,11 @@ export const en = {
         jumpToTab: "Jump to tab",
         previousWorkspace: "Previous workspace",
         nextWorkspace: "Next workspace",
+        nextAttentionAgent: "Go to next agent that needs you",
+        recentAgentNext: "Switch to recent agent",
+        recentAgentPrevious: "Switch to recent agent (reverse)",
+        navigateBack: "Back",
+        navigateForward: "Forward",
         previousTab: "Previous tab",
         nextTab: "Next tab",
         splitPaneRight: "Split pane right",

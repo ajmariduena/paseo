@@ -77,6 +77,7 @@ export const ko: TranslationResources = {
     },
   },
   shell: {
+    nothingNeedsAttention: "확인이 필요한 항목이 없습니다",
     menu: {
       toggleSidebar: "사이드바 토글",
       open: "메뉴 열기",
@@ -2420,6 +2421,11 @@ export const ko: TranslationResources = {
         jumpToTab: "탭으로 이동",
         previousWorkspace: "이전 워크스페이스",
         nextWorkspace: "다음 워크스페이스",
+        nextAttentionAgent: "확인이 필요한 다음 에이전트로 이동",
+        recentAgentNext: "최근 에이전트로 전환",
+        recentAgentPrevious: "최근 에이전트로 전환 (역순)",
+        navigateBack: "뒤로",
+        navigateForward: "앞으로",
         previousTab: "이전 탭",
         nextTab: "다음 탭",
         splitPaneRight: "창을 오른쪽으로 분할",

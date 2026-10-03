@@ -436,3 +436,29 @@ describe("routeKeyboardShortcut — unknown actions", () => {
     ).toEqual<ShortcutAction>({ kind: "none" });
   });
 });
+
+describe("routeKeyboardShortcut — agent navigation", () => {
+  it("jumps to the next agent that needs attention", () => {
+    expect(
+      routeKeyboardShortcut({ action: "agent.attention.next", payload: null }, makeCtx()),
+    ).toEqual<ShortcutAction>({ kind: "navigate-agent", navigation: { type: "next-attention" } });
+  });
+
+  it.each([1, -1] as const)("walks recent agents and history by %i", (delta) => {
+    expect(
+      routeKeyboardShortcut({ action: "agent.recent.relative", payload: { delta } }, makeCtx()),
+    ).toEqual<ShortcutAction>({ kind: "navigate-agent", navigation: { type: "recent", delta } });
+    expect(
+      routeKeyboardShortcut(
+        { action: "navigation.history.relative", payload: { delta } },
+        makeCtx(),
+      ),
+    ).toEqual<ShortcutAction>({ kind: "navigate-agent", navigation: { type: "history", delta } });
+  });
+
+  it("ignores relative agent navigation without a delta", () => {
+    expect(
+      routeKeyboardShortcut({ action: "agent.recent.relative", payload: null }, makeCtx()),
+    ).toEqual<ShortcutAction>({ kind: "none" });
+  });
+});

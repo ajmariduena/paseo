@@ -19,6 +19,9 @@ export type MessageInputKeyboardActionKind =
 export type KeyboardActionId =
   | "agent.interrupt"
   | "agent.new"
+  | "agent.attention.next"
+  | "agent.recent.relative"
+  | "navigation.history.relative"
   | "workspace.tab.menu.open"
   | "workspace.tab.target.agent"
   | "workspace.tab.target.browser"

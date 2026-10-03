@@ -78,6 +78,7 @@ export const es: TranslationResources = {
     },
   },
   shell: {
+    nothingNeedsAttention: "Nada necesita tu atención",
     menu: {
       toggleSidebar: "Alternar barra lateral",
       open: "abrir menú",
@@ -2465,6 +2466,11 @@ export const es: TranslationResources = {
         jumpToTab: "Saltar a la pestaña",
         previousWorkspace: "Espacio de trabajo anterior",
         nextWorkspace: "Siguiente espacio de trabajo",
+        nextAttentionAgent: "Ir al siguiente agente que te necesita",
+        recentAgentNext: "Cambiar al agente reciente",
+        recentAgentPrevious: "Cambiar al agente reciente (inverso)",
+        navigateBack: "Atrás",
+        navigateForward: "Adelante",
         previousTab: "Pestaña anterior",
         nextTab: "Pestaña siguiente",
         splitPaneRight: "Panel dividido a la derecha",

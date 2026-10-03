@@ -24,6 +24,7 @@ import {
 import { nativeKeyCommandRegistry } from "@/keyboard/native-key-command-registry";
 import { useNativeKeyCommandLayer } from "@/hooks/use-native-key-command-layer";
 import { useHardwareKeyboardConnected } from "@/hooks/use-hardware-keyboard-connected";
+import { useAgentNavigation } from "@/navigation/agent-switching";
 import { resolveKeyboardFocusScope } from "@/keyboard/focus-scope";
 import {
   buildBrowserKeyboardPolicy,
@@ -91,6 +92,7 @@ export function useKeyboardShortcuts({
     timeoutId: null,
   });
   const openProjectPickerAction = useOpenAddProject();
+  const navigateAgent = useAgentNavigation();
   const activeWorkspaceSelection = useActiveWorkspaceSelection();
   const keyboardWorkspaceSelectionRef = useRef<ActiveWorkspaceSelection | null>(null);
 
@@ -190,6 +192,9 @@ export function useKeyboardShortcuts({
           workspaceId: action.workspaceId,
         };
         navigateToWorkspace({ serverId: action.serverId, workspaceId: action.workspaceId });
+        return true;
+      case "navigate-agent":
+        navigateAgent(action.navigation);
         return true;
       case "navigate-last-workspace":
         if (navigateToLastWorkspace()) {

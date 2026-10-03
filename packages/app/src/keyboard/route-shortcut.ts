@@ -22,11 +22,17 @@ export interface ShortcutRoutingInput {
 
 export type ShortcutCallbackName = "toggle-agent-list" | "toggle-both-sidebars" | "cycle-theme";
 
+export type AgentNavigation =
+  | { type: "next-attention" }
+  | { type: "recent"; delta: 1 | -1 }
+  | { type: "history"; delta: 1 | -1 };
+
 export type ShortcutAction =
   | { kind: "none" }
   | { kind: "dispatch"; action: KeyboardActionDefinition }
   | { kind: "navigate-workspace"; serverId: string; workspaceId: string }
   | { kind: "navigate-last-workspace" }
+  | { kind: "navigate-agent"; navigation: AgentNavigation }
   | { kind: "router-replace"; route: string }
   | { kind: "router-back" }
   | { kind: "router-push"; route: string }
@@ -71,6 +77,11 @@ const SIMPLE_CALLBACKS: Record<string, ShortcutCallbackName> = {
   "sidebar.toggle.left": "toggle-agent-list",
   "sidebar.toggle.both": "toggle-both-sidebars",
   "theme.cycle": "cycle-theme",
+};
+
+const AGENT_RELATIVE_NAVIGATION: Record<string, "recent" | "history"> = {
+  "agent.recent.relative": "recent",
+  "navigation.history.relative": "history",
 };
 
 const MESSAGE_INPUT_DISPATCH: Record<
@@ -161,6 +172,16 @@ function routeMessageInputAction(payload: KeyboardShortcutPayload): ShortcutActi
   return dispatch(action);
 }
 
+function routeAgentNavigation(input: ShortcutRoutingInput): ShortcutAction | null {
+  if (input.action === "agent.attention.next") {
+    return { kind: "navigate-agent", navigation: { type: "next-attention" } };
+  }
+  const type = AGENT_RELATIVE_NAVIGATION[input.action];
+  if (!type) return null;
+  if (!hasPayloadKey(input.payload, "delta")) return NONE;
+  return { kind: "navigate-agent", navigation: { type, delta: input.payload.delta } };
+}
+
 function routeSettingsToggle(ctx: ShortcutRoutingContext): ShortcutAction {
   if (!ctx.pathname.startsWith("/settings")) {
     return { kind: "router-push", route: buildSettingsRoute() };
@@ -185,6 +206,11 @@ export function routeKeyboardShortcut(
       return { kind: "navigate-last-workspace" };
     }
     return dispatch(passthrough);
+  }
+
+  const agentNavigation = routeAgentNavigation(input);
+  if (agentNavigation) {
+    return agentNavigation;
   }
 
   const callback = SIMPLE_CALLBACKS[input.action];

@@ -78,6 +78,7 @@ export const ja: TranslationResources = {
     },
   },
   shell: {
+    nothingNeedsAttention: "対応が必要なものはありません",
     menu: {
       toggleSidebar: "サイドバーを切り替え",
       open: "メニューを開く",
@@ -2430,6 +2431,11 @@ export const ja: TranslationResources = {
         jumpToTab: "タブにジャンプ",
         previousWorkspace: "前のワークスペース",
         nextWorkspace: "次のワークスペース",
+        nextAttentionAgent: "対応が必要な次のエージェントへ移動",
+        recentAgentNext: "最近のエージェントに切り替え",
+        recentAgentPrevious: "最近のエージェントに切り替え（逆順）",
+        navigateBack: "戻る",
+        navigateForward: "進む",
         previousTab: "前のタブ",
         nextTab: "次のタブ",
         splitPaneRight: "右にペインを分割",

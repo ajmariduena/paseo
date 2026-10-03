@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { Agent } from "@/stores/session-store";
-import { pickAttentionAgent, shouldClearAgentAttention } from "@/utils/agent-attention";
+import {
+  pickAttentionAgent,
+  pickNextAttentionAgent,
+  shouldClearAgentAttention,
+} from "@/utils/agent-attention";
 
 function createAgent(input: Partial<Agent> & Pick<Agent, "id">): Agent {
   const { id, ...rest } = input;
@@ -265,5 +269,105 @@ describe("pickAttentionAgent", () => {
         }),
       ]),
     ).toBe("error-agent");
+  });
+});
+
+describe("pickNextAttentionAgent", () => {
+  const permissionOnHostB = createAgent({
+    id: "permission-agent",
+    serverId: "host-b",
+    workspaceId: "workspace-b",
+    pendingPermissions: [{ id: "permission-1", provider: "codex", name: "Bash", kind: "tool" }],
+  });
+  const errorOnHostA = createAgent({
+    id: "error-agent",
+    serverId: "host-a",
+    workspaceId: "workspace-a1",
+    requiresAttention: true,
+    attentionReason: "error",
+    attentionTimestamp: new Date("2026-01-02T00:00:00.000Z"),
+  });
+  const olderFinishedOnHostA = createAgent({
+    id: "older-finished-agent",
+    serverId: "host-a",
+    workspaceId: "workspace-a2",
+    requiresAttention: true,
+    attentionReason: "finished",
+    attentionTimestamp: new Date("2026-01-01T00:00:00.000Z"),
+  });
+  const newerFinishedOnHostB = createAgent({
+    id: "newer-finished-agent",
+    serverId: "host-b",
+    workspaceId: "workspace-b",
+    requiresAttention: true,
+    attentionReason: "finished",
+    attentionTimestamp: new Date("2026-01-03T00:00:00.000Z"),
+  });
+  const quietAgent = createAgent({ id: "quiet-agent", serverId: "host-a" });
+  const agents = [
+    newerFinishedOnHostB,
+    quietAgent,
+    olderFinishedOnHostA,
+    errorOnHostA,
+    permissionOnHostB,
+  ];
+
+  function nextFrom(current: { serverId: string; agentId: string } | null) {
+    return pickNextAttentionAgent({ agents, current })?.id ?? null;
+  }
+
+  it("crosses hosts and workspaces: permission, then error, then the oldest finished", () => {
+    expect(nextFrom(null)).toBe("permission-agent");
+    expect(nextFrom({ serverId: "host-b", agentId: "permission-agent" })).toBe("error-agent");
+    expect(nextFrom({ serverId: "host-a", agentId: "error-agent" })).toBe("older-finished-agent");
+    expect(nextFrom({ serverId: "host-a", agentId: "older-finished-agent" })).toBe(
+      "newer-finished-agent",
+    );
+    expect(nextFrom({ serverId: "host-b", agentId: "newer-finished-agent" })).toBe(
+      "permission-agent",
+    );
+  });
+
+  it("starts from the top when the current agent needs nothing", () => {
+    expect(nextFrom({ serverId: "host-a", agentId: "quiet-agent" })).toBe("permission-agent");
+  });
+
+  it("matches the current agent by host, not just by id", () => {
+    expect(nextFrom({ serverId: "host-a", agentId: "permission-agent" })).toBe("permission-agent");
+  });
+
+  it("returns null when the only agent waiting is the one on screen", () => {
+    expect(
+      pickNextAttentionAgent({
+        agents: [errorOnHostA, quietAgent],
+        current: { serverId: "host-a", agentId: "error-agent" },
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null when nothing needs attention", () => {
+    expect(pickNextAttentionAgent({ agents: [quietAgent], current: null })).toBeNull();
+  });
+
+  it("skips subagents and archived agents", () => {
+    expect(
+      pickNextAttentionAgent({
+        agents: [
+          createAgent({
+            id: "subagent",
+            parentAgentId: "parent",
+            requiresAttention: true,
+            attentionReason: "permission",
+          }),
+          createAgent({
+            id: "archived",
+            archivedAt: new Date("2026-01-04T00:00:00.000Z"),
+            requiresAttention: true,
+            attentionReason: "error",
+          }),
+        ],
+        current: null,
+      }),
+    ).toBeNull();
   });
 });

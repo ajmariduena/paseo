@@ -164,6 +164,11 @@ export const SHORTCUT_HELP_ROW_ORDER: Record<ShortcutSectionId, readonly string[
   workspaces: [
     "new-agent",
     "new-workspace",
+    "next-attention-agent",
+    "recent-agent-next",
+    "recent-agent-previous",
+    "navigate-back",
+    "navigate-forward",
     "workspace-jump-index",
     "workspace-prev",
     "workspace-next",
@@ -219,6 +224,11 @@ const SHORTCUT_HELP_LABEL_KEYS: Record<string, string> = {
   "workspace-tab-jump-index": "settings.shortcuts.help.jumpToTab",
   "workspace-prev": "settings.shortcuts.help.previousWorkspace",
   "workspace-next": "settings.shortcuts.help.nextWorkspace",
+  "next-attention-agent": "settings.shortcuts.help.nextAttentionAgent",
+  "recent-agent-next": "settings.shortcuts.help.recentAgentNext",
+  "recent-agent-previous": "settings.shortcuts.help.recentAgentPrevious",
+  "navigate-back": "settings.shortcuts.help.navigateBack",
+  "navigate-forward": "settings.shortcuts.help.navigateForward",
   "workspace-tab-prev": "settings.shortcuts.help.previousTab",
   "workspace-tab-next": "settings.shortcuts.help.nextTab",
   "workspace-pane-split-right": "settings.shortcuts.help.splitPaneRight",
@@ -618,7 +628,7 @@ const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
   {
     id: "workspace-navigate-relative-cmd-left-mac",
     action: "workspace.navigate.relative",
-    combo: "Cmd+[",
+    combo: "Cmd+Shift+[",
     when: { mac: true, desktop: true, commandCenter: false },
     payload: { type: "delta", delta: -1 },
     help: {
@@ -630,7 +640,7 @@ const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
   {
     id: "workspace-navigate-relative-ctrl-left-non-mac",
     action: "workspace.navigate.relative",
-    combo: "Ctrl+[",
+    combo: "Ctrl+Shift+[",
     when: { mac: false, desktop: true, commandCenter: false, terminal: false },
     payload: { type: "delta", delta: -1 },
     help: {
@@ -642,7 +652,7 @@ const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
   {
     id: "workspace-navigate-relative-cmd-right-mac",
     action: "workspace.navigate.relative",
-    combo: "Cmd+]",
+    combo: "Cmd+Shift+]",
     when: { mac: true, desktop: true, commandCenter: false },
     payload: { type: "delta", delta: 1 },
     help: {
@@ -654,7 +664,7 @@ const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
   {
     id: "workspace-navigate-relative-ctrl-right-non-mac",
     action: "workspace.navigate.relative",
-    combo: "Ctrl+]",
+    combo: "Ctrl+Shift+]",
     when: { mac: false, desktop: true, commandCenter: false, terminal: false },
     payload: { type: "delta", delta: 1 },
     help: {
@@ -685,6 +695,105 @@ const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
       id: "workspace-next",
       section: "workspaces",
       label: "Next workspace",
+    },
+  },
+
+  // --- Agent navigation ---
+  {
+    id: "agent-attention-next-cmd-alt-a-mac",
+    action: "agent.attention.next",
+    combo: "Cmd+Alt+A",
+    when: { mac: true, commandCenter: false },
+    help: {
+      id: "next-attention-agent",
+      section: "workspaces",
+      label: "Go to next agent that needs you",
+    },
+  },
+  {
+    id: "agent-attention-next-ctrl-alt-a-non-mac",
+    action: "agent.attention.next",
+    combo: "Ctrl+Alt+A",
+    when: { mac: false, commandCenter: false, terminal: false },
+    help: {
+      id: "next-attention-agent",
+      section: "workspaces",
+      label: "Go to next agent that needs you",
+    },
+  },
+  // Desktop only: a browser tab never sees Ctrl+Tab, the browser switches tabs with it.
+  {
+    id: "agent-recent-next-ctrl-tab",
+    action: "agent.recent.relative",
+    combo: "Ctrl+Tab",
+    when: { desktop: true, commandCenter: false },
+    payload: { type: "delta", delta: 1 },
+    help: {
+      id: "recent-agent-next",
+      section: "workspaces",
+      label: "Switch to recent agent",
+    },
+  },
+  {
+    id: "agent-recent-previous-ctrl-shift-tab",
+    action: "agent.recent.relative",
+    combo: "Ctrl+Shift+Tab",
+    when: { desktop: true, commandCenter: false },
+    payload: { type: "delta", delta: -1 },
+    help: {
+      id: "recent-agent-previous",
+      section: "workspaces",
+      label: "Switch to recent agent (reverse)",
+    },
+  },
+  // Desktop only: in a browser tab the browser's own back and forward already walk the route
+  // history. Focus inside the embedded browser keeps Cmd+[ / Cmd+] for the page itself.
+  {
+    id: "navigation-back-cmd-left-bracket-mac",
+    action: "navigation.history.relative",
+    combo: "Cmd+[",
+    when: { mac: true, desktop: true, commandCenter: false },
+    payload: { type: "delta", delta: -1 },
+    help: {
+      id: "navigate-back",
+      section: "workspaces",
+      label: "Back",
+    },
+  },
+  {
+    id: "navigation-back-ctrl-left-bracket-non-mac",
+    action: "navigation.history.relative",
+    combo: "Ctrl+[",
+    when: { mac: false, desktop: true, commandCenter: false, terminal: false },
+    payload: { type: "delta", delta: -1 },
+    help: {
+      id: "navigate-back",
+      section: "workspaces",
+      label: "Back",
+    },
+  },
+  {
+    id: "navigation-forward-cmd-right-bracket-mac",
+    action: "navigation.history.relative",
+    combo: "Cmd+]",
+    when: { mac: true, desktop: true, commandCenter: false },
+    payload: { type: "delta", delta: 1 },
+    help: {
+      id: "navigate-forward",
+      section: "workspaces",
+      label: "Forward",
+    },
+  },
+  {
+    id: "navigation-forward-ctrl-right-bracket-non-mac",
+    action: "navigation.history.relative",
+    combo: "Ctrl+]",
+    when: { mac: false, desktop: true, commandCenter: false, terminal: false },
+    payload: { type: "delta", delta: 1 },
+    help: {
+      id: "navigate-forward",
+      section: "workspaces",
+      label: "Forward",
     },
   },
 
