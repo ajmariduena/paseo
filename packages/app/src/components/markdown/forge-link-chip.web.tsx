@@ -77,6 +77,9 @@ export const ForgeLinkChip = memo(function ForgeLinkChip({
   );
 });
 
+// The web chip already has a rounded inline surface.
+export const StandaloneForgeLinkChip = ForgeLinkChip;
+
 const styles = StyleSheet.create((theme) => ({
   chip: {
     fontSize: theme.fontSize.sm,
