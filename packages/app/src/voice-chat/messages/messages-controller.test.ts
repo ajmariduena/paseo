@@ -56,11 +56,14 @@ function createTransport() {
   let connectionListener: ((connected: boolean) => void) | null = null;
   const sent: Array<Record<string, unknown>> = [];
   const starts: Array<{ callId: string; greet: boolean }> = [];
+  let hostLastSeq = 0;
+  let syncActive = true;
   let failNextWith: string | null = null;
   const transport: VoiceMessagesTransport = {
     start: async (params) => {
       starts.push(params);
-      return { lastSeq: 0, language: "es" };
+      syncActive = true;
+      return { lastSeq: hostLastSeq, language: "es" };
     },
     sendUtterance: async (params) => {
       if (!connected) throw new Error("disconnected");
@@ -78,7 +81,7 @@ function createTransport() {
         error: null,
       };
     },
-    sync: async () => ({ active: true, items: [] }),
+    sync: async () => ({ active: syncActive, items: [] }),
     getAudio: async ({ offset }) => ({
       audio: Buffer.from(new Uint8Array(offset === 0 ? 10 : 0)).toString("base64"),
       total: 10,
@@ -99,6 +102,10 @@ function createTransport() {
     transport,
     sent,
     starts,
+    loseHostCall() {
+      syncActive = false;
+      hostLastSeq = 0;
+    },
     failNext(error: string) {
       failNextWith = error;
     },
@@ -260,5 +267,20 @@ describe("voice messages controller", () => {
 
     expect(network.starts).toEqual([{ callId: "call-1", greet: true }]);
     expect(network.sent[0]).toMatchObject({ utteranceId: "utt-1", text: "¿cómo va auth?" });
+  });
+
+  it("starts numbering over when the host lost the call, so new replies still play", async () => {
+    const { network, synthesized } = await setup();
+    network.push({ seq: 1, text: "uno" });
+    network.push({ seq: 2, text: "dos" });
+    await vi.advanceTimersByTimeAsync(8_500);
+    expect(synthesized).toEqual(["uno", "dos"]);
+
+    network.loseHostCall();
+    await vi.advanceTimersByTimeAsync(4_100);
+    network.push({ seq: 1, text: "después del reinicio" });
+    await vi.advanceTimersByTimeAsync(4_200);
+
+    expect(synthesized).toEqual(["uno", "dos", "después del reinicio"]);
   });
 });

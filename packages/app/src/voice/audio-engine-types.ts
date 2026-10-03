@@ -24,4 +24,6 @@ export interface AudioEngine {
   stop(): void;
   clearQueue(): void;
   isPlaying(): boolean;
+  /** Releases the native audio unit so another stack (WebRTC) can own the session; `initialize` brings it back. */
+  suspend?(): Promise<void>;
 }

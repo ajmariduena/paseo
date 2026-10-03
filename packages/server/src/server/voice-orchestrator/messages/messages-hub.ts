@@ -4,6 +4,7 @@ import { VoiceMessagesCall, type VoiceMessagesSpeech } from "./messages-call.js"
 
 const IDLE_CALL_MS = 20 * 60_000;
 const SWEEP_MS = 60_000;
+const LATE_REPLY_MS = 2 * 60_000;
 
 export type VoiceMessagesPushSender = (payload: {
   title: string;
@@ -19,6 +20,7 @@ export class VoiceMessagesHub {
   private readonly calls = new Map<string, VoiceMessagesCall>();
   private pushSender: VoiceMessagesPushSender | null = null;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
+  private lateReplies: Array<{ text: string; at: number }> = [];
 
   constructor(
     private readonly options: {
@@ -51,8 +53,22 @@ export class VoiceMessagesHub {
     });
     this.calls.set(params.callId, call);
     call.start();
+    const now = Date.now();
+    for (const late of this.lateReplies) {
+      if (now - late.at < LATE_REPLY_MS) call.addLateReply(late.text);
+    }
+    this.lateReplies = [];
     this.ensureSweep();
     return call;
+  }
+
+  deliverLateReply(text: string): void {
+    const active = [...this.calls.values()].find((call) => !call.isClosed);
+    if (active) {
+      active.addLateReply(text);
+      return;
+    }
+    this.lateReplies.push({ text, at: Date.now() });
   }
 
   get(callId: string): VoiceMessagesCall | null {

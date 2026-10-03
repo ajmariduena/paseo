@@ -159,19 +159,44 @@ final class SystemVoiceRenderer {
   private var sampleRate: Double = 22_050
   private var finished = false
 
-  func render(text: String, language: String, completion: @escaping (PcmClip) -> Void) {
+  private let lock = NSLock()
+
+  /// `write` normally ends with an empty buffer; a timeout finishes with what arrived so a
+  /// missing end marker can't stall every later reply.
+  func render(
+    text: String, language: String, timeout: TimeInterval = 15,
+    completion: @escaping (PcmClip) -> Void
+  ) {
     let utterance = AVSpeechUtterance(string: text)
     utterance.voice = PaseoSpeechKit.bestVoice(for: language)
     utterance.rate = AVSpeechUtteranceDefaultSpeechRate
-    synthesizer.write(utterance) { [weak self] buffer in
-      guard let self, !self.finished else { return }
-      guard let pcm = buffer as? AVAudioPCMBuffer, pcm.frameLength > 0 else {
-        self.finished = true
-        completion(PcmClip(samples: self.samples, sampleRate: self.sampleRate))
+    let finish: () -> Void = { [weak self] in
+      guard let self else { return }
+      self.lock.lock()
+      if self.finished {
+        self.lock.unlock()
         return
       }
-      self.sampleRate = pcm.format.sampleRate
-      self.samples.append(contentsOf: PaseoSpeechKit.int16Samples(from: pcm))
+      self.finished = true
+      let clip = PcmClip(samples: self.samples, sampleRate: self.sampleRate)
+      self.lock.unlock()
+      completion(clip)
+    }
+    synthesizer.write(utterance) { [weak self] buffer in
+      guard let self else { return }
+      guard let pcm = buffer as? AVAudioPCMBuffer, pcm.frameLength > 0 else {
+        finish()
+        return
+      }
+      self.lock.lock()
+      if !self.finished {
+        self.sampleRate = pcm.format.sampleRate
+        self.samples.append(contentsOf: PaseoSpeechKit.int16Samples(from: pcm))
+      }
+      self.lock.unlock()
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
+      finish()
     }
   }
 }
@@ -233,11 +258,13 @@ final class OnDeviceTranscriber {
     request.endAudio()
 
     let finish: (String?) -> Void = { [weak self] text in
-      guard let self, !self.done else { return }
-      self.done = true
-      self.task?.cancel()
-      self.task = nil
-      completion(text)
+      DispatchQueue.main.async {
+        guard let self, !self.done else { return }
+        self.done = true
+        self.task?.cancel()
+        self.task = nil
+        completion(text)
+      }
     }
     task = recognizer.recognitionTask(with: request) { result, error in
       if let result, result.isFinal {

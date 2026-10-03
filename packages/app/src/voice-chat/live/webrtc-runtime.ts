@@ -14,6 +14,7 @@ interface ReactNativeWebrtc {
 
 interface CallAudioEvents {
   addListener(eventName: string, handler: () => void): { remove(): void };
+  isCallActive(): boolean;
 }
 
 interface SpeakerControl {
@@ -41,6 +42,8 @@ export function getLiveWebrtcRuntime(): LiveWebrtcRuntime | null {
     attachRemoteAudio: () => () => undefined,
     onCallAudioSession() {
       if (!callEvents) return () => undefined;
+      // CallKit usually activated the session before this subscription existed.
+      if (callEvents.isCallActive()) webrtc.RTCAudioSession.audioSessionDidActivate();
       const activated = callEvents.addListener("onAudioSessionActivated", () =>
         webrtc.RTCAudioSession.audioSessionDidActivate(),
       );

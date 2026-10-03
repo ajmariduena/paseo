@@ -128,6 +128,13 @@ export class VoiceMessagesCall {
     return receipt;
   }
 
+  addLateReply(text: string): void {
+    this.enqueue(async () => {
+      this.pushHistory(`Assistant: ${text}`);
+      await this.addSpokenItem("reply", text, null);
+    });
+  }
+
   /** Items after `afterSeq`; also records that the phone has everything up to it. */
   sync(afterSeq: number): VoiceMessagesItem[] {
     this.touch();

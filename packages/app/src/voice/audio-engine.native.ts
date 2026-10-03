@@ -357,5 +357,15 @@ export function createAudioEngine(
     isPlaying() {
       return refs.activePlayback !== null;
     },
+
+    async suspend() {
+      this.stop();
+      this.clearQueue();
+      await this.stopCapture();
+      if (refs.initialized) {
+        native.tearDown();
+        refs.initialized = false;
+      }
+    },
   };
 }

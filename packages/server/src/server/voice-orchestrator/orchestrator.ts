@@ -97,6 +97,7 @@ export class VoiceOrchestrator {
   private lastUtterance: { text: string; at: number; approvalUsed: boolean } | null = null;
   private preferredLanguage: string | null = null;
   private turnChain: Promise<unknown> = Promise.resolve();
+  private narrating = false;
   private liveCall: { close(): void } | null = null;
   private handoffHistory: { lines: string[]; at: number; mode: "live" | "messages" } | null = null;
 
@@ -185,6 +186,7 @@ export class VoiceOrchestrator {
   authorizePermissionApproval(): string | null {
     const utterance = this.lastUtterance;
     if (
+      this.narrating ||
       !utterance ||
       utterance.approvalUsed ||
       Date.now() - utterance.at > APPROVAL_WINDOW_MS ||
@@ -222,6 +224,11 @@ export class VoiceOrchestrator {
     const call = this.liveCall;
     this.liveCall = null;
     call?.close();
+  }
+
+  /** An answer that finished after its live call closed goes to the messages call instead. */
+  deliverLateReply(text: string): void {
+    this.messages.deliverLateReply(text);
   }
 
   saveCallHistory(lines: string[], mode: "live" | "messages"): void {
@@ -272,14 +279,20 @@ export class VoiceOrchestrator {
   /** One agent turn at a time: delegations and narrations would otherwise interrupt each other. */
   private runTurn(buildPrompt: () => Promise<string>, fromUser: boolean): Promise<string> {
     const run = async (): Promise<string> => {
-      const agentId = await this.ensureAgent();
-      await this.sendPrompt(agentId, await buildPrompt(), fromUser);
-      const { agentManager } = this.options;
-      let result = await agentManager.waitForAgentEvent(agentId, { waitForActive: true });
-      for (let attempt = 0; result.permission && attempt < DELEGATION_MAX_WAITS; attempt += 1) {
-        result = await agentManager.waitForAgentEvent(agentId);
+      // Narration turns relay daemon updates; they never act on the user's last "yes".
+      this.narrating = !fromUser;
+      try {
+        const agentId = await this.ensureAgent();
+        await this.sendPrompt(agentId, await buildPrompt(), fromUser);
+        const { agentManager } = this.options;
+        let result = await agentManager.waitForAgentEvent(agentId, { waitForActive: true });
+        for (let attempt = 0; result.permission && attempt < DELEGATION_MAX_WAITS; attempt += 1) {
+          result = await agentManager.waitForAgentEvent(agentId);
+        }
+        return result.lastMessage?.trim() || "No result from the backend.";
+      } finally {
+        this.narrating = false;
       }
-      return result.lastMessage?.trim() || "No result from the backend.";
     };
     const turn = this.turnChain.then(run, run);
     this.turnChain = turn.catch(() => undefined);

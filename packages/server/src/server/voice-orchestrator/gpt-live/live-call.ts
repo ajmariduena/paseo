@@ -288,7 +288,11 @@ export class GptLiveCall {
         request,
         history: [...this.history],
       });
-      if (this.closed) return;
+      if (this.closed) {
+        // The call switched to messages mode while the agent worked; say it there.
+        this.options.orchestrator.deliverLateReply(result);
+        return;
+      }
       this.connection.append("commentary", result, delegationId);
     } catch (error) {
       this.options.logger.warn({ err: error }, "GPT-Live delegation failed");

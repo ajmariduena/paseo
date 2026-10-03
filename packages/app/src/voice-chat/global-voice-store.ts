@@ -14,6 +14,8 @@ interface GlobalVoiceState {
   isAutoMode: boolean;
   /** How live audio travels: straight to GPT-Live over WebRTC, or relayed through the host. */
   liveTransport: "webrtc" | "relay" | null;
+  /** The call's mute, applied to whichever mode is running. */
+  isMuted: boolean;
   /** True while one mode hands over to the other, so the call isn't treated as ended. */
   isSwitching: boolean;
   /** Start the next call in messages mode (the user's last manual choice in this app session). */
@@ -23,7 +25,7 @@ interface GlobalVoiceState {
   setMinimized: (isMinimized: boolean) => void;
   setCall: (
     patch: Partial<
-      Pick<GlobalVoiceState, "callServerId" | "mode" | "isAutoMode" | "liveTransport">
+      Pick<GlobalVoiceState, "callServerId" | "mode" | "isAutoMode" | "liveTransport" | "isMuted">
     >,
   ) => void;
   setSwitching: (isSwitching: boolean) => void;
@@ -38,6 +40,7 @@ export const useGlobalVoiceStore = create<GlobalVoiceState>((set) => ({
   mode: "live",
   isAutoMode: false,
   liveTransport: null,
+  isMuted: false,
   isSwitching: false,
   preferMessages: false,
   setOrchestratorAgentId: (serverId, agentId) =>

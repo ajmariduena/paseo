@@ -13,6 +13,7 @@ let serverId: string | null = null;
 let buffer: CallEvent[] = [];
 let timer: ReturnType<typeof setInterval> | null = null;
 let flushing = false;
+let generation = 0;
 
 async function flush(): Promise<void> {
   if (flushing || !serverId || buffer.length === 0) return;
@@ -41,12 +42,16 @@ export function logVoiceCallEvent(kind: string, detail?: Record<string, unknown>
 }
 
 export function startVoiceCallEventLog(nextServerId: string): void {
+  generation += 1;
   serverId = nextServerId;
   timer ??= setInterval(() => void flush(), FLUSH_INTERVAL_MS);
 }
 
 export function stopVoiceCallEventLog(): void {
+  const stopping = generation;
   void flush().finally(() => {
+    // A new call may have started while the last flush was in flight.
+    if (generation !== stopping) return;
     if (timer) clearInterval(timer);
     timer = null;
     serverId = null;

@@ -241,7 +241,13 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
 
     const webrtcRuntime = getLiveWebrtcRuntime();
     liveWebrtcRef.current = webrtcRuntime
-      ? createLiveWebrtcController({ runtime: webrtcRuntime, log: logVoiceCallEvent })
+      ? createLiveWebrtcController({
+          runtime: webrtcRuntime,
+          log: logVoiceCallEvent,
+          releaseOtherAudio: async () => {
+            await engine.suspend?.();
+          },
+        })
       : null;
     engineRef.current = engine;
     runtimeRef.current = runtime;

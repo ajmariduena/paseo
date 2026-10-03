@@ -20,6 +20,8 @@ const OUTGOING_MAX_AGE_MS = 3 * 60_000;
 const BARGE_IN_MS = 300;
 const BARGE_IN_MIN_RMS = 0.08;
 const CUE_GAP_MS = 1_200;
+// A reply that never comes (the host lost it) must not leave the call "waiting" forever.
+const REPLY_WAIT_MAX_MS = 150_000;
 const KEEP_AWAKE_TAG = "paseo:voice-messages";
 
 export type VoiceMessagesPhase = "idle" | "listening" | "recording" | "waiting" | "speaking";
@@ -186,7 +188,7 @@ export function createVoiceMessagesController(deps: VoiceMessagesControllerDeps)
   const outgoing: Outgoing[] = [];
   const incoming: Incoming[] = [];
   const handledSeqs = new Set<number>();
-  const awaitingReplies = new Set<string>();
+  const awaitingReplies = new Map<string, number>();
   let senderRunning = false;
   const senderWakeup = new Wakeup();
   let playerRunning = false;
@@ -219,9 +221,20 @@ export function createVoiceMessagesController(deps: VoiceMessagesControllerDeps)
     let phase: VoiceMessagesPhase = "listening";
     if (speaking) phase = "speaking";
     else if (vad.isInSpeech) phase = "recording";
-    else if (outgoing.length > 0 || awaitingReplies.size > 0) phase = "waiting";
+    else if (outgoing.length > 0 || hasAwaitedReplies()) phase = "waiting";
     patch({ phase, pendingSends: outgoing.length });
     reconcileCue();
+  }
+
+  function hasAwaitedReplies(): boolean {
+    const at = now();
+    for (const [utteranceId, sentAt] of awaitingReplies) {
+      if (at - sentAt > REPLY_WAIT_MAX_MS) {
+        awaitingReplies.delete(utteranceId);
+        deps.log("reply_wait_expired", { utteranceId });
+      }
+    }
+    return awaitingReplies.size > 0;
   }
 
   function isCurrent(active: ActiveCall): boolean {
@@ -309,7 +322,7 @@ export function createVoiceMessagesController(deps: VoiceMessagesControllerDeps)
       audioComplete: false,
     };
     outgoing.push(entry);
-    awaitingReplies.add(entry.utteranceId);
+    awaitingReplies.set(entry.utteranceId, now());
     deps.log("utterance_captured", {
       utteranceId: entry.utteranceId,
       durationMs: Math.round(durationMs),
@@ -362,6 +375,7 @@ export function createVoiceMessagesController(deps: VoiceMessagesControllerDeps)
         }
         try {
           const progressed = await sendNextPart(active, entry);
+          if (!isCurrent(active)) continue;
           retryDelay = 1_000;
           if (entry.audioComplete) {
             outgoing.shift();
@@ -418,11 +432,29 @@ export function createVoiceMessagesController(deps: VoiceMessagesControllerDeps)
   /** The call can start offline (that is when it's needed most); the host learns about it later. */
   async function ensureHostStarted(active: ActiveCall): Promise<void> {
     if (active.hostStarted) return;
-    const started = await active.transport.start({ callId: active.callId, greet: active.greet });
+    await startOnHost(active, active.greet);
+  }
+
+  /**
+   * A host that lost the call (restart, idle sweep) recreates it with numbering from 1, so
+   * the phone's sequence state resets with it; otherwise the next replies would be skipped.
+   */
+  async function startOnHost(active: ActiveCall, greet: boolean): Promise<void> {
+    const started = await active.transport.start({ callId: active.callId, greet });
     if (!isCurrent(active)) return;
+    const wasStarted = active.hostStarted;
     active.hostStarted = true;
     if (started.language) active.language = started.language;
-    deps.log("host_call_started", { callId: active.callId });
+    if (started.lastSeq < active.lastSeq) {
+      active.lastSeq = started.lastSeq;
+      handledSeqs.clear();
+      awaitingReplies.clear();
+      refreshPhase();
+    }
+    deps.log(wasStarted ? "host_call_resumed" : "host_call_started", {
+      callId: active.callId,
+      lastSeq: started.lastSeq,
+    });
   }
 
   async function send(
@@ -433,7 +465,7 @@ export function createVoiceMessagesController(deps: VoiceMessagesControllerDeps)
     const result = await active.transport.sendUtterance({ callId: active.callId, ...part });
     if (result.error === "call_not_found") {
       // The host restarted or dropped the call: resume it under the same id, then retry.
-      await active.transport.start({ callId: active.callId, greet: false });
+      await startOnHost(active, false);
       throw new Error("call_not_found");
     }
     if (result.error) throw new Error(result.error);
@@ -465,6 +497,7 @@ export function createVoiceMessagesController(deps: VoiceMessagesControllerDeps)
   }
 
   async function syncOnce(active: ActiveCall): Promise<void> {
+    refreshPhase();
     if (!active.transport.isConnected()) return;
     try {
       await ensureHostStarted(active);
@@ -474,8 +507,7 @@ export function createVoiceMessagesController(deps: VoiceMessagesControllerDeps)
       });
       if (!isCurrent(active)) return;
       if (!result.active) {
-        deps.log("call_resumed_after_host_loss");
-        await active.transport.start({ callId: active.callId, greet: false });
+        await startOnHost(active, false);
         return;
       }
       handleItems(active, result.items);
@@ -498,14 +530,23 @@ export function createVoiceMessagesController(deps: VoiceMessagesControllerDeps)
         const active = call;
         const entry = incoming[0];
         if (!active || !entry) break;
-        const audio = await resolveSpeech(active, entry);
-        if (!isCurrent(active)) return;
-        incoming.shift();
-        if (audio) await speak(entry.item.text, audio);
+        try {
+          const audio = await resolveSpeech(active, entry);
+          if (!isCurrent(active)) continue;
+          incoming.shift();
+          if (audio) await speak(entry.item.text, audio);
+        } catch (error) {
+          if (incoming[0] === entry) incoming.shift();
+          deps.log("reply_playback_failed", {
+            seq: entry.item.seq,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
         refreshPhase();
       }
     } finally {
       playerRunning = false;
+      if (call && incoming.length > 0) void runPlayer();
     }
   }
 

@@ -95,6 +95,8 @@ function waitForConnected(pc: LivePeerConnection): Promise<void> {
 export function createLiveWebrtcController(deps: {
   runtime: LiveWebrtcRuntime;
   log(kind: string, detail?: Record<string, unknown>): void;
+  /** Frees the app's other audio engine; two voice-processing units in one app break the mic. */
+  releaseOtherAudio?: () => Promise<void>;
   now?: () => number;
 }) {
   const now = deps.now ?? Date.now;
@@ -199,6 +201,7 @@ export function createLiveWebrtcController(deps: {
   async function start(params: { signaling: LiveWebrtcSignaling }): Promise<void> {
     await stop({ handoff: false });
     patch({ ...INITIAL_SNAPSHOT, active: true, state: "connecting" });
+    await deps.releaseOtherAudio?.().catch(() => undefined);
     const microphone = await deps.runtime.getMicrophone();
     const pc = deps.runtime.createPeerConnection();
     const active: ActiveLive = {
@@ -228,6 +231,11 @@ export function createLiveWebrtcController(deps: {
       const sdp = pc.localDescription?.sdp ?? offer.sdp;
       if (!sdp) throw new Error("WebRTC produced no offer");
       const answer = await params.signaling.connect(sdp);
+      if (live !== active) {
+        // Hung up while the host was creating the session: end it there too.
+        await params.signaling.end(answer.sessionId, false).catch(() => undefined);
+        return;
+      }
       active.sessionId = answer.sessionId;
       await pc.setRemoteDescription({ type: "answer", sdp: answer.sdp });
       await waitForConnected(pc);
