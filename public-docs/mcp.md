@@ -8,14 +8,14 @@ category: Orchestration
 
 # MCP reference
 
-[Enable Paseo tools](/docs/orchestration#get-started) to give agents this catalog. Ask for an outcome in natural language, or use the tool interfaces below.
+Agents launched by Paseo get this catalog by default ([turn it off](/docs/orchestration#get-started)). Ask for an outcome in natural language, or use the tool interfaces below.
 
 ## Configuration
 
 | Setting                       | Default | Purpose                                            |
 | ----------------------------- | ------- | -------------------------------------------------- |
 | `daemon.mcp.enabled`          | `true`  | Run the MCP server.                                |
-| `daemon.mcp.injectIntoAgents` | `false` | Give agents launched by Paseo access to its tools. |
+| `daemon.mcp.injectIntoAgents` | `true`  | Give agents launched by Paseo access to its tools. |
 
 Depending on the provider, Paseo delivers tools through its native tool interface or MCP. The capabilities are the same. Start a new agent or reload an existing one after changing injection settings.
 

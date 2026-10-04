@@ -28,12 +28,9 @@ Use built-in Paseo tools or the CLI. Both let an agent launch and coordinate wor
 
 ### Built-in Paseo tools (MCP)
 
-Enable Paseo tools so agents running inside Paseo can manage agents and workspaces on their host directly.
+Agents running inside Paseo get Paseo tools by default, so they can manage agents and workspaces on their host directly. To turn them off, open **Settings → your host → Agents** and turn off **Enable Paseo tools**, then reload existing agents.
 
-1. Open **Settings → your host → Agents**.
-2. Turn on **Enable Paseo tools**. Tool injection is off by default.
-3. Start a new agent, or reload an existing agent so it receives the tools.
-4. Ask:
+Ask:
 
 > Use Paseo to launch a second agent to review this branch. Have it report potential bugs without changing files, then summarize its findings.
 
