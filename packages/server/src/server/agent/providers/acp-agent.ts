@@ -107,6 +107,12 @@ import {
   resolveDefaultAgentCreateConfig,
 } from "../create-agent-mode.js";
 import { importSessionFromPersistence } from "../provider-session-import.js";
+import { composeSystemPromptParts } from "../system-prompt.js";
+import {
+  isACPSlashCommand,
+  unwrapACPPromptText,
+  wrapACPPromptWithInstructions,
+} from "./acp-prompt-instructions.js";
 import {
   checkProviderLaunchAvailable,
   createProviderEnvSpec,
@@ -586,7 +592,8 @@ class ACPImportHistoryCollector {
     current: { messageId: string | null; text: string } | null;
     hasConversation: boolean;
   }): void {
-    if (state.current?.text.trim()) state.completed.push(state.current.text);
+    const text = state.current ? unwrapACPPromptText(state.current.text).text : "";
+    if (text.trim()) state.completed.push(text);
     state.current = null;
   }
 }
@@ -1723,6 +1730,8 @@ export class ACPAgentSession implements AgentSession, ACPClient {
   private closed = false;
   private historyPending = false;
   private replayingHistory = false;
+  /** Instructions the provider already holds, from this session's prompts or its loaded history. */
+  private deliveredInstructions: string | null = null;
   private bootstrapThreadEventPending = false;
   private readonly terminateProcess: ProcessTerminator;
 
@@ -1899,7 +1908,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       .prompt({
         sessionId: this.sessionId,
         messageId,
-        prompt: toACPContentBlocks(prompt),
+        prompt: toACPContentBlocks(this.withInstructions(prompt)),
       })
       .then((response) => {
         this.handlePromptResponse(response, turnId);
@@ -1918,6 +1927,22 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       });
 
     return { turnId };
+  }
+
+  private withInstructions(prompt: AgentPromptInput): AgentPromptInput {
+    const instructions = composeSystemPromptParts(
+      this.config.systemPrompt,
+      this.config.daemonAppendSystemPrompt,
+    );
+    if (
+      !instructions ||
+      instructions === this.deliveredInstructions ||
+      isACPSlashCommand(extractPromptText(prompt))
+    ) {
+      return prompt;
+    }
+    this.deliveredInstructions = instructions;
+    return wrapACPPromptWithInstructions(prompt, instructions);
   }
 
   subscribe(callback: (event: AgentStreamEvent) => void): () => void {
@@ -3072,10 +3097,14 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       return [];
     }
     this.pendingUserMessage = null;
+    const unwrapped = unwrapACPPromptText(pending.text);
+    if (unwrapped.instructions !== null) {
+      this.deliveredInstructions = unwrapped.instructions;
+    }
     return [
       this.wrapTimeline({
         type: "user_message",
-        text: pending.text,
+        text: unwrapped.text,
         ...(pending.messageId ? { messageId: pending.messageId } : {}),
       }),
     ];

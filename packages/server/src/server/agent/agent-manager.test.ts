@@ -1,4 +1,4 @@
-import { expect, test, vi } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -11,8 +11,11 @@ import {
   AgentManagerShuttingDownError,
   commandMayHaveChangedExternalState,
   type AgentManagerEvent,
+  type AgentManagerOptions,
   type ManagedAgent,
 } from "./agent-manager.js";
+import { buildPaseoOrchestrationInstructions } from "./orchestration-instructions.js";
+import { PASEO_MCP_TOOL_TIMEOUT_MS } from "./runtime-mcp-config.js";
 import { AgentStorage } from "./agent-storage.js";
 import { InMemoryAgentTimelineStore } from "./agent-timeline-store.js";
 import { toAgentPayload } from "./agent-projections.js";
@@ -29,6 +32,7 @@ import type {
   AgentTimelineStore,
 } from "./agent-timeline-store-types.js";
 import type {
+  AgentCapabilityFlags,
   AgentClient,
   AgentCreateSessionOptions,
   AgentFeature,
@@ -2295,6 +2299,119 @@ test("daemon append system prompt is injected into Pi configs", async () => {
   expect(client.createdConfigs[0]?.daemonAppendSystemPrompt).toBe("Daemon instructions.");
 });
 
+class CapabilityTestAgentClient extends TestAgentClient {
+  override readonly capabilities: AgentCapabilityFlags;
+
+  constructor(provider: AgentProvider, capabilities: AgentCapabilityFlags) {
+    super(provider);
+    this.capabilities = capabilities;
+  }
+}
+
+describe("orchestration instructions in the daemon append system prompt", () => {
+  const MCP_BASE_URL = "http://127.0.0.1:6767/mcp/agents";
+
+  async function launchConfigFor(input: {
+    provider?: AgentProvider;
+    managerOptions?: Partial<AgentManagerOptions>;
+    capabilities?: Partial<AgentCapabilityFlags>;
+    config?: Partial<AgentSessionConfig>;
+  }): Promise<AgentSessionConfig> {
+    const provider = input.provider ?? "codex";
+    const workdir = mkdtempSync(join(tmpdir(), "agent-manager-test-"));
+    const client = new CapabilityTestAgentClient(provider, {
+      ...TEST_CAPABILITIES,
+      ...input.capabilities,
+    });
+    const manager = new AgentManager({
+      clients: { [provider]: client },
+      providerDefinitions: { [provider]: { enabled: true } },
+      registry: new AgentStorage(join(workdir, "agents"), logger),
+      logger,
+      appendSystemPrompt: "Daemon instructions.",
+      ...input.managerOptions,
+    });
+    await manager.createAgent({ provider, cwd: workdir, ...input.config }, undefined, {
+      workspaceId: undefined,
+    });
+    const launched = client.createdConfigs[0];
+    if (!launched) throw new Error("No session was created");
+    return launched;
+  }
+
+  const fullText = buildPaseoOrchestrationInstructions(undefined);
+
+  test.each(["codex", "claude", "pi", "opencode", "cursor"])(
+    "%s gets the block ahead of the user's append prompt when the Paseo MCP server is attached",
+    async (provider) => {
+      const config = await launchConfigFor({
+        provider,
+        managerOptions: { mcpBaseUrl: MCP_BASE_URL },
+      });
+
+      expect(config.daemonAppendSystemPrompt).toBe(`${fullText}\n\nDaemon instructions.`);
+      expect(Object.keys(config.mcpServers ?? {})).toEqual(["paseo"]);
+    },
+  );
+
+  test("native Paseo tools attach the block without an MCP endpoint", async () => {
+    const config = await launchConfigFor({
+      capabilities: { supportsNativePaseoTools: true },
+      managerOptions: {
+        paseoToolCatalogFactory: () => ({
+          tools: new Map(),
+          getTool: () => undefined,
+          executeTool: async () => {
+            throw new Error("No tools registered in test catalog");
+          },
+        }),
+      },
+    });
+
+    expect(config.daemonAppendSystemPrompt).toBe(`${fullText}\n\nDaemon instructions.`);
+  });
+
+  test("is absent without Paseo tools", async () => {
+    const config = await launchConfigFor({});
+
+    expect(config.daemonAppendSystemPrompt).toBe("Daemon instructions.");
+  });
+
+  test("is absent when the provider policy turns Paseo tools off", async () => {
+    const config = await launchConfigFor({
+      managerOptions: {
+        mcpBaseUrl: MCP_BASE_URL,
+        resolvePaseoToolPolicy: () => ({ enabled: false }),
+      },
+    });
+
+    expect(config.daemonAppendSystemPrompt).toBe("Daemon instructions.");
+    expect(config.mcpServers).toBe(undefined);
+  });
+
+  test("is absent for internal agents, including the voice orchestrator", async () => {
+    const config = await launchConfigFor({
+      managerOptions: { mcpBaseUrl: MCP_BASE_URL },
+      config: { internal: true },
+    });
+
+    expect(config.daemonAppendSystemPrompt).toBe("Daemon instructions.");
+    expect(Object.keys(config.mcpServers ?? {})).toEqual(["paseo"]);
+  });
+
+  test("omits lines for tools the provider policy disables", async () => {
+    const config = await launchConfigFor({
+      managerOptions: {
+        mcpBaseUrl: MCP_BASE_URL,
+        resolvePaseoToolPolicy: () => ({ disabledTools: ["wait_for_agent"] }),
+      },
+    });
+
+    expect(config.daemonAppendSystemPrompt).toContain("## Paseo orchestration");
+    expect(config.daemonAppendSystemPrompt).not.toContain("wait_for_agent");
+  });
+});
+
 test("setAgentMode persists the selected mode across session reload", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-test-"));
   const storagePath = join(workdir, "agents");
@@ -3595,6 +3712,7 @@ test("createAgent injects paseo MCP server only into provider launch config", as
     paseo: {
       type: "http",
       url: `http://127.0.0.1:6767/mcp/agents?callerAgentId=${snapshot.id}`,
+      toolTimeoutMs: PASEO_MCP_TOOL_TIMEOUT_MS,
     },
     custom: {
       type: "stdio",
@@ -3896,6 +4014,7 @@ test("createAgent allows best-effort internal MCP when the provider session repo
   expect(client.lastConfig?.mcpServers?.paseo).toEqual({
     type: "http",
     url: `http://127.0.0.1:6767/mcp/agents?callerAgentId=${snapshot.id}`,
+    toolTimeoutMs: PASEO_MCP_TOOL_TIMEOUT_MS,
     headers: { Authorization: "Bearer cap-token" },
   });
 
@@ -3963,7 +4082,11 @@ test("uses each provider's current policy for new sessions and snapshots it by a
   );
 
   expect(policyInputs).toEqual([
-    { callerAgentId: codexAgent.id, paseoToolPolicy: { disabledTools: ["list_agents"] } },
+    {
+      callerAgentId: codexAgent.id,
+      paseoToolPolicy: { disabledTools: ["list_agents"] },
+      transport: "native",
+    },
   ]);
   expect(codex.launchContexts[0]?.paseoTools).toBe(paseoTools);
   expect(claude.launchContexts[0]?.paseoTools).toBeUndefined();
@@ -3988,10 +4111,15 @@ test("uses each provider's current policy for new sessions and snapshots it by a
     disabledTools: ["create_agent"],
   });
   expect(policyInputs).toEqual([
-    { callerAgentId: codexAgent.id, paseoToolPolicy: { disabledTools: ["list_agents"] } },
+    {
+      callerAgentId: codexAgent.id,
+      paseoToolPolicy: { disabledTools: ["list_agents"] },
+      transport: "native",
+    },
     {
       callerAgentId: nextCodexAgent.id,
       paseoToolPolicy: { disabledTools: ["create_agent"] },
+      transport: "native",
     },
   ]);
 
@@ -4035,6 +4163,7 @@ test("keeps the global Paseo-tools gate outside provider policy and MCP injectio
   expect(enabledClient.lastConfig?.mcpServers?.paseo).toEqual({
     type: "http",
     url: `http://127.0.0.1:6767/mcp/agents?callerAgentId=${enabledAgent.id}`,
+    toolTimeoutMs: PASEO_MCP_TOOL_TIMEOUT_MS,
   });
 
   const disabledClient = new McpClient();
@@ -4104,6 +4233,7 @@ test("resumeAgentFromPersistence replaces stored internal paseo MCP with current
     paseo: {
       type: "http",
       url: `http://127.0.0.1:6768/mcp/agents?callerAgentId=${snapshot.id}`,
+      toolTimeoutMs: PASEO_MCP_TOOL_TIMEOUT_MS,
     },
     custom: {
       type: "stdio",

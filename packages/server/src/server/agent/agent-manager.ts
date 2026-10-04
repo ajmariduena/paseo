@@ -85,6 +85,8 @@ import { stripInternalPaseoMcpServer, withRuntimePaseoMcpServer } from "./runtim
 import { resolveCreateAgentTitles } from "./create-agent-title.js";
 import type { PaseoToolCatalogFactory } from "./tools/types.js";
 import { isPaseoToolPolicyEnabled } from "./paseo-tool-policy.js";
+import { buildPaseoOrchestrationInstructions } from "./orchestration-instructions.js";
+import { composeSystemPromptParts } from "./system-prompt.js";
 import {
   ProviderSubagentStore,
   type ProviderSubagentDescriptor,
@@ -175,6 +177,11 @@ async function assertUsableWorkingDirectory(cwd: string): Promise<void> {
     }
     throw new Error(`Failed to access working directory: ${cwd}`, { cause: error });
   }
+}
+
+interface AttachedPaseoTools {
+  toolsAttached: boolean;
+  paseoToolPolicy: ProviderPaseoToolsPolicy | undefined;
 }
 
 interface PreparedSessionConfig {
@@ -5410,22 +5417,42 @@ export class AgentManager {
     const paseoToolPolicy = this.paseoToolsEnabled
       ? this.resolvePaseoToolPolicy(storedConfig.provider)
       : { enabled: false };
+    const toolsEnabled = this.paseoToolsEnabled && isPaseoToolPolicyEnabled(paseoToolPolicy);
+    const mcpBaseUrl = toolsEnabled ? this.mcpBaseUrl : null;
     const launchConfig = this.applyDaemonAppendSystemPrompt(
       withRuntimePaseoMcpServer({
         config: storedConfig,
         agentId,
-        mcpBaseUrl:
-          this.paseoToolsEnabled && isPaseoToolPolicyEnabled(paseoToolPolicy)
-            ? this.mcpBaseUrl
-            : null,
+        mcpBaseUrl,
         mcpAuthToken: this.mcpAuthToken,
       }),
+      {
+        toolsAttached:
+          toolsEnabled &&
+          (this.mcpBaseUrl !== null || this.hasNativePaseoTools(storedConfig.provider)),
+        paseoToolPolicy,
+      },
     );
     return { storedConfig, launchConfig, paseoToolPolicy };
   }
 
-  private applyDaemonAppendSystemPrompt(config: AgentSessionConfig): AgentSessionConfig {
-    const daemonAppendSystemPrompt = this.appendSystemPrompt.trim();
+  private hasNativePaseoTools(provider: AgentProvider): boolean {
+    const client = this.clients.get(provider);
+    return Boolean(client?.capabilities.supportsNativePaseoTools && this.paseoToolCatalogFactory);
+  }
+
+  private applyDaemonAppendSystemPrompt(
+    config: AgentSessionConfig,
+    tools: AttachedPaseoTools,
+  ): AgentSessionConfig {
+    const orchestration =
+      tools.toolsAttached && !config.internal
+        ? buildPaseoOrchestrationInstructions(tools.paseoToolPolicy)
+        : undefined;
+    const daemonAppendSystemPrompt = composeSystemPromptParts(
+      orchestration,
+      this.appendSystemPrompt,
+    );
     const next = { ...config };
     delete next.daemonAppendSystemPrompt;
 

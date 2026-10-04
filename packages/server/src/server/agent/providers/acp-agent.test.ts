@@ -48,7 +48,7 @@ import {
 import { GenericACPAgentClient } from "./generic-acp-agent.js";
 import { parseKiroExtensionCommands } from "./kiro-acp-agent.js";
 import { transformPiModels } from "./pi/agent.js";
-import type { AgentStreamEvent } from "../agent-sdk-types.js";
+import type { AgentPromptInput, AgentStreamEvent } from "../agent-sdk-types.js";
 import type {
   AgentCapabilityFlags,
   AgentPersistenceHandle,
@@ -4178,5 +4178,171 @@ describe("ACP session/load invariant — cwd and mcpServers always passed", () =
       cwd: "/tmp/paseo-acp-test",
       mcpServers: [],
     });
+  });
+});
+
+describe("ACP instructions in the first prompt", () => {
+  const SYSTEM_PROMPT = "Agent instructions.";
+  const DAEMON_APPEND = "## Paseo orchestration\n\nDelegate with create_agent.";
+  const INSTRUCTIONS = `${SYSTEM_PROMPT}\n\n${DAEMON_APPEND}`;
+
+  function wrapped(text: string, instructions = INSTRUCTIONS): string {
+    return `<paseo_instructions>\n${instructions}\n</paseo_instructions>\n\n<user_request>\n${text}\n</user_request>`;
+  }
+
+  function makeSession(args: { daemonAppendSystemPrompt?: string; replayedUserText?: string }) {
+    const prompt = vi.fn((_input: { prompt: Array<{ type: string; text?: string }> }) =>
+      Promise.resolve<PromptResponse>({ stopReason: "end_turn" }),
+    );
+    let session!: ACPAgentSession;
+    const loadSession = async () => {
+      if (args.replayedUserText) {
+        await session.sessionUpdate({
+          sessionId: "session-1",
+          update: {
+            sessionUpdate: "user_message_chunk",
+            content: { type: "text", text: args.replayedUserText },
+          } as SessionUpdate,
+        });
+      }
+      return { sessionId: "session-1", modes: null, models: null, configOptions: [] };
+    };
+
+    class TestSession extends ACPAgentSession {
+      protected override async spawnProcess(): Promise<SpawnedACPProcess> {
+        return {
+          child: createProbeChildStub(),
+          connection: { prompt, loadSession } as unknown as ClientSideConnection,
+          initialize: { agentCapabilities: { loadSession: true } },
+        } as SpawnedACPProcess;
+      }
+    }
+
+    session = new TestSession(
+      {
+        provider: "cursor",
+        cwd: "/tmp/paseo-acp-test",
+        systemPrompt: SYSTEM_PROMPT,
+        daemonAppendSystemPrompt: args.daemonAppendSystemPrompt ?? DAEMON_APPEND,
+      },
+      {
+        provider: "cursor",
+        logger: createTestLogger(),
+        defaultCommand: ["cursor-agent", "acp"],
+        defaultModes: [],
+        capabilities: {
+          supportsStreaming: true,
+          supportsSessionPersistence: true,
+          supportsDynamicModes: true,
+          supportsMcpServers: true,
+          supportsReasoningStream: true,
+          supportsToolInvocations: true,
+        },
+        handle: { sessionId: "session-1", provider: "cursor" },
+      },
+    );
+    return { session, prompt };
+  }
+
+  function sentText(prompt: ReturnType<typeof makeSession>["prompt"], call: number): string {
+    return (prompt.mock.calls[call]?.[0].prompt ?? []).map((block) => block.text ?? "").join("");
+  }
+
+  async function runTurn(session: ACPAgentSession, input: AgentPromptInput): Promise<void> {
+    await session.startTurn(input);
+    await Promise.resolve();
+    await Promise.resolve();
+  }
+
+  async function loadedHistory(session: ACPAgentSession): Promise<AgentStreamEvent[]> {
+    const history: AgentStreamEvent[] = [];
+    for await (const event of session.streamHistory()) {
+      history.push(event);
+    }
+    return history;
+  }
+
+  test("wraps the system prompt and daemon append prompt into the first prompt only", async () => {
+    const { session, prompt } = makeSession({});
+    await session.initializeResumedSession();
+    const events: AgentStreamEvent[] = [];
+    session.subscribe((event) => events.push(event));
+
+    await runTurn(session, "first");
+    await runTurn(session, "second");
+
+    expect(sentText(prompt, 0)).toBe(wrapped("first"));
+    expect(sentText(prompt, 1)).toBe("second");
+    expect(
+      events.flatMap((event) =>
+        event.type === "timeline" && event.item.type === "user_message" ? [event.item.text] : [],
+      ),
+    ).toEqual(["first", "second"]);
+  });
+
+  test("wraps text and image prompts around their blocks", async () => {
+    const { session, prompt } = makeSession({});
+    await session.initializeResumedSession();
+
+    await runTurn(session, [
+      { type: "text", text: "look" },
+      { type: "image", data: "AA==", mimeType: "image/png" },
+    ]);
+
+    expect(prompt.mock.calls[0]?.[0].prompt).toEqual([
+      {
+        type: "text",
+        text: `<paseo_instructions>\n${INSTRUCTIONS}\n</paseo_instructions>\n\n<user_request>\n`,
+      },
+      { type: "text", text: "look" },
+      { type: "image", data: "AA==", mimeType: "image/png" },
+      { type: "text", text: "\n</user_request>" },
+    ]);
+  });
+
+  test("leaves slash commands untouched and wraps the next prompt", async () => {
+    const { session, prompt } = makeSession({});
+    await session.initializeResumedSession();
+
+    await runTurn(session, "/compact");
+    await runTurn(session, "continue");
+
+    expect(sentText(prompt, 0)).toBe("/compact");
+    expect(sentText(prompt, 1)).toBe(wrapped("continue"));
+  });
+
+  test("strips the wrapper from loaded history", async () => {
+    const { session } = makeSession({ replayedUserText: wrapped("fix the bug") });
+    await session.initializeResumedSession();
+
+    expect(await loadedHistory(session)).toEqual([
+      {
+        type: "timeline",
+        provider: "cursor",
+        item: { type: "user_message", text: "fix the bug" },
+      },
+    ]);
+  });
+
+  test("doesn't repeat instructions the loaded history already holds", async () => {
+    const { session, prompt } = makeSession({ replayedUserText: wrapped("fix the bug") });
+    await session.initializeResumedSession();
+
+    await runTurn(session, "next");
+
+    expect(sentText(prompt, 0)).toBe("next");
+  });
+
+  test("re-wraps when the instructions changed since the loaded history, such as new tools", async () => {
+    const changed = "## Paseo orchestration\n\nDelegate with create_agent or wait_for_agent.";
+    const { session, prompt } = makeSession({
+      daemonAppendSystemPrompt: changed,
+      replayedUserText: wrapped("fix the bug"),
+    });
+    await session.initializeResumedSession();
+
+    await runTurn(session, "next");
+
+    expect(sentText(prompt, 0)).toBe(wrapped("next", `${SYSTEM_PROMPT}\n\n${changed}`));
   });
 });
