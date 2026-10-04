@@ -6,6 +6,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
+import {
+  createControlledHost,
+  createTraceRecorder,
+  type ControlledHost,
+} from "../test-utils/controlled-agent-client.js";
 import { AgentManager } from "./agent-manager.js";
 import { AgentStorage } from "./agent-storage.js";
 import {
@@ -64,7 +69,6 @@ interface FinishNotificationScenario {
   finishChildAndReadParentPrompt(): Promise<string>;
   closeChildAndReadParentPrompt(): Promise<string>;
   parentPrompts(): string[];
-  steerAttemptCount(): number;
   wasParentPrompted(): boolean;
 }
 
@@ -74,7 +78,6 @@ function createFinishNotificationScenario(
   let subscriber: ((event: AgentManagerEvent) => void) | null = null;
   let resolveParentPrompt: ((prompt: string) => void) | null = null;
   let parentPrompted = false;
-  let steerAttemptCount = 0;
   const parentPrompts: string[] = [];
 
   const childAgent: ManagedAgent = Object.create(null);
@@ -108,20 +111,14 @@ function createFinishNotificationScenario(
     return options?.childLastAssistantMessage ?? null;
   });
   Reflect.set(agentManager, "tryRunOutOfBand", () => false);
-  Reflect.set(agentManager, "hasInFlightRun", () => Boolean(options?.parentPromptError));
-  Reflect.set(agentManager, "steerOrReplaceActiveTurn", async () => {
-    steerAttemptCount += 1;
-    return { status: "inactive" };
-  });
   Reflect.set(agentManager, "streamAgent", (_agentId: string, prompt: string) => {
+    resolveParentPrompt?.(prompt);
+    if (options?.parentPromptError) {
+      throw options.parentPromptError;
+    }
     parentPrompted = true;
     parentPrompts.push(prompt);
-    resolveParentPrompt?.(prompt);
     return (async function* noop() {})();
-  });
-  Reflect.set(agentManager, "replaceAgentRun", async (_agentId: string, prompt: string) => {
-    resolveParentPrompt?.(prompt);
-    throw options?.parentPromptError;
   });
 
   const agentStorage: AgentStorage = Object.create(AgentStorage.prototype);
@@ -250,9 +247,6 @@ function createFinishNotificationScenario(
     parentPrompts() {
       return parentPrompts;
     },
-    steerAttemptCount() {
-      return steerAttemptCount;
-    },
     wasParentPrompted() {
       return parentPrompted;
     },
@@ -277,7 +271,6 @@ test("finish notifications tell the parent the child's last assistant message", 
       "Agent child-agent (Child Agent) finished.\n\n<agent-response>\nImplemented the cleanup and all checks pass.\n</agent-response>",
     ),
   );
-  expect(scenario.steerAttemptCount()).toBe(1);
 });
 
 test("finish notifications truncate oversized child responses", async () => {
@@ -432,7 +425,7 @@ test("follow-up finish notifications do not require a parent relationship", asyn
 test("finish notifications log a rejected parent prompt without an unhandled rejection", async () => {
   const captured = createCapturedLogger();
   const scenario = createFinishNotificationScenario({
-    parentPromptError: new Error("parent provider rejected replacement"),
+    parentPromptError: new Error("parent provider rejected the prompt"),
     logger: captured.logger,
   });
 
@@ -446,7 +439,7 @@ test("finish notifications log a rejected parent prompt without an unhandled rej
       childAgentId: "child-agent",
       callerAgentId: "caller-agent",
       reason: "finished",
-      err: expect.objectContaining({ message: "parent provider rejected replacement" }),
+      err: expect.objectContaining({ message: "parent provider rejected the prompt" }),
     }),
   ]);
 });
@@ -760,5 +753,101 @@ test("waiting for a run start still gives up at the run start budget", async () 
   } finally {
     vi.useRealTimers();
     await scenario.cleanup();
+  }
+});
+
+interface ParentChildScenario {
+  host: ControlledHost;
+  parentId: string;
+  childId: string;
+}
+
+async function startParentAndChild(options: {
+  parentSteerable: boolean;
+  logger?: Logger;
+}): Promise<ParentChildScenario> {
+  const host = createControlledHost();
+  const parentId = await host.createAgent({ steerable: options.parentSteerable });
+  const childId = await host.createAgent({
+    steerable: false,
+    labels: { "paseo.parent-agent-id": parentId },
+  });
+  await host.startTurn(childId, "child task");
+  setupFinishNotification({
+    agentManager: host.agentManager,
+    agentStorage: host.agentStorage,
+    childAgentId: childId,
+    callerAgentId: parentId,
+    logger: options.logger ?? host.logger,
+  });
+  return { host, parentId, childId };
+}
+
+test("a finish notification never interrupts a parent whose provider cannot steer — it waits for the turn to end", async () => {
+  const trace = createTraceRecorder();
+  const { host, parentId, childId } = await startParentAndChild({
+    parentSteerable: false,
+    logger: trace.logger,
+  });
+  try {
+    await host.startTurn(parentId, "parent work");
+    const parent = host.session(parentId);
+
+    host.session(childId).completeTurn("child result");
+    await trace.waitFor("agent.dispatch.wait_for_turn");
+    expect(parent.startPrompts).toEqual(["parent work"]);
+    expect(parent.interruptCount).toBe(0);
+
+    parent.completeTurn("parent done");
+    await vi.waitFor(() => expect(parent.startPrompts).toHaveLength(2));
+    expect(parent.startPrompts[1]).toContain("<agent-response>\nchild result\n</agent-response>");
+    expect(parent.interruptCount).toBe(0);
+  } finally {
+    await host.cleanup();
+  }
+});
+
+test("a finish notification steers into a steerable running parent", async () => {
+  const { host, parentId, childId } = await startParentAndChild({ parentSteerable: true });
+  try {
+    await host.startTurn(parentId, "parent work");
+    const parent = host.session(parentId);
+
+    host.session(childId).completeTurn("child result");
+    await vi.waitFor(() => expect(parent.steerPrompts).toHaveLength(1));
+    expect(parent.steerPrompts[0]).toContain("finished.");
+    expect(parent.startPrompts).toEqual(["parent work"]);
+    expect(parent.interruptCount).toBe(0);
+  } finally {
+    await host.cleanup();
+  }
+});
+
+test("an idle-path notification does not replace a run that started in between", async () => {
+  const { host, parentId, childId } = await startParentAndChild({ parentSteerable: false });
+  try {
+    const parent = host.session(parentId);
+    let userRun: Promise<void> | null = null;
+    parent.beforeDispatch = (prompt) => {
+      if (userRun || typeof prompt !== "string" || !prompt.includes("finished.")) return;
+      const events = host.agentManager.streamAgent(parentId, "user work");
+      userRun = (async () => {
+        for await (const _event of events) {
+          // Drain the user's turn.
+        }
+      })();
+    };
+
+    host.session(childId).completeTurn("child result");
+    await vi.waitFor(() => expect(parent.startPrompts).toEqual(["user work"]));
+    expect(parent.interruptCount).toBe(0);
+
+    parent.completeTurn("user done");
+    await vi.waitFor(() => expect(parent.startPrompts).toHaveLength(2));
+    expect(parent.startPrompts[1]).toContain("finished.");
+    expect(parent.interruptCount).toBe(0);
+    await userRun;
+  } finally {
+    await host.cleanup();
   }
 });

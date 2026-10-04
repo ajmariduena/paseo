@@ -136,6 +136,20 @@ export class AgentRunCancellationError extends Error {
   }
 }
 
+export class AgentRunActiveError extends Error {
+  constructor(readonly agentId: string) {
+    super(`Agent ${agentId} already has an active run`);
+    this.name = "AgentRunActiveError";
+  }
+}
+
+export class ActiveTurnChangedError extends Error {
+  constructor() {
+    super("Active turn changed before steering could be delivered");
+    this.name = "ActiveTurnChangedError";
+  }
+}
+
 export type AgentRunCancellationResult =
   | { status: "not_running" }
   | { status: "settled" }
@@ -338,6 +352,13 @@ export interface AgentManagerOptions {
   }) => Promise<void>;
   logger: Logger;
 }
+
+export interface ActiveRun {
+  key: string;
+  started: boolean;
+}
+
+export type SteerOnlyResult = SteerResult | { status: "inactive" };
 
 export type ActiveTurnSteerDispatchResult =
   | { status: "inactive" | "steered" }
@@ -2641,7 +2662,7 @@ export class AgentManager {
         },
         "agent.manager.stream.reject",
       );
-      throw new Error(`Agent ${agentId} already has an active run`);
+      throw new AgentRunActiveError(agentId);
     }
 
     const agent = existingAgent;
@@ -2838,32 +2859,84 @@ export class AgentManager {
     }
   }
 
+  /** Steers the active turn without ever replacing it. A turn that ended first is `inactive`. */
   async steerAgentRun(
     agentId: string,
     prompt: AgentPromptInput,
     options?: AgentSteerOptions,
-  ): Promise<SteerResult> {
+  ): Promise<SteerOnlyResult> {
     const agent = this.requireSessionAgent(agentId);
     const expectedTurnId = agent.activeForegroundTurnId ?? agent.activeTurnId;
-    if (!expectedTurnId || !agent.session.steerActiveTurn) {
+    if (!expectedTurnId) {
+      return { status: "inactive" };
+    }
+    if (!agent.session.steerActiveTurn) {
       return { status: "unavailable" };
     }
-    const result = await this.runSteerAdmission(agent, expectedTurnId, async () => {
-      const admission = await agent.session.steerActiveTurn!(prompt, {
-        ...options,
-        expectedTurnId,
+    try {
+      const result = await this.runSteerAdmission(agent, expectedTurnId, async () => {
+        const admission = await agent.session.steerActiveTurn!(prompt, {
+          ...options,
+          expectedTurnId,
+        });
+        if (admission.status === "accepted") {
+          await this.recordAcceptedSteer(agent, prompt, options?.clientMessageId, expectedTurnId);
+        }
+        return admission;
       });
-      if (admission.status === "accepted") {
-        await this.recordAcceptedSteer(agent, prompt, options?.clientMessageId, expectedTurnId);
+      if (result.status === "unavailable" && agent.activeTurnId !== expectedTurnId) {
+        return { status: "inactive" };
       }
-      return admission;
-    });
-    // An unavailable answer is only safe to fall back from while this admission
-    // still owns the active turn. Never let an A admission replace a later B.
-    if (result.status === "unavailable" && agent.activeTurnId !== expectedTurnId) {
-      throw new Error("Active turn changed before steering could be delivered");
+      return result;
+    } catch (error) {
+      if (error instanceof ActiveTurnChangedError) {
+        return { status: "inactive" };
+      }
+      throw error;
     }
-    return result;
+  }
+
+  /** The tracked run, keyed by its in-memory identity. Keys do not survive a restart. */
+  getActiveRun(agentId: string): ActiveRun | null {
+    const run = this.runs.getRun(agentId);
+    if (!run) return null;
+    const started = run.kind === "autonomous" || run.start.status === "started";
+    return { key: run.token, started };
+  }
+
+  /** An idle agent that still holds background tasks is not live. */
+  isRunLive(agentId: string, runKey: string): boolean {
+    const run = this.runs.getRun(agentId);
+    return (
+      run !== null &&
+      run.token === runKey &&
+      !run.settled &&
+      this.agents.get(agentId)?.lifecycle === "running"
+    );
+  }
+
+  /** Resolves once the agent has no in-flight run; returns at once when it is idle or gone. */
+  async waitForRunToSettle(agentId: string): Promise<void> {
+    for (;;) {
+      const run = this.runs.getRun(agentId);
+      if (run) {
+        await run.settledPromise;
+        continue;
+      }
+      const agent = this.agents.get(agentId);
+      if (!agent || (agent.lifecycle !== "running" && !agent.activeForegroundTurnId)) {
+        return;
+      }
+      await new Promise<void>((resolveNextEvent) => {
+        const unsubscribe = this.subscribe(
+          () => {
+            unsubscribe();
+            resolveNextEvent();
+          },
+          { agentId, replayState: false },
+        );
+      });
+    }
   }
 
   async steerOrReplaceActiveTurn(
@@ -2914,7 +2987,7 @@ export class AgentManager {
 
   private assertSteerAdmissionOwnsTurn(agent: ActiveManagedAgent, expectedTurnId: string): void {
     if (agent.activeTurnId !== expectedTurnId) {
-      throw new Error("Active turn changed before steering could be delivered");
+      throw new ActiveTurnChangedError();
     }
   }
 

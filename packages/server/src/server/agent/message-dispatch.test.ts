@@ -1,0 +1,98 @@
+import { afterEach, expect, test } from "vitest";
+
+import {
+  createControlledHost,
+  createTraceRecorder,
+  SteerableControlledAgentSession,
+  type ControlledHost,
+} from "../test-utils/controlled-agent-client.js";
+import {
+  dispatchAgentMessage,
+  resolveDispatchIntent,
+  type DispatchIntent,
+  type DispatchTarget,
+} from "./message-dispatch.js";
+
+const IDLE: DispatchTarget = { run: null, canSteer: true };
+const PENDING: DispatchTarget = { run: { key: "run-1", started: false }, canSteer: true };
+const RUNNING_STEERABLE: DispatchTarget = { run: { key: "run-1", started: true }, canSteer: true };
+const RUNNING_PLAIN: DispatchTarget = { run: { key: "run-1", started: true }, canSteer: false };
+
+test.each<[string, DispatchTarget, DispatchIntent, ReturnType<typeof resolveDispatchIntent>]>([
+  ["idle", IDLE, "auto", { kind: "start" }],
+  ["idle", IDLE, "steer", { kind: "start" }],
+  ["idle", IDLE, "restart", { kind: "start" }],
+  ["idle", IDLE, "queue", { kind: "start" }],
+  ["pending", PENDING, "auto", { kind: "queue" }],
+  ["pending", PENDING, "steer", { kind: "steer", runKey: "run-1" }],
+  ["pending", PENDING, "restart", { kind: "restart", runKey: "run-1" }],
+  ["pending", PENDING, "queue", { kind: "queue" }],
+  ["running steerable", RUNNING_STEERABLE, "auto", { kind: "steer", runKey: "run-1" }],
+  ["running plain", RUNNING_PLAIN, "auto", { kind: "queue" }],
+  ["running plain", RUNNING_PLAIN, "steer", { kind: "steer", runKey: "run-1" }],
+  ["running plain", RUNNING_PLAIN, "restart", { kind: "restart", runKey: "run-1" }],
+  ["running steerable", RUNNING_STEERABLE, "queue", { kind: "queue" }],
+])("%s agent with %s intent resolves to %j", (_label, target, intent, expected) => {
+  expect(resolveDispatchIntent(target, intent)).toEqual(expected);
+});
+
+let host: ControlledHost | null = null;
+
+afterEach(async () => {
+  await host?.cleanup();
+  host = null;
+});
+
+test("a late steer becomes a new turn with the same messageId", async () => {
+  host = createControlledHost();
+  const agentId = await host.createAgent({ steerable: true });
+  await host.startTurn(agentId, "first task");
+  const session = host.session(agentId);
+  if (!(session instanceof SteerableControlledAgentSession)) throw new Error("not steerable");
+  session.steerOutcome = "late";
+
+  const disposition = await dispatchAgentMessage({
+    agentManager: host.agentManager,
+    agentStorage: host.agentStorage,
+    agentId,
+    prompt: "follow-up",
+    messageId: "msg-late",
+    policy: { kind: "intent", intent: "auto" },
+    logger: host.logger,
+  });
+
+  expect(disposition).toBe("started");
+  expect(session.startPrompts).toEqual(["first task", "follow-up"]);
+  expect(session.interruptCount).toBe(0);
+  expect(host.agentManager.getTimeline(agentId)).toContainEqual({
+    type: "user_message",
+    text: "follow-up",
+    clientMessageId: "msg-late",
+    messageId: "msg-late",
+  });
+});
+
+test("a queued message waits for the running turn instead of replacing it", async () => {
+  host = createControlledHost();
+  const agentId = await host.createAgent({ steerable: false });
+  await host.startTurn(agentId, "first task");
+  const session = host.session(agentId);
+  const trace = createTraceRecorder();
+
+  const delivered = dispatchAgentMessage({
+    agentManager: host.agentManager,
+    agentStorage: host.agentStorage,
+    agentId,
+    prompt: "next task",
+    messageId: "msg-queued",
+    policy: { kind: "intent", intent: "auto" },
+    logger: trace.logger,
+  });
+  await trace.waitFor("agent.dispatch.wait_for_turn");
+  expect(session.startPrompts).toEqual(["first task"]);
+  session.completeTurn("first done");
+
+  await expect(delivered).resolves.toBe("started");
+  expect(session.startPrompts).toEqual(["first task", "next task"]);
+  expect(session.interruptCount).toBe(0);
+});
