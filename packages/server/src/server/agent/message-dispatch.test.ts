@@ -115,6 +115,33 @@ test("a steered system message reaches the provider as its prompt and the timeli
   });
 });
 
+test("a prompt another agent sent records its origin on the user message", async () => {
+  host = createControlledHost();
+  const agentId = await host.createAgent({ steerable: false });
+
+  await dispatchAgentMessage({
+    agentManager: host.agentManager,
+    agentStorage: host.agentStorage,
+    agentId,
+    messageId: "mcp:parent:1",
+    policy: {
+      kind: "intent",
+      intent: "auto",
+      prompt: "Review the diff",
+      origin: { kind: "agent", agentId: "parent-agent" },
+    },
+    logger: host.logger,
+  });
+
+  expect(host.agentManager.getTimeline(agentId)).toContainEqual({
+    type: "user_message",
+    text: "Review the diff",
+    clientMessageId: "mcp:parent:1",
+    messageId: "mcp:parent:1",
+    origin: { kind: "agent", agentId: "parent-agent" },
+  });
+});
+
 test("a queued message waits for the running turn instead of replacing it", async () => {
   host = createControlledHost();
   const agentId = await host.createAgent({ steerable: false });

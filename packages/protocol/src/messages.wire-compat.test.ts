@@ -291,6 +291,38 @@ describe("wire schema compatibility", () => {
     expect(parsed.capabilities.supportsRewindBoth).toBe(false);
   });
 
+  test("user messages carry the agent that sent them, and old clients still parse them", () => {
+    const item = {
+      type: "user_message",
+      text: "Review the diff",
+      messageId: "mcp:parent:1",
+      clientMessageId: "mcp:parent:1",
+      origin: { kind: "agent", agentId: "parent-agent" },
+    };
+    expect(AgentTimelineItemPayloadSchema.parse(item)).toEqual(item);
+    expect(
+      AgentTimelineItemPayloadSchema.parse({
+        type: "user_message",
+        text: "hi",
+        origin: { kind: "user" },
+      }),
+    ).toEqual({ type: "user_message", text: "hi", origin: { kind: "user" } });
+
+    // Copied from v0.11.0-beta.3, before user messages had an origin.
+    const LegacyUserMessageSchema = z.object({
+      type: z.literal("user_message"),
+      text: z.string(),
+      messageId: z.string().optional(),
+      clientMessageId: z.string().optional(),
+    });
+    expect(LegacyUserMessageSchema.parse(item)).toEqual({
+      type: "user_message",
+      text: "Review the diff",
+      messageId: "mcp:parent:1",
+      clientMessageId: "mcp:parent:1",
+    });
+  });
+
   test("notification rows carry their prompt id and subagent source, and old clients still parse them", () => {
     const item = {
       type: "notification",

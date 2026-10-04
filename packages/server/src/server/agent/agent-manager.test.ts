@@ -11949,6 +11949,48 @@ test("a replayed wake envelope becomes its notification row again after a daemon
   ]);
 });
 
+test("a replayed prompt another agent sent keeps its origin after a daemon restart", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-origin-replay-"));
+  const annotationsDir = join(workdir, "prompt-annotations");
+  const manager = new AgentManager({
+    clients: {
+      codex: fakeCodexEmitting({
+        historyItems: [
+          { type: "user_message", text: "Review the diff", messageId: "msg_1" },
+          { type: "assistant_message", text: "Reviewed." },
+          { type: "user_message", text: "Review the diff", messageId: "msg_2" },
+        ],
+      }),
+    },
+    registry: new AgentStorage(join(workdir, "agents"), logger),
+    promptAnnotations: new PromptAnnotationStore(annotationsDir),
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-0000000005a4",
+  });
+  const snapshot = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+    workspaceId: undefined,
+  });
+  // Written by the daemon process that delivered the parent's prompt.
+  await new PromptAnnotationStore(annotationsDir).remember(snapshot.id, {
+    messageId: "mcp:parent:1",
+    text: "Review the diff",
+    annotation: { kind: "origin", origin: { kind: "agent", agentId: "parent-agent" } },
+  });
+
+  await manager.hydrateTimelineFromProvider(snapshot.id, { force: true });
+
+  expect(manager.getTimeline(snapshot.id)).toEqual([
+    {
+      type: "user_message",
+      text: "Review the diff",
+      messageId: "msg_1",
+      origin: { kind: "agent", agentId: "parent-agent" },
+    },
+    { type: "assistant_message", text: "Reviewed." },
+    { type: "user_message", text: "Review the diff", messageId: "msg_2" },
+  ]);
+});
+
 test("commandMayHaveChangedExternalState matches remote-state commands", () => {
   // GitHub PR operations (remote, no local file changes)
   expect(commandMayHaveChangedExternalState("gh pr merge 123")).toBe(true);

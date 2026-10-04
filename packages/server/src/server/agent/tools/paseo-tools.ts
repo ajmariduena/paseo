@@ -2297,6 +2297,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         messageId: input.messageId,
         intent: input.delivery,
         prompt: input.prompt,
+        ...(callerAgentId ? { origin: { kind: "agent" as const, agentId: callerAgentId } } : {}),
         logger: childLogger,
       });
     } catch (error) {

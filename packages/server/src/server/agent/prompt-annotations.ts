@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
-import { NotificationSourceSchema } from "@getpaseo/protocol/messages";
+import { MessageOriginSchema, NotificationSourceSchema } from "@getpaseo/protocol/messages";
 import { z } from "zod";
 
 import { writeJsonFileAtomic } from "../atomic-file.js";
@@ -15,7 +15,15 @@ const NotificationAnnotationSchema = z.object({
   source: NotificationSourceSchema.optional(),
 });
 
-const PromptAnnotationSchema = z.discriminatedUnion("kind", [NotificationAnnotationSchema]);
+const OriginAnnotationSchema = z.object({
+  kind: z.literal("origin"),
+  origin: MessageOriginSchema,
+});
+
+const PromptAnnotationSchema = z.discriminatedUnion("kind", [
+  NotificationAnnotationSchema,
+  OriginAnnotationSchema,
+]);
 
 const EntrySchema = z.object({
   messageId: z.string(),
@@ -28,7 +36,7 @@ const FileSchema = z.object({
   entries: z.array(EntrySchema),
 });
 
-/** How a prompt the daemon sent appears in the timeline instead of a plain user message. */
+/** How a prompt the daemon sent appears in the timeline: as a notification, or with its sender. */
 export type PromptAnnotation = z.infer<typeof PromptAnnotationSchema>;
 export type NotificationAnnotation = z.infer<typeof NotificationAnnotationSchema>;
 type Entry = z.infer<typeof EntrySchema>;

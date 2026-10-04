@@ -270,6 +270,7 @@ function buildAgentManagerSpies() {
     tryRunOutOfBand: vi.fn().mockReturnValue(false),
     subscribe: vi.fn().mockReturnValue(() => {}),
     streamAgent: vi.fn(() => (async function* noop() {})()),
+    annotatePrompt: vi.fn().mockResolvedValue(undefined),
     waitForAgentRunStart: vi.fn().mockResolvedValue(undefined),
     respondToPermission: vi.fn(),
     cancelAgentRun: vi.fn(),
@@ -3358,6 +3359,14 @@ describe("create_agent MCP tool", () => {
     expect(response.structuredContent.guidance).toBe(
       "You will get notified when the created agent finishes, errors, or needs permission. Do not poll for status; continue with other work until the notification arrives.",
     );
+    const [[, , runOptions]] = spies.agentManager.streamAgent.mock.calls as unknown as Array<
+      [string, string, { clientMessageId: string }]
+    >;
+    expect(spies.agentManager.annotatePrompt).toHaveBeenCalledWith("child-agent", {
+      messageId: runOptions.clientMessageId,
+      prompt: "Do work",
+      annotation: { kind: "origin", origin: { kind: "agent", agentId: "parent-agent" } },
+    });
   });
 
   it("creates detached caller agents without a parent label", async () => {
@@ -4040,6 +4049,11 @@ describe("send_agent_prompt MCP tool", () => {
     expect(response.structuredContent.guidance).toBe(
       "You will get notified when the prompted agent finishes, errors, or needs permission. Do not poll for status; continue with other work until the notification arrives.",
     );
+    expect(spies.agentManager.annotatePrompt).toHaveBeenCalledWith("child-agent", {
+      messageId: expect.stringMatching(/^mcp:/),
+      prompt: "Follow up",
+      annotation: { kind: "origin", origin: { kind: "agent", agentId: "parent-agent" } },
+    });
   });
 
   it("leaves the result to the voice call when the caller acts for the user", async () => {

@@ -6,6 +6,7 @@ import type { AgentStorage } from "./agent-storage.js";
 import { ensureAgentLoaded } from "./agent-loading.js";
 import { startAgentRun, type StartAgentRunOptions } from "./agent-prompt.js";
 import type { NotificationAnnotation } from "./prompt-annotations.js";
+import type { MessageOrigin } from "@getpaseo/protocol/agent-types";
 
 export type DispatchIntent = "auto" | "steer" | "restart" | "queue";
 
@@ -60,6 +61,8 @@ export type DispatchPolicy =
       kind: "intent";
       intent: DispatchIntent;
       prompt: AgentPromptInput;
+      /** Omitted for the user's own prompts. */
+      origin?: MessageOrigin;
       onQueued?: () => void;
     }
   | {
@@ -161,7 +164,15 @@ function resolveMode(params: DispatchAgentMessageParams): DispatchMode {
 
 async function preparePrompt(params: DispatchAgentMessageParams): Promise<AgentPromptInput | null> {
   if (params.policy.kind === "intent") {
-    return params.policy.prompt;
+    const { prompt, origin } = params.policy;
+    if (origin) {
+      await params.agentManager.annotatePrompt(params.agentId, {
+        messageId: params.messageId,
+        prompt,
+        annotation: { kind: "origin", origin },
+      });
+    }
+    return prompt;
   }
   const message = await params.policy.prepare();
   if (!message) {
@@ -169,7 +180,7 @@ async function preparePrompt(params: DispatchAgentMessageParams): Promise<AgentP
   }
   await params.agentManager.annotatePrompt(params.agentId, {
     messageId: params.messageId,
-    text: message.prompt,
+    prompt: message.prompt,
     annotation: { kind: "notification", ...message.notification },
   });
   return message.prompt;
@@ -261,16 +272,17 @@ export async function dispatchAgentMessageInBackground(
   params: Omit<DispatchAgentMessageParams, "policy"> & {
     intent: DispatchIntent;
     prompt: AgentPromptInput;
+    origin?: MessageOrigin;
   },
 ): Promise<BackgroundDispatch> {
-  const { intent, prompt, ...rest } = params;
+  const { intent, prompt, origin, ...rest } = params;
   let markQueued: () => void = () => undefined;
   const queued = new Promise<"queued">((resolve) => {
     markQueued = () => resolve("queued");
   });
   const settled = dispatchAgentMessage({
     ...rest,
-    policy: { kind: "intent", intent, prompt, onQueued: markQueued },
+    policy: { kind: "intent", intent, prompt, origin, onQueued: markQueued },
   });
   const disposition = await Promise.race([settled, queued]);
   return { disposition, settled };

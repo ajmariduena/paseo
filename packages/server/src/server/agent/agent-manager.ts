@@ -89,9 +89,9 @@ import { buildPaseoOrchestrationInstructions } from "./orchestration-instruction
 import { composeSystemPromptParts } from "./system-prompt.js";
 import {
   PromptAnnotationStore,
-  type AnnotatedPrompt,
   type HistoryAnnotationMatcher,
   type NotificationAnnotation,
+  type PromptAnnotation,
 } from "./prompt-annotations.js";
 import {
   ProviderSubagentStore,
@@ -136,8 +136,8 @@ function toNotificationItem(
 }
 
 /**
- * A replayed user message the daemon sent as a notification becomes that notification again.
- * Other daemon envelopes have no timeline row.
+ * A replayed user message the daemon sent as a notification becomes that notification again, and
+ * one another agent sent gets its origin back. Other daemon envelopes have no timeline row.
  */
 function presentReplayedItem(
   item: AgentTimelineItem,
@@ -150,7 +150,13 @@ function presentReplayedItem(
   if (matched?.annotation.kind === "notification") {
     return toNotificationItem(matched.messageId, matched.annotation);
   }
-  return isSystemInjectedEnvelope(item.text) ? null : item;
+  if (isSystemInjectedEnvelope(item.text)) {
+    return null;
+  }
+  if (matched?.annotation.kind === "origin") {
+    return { ...item, origin: matched.annotation.origin };
+  }
+  return item;
 }
 
 function submittedPromptText(prompt: AgentPromptInput): string {
@@ -218,6 +224,12 @@ async function assertUsableWorkingDirectory(cwd: string): Promise<void> {
     }
     throw new Error(`Failed to access working directory: ${cwd}`, { cause: error });
   }
+}
+
+export interface PromptToAnnotate {
+  messageId: string;
+  prompt: AgentPromptInput;
+  annotation: PromptAnnotation;
 }
 
 interface NotificationPrompt {
@@ -3485,8 +3497,12 @@ export class AgentManager {
    * Records how a prompt the daemon is about to send should appear in the timeline. Call before
    * dispatching the prompt under `messageId`.
    */
-  async annotatePrompt(agentId: string, prompt: AnnotatedPrompt): Promise<void> {
-    await this.promptAnnotations.remember(agentId, prompt);
+  async annotatePrompt(agentId: string, input: PromptToAnnotate): Promise<void> {
+    await this.promptAnnotations.remember(agentId, {
+      messageId: input.messageId,
+      text: submittedPromptText(input.prompt),
+      annotation: input.annotation,
+    });
   }
 
   async deleteCommittedTimeline(agentId: string): Promise<void> {
@@ -5030,6 +5046,7 @@ export class AgentManager {
       text: submittedPromptText(prompt),
       clientMessageId,
       ...(options?.messageId ? { messageId: options.messageId } : {}),
+      ...(annotation?.kind === "origin" ? { origin: annotation.origin } : {}),
     };
     this.recordAndDispatchTimelineItem(agent.id, item, agent.provider, options?.turnId, options);
   }

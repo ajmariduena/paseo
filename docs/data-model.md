@@ -59,7 +59,7 @@ $PASEO_HOME/
 │   ├── {parentAgentId}.json             # Delegated tasks and wake cohorts of one parent
 │   └── by-child.json                    # childAgentId → parentAgentIds
 ├── prompt-annotations/
-│   └── {agentId}.json                   # How daemon-sent prompts appear in the agent's timeline
+│   └── {agentId}.json                   # Notification rows and senders of daemon-sent prompts
 ├── projects/
 │   ├── projects.json                    # Project registry
 │   ├── workspaces.json                  # Workspace registry
@@ -604,7 +604,7 @@ One file per parent agent, because every transition (finalize a child's result, 
 
 **Path:** `$PASEO_HOME/prompt-annotations/{agentId}.json`
 
-The timeline is rebuilt from provider history on load, and provider history keeps only the prompt text. When the daemon sends a prompt that should not read as a user message, such as a wake or a permission notification, it records the prompt's `messageId`, a SHA-256 of its text, and how to show it (a `notification` row with its `source`). Replayed user messages match entries by text hash, each entry once, in send order. A replayed `<paseo-system>` envelope without an entry has no timeline row. The newest 500 entries per agent are kept, and the file is deleted with the agent's state. Schema: `packages/server/src/server/agent/prompt-annotations.ts`.
+The timeline is rebuilt from provider history on load, and provider history keeps only the prompt text. When the daemon sends a prompt the user didn't write, it records the prompt's `messageId`, a SHA-256 of its text, and how to show it: a wake or permission notification becomes a `notification` row with its `source`, and a prompt another agent sent through its Paseo tools keeps its `origin`. Replayed user messages match entries by text hash, each entry once, in send order. A replayed `<paseo-system>` envelope without an entry has no timeline row. The newest 500 entries per agent are kept, and the file is deleted with the agent's state. Schema: `packages/server/src/server/agent/prompt-annotations.ts`.
 
 ---
 

@@ -404,8 +404,29 @@ export interface NotificationTimelineItem {
   source?: NotificationSource;
 }
 
+export interface UserMessageOrigin {
+  kind: "user";
+}
+
+export interface AgentMessageOrigin {
+  kind: "agent";
+  /** The agent that sent the prompt, through its Paseo tools. */
+  agentId: string;
+}
+
+/** Who wrote a user message. Absent means the user. */
+export type MessageOrigin = UserMessageOrigin | AgentMessageOrigin;
+
+export interface UserMessageTimelineItem {
+  type: "user_message";
+  text: string;
+  messageId?: string;
+  clientMessageId?: string;
+  origin?: MessageOrigin;
+}
+
 export type AgentTimelineItem =
-  | { type: "user_message"; text: string; messageId?: string; clientMessageId?: string }
+  | UserMessageTimelineItem
   | { type: "assistant_message"; text: string; messageId?: string }
   | { type: "reasoning"; text: string }
   | ToolCallTimelineItem

@@ -703,6 +703,11 @@ const ToolCallTimelineItemPayloadSchema: z.ZodType<ToolCallTimelineItem, unknown
     ToolCallCanceledPayloadSchema,
   ]);
 
+export const MessageOriginSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("user") }),
+  z.object({ kind: z.literal("agent"), agentId: z.string() }),
+]);
+
 export const NotificationSourceSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("subagent"),
@@ -725,6 +730,8 @@ export const AgentTimelineItemPayloadSchema: z.ZodType<AgentTimelineItem, unknow
     text: z.string(),
     messageId: z.string().optional(),
     clientMessageId: z.string().optional(),
+    // COMPAT(messageOrigin): added in v0.11.0, keep optional; older daemons never send it.
+    origin: MessageOriginSchema.optional(),
   }),
   z.object({
     type: z.literal("assistant_message"),

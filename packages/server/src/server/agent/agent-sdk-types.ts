@@ -9,6 +9,7 @@ import type {
   NotificationTimelineItem,
   ProviderOptions,
   ToolPolicy,
+  UserMessageTimelineItem,
 } from "@getpaseo/protocol/agent-types";
 import type { AgentAttachment } from "@getpaseo/protocol/messages";
 import type { PaseoToolCatalog } from "./tools/types.js";
@@ -395,7 +396,7 @@ export interface PluginTimelineItem {
 }
 
 export type AgentTimelineItem =
-  | { type: "user_message"; text: string; messageId?: string; clientMessageId?: string }
+  | UserMessageTimelineItem
   | { type: "assistant_message"; text: string; messageId?: string }
   | { type: "reasoning"; text: string }
   | ToolCallTimelineItem
