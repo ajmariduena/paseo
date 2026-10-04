@@ -300,7 +300,7 @@ async function enqueue(params: DispatchAgentMessageParams): Promise<MessageDispo
     return "dropped";
   }
   const queued = await params.agentManager.messageQueue.enqueue(params.agentId, entry, (delivery) =>
-    deliverQueued(params, delivery),
+    deliverQueuedMessage(params, delivery),
   );
   params.logger.trace(
     { agentId: params.agentId, messageId: params.messageId },
@@ -338,9 +338,10 @@ async function queueEntry(params: DispatchAgentMessageParams): Promise<NewQueueE
   };
 }
 
-async function deliverQueued(
+/** Starts (or steers) a message the queue handed over; a newer run makes it `busy`. */
+export async function deliverQueuedMessage(
   params: DispatchAgentMessageParams,
-  delivery: QueueDelivery,
+  delivery: Pick<QueueDelivery, "prompt" | "mode">,
 ): Promise<QueueDeliveryResult> {
   const queuedParams =
     params.policy.kind === "intent" && delivery.prompt !== null
@@ -388,21 +389,27 @@ async function loadAgent(params: DispatchAgentMessageParams): Promise<void> {
 }
 
 /**
- * Delivers a queued user or agent message that has no in-process sender, such as one that
- * survived a restart. System entries are process-bound and are dropped.
+ * Delivers a queued message that has no in-process sender, such as one that survived a
+ * restart. Wakes go back to their delegation; system entries are process-bound and dropped.
  */
 export function createRestoredEntryDeliverer(
-  deps: Pick<DispatchAgentMessageParams, "agentManager" | "agentStorage" | "logger">,
+  deps: Pick<DispatchAgentMessageParams, "agentManager" | "agentStorage" | "logger"> & {
+    deliverWake: FallbackQueueDeliverer;
+  },
 ): FallbackQueueDeliverer {
+  const { deliverWake, ...dispatchDeps } = deps;
   return async (agentId, delivery) => {
     const { entry, prompt } = delivery;
+    if (entry.origin === "delegation_wake") {
+      return await deliverWake(agentId, delivery);
+    }
     if (prompt === null) {
       deps.logger.info({ agentId, entryId: entry.id }, "agent.queue.dropped_process_bound");
       return "dropped";
     }
     const sender = entry.senderAgentId;
     const params: DispatchAgentMessageParams = {
-      ...deps,
+      ...dispatchDeps,
       agentId,
       messageId: entry.id,
       policy: {
@@ -414,7 +421,7 @@ export function createRestoredEntryDeliverer(
         clearPendingPermissions: sender === null,
       },
     };
-    return await deliverQueued(params, delivery);
+    return await deliverQueuedMessage(params, delivery);
   };
 }
 

@@ -72,6 +72,7 @@ $PASEO_HOME/
 ├── scratch/
 │   └── {workspaceId}/                   # One directory per "No project" workspace; kept on archive
 ├── runtime/
+│   ├── restart-intents.json             # Runs a graceful shutdown cut short; consumed at the next boot
 │   └── managed-processes/
 │       └── {recordId}.json              # Helper processes owned by Paseo; reconciled on daemon bootstrap
 ├── plugins/
@@ -613,6 +614,14 @@ Messages that arrived while the agent's turn was running, delivered one per sett
 - **Hold:** `held` with `heldReason` `failure` (the turn that just ended failed), `user_stop`, or `restart`. A held queue delivers nothing until `agent.queue.resume`; a message sent to an idle agent still starts.
 
 The prompt file is written before the queue file references it and deleted after the queue file stops referencing it. `load` at boot removes prompt files nothing references.
+
+---
+
+## Restart Intents
+
+**Path:** `$PASEO_HOME/runtime/restart-intents.json`
+
+Written by a graceful shutdown before agents close, because closing persists every agent as `closed` and the record no longer says which ones were mid-turn. It lists the cut runs (`agentId`, `provider`, in-memory `runKey`, `cutAt`). Boot reads it, adds every agent whose record still says `running` or `initializing` (a crash writes no intents), settles delegations, and deletes the file. Schema: `packages/server/src/server/restart/restart-intent-store.ts`.
 
 ---
 

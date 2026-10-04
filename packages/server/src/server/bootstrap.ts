@@ -163,6 +163,8 @@ import { DelegationStore } from "./delegation/delegation-store.js";
 import { PromptAnnotationStore } from "./agent/prompt-annotations.js";
 import { AgentQueueStore } from "./agent-queue/store.js";
 import { createRestoredEntryDeliverer } from "./agent/message-dispatch.js";
+import { RestartIntentStore } from "./restart/restart-intent-store.js";
+import { RestartRecovery } from "./restart/restart-recovery.js";
 import { DaemonConfigStore, type MutableDaemonConfig } from "./daemon-config-store.js";
 import { createOrchestrationSkills } from "./orchestration-skills/index.js";
 import { resolveConfigFromPersisted, type CliConfigOverrides } from "./config.js";
@@ -1037,6 +1039,13 @@ export async function createPaseoDaemon(
     agentStorage,
     logger,
   });
+  const restartRecovery = new RestartRecovery({
+    intents: RestartIntentStore.at(config.paseoHome),
+    agentManager,
+    agentStorage,
+    delegations,
+    logger,
+  });
   const syncPluginProviders = () => {
     agentManager.updateProviderRegistry(
       providerSnapshotManager.replacePluginProviders(pluginRuntime.getProviderRegistrations()),
@@ -1053,9 +1062,18 @@ export async function createPaseoDaemon(
   await agentStorage.initialize();
   logger.info({ elapsed: elapsed() }, "Agent storage initialized");
   agentManager.messageQueue.setFallbackDeliverer(
-    createRestoredEntryDeliverer({ agentManager, agentStorage, logger }),
+    createRestoredEntryDeliverer({
+      agentManager,
+      agentStorage,
+      logger,
+      deliverWake: (agentId, delivery) => delegations.deliverQueuedWake(agentId, delivery),
+    }),
   );
-  await agentManager.messageQueue.load();
+  // A damaged queue or delegation file must not keep the daemon from starting.
+  await agentManager.messageQueue
+    .load()
+    .then(() => restartRecovery.holdQueues())
+    .catch((error: unknown) => logger.error({ err: error }, "Failed to restore agent queues"));
   await bootstrapWorkspaceRegistries({
     serverId,
     paseoHome: config.paseoHome,
@@ -1861,6 +1879,11 @@ export async function createPaseoDaemon(
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();
             providerSnapshotManager.settlePluginProviders();
+            await restartRecovery
+              .recoverDelegations()
+              .catch((error: unknown) =>
+                logger.error({ err: error }, "Failed to recover delegations after restart"),
+              );
             wsServer.beginAcceptingConnections();
             relayRuntime = createRelayRuntime({
               config: {
@@ -1932,6 +1955,9 @@ export async function createPaseoDaemon(
     // Freeze both ingress and registration before taking the agent closure snapshot.
     wsServer?.prepareForShutdown();
     agentManager.prepareForShutdown();
+    await restartRecovery
+      .prepareForShutdown()
+      .catch((error: unknown) => logger.error({ err: error }, "Failed to record restart intents"));
     // Closing agents for shutdown is not a child result; running tasks stay running on disk.
     delegations.close();
     await closeAllAgents(logger, agentManager);

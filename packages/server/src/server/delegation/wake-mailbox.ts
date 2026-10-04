@@ -3,10 +3,13 @@ import type { Logger } from "pino";
 import type { AgentManager } from "../agent/agent-manager.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
 import {
+  deliverQueuedMessage,
   dispatchAgentMessage,
+  type DispatchPolicy,
   type MessageDisposition,
   type SystemMessage,
 } from "../agent/message-dispatch.js";
+import type { QueueDelivery, QueueDeliveryResult } from "../agent-queue/runner.js";
 import type { DelegationStore, DeliveryRef, PlanContext, WakeOffer } from "./delegation-store.js";
 import { renderWakeMessage } from "./wake-text.js";
 
@@ -21,6 +24,10 @@ export interface WakeMailboxOptions {
   /** Whether the agent's most recent turn ended cancelled. */
   wasLastTurnCancelled(agentId: string): boolean;
   logger: Logger;
+}
+
+interface RenderedTasks {
+  taskIds: string[];
 }
 
 interface PreparedWake {
@@ -91,24 +98,14 @@ export class WakeMailbox {
     if (!initial) {
       return;
     }
-    let rendered: string[] = initial.taskIds;
+    const rendered: RenderedTasks = { taskIds: initial.taskIds };
     const disposition: MessageDisposition = await dispatchAgentMessage({
       agentManager,
       agentStorage,
       agentId: parentAgentId,
       messageId: offer.messageId,
       policy: {
-        kind: "system",
-        maySteer: initial.maySteer,
-        prepare: async () => {
-          const wake = await this.prepare(offer);
-          rendered = wake?.taskIds ?? [];
-          return wake?.message ?? null;
-        },
-        queueAs: {
-          origin: "delegation_wake",
-          wake: { cohortKey: offer.cohortKey, generation: offer.generation },
-        },
+        ...this.systemPolicy(offer, initial.maySteer, rendered),
         onQueued: async () => {
           await store.markQueued(parentAgentId, offer);
         },
@@ -116,7 +113,68 @@ export class WakeMailbox {
       logger,
     });
     logger.trace({ ...offer, disposition }, "delegation.wake.dispatched");
+    await this.settleDispatch(offer, disposition, rendered.taskIds);
+  }
 
+  /**
+   * Delivers a wake that waited in the parent's queue without its in-process sender, as after
+   * a restart. A newer run on the parent reports `busy` so the queue keeps the entry.
+   */
+  async deliverQueued(offer: WakeOffer, mode: QueueDelivery["mode"]): Promise<QueueDeliveryResult> {
+    const { agentManager, agentStorage, logger } = this.options;
+    const initial = await this.prepare(offer);
+    if (!initial) {
+      return "dropped";
+    }
+    const rendered: RenderedTasks = { taskIds: initial.taskIds };
+    const result = await deliverQueuedMessage(
+      {
+        agentManager,
+        agentStorage,
+        agentId: offer.parentAgentId,
+        messageId: offer.messageId,
+        policy: this.systemPolicy(offer, initial.maySteer, rendered),
+        logger,
+      },
+      { prompt: null, mode },
+    );
+    logger.trace({ ...offer, result }, "delegation.wake.dispatched_from_queue");
+    if (result === "busy") {
+      return result;
+    }
+    void this.settleDispatch(offer, result, rendered.taskIds).catch((error: unknown) => {
+      logger.error({ err: error, ...offer }, "delegation.wake.settle_failed");
+    });
+    return result;
+  }
+
+  private systemPolicy(
+    offer: WakeOffer,
+    maySteer: boolean,
+    rendered: RenderedTasks,
+  ): Extract<DispatchPolicy, { kind: "system" }> {
+    return {
+      kind: "system",
+      maySteer,
+      prepare: async () => {
+        const wake = await this.prepare(offer);
+        rendered.taskIds = wake?.taskIds ?? [];
+        return wake?.message ?? null;
+      },
+      queueAs: {
+        origin: "delegation_wake",
+        wake: { cohortKey: offer.cohortKey, generation: offer.generation },
+      },
+    };
+  }
+
+  private async settleDispatch(
+    offer: WakeOffer,
+    disposition: MessageDisposition,
+    rendered: string[],
+  ): Promise<void> {
+    const { store } = this.options;
+    const parentAgentId = offer.parentAgentId;
     switch (disposition) {
       case "steered":
       case "out_of_band": {
@@ -153,6 +211,8 @@ export class WakeMailbox {
     if (runKey) {
       await agentManager.waitForRunSettled(parentAgentId, runKey);
     }
+    // A shutdown cut this turn; boot recovery hands its results to a successor wake.
+    if (this.closed) return;
     const successor = await store.settleWakeRun(
       parentAgentId,
       offer,

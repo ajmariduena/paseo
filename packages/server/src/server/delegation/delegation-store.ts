@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 
@@ -250,6 +250,31 @@ export class DelegationStore {
 
   async get(parentAgentId: string): Promise<DelegationFile | null> {
     return await this.read(parentAgentId);
+  }
+
+  /** Boot index: every parent with a delegation file. One directory scan today. */
+  async listParents(): Promise<string[]> {
+    let names: string[];
+    try {
+      names = await readdir(this.directory);
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
+      throw error;
+    }
+    return names
+      .filter((name) => name.endsWith(".json") && name !== "by-child.json")
+      .map((name) => name.slice(0, -".json".length));
+  }
+
+  /** A queued wake whose queue entry is gone goes back to undispatched, to be offered again. */
+  async unmarkQueued(parentAgentId: string, ref: DeliveryRef): Promise<boolean> {
+    return await this.mutateExisting(parentAgentId, false, (file) => {
+      const cohort = file.cohorts[ref.cohortKey];
+      if (!cohort?.delivery || !matchesDelivery(cohort, ref)) return false;
+      if (cohort.delivery.dispatch.kind !== "queued") return false;
+      cohort.delivery.dispatch = { kind: "none" };
+      return true;
+    });
   }
 
   /** Idempotent on task id. A newer task for the same child supersedes an older pending one. */

@@ -189,3 +189,31 @@ test("a prompt over the size cap is rejected before anything is written", async 
   );
   expect(readdirSync(root)).toEqual([]);
 });
+
+test("a restart drops process-bound system entries and holds the rest", async () => {
+  const store = new AgentQueueStore(root);
+  await store.enqueue("agent-1", userMessage("m1"), NOW);
+  await store.enqueue(
+    "agent-1",
+    { ...wake("perm:child:req-1", 0), origin: "system", wake: null },
+    NOW,
+  );
+  await store.enqueue("agent-1", wake("wake-1", 1), NOW);
+  await store.enqueue(
+    "agent-2",
+    { ...wake("perm:child:req-2", 0), origin: "system", wake: null },
+    NOW,
+  );
+
+  expect((await store.holdForRestart("agent-1")).map((entry) => entry.id)).toEqual([
+    "perm:child:req-1",
+  ]);
+  await store.holdForRestart("agent-2");
+
+  expect(store.peek("agent-1")).toMatchObject({
+    held: true,
+    heldReason: "restart",
+    entries: [{ id: "m1" }, { id: "wake-1" }],
+  });
+  expect(store.peek("agent-2")).toBeNull();
+});

@@ -6,12 +6,15 @@ import type { AgentManager, AgentManagerEvent, ManagedAgent } from "../agent/age
 import { setupPermissionNotification } from "../agent/agent-prompt.js";
 import { hasPendingDispatch } from "../agent/message-dispatch.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
+import { ensureAgentLoaded } from "../agent/agent-loading.js";
+import type { QueueDelivery, QueueDeliveryResult } from "../agent-queue/runner.js";
 import {
   isDeliveryFinal,
   type DelegationStore,
   type DelegationTask,
   type PlanContext,
   type TerminalTaskStatus,
+  type WakeOffer,
 } from "./delegation-store.js";
 import { WakeMailbox } from "./wake-mailbox.js";
 
@@ -51,6 +54,7 @@ export class DelegationService {
   private readonly queuedChildChecks = new Set<string>();
   private readonly finalizeWaiters = new Set<() => void>();
   private readonly unsubscribe: () => void;
+  private closed = false;
 
   constructor(options: DelegationServiceOptions) {
     this.store = options.store;
@@ -71,6 +75,7 @@ export class DelegationService {
   }
 
   close(): void {
+    this.closed = true;
     this.unsubscribe();
     this.mailbox.close();
   }
@@ -235,6 +240,146 @@ export class DelegationService {
     }
   }
 
+  /**
+   * Boot pass after a restart, before anything is live. A child the restart cut reports
+   * `cancelled`; a wake turn the restart cut gives its results back to a successor wake; a wake
+   * that was claimed but never dispatched is offered once; a wake waiting in the parent's queue
+   * stays there, held with the rest of the queue. A child that had settled before the restart
+   * but whose result was not recorded yet is reloaded so its result comes from its history.
+   */
+  async recoverAfterRestart(cutAgentIds: ReadonlySet<string>): Promise<void> {
+    const offers = new Map<string, WakeOffer>();
+    const settledChildren = new Map<string, string[]>();
+    for (const parentAgentId of await this.store.listParents()) {
+      for (const offer of await this.recoverDeliveries(parentAgentId)) {
+        offers.set(offer.messageId, offer);
+      }
+      const file = await this.store.get(parentAgentId);
+      const runningTasks = Object.values(file?.tasks ?? {}).filter(
+        (task) => task.status === "running",
+      );
+      for (const task of runningTasks) {
+        const childRecord = await this.agentStorage.get(task.childAgentId);
+        const childGone = !childRecord || Boolean(childRecord.archivedAt);
+        if (childGone || cutAgentIds.has(task.childAgentId)) {
+          const offer = await this.finalizeCutTask(parentAgentId, task, childGone);
+          if (offer) offers.set(offer.messageId, offer);
+          continue;
+        }
+        const parents = settledChildren.get(task.childAgentId) ?? [];
+        settledChildren.set(task.childAgentId, [...parents, parentAgentId]);
+      }
+    }
+    this.logger.info(
+      { offers: offers.size, settledChildren: settledChildren.size },
+      "delegation.recovered_after_restart",
+    );
+    for (const offer of offers.values()) this.mailbox.offer(offer);
+    for (const [childAgentId, parents] of settledChildren) {
+      void this.reloadSettledChild(childAgentId, parents);
+    }
+  }
+
+  /** Delivers a wake that waited in the parent's queue across a restart. */
+  async deliverQueuedWake(
+    parentAgentId: string,
+    delivery: QueueDelivery,
+  ): Promise<QueueDeliveryResult> {
+    const { wake } = delivery.entry;
+    if (!wake) return "dropped";
+    return await this.mailbox.deliverQueued(
+      { parentAgentId, ...wake, messageId: delivery.entry.id },
+      delivery.mode,
+    );
+  }
+
+  private async recoverDeliveries(parentAgentId: string): Promise<WakeOffer[]> {
+    const file = await this.store.get(parentAgentId);
+    if (!file) return [];
+    const queuedIds = new Set(
+      this.agentManager.messageQueue.entries(parentAgentId).map((entry) => entry.id),
+    );
+    const offers: WakeOffer[] = [];
+    for (const [cohortKey, cohort] of Object.entries(file.cohorts)) {
+      const delivery = cohort.delivery;
+      if (!delivery || cohort.disposition !== "open") continue;
+      const offer: WakeOffer = {
+        parentAgentId,
+        cohortKey,
+        generation: delivery.generation,
+        messageId: delivery.messageId,
+      };
+      switch (delivery.dispatch.kind) {
+        case "started": {
+          const successor = await this.store.settleWakeRun(
+            parentAgentId,
+            offer,
+            { cancelled: true },
+            await this.planContext(parentAgentId),
+            new Date().toISOString(),
+          );
+          if (successor) offers.push(successor);
+          break;
+        }
+        case "queued":
+          if (!queuedIds.has(delivery.messageId)) {
+            await this.store.unmarkQueued(parentAgentId, offer);
+            offers.push(offer);
+          }
+          break;
+        case "none":
+          if (queuedIds.has(delivery.messageId)) {
+            await this.store.markQueued(parentAgentId, offer);
+          } else {
+            offers.push(offer);
+          }
+          break;
+      }
+    }
+    return offers;
+  }
+
+  private async finalizeCutTask(
+    parentAgentId: string,
+    task: DelegationTask,
+    childGone: boolean,
+  ): Promise<WakeOffer | null> {
+    const status: TerminalTaskStatus = childGone ? "interrupted" : "cancelled";
+    const childRecord = await this.agentStorage.get(task.childAgentId);
+    const ownedByParent = getParentAgentIdFromLabels(childRecord?.labels) === parentAgentId;
+    const offer = await this.store.finalizeTask(
+      parentAgentId,
+      task.id,
+      {
+        status,
+        result: `Child task ended with status ${status}.`,
+        wake: task.source !== "create_agent" || ownedByParent,
+      },
+      await this.planContext(parentAgentId),
+      new Date().toISOString(),
+    );
+    this.logger.trace({ parentAgentId, taskId: task.id, status, offer }, "delegation.finalized");
+    return offer;
+  }
+
+  /**
+   * Its history holds the result the restart kept from being recorded. Tracked only once
+   * loaded, so a state event mid-load cannot capture the result before the history replays.
+   */
+  private async reloadSettledChild(childAgentId: string, parents: string[]): Promise<void> {
+    try {
+      await ensureAgentLoaded(childAgentId, {
+        agentManager: this.agentManager,
+        agentStorage: this.agentStorage,
+        logger: this.logger,
+      });
+    } catch (error) {
+      this.logger.warn({ err: error, childAgentId }, "delegation.settled_child_reload_failed");
+    }
+    for (const parentAgentId of parents) this.trackRunningChild(childAgentId, parentAgentId);
+    this.scheduleChildCheck(childAgentId);
+  }
+
   async disposeForArchivedAgent(agentId: string): Promise<void> {
     await this.store.disposeAll(agentId, new Date().toISOString());
   }
@@ -282,6 +427,8 @@ export class DelegationService {
       return;
     }
     await this.agentManager.waitForRunToSettle(childAgentId);
+    // Shutdown closes children without settling their work; boot recovery reports them.
+    if (this.closed) return;
     const child = this.agentManager.getAgent(childAgentId);
     const stillWorking =
       child !== null &&

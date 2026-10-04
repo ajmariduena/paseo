@@ -270,6 +270,20 @@ export class AgentQueueStore {
     });
   }
 
+  /**
+   * After a restart: process-bound system entries are dropped and whatever remains is held
+   * until someone resumes it. Returns the dropped entries.
+   */
+  async holdForRestart(agentId: string): Promise<AgentQueueEntry[]> {
+    return await this.mutate(agentId, (file) => {
+      const dropped = file.entries.filter((entry) => entry.origin === "system");
+      file.entries = file.entries.filter((entry) => entry.origin !== "system");
+      file.held = true;
+      file.heldReason = "restart";
+      return dropped;
+    });
+  }
+
   /** Empties the queue and returns what it held. */
   async clear(agentId: string): Promise<AgentQueueEntry[]> {
     const removed = await this.mutate(agentId, (file) => {

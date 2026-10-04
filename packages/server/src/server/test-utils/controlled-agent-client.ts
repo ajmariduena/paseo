@@ -10,6 +10,7 @@ import { AgentStorage } from "../agent/agent-storage.js";
 import { createTestLogger } from "../../test-utils/test-logger.js";
 
 import type {
+  AgentPersistenceHandle,
   AgentBackgroundTask,
   AgentCapabilityFlags,
   AgentClient,
@@ -37,7 +38,6 @@ const CAPABILITIES: AgentCapabilityFlags = {
  */
 export class ControlledAgentSession implements AgentSession {
   readonly capabilities = CAPABILITIES;
-  readonly id = randomUUID();
   readonly startPrompts: AgentPromptInput[] = [];
   readonly steerPrompts: AgentPromptInput[] = [];
   interruptCount = 0;
@@ -48,7 +48,12 @@ export class ControlledAgentSession implements AgentSession {
   private turnCounter = 0;
   private pendingTurnStart: { turnId: string; timer: NodeJS.Timeout } | null = null;
 
-  constructor(readonly provider: AgentProvider) {}
+  constructor(
+    readonly provider: AgentProvider,
+    readonly id: string = randomUUID(),
+    /** Timeline events replayed by `streamHistory`, shared with later resumes of this id. */
+    private readonly history: AgentStreamEvent[] = [],
+  ) {}
 
   async run(): Promise<AgentRunResult> {
     return { sessionId: this.id, finalText: "", timeline: [] };
@@ -57,6 +62,14 @@ export class ControlledAgentSession implements AgentSession {
   async startTurn(prompt: AgentPromptInput): Promise<{ turnId: string }> {
     this.startPrompts.push(prompt);
     const turnId = `turn-${++this.turnCounter}`;
+    if (typeof prompt === "string") {
+      this.history.push({
+        type: "timeline",
+        provider: this.provider,
+        turnId,
+        item: { type: "user_message", text: prompt },
+      });
+    }
     this.activeTurnId = turnId;
     this.pendingTurnStart = { turnId, timer: setTimeout(() => this.flushTurnStart(), 0) };
     return { turnId };
@@ -107,7 +120,9 @@ export class ControlledAgentSession implements AgentSession {
     };
   }
 
-  async *streamHistory(): AsyncGenerator<AgentStreamEvent> {}
+  async *streamHistory(): AsyncGenerator<AgentStreamEvent> {
+    yield* this.history.slice();
+  }
 
   async getRuntimeInfo() {
     return { provider: this.provider, sessionId: this.id, model: null, modeId: null };
@@ -145,6 +160,9 @@ export class ControlledAgentSession implements AgentSession {
   async close(): Promise<void> {}
 
   protected push(event: AgentStreamEvent): void {
+    if (event.type === "timeline") {
+      this.history.push(event);
+    }
     for (const callback of this.subscribers) {
       callback(event);
     }
@@ -183,9 +201,16 @@ export class ControlledAgentClient implements AgentClient {
   readonly capabilities = CAPABILITIES;
   readonly sessions: ControlledAgentSession[] = [];
 
+  /**
+   * Pass the same `histories` to a client in a second daemon to resume sessions across a
+   * restart with their timeline.
+   */
   constructor(
     readonly provider: AgentProvider,
-    private readonly options: { steerable: boolean },
+    private readonly options: {
+      steerable: boolean;
+      histories?: Map<string, AgentStreamEvent[]>;
+    },
   ) {}
 
   async isAvailable(): Promise<boolean> {
@@ -193,19 +218,38 @@ export class ControlledAgentClient implements AgentClient {
   }
 
   async createSession(): Promise<AgentSession> {
+    return this.openSession(randomUUID());
+  }
+
+  async resumeSession(handle: AgentPersistenceHandle): Promise<AgentSession> {
+    return this.openSession(handle.sessionId);
+  }
+
+  /** The session the agent with this persistence id runs on in this client. */
+  sessionFor(sessionId: string): ControlledAgentSession {
+    const session = this.sessions.findLast((candidate) => candidate.id === sessionId);
+    if (!session) {
+      throw new Error(`No ${this.provider} session ${sessionId}`);
+    }
+    return session;
+  }
+
+  private openSession(sessionId: string): ControlledAgentSession {
+    const histories = this.options.histories;
+    const history = histories?.get(sessionId) ?? [];
+    histories?.set(sessionId, history);
     const session = this.options.steerable
-      ? new SteerableControlledAgentSession(this.provider)
-      : new ControlledAgentSession(this.provider);
+      ? new SteerableControlledAgentSession(this.provider, sessionId, history)
+      : new ControlledAgentSession(this.provider, sessionId, history);
     this.sessions.push(session);
     return session;
   }
 
-  async resumeSession(): Promise<AgentSession> {
-    return await this.createSession();
-  }
-
   async fetchCatalog() {
-    return { models: [], modes: [] };
+    return {
+      models: [{ provider: this.provider, id: "controlled", label: "Controlled", isDefault: true }],
+      modes: [],
+    };
   }
 
   latestSession(): ControlledAgentSession {

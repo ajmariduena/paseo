@@ -186,6 +186,14 @@ export class AgentQueueRunner {
     this.kick(agentId);
   }
 
+  /** Boot: every queue that survived a restart waits for an explicit resume. */
+  async holdAllForRestart(): Promise<void> {
+    for (const agentId of this.store.agentIds()) {
+      const dropped = await this.store.holdForRestart(agentId);
+      this.logger.info({ agentId, dropped: dropped.length }, "agent.queue.held_after_restart");
+    }
+  }
+
   /** Archive: nothing queued for the agent is delivered. */
   async clear(agentId: string): Promise<void> {
     const removed = await this.store.clear(agentId);
