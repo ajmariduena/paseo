@@ -4835,6 +4835,188 @@ describe("get_orchestration_capabilities", () => {
   });
 });
 
+describe("get_agent_activity paging", () => {
+  it("continues after an append and acknowledges a delegated result read whole", async () => {
+    const host = createControlledHost();
+    const trace = createTraceRecorder();
+    const delegations = new DelegationService({
+      store: new DelegationStore(join(host.root, "delegations")),
+      agentManager: host.agentManager,
+      agentStorage: host.agentStorage,
+      logger: trace.logger,
+    });
+    try {
+      const parentId = await host.createAgent({ steerable: false });
+      const childId = await host.createAgent({
+        steerable: false,
+        labels: { [PARENT_AGENT_ID_LABEL]: parentId },
+      });
+      await host.startTurn(parentId, "parent work");
+      await host.startTurn(childId, "child work");
+      await delegations.delegate({
+        parentAgentId: parentId,
+        childAgentId: childId,
+        source: "create_agent",
+        title: "Child",
+        prompt: "child work",
+        requireParentOwnership: true,
+      });
+      const server = await createAgentMcpServer({
+        agentManager: host.agentManager,
+        agentStorage: host.agentStorage,
+        providerSnapshotManager: createOpenCodeManager().manager,
+        callerAgentId: parentId,
+        delegations,
+        logger: host.logger,
+      });
+      async function read(input: Record<string, unknown>) {
+        const response = await invokeToolWithParsedInput(
+          registeredTool(server, "get_agent_activity"),
+          { agentId: childId, ...input },
+        );
+        return response.structuredContent;
+      }
+
+      const first = await read({ view: "messages", afterPosition: 0 });
+      const firstItems = z
+        .array(z.object({ kind: z.string(), text: z.string() }))
+        .parse(first.items);
+      expect(first.hasMore).toBe(false);
+      const position = z.number().parse(first.nextPosition);
+
+      host.session(childId).completeTurn("x".repeat(30) + " the end");
+      await trace.waitFor("delegation.finalized");
+      const truncated = await read({
+        view: "messages",
+        afterPosition: position,
+        epoch: first.epoch,
+        maxCharsPerItem: 30,
+      });
+      expect(truncated.reset).toBeUndefined();
+      expect(truncated.items).toEqual([
+        expect.objectContaining({
+          kind: "assistant_message",
+          text: "x".repeat(30),
+          textTruncated: true,
+          nextTextOffset: 30,
+        }),
+      ]);
+      expect(firstItems.map((item) => item.text)).not.toContain("x".repeat(30) + " the end");
+      const pending = await delegations["store"].get(parentId);
+      expect(Object.values(pending?.tasks ?? {})[0]?.completionDelivery.state).toBe("claimed");
+
+      const whole = await read({ view: "messages", afterPosition: position });
+      expect(whole.items).toEqual([
+        expect.objectContaining({ text: "x".repeat(30) + " the end", textTruncated: false }),
+      ]);
+      const acknowledged = await delegations["store"].get(parentId);
+      expect(Object.values(acknowledged?.tasks ?? {})[0]?.completionDelivery.state).toBe(
+        "acknowledged",
+      );
+    } finally {
+      delegations.close();
+      await host.cleanup();
+    }
+  });
+
+  it("restarts at the latest page when the timeline epoch changed", async () => {
+    const host = createControlledHost();
+    try {
+      const agentId = await host.createAgent({ steerable: false });
+      await host.agentManager.appendTimelineItem(agentId, { type: "user_message", text: "hi" });
+      const server = await createAgentMcpServer({
+        agentManager: host.agentManager,
+        agentStorage: host.agentStorage,
+        providerSnapshotManager: createOpenCodeManager().manager,
+        logger: host.logger,
+      });
+      const response = await invokeToolWithParsedInput(
+        registeredTool(server, "get_agent_activity"),
+        { agentId, afterPosition: 99, epoch: "stale-epoch" },
+      );
+      expect(response.structuredContent).toMatchObject({
+        reset: true,
+        items: [expect.objectContaining({ kind: "user_message", text: "hi" })],
+      });
+    } finally {
+      await host.cleanup();
+    }
+  });
+});
+
+describe("list_agents scope filters", () => {
+  async function listFor(input: Record<string, unknown>): Promise<string[]> {
+    const { agentManager, agentStorage, spies } = createTestDeps();
+    const caller = createManagedAgent({
+      id: "caller",
+      cwd: "/tmp/workspace",
+      workspaceId: "ws-a",
+    });
+    spies.agentManager.getAgent.mockImplementation((agentId: string) =>
+      agentId === "caller" ? caller : null,
+    );
+    spies.agentManager.listAgents.mockReturnValue([
+      createManagedAgent({
+        id: "child-in-worktree",
+        cwd: "/tmp/worktrees/feature",
+        workspaceId: "ws-b",
+        labels: { [PARENT_AGENT_ID_LABEL]: "caller" },
+      }),
+      createManagedAgent({
+        id: "grandchild",
+        cwd: "/tmp/worktrees/feature",
+        workspaceId: "ws-b",
+        labels: { [PARENT_AGENT_ID_LABEL]: "child-in-worktree" },
+      }),
+      createManagedAgent({ id: "sibling", cwd: "/tmp/workspace", workspaceId: "ws-a" }),
+      createManagedAgent({ id: "other-project", cwd: "/tmp/other", workspaceId: "ws-c" }),
+    ]);
+    spies.agentStorage.get.mockImplementation(async (agentId: string) =>
+      agentId === "sibling" ? createStoredRecord({ id: agentId, title: "Review auth" }) : null,
+    );
+    const workspaces = [
+      { workspaceId: "ws-a", projectId: "project-1" },
+      { workspaceId: "ws-b", projectId: "project-1" },
+      { workspaceId: "ws-c", projectId: "project-2" },
+    ] as unknown as PersistedWorkspaceRecord[];
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      logger: createTestLogger(),
+      providerSnapshotManager: createClaudeOnlyManager(),
+      callerAgentId: "caller",
+      workspaceRegistry: {
+        get: async (workspaceId: string) =>
+          workspaces.find((workspace) => workspace.workspaceId === workspaceId) ?? null,
+        list: async () => workspaces,
+      } as unknown as WorkspaceRegistry,
+    });
+    const response = await registeredTool(server, "list_agents").handler(input);
+    return agentsOf(response)
+      .map((agent) => String(agent.id))
+      .sort();
+  }
+
+  it("finds the caller's subagents in any workspace", async () => {
+    expect(await listFor({ scope: "children" })).toEqual(["child-in-worktree"]);
+    expect(await listFor({ parentAgentId: "child-in-worktree" })).toEqual(["grandchild"]);
+  });
+
+  it("scopes to the caller's workspace or project", async () => {
+    expect(await listFor({})).toEqual(["sibling"]);
+    expect(await listFor({ scope: "workspace" })).toEqual(["sibling"]);
+    expect(await listFor({ scope: "project" })).toEqual([
+      "child-in-worktree",
+      "grandchild",
+      "sibling",
+    ]);
+  });
+
+  it("filters by title, case-insensitively", async () => {
+    expect(await listFor({ scope: "all", titleContains: "REVIEW" })).toEqual(["sibling"]);
+  });
+});
+
 describe("cancel_agent delegation", () => {
   it("drops the caller's pending wake for the cancelled child", async () => {
     const host = createControlledHost();

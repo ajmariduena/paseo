@@ -22,13 +22,23 @@ import {
   AgentSnapshotPayloadSchema,
   WorkspaceScriptPayloadSchema,
 } from "../../messages.js";
-import type { AgentListItemPayload } from "../../messages.js";
+import type { AgentListItemPayload, AgentSnapshotPayload } from "../../messages.js";
+import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
 import {
   buildStoredAgentPayload,
   toAgentListItemPayload,
   toAgentPayload,
 } from "../agent-projections.js";
 import { curateAgentActivity } from "../activity-curator.js";
+import {
+  DEFAULT_ACTIVITY_PAGE_LIMIT,
+  DEFAULT_MAX_CHARS_PER_ITEM,
+  MAX_ACTIVITY_PAGE_LIMIT,
+  MAX_CHARS_PER_ITEM,
+  readActivityPage,
+  type ActivityPage,
+  type ActivityView,
+} from "../activity-page.js";
 import { selectItemsByProjectedLimit } from "../timeline-projection.js";
 import type { AgentCreationRequest, AgentStorage, StoredAgentRecord } from "../agent-storage.js";
 import { ensureAgentLoaded } from "../agent-loading.js";
@@ -643,6 +653,39 @@ const OrchestrationCapabilitiesSchema = {
 
 /** Providers whose MCP client Paseo configures to allow a full wait_for_agent call. */
 const RAISED_TOOL_TIMEOUT_PROVIDERS = new Set(["claude", "codex"]);
+
+interface ListAgentsArgs {
+  includeArchived?: boolean;
+  cwd?: string;
+  sinceHours?: number;
+  statuses?: Array<z.infer<typeof AgentStatusEnum>>;
+  limit?: number;
+  scope?: "cwd" | "children" | "workspace" | "project" | "all";
+  parentAgentId?: string;
+  titleContains?: string;
+}
+
+interface GetAgentActivityArgs {
+  agentId: string;
+  limit?: number;
+  view?: ActivityView;
+  afterPosition?: number;
+  epoch?: string;
+  maxCharsPerItem?: number;
+  itemPosition?: number;
+  textOffset?: number;
+}
+
+function describeActivityPage(page: ActivityPage): string {
+  const first = page.items[0]?.position;
+  const last = page.items.at(-1)?.position;
+  const range =
+    first === undefined ? "No items" : `${page.items.length} items at positions ${first}-${last}`;
+  const more = page.hasMore
+    ? `; more after: pass afterPosition ${page.nextPosition}`
+    : "; no newer items";
+  return `${range}${more}.`;
+}
 
 type SendDisposition = "started" | "steered" | "queued" | "restarted" | "out_of_band" | "duplicate";
 
@@ -2529,7 +2572,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     "list_agents",
     {
       title: "List agents",
-      description: "List recent agents as compact metadata.",
+      description:
+        "List recent agents as compact metadata. By default, agents under your working directory; scope widens or narrows that.",
       inputSchema: {
         includeArchived: z.boolean().optional().default(false),
         cwd: z.string().optional(),
@@ -2542,16 +2586,34 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           .default(48),
         statuses: z.array(AgentStatusEnum).optional(),
         limit: z.number().int().positive().max(200).optional().default(50),
+        scope: z
+          .enum(["cwd", "children", "workspace", "project", "all"])
+          .optional()
+          .describe(
+            "cwd (default): under your working directory. children: your subagents, in any workspace. workspace: in your workspace. project: in any workspace of your project. all: every agent.",
+          ),
+        parentAgentId: z
+          .string()
+          .optional()
+          .describe("Only subagents of this agent, in any workspace unless scope says otherwise."),
+        titleContains: z
+          .string()
+          .trim()
+          .min(1)
+          .max(256)
+          .optional()
+          .describe("Case-insensitive title filter."),
       },
       outputSchema: {
         agents: z.array(AgentListItemPayloadSchema),
       },
     },
-    async ({ includeArchived = false, cwd, sinceHours = 48, statuses, limit = 50 }) => {
-      const callerCwd = callerAgentId ? resolveCallerAgent()?.cwd : undefined;
-      const requestedCwd = cwd?.trim() ? expandUserPath(cwd) : callerCwd;
+    async (args: ListAgentsArgs) => {
+      const { includeArchived = false, sinceHours = 48, statuses, limit = 50 } = args;
       const statusFilter = statuses && statuses.length > 0 ? new Set(statuses) : null;
       const sinceMs = Date.now() - sinceHours * 60 * 60 * 1000;
+      const inScope = await resolveAgentListScope(args);
+      const titleNeedle = args.titleContains?.toLowerCase();
       const liveSnapshots = agentManager.listAgents();
       const liveAgents = await Promise.all(
         liveSnapshots.map((snapshot) =>
@@ -2570,8 +2632,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         )
         .map((record) => buildStoredAgentPayload(record, registeredProviderIds));
       const agents = [...liveAgents, ...storedAgents]
+        .filter(inScope)
         .map(toAgentListItemPayload)
-        .filter((agent) => !requestedCwd || isSameOrDescendantPath(requestedCwd, agent.cwd))
+        .filter((agent) => !titleNeedle || agent.title?.toLowerCase().includes(titleNeedle))
         .filter((agent) => !statusFilter || statusFilter.has(agent.status))
         .filter((agent) => !agent.archivedAt || resolveAgentListActivityTime(agent) >= sinceMs)
         .sort(compareAgentListItems)
@@ -2583,6 +2646,45 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       };
     },
   );
+
+  async function resolveAgentListScope(
+    args: ListAgentsArgs,
+  ): Promise<(agent: AgentSnapshotPayload) => boolean> {
+    const caller = callerAgentId ? resolveCallerAgent() : null;
+    const scope = args.scope ?? (args.parentAgentId ? "all" : "cwd");
+    const explicitCwd = args.cwd?.trim() ? expandUserPath(args.cwd) : undefined;
+    const cwdFilter = explicitCwd ?? (scope === "cwd" ? caller?.cwd : undefined);
+    const parentFilter = args.parentAgentId ?? (scope === "children" ? callerAgentId : undefined);
+    if (scope === "children" && !parentFilter) {
+      throw new Error("scope children needs an agent-scoped caller or parentAgentId");
+    }
+    const workspaceIds = await resolveScopeWorkspaceIds(scope, caller?.workspaceId);
+    return (agent) =>
+      (!cwdFilter || isSameOrDescendantPath(cwdFilter, agent.cwd)) &&
+      (!parentFilter || getParentAgentIdFromLabels(agent.labels) === parentFilter) &&
+      (!workspaceIds || (agent.workspaceId !== undefined && workspaceIds.has(agent.workspaceId)));
+  }
+
+  async function resolveScopeWorkspaceIds(
+    scope: NonNullable<ListAgentsArgs["scope"]>,
+    callerWorkspaceId: string | undefined,
+  ): Promise<Set<string> | null> {
+    if (scope !== "workspace" && scope !== "project") return null;
+    if (!callerWorkspaceId) {
+      throw new Error(`scope ${scope} needs an agent-scoped caller with a workspace`);
+    }
+    if (scope === "workspace" || !options.workspaceRegistry) {
+      return new Set([callerWorkspaceId]);
+    }
+    const projectId = (await options.workspaceRegistry.get(callerWorkspaceId))?.projectId;
+    if (!projectId) return new Set([callerWorkspaceId]);
+    const workspaces = await options.workspaceRegistry.list();
+    return new Set(
+      workspaces
+        .filter((workspace) => workspace.projectId === projectId)
+        .map((workspace) => workspace.workspaceId),
+    );
+  }
 
   registerTool(
     "cancel_agent",
@@ -3648,61 +3750,152 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     "get_agent_activity",
     {
       title: "Get agent activity",
-      description: "Return recent agent timeline entries as a curated summary.",
+      description:
+        "Read an agent's timeline. Without paging fields, returns recent entries as a curated summary. Pass view, afterPosition, or itemPosition for paged items: afterPosition reads forward from a position (0 for the start, nextPosition from the previous page), itemPosition with textOffset continues one long item. Reading your delegated agent's final message whole means you will not also be notified of it.",
       inputSchema: {
         agentId: z.string(),
         limit: z
           .number()
           .optional()
-          .describe("Optional limit for number of activities to include (most recent first)."),
+          .describe(
+            "Summary: number of most recent activities. Paged: items per page (default 50, max 100).",
+          ),
+        view: z
+          .enum(["activity", "messages"])
+          .optional()
+          .describe("Paged read. messages: only user and assistant messages. Default activity."),
+        afterPosition: z
+          .number()
+          .int()
+          .nonnegative()
+          .optional()
+          .describe("Paged read of items after this position. Omit for the latest page."),
+        epoch: z
+          .string()
+          .optional()
+          .describe(
+            "epoch from the previous page; a changed timeline restarts at the latest page.",
+          ),
+        maxCharsPerItem: z
+          .number()
+          .int()
+          .positive()
+          .max(MAX_CHARS_PER_ITEM)
+          .optional()
+          .describe(`Per-item text cap. Default ${DEFAULT_MAX_CHARS_PER_ITEM}.`),
+        itemPosition: z
+          .number()
+          .int()
+          .nonnegative()
+          .optional()
+          .describe("Read only the item at this position, from textOffset."),
+        textOffset: z.number().int().nonnegative().optional(),
       },
       outputSchema: {
         agentId: z.string(),
         updateCount: z.number(),
         currentModeId: z.string().nullable(),
         content: z.string(),
+        epoch: z.string().optional(),
+        reset: z.boolean().optional(),
+        items: z
+          .array(
+            z.object({
+              position: z.number(),
+              kind: z.string(),
+              text: z.string(),
+              textOffset: z.number(),
+              textTruncated: z.boolean(),
+              nextTextOffset: z.number().optional(),
+            }),
+          )
+          .optional(),
+        nextPosition: z.number().optional(),
+        hasMore: z.boolean().optional(),
+        hasOlder: z.boolean().optional(),
       },
     },
-    async ({ agentId, limit }) => {
-      await ensureAgentLoaded(agentId, {
+    async (args: GetAgentActivityArgs) => {
+      await ensureAgentLoaded(args.agentId, {
         agentManager,
         agentStorage,
         logger: childLogger,
       });
-      const timeline = agentManager.getTimeline(agentId);
-      const snapshot = agentManager.getAgent(agentId);
-
-      const selection = selectItemsByProjectedLimit({
-        items: timeline,
-        direction: "tail",
-        limit: limit ?? 0,
-      });
-      const curatedContent = curateAgentActivity(selection.items);
-      const { totalProjected, shownProjected } = selection;
-      const finalAssistantMessage = timeline.findLast((item) => item.type === "assistant_message");
-      if (finalAssistantMessage && selection.items.includes(finalAssistantMessage)) {
-        await readDelegatedResult(agentId);
-      }
-
-      const noun = totalProjected === 1 ? "activity" : "activities";
-      const countHeader =
-        limit && shownProjected < totalProjected
-          ? `Showing ${shownProjected} of ${totalProjected} ${noun} (limited to ${limit})`
-          : `Showing all ${totalProjected} ${noun}`;
-
-      const contentWithCount = `${countHeader}\n\n${curatedContent}`;
-
-      return {
-        content: [],
-        structuredContent: ensureValidJson({
-          agentId,
-          updateCount: timeline.length,
-          currentModeId: snapshot?.currentModeId ?? null,
-          content: contentWithCount,
-        }),
-      };
+      const paged =
+        args.view !== undefined ||
+        args.afterPosition !== undefined ||
+        args.itemPosition !== undefined;
+      return paged ? await readPagedActivity(args) : await readActivitySummary(args);
     },
   );
+
+  async function readActivitySummary({ agentId, limit }: GetAgentActivityArgs) {
+    const timeline = agentManager.getTimeline(agentId);
+    const snapshot = agentManager.getAgent(agentId);
+
+    const selection = selectItemsByProjectedLimit({
+      items: timeline,
+      direction: "tail",
+      limit: limit ?? 0,
+    });
+    const curatedContent = curateAgentActivity(selection.items);
+    const { totalProjected, shownProjected } = selection;
+    const finalAssistantMessage = timeline.findLast((item) => item.type === "assistant_message");
+    if (finalAssistantMessage && selection.items.includes(finalAssistantMessage)) {
+      await readDelegatedResult(agentId);
+    }
+
+    const noun = totalProjected === 1 ? "activity" : "activities";
+    const countHeader =
+      limit && shownProjected < totalProjected
+        ? `Showing ${shownProjected} of ${totalProjected} ${noun} (limited to ${limit})`
+        : `Showing all ${totalProjected} ${noun}`;
+
+    return {
+      content: [],
+      structuredContent: ensureValidJson({
+        agentId,
+        updateCount: timeline.length,
+        currentModeId: snapshot?.currentModeId ?? null,
+        content: `${countHeader}\n\n${curatedContent}`,
+      }),
+    };
+  }
+
+  async function readPagedActivity(args: GetAgentActivityArgs) {
+    const { agentId } = args;
+    const timeline = agentManager.fetchTimeline(agentId, { direction: "tail", limit: 0 });
+    const reset = args.epoch !== undefined && args.epoch !== timeline.epoch;
+    const page = readActivityPage({
+      rows: timeline.rows,
+      view: args.view ?? "activity",
+      ...(reset ? {} : { afterPosition: args.afterPosition, itemPosition: args.itemPosition }),
+      textOffset: args.textOffset,
+      limit: Math.min(
+        MAX_ACTIVITY_PAGE_LIMIT,
+        Math.max(1, args.limit ?? DEFAULT_ACTIVITY_PAGE_LIMIT),
+      ),
+      maxCharsPerItem: args.maxCharsPerItem ?? DEFAULT_MAX_CHARS_PER_ITEM,
+    });
+    if (page.includesFinalAssistantMessage) {
+      await readDelegatedResult(agentId);
+    }
+    return {
+      content: [],
+      structuredContent: ensureValidJson({
+        agentId,
+        updateCount: timeline.rows.length,
+        currentModeId: agentManager.getAgent(agentId)?.currentModeId ?? null,
+        content: describeActivityPage(page),
+        epoch: timeline.epoch,
+        ...(reset ? { reset: true } : {}),
+        items: page.items,
+        nextPosition: page.nextPosition,
+        hasMore: page.hasMore,
+        hasOlder: page.hasOlder,
+      }),
+    };
+  }
 
   registerTool(
     "set_agent_mode",
