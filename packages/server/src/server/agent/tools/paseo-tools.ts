@@ -124,6 +124,7 @@ import type {
   PaseoToolResult,
   PaseoToolRuntimeContext,
 } from "./types.js";
+import { READ_ONLY_TOOL_ANNOTATIONS } from "./read-only-tools.js";
 import type { ProviderPaseoToolsPolicy } from "@getpaseo/protocol/provider-config";
 import { isPaseoToolEnabled } from "../paseo-tool-policy.js";
 
@@ -790,6 +791,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       description: config.description ?? name,
       inputSchema: config.inputSchema,
       outputSchema: config.outputSchema,
+      ...(config.annotations ? { annotations: config.annotations } : {}),
       handler: handler as PaseoToolDefinition["handler"],
     });
   };
@@ -1576,6 +1578,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   registerTool(
     "list_workspaces",
     {
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
       title: "List workspaces",
       description: "List active workspaces.",
       inputSchema: {},
@@ -2368,6 +2371,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   registerTool(
     "get_agent_status",
     {
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
       title: "Get agent status",
       description:
         "Return the latest snapshot for an agent, including lifecycle state, capabilities, and pending permissions. For your own delegated agent that finished, also returns its result.",
@@ -2443,6 +2447,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   registerTool(
     "wait_for_agent",
     {
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
       title: "Wait for agent",
       description:
         "Block until an agent is idle, errored, or needs permission, or the wait times out. Returns at once for an agent that is not working. Timing out does not stop the agent; your delegated agent then notifies you when it finishes. Reading a finished delegated result here means you will not also be notified of it.",
@@ -2652,6 +2657,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   registerTool(
     "list_agents",
     {
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
       title: "List agents",
       description:
         "List recent agents as compact metadata. By default, agents under your working directory; scope widens or narrows that.",
@@ -2957,6 +2963,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   registerTool(
     "list_workspace_scripts",
     {
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
       title: "List workspace scripts",
       description:
         "List configured workspace scripts and their lifecycle, service port, proxy URL, health, and terminal ID.",
@@ -3034,6 +3041,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   registerTool(
     "list_terminals",
     {
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
       title: "List terminals",
       description: "List terminals for a working directory or across all working directories.",
       inputSchema: {
@@ -3152,6 +3160,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   registerTool(
     "capture_terminal",
     {
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
       title: "Capture terminal",
       description: "Capture plain-text terminal output lines from a terminal session.",
       inputSchema: {
@@ -3352,6 +3361,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   registerTool(
     "list_schedules",
     {
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
       title: "List schedules",
       description: "List all schedules managed by the daemon.",
       inputSchema: {},
@@ -3377,6 +3387,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   registerTool(
     "inspect_schedule",
     {
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
       title: "Inspect schedule",
       description: "Inspect a schedule and its run history.",
       inputSchema: {
@@ -3550,6 +3561,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   registerTool(
     "schedule_logs",
     {
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
       title: "Schedule logs",
       description: "Get the run history (logs) for a schedule.",
       inputSchema: {
@@ -3597,6 +3609,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   registerTool(
     "get_orchestration_capabilities",
     {
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
       title: "Get orchestration capabilities",
       description:
         "One call before delegating: every provider you can start a child on (provider aliases such as claude-work are separate accounts of the provider they extend), its health, models with thinking options, modes, agent profiles, wait limits, and which orchestration features this daemon has. Pass a provider as <id>/<model> to create_agent.",
@@ -3696,6 +3709,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   registerTool(
     "list_providers",
     {
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
       title: "List providers",
       description: "List configured agent providers, availability, and their modes.",
       inputSchema: {},
@@ -3717,6 +3731,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   registerTool(
     "list_models",
     {
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
       title: "List models",
       description: "List models for an agent provider.",
       inputSchema: {
@@ -3745,6 +3760,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   registerTool(
     "list_profiles",
     {
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
       title: "List agent profiles",
       description:
         "List agent profiles: named provider/model/mode bundles a human configured for specific " +
@@ -3769,6 +3785,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   registerTool(
     "inspect_provider",
     {
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
       title: "Inspect provider",
       description:
         "Inspect compact provider capabilities for orchestration, including modes and draft feature settings. Use list_models for the full model list.",
@@ -3831,6 +3848,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   registerTool(
     "get_agent_activity",
     {
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
       title: "Get agent activity",
       description:
         "Read an agent's timeline. Without paging fields, returns recent entries as a curated summary. Pass view, afterPosition, or itemPosition for paged items: afterPosition reads forward from a position (0 for the start, nextPosition from the previous page), itemPosition with textOffset continues one long item. Reading your delegated agent's final message whole means you will not also be notified of it.",
@@ -4006,6 +4024,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   registerTool(
     "list_pending_permissions",
     {
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
       title: "List pending permissions",
       description:
         "Return all pending permission requests across all agents with the normalized payloads.",

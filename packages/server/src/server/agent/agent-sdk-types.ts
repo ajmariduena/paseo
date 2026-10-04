@@ -58,6 +58,8 @@ export interface McpHttpServerConfig {
   alwaysLoad?: boolean;
   /** Per-call tool timeout the MCP client should allow. Honored by the Claude and Codex providers. */
   toolTimeoutMs?: number;
+  /** Tools the client runs without a permission prompt. Honored by the Claude and Codex providers. */
+  preapprovedTools?: readonly string[];
 }
 
 /**
@@ -74,6 +76,8 @@ export interface McpSseServerConfig {
   alwaysLoad?: boolean;
   /** Per-call tool timeout the MCP client should allow. Honored by the Claude and Codex providers. */
   toolTimeoutMs?: number;
+  /** Tools the client runs without a permission prompt. Honored by the Claude and Codex providers. */
+  preapprovedTools?: readonly string[];
 }
 
 /**

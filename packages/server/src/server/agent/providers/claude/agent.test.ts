@@ -25,6 +25,8 @@ import type {
 } from "../../agent-sdk-types.js";
 import type { AgentAttachment } from "@getpaseo/protocol/messages";
 import { buildAgentPrompt, renderPromptAttachmentAsText } from "../../prompt-attachments.js";
+import { withRuntimePaseoMcpServer } from "../../runtime-mcp-config.js";
+import { PASEO_READ_ONLY_TOOL_NAMES } from "../../tools/read-only-tools.js";
 
 interface TestClaudeSession {
   translateMessageToEvents(message: SDKMessage): AgentStreamEvent[];
@@ -784,6 +786,44 @@ describe("ClaudeAgentSession features", () => {
       sandbox: { enabled: true, failIfUnavailable: true },
     });
     expect(queryFactory.mock.calls[0]?.[0].options.allowedTools).not.toContain("mcp__hub__reply");
+    await session.close();
+  });
+
+  test("pre-approves read-only Paseo tools in default mode and leaves the rest to permission prompts", async () => {
+    const { queryFactory } = createQueryMock();
+    const client = new ClaudeAgentClient({
+      logger,
+      queryFactory,
+      resolveBinary: async () => "/test/claude/bin",
+    });
+    const session = await client.createSession(
+      withRuntimePaseoMcpServer({
+        config: {
+          provider: "claude",
+          cwd: process.cwd(),
+          modeId: "default",
+          providerOptions: { allowedTools: ["Read"] },
+        },
+        agentId: "agent-1",
+        mcpBaseUrl: "http://127.0.0.1:6767/mcp/agents",
+        mcpAuthToken: null,
+      }),
+    );
+
+    await (
+      session as unknown as {
+        ensureQuery(): Promise<unknown>;
+      }
+    ).ensureQuery();
+
+    const options = queryFactory.mock.calls[0]?.[0].options;
+    expect(options?.permissionMode).toBe("default");
+    expect(options?.allowedTools).toEqual([
+      "Read",
+      ...PASEO_READ_ONLY_TOOL_NAMES.map((tool) => `mcp__paseo__${tool}`),
+    ]);
+    expect(options?.allowedTools).not.toContain("mcp__paseo__create_agent");
+    expect(options?.mcpServers?.paseo).not.toHaveProperty("preapprovedTools");
     await session.close();
   });
 

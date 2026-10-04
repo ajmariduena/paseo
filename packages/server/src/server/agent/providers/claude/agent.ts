@@ -997,6 +997,14 @@ function coerceSessionMetadata(metadata: AgentMetadata | undefined): Partial<Age
   return result;
 }
 
+export function listClaudePreapprovedMcpTools(servers: Record<string, McpServerConfig>): string[] {
+  return Object.entries(servers).flatMap(([name, config]) =>
+    config.type === "stdio"
+      ? []
+      : (config.preapprovedTools ?? []).map((tool) => `mcp__${name}__${tool}`),
+  );
+}
+
 export function toClaudeSdkMcpConfig(config: McpServerConfig): ClaudeSdkMcpServerConfig {
   const eagerTools = config.alwaysLoad === true ? { alwaysLoad: true } : {};
   const timeout =
@@ -3395,6 +3403,10 @@ class ClaudeAgentSession implements AgentSession {
 
     if (this.config.mcpServers) {
       base.mcpServers = this.normalizeMcpServers(this.config.mcpServers);
+      const preapproved = listClaudePreapprovedMcpTools(this.config.mcpServers);
+      if (preapproved.length > 0) {
+        base.allowedTools = [...new Set([...(base.allowedTools ?? []), ...preapproved])];
+      }
     }
 
     if (this.config.model) {

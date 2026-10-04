@@ -1291,6 +1291,60 @@ describe("Codex app-server provider", () => {
     expect(startCall?.params).not.toHaveProperty("config.mcp_servers.other.tool_timeout_sec");
   });
 
+  test("approves the server config's preapprovedTools without limiting its other tools", async () => {
+    const requests: Array<{ method: string; params: unknown }> = [];
+    const fakeClient: CodexClientLike = {
+      async request(method: string, params?: unknown) {
+        requests.push({ method, params });
+        if (method === "thread/start") {
+          return { thread: { id: "preapproved-thread" } };
+        }
+        return null;
+      },
+    };
+
+    const session = new CodexAppServerAgentSession(
+      createConfig({
+        thinkingOptionId: "medium",
+        mcpServers: {
+          paseo: {
+            type: "http",
+            url: "http://127.0.0.1:6767/mcp/agents?callerAgentId=agent-1",
+            preapprovedTools: ["list_agents", "wait_for_agent"],
+          },
+          other: { type: "http", url: "https://example.com/mcp" },
+        },
+      }),
+      null,
+      createTestLogger(),
+      () => {
+        throw new Error("Test session cannot spawn Codex app-server");
+      },
+    );
+    castInternals<{ client: CodexClientLike }>(session).client = fakeClient;
+
+    await castInternals<{ ensureThread: () => Promise<void> }>(session).ensureThread();
+
+    const startCall = requests.find((req) => req.method === "thread/start");
+    expect(startCall?.params).toMatchObject({
+      config: {
+        mcp_servers: {
+          paseo: {
+            tools: {
+              list_agents: { approval_mode: "approve" },
+              wait_for_agent: { approval_mode: "approve" },
+            },
+          },
+        },
+      },
+    });
+    expect(startCall?.params).not.toHaveProperty("config.mcp_servers.paseo.enabled_tools");
+    expect(startCall?.params).not.toHaveProperty(
+      "config.mcp_servers.paseo.default_tools_approval_mode",
+    );
+    expect(startCall?.params).not.toHaveProperty("config.mcp_servers.other.tools");
+  });
+
   test("omits ephemeral from thread/start by default", async () => {
     const requests: Array<{ method: string; params: unknown }> = [];
     const fakeClient: CodexClientLike = {

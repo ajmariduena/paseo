@@ -1,4 +1,5 @@
 import type { AgentSessionConfig, McpServerConfig } from "./agent-sdk-types.js";
+import { PASEO_READ_ONLY_TOOL_NAMES } from "./tools/read-only-tools.js";
 
 const PASEO_MCP_SERVER_NAME = "paseo";
 const PASEO_MCP_PATHNAME = "/mcp/agents";
@@ -55,6 +56,7 @@ export function withRuntimePaseoMcpServer(params: {
         type: "http",
         url: `${params.mcpBaseUrl}?callerAgentId=${params.agentId}`,
         toolTimeoutMs: PASEO_MCP_TOOL_TIMEOUT_MS,
+        preapprovedTools: PASEO_READ_ONLY_TOOL_NAMES,
         ...(params.mcpAuthToken
           ? { headers: { Authorization: `Bearer ${params.mcpAuthToken}` } }
           : {}),

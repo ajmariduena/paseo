@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import type { AgentSessionConfig } from "./agent-sdk-types.js";
 import { MAX_AGENT_WAIT_MS } from "./mcp-shared.js";
 import { PASEO_MCP_TOOL_TIMEOUT_MS, withRuntimePaseoMcpServer } from "./runtime-mcp-config.js";
+import { PASEO_READ_ONLY_TOOL_NAMES } from "./tools/read-only-tools.js";
 
 const BASE_CONFIG: AgentSessionConfig = {
   provider: "claude",
@@ -22,6 +23,7 @@ describe("withRuntimePaseoMcpServer", () => {
       type: "http",
       url: "http://127.0.0.1:6767/mcp/agents?callerAgentId=agent-1",
       toolTimeoutMs: PASEO_MCP_TOOL_TIMEOUT_MS,
+      preapprovedTools: PASEO_READ_ONLY_TOOL_NAMES,
       headers: { Authorization: "Bearer cap-token" },
     });
   });
@@ -38,6 +40,7 @@ describe("withRuntimePaseoMcpServer", () => {
       type: "http",
       url: "http://127.0.0.1:6767/mcp/agents?callerAgentId=agent-1",
       toolTimeoutMs: PASEO_MCP_TOOL_TIMEOUT_MS,
+      preapprovedTools: PASEO_READ_ONLY_TOOL_NAMES,
     });
   });
 

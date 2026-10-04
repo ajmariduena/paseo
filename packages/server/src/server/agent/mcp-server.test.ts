@@ -11,6 +11,7 @@ import { z } from "zod";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import { createAgentMcpServer } from "./mcp-server.js";
+import { PASEO_READ_ONLY_TOOL_NAMES } from "./tools/read-only-tools.js";
 import { DelegationService } from "../delegation/delegation-service.js";
 import { DelegationStore } from "../delegation/delegation-store.js";
 import { AgentManager, type ManagedAgent } from "./agent-manager.js";
@@ -862,6 +863,34 @@ function createPaseoWorktreeForMcpTest(options: {
     return result;
   };
 }
+
+describe("Paseo tool annotations", () => {
+  it("marks exactly the pre-approved read-only tools readOnlyHint", async () => {
+    const server = await createAgentMcpServer({
+      agentManager: new BoundaryAgentManagerFake() as AgentManager,
+      agentStorage: new BoundaryAgentStorageFake() as AgentStorage,
+      providerSnapshotManager:
+        new BoundaryProviderSnapshotManagerFake() as unknown as ProviderSnapshotManager,
+      callerAgentId: "agent-1",
+      logger: createTestLogger(),
+    });
+    const client = await connectInMemoryMcpClient(server);
+
+    try {
+      const listedTools = await client.listTools();
+      const readOnly = listedTools.tools
+        .filter((tool) => tool.annotations?.readOnlyHint === true)
+        .map((tool) => tool.name)
+        .sort();
+
+      expect(readOnly).toEqual([...PASEO_READ_ONLY_TOOL_NAMES].sort());
+      expect(readOnly).not.toContain("create_agent");
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+});
 
 describe("browser MCP tools", () => {
   const logger = createTestLogger();

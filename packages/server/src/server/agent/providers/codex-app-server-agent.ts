@@ -877,6 +877,7 @@ interface CodexMcpServerConfig {
   args?: string[];
   env?: Record<string, string>;
   tool_timeout_sec?: number;
+  tools?: Record<string, { approval_mode: "approve" }>;
 }
 
 function toCodexMcpConfig(config: McpServerConfig): CodexMcpServerConfig {
@@ -894,6 +895,16 @@ function toCodexMcpConfig(config: McpServerConfig): CodexMcpServerConfig {
         http_headers: config.headers,
         ...(config.toolTimeoutMs !== undefined
           ? { tool_timeout_sec: config.toolTimeoutMs / 1000 }
+          : {}),
+        ...(config.preapprovedTools?.length
+          ? {
+              tools: Object.fromEntries(
+                config.preapprovedTools.map((tool) => [
+                  tool,
+                  { approval_mode: "approve" as const },
+                ]),
+              ),
+            }
           : {}),
       };
     default: {
