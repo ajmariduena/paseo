@@ -1,5 +1,5 @@
 Pod::Spec.new do |s|
-  s.name           = 'PaseoLiveActivity'
+  s.name           = 'PaseoAgentsActivityBridge'
   s.version        = '0.1.0'
   s.summary        = 'Live Activity with the agents working on Paseo hosts'
   s.description    = 'Live Activity with the agents working on Paseo hosts'
