@@ -154,6 +154,8 @@ export interface AgentCreateConfigParent {
   provider: AgentProvider;
   modeId: string | null;
   isUnattended: boolean;
+  /** The parent's current mode with manifest metadata, when known. */
+  mode?: AgentMode;
 }
 
 export interface ResolveAgentCreateConfigInput {
@@ -163,6 +165,7 @@ export interface ResolveAgentCreateConfigInput {
   parent: AgentCreateConfigParent | null;
   unattended: boolean;
   availableModes: AgentMode[] | undefined;
+  defaultModeId?: string | null;
 }
 
 export interface ResolveAgentCreateConfigResult {

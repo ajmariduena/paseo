@@ -1353,9 +1353,11 @@ describe("ProviderSnapshotManager public surface", () => {
             provider: "claude",
             modeId: "parent-unattended",
             isUnattended: true,
+            mode: { id: "parent-unattended", label: "Parent", isUnattended: true },
           },
           unattended: true,
           availableModes: childModes,
+          defaultModeId: "auto-review",
         },
       ]);
     } finally {
@@ -1411,6 +1413,7 @@ describe("ProviderSnapshotManager public surface", () => {
           parent: null,
           unattended: true,
           availableModes: modes,
+          defaultModeId: "auto-review",
         },
       ]);
     } finally {

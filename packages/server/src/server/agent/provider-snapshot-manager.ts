@@ -38,6 +38,7 @@ import {
   type ProviderDefinition,
 } from "./provider-registry.js";
 import { BUILTIN_PROVIDER_IDS } from "@getpaseo/protocol/provider-manifest";
+import { withManifestModeMetadata } from "./create-agent-mode.js";
 import { applyMutableProviderConfigToOverrides } from "../daemon-config-store.js";
 import {
   formatProviderDiagnostic,
@@ -568,6 +569,7 @@ export class ProviderSnapshotManager {
       parent,
       unattended: input.unattended || parent?.isUnattended === true,
       availableModes: entry.modes ?? [],
+      defaultModeId: entry.defaultModeId,
     });
   }
 
@@ -740,6 +742,11 @@ export class ProviderSnapshotManager {
 
   private resolveParent(parent: ManagedAgent): AgentCreateConfigParent {
     const definition = this.requireProvider(parent.provider);
+    const availableModes = withManifestModeMetadata(
+      parent.availableModes ?? definition.modes ?? [],
+      definition.modes ?? [],
+    );
+    const mode = availableModes.find((candidate) => candidate.id === parent.currentModeId);
     return {
       provider: parent.provider,
       modeId: parent.currentModeId,
@@ -747,8 +754,9 @@ export class ProviderSnapshotManager {
         modeId: parent.currentModeId,
         config: parent.config,
         features: parent.features,
-        availableModes: parent.availableModes ?? definition.modes ?? [],
+        availableModes,
       }),
+      ...(mode ? { mode } : {}),
     };
   }
 
