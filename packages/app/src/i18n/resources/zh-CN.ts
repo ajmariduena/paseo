@@ -1920,6 +1920,19 @@ export const zhCN: TranslationResources = {
     archiveTooltip: "归档 subagent",
     archiveFinishedAction: "归档已完成的 subagent",
     archiveFinishedRetry: "重试 ({{failed}}/{{total}})",
+    untitled: "Subagent",
+    openAction: "打开 {{label}}",
+    summaryDone: "{{count}} 个已完成",
+    summaryStopped: "{{count}} 个已停止",
+    status: {
+      starting: "启动中",
+      working: "运行中",
+      needsInput: "需要输入",
+      failed: "失败",
+      done: "已完成",
+      stopped: "已停止",
+      archived: "已归档",
+    },
   },
   panels: {
     draft: {

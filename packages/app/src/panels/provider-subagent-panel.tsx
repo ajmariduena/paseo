@@ -265,6 +265,7 @@ function ProviderSubagentPanel() {
         isAuthoritativeHistoryReady
         onOpenWorkspaceFile={openFileInWorkspace}
         readOnly
+        subagentParentId={target.parentAgentId}
         historyPagination={historyPagination}
         bottomOverlayTailClearance={childTrackClearance.tail}
         bottomOverlayControlClearance={childTrackClearance.controls}

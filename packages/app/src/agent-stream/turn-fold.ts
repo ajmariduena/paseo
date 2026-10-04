@@ -1,5 +1,6 @@
 import type { StreamItem, ToolCallItem, UserMessageItem } from "@/types/stream";
 import { describeToolCall } from "@/tool-calls/detail-level/grouping";
+import { isSubagentSpawnCall } from "@/subagents/timeline/spawn-call";
 import {
   summarizeOverviewToolCalls,
   type OverviewSummary,
@@ -152,11 +153,13 @@ export function collectTurnFileChanges(calls: readonly ToolCallItem[]): TurnFile
   return [...byPath.values()];
 }
 
+// Subagent rows stay visible in a collapsed turn: they are the way to the children it started.
 function isPinnedCall(call: ToolCallItem): boolean {
   const descriptor = describeToolCall(call);
   return (
     descriptor.detail.type === "plan" ||
-    QUESTION_TOOL_NAME.test(descriptor.name.trim().toLowerCase())
+    QUESTION_TOOL_NAME.test(descriptor.name.trim().toLowerCase()) ||
+    isSubagentSpawnCall(call)
   );
 }
 

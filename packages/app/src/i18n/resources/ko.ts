@@ -1952,6 +1952,19 @@ export const ko: TranslationResources = {
     archiveTooltip: "서브에이전트 보관",
     archiveFinishedAction: "완료된 하위 에이전트 보관",
     archiveFinishedRetry: "다시 시도 ({{failed}}/{{total}})",
+    untitled: "하위 에이전트",
+    openAction: "{{label}} 열기",
+    summaryDone: "{{count}}개 완료",
+    summaryStopped: "{{count}}개 중지됨",
+    status: {
+      starting: "시작 중",
+      working: "실행 중",
+      needsInput: "입력 필요",
+      failed: "실패",
+      done: "완료",
+      stopped: "중지됨",
+      archived: "보관됨",
+    },
   },
   panels: {
     draft: {

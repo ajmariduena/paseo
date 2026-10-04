@@ -1976,6 +1976,19 @@ export const ru: TranslationResources = {
     archiveTooltip: "Архивировать субагента",
     archiveFinishedAction: "Архивировать завершенные субагенты",
     archiveFinishedRetry: "Повторить ({{failed}}/{{total}})",
+    untitled: "Субагент",
+    openAction: "Открыть {{label}}",
+    summaryDone: "{{count}} готово",
+    summaryStopped: "{{count}} остановлено",
+    status: {
+      starting: "Запуск",
+      working: "В работе",
+      needsInput: "Ожидает ввода",
+      failed: "Ошибка",
+      done: "Готово",
+      stopped: "Остановлен",
+      archived: "В архиве",
+    },
   },
   panels: {
     draft: {

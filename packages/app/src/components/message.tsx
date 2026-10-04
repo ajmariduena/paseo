@@ -76,6 +76,7 @@ import { useRevealedText } from "@/hooks/use-revealed-text";
 import { colorMarkdownLinkChildren } from "@/components/markdown/link-children";
 import { createAssistantMarkdownParser } from "@/utils/assistant-markdown-parser";
 import { formatDuration, formatMessageTimestamp } from "@/utils/time";
+import { useElapsedNow } from "@/subagents/presentation/use-elapsed-now";
 import { writeMarkdownToRichClipboard } from "@/utils/rich-clipboard";
 import { getDefaultMarkdownClipboardEnvironment } from "@/utils/rich-clipboard-default-environment";
 import { setAssistantMarkdownBlockHeight } from "@/utils/assistant-message-height-estimate";
@@ -725,8 +726,8 @@ interface LiveElapsedProps {
 }
 
 /**
- * Ticks every second to render an elapsed duration. Isolated from parents so
- * only this component re-renders on each tick.
+ * Renders an elapsed duration on the shared one-second clock. Isolated from parents so only this
+ * component re-renders on each tick.
  */
 export const LiveElapsed = memo(function LiveElapsed({
   startedAt,
@@ -734,24 +735,10 @@ export const LiveElapsed = memo(function LiveElapsed({
   style,
   testID,
 }: LiveElapsedProps) {
-  const startedAtMs = startedAt.getTime();
-  const [elapsedMs, setElapsedMs] = useState(() => Math.max(0, Date.now() - startedAtMs));
-  const visibleElapsedMs = active ? Math.max(0, Date.now() - startedAtMs) : elapsedMs;
-
-  useEffect(() => {
-    if (!active) {
-      return;
-    }
-    setElapsedMs(Math.max(0, Date.now() - startedAtMs));
-    const handle = setInterval(() => {
-      setElapsedMs(Math.max(0, Date.now() - startedAtMs));
-    }, 1000);
-    return () => clearInterval(handle);
-  }, [active, startedAtMs]);
-
+  const now = useElapsedNow(active);
   return (
     <Text style={style} testID={testID}>
-      {formatDuration(visibleElapsedMs)}
+      {formatDuration(Math.max(0, now - startedAt.getTime()))}
     </Text>
   );
 });

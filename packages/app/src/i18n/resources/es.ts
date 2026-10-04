@@ -1992,6 +1992,19 @@ export const es: TranslationResources = {
     archiveTooltip: "Subagente de archivo",
     archiveFinishedAction: "Archivar subagentes finalizados",
     archiveFinishedRetry: "Reintentar ({{failed}}/{{total}})",
+    untitled: "Subagente",
+    openAction: "Abrir {{label}}",
+    summaryDone: "{{count}} finalizados",
+    summaryStopped: "{{count}} detenidos",
+    status: {
+      starting: "Iniciando",
+      working: "En ejecución",
+      needsInput: "Necesita datos",
+      failed: "Con error",
+      done: "Finalizado",
+      stopped: "Detenido",
+      archived: "Archivado",
+    },
   },
   panels: {
     draft: {

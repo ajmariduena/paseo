@@ -1942,6 +1942,19 @@ export const ar: TranslationResources = {
     archiveTooltip: "أرشفة الوكيل الفرعي",
     archiveFinishedAction: "أرشفة الوكلاء الفرعيين المكتملين",
     archiveFinishedRetry: "إعادة المحاولة ({{failed}}/{{total}})",
+    untitled: "وكيل فرعي",
+    openAction: "فتح {{label}}",
+    summaryDone: "{{count}} مكتملة",
+    summaryStopped: "{{count}} متوقفة",
+    status: {
+      starting: "قيد البدء",
+      working: "قيد التشغيل",
+      needsInput: "يحتاج إدخالاً",
+      failed: "فشل",
+      done: "مكتمل",
+      stopped: "متوقف",
+      archived: "مؤرشف",
+    },
   },
   panels: {
     draft: {

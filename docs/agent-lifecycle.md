@@ -207,6 +207,8 @@ parentAgentId === thisAgent.id  AND  !archivedAt
 
 Clicking either kind opens a workspace tab. A Paseo subagent tab is a normal interactive agent pane. A provider subagent tab is a read-only timeline pane with no composer, archive, detach, rewind, or fork actions. It shows its own direct children in a subagents track. Both panes use `AgentStreamView`, so message, reasoning, tool-call, and layout rendering stay identical.
 
+The parent's timeline also shows each child where it was started, as a subagent row in place of the spawning tool call (`packages/app/src/subagents/timeline/`). A `create_agent` call becomes a row once its result names the agent; one that failed has no child and stays a tool call. A provider `sub_agent` call finds its descriptor through `descriptor.toolCallId`. Spawn calls run separately from tool work in the overview grouping, so adjacent spawns become one group, and a collapsed turn keeps them visible. Settled Paseo rows show no duration: the snapshot has no turn end time.
+
 Provider timelines use the same structural timeline item format but deliberately have a separate lifecycle and transport. A provider thread/session identifier is not a Paseo agent identifier, and closing its tab is always layout-only.
 
 Provider descriptors may include one compact subtitle. The provider owns its contents and formatting; clients display and truncate it without interpreting provider-specific model, thinking, or usage fields.

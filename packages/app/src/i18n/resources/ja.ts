@@ -1962,6 +1962,19 @@ export const ja: TranslationResources = {
     archiveTooltip: "サブエージェントをアーカイブ",
     archiveFinishedAction: "完了したサブエージェントをアーカイブ",
     archiveFinishedRetry: "再試行 ({{failed}}/{{total}})",
+    untitled: "サブエージェント",
+    openAction: "{{label}}を開く",
+    summaryDone: "{{count}} 件完了",
+    summaryStopped: "{{count}} 件停止",
+    status: {
+      starting: "起動中",
+      working: "実行中",
+      needsInput: "入力待ち",
+      failed: "失敗",
+      done: "完了",
+      stopped: "停止",
+      archived: "アーカイブ済み",
+    },
   },
   panels: {
     draft: {

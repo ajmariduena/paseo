@@ -293,7 +293,7 @@ describe("selectSubagentsForParent", () => {
         status: "running",
         requiresAttention: true,
         createdAt,
-        model: "should-not-leak",
+        model: "gpt-5.4",
         cwd: "/private/project",
       }),
     ]);
@@ -319,6 +319,7 @@ describe("selectSubagentsForParent", () => {
         turn: { phase: "idle", cancellationRequestId: null },
         requiresAttention: true,
         createdAt,
+        model: "gpt-5.4",
       },
     ]);
     expect(Object.keys(rows[0] ?? {}).sort()).toEqual([
@@ -326,6 +327,7 @@ describe("selectSubagentsForParent", () => {
       "description",
       "id",
       "kind",
+      "model",
       "provider",
       "requiresAttention",
       "status",
@@ -334,7 +336,6 @@ describe("selectSubagentsForParent", () => {
       "turn",
     ]);
     expect(rows[0]).not.toHaveProperty("onOpen");
-    expect(rows[0]).not.toHaveProperty("model");
     expect(rows[0]).not.toHaveProperty("cwd");
   });
 

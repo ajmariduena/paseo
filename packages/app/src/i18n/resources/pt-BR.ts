@@ -1976,6 +1976,19 @@ export const ptBR: TranslationResources = {
     archiveTooltip: "Arquivar subagente",
     archiveFinishedAction: "Arquivar subagentes concluídos",
     archiveFinishedRetry: "Tentar novamente ({{failed}}/{{total}})",
+    untitled: "Subagente",
+    openAction: "Abrir {{label}}",
+    summaryDone: "{{count}} concluídos",
+    summaryStopped: "{{count}} interrompidos",
+    status: {
+      starting: "Iniciando",
+      working: "Em execução",
+      needsInput: "Precisa de resposta",
+      failed: "Com falha",
+      done: "Concluído",
+      stopped: "Interrompido",
+      archived: "Arquivado",
+    },
   },
   panels: {
     draft: {

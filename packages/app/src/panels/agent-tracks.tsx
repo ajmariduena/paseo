@@ -5,8 +5,7 @@ import { WorkspaceDiffStatPill } from "@/composer/diff-stat-pill";
 import { useWorkspaceHasDiffStat } from "@/composer/workspace-diff-stat";
 import { AgentTaskList } from "@/composer/task-list";
 import { ComposerTrackBar } from "@/composer/tracks";
-import { supportsDesktopPaneSplits, useIsCompactFormFactor } from "@/constants/layout";
-import { usePaneContext } from "@/panels/pane-context";
+import { useIsCompactFormFactor } from "@/constants/layout";
 import { useSettings } from "@/hooks/use-settings";
 import { PluginComposerPills } from "@/plugins";
 import { useSessionStore } from "@/stores/session-store";
@@ -17,10 +16,9 @@ import {
   type SubagentRow,
 } from "@/subagents";
 import { SubagentsTrack } from "@/subagents/track";
+import { useOpenSubagent } from "@/subagents/use-open-subagent";
 import type { TodoEntry } from "@/types/stream";
-import { navigateToAgent } from "@/utils/navigate-to-agent";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
-import { openPreferredWorkspaceTarget } from "@/workspace-tabs/open-beside";
 import { openComposerChanges } from "@/workspace-tabs/open-supporting-view";
 
 /**
@@ -53,10 +51,8 @@ export const AgentTracks = memo(function AgentTracks({
   onArchiveFinished: () => void;
   hasPluginComposerPills: boolean;
 }): ReactElement | null {
-  const { tabId, openTab } = usePaneContext();
   const hasWorkspaceDiffStat = useWorkspaceHasDiffStat(serverId, workspaceId);
   const isCompact = useIsCompactFormFactor();
-  const canSplit = supportsDesktopPaneSplits() && !isCompact;
   const openInSidePane = useSettings((settings) => settings.openInSidePane);
   const workspaceKey = buildWorkspaceTabPersistenceKey({ serverId, workspaceId });
   const canDetachSubagents = useSessionStore(
@@ -64,46 +60,7 @@ export const AgentTracks = memo(function AgentTracks({
   );
   const archiveSubagent = useArchiveSubagent({ serverId });
   const detachSubagent = useDetachSubagent({ serverId });
-  const handleOpenSubagent = useCallback(
-    (subagentId: string) => {
-      const session = useSessionStore.getState().sessions[serverId];
-      const agent = session?.agents.get(subagentId) ?? session?.agentDetails.get(subagentId);
-      if (agent?.workspaceId && agent.workspaceId !== workspaceId) {
-        navigateToAgent({ serverId, agentId: subagentId });
-        return;
-      }
-      if (canSplit && workspaceKey) {
-        openPreferredWorkspaceTarget({
-          isCompact,
-          workspaceKey,
-          target: { kind: "agent", agentId: subagentId },
-          source: "subagents",
-          preferences: openInSidePane,
-          parentTabId: tabId,
-        });
-        return;
-      }
-      navigateToAgent({ serverId, agentId: subagentId });
-    },
-    [canSplit, isCompact, openInSidePane, serverId, tabId, workspaceId, workspaceKey],
-  );
-  const handleOpenProviderSubagent = useCallback(
-    (parentAgentId: string, subagentId: string) => {
-      if (canSplit && workspaceKey) {
-        openPreferredWorkspaceTarget({
-          isCompact,
-          workspaceKey,
-          target: { kind: "provider_subagent", parentAgentId, subagentId },
-          source: "subagents",
-          preferences: openInSidePane,
-          parentTabId: tabId,
-        });
-        return;
-      }
-      openTab({ kind: "provider_subagent", parentAgentId, subagentId });
-    },
-    [canSplit, isCompact, openInSidePane, openTab, tabId, workspaceKey],
-  );
+  const { openSubagent, openProviderSubagent } = useOpenSubagent({ serverId, workspaceId });
   const handleOpenChanges = useCallback(() => {
     if (!workspaceKey) {
       return;
@@ -136,8 +93,8 @@ export const AgentTracks = memo(function AgentTracks({
       <SubagentsTrack
         serverId={serverId}
         rows={subagentRows}
-        onOpenSubagent={handleOpenSubagent}
-        onOpenProviderSubagent={handleOpenProviderSubagent}
+        onOpenSubagent={openSubagent}
+        onOpenProviderSubagent={openProviderSubagent}
         onArchiveSubagent={archiveSubagent}
         onArchiveFinished={onArchiveFinished}
         archiveFinishedStatus={archiveFinishedStatus}

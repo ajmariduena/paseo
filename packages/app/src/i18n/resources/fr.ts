@@ -1997,6 +1997,19 @@ export const fr: TranslationResources = {
     archiveTooltip: "Sous-agent d'archivage",
     archiveFinishedAction: "Archiver les sous-agents terminés",
     archiveFinishedRetry: "Réessayer ({{failed}}/{{total}})",
+    untitled: "Sous-agent",
+    openAction: "Ouvrir {{label}}",
+    summaryDone: "{{count}} terminés",
+    summaryStopped: "{{count}} arrêtés",
+    status: {
+      starting: "Démarrage",
+      working: "En cours",
+      needsInput: "Attend une réponse",
+      failed: "En échec",
+      done: "Terminé",
+      stopped: "Arrêté",
+      archived: "Archivé",
+    },
   },
   panels: {
     draft: {

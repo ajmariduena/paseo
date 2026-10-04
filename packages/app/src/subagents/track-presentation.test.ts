@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
+import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
 import { i18n } from "@/i18n/i18next";
 import type { PaseoSubagentRow, ProviderSubagentRow, SubagentRow } from "./select";
 import {
@@ -6,6 +7,7 @@ import {
   buildSubagentRowPresentationData,
   countFinishedSubagents,
   resolveRowLabel,
+  resolveSubagentRowTiming,
 } from "./track-presentation";
 
 function row(
@@ -26,7 +28,12 @@ function row(
         : { phase: "idle", cancellationRequestId: null }),
     requiresAttention: overrides.requiresAttention ?? false,
     createdAt: overrides.createdAt ?? new Date("2026-04-20T00:00:00.000Z"),
+    model: overrides.model ?? null,
   };
+}
+
+function present(subagent: SubagentRow, entries?: ProviderSnapshotEntry[]) {
+  return buildSubagentRowPresentationData(subagent, entries);
 }
 
 describe("buildSubagentPillPresentation", () => {
@@ -112,6 +119,7 @@ describe("countFinishedSubagents", () => {
         status: "running",
         requiresAttention: false,
         createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
       },
       {
         kind: "provider",
@@ -124,6 +132,7 @@ describe("countFinishedSubagents", () => {
         status: "failed",
         requiresAttention: true,
         createdAt: new Date("2026-04-20T00:00:01.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:01.000Z"),
       },
     ];
 
@@ -169,40 +178,33 @@ describe("resolveRowLabel", () => {
 
 describe("buildSubagentRowPresentationData", () => {
   it("namespaces the key with a subagent prefix", () => {
-    expect(buildSubagentRowPresentationData(row({ id: "child-a" })).key).toBe(
-      "paseo_subagent_child-a",
-    );
+    expect(present(row({ id: "child-a" })).key).toBe("paseo_subagent_child-a");
   });
 
   it("marks the row ready when the title resolves to a real label", () => {
-    const presentation = buildSubagentRowPresentationData(row({ id: "a", title: "Build it" }));
+    const presentation = present(row({ id: "a", title: "Build it" }));
     expect(presentation.titleState).toBe("ready");
     expect(presentation.label).toBe("Build it");
   });
 
   it("marks the row loading and blanks the label for the placeholder title", () => {
-    const presentation = buildSubagentRowPresentationData(row({ id: "a", title: "new agent" }));
+    const presentation = present(row({ id: "a", title: "new agent" }));
     expect(presentation.titleState).toBe("loading");
     expect(presentation.label).toBe("");
   });
 
   it("maps a running row to the running status bucket so callers render the synced loader", () => {
-    expect(buildSubagentRowPresentationData(row({ id: "a", status: "running" })).statusBucket).toBe(
-      "running",
-    );
+    expect(present(row({ id: "a", status: "running" })).statusBucket).toBe("running");
   });
 
   it("maps an idle row to the done status bucket so callers render the static provider icon", () => {
-    expect(buildSubagentRowPresentationData(row({ id: "a", status: "idle" })).statusBucket).toBe(
-      "done",
-    );
+    expect(present(row({ id: "a", status: "idle" })).statusBucket).toBe("done");
   });
 
   it("ignores requiresAttention on the source row when computing the bucket", () => {
-    expect(
-      buildSubagentRowPresentationData(row({ id: "a", status: "idle", requiresAttention: true }))
-        .statusBucket,
-    ).toBe("done");
+    expect(present(row({ id: "a", status: "idle", requiresAttention: true })).statusBucket).toBe(
+      "done",
+    );
   });
 });
 
@@ -219,11 +221,12 @@ describe("buildSubagentRowPresentationData for provider rows", () => {
       status: overrides.status ?? "running",
       requiresAttention: false,
       createdAt: overrides.createdAt ?? new Date("2026-07-26T00:00:00.000Z"),
+      updatedAt: overrides.updatedAt ?? new Date("2026-07-26T00:00:00.000Z"),
     };
   }
 
   it("names the row after the task and demotes the subagent type", () => {
-    const presentation = buildSubagentRowPresentationData(
+    const presentation = present(
       providerRow({ title: "general-purpose", description: "Reply with banana" }),
     );
     expect(presentation.label).toBe("Reply with banana");
@@ -231,32 +234,83 @@ describe("buildSubagentRowPresentationData for provider rows", () => {
   });
 
   it("tells two siblings of the same type apart", () => {
-    const left = buildSubagentRowPresentationData(
-      providerRow({ id: "a", description: "Summarize the docs" }),
-    );
-    const right = buildSubagentRowPresentationData(
-      providerRow({ id: "b", description: "Reply with banana" }),
-    );
+    const left = present(providerRow({ id: "a", description: "Summarize the docs" }));
+    const right = present(providerRow({ id: "b", description: "Reply with banana" }));
     expect(left.label).not.toBe(right.label);
   });
 
   it("keeps type-as-label and an empty subtitle when a provider reports no task", () => {
-    const presentation = buildSubagentRowPresentationData(
-      providerRow({ title: "Provider child", description: null }),
-    );
+    const presentation = present(providerRow({ title: "Provider child", description: null }));
     expect(presentation.label).toBe("Provider child");
     expect(presentation.subtitle).toBe("");
   });
 
   it("stays in the loading state when neither field is known", () => {
-    const presentation = buildSubagentRowPresentationData(
-      providerRow({ title: null, description: null }),
-    );
+    const presentation = present(providerRow({ title: null, description: null }));
     expect(presentation.titleState).toBe("loading");
   });
 
-  it("leaves managed subagent rows with no subtitle", () => {
-    expect(buildSubagentRowPresentationData(row({ id: "a", title: "Managed" })).subtitle).toBe("");
+  it("leaves a managed subagent with no known model without a subtitle", () => {
+    expect(present(row({ id: "a", title: "Managed" })).subtitle).toBe("");
+  });
+
+  it("subtitles a managed subagent with its model and the account it runs on", () => {
+    const entries: ProviderSnapshotEntry[] = [
+      {
+        provider: "claude-personal",
+        status: "ready",
+        enabled: true,
+        source: "custom",
+        label: "Claude personal",
+        models: [{ provider: "claude-personal", id: "claude-opus-5-1", label: "Opus 5.1" }],
+      },
+    ];
+    expect(
+      present(row({ id: "a", provider: "claude-personal", model: "claude-opus-5-1" }), entries)
+        .subtitle,
+    ).toBe("Opus 5.1 · Claude personal");
+  });
+});
+
+describe("resolveSubagentRowTiming", () => {
+  it("times a managed child's open turn from when it started", () => {
+    const startedAt = new Date("2026-04-20T00:01:00.000Z");
+    expect(
+      resolveSubagentRowTiming(
+        row({
+          id: "a",
+          status: "running",
+          turn: { phase: "open", turnId: "t1", startedAt, cancellationRequestId: null },
+        }),
+      ),
+    ).toEqual({ liveSince: startedAt, settledDurationMs: null });
+  });
+
+  it("has no duration for a settled managed child", () => {
+    expect(resolveSubagentRowTiming(row({ id: "a", status: "idle" }))).toEqual({
+      liveSince: null,
+      settledDurationMs: null,
+    });
+  });
+
+  it("freezes a finished provider child at its last update", () => {
+    const subagent: ProviderSubagentRow = {
+      kind: "provider",
+      id: "toolu_1",
+      parentAgentId: "parent",
+      provider: "claude",
+      title: "Explore",
+      description: null,
+      subtitle: null,
+      status: "completed",
+      requiresAttention: false,
+      createdAt: new Date("2026-07-26T00:00:00.000Z"),
+      updatedAt: new Date("2026-07-26T00:00:34.000Z"),
+    };
+    expect(resolveSubagentRowTiming(subagent)).toEqual({
+      liveSince: null,
+      settledDurationMs: 34_000,
+    });
   });
 });
 
@@ -273,27 +327,25 @@ describe("provider-owned row subtitles", () => {
       status: "running",
       requiresAttention: false,
       createdAt: new Date("2026-07-26T00:00:00.000Z"),
+      updatedAt: new Date("2026-07-26T00:00:00.000Z"),
       ...overrides,
     };
   }
 
   it("displays provider context without interpreting it", () => {
     expect(
-      buildSubagentRowPresentationData(
-        providerRow({ subtitle: "general-purpose · Opus 5 · High · 16.5k tokens" }),
-      ).subtitle,
+      present(providerRow({ subtitle: "general-purpose · Opus 5 · High · 16.5k tokens" })).subtitle,
     ).toBe("general-purpose · Opus 5 · High · 16.5k tokens");
   });
 
   it("falls back to the type when an older provider sends no subtitle", () => {
-    expect(buildSubagentRowPresentationData(providerRow()).subtitle).toBe("general-purpose");
+    expect(present(providerRow()).subtitle).toBe("general-purpose");
   });
 
   it("does not duplicate the type when it is already the primary label", () => {
     expect(
-      buildSubagentRowPresentationData(
-        providerRow({ description: null, subtitle: null, title: "general-purpose" }),
-      ).subtitle,
+      present(providerRow({ description: null, subtitle: null, title: "general-purpose" }))
+        .subtitle,
     ).toBe("");
   });
 });

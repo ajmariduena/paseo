@@ -1968,6 +1968,19 @@ export const en = {
     archiveTooltip: "Archive subagent",
     archiveFinishedAction: "Archive finished subagents",
     archiveFinishedRetry: "Retry ({{failed}}/{{total}})",
+    untitled: "Subagent",
+    openAction: "Open {{label}}",
+    summaryDone: "{{count}} done",
+    summaryStopped: "{{count}} stopped",
+    status: {
+      starting: "Starting",
+      working: "Working",
+      needsInput: "Needs input",
+      failed: "Failed",
+      done: "Done",
+      stopped: "Stopped",
+      archived: "Archived",
+    },
   },
   panels: {
     draft: {
