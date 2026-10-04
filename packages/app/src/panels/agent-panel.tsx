@@ -321,6 +321,16 @@ function storeFetchedAgentDetail(input: {
   return hydrated;
 }
 
+function selectParentTitle(
+  session: ReturnType<typeof useSessionStore.getState>["sessions"][string] | undefined,
+  agent: Pick<Agent, "parentAgentId"> | null,
+): { isSubagent: boolean; parentTitle: string | null } {
+  const parentId = agent?.parentAgentId;
+  if (!parentId) return { isSubagent: false, parentTitle: null };
+  const parent = session?.agents.get(parentId) ?? session?.agentDetails.get(parentId);
+  return { isSubagent: true, parentTitle: parent?.title ?? null };
+}
+
 function useAgentPanelDescriptor(
   target: { kind: "agent"; agentId: string },
   context: { serverId: string },
@@ -333,6 +343,7 @@ function useAgentPanelDescriptor(
       return {
         provider: agent?.provider ?? "codex",
         title: agent?.title ?? null,
+        ...selectParentTitle(session, agent),
         status: agent?.status ?? null,
         pendingPermissionCount: agent?.pendingPermissions.length ?? 0,
         requiresAttention: agent?.requiresAttention ?? false,
@@ -341,13 +352,19 @@ function useAgentPanelDescriptor(
       };
     }),
   );
+  const { t } = useTranslation();
   const provider = descriptorState.provider;
   const label = resolveWorkspaceAgentTabLabel(descriptorState.title);
   const icon = useProviderIcon(provider, context.serverId);
+  const parentLabel =
+    resolveWorkspaceAgentTabLabel(descriptorState.parentTitle) ?? t("lineage.parentFallback");
+  const subtitle = descriptorState.isSubagent
+    ? t("lineage.subagentOf", { title: parentLabel })
+    : `${formatProviderLabel(provider)} agent`;
 
   return {
     label: label ?? "",
-    subtitle: `${formatProviderLabel(provider)} agent`,
+    subtitle,
     tooltip: label ?? `${formatProviderLabel(provider)} agent`,
     titleState: label ? "ready" : "loading",
     icon,

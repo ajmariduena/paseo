@@ -1983,6 +1983,18 @@ export const ja: TranslationResources = {
     providerPaneUnsupported:
       "プロバイダーのサブエージェントを表示するには、このホストを更新してください",
   },
+  lineage: {
+    title: "系譜",
+    titleRunning: "系譜 · {{count}} 件実行中",
+    parent: "親",
+    previous: "以前のサブエージェント ({{count}})",
+    includeArchived: "アーカイブ済みを含める",
+    archivedLoadFailed: "読み込めませんでした。再試行",
+    showMore: "さらに {{count}} 件表示",
+    subagentOf: "{{title}} のサブエージェント",
+    parentFallback: "別のエージェント",
+    empty: "関連するエージェントはありません",
+  },
   panels: {
     draft: {
       newAgent: "新しいエージェント",

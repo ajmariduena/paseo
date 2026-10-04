@@ -1988,6 +1988,18 @@ export const en = {
     },
     providerPaneUnsupported: "Update this host to view provider subagents",
   },
+  lineage: {
+    title: "Lineage",
+    titleRunning: "Lineage · {{count}} running",
+    parent: "Parent",
+    previous: "Previous subagents ({{count}})",
+    includeArchived: "Include archived",
+    archivedLoadFailed: "Unable to load. Retry",
+    showMore: "Show {{count}} more",
+    subagentOf: "Subagent of {{title}}",
+    parentFallback: "another agent",
+    empty: "No related agents",
+  },
   panels: {
     draft: {
       newAgent: "New Agent",

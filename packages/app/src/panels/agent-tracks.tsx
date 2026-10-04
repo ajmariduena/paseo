@@ -6,6 +6,7 @@ import { useWorkspaceHasDiffStat } from "@/composer/workspace-diff-stat";
 import { AgentTaskList } from "@/composer/task-list";
 import { ComposerTrackBar } from "@/composer/tracks";
 import { useIsCompactFormFactor } from "@/constants/layout";
+import { usePaneContext } from "@/panels/pane-context";
 import { useSettings } from "@/hooks/use-settings";
 import { PluginComposerPills } from "@/plugins";
 import { useSessionStore } from "@/stores/session-store";
@@ -60,7 +61,13 @@ export const AgentTracks = memo(function AgentTracks({
   );
   const archiveSubagent = useArchiveSubagent({ serverId });
   const detachSubagent = useDetachSubagent({ serverId });
-  const { openSubagent, openProviderSubagent } = useOpenSubagent({ serverId, workspaceId });
+  const { tabId, openTab } = usePaneContext();
+  const { openSubagent, openProviderSubagent } = useOpenSubagent({
+    serverId,
+    workspaceId,
+    parentTabId: tabId,
+    openTab,
+  });
   const handleOpenChanges = useCallback(() => {
     if (!workspaceKey) {
       return;

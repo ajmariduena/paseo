@@ -3,6 +3,7 @@ import invariant from "tiny-invariant";
 import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
 import type { ProviderSubagentDescriptorPayload } from "@getpaseo/protocol/messages";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
+import { usePaneContext } from "@/panels/pane-context";
 import { useProviderSubagentStore } from "../provider-store";
 import { useOpenSubagent } from "../use-open-subagent";
 import type { SubagentOpenTarget } from "./model";
@@ -47,7 +48,13 @@ export function SubagentTimelineProvider({
   const parentAgentId = subagentParentId ?? streamAgentId;
   const descriptors = useProviderSubagentStore((state) => state.descriptors);
   const providerEntries = useProvidersSnapshot(serverId).entries;
-  const { openSubagent, openProviderSubagent } = useOpenSubagent({ serverId, workspaceId });
+  const { tabId, openTab } = usePaneContext();
+  const { openSubagent, openProviderSubagent } = useOpenSubagent({
+    serverId,
+    workspaceId,
+    parentTabId: tabId,
+    openTab,
+  });
   const [groupExpansion, setGroupExpansion] = useState<ReadonlyMap<string, boolean>>(
     () => new Map(),
   );

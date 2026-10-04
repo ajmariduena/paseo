@@ -2017,6 +2017,18 @@ export const fr: TranslationResources = {
     },
     providerPaneUnsupported: "Mettez à jour cet hôte pour voir les sous-agents du fournisseur",
   },
+  lineage: {
+    title: "Lignée",
+    titleRunning: "Lignée · {{count}} en cours",
+    parent: "Parent",
+    previous: "Sous-agents précédents ({{count}})",
+    includeArchived: "Inclure les archivés",
+    archivedLoadFailed: "Chargement impossible. Réessayer",
+    showMore: "Afficher {{count}} de plus",
+    subagentOf: "Sous-agent de {{title}}",
+    parentFallback: "un autre agent",
+    empty: "Aucun agent lié",
+  },
   panels: {
     draft: {
       newAgent: "Nouvel agent",

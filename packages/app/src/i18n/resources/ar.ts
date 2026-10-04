@@ -1962,6 +1962,18 @@ export const ar: TranslationResources = {
     },
     providerPaneUnsupported: "حدّث هذا المضيف لعرض الوكلاء الفرعيين للمزوّد",
   },
+  lineage: {
+    title: "السلالة",
+    titleRunning: "السلالة · {{count}} قيد التشغيل",
+    parent: "الأصل",
+    previous: "الوكلاء الفرعيون السابقون ({{count}})",
+    includeArchived: "تضمين المؤرشفين",
+    archivedLoadFailed: "تعذّر التحميل. إعادة المحاولة",
+    showMore: "عرض {{count}} أخرى",
+    subagentOf: "وكيل فرعي لـ {{title}}",
+    parentFallback: "وكيل آخر",
+    empty: "لا يوجد وكلاء مرتبطون",
+  },
   panels: {
     draft: {
       newAgent: "وكيل جديد",

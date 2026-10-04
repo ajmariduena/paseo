@@ -114,6 +114,7 @@ import { useRetainedPanelActive } from "@/components/retained-panel";
 import { useStreamHistoryWindow } from "./use-stream-history-window";
 import { PluginTimelineItemView, useInstalledTimelineTransform } from "@/plugins/timeline";
 import { SubagentTimelineProvider } from "@/subagents/timeline/context";
+import { LineageMarker } from "@/subagents/timeline/lineage-marker";
 import { SubagentSpawnGroup } from "@/subagents/timeline/spawn-group";
 import { SubagentSpawnRow } from "@/subagents/timeline/spawn-row";
 import { isSubagentSpawnCall } from "@/subagents/timeline/spawn-call";
@@ -1185,6 +1186,16 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       () => [...effectiveStreamItems, ...(effectiveStreamHead ?? [])],
       [effectiveStreamItems, effectiveStreamHead],
     );
+    const lineageMarker = useMemo(
+      () => (
+        <LineageMarker
+          serverId={resolvedServerId}
+          workspaceId={context.workspaceId}
+          agentId={agentId}
+        />
+      ),
+      [agentId, context.workspaceId, resolvedServerId],
+    );
     const readAloudTarget = useMemo(
       () => ({ serverId: resolvedServerId, agentId, toast: toast ?? null }),
       [resolvedServerId, agentId, toast],
@@ -1242,6 +1253,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
                     isLoadingOlderHistory: isLoadingOlder,
                     hasOlderHistory: hasOlder,
                     olderHistoryProgressKey: progressKey,
+                    historyStartContent: lineageMarker,
                     scrollEnabled: streamScrollEnabled,
                     listStyle: stylesheet.list,
                     baseListContentContainerStyle: stylesheet.listContentContainer,

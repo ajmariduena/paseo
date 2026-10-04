@@ -285,6 +285,7 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     isLoadingOlderHistory,
     hasOlderHistory,
     olderHistoryProgressKey,
+    historyStartContent,
     scrollEnabled,
     contentMaxWidth,
     imageContext,
@@ -1224,16 +1225,19 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
   }, [renderLiveAuxiliary]);
   const historyStartSlot = useMemo(() => {
     const isLoadingOperation = isHistoryStartLoadingOperation(historyStartPaginationState);
+    const startContent = hasOlderHistory ? null : historyStartContent;
     return (
       <div style={historyStartSlotStyle} data-testid="older-history-slot">
         {isLoadingOperation ? (
           <div data-testid="load-older-history-spinner">
             <ThemedLoadingSpinner size="small" uniProps={foregroundMutedColorMapping} />
           </div>
-        ) : null}
+        ) : (
+          startContent
+        )}
       </div>
     );
-  }, [historyStartPaginationState]);
+  }, [hasOlderHistory, historyStartContent, historyStartPaginationState]);
   const shouldRenderEmpty =
     !boundary.hasMountedHistory &&
     !boundary.hasVirtualizedHistory &&

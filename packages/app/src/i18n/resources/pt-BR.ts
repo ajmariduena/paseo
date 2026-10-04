@@ -1996,6 +1996,18 @@ export const ptBR: TranslationResources = {
     },
     providerPaneUnsupported: "Atualize este host para ver os subagentes do provedor",
   },
+  lineage: {
+    title: "Linhagem",
+    titleRunning: "Linhagem · {{count}} em execução",
+    parent: "Pai",
+    previous: "Subagentes anteriores ({{count}})",
+    includeArchived: "Incluir arquivados",
+    archivedLoadFailed: "Não foi possível carregar. Tentar novamente",
+    showMore: "Mostrar mais {{count}}",
+    subagentOf: "Subagente de {{title}}",
+    parentFallback: "outro agente",
+    empty: "Nenhum agente relacionado",
+  },
   panels: {
     draft: {
       newAgent: "Novo Agente",

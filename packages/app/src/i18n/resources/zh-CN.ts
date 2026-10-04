@@ -1940,6 +1940,18 @@ export const zhCN: TranslationResources = {
     },
     providerPaneUnsupported: "请更新此主机以查看提供方的 subagent",
   },
+  lineage: {
+    title: "谱系",
+    titleRunning: "谱系 · {{count}} 个运行中",
+    parent: "父级",
+    previous: "之前的 subagent ({{count}})",
+    includeArchived: "包含已归档",
+    archivedLoadFailed: "无法加载。重试",
+    showMore: "再显示 {{count}} 个",
+    subagentOf: "{{title}} 的 subagent",
+    parentFallback: "另一个 agent",
+    empty: "没有相关的 agent",
+  },
   panels: {
     draft: {
       newAgent: "新建 Agent",

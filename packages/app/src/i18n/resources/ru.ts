@@ -1996,6 +1996,18 @@ export const ru: TranslationResources = {
     },
     providerPaneUnsupported: "Обновите этот хост, чтобы видеть субагентов провайдера",
   },
+  lineage: {
+    title: "Родословная",
+    titleRunning: "Родословная · {{count}} в работе",
+    parent: "Родитель",
+    previous: "Предыдущие субагенты ({{count}})",
+    includeArchived: "Показать архивные",
+    archivedLoadFailed: "Не удалось загрузить. Повторить",
+    showMore: "Показать ещё {{count}}",
+    subagentOf: "Субагент агента {{title}}",
+    parentFallback: "другой агент",
+    empty: "Нет связанных агентов",
+  },
   panels: {
     draft: {
       newAgent: "Новый агент",

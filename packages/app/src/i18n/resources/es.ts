@@ -2012,6 +2012,18 @@ export const es: TranslationResources = {
     },
     providerPaneUnsupported: "Actualiza este host para ver los subagentes del proveedor",
   },
+  lineage: {
+    title: "Linaje",
+    titleRunning: "Linaje · {{count}} en ejecución",
+    parent: "Principal",
+    previous: "Subagentes anteriores ({{count}})",
+    includeArchived: "Incluir archivados",
+    archivedLoadFailed: "No se pudo cargar. Reintentar",
+    showMore: "Mostrar {{count}} más",
+    subagentOf: "Subagente de {{title}}",
+    parentFallback: "otro agente",
+    empty: "No hay agentes relacionados",
+  },
   panels: {
     draft: {
       newAgent: "Nuevo agente",

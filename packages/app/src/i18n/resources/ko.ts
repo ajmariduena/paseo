@@ -1972,6 +1972,18 @@ export const ko: TranslationResources = {
     },
     providerPaneUnsupported: "공급자 하위 에이전트를 보려면 이 호스트를 업데이트하세요",
   },
+  lineage: {
+    title: "계보",
+    titleRunning: "계보 · {{count}}개 실행 중",
+    parent: "상위",
+    previous: "이전 하위 에이전트 ({{count}})",
+    includeArchived: "보관된 항목 포함",
+    archivedLoadFailed: "불러올 수 없습니다. 다시 시도",
+    showMore: "{{count}}개 더 보기",
+    subagentOf: "{{title}}의 하위 에이전트",
+    parentFallback: "다른 에이전트",
+    empty: "관련 에이전트 없음",
+  },
   panels: {
     draft: {
       newAgent: "새 에이전트",
