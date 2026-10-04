@@ -2,6 +2,20 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const fr: TranslationResources = {
+  liveActivity: {
+    working_one: "{{count}} en cours",
+    working_other: "{{count}} en cours",
+    waiting_one: "{{count}} demande une autorisation",
+    waiting_other: "{{count}} demandent une autorisation",
+    finished_one: "{{count}} terminé",
+    finished_other: "{{count}} terminés",
+    workingShort: "en cours",
+    waitingShort_one: "demande une autorisation",
+    waitingShort_other: "demandent une autorisation",
+    permission: "autorisation",
+    doneLabel: "terminé",
+    failed: "échec",
+  },
   paneFind: {
     connectionFailure:
       "Impossible de rechercher dans cette conversation. Vérifiez la connexion à l’hôte et réessayez.",

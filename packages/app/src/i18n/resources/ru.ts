@@ -2,6 +2,20 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const ru: TranslationResources = {
+  liveActivity: {
+    working_one: "{{count}} работает",
+    working_other: "Работают: {{count}}",
+    waiting_one: "{{count}} ждёт разрешения",
+    waiting_other: "Ждут разрешения: {{count}}",
+    finished_one: "{{count}} завершён",
+    finished_other: "Завершено: {{count}}",
+    workingShort: "работают",
+    waitingShort_one: "ждёт разрешения",
+    waitingShort_other: "ждут разрешения",
+    permission: "разрешение",
+    doneLabel: "завершён",
+    failed: "ошибка",
+  },
   paneFind: {
     connectionFailure:
       "Не удалось выполнить поиск в чате. Проверьте подключение к хосту и повторите попытку.",

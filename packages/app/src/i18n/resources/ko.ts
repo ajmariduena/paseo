@@ -2,6 +2,20 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const ko: TranslationResources = {
+  liveActivity: {
+    working_one: "{{count}}개 작업 중",
+    working_other: "{{count}}개 작업 중",
+    waiting_one: "{{count}}개 권한 요청",
+    waiting_other: "{{count}}개 권한 요청",
+    finished_one: "{{count}}개 완료",
+    finished_other: "{{count}}개 완료",
+    workingShort: "작업 중",
+    waitingShort_one: "권한 요청",
+    waitingShort_other: "권한 요청",
+    permission: "권한",
+    doneLabel: "완료",
+    failed: "실패",
+  },
   paneFind: {
     connectionFailure: "이 채팅을 검색할 수 없습니다. 호스트 연결을 확인하고 다시 시도하세요.",
     historyChangedFailure: "검색 중에 채팅이 변경되었습니다. 다시 검색하세요.",

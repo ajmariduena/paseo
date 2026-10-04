@@ -2,6 +2,20 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const zhCN: TranslationResources = {
+  liveActivity: {
+    working_one: "{{count}} 个运行中",
+    working_other: "{{count}} 个运行中",
+    waiting_one: "{{count}} 个等待授权",
+    waiting_other: "{{count}} 个等待授权",
+    finished_one: "{{count}} 个已完成",
+    finished_other: "{{count}} 个已完成",
+    workingShort: "运行中",
+    waitingShort_one: "等待授权",
+    waitingShort_other: "等待授权",
+    permission: "授权",
+    doneLabel: "已完成",
+    failed: "失败",
+  },
   paneFind: {
     connectionFailure: "无法搜索此聊天。请检查主机连接后重试。",
     historyChangedFailure: "搜索期间聊天已更改。请重新搜索。",

@@ -39,6 +39,7 @@
     "build:mermaid-runtime": "node ./src/components/markdown/fence/mermaid/build-runtime.mjs"
   },
   "dependencies": {
+    "@bacons/apple-targets": "4.0.7",
     "@bsky.app/react-native-uitextview": "^2.7.1",
     "@codemirror/commands": "6.10.4",
     "@codemirror/language": "6.12.4",

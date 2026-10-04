@@ -1,4 +1,18 @@
 export const en = {
+  liveActivity: {
+    working_one: "{{count}} working",
+    working_other: "{{count}} working",
+    waiting_one: "{{count}} needs permission",
+    waiting_other: "{{count}} need permission",
+    finished_one: "{{count}} finished",
+    finished_other: "{{count}} finished",
+    workingShort: "working",
+    waitingShort_one: "needs permission",
+    waitingShort_other: "need permission",
+    permission: "permission",
+    doneLabel: "finished",
+    failed: "failed",
+  },
   paneFind: {
     connectionFailure: "Could not search this chat. Check the host connection and retry.",
     historyChangedFailure: "The chat changed while searching. Search again.",

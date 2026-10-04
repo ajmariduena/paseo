@@ -2,6 +2,20 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const ja: TranslationResources = {
+  liveActivity: {
+    working_one: "{{count}} 件実行中",
+    working_other: "{{count}} 件実行中",
+    waiting_one: "{{count}} 件が許可待ち",
+    waiting_other: "{{count}} 件が許可待ち",
+    finished_one: "{{count}} 件完了",
+    finished_other: "{{count}} 件完了",
+    workingShort: "実行中",
+    waitingShort_one: "許可待ち",
+    waitingShort_other: "許可待ち",
+    permission: "許可",
+    doneLabel: "完了",
+    failed: "失敗",
+  },
   paneFind: {
     connectionFailure:
       "このチャットを検索できませんでした。ホストへの接続を確認して再試行してください。",

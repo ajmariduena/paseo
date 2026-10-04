@@ -2,6 +2,20 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const ar: TranslationResources = {
+  liveActivity: {
+    working_one: "{{count}} قيد العمل",
+    working_other: "{{count}} قيد العمل",
+    waiting_one: "{{count}} يطلب إذنًا",
+    waiting_other: "{{count}} يطلبون إذنًا",
+    finished_one: "{{count}} انتهى",
+    finished_other: "{{count}} انتهوا",
+    workingShort: "قيد العمل",
+    waitingShort_one: "يطلب إذنًا",
+    waitingShort_other: "يطلبون إذنًا",
+    permission: "إذن",
+    doneLabel: "انتهى",
+    failed: "فشل",
+  },
   paneFind: {
     connectionFailure: "تعذر البحث في هذه المحادثة. تحقق من الاتصال بالمضيف وأعد المحاولة.",
     historyChangedFailure: "تغيّرت المحادثة أثناء البحث. أعد البحث.",
