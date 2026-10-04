@@ -8,7 +8,10 @@ import {
 } from "../test-utils/controlled-agent-client.js";
 import {
   dispatchAgentMessage,
+  dispatchAgentMessageInBackground,
+  isMessageAlreadyDispatched,
   resolveDispatchIntent,
+  SteerUnavailableError,
   type DispatchIntent,
   type DispatchTarget,
 } from "./message-dispatch.js";
@@ -93,4 +96,68 @@ test("a queued message waits for the running turn instead of replacing it", asyn
   await expect(delivered).resolves.toBe("started");
   expect(session.startPrompts).toEqual(["first task", "next task"]);
   expect(session.interruptCount).toBe(0);
+});
+
+test("an explicit steer the provider cannot take fails without touching the turn", async () => {
+  host = createControlledHost();
+  const agentId = await host.createAgent({ steerable: false });
+  await host.startTurn(agentId, "first task");
+  const session = host.session(agentId);
+
+  await expect(
+    dispatchAgentMessage({
+      agentManager: host.agentManager,
+      agentStorage: host.agentStorage,
+      agentId,
+      messageId: "msg-steer",
+      policy: { kind: "intent", intent: "steer", prompt: "steer this" },
+      logger: host.logger,
+    }),
+  ).rejects.toBeInstanceOf(SteerUnavailableError);
+  expect(session.startPrompts).toEqual(["first task"]);
+  expect(session.interruptCount).toBe(0);
+});
+
+test("a restart replaces the running turn and says so", async () => {
+  host = createControlledHost();
+  const agentId = await host.createAgent({ steerable: true });
+  await host.startTurn(agentId, "first task");
+  const session = host.session(agentId);
+
+  const disposition = await dispatchAgentMessage({
+    agentManager: host.agentManager,
+    agentStorage: host.agentStorage,
+    agentId,
+    messageId: "msg-restart",
+    policy: { kind: "intent", intent: "restart", prompt: "start over" },
+    logger: host.logger,
+  });
+
+  expect(disposition).toBe("restarted");
+  expect(session.interruptCount).toBe(1);
+  expect(session.startPrompts).toEqual(["first task", "start over"]);
+});
+
+test("a background dispatch reports queued and keeps the message pending until it starts", async () => {
+  host = createControlledHost();
+  const agentId = await host.createAgent({ steerable: false });
+  await host.startTurn(agentId, "first task");
+  const session = host.session(agentId);
+
+  const dispatch = await dispatchAgentMessageInBackground({
+    agentManager: host.agentManager,
+    agentStorage: host.agentStorage,
+    agentId,
+    messageId: "msg-queued",
+    intent: "queue",
+    prompt: "next task",
+    logger: host.logger,
+  });
+
+  expect(dispatch.disposition).toBe("queued");
+  expect(isMessageAlreadyDispatched(host.agentManager, agentId, "msg-queued")).toBe(true);
+  session.completeTurn("first done");
+  await expect(dispatch.settled).resolves.toBe("started");
+  expect(session.startPrompts).toEqual(["first task", "next task"]);
+  expect(isMessageAlreadyDispatched(host.agentManager, agentId, "msg-queued")).toBe(true);
 });

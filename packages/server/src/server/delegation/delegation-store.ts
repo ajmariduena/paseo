@@ -429,14 +429,20 @@ export class DelegationStore {
         if (isDeliveryFinal(task)) continue;
         task.completionDelivery = { state: "acknowledged", observedByRunKey };
         task.updatedAt = now;
-        const delivery = file.cohorts[task.spawningRunKey]?.delivery;
-        if (!delivery || delivery.dispatch.kind === "started") continue;
-        delivery.taskIds = delivery.taskIds.filter((id) => id !== task.id);
-        if (delivery.taskIds.length === 0) {
-          file.cohorts[task.spawningRunKey].delivery = null;
-        }
+        withdrawFromUnstartedWake(file, task);
       }
       return latest;
+    });
+  }
+
+  /** The parent cancelled the child: none of its tasks, finished or not, wakes the parent. */
+  async disposeChildTasks(parentAgentId: string, childAgentId: string, now: string): Promise<void> {
+    await this.mutateExisting(parentAgentId, undefined, (file) => {
+      for (const task of Object.values(file.tasks)) {
+        if (task.childAgentId !== childAgentId || isDeliveryFinal(task)) continue;
+        setDeliveryState(task, "disposed", now);
+        withdrawFromUnstartedWake(file, task);
+      }
     });
   }
 
@@ -526,6 +532,16 @@ export class DelegationStore {
       apply(index);
       await writeJsonFileAtomic(indexPath, index);
     });
+  }
+}
+
+function withdrawFromUnstartedWake(file: DelegationFile, task: DelegationTask): void {
+  const cohort = file.cohorts[task.spawningRunKey];
+  const delivery = cohort?.delivery;
+  if (!delivery || delivery.dispatch.kind === "started") return;
+  delivery.taskIds = delivery.taskIds.filter((id) => id !== task.id);
+  if (delivery.taskIds.length === 0) {
+    cohort.delivery = null;
   }
 }
 

@@ -123,6 +123,7 @@ export class WakeMailbox {
         return;
       }
       case "started":
+      case "restarted":
         await this.followWakeRun(offer, rendered);
         return;
       case "skipped_archived":

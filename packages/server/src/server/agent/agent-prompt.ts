@@ -307,12 +307,36 @@ export async function waitForAgentRunStartWithTimeout(
 export async function sendPromptToAgent(
   params: SendPromptToAgentParams,
 ): Promise<{ disposition: PromptDispatchDisposition }> {
-  const unarchive = params.unarchive ?? true;
+  if (!(await prepareAgentForPrompt(params))) {
+    return { disposition: "turn_started" };
+  }
 
+  const runOptions = params.messageId
+    ? { ...params.runOptions, clientMessageId: params.messageId }
+    : params.runOptions;
+
+  return await startAgentRun(params.agentManager, params.agentId, params.prompt, params.logger, {
+    replaceRunning: true,
+    activeTurnBehavior: params.activeTurnBehavior,
+    clearPendingPermissions: params.clearPendingPermissions,
+    runOptions,
+  });
+}
+
+/**
+ * (optional unarchive) → load → (optional mode change). Returns false when the agent is
+ * archived and `unarchive` is false, so the prompt must be skipped.
+ */
+export async function prepareAgentForPrompt(
+  params: Pick<
+    SendPromptToAgentParams,
+    "agentManager" | "agentStorage" | "agentId" | "sessionMode" | "unarchive" | "logger"
+  >,
+): Promise<boolean> {
   const record = await params.agentStorage.get(params.agentId);
   if (record?.archivedAt) {
-    if (!unarchive) {
-      return { disposition: "turn_started" };
+    if (!(params.unarchive ?? true)) {
+      return false;
     }
     await unarchiveAgentState(params.agentStorage, params.agentManager, params.agentId);
   }
@@ -326,17 +350,7 @@ export async function sendPromptToAgent(
   if (params.sessionMode) {
     await params.agentManager.setAgentMode(params.agentId, params.sessionMode);
   }
-
-  const runOptions = params.messageId
-    ? { ...params.runOptions, clientMessageId: params.messageId }
-    : params.runOptions;
-
-  return await startAgentRun(params.agentManager, params.agentId, params.prompt, params.logger, {
-    replaceRunning: true,
-    activeTurnBehavior: params.activeTurnBehavior,
-    clearPendingPermissions: params.clearPendingPermissions,
-    runOptions,
-  });
+  return true;
 }
 
 export async function startCreatedAgentInitialPrompt(

@@ -106,6 +106,8 @@ export interface CreateAgentFromMcpInput {
   }) => void;
   onWorktreeCreated?: (createdWorktree: CreatePaseoWorktreeWorkflowResult) => void;
   callerAgentId?: string;
+  /** Persisted with the agent so a retried create under the same key finds it. */
+  clientRequestId?: string;
   callerContext?: {
     lockedCwd?: string;
     allowCustomCwd?: boolean;
@@ -189,6 +191,8 @@ export async function createAgentCommand(
     resolved.createOptions,
   );
 
+  await recordCreationRequest(dependencies, input, snapshot.id);
+
   resolved.setupContinuation?.startAfterAgentCreate({
     agentId: snapshot.id,
   });
@@ -227,6 +231,18 @@ export async function createAgentCommand(
     initialPromptError,
     ...(resolved.createdWorktree ? { createdWorktree: resolved.createdWorktree } : {}),
   };
+}
+
+async function recordCreationRequest(
+  dependencies: CreateAgentCommandDependencies,
+  input: CreateAgentCommandInput,
+  agentId: string,
+): Promise<void> {
+  if (input.kind !== "mcp" || !input.clientRequestId) return;
+  await dependencies.agentStorage.setCreation(agentId, {
+    callerAgentId: input.callerAgentId ?? null,
+    clientRequestId: input.clientRequestId,
+  });
 }
 
 async function resolveSessionCreateAgent(

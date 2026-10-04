@@ -49,7 +49,12 @@ export function resolveDispatchIntent(
  * stale while waiting is dropped instead of delivered.
  */
 export type DispatchPolicy =
-  | { kind: "intent"; intent: DispatchIntent; prompt: AgentPromptInput }
+  | {
+      kind: "intent";
+      intent: DispatchIntent;
+      prompt: AgentPromptInput;
+      onQueued?: () => void;
+    }
   | {
       kind: "system";
       maySteer: boolean;
@@ -60,9 +65,45 @@ export type DispatchPolicy =
 export type MessageDisposition =
   | "steered"
   | "started"
+  | "restarted"
   | "out_of_band"
   | "skipped_archived"
   | "dropped";
+
+/** An explicit steer found a running turn whose provider cannot take it without a restart. */
+export class SteerUnavailableError extends Error {
+  constructor(readonly agentId: string) {
+    super(`Agent ${agentId} cannot take a steer into its running turn`);
+    this.name = "SteerUnavailableError";
+  }
+}
+
+const pendingDispatches = new WeakMap<AgentManager, Map<string, Set<string>>>();
+
+function trackPendingDispatch(params: DispatchAgentMessageParams): () => void {
+  const byAgent = pendingDispatches.get(params.agentManager) ?? new Map<string, Set<string>>();
+  pendingDispatches.set(params.agentManager, byAgent);
+  const messageIds = byAgent.get(params.agentId) ?? new Set<string>();
+  byAgent.set(params.agentId, messageIds);
+  messageIds.add(params.messageId);
+  return () => {
+    messageIds.delete(params.messageId);
+    if (messageIds.size === 0 && byAgent.get(params.agentId) === messageIds) {
+      byAgent.delete(params.agentId);
+    }
+  };
+}
+
+/** A message for this agent was dispatched and has not yet steered, started, or been dropped. */
+export function hasPendingDispatch(
+  agentManager: AgentManager,
+  agentId: string,
+  messageId?: string,
+): boolean {
+  const messageIds = pendingDispatches.get(agentManager)?.get(agentId);
+  if (!messageIds) return false;
+  return messageId === undefined ? messageIds.size > 0 : messageIds.has(messageId);
+}
 
 export interface DispatchAgentMessageParams {
   agentManager: AgentManager;
@@ -76,19 +117,26 @@ export interface DispatchAgentMessageParams {
 export async function dispatchAgentMessage(
   params: DispatchAgentMessageParams,
 ): Promise<MessageDisposition> {
-  if (params.policy.kind === "system" && (await isArchived(params))) {
-    return "skipped_archived";
-  }
-  await loadAgent(params);
-  const mode = resolveMode(params);
-  switch (mode.kind) {
-    case "steer":
-      return await steer(params);
-    case "restart":
-      return await start(params, { replaceRunning: true });
-    case "start":
-    case "queue":
-      return await startWhenIdle(params);
+  const untrack = trackPendingDispatch(params);
+  try {
+    if (params.policy.kind === "system" && (await isArchived(params))) {
+      return "skipped_archived";
+    }
+    await loadAgent(params);
+    const mode = resolveMode(params);
+    switch (mode.kind) {
+      case "steer":
+        return await steer(params);
+      case "restart": {
+        const disposition = await start(params, { replaceRunning: true });
+        return disposition === "started" ? "restarted" : disposition;
+      }
+      case "start":
+      case "queue":
+        return await startWhenIdle(params);
+    }
+  } finally {
+    untrack();
   }
 }
 
@@ -108,15 +156,8 @@ async function preparePrompt(params: DispatchAgentMessageParams): Promise<AgentP
   return params.policy.kind === "intent" ? params.policy.prompt : await params.policy.prepare();
 }
 
+/** Never replaces the running turn; an explicit steer the provider cannot take fails instead. */
 async function steer(params: DispatchAgentMessageParams): Promise<MessageDisposition> {
-  if (params.policy.kind === "intent" && params.policy.intent === "steer") {
-    try {
-      return await start(params, { activeTurnBehavior: "steer" });
-    } catch (error) {
-      if (!(error instanceof AgentRunActiveError)) throw error;
-      return await startWhenIdle(params);
-    }
-  }
   const prompt = await preparePrompt(params);
   if (prompt === null) {
     return "dropped";
@@ -126,6 +167,10 @@ async function steer(params: DispatchAgentMessageParams): Promise<MessageDisposi
   });
   if (result.status === "accepted") {
     return "steered";
+  }
+  const explicitSteer = params.policy.kind === "intent" && params.policy.intent === "steer";
+  if (explicitSteer && result.status === "unavailable") {
+    throw new SteerUnavailableError(params.agentId);
   }
   // A late steer becomes a new turn carrying the same messageId.
   return await startWhenIdle(params);
@@ -140,7 +185,7 @@ async function startWhenIdle(params: DispatchAgentMessageParams): Promise<Messag
         { agentId: params.agentId, messageId: params.messageId },
         "agent.dispatch.wait_for_turn",
       );
-      if (params.policy.kind === "system") await params.policy.onQueued?.();
+      await params.policy.onQueued?.();
     }
     await params.agentManager.waitForRunToSettle(params.agentId);
     if (params.policy.kind === "system" && (await isArchived(params))) {
@@ -184,4 +229,46 @@ async function loadAgent(params: DispatchAgentMessageParams): Promise<void> {
     agentStorage: params.agentStorage,
     logger: params.logger,
   });
+}
+
+export interface BackgroundDispatch {
+  /** `queued` means the message waits for the running turn and keeps going in `settled`. */
+  disposition: MessageDisposition | "queued";
+  settled: Promise<MessageDisposition>;
+}
+
+/** Dispatches an intent and returns as soon as the message steered, started, or got queued. */
+export async function dispatchAgentMessageInBackground(
+  params: Omit<DispatchAgentMessageParams, "policy"> & {
+    intent: DispatchIntent;
+    prompt: AgentPromptInput;
+  },
+): Promise<BackgroundDispatch> {
+  const { intent, prompt, ...rest } = params;
+  let markQueued: () => void = () => undefined;
+  const queued = new Promise<"queued">((resolve) => {
+    markQueued = () => resolve("queued");
+  });
+  const settled = dispatchAgentMessage({
+    ...rest,
+    policy: { kind: "intent", intent, prompt, onQueued: markQueued },
+  });
+  const disposition = await Promise.race([settled, queued]);
+  return { disposition, settled };
+}
+
+/** The message is already in flight or in the agent's timeline, so a retry must not resend it. */
+export function isMessageAlreadyDispatched(
+  agentManager: AgentManager,
+  agentId: string,
+  messageId: string,
+): boolean {
+  if (hasPendingDispatch(agentManager, agentId, messageId)) return true;
+  return agentManager
+    .getTimeline(agentId)
+    .some(
+      (item) =>
+        item.type === "user_message" &&
+        (item.clientMessageId === messageId || item.messageId === messageId),
+    );
 }

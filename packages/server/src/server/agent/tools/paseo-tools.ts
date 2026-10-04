@@ -1,9 +1,15 @@
+import { createHash, randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { z } from "zod";
 import { ensureValidJson } from "../../json-utils.js";
 import type { Logger } from "pino";
 
-import type { AgentMode, AgentProvider, AgentSessionConfig } from "../agent-sdk-types.js";
+import type {
+  AgentMode,
+  AgentPermissionRequest,
+  AgentProvider,
+  AgentSessionConfig,
+} from "../agent-sdk-types.js";
 import type { AgentManager } from "../agent-manager.js";
 import { AgentProfileSchema } from "@getpaseo/protocol/messages";
 import type { DaemonConfigStore } from "../../daemon-config-store.js";
@@ -23,7 +29,7 @@ import {
 } from "../agent-projections.js";
 import { curateAgentActivity } from "../activity-curator.js";
 import { selectItemsByProjectedLimit } from "../timeline-projection.js";
-import type { AgentStorage } from "../agent-storage.js";
+import type { AgentCreationRequest, AgentStorage, StoredAgentRecord } from "../agent-storage.js";
 import { ensureAgentLoaded } from "../agent-loading.js";
 import { isStoredAgentProviderAvailable } from "../../persistence-hooks.js";
 import {
@@ -59,9 +65,17 @@ import {
   sanitizePermissionRequest,
   serializeSnapshotWithMetadata,
   toScheduleSummary,
+  AGENT_WAIT_TIMEOUT_MS,
   waitForAgentWithTimeout,
 } from "../mcp-shared.js";
-import { sendPromptToAgent, waitForAgentRunStartWithTimeout } from "../agent-prompt.js";
+import { prepareAgentForPrompt, waitForAgentRunStartWithTimeout } from "../agent-prompt.js";
+import {
+  dispatchAgentMessageInBackground,
+  isMessageAlreadyDispatched,
+  SteerUnavailableError,
+  type BackgroundDispatch,
+  type DispatchIntent,
+} from "../message-dispatch.js";
 import type { DelegationService } from "../../delegation/delegation-service.js";
 import { respondToAgentPermission } from "../permission-response.js";
 import {
@@ -135,7 +149,10 @@ export interface PaseoToolHostDependencies {
   paseoToolPolicy?: ProviderPaseoToolsPolicy;
   paseoHome?: string;
   worktreesRoot?: string;
-  delegations?: Pick<DelegationService, "delegate" | "acknowledgeChildResults">;
+  delegations?: Pick<
+    DelegationService,
+    "delegate" | "acknowledgeChildResults" | "disposeChildTasks" | "refreshChild"
+  >;
   /**
    * ID of the agent that is using this tool catalog.
    * Used for cwd/mode inheritance when agents spawn child agents.
@@ -555,6 +572,60 @@ function resolveTerminalKeyToken(key: string, literal: boolean): string {
       return "\u0005";
     default:
       return key;
+  }
+}
+
+type SendDisposition = "started" | "steered" | "queued" | "restarted" | "out_of_band" | "duplicate";
+
+function toSendDisposition(disposition: BackgroundDispatch["disposition"]): SendDisposition {
+  switch (disposition) {
+    case "started":
+    case "steered":
+    case "queued":
+    case "restarted":
+    case "out_of_band":
+      return disposition;
+    case "dropped":
+    case "skipped_archived":
+      throw new Error(`Prompt was not delivered (${disposition})`);
+  }
+}
+
+/** Retry keys are scoped per caller, so two agents reusing a key never collide. */
+function deriveClientMessageId(callerAgentId: string | undefined, clientRequestId: string): string {
+  const digest = createHash("sha256").update(clientRequestId).digest("hex");
+  return `mcp:${callerAgentId ?? "top-level"}:${digest}`;
+}
+
+const createRequestTails = new WeakMap<AgentStorage, Map<string, Promise<unknown>>>();
+
+/** Retries of one create request run one at a time, so the second finds the first's agent. */
+async function serializeCreateRequest<T>(
+  agentStorage: AgentStorage,
+  creation: AgentCreationRequest,
+  run: () => Promise<T>,
+): Promise<T> {
+  const tails = createRequestTails.get(agentStorage) ?? new Map<string, Promise<unknown>>();
+  createRequestTails.set(agentStorage, tails);
+  const key = JSON.stringify([creation.callerAgentId, creation.clientRequestId]);
+  const result = (tails.get(key) ?? Promise.resolve()).catch(() => undefined).then(run);
+  tails.set(key, result);
+  try {
+    return await result;
+  } finally {
+    if (tails.get(key) === result) tails.delete(key);
+  }
+}
+
+async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const timedOut = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise.then(() => true).catch(() => true), timedOut]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -1000,6 +1071,15 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       .strict()
       .describe("Create a new workspace for the agent."),
   ]);
+  const clientRequestIdSchema = z
+    .string()
+    .trim()
+    .min(1)
+    .max(256)
+    .optional()
+    .describe(
+      "Idempotency key: distinct per logical request, the same on every retry of it. A retry returns the original result instead of acting twice.",
+    );
   const commonCreateAgentFields = {
     title: z
       .string()
@@ -1019,6 +1099,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       .trim()
       .min(1, "initialPrompt is required")
       .describe("Required first task to run immediately after creation."),
+    clientRequestId: clientRequestIdSchema,
   };
   const legacyCreateAgentPlacementFields = {
     relationship: AgentRelationshipInputSchema.describe(
@@ -1129,6 +1210,15 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     agentId: z.string(),
     prompt: z.string(),
     sessionMode: z.string().optional().describe("Optional mode to set before running the prompt."),
+    delivery: z
+      .enum(["auto", "queue", "steer", "restart"])
+      .optional()
+      .describe(
+        callerAgentId
+          ? "How to deliver to a busy agent. auto (default): steer into its running turn when the provider can, otherwise run after that turn. queue: run after the running turn. steer: steer into the running turn, failing if the provider cannot. restart: interrupt the running turn and start over with this prompt. An idle agent always starts right away."
+          : "How to deliver to a busy agent. restart (default): interrupt the running turn and start over with this prompt. auto: steer when the provider can, otherwise run after the running turn. queue: run after the running turn. steer: steer, failing if the provider cannot.",
+      ),
+    clientRequestId: clientRequestIdSchema,
   };
   const agentToAgentSendAgentPromptInputSchema = {
     ...commonSendAgentPromptInputSchema,
@@ -1167,6 +1257,10 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   const sendAgentPromptInputSchema = callerAgentId
     ? agentToAgentSendAgentPromptInputSchema
     : topLevelSendAgentPromptInputSchema;
+  type SendAgentPromptArgs = Partial<
+    z.infer<z.ZodObject<typeof agentToAgentSendAgentPromptInputSchema>>
+  > &
+    Pick<z.infer<z.ZodObject<typeof commonSendAgentPromptInputSchema>>, "agentId" | "prompt">;
   const inspectProviderInputSchema = {
     provider: ProviderOrProviderModelInputSchema.describe(
       "Provider ID, optionally with a model ID (for example codex or codex/gpt-5.4).",
@@ -1470,117 +1564,156 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         lastMessage: z.string().nullable().optional(),
         permission: AgentPermissionRequestPayloadSchema.nullable().optional(),
         guidance: z.string().optional(),
+        deduplicated: z.boolean().optional(),
       },
     },
     async (args: unknown) => {
-      const resolvedArgs = await resolveCreateAgentToolArgs(args);
-      const { parsedArgs, worktree } = resolvedArgs;
-      let requestedBackground: boolean;
-      let notifyOnFinish: boolean;
-      if (resolvedArgs.kind === "agent-scoped") {
-        requestedBackground = true;
-        notifyOnFinish = parsedArgs.notifyOnFinish;
-      } else {
-        requestedBackground = resolvedArgs.parsedArgs.background;
-        notifyOnFinish = resolvedArgs.parsedArgs.notifyOnFinish ?? false;
-      }
-      notifyOnFinish &&= !callerHearsResultsItself();
-      const selectedProvider = resolveRequiredProviderModel(parsedArgs.provider).provider;
-      const inheritedConfig = resolveInheritedProviderConfig(selectedProvider);
-      const mode = resolveCreateMode(parsedArgs.settings?.modeId, selectedProvider);
-      const {
-        snapshot,
-        background: createdInBackground,
-        initialPromptStarted,
-      } = await createAgentCommand(
-        {
-          agentManager,
-          agentStorage,
-          logger: childLogger,
-          paseoHome: options.paseoHome,
-          worktreesRoot: options.worktreesRoot,
-          terminalManager,
-          providerSnapshotManager,
-          createPaseoWorktree: options.createPaseoWorktree,
-          ...(options.ensureWorkspaceForCreate
-            ? { ensureWorkspaceForCreate: options.ensureWorkspaceForCreate }
-            : {}),
-          delegations: options.delegations,
-        },
-        {
-          kind: "mcp",
-          provider: parsedArgs.provider,
-          title: parsedArgs.title,
-          initialPrompt: parsedArgs.initialPrompt,
-          config: inheritedConfig,
-          cwd: resolvedArgs.cwd,
-          workspaceId: resolvedArgs.workspaceId,
-          thinking: parsedArgs.settings?.thinkingOptionId,
-          features: parsedArgs.settings?.features,
-          labels: parsedArgs.labels,
-          mode,
-          background: requestedBackground,
-          notifyOnFinish,
-          detached: resolvedArgs.detached,
-          callerAgentId,
-          callerContext,
-          worktree,
-        },
+      const clientRequestId = clientRequestIdSchema.parse(
+        (args as { clientRequestId?: unknown }).clientRequestId,
       );
-      if (initialPromptStarted) callerContext?.onAgentPrompted?.(snapshot.id);
-
-      try {
-        if (!createdInBackground && initialPromptStarted) {
-          const result = await waitForAgentWithTimeout(agentManager, snapshot.id, {
-            waitForActive: true,
-          });
-
-          const liveSnapshot = agentManager.getAgent(snapshot.id) ?? snapshot;
-          const responseData = {
-            agentId: snapshot.id,
-            type: snapshot.provider,
-            status: result.status,
-            cwd: liveSnapshot.cwd,
-            ...(liveSnapshot.workspaceId ? { workspaceId: liveSnapshot.workspaceId } : {}),
-            currentModeId: liveSnapshot.currentModeId,
-            availableModes: liveSnapshot.availableModes,
-            lastMessage: result.lastMessage,
-            permission: sanitizePermissionRequest(result.permission),
-          };
-          const validJson = ensureValidJson(responseData);
-
-          const response = {
-            content: [],
-            structuredContent: validJson,
-          };
-          return response;
-        }
-      } catch (error) {
-        childLogger.error({ err: error, agentId: snapshot.id }, "Failed to run initial prompt");
-        throw error;
+      if (!clientRequestId) {
+        return await createAgentFromTool(args, undefined);
       }
-
-      // Return immediately for async creation.
-      const currentSnapshot = agentManager.getAgent(snapshot.id) ?? snapshot;
-      const guidance = initialPromptStarted ? createdAgentGuidance(notifyOnFinish) : undefined;
-      const response = {
-        content: [],
-        structuredContent: ensureValidJson({
-          agentId: currentSnapshot.id,
-          type: snapshot.provider,
-          status: currentSnapshot.lifecycle,
-          cwd: currentSnapshot.cwd,
-          ...(currentSnapshot.workspaceId ? { workspaceId: currentSnapshot.workspaceId } : {}),
-          currentModeId: currentSnapshot.currentModeId,
-          availableModes: currentSnapshot.availableModes,
-          lastMessage: null,
-          permission: null,
-          ...(guidance ? { guidance } : {}),
-        }),
-      };
-      return response;
+      const creation = { callerAgentId: callerAgentId ?? null, clientRequestId };
+      return await serializeCreateRequest(agentStorage, creation, async () => {
+        const existing = await agentStorage.findByCreationRequest(creation);
+        if (existing) {
+          return deduplicatedCreateResponse(existing);
+        }
+        return await createAgentFromTool(args, clientRequestId);
+      });
     },
   );
+
+  function deduplicatedCreateResponse(record: StoredAgentRecord) {
+    const live = agentManager.getAgent(record.id);
+    const workspaceId = live?.workspaceId ?? record.workspaceId;
+    return {
+      content: [],
+      structuredContent: ensureValidJson({
+        agentId: record.id,
+        type: record.provider,
+        status: live?.lifecycle ?? record.lastStatus,
+        cwd: live?.cwd ?? record.cwd,
+        ...(workspaceId ? { workspaceId } : {}),
+        currentModeId: live?.currentModeId ?? record.lastModeId ?? null,
+        availableModes: live?.availableModes ?? [],
+        lastMessage: null,
+        permission: null,
+        deduplicated: true,
+      }),
+    };
+  }
+
+  async function createAgentFromTool(args: unknown, clientRequestId: string | undefined) {
+    const resolvedArgs = await resolveCreateAgentToolArgs(args);
+    const { parsedArgs, worktree } = resolvedArgs;
+    let requestedBackground: boolean;
+    let notifyOnFinish: boolean;
+    if (resolvedArgs.kind === "agent-scoped") {
+      requestedBackground = true;
+      notifyOnFinish = parsedArgs.notifyOnFinish;
+    } else {
+      requestedBackground = resolvedArgs.parsedArgs.background;
+      notifyOnFinish = resolvedArgs.parsedArgs.notifyOnFinish ?? false;
+    }
+    notifyOnFinish &&= !callerHearsResultsItself();
+    const selectedProvider = resolveRequiredProviderModel(parsedArgs.provider).provider;
+    const inheritedConfig = resolveInheritedProviderConfig(selectedProvider);
+    const mode = resolveCreateMode(parsedArgs.settings?.modeId, selectedProvider);
+    const {
+      snapshot,
+      background: createdInBackground,
+      initialPromptStarted,
+    } = await createAgentCommand(
+      {
+        agentManager,
+        agentStorage,
+        logger: childLogger,
+        paseoHome: options.paseoHome,
+        worktreesRoot: options.worktreesRoot,
+        terminalManager,
+        providerSnapshotManager,
+        createPaseoWorktree: options.createPaseoWorktree,
+        ...(options.ensureWorkspaceForCreate
+          ? { ensureWorkspaceForCreate: options.ensureWorkspaceForCreate }
+          : {}),
+        delegations: options.delegations,
+      },
+      {
+        kind: "mcp",
+        provider: parsedArgs.provider,
+        title: parsedArgs.title,
+        initialPrompt: parsedArgs.initialPrompt,
+        config: inheritedConfig,
+        cwd: resolvedArgs.cwd,
+        workspaceId: resolvedArgs.workspaceId,
+        thinking: parsedArgs.settings?.thinkingOptionId,
+        features: parsedArgs.settings?.features,
+        labels: parsedArgs.labels,
+        mode,
+        background: requestedBackground,
+        notifyOnFinish,
+        detached: resolvedArgs.detached,
+        callerAgentId,
+        clientRequestId,
+        callerContext,
+        worktree,
+      },
+    );
+    if (initialPromptStarted) callerContext?.onAgentPrompted?.(snapshot.id);
+
+    try {
+      if (!createdInBackground && initialPromptStarted) {
+        const result = await waitForAgentWithTimeout(agentManager, snapshot.id, {
+          waitForActive: true,
+        });
+
+        const liveSnapshot = agentManager.getAgent(snapshot.id) ?? snapshot;
+        const responseData = {
+          agentId: snapshot.id,
+          type: snapshot.provider,
+          status: result.status,
+          cwd: liveSnapshot.cwd,
+          ...(liveSnapshot.workspaceId ? { workspaceId: liveSnapshot.workspaceId } : {}),
+          currentModeId: liveSnapshot.currentModeId,
+          availableModes: liveSnapshot.availableModes,
+          lastMessage: result.lastMessage,
+          permission: sanitizePermissionRequest(result.permission),
+        };
+        const validJson = ensureValidJson(responseData);
+
+        const response = {
+          content: [],
+          structuredContent: validJson,
+        };
+        return response;
+      }
+    } catch (error) {
+      childLogger.error({ err: error, agentId: snapshot.id }, "Failed to run initial prompt");
+      throw error;
+    }
+
+    // Return immediately for async creation.
+    const currentSnapshot = agentManager.getAgent(snapshot.id) ?? snapshot;
+    const guidance = initialPromptStarted ? createdAgentGuidance(notifyOnFinish) : undefined;
+    const response = {
+      content: [],
+      structuredContent: ensureValidJson({
+        agentId: currentSnapshot.id,
+        type: snapshot.provider,
+        status: currentSnapshot.lifecycle,
+        cwd: currentSnapshot.cwd,
+        ...(currentSnapshot.workspaceId ? { workspaceId: currentSnapshot.workspaceId } : {}),
+        currentModeId: currentSnapshot.currentModeId,
+        availableModes: currentSnapshot.availableModes,
+        lastMessage: null,
+        permission: null,
+        ...(guidance ? { guidance } : {}),
+      }),
+    };
+    return response;
+  }
 
   type ResolvedCreateAgentToolArgs =
     | {
@@ -1928,28 +2061,31 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     "send_agent_prompt",
     {
       title: "Send agent prompt",
-      description:
-        "Send a task to a running agent. Agent-scoped callers run in background by default; top-level callers wait by default.",
+      description: callerAgentId
+        ? "Send a task to an agent. Runs in background by default. A busy agent gets the prompt steered into its running turn, or after that turn ends; it is never interrupted unless delivery is restart."
+        : "Send a task to an agent. Waits for the result by default. A busy agent is interrupted unless you pass another delivery.",
       inputSchema: sendAgentPromptInputSchema,
       outputSchema: {
         success: z.boolean(),
         status: AgentStatusEnum,
+        disposition: z
+          .enum(["started", "steered", "queued", "restarted", "out_of_band", "duplicate"])
+          .optional(),
         lastMessage: z.string().nullable().optional(),
         permission: AgentPermissionRequestPayloadSchema.nullable().optional(),
         guidance: z.string().optional(),
       },
     },
-    async ({
-      agentId,
-      prompt,
-      sessionMode,
-      background = Boolean(callerAgentId),
-      notifyOnFinish = Boolean(callerAgentId),
-    }) => {
-      async function delegateResult(): Promise<boolean> {
-        if (!callerAgentId || !notifyOnFinish || callerHearsResultsItself()) {
-          return false;
-        }
+    async (args: SendAgentPromptArgs) => {
+      const { agentId, prompt } = args;
+      const background = args.background ?? Boolean(callerAgentId);
+      const notifyOnFinish = args.notifyOnFinish ?? Boolean(callerAgentId);
+
+      async function laterResultGuidance(
+        disposition: SendDisposition,
+      ): Promise<string | undefined> {
+        if (callerHearsResultsItself()) return VOICE_ANNOUNCES_RESULT_GUIDANCE;
+        if (disposition === "out_of_band" || !callerAgentId || !notifyOnFinish) return undefined;
         await options.delegations?.delegate({
           parentAgentId: callerAgentId,
           childAgentId: agentId,
@@ -1958,82 +2094,139 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           prompt,
           requireParentOwnership: false,
         });
-        return true;
+        return PROMPTED_AGENT_NOTIFICATION_GUIDANCE;
       }
 
-      const { disposition } = await sendPromptToAgent({
+      await prepareAgentForPrompt({
         agentManager,
         agentStorage,
         agentId,
-        prompt,
-        sessionMode,
+        sessionMode: args.sessionMode,
         logger: childLogger,
       });
-      callerContext?.onAgentPrompted?.(agentId);
-
-      async function laterResultGuidance(): Promise<string | undefined> {
-        if (callerHearsResultsItself()) return VOICE_ANNOUNCES_RESULT_GUIDANCE;
-        if (disposition === "out_of_band") return undefined;
-        return (await delegateResult()) ? PROMPTED_AGENT_NOTIFICATION_GUIDANCE : undefined;
+      const messageId = args.clientRequestId
+        ? deriveClientMessageId(callerAgentId, args.clientRequestId)
+        : `mcp:${randomUUID()}`;
+      if (args.clientRequestId && isMessageAlreadyDispatched(agentManager, agentId, messageId)) {
+        return sendPromptResponse({ status: currentStatus(agentId), disposition: "duplicate" });
       }
 
-      // If not running in background, wait for completion
+      const dispatch = await dispatchPrompt({
+        agentId,
+        prompt,
+        messageId,
+        delivery: args.delivery ?? (callerAgentId ? "auto" : "restart"),
+      });
+      const disposition = toSendDisposition(dispatch.disposition);
+      callerContext?.onAgentPrompted?.(agentId);
+
       if (!background) {
-        const result = await waitForAgentWithTimeout(agentManager, agentId, {
-          waitForActive: true,
-        });
+        const result = await waitForSentPrompt(agentId, dispatch);
         // The wait ran out while the agent keeps working, so its result arrives later
         // instead of in this response.
-        const guidance =
-          result.timedOut && agentManager.getAgent(agentId)?.lifecycle === "running"
-            ? await laterResultGuidance()
-            : undefined;
-
-        const responseData = {
-          success: true,
-          status: result.status,
-          lastMessage: result.lastMessage,
-          permission: sanitizePermissionRequest(result.permission),
-          ...(guidance ? { guidance } : {}),
-        };
-        const validJson = ensureValidJson(responseData);
-
-        const response = {
-          content: [],
-          structuredContent: validJson,
-        };
-        return response;
+        const guidance = result.stillWorking ? await laterResultGuidance(disposition) : undefined;
+        return sendPromptResponse({ ...result, disposition, guidance });
       }
 
       // Awaiting the delegation first would let a fast turn end before the start wait begins.
-      const delegated = laterResultGuidance();
+      const delegated = laterResultGuidance(disposition);
       let guidance: string | undefined;
       try {
         // Return once the provider has accepted the turn, so the status reports it running.
-        if (disposition === "turn_started") {
+        // A turn that already ended has no start left to wait for.
+        const startedTurn = disposition === "started" || disposition === "restarted";
+        if (startedTurn && agentManager.hasInFlightRun(agentId)) {
           await waitForAgentRunStartWithTimeout(agentManager, agentId);
         }
       } finally {
         guidance = await delegated;
       }
-      const currentSnapshot = agentManager.getAgent(agentId);
-
-      const responseData = {
-        success: true,
-        status: currentSnapshot?.lifecycle ?? "idle",
-        lastMessage: null,
-        permission: null,
-        ...(guidance ? { guidance } : {}),
-      };
-      const validJson = ensureValidJson(responseData);
-
-      const response = {
-        content: [],
-        structuredContent: validJson,
-      };
-      return response;
+      return sendPromptResponse({ status: currentStatus(agentId), disposition, guidance });
     },
   );
+
+  function currentStatus(agentId: string): z.infer<typeof AgentStatusEnum> {
+    return agentManager.getAgent(agentId)?.lifecycle ?? "idle";
+  }
+
+  function sendPromptResponse(data: {
+    status: z.infer<typeof AgentStatusEnum>;
+    disposition: SendDisposition;
+    lastMessage?: string | null;
+    permission?: AgentPermissionRequest | null;
+    guidance?: string;
+  }) {
+    return {
+      content: [],
+      structuredContent: ensureValidJson({
+        success: true,
+        status: data.status,
+        disposition: data.disposition,
+        lastMessage: data.lastMessage ?? null,
+        permission: sanitizePermissionRequest(data.permission),
+        ...(data.guidance ? { guidance: data.guidance } : {}),
+      }),
+    };
+  }
+
+  /** A queued prompt keeps dispatching after this returns; its failure can only be logged. */
+  async function dispatchPrompt(input: {
+    agentId: string;
+    prompt: string;
+    messageId: string;
+    delivery: DispatchIntent;
+  }): Promise<BackgroundDispatch> {
+    let dispatch: BackgroundDispatch;
+    try {
+      dispatch = await dispatchAgentMessageInBackground({
+        agentManager,
+        agentStorage,
+        agentId: input.agentId,
+        messageId: input.messageId,
+        intent: input.delivery,
+        prompt: input.prompt,
+        logger: childLogger,
+      });
+    } catch (error) {
+      if (error instanceof SteerUnavailableError) {
+        throw new Error(
+          `Agent ${input.agentId} is running and its provider cannot take a steer. Use delivery auto or queue to run after its turn, or restart to interrupt it.`,
+          { cause: error },
+        );
+      }
+      throw error;
+    }
+    void dispatch.settled
+      .catch((error: unknown) => {
+        childLogger.error(
+          { err: error, agentId: input.agentId, messageId: input.messageId },
+          "Queued agent prompt failed",
+        );
+      })
+      .finally(() => options.delegations?.refreshChild(input.agentId));
+    return dispatch;
+  }
+
+  async function waitForSentPrompt(agentId: string, dispatch: BackgroundDispatch) {
+    const started =
+      dispatch.disposition !== "queued" ||
+      (await settlesWithin(dispatch.settled, AGENT_WAIT_TIMEOUT_MS));
+    if (!started) {
+      return {
+        status: currentStatus(agentId),
+        lastMessage: `The prompt is queued behind the agent's running turn and did not start within ${Math.round(AGENT_WAIT_TIMEOUT_MS / 1000)}s.`,
+        permission: null,
+        stillWorking: true,
+      };
+    }
+    const result = await waitForAgentWithTimeout(agentManager, agentId, { waitForActive: true });
+    return {
+      status: result.status,
+      lastMessage: result.lastMessage,
+      permission: result.permission,
+      stillWorking: result.timedOut && agentManager.getAgent(agentId)?.lifecycle === "running",
+    };
+  }
 
   // Reading a delegated child's terminal result acknowledges it, which cancels a wake for that
   // result that has not started yet.
@@ -2177,22 +2370,33 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     "cancel_agent",
     {
       title: "Cancel agent run",
-      description: "Abort the agent's current run but keep the agent alive for future tasks.",
+      description:
+        "Abort the agent's current run but keep the agent alive for future tasks. Your pending notification for its result is dropped.",
       inputSchema: {
         agentId: z.string(),
       },
       outputSchema: {
         success: z.boolean(),
+        status: z.enum(["cancel_requested", "not_running"]).optional(),
       },
     },
     async ({ agentId }) => {
+      if (callerAgentId && options.delegations) {
+        await options.delegations.disposeChildTasks({
+          parentAgentId: callerAgentId,
+          childAgentId: agentId,
+        });
+      }
       const { cancelled } = await cancelAgentRunCommand(
         { agentManager, logger: childLogger },
         agentId,
       );
       return {
         content: [],
-        structuredContent: ensureValidJson({ success: cancelled }),
+        structuredContent: ensureValidJson({
+          success: cancelled,
+          status: cancelled ? "cancel_requested" : "not_running",
+        }),
       };
     },
   );

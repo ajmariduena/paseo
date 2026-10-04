@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { realpathSync } from "node:fs";
 import { access, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve as resolvePath } from "node:path";
@@ -16,6 +16,11 @@ import { DelegationStore } from "../delegation/delegation-store.js";
 import { AgentManager, type ManagedAgent } from "./agent-manager.js";
 import { AgentStorage, type StoredAgentRecord } from "./agent-storage.js";
 import { createTestAgentClients } from "../test-utils/fake-agent-client.js";
+import {
+  createControlledHost,
+  createTraceRecorder,
+  type ControlledHost,
+} from "../test-utils/controlled-agent-client.js";
 import type {
   AgentClient,
   AgentMode,
@@ -260,6 +265,8 @@ function buildAgentManagerSpies() {
     appendTimelineItem: vi.fn().mockResolvedValue(undefined),
     emitLiveTimelineItem: vi.fn().mockResolvedValue(undefined),
     hasInFlightRun: vi.fn().mockReturnValue(false),
+    getActiveRun: vi.fn().mockReturnValue(null),
+    waitForRunToSettle: vi.fn().mockResolvedValue(undefined),
     tryRunOutOfBand: vi.fn().mockReturnValue(false),
     subscribe: vi.fn().mockReturnValue(() => {}),
     streamAgent: vi.fn(() => (async function* noop() {})()),
@@ -3996,7 +4003,12 @@ describe("send_agent_prompt MCP tool", () => {
       agentStorage,
       providerSnapshotManager: createOpenCodeManager().manager,
       callerAgentId: "parent-agent",
-      delegations: { delegate, acknowledgeChildResults: vi.fn(async () => null) },
+      delegations: {
+        delegate,
+        acknowledgeChildResults: vi.fn(async () => null),
+        disposeChildTasks: vi.fn(async () => {}),
+        refreshChild: vi.fn(),
+      },
       logger,
     });
 
@@ -4224,7 +4236,7 @@ describe("send_agent_prompt MCP tool", () => {
       await removeAgentStateDir(agentManager, storage, workdir);
     }
   });
-  it("notifies the caller once when it prompts a created child that is still running", async () => {
+  it("queues a prompt to a busy child that cannot steer and notifies the caller once", async () => {
     const workdir = await mkdtemp(join(tmpdir(), "mcp-send-running-child-"));
     const storage = new AgentStorage(join(workdir, "agents"), logger);
     const parentClient = new HeldTurnAgentClient("claude", false);
@@ -4267,10 +4279,16 @@ describe("send_agent_prompt MCP tool", () => {
       expect(sent.structuredContent).toMatchObject({
         success: true,
         status: "running",
+        disposition: "queued",
       });
       const childSession = childClient.sessions[0]!;
-      await vi.waitFor(() => expect(childSession.prompts).toHaveLength(2));
+      expect(childSession.prompts).toEqual(["Run a long command"]);
 
+      childSession.finishTurn();
+      await vi.waitFor(() =>
+        expect(childSession.prompts).toEqual(["Run a long command", "Stop and reply instead"]),
+      );
+      await vi.waitFor(() => expect(agentManager.getAgent(childId)?.lifecycle).toBe("running"));
       childSession.finishTurn();
 
       function finishNotifications() {
@@ -4406,6 +4424,241 @@ describe("send_agent_prompt MCP tool", () => {
       });
     } finally {
       await removeAgentStateDir(agentManager, storage, workdir);
+    }
+  });
+});
+
+describe("send_agent_prompt delivery", () => {
+  let host: ControlledHost | null = null;
+
+  afterEach(async () => {
+    await host?.cleanup();
+    host = null;
+  });
+
+  async function sendFrom(
+    callerAgentId: string | undefined,
+    input: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    if (!host) throw new Error("host not started");
+    const server = await createAgentMcpServer({
+      agentManager: host.agentManager,
+      agentStorage: host.agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      ...(callerAgentId ? { callerAgentId } : {}),
+      logger: host.logger,
+    });
+    const response = await invokeToolWithParsedInput(registeredTool(server, "send_agent_prompt"), {
+      notifyOnFinish: false,
+      ...input,
+    });
+    return response.structuredContent;
+  }
+
+  async function startBusyChild(steerable: boolean) {
+    host = createControlledHost();
+    const parentId = await host.createAgent({ steerable: false });
+    const childId = await host.createAgent({ steerable });
+    await host.startTurn(childId, "long task");
+    return { parentId, childId, child: host.session(childId) };
+  }
+
+  it("steers an agent caller's prompt into a running turn that can take it", async () => {
+    const { parentId, childId, child } = await startBusyChild(true);
+
+    const sent = await sendFrom(parentId, { agentId: childId, prompt: "also check tests" });
+
+    expect(sent.disposition).toBe("steered");
+    expect(child.steerPrompts).toEqual(["also check tests"]);
+    expect(child.startPrompts).toEqual(["long task"]);
+    expect(child.interruptCount).toBe(0);
+  });
+
+  it("runs an agent caller's prompt after a running turn that cannot steer", async () => {
+    const { parentId, childId, child } = await startBusyChild(false);
+
+    const sent = await sendFrom(parentId, { agentId: childId, prompt: "next task" });
+
+    expect(sent.disposition).toBe("queued");
+    expect(child.startPrompts).toEqual(["long task"]);
+    child.completeTurn("long task done");
+    await vi.waitFor(() => expect(child.startPrompts).toEqual(["long task", "next task"]));
+    expect(child.interruptCount).toBe(0);
+  });
+
+  it("restarts the running turn only when asked to", async () => {
+    const { parentId, childId, child } = await startBusyChild(false);
+
+    const sent = await sendFrom(parentId, {
+      agentId: childId,
+      prompt: "start over",
+      delivery: "restart",
+    });
+
+    expect(sent.disposition).toBe("restarted");
+    expect(child.interruptCount).toBe(1);
+    expect(child.startPrompts).toEqual(["long task", "start over"]);
+  });
+
+  it("fails an explicit steer the provider cannot take instead of interrupting", async () => {
+    const { parentId, childId, child } = await startBusyChild(false);
+
+    await expect(
+      sendFrom(parentId, { agentId: childId, prompt: "steer this", delivery: "steer" }),
+    ).rejects.toThrow("cannot take a steer");
+    expect(child.interruptCount).toBe(0);
+    expect(child.startPrompts).toEqual(["long task"]);
+  });
+
+  it("keeps interrupting by default for top-level callers", async () => {
+    const { childId, child } = await startBusyChild(true);
+
+    const sent = await sendFrom(undefined, {
+      agentId: childId,
+      prompt: "replace it",
+      background: true,
+    });
+
+    expect(sent.disposition).toBe("restarted");
+    expect(child.interruptCount).toBe(1);
+    expect(child.steerPrompts).toEqual([]);
+  });
+
+  it("answers a retried send with duplicate instead of running it twice", async () => {
+    const { parentId, childId, child } = await startBusyChild(false);
+    const request = { agentId: childId, prompt: "next task", clientRequestId: "follow-up-1" };
+
+    expect((await sendFrom(parentId, request)).disposition).toBe("queued");
+    expect((await sendFrom(parentId, request)).disposition).toBe("duplicate");
+    child.completeTurn("long task done");
+    await vi.waitFor(() => expect(child.startPrompts).toEqual(["long task", "next task"]));
+    child.completeTurn("next task done");
+    expect((await sendFrom(parentId, request)).disposition).toBe("duplicate");
+    expect(child.startPrompts).toEqual(["long task", "next task"]);
+  });
+
+  it("scopes retry keys to the caller", async () => {
+    const { parentId, childId, child } = await startBusyChild(false);
+    child.completeTurn("long task done");
+    const otherCallerId = await host!.createAgent({ steerable: false });
+    const request = { agentId: childId, prompt: "status?", clientRequestId: "same-key" };
+
+    expect((await sendFrom(parentId, request)).disposition).toBe("started");
+    child.completeTurn("ok");
+    expect((await sendFrom(otherCallerId, request)).disposition).toBe("started");
+    expect(child.startPrompts).toEqual(["long task", "status?", "status?"]);
+  });
+});
+
+describe("create_agent clientRequestId", () => {
+  const logger = createTestLogger();
+
+  it("returns the agent a retried create made, also after a storage reload", async () => {
+    const workdir = await mkdtemp(join(tmpdir(), "mcp-create-request-id-"));
+    const storage = new AgentStorage(join(workdir, "agents"), logger);
+    const clients = {
+      claude: new HeldTurnAgentClient("claude", false),
+      codex: new HeldTurnAgentClient("codex", true),
+    };
+    const agentManager = new AgentManager({ clients, registry: storage, logger });
+    const request = {
+      relationship: { kind: "subagent" },
+      workspace: { kind: "current" },
+      title: "Retried Child",
+      provider: "codex/gpt-5.4",
+      initialPrompt: "Do the work",
+      clientRequestId: "create-1",
+    };
+    async function createFrom(manager: AgentManager, registry: AgentStorage, parentId: string) {
+      const server = await createAgentMcpServer({
+        agentManager: manager,
+        agentStorage: registry,
+        callerAgentId: parentId,
+        providerSnapshotManager: createOpenCodeManager().manager,
+        delegations: createDelegations(manager, registry, workdir),
+        logger,
+      });
+      const response = await invokeToolWithParsedInput(
+        registeredTool(server, "create_agent"),
+        request,
+      );
+      return response.structuredContent;
+    }
+
+    try {
+      const parent = await agentManager.createAgent(
+        { provider: "claude", cwd: process.cwd() },
+        undefined,
+        { workspaceId: "wks_parent" },
+      );
+      const first = await createFrom(agentManager, storage, parent.id);
+      expect(first.deduplicated).toBeUndefined();
+
+      const retried = await createFrom(agentManager, storage, parent.id);
+      expect(retried).toMatchObject({ agentId: first.agentId, deduplicated: true });
+      expect(clients.codex.sessions).toHaveLength(1);
+
+      await storage.flush();
+      const reloadedStorage = new AgentStorage(join(workdir, "agents"), logger);
+      const reloadedManager = new AgentManager({ clients, registry: reloadedStorage, logger });
+      const afterReload = await createFrom(reloadedManager, reloadedStorage, parent.id);
+      expect(afterReload).toMatchObject({ agentId: first.agentId, deduplicated: true });
+      expect(clients.codex.sessions).toHaveLength(1);
+    } finally {
+      await removeAgentStateDir(agentManager, storage, workdir);
+    }
+  });
+});
+
+describe("cancel_agent delegation", () => {
+  it("drops the caller's pending wake for the cancelled child", async () => {
+    const host = createControlledHost();
+    const trace = createTraceRecorder();
+    const delegations = new DelegationService({
+      store: new DelegationStore(join(host.root, "delegations")),
+      agentManager: host.agentManager,
+      agentStorage: host.agentStorage,
+      logger: trace.logger,
+    });
+    try {
+      const parentId = await host.createAgent({ steerable: false });
+      const childId = await host.createAgent({
+        steerable: false,
+        labels: { [PARENT_AGENT_ID_LABEL]: parentId },
+      });
+      await host.startTurn(parentId, "parent work");
+      await host.startTurn(childId, "child work");
+      await delegations.delegate({
+        parentAgentId: parentId,
+        childAgentId: childId,
+        source: "create_agent",
+        title: "Child",
+        prompt: "child work",
+        requireParentOwnership: true,
+      });
+      host.session(childId).completeTurn("child result");
+      await trace.waitFor("agent.dispatch.wait_for_turn");
+
+      const server = await createAgentMcpServer({
+        agentManager: host.agentManager,
+        agentStorage: host.agentStorage,
+        providerSnapshotManager: createOpenCodeManager().manager,
+        callerAgentId: parentId,
+        delegations,
+        logger: host.logger,
+      });
+      const cancelled = await invokeToolWithParsedInput(registeredTool(server, "cancel_agent"), {
+        agentId: childId,
+      });
+      expect(cancelled.structuredContent).toEqual({ success: false, status: "not_running" });
+
+      const parent = host.session(parentId);
+      parent.completeTurn("parent done");
+      await trace.waitFor("delegation.wake.dispatched");
+      expect(parent.startPrompts).toEqual(["parent work"]);
+    } finally {
+      delegations.close();
+      await host.cleanup();
     }
   });
 });

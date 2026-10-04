@@ -4,6 +4,7 @@ import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
 
 import type { AgentManager, AgentManagerEvent, ManagedAgent } from "../agent/agent-manager.js";
 import { setupPermissionNotification } from "../agent/agent-prompt.js";
+import { hasPendingDispatch } from "../agent/message-dispatch.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
 import {
   isDeliveryFinal,
@@ -122,6 +123,20 @@ export class DelegationService {
     return task;
   }
 
+  /** The parent cancelled its child, so the child's results no longer wake it. */
+  async disposeChildTasks(input: { parentAgentId: string; childAgentId: string }): Promise<void> {
+    await this.store.disposeChildTasks(
+      input.parentAgentId,
+      input.childAgentId,
+      new Date().toISOString(),
+    );
+  }
+
+  /** Re-checks a child whose queued message finished dispatching without a state change. */
+  refreshChild(childAgentId: string): void {
+    if (this.runningChildren.has(childAgentId)) this.scheduleChildCheck(childAgentId);
+  }
+
   /** User Stop: results of children the stopped turn spawned or was waking for are dropped. */
   async stopActiveTurn(agentId: string): Promise<void> {
     const run = this.agentManager.getActiveRun(agentId);
@@ -182,7 +197,8 @@ export class DelegationService {
       child !== null &&
       (child.lifecycle === "running" ||
         child.lifecycle === "initializing" ||
-        child.backgroundTasks.length > 0);
+        child.backgroundTasks.length > 0 ||
+        hasPendingDispatch(this.agentManager, childAgentId));
     if (stillWorking || (await this.hasOpenDelegations(childAgentId))) {
       this.logger.trace({ childAgentId }, "delegation.child_still_working");
       return;

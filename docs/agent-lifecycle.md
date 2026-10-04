@@ -100,8 +100,10 @@ Each notified prompt is a durable delegated task (see [data-model.md](data-model
 - Children of the same parent turn that finish together share one wake. A child finishing while that wake's turn runs goes out in the next wake.
 - The wake inlines each result, capped at 4000 characters, with the task id and a pointer to `get_agent_activity` for the rest.
 - Reading a finished child's result through `get_agent_status` or `get_agent_activity` acknowledges it and cancels a wake that has not started yet.
-- A user Stop of the parent turn drops later results of the children it spawned. Archiving the parent drops all of them.
+- A user Stop of the parent turn drops later results of the children it spawned. Archiving the parent drops all of them. The parent's `cancel_agent` on a child drops that child's results.
 - A child that closes before it finishes reports as stopped, so delegated work cannot disappear silently during archive or workspace teardown.
+
+`send_agent_prompt` from an agent never interrupts a busy target unless it passes `delivery: "restart"`. The default `auto` steers into the running turn when the provider can steer and otherwise runs the prompt after that turn ends (`queued`); `steer` fails instead of falling back. Top-level callers keep `restart` as the default. Until the server queue lands, a queued prompt waits in memory and is lost on a daemon restart. A `clientRequestId` makes `create_agent` and `send_agent_prompt` safe to retry: the agent created under a key is persisted with it, and a resent prompt answers `duplicate`.
 
 Permission requests are checkpoints. The parent hears each request as it happens, through the same never-interrupt delivery, with the normalized request plus the child and request IDs so it can respond without fetching agent status. A request resolved before the parent hears it is dropped.
 

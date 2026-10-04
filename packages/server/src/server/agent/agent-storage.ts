@@ -75,6 +75,12 @@ const STORED_AGENT_SCHEMA = z.object({
   internal: z.boolean().optional(),
   archivedAt: z.string().nullable().optional(),
   owner: AgentOwnerSchema.optional(),
+  creation: z
+    .object({
+      callerAgentId: z.string().nullable(),
+      clientRequestId: z.string(),
+    })
+    .optional(),
 });
 
 export type SerializableAgentConfig = Pick<
@@ -90,6 +96,7 @@ export type SerializableAgentConfig = Pick<
 >;
 
 export type StoredAgentRecord = z.infer<typeof STORED_AGENT_SCHEMA>;
+export type AgentCreationRequest = NonNullable<StoredAgentRecord["creation"]>;
 export function parseStoredAgentRecord(value: unknown): StoredAgentRecord {
   return STORED_AGENT_SCHEMA.parse(value);
 }
@@ -259,8 +266,36 @@ export class AgentStorage {
       if (existing && existing.archivedAt !== undefined) {
         record.archivedAt = existing.archivedAt;
       }
+      if (existing?.creation) {
+        record.creation = existing.creation;
+      }
       return record;
     });
+  }
+
+  /** Records the idempotency key the agent was created under, for retried create requests. */
+  async setCreation(agentId: string, creation: AgentCreationRequest): Promise<void> {
+    await this.load();
+    await this.queueRecordMutation(agentId, (existing) => {
+      if (!existing) {
+        throw new Error(`Agent ${agentId} not found`);
+      }
+      return { ...existing, creation };
+    });
+  }
+
+  async findByCreationRequest(creation: AgentCreationRequest): Promise<StoredAgentRecord | null> {
+    await this.load();
+    for (const record of this.cache.values()) {
+      if (
+        !record.archivedAt &&
+        record.creation?.callerAgentId === creation.callerAgentId &&
+        record.creation.clientRequestId === creation.clientRequestId
+      ) {
+        return record;
+      }
+    }
+    return null;
   }
 
   async setTitle(agentId: string, title: string): Promise<void> {
