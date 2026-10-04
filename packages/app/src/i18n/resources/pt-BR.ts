@@ -2084,6 +2084,71 @@ export const ptBR: TranslationResources = {
       one: "chamou o Paseo {{count}} vez",
       other: "chamou o Paseo {{count}} vezes",
     },
+    paseo: {
+      agentCount: { one: "{{count}} agente", other: "{{count}} agentes" },
+      sentPrompts: {
+        one: "enviou {{count}} prompt para {{agents}}",
+        other: "enviou {{count}} prompts para {{agents}}",
+      },
+      sentPromptsFailed: {
+        one: "tentou enviar {{count}} prompt para {{agents}}",
+        other: "tentou enviar {{count}} prompts para {{agents}}",
+      },
+      waitedForAgents: {
+        one: "esperou {{count}} agente",
+        other: "esperou {{count}} agentes",
+      },
+      waitedForAgentsFailed: {
+        one: "tentou esperar {{count}} agente",
+        other: "tentou esperar {{count}} agentes",
+      },
+      checkedAgents: { one: "verificou {{count}} agente", other: "verificou {{count}} agentes" },
+      checkedAgentsFailed: {
+        one: "tentou verificar {{count}} agente",
+        other: "tentou verificar {{count}} agentes",
+      },
+      listedAgents: "listou os agentes",
+      listedAgentsFailed: "tentou listar os agentes",
+      stoppedAgents: {
+        one: "interrompeu {{count}} agente",
+        other: "interrompeu {{count}} agentes",
+      },
+      stoppedAgentsFailed: {
+        one: "tentou interromper {{count}} agente",
+        other: "tentou interromper {{count}} agentes",
+      },
+      archivedAgents: { one: "arquivou {{count}} agente", other: "arquivou {{count}} agentes" },
+      archivedAgentsFailed: {
+        one: "tentou arquivar {{count}} agente",
+        other: "tentou arquivar {{count}} agentes",
+      },
+      answeredPermissions: {
+        one: "respondeu {{count}} pedido de permissão",
+        other: "respondeu {{count}} pedidos de permissão",
+      },
+      answeredPermissionsFailed: {
+        one: "tentou responder {{count}} pedido de permissão",
+        other: "tentou responder {{count}} pedidos de permissão",
+      },
+      createdSchedules: {
+        one: "criou {{count}} agendamento",
+        other: "criou {{count}} agendamentos",
+      },
+      createdSchedulesFailed: {
+        one: "tentou criar {{count}} agendamento",
+        other: "tentou criar {{count}} agendamentos",
+      },
+      createdHeartbeats: {
+        one: "criou {{count}} heartbeat",
+        other: "criou {{count}} heartbeats",
+      },
+      createdHeartbeatsFailed: {
+        one: "tentou criar {{count}} heartbeat",
+        other: "tentou criar {{count}} heartbeats",
+      },
+      checkedCapabilities: "verificou as capacidades de orquestração",
+      checkedCapabilitiesFailed: "tentou verificar as capacidades de orquestração",
+    },
     and: "e",
   },
   turnFold: {

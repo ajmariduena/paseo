@@ -2076,6 +2076,68 @@ export const en = {
       one: "called Paseo {{count}} time",
       other: "called Paseo {{count}} times",
     },
+    paseo: {
+      agentCount: { one: "{{count}} agent", other: "{{count}} agents" },
+      sentPrompts: {
+        one: "sent {{count}} prompt to {{agents}}",
+        other: "sent {{count}} prompts to {{agents}}",
+      },
+      sentPromptsFailed: {
+        one: "tried to send {{count}} prompt to {{agents}}",
+        other: "tried to send {{count}} prompts to {{agents}}",
+      },
+      waitedForAgents: {
+        one: "waited for {{count}} agent",
+        other: "waited for {{count}} agents",
+      },
+      waitedForAgentsFailed: {
+        one: "tried to wait for {{count}} agent",
+        other: "tried to wait for {{count}} agents",
+      },
+      checkedAgents: { one: "checked {{count}} agent", other: "checked {{count}} agents" },
+      checkedAgentsFailed: {
+        one: "tried to check {{count}} agent",
+        other: "tried to check {{count}} agents",
+      },
+      listedAgents: "listed agents",
+      listedAgentsFailed: "tried to list agents",
+      stoppedAgents: { one: "stopped {{count}} agent", other: "stopped {{count}} agents" },
+      stoppedAgentsFailed: {
+        one: "tried to stop {{count}} agent",
+        other: "tried to stop {{count}} agents",
+      },
+      archivedAgents: { one: "archived {{count}} agent", other: "archived {{count}} agents" },
+      archivedAgentsFailed: {
+        one: "tried to archive {{count}} agent",
+        other: "tried to archive {{count}} agents",
+      },
+      answeredPermissions: {
+        one: "answered {{count}} permission request",
+        other: "answered {{count}} permission requests",
+      },
+      answeredPermissionsFailed: {
+        one: "tried to answer {{count}} permission request",
+        other: "tried to answer {{count}} permission requests",
+      },
+      createdSchedules: {
+        one: "created {{count}} schedule",
+        other: "created {{count}} schedules",
+      },
+      createdSchedulesFailed: {
+        one: "tried to create {{count}} schedule",
+        other: "tried to create {{count}} schedules",
+      },
+      createdHeartbeats: {
+        one: "created {{count}} heartbeat",
+        other: "created {{count}} heartbeats",
+      },
+      createdHeartbeatsFailed: {
+        one: "tried to create {{count}} heartbeat",
+        other: "tried to create {{count}} heartbeats",
+      },
+      checkedCapabilities: "checked orchestration capabilities",
+      checkedCapabilitiesFailed: "tried to check orchestration capabilities",
+    },
     and: "and",
   },
   turnFold: {

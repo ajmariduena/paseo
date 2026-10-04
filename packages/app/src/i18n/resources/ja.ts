@@ -2071,6 +2071,77 @@ export const ja: TranslationResources = {
       one: "Paseoを{{count}}回呼び出し",
       other: "Paseoを{{count}}回呼び出し",
     },
+    paseo: {
+      agentCount: { one: "{{count}}件のエージェント", other: "{{count}}件のエージェント" },
+      sentPrompts: {
+        one: "{{agents}}にプロンプトを{{count}}件送信",
+        other: "{{agents}}にプロンプトを{{count}}件送信",
+      },
+      sentPromptsFailed: {
+        one: "{{agents}}へのプロンプト{{count}}件の送信を試行",
+        other: "{{agents}}へのプロンプト{{count}}件の送信を試行",
+      },
+      waitedForAgents: {
+        one: "エージェント{{count}}件を待機",
+        other: "エージェント{{count}}件を待機",
+      },
+      waitedForAgentsFailed: {
+        one: "エージェント{{count}}件の待機を試行",
+        other: "エージェント{{count}}件の待機を試行",
+      },
+      checkedAgents: {
+        one: "エージェント{{count}}件を確認",
+        other: "エージェント{{count}}件を確認",
+      },
+      checkedAgentsFailed: {
+        one: "エージェント{{count}}件の確認を試行",
+        other: "エージェント{{count}}件の確認を試行",
+      },
+      listedAgents: "エージェントを一覧表示",
+      listedAgentsFailed: "エージェントの一覧表示を試行",
+      stoppedAgents: {
+        one: "エージェント{{count}}件を停止",
+        other: "エージェント{{count}}件を停止",
+      },
+      stoppedAgentsFailed: {
+        one: "エージェント{{count}}件の停止を試行",
+        other: "エージェント{{count}}件の停止を試行",
+      },
+      archivedAgents: {
+        one: "エージェント{{count}}件をアーカイブ",
+        other: "エージェント{{count}}件をアーカイブ",
+      },
+      archivedAgentsFailed: {
+        one: "エージェント{{count}}件のアーカイブを試行",
+        other: "エージェント{{count}}件のアーカイブを試行",
+      },
+      answeredPermissions: {
+        one: "権限リクエスト{{count}}件に回答",
+        other: "権限リクエスト{{count}}件に回答",
+      },
+      answeredPermissionsFailed: {
+        one: "権限リクエスト{{count}}件への回答を試行",
+        other: "権限リクエスト{{count}}件への回答を試行",
+      },
+      createdSchedules: {
+        one: "スケジュールを{{count}}件作成",
+        other: "スケジュールを{{count}}件作成",
+      },
+      createdSchedulesFailed: {
+        one: "スケジュール{{count}}件の作成を試行",
+        other: "スケジュール{{count}}件の作成を試行",
+      },
+      createdHeartbeats: {
+        one: "ハートビートを{{count}}件作成",
+        other: "ハートビートを{{count}}件作成",
+      },
+      createdHeartbeatsFailed: {
+        one: "ハートビート{{count}}件の作成を試行",
+        other: "ハートビート{{count}}件の作成を試行",
+      },
+      checkedCapabilities: "オーケストレーション機能を確認",
+      checkedCapabilitiesFailed: "オーケストレーション機能の確認を試行",
+    },
     and: "および",
   },
   turnFold: {

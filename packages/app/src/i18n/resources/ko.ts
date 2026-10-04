@@ -2060,6 +2060,68 @@ export const ko: TranslationResources = {
       one: "Paseo를 {{count}}회 호출함",
       other: "Paseo를 {{count}}회 호출함",
     },
+    paseo: {
+      agentCount: { one: "에이전트 {{count}}개", other: "에이전트 {{count}}개" },
+      sentPrompts: {
+        one: "{{agents}}에 프롬프트 {{count}}개 보냄",
+        other: "{{agents}}에 프롬프트 {{count}}개 보냄",
+      },
+      sentPromptsFailed: {
+        one: "{{agents}}에 프롬프트 {{count}}개 보내기 시도함",
+        other: "{{agents}}에 프롬프트 {{count}}개 보내기 시도함",
+      },
+      waitedForAgents: {
+        one: "에이전트 {{count}}개를 기다림",
+        other: "에이전트 {{count}}개를 기다림",
+      },
+      waitedForAgentsFailed: {
+        one: "에이전트 {{count}}개 기다리기 시도함",
+        other: "에이전트 {{count}}개 기다리기 시도함",
+      },
+      checkedAgents: { one: "에이전트 {{count}}개 확인함", other: "에이전트 {{count}}개 확인함" },
+      checkedAgentsFailed: {
+        one: "에이전트 {{count}}개 확인 시도함",
+        other: "에이전트 {{count}}개 확인 시도함",
+      },
+      listedAgents: "에이전트 목록 조회함",
+      listedAgentsFailed: "에이전트 목록 조회 시도함",
+      stoppedAgents: { one: "에이전트 {{count}}개 중지함", other: "에이전트 {{count}}개 중지함" },
+      stoppedAgentsFailed: {
+        one: "에이전트 {{count}}개 중지 시도함",
+        other: "에이전트 {{count}}개 중지 시도함",
+      },
+      archivedAgents: { one: "에이전트 {{count}}개 보관함", other: "에이전트 {{count}}개 보관함" },
+      archivedAgentsFailed: {
+        one: "에이전트 {{count}}개 보관 시도함",
+        other: "에이전트 {{count}}개 보관 시도함",
+      },
+      answeredPermissions: {
+        one: "권한 요청 {{count}}개에 응답함",
+        other: "권한 요청 {{count}}개에 응답함",
+      },
+      answeredPermissionsFailed: {
+        one: "권한 요청 {{count}}개에 응답 시도함",
+        other: "권한 요청 {{count}}개에 응답 시도함",
+      },
+      createdSchedules: {
+        one: "일정 {{count}}개 만듦",
+        other: "일정 {{count}}개 만듦",
+      },
+      createdSchedulesFailed: {
+        one: "일정 {{count}}개 만들기 시도함",
+        other: "일정 {{count}}개 만들기 시도함",
+      },
+      createdHeartbeats: {
+        one: "하트비트 {{count}}개 만듦",
+        other: "하트비트 {{count}}개 만듦",
+      },
+      createdHeartbeatsFailed: {
+        one: "하트비트 {{count}}개 만들기 시도함",
+        other: "하트비트 {{count}}개 만들기 시도함",
+      },
+      checkedCapabilities: "오케스트레이션 기능 확인함",
+      checkedCapabilitiesFailed: "오케스트레이션 기능 확인 시도함",
+    },
     and: "그리고",
   },
   turnFold: {

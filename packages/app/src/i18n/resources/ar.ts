@@ -2050,6 +2050,68 @@ export const ar: TranslationResources = {
       one: "استدعى Paseo {{count}} مرة",
       other: "استدعى Paseo {{count}} مرات",
     },
+    paseo: {
+      agentCount: { one: "{{count}} وكيل", other: "{{count}} وكلاء" },
+      sentPrompts: {
+        one: "أرسل {{count}} موجّه إلى {{agents}}",
+        other: "أرسل {{count}} موجّهات إلى {{agents}}",
+      },
+      sentPromptsFailed: {
+        one: "حاول إرسال {{count}} موجّه إلى {{agents}}",
+        other: "حاول إرسال {{count}} موجّهات إلى {{agents}}",
+      },
+      waitedForAgents: {
+        one: "انتظر {{count}} وكيل",
+        other: "انتظر {{count}} وكلاء",
+      },
+      waitedForAgentsFailed: {
+        one: "حاول انتظار {{count}} وكيل",
+        other: "حاول انتظار {{count}} وكلاء",
+      },
+      checkedAgents: { one: "فحص {{count}} وكيل", other: "فحص {{count}} وكلاء" },
+      checkedAgentsFailed: {
+        one: "حاول فحص {{count}} وكيل",
+        other: "حاول فحص {{count}} وكلاء",
+      },
+      listedAgents: "عرض قائمة الوكلاء",
+      listedAgentsFailed: "حاول عرض قائمة الوكلاء",
+      stoppedAgents: { one: "أوقف {{count}} وكيل", other: "أوقف {{count}} وكلاء" },
+      stoppedAgentsFailed: {
+        one: "حاول إيقاف {{count}} وكيل",
+        other: "حاول إيقاف {{count}} وكلاء",
+      },
+      archivedAgents: { one: "أرشف {{count}} وكيل", other: "أرشف {{count}} وكلاء" },
+      archivedAgentsFailed: {
+        one: "حاول أرشفة {{count}} وكيل",
+        other: "حاول أرشفة {{count}} وكلاء",
+      },
+      answeredPermissions: {
+        one: "ردّ على {{count}} طلب إذن",
+        other: "ردّ على {{count}} طلبات إذن",
+      },
+      answeredPermissionsFailed: {
+        one: "حاول الرد على {{count}} طلب إذن",
+        other: "حاول الرد على {{count}} طلبات إذن",
+      },
+      createdSchedules: {
+        one: "أنشأ {{count}} جدولة",
+        other: "أنشأ {{count}} جدولات",
+      },
+      createdSchedulesFailed: {
+        one: "حاول إنشاء {{count}} جدولة",
+        other: "حاول إنشاء {{count}} جدولات",
+      },
+      createdHeartbeats: {
+        one: "أنشأ {{count}} نبضة",
+        other: "أنشأ {{count}} نبضات",
+      },
+      createdHeartbeatsFailed: {
+        one: "حاول إنشاء {{count}} نبضة",
+        other: "حاول إنشاء {{count}} نبضات",
+      },
+      checkedCapabilities: "فحص قدرات التنسيق",
+      checkedCapabilitiesFailed: "حاول فحص قدرات التنسيق",
+    },
     and: "و",
   },
   turnFold: {

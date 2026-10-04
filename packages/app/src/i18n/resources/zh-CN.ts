@@ -2028,6 +2028,68 @@ export const zhCN: TranslationResources = {
       one: "调用了 Paseo {{count}} 次",
       other: "调用了 Paseo {{count}} 次",
     },
+    paseo: {
+      agentCount: { one: "{{count}} 个 agent", other: "{{count}} 个 agent" },
+      sentPrompts: {
+        one: "向 {{agents}}发送了 {{count}} 条 prompt",
+        other: "向 {{agents}}发送了 {{count}} 条 prompt",
+      },
+      sentPromptsFailed: {
+        one: "尝试向 {{agents}}发送 {{count}} 条 prompt",
+        other: "尝试向 {{agents}}发送 {{count}} 条 prompt",
+      },
+      waitedForAgents: {
+        one: "等待了 {{count}} 个 agent",
+        other: "等待了 {{count}} 个 agent",
+      },
+      waitedForAgentsFailed: {
+        one: "尝试等待 {{count}} 个 agent",
+        other: "尝试等待 {{count}} 个 agent",
+      },
+      checkedAgents: { one: "检查了 {{count}} 个 agent", other: "检查了 {{count}} 个 agent" },
+      checkedAgentsFailed: {
+        one: "尝试检查 {{count}} 个 agent",
+        other: "尝试检查 {{count}} 个 agent",
+      },
+      listedAgents: "列出了 agent",
+      listedAgentsFailed: "尝试列出 agent",
+      stoppedAgents: { one: "停止了 {{count}} 个 agent", other: "停止了 {{count}} 个 agent" },
+      stoppedAgentsFailed: {
+        one: "尝试停止 {{count}} 个 agent",
+        other: "尝试停止 {{count}} 个 agent",
+      },
+      archivedAgents: { one: "归档了 {{count}} 个 agent", other: "归档了 {{count}} 个 agent" },
+      archivedAgentsFailed: {
+        one: "尝试归档 {{count}} 个 agent",
+        other: "尝试归档 {{count}} 个 agent",
+      },
+      answeredPermissions: {
+        one: "回复了 {{count}} 个权限请求",
+        other: "回复了 {{count}} 个权限请求",
+      },
+      answeredPermissionsFailed: {
+        one: "尝试回复 {{count}} 个权限请求",
+        other: "尝试回复 {{count}} 个权限请求",
+      },
+      createdSchedules: {
+        one: "创建了 {{count}} 个计划任务",
+        other: "创建了 {{count}} 个计划任务",
+      },
+      createdSchedulesFailed: {
+        one: "尝试创建 {{count}} 个计划任务",
+        other: "尝试创建 {{count}} 个计划任务",
+      },
+      createdHeartbeats: {
+        one: "创建了 {{count}} 个 heartbeat",
+        other: "创建了 {{count}} 个 heartbeat",
+      },
+      createdHeartbeatsFailed: {
+        one: "尝试创建 {{count}} 个 heartbeat",
+        other: "尝试创建 {{count}} 个 heartbeat",
+      },
+      checkedCapabilities: "检查了编排能力",
+      checkedCapabilitiesFailed: "尝试检查编排能力",
+    },
     and: "并",
   },
   turnFold: {

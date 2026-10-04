@@ -67,6 +67,7 @@ const EMPTY_SUMMARY: OverviewSummary = {
   readFileCount: 0,
   searchCount: 0,
   otherToolCount: 0,
+  paseoActivities: [],
   paseoCallCount: 0,
 };
 
@@ -195,6 +196,25 @@ function areFileChangesEqual(
   );
 }
 
+function arePaseoActivitiesEqual(
+  left: OverviewSummary["paseoActivities"],
+  right: OverviewSummary["paseoActivities"],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((entry, index) => {
+      const other = right[index];
+      return (
+        other !== undefined &&
+        entry.activity === other.activity &&
+        entry.count === other.count &&
+        entry.agentCount === other.agentCount &&
+        entry.failedOnly === other.failedOnly
+      );
+    })
+  );
+}
+
 function areSummariesEqual(left: OverviewSummary, right: OverviewSummary): boolean {
   return (
     left.editedFileCount === right.editedFileCount &&
@@ -202,6 +222,7 @@ function areSummariesEqual(left: OverviewSummary, right: OverviewSummary): boole
     left.readFileCount === right.readFileCount &&
     left.searchCount === right.searchCount &&
     left.otherToolCount === right.otherToolCount &&
+    arePaseoActivitiesEqual(left.paseoActivities, right.paseoActivities) &&
     left.paseoCallCount === right.paseoCallCount
   );
 }

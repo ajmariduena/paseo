@@ -260,6 +260,7 @@ describe("tool call detail-level projection", () => {
         readFileCount: 2,
         searchCount: 0,
         otherToolCount: 0,
+        paseoActivities: [],
         paseoCallCount: 0,
       },
     });
@@ -328,7 +329,11 @@ describe("tool call detail-level projection", () => {
     const result = project({ level: "overview", head: calls });
 
     expect(result.groupsByHostId.get("1")).toMatchObject({
-      summary: { otherToolCount: 2, paseoCallCount: 2 },
+      summary: {
+        otherToolCount: 2,
+        paseoActivities: [{ activity: "listedAgents", count: 1, agentCount: 1, failedOnly: false }],
+        paseoCallCount: 1,
+      },
     });
   });
 

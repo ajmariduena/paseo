@@ -2106,6 +2106,68 @@ export const fr: TranslationResources = {
       one: "a appelé Paseo {{count}} fois",
       other: "a appelé Paseo {{count}} fois",
     },
+    paseo: {
+      agentCount: { one: "{{count}} agent", other: "{{count}} agents" },
+      sentPrompts: {
+        one: "a envoyé {{count}} prompt à {{agents}}",
+        other: "a envoyé {{count}} prompts à {{agents}}",
+      },
+      sentPromptsFailed: {
+        one: "a tenté d'envoyer {{count}} prompt à {{agents}}",
+        other: "a tenté d'envoyer {{count}} prompts à {{agents}}",
+      },
+      waitedForAgents: {
+        one: "a attendu {{count}} agent",
+        other: "a attendu {{count}} agents",
+      },
+      waitedForAgentsFailed: {
+        one: "a tenté d'attendre {{count}} agent",
+        other: "a tenté d'attendre {{count}} agents",
+      },
+      checkedAgents: { one: "a vérifié {{count}} agent", other: "a vérifié {{count}} agents" },
+      checkedAgentsFailed: {
+        one: "a tenté de vérifier {{count}} agent",
+        other: "a tenté de vérifier {{count}} agents",
+      },
+      listedAgents: "a listé les agents",
+      listedAgentsFailed: "a tenté de lister les agents",
+      stoppedAgents: { one: "a arrêté {{count}} agent", other: "a arrêté {{count}} agents" },
+      stoppedAgentsFailed: {
+        one: "a tenté d'arrêter {{count}} agent",
+        other: "a tenté d'arrêter {{count}} agents",
+      },
+      archivedAgents: { one: "a archivé {{count}} agent", other: "a archivé {{count}} agents" },
+      archivedAgentsFailed: {
+        one: "a tenté d'archiver {{count}} agent",
+        other: "a tenté d'archiver {{count}} agents",
+      },
+      answeredPermissions: {
+        one: "a répondu à {{count}} demande d'autorisation",
+        other: "a répondu à {{count}} demandes d'autorisation",
+      },
+      answeredPermissionsFailed: {
+        one: "a tenté de répondre à {{count}} demande d'autorisation",
+        other: "a tenté de répondre à {{count}} demandes d'autorisation",
+      },
+      createdSchedules: {
+        one: "a créé {{count}} planification",
+        other: "a créé {{count}} planifications",
+      },
+      createdSchedulesFailed: {
+        one: "a tenté de créer {{count}} planification",
+        other: "a tenté de créer {{count}} planifications",
+      },
+      createdHeartbeats: {
+        one: "a créé {{count}} heartbeat",
+        other: "a créé {{count}} heartbeats",
+      },
+      createdHeartbeatsFailed: {
+        one: "a tenté de créer {{count}} heartbeat",
+        other: "a tenté de créer {{count}} heartbeats",
+      },
+      checkedCapabilities: "a vérifié les capacités d'orchestration",
+      checkedCapabilitiesFailed: "a tenté de vérifier les capacités d'orchestration",
+    },
     and: "et",
   },
   turnFold: {
