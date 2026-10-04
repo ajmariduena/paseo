@@ -749,6 +749,25 @@ describe("turn folding", () => {
     ]);
   });
 
+  it("keeps a subagent wake visible in a collapsed turn", () => {
+    const wake: StreamItem = {
+      ...notification("wake", 7),
+      source: { kind: "subagent", subagents: [{ agentId: "child", reason: "finished" }] },
+    };
+    const tail = [prompt, ...work, wake, answer];
+
+    const result = present({ tail });
+
+    expect(ids(result.tail)).toEqual([
+      "prompt",
+      "prompt:turn-fold",
+      "note:block:0",
+      "wake",
+      "answer:block:0",
+      "prompt:turn-files",
+    ]);
+  });
+
   it("lets chat find open the fold that hides a message", () => {
     const collapsed = present({ tail: turn });
     expect(findCollapsedTurnFoldKey(collapsed.turnFolds, "thinking")).toBe("prompt");

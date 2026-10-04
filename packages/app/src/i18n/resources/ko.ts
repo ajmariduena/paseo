@@ -331,6 +331,10 @@ export const ko: TranslationResources = {
     },
   },
   message: {
+    attribution: {
+      sentBy: "{{title}}에서 보냄",
+      sentByAgent: "에이전트가 보냄",
+    },
     diagram: {
       diagram: "다이어그램",
       zoomIn: "확대",
@@ -1964,6 +1968,8 @@ export const ko: TranslationResources = {
       done: "완료",
       stopped: "중지됨",
       archived: "보관됨",
+      finished: "종료됨",
+      closed: "닫힘",
     },
     providerBar: {
       working: "실행 중 {{duration}}",

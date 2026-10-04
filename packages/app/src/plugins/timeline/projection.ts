@@ -48,6 +48,7 @@ function sourceTimelineItem(item: StreamItem): AgentTimelineItem | null {
         text: item.text,
         ...(item.messageId ? { messageId: item.messageId } : {}),
         ...(item.clientMessageId ? { clientMessageId: item.clientMessageId } : {}),
+        ...(item.origin ? { origin: item.origin } : {}),
       };
     case "assistant_message":
       return {
@@ -66,7 +67,12 @@ function sourceTimelineItem(item: StreamItem): AgentTimelineItem | null {
     case "notification":
       return item.sourceType === "error"
         ? { type: "error", message: item.message }
-        : { type: "notification", level: item.level, message: item.message };
+        : {
+            type: "notification",
+            level: item.level,
+            message: item.message,
+            ...(item.source ? { source: item.source } : {}),
+          };
     case "compaction":
       return {
         type: "compaction",

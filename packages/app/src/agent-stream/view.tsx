@@ -115,6 +115,9 @@ import { useStreamHistoryWindow } from "./use-stream-history-window";
 import { PluginTimelineItemView, useInstalledTimelineTransform } from "@/plugins/timeline";
 import { SubagentTimelineProvider } from "@/subagents/timeline/context";
 import { LineageMarker } from "@/subagents/timeline/lineage-marker";
+import { readAgentMessageSender } from "@/subagents/timeline/message-sender";
+import { SubagentNotificationRows } from "@/subagents/timeline/notification-row";
+import { readSubagentNotificationEntries } from "@/subagents/timeline/notification-source";
 import { SubagentSpawnGroup } from "@/subagents/timeline/spawn-group";
 import { SubagentSpawnRow } from "@/subagents/timeline/spawn-row";
 import { isSubagentSpawnCall } from "@/subagents/timeline/spawn-call";
@@ -755,6 +758,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
               item.clientMessageId !== undefined &&
               pendingClientMessageIds.has(item.clientMessageId)
             }
+            senderAgentId={readAgentMessageSender(item.origin) ?? undefined}
           />
         );
       },
@@ -964,8 +968,19 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           case "tool_call":
             return renderToolCallItem(layoutItem, item);
 
-          case "notification":
+          case "notification": {
+            const subagents = readSubagentNotificationEntries(item);
+            if (subagents.length > 0) {
+              return (
+                <SubagentNotificationRows
+                  notificationId={item.id}
+                  entries={subagents}
+                  timestamp={item.timestamp}
+                />
+              );
+            }
             return <Notification level={item.level} message={item.message} />;
+          }
 
           case "todo_list":
             return <TodoListCard items={item.items} activity={item.activity} />;

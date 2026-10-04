@@ -2213,6 +2213,52 @@ describe("turn lifecycle events", () => {
   });
 });
 
+describe("user message origin", () => {
+  it("keeps the agent that wrote a canonical user message and drops a plain user origin", () => {
+    const timestamp = new Date("2026-07-26T10:00:00.000Z");
+    const state = hydrateStreamState(
+      [
+        {
+          event: {
+            type: "timeline",
+            provider: "claude",
+            item: {
+              type: "user_message",
+              text: "Review the diff panel",
+              messageId: "msg-1",
+              origin: { kind: "agent", agentId: "agt_parent" },
+            },
+          },
+          timestamp,
+        },
+        {
+          event: {
+            type: "timeline",
+            provider: "claude",
+            item: {
+              type: "user_message",
+              text: "Thanks",
+              messageId: "msg-2",
+              origin: { kind: "user" },
+            },
+          },
+          timestamp,
+        },
+      ],
+      { source: "canonical" },
+    );
+
+    expect(
+      state.map((item) =>
+        item.kind === "user_message" ? { id: item.id, origin: item.origin } : { id: item.id },
+      ),
+    ).toEqual([
+      { id: "msg-1", origin: { kind: "agent", agentId: "agt_parent" } },
+      { id: "msg-2", origin: undefined },
+    ]);
+  });
+});
+
 describe("notification timeline items", () => {
   it("maps notification items to activity log entries with the matching level", () => {
     const timestamp = new Date("2026-07-26T10:00:00.000Z");
@@ -2303,5 +2349,51 @@ describe("notification timeline items", () => {
       { kind: "notification", level: "error", message: "Command blocked" },
     ]);
     expect(new Set(state.map((item) => item.id)).size).toBe(state.length);
+  });
+
+  it("keeps a wake's subagent source and collapses a replayed wake into one row", () => {
+    const timestamp = new Date("2026-07-26T10:00:00.000Z");
+    const wake = {
+      type: "timeline" as const,
+      provider: "claude" as const,
+      turnId: "turn-2",
+      item: {
+        type: "notification" as const,
+        level: "info" as const,
+        message: "Review diff finished",
+        messageId: "wake-1",
+        source: {
+          kind: "subagent" as const,
+          subagents: [
+            {
+              agentId: "child-1",
+              reason: "finished" as const,
+              title: "Review diff",
+              durationMs: 192000,
+            },
+          ],
+        },
+      },
+    };
+    const state = hydrateStreamState(
+      [
+        { event: wake, timestamp },
+        { event: wake, timestamp },
+      ],
+      { source: "canonical" },
+    );
+
+    expect(state).toEqual([
+      {
+        kind: "notification",
+        sourceType: "notification",
+        id: "notification:wake-1",
+        turnId: "turn-2",
+        timestamp,
+        level: "info",
+        message: "Review diff finished",
+        source: wake.item.source,
+      },
+    ]);
   });
 });

@@ -335,6 +335,10 @@ export const ja: TranslationResources = {
     },
   },
   message: {
+    attribution: {
+      sentBy: "{{title}} から送信",
+      sentByAgent: "エージェントから送信",
+    },
     diagram: {
       diagram: "図",
       zoomIn: "拡大",
@@ -1974,6 +1978,8 @@ export const ja: TranslationResources = {
       done: "完了",
       stopped: "停止",
       archived: "アーカイブ済み",
+      finished: "終了",
+      closed: "クローズ済み",
     },
     providerBar: {
       working: "実行中 {{duration}}",

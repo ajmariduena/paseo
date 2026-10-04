@@ -334,6 +334,10 @@ export const ru: TranslationResources = {
     },
   },
   message: {
+    attribution: {
+      sentBy: "Отправил {{title}}",
+      sentByAgent: "Отправил агент",
+    },
     diagram: {
       diagram: "Диаграмма",
       zoomIn: "Увеличить масштаб",
@@ -1988,6 +1992,8 @@ export const ru: TranslationResources = {
       done: "Готово",
       stopped: "Остановлен",
       archived: "В архиве",
+      finished: "Завершён",
+      closed: "Закрыт",
     },
     providerBar: {
       working: "В работе {{duration}}",

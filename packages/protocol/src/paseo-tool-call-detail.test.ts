@@ -146,6 +146,229 @@ describe("Paseo tool-call detail presentation", () => {
     ]);
   });
 
+  it("reads send_agent_prompt delivery, retry key and outcome in words", () => {
+    expect(
+      buildPaseoToolDetailSections(
+        "mcp__paseo__send_agent_prompt",
+        {
+          agentId: "agt_1",
+          prompt: "Rebase onto main.",
+          delivery: "queue",
+          clientRequestId: "rebase-1",
+          background: true,
+        },
+        {
+          structuredContent: {
+            success: true,
+            status: "running",
+            disposition: "queued",
+            lastMessage: null,
+            guidance: "You will get notified when the prompted agent finishes.",
+          },
+        },
+      ),
+    ).toEqual([
+      { kind: "prose", title: "Prompt", text: "Rebase onto main." },
+      {
+        kind: "fields",
+        title: "Details",
+        fields: [
+          { label: "Agent", value: "agt_1" },
+          { label: "If the agent is busy", value: "Run after its turn" },
+          { label: "Background", value: "Yes" },
+          { label: "Retry key", value: "rebase-1" },
+        ],
+      },
+      {
+        kind: "fields",
+        title: "Result",
+        fields: [
+          { label: "Outcome", value: "Runs after the running turn" },
+          { label: "Status", value: "running" },
+          { label: "Last message", value: "None" },
+        ],
+      },
+    ]);
+  });
+
+  it("marks a create_agent retry that returned the agent it already made", () => {
+    expect(
+      buildPaseoToolDetailSections(
+        "mcp__paseo__create_agent",
+        { title: "Greeter", initialPrompt: "Hi", clientRequestId: "greeter-1" },
+        { structuredContent: { agentId: "agt_1", status: "idle", deduplicated: true } },
+      )?.slice(1),
+    ).toEqual([
+      {
+        kind: "fields",
+        title: "Details",
+        fields: [
+          { label: "Title", value: "Greeter" },
+          { label: "Retry key", value: "greeter-1" },
+        ],
+      },
+      {
+        kind: "fields",
+        title: "Result",
+        fields: [
+          { label: "Agent", value: "agt_1" },
+          { label: "Status", value: "idle" },
+          { label: "Deduplicated", value: "Yes" },
+        ],
+      },
+    ]);
+  });
+
+  it("shows a wait_for_agent timeout and the delegated result it read", () => {
+    expect(
+      buildPaseoToolDetailSections(
+        "mcp__paseo__wait_for_agent",
+        { agentId: "agt_1", timeoutMs: 600000 },
+        {
+          structuredContent: {
+            agentId: "agt_1",
+            status: "idle",
+            timedOut: false,
+            lastMessage: "Done.",
+            permission: null,
+            delegatedTask: {
+              taskId: "task_1",
+              status: "completed",
+              result: "Done.",
+              resultTruncated: false,
+            },
+          },
+        },
+      ),
+    ).toEqual([
+      {
+        kind: "fields",
+        title: "Details",
+        fields: [
+          { label: "Agent", value: "agt_1" },
+          { label: "Timeout (ms)", value: "600000" },
+        ],
+      },
+      {
+        kind: "fields",
+        title: "Result",
+        fields: [
+          { label: "Status", value: "idle" },
+          { label: "Timed out", value: "No" },
+          { label: "Last message", value: "Done." },
+          { label: "Permission", value: "None" },
+          {
+            label: "Delegated result",
+            value: "Task: task_1\nStatus: completed\nResult: Done.\nResult truncated: No",
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("orders list_agents scope filters first and names the scope", () => {
+    expect(
+      buildPaseoToolDetailSections(
+        "mcp__paseo__list_agents",
+        { limit: 20, titleContains: "review", scope: "children", parentAgentId: "agt_p" },
+        null,
+      ),
+    ).toEqual([
+      {
+        kind: "fields",
+        title: "Details",
+        fields: [
+          { label: "Scope", value: "My subagents" },
+          { label: "Parent agent", value: "agt_p" },
+          { label: "Title contains", value: "review" },
+          { label: "Limit", value: "20" },
+        ],
+      },
+    ]);
+  });
+
+  it("says whether cancel_agent had a run to stop", () => {
+    expect(
+      buildPaseoToolDetailSections(
+        "mcp__paseo__cancel_agent",
+        { agentId: "agt_1" },
+        { structuredContent: { success: false, status: "not_running" } },
+      )?.at(-1),
+    ).toEqual({
+      kind: "fields",
+      title: "Result",
+      fields: [{ label: "Status", value: "Not running" }],
+    });
+  });
+
+  it("keeps get_orchestration_capabilities to its limits and features", () => {
+    expect(
+      buildPaseoToolDetailSections(
+        "mcp__paseo__get_orchestration_capabilities",
+        { provider: "codex" },
+        {
+          structuredContent: {
+            caller: null,
+            providers: [{ id: "codex", models: [] }],
+            agentProfiles: [],
+            limits: { maxWaitMs: 3600000 },
+            features: { waitForAgent: true },
+          },
+        },
+      ),
+    ).toEqual([
+      { kind: "fields", title: "Details", fields: [{ label: "Provider", value: "codex" }] },
+      {
+        kind: "fields",
+        title: "Result",
+        fields: [
+          { label: "Limits", value: "Max wait ms: 3600000" },
+          { label: "Features", value: "Wait for agent: Yes" },
+        ],
+      },
+    ]);
+  });
+
+  it("shows get_agent_activity paging position", () => {
+    expect(
+      buildPaseoToolDetailSections(
+        "mcp__paseo__get_agent_activity",
+        { agentId: "agt_1", view: "messages", afterPosition: 0, limit: 2 },
+        {
+          structuredContent: {
+            agentId: "agt_1",
+            updateCount: 4,
+            currentModeId: null,
+            content: "",
+            epoch: "e1",
+            nextPosition: 2,
+            hasMore: true,
+          },
+        },
+      ),
+    ).toEqual([
+      {
+        kind: "fields",
+        title: "Details",
+        fields: [
+          { label: "Agent", value: "agt_1" },
+          { label: "View", value: "messages" },
+          { label: "Limit", value: "2" },
+          { label: "After position", value: "0" },
+        ],
+      },
+      {
+        kind: "fields",
+        title: "Result",
+        fields: [
+          { label: "Content", value: "" },
+          { label: "Next position", value: "2" },
+          { label: "More after this page", value: "Yes" },
+        ],
+      },
+    ]);
+  });
+
   it("leaves non-Paseo tools alone", () => {
     expect(buildPaseoToolDetailSections("mcp__github__create_issue", {}, {})).toBeNull();
   });

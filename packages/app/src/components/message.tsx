@@ -48,6 +48,7 @@ import {
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { ReadAloudButton } from "@/read-aloud/button";
+import { AgentMessageAttribution } from "@/subagents/timeline/message-attribution";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import Animated, {
   Easing,
@@ -136,6 +137,8 @@ interface UserMessageProps {
   isLastInGroup?: boolean;
   isPending?: boolean;
   disableOuterSpacing?: boolean;
+  /** The agent that wrote the message through its Paseo tools; absent means the user. */
+  senderAgentId?: string;
 }
 
 const MessageOuterSpacingContext = createContext(false);
@@ -444,6 +447,7 @@ export const UserMessage = memo(function UserMessage({
   isLastInGroup = true,
   isPending = false,
   disableOuterSpacing,
+  senderAgentId,
 }: UserMessageProps) {
   const isCompact = useIsCompactFormFactor();
   const { t } = useTranslation();
@@ -517,6 +521,7 @@ export const UserMessage = memo(function UserMessage({
         onPointerEnter={handlePointerEnter}
         onPointerLeave={handlePointerLeave}
       >
+        {senderAgentId ? <AgentMessageAttribution senderAgentId={senderAgentId} /> : null}
         <View style={userMessageStylesheet.bubble}>
           {hasImages ? (
             <View style={imagePreviewContainerStyle}>

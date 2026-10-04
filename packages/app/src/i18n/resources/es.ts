@@ -335,6 +335,10 @@ export const es: TranslationResources = {
     },
   },
   message: {
+    attribution: {
+      sentBy: "Enviado por {{title}}",
+      sentByAgent: "Enviado por un agente",
+    },
     diagram: {
       diagram: "Diagrama",
       zoomIn: "Acercar",
@@ -2004,6 +2008,8 @@ export const es: TranslationResources = {
       done: "Finalizado",
       stopped: "Detenido",
       archived: "Archivado",
+      finished: "Terminó",
+      closed: "Cerrado",
     },
     providerBar: {
       working: "En ejecución {{duration}}",

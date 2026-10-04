@@ -1,4 +1,5 @@
 import type { StreamItem } from "@/types/stream";
+import { isSubagentNotification } from "@/subagents/timeline/notification-source";
 
 /**
  * Canonical turn IDs take precedence. Timelines without them retain the legacy
@@ -14,11 +15,16 @@ export function continuesTurn(previous: StreamItem | null, next: StreamItem | nu
 
 /**
  * A visible response can span multiple canonical turns when their prompts are
- * system-injected and therefore absent from the Paseo timeline.
+ * system-injected and therefore absent from the Paseo timeline. A subagent wake is the
+ * visible cause of the response after it, so it starts one the way a user message does.
  */
 export function continuesResponse(previous: StreamItem | null, next: StreamItem | null): boolean {
   if (!previous || !next) return false;
-  return continuesTurn(previous, next) || next.kind !== "user_message";
+  return continuesTurn(previous, next) || !startsResponse(next);
+}
+
+function startsResponse(item: StreamItem): boolean {
+  return item.kind === "user_message" || isSubagentNotification(item);
 }
 
 export function isTurnBoundary(previous: StreamItem | null, next: StreamItem | null): boolean {

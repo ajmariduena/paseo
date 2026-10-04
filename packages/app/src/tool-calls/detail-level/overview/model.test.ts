@@ -88,6 +88,33 @@ describe("Paseo orchestration summaries", () => {
     ]);
   });
 
+  it("summarizes the new orchestration fields by the agent each call names", () => {
+    expect(
+      phrases([
+        paseoCall("send_agent_prompt", {
+          agentId: "a",
+          prompt: "go",
+          delivery: "queue",
+          clientRequestId: "k1",
+        }),
+        paseoCall(
+          "wait_for_agent",
+          { agentId: "a", timeoutMs: 600000 },
+          { output: { structuredContent: { agentId: "a", status: "running", timedOut: true } } },
+        ),
+        paseoCall("get_agent_activity", { agentId: "b", view: "messages", afterPosition: 0 }),
+        paseoCall("list_agents", { scope: "children", titleContains: "review" }),
+        paseoCall("cancel_agent", { agentId: "b" }),
+      ]),
+    ).toEqual([
+      "sent 1 prompt to 1 agent",
+      "waited for 1 agent",
+      "checked 1 agent",
+      "listed agents",
+      "stopped 1 agent",
+    ]);
+  });
+
   it("reads 'tried to' only when every call of an action failed", () => {
     expect(
       phrases([

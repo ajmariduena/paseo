@@ -330,6 +330,10 @@ export const ar: TranslationResources = {
     },
   },
   message: {
+    attribution: {
+      sentBy: "أرسلها {{title}}",
+      sentByAgent: "أرسلها وكيل",
+    },
     diagram: {
       diagram: "مخطط",
       zoomIn: "تكبير",
@@ -1954,6 +1958,8 @@ export const ar: TranslationResources = {
       done: "مكتمل",
       stopped: "متوقف",
       archived: "مؤرشف",
+      finished: "انتهى",
+      closed: "مغلق",
     },
     providerBar: {
       working: "قيد التشغيل {{duration}}",

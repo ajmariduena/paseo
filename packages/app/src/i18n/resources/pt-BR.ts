@@ -334,6 +334,10 @@ export const ptBR: TranslationResources = {
     },
   },
   message: {
+    attribution: {
+      sentBy: "Enviado por {{title}}",
+      sentByAgent: "Enviado por um agente",
+    },
     diagram: {
       diagram: "Diagrama",
       zoomIn: "Aproximar",
@@ -1988,6 +1992,8 @@ export const ptBR: TranslationResources = {
       done: "Concluído",
       stopped: "Interrompido",
       archived: "Arquivado",
+      finished: "Terminou",
+      closed: "Fechado",
     },
     providerBar: {
       working: "Em execução {{duration}}",

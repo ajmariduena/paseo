@@ -2,6 +2,8 @@ import type {
   AgentProvider,
   AgentTimelineItem,
   JsonValue,
+  MessageOrigin,
+  NotificationSource,
   ToolCallDetail,
 } from "@getpaseo/protocol/agent-types";
 import { timelineItemIdentity } from "@getpaseo/protocol/timeline-identity";
@@ -100,6 +102,8 @@ export interface UserMessageItem {
   timestamp: Date;
   images?: UserMessageImageAttachment[];
   attachments?: AgentAttachment[];
+  /** Who wrote the message when it was not the user; absent means the user. */
+  origin?: MessageOrigin;
 }
 
 export interface UserMessageInput {
@@ -112,6 +116,7 @@ export interface UserMessageInput {
   timestamp: Date;
   images?: UserMessageImageAttachment[];
   attachments?: AgentAttachment[];
+  origin?: MessageOrigin;
 }
 
 export function createUserMessage(input: UserMessageInput): UserMessageItem {
@@ -132,6 +137,7 @@ export function createUserMessage(input: UserMessageInput): UserMessageItem {
     ...(input.attachments && input.attachments.length > 0
       ? { attachments: input.attachments }
       : {}),
+    ...(input.origin && input.origin.kind !== "user" ? { origin: input.origin } : {}),
   };
 }
 
@@ -260,6 +266,7 @@ function produceUserMessage(
     clientMessageId: incoming.clientMessageId ?? existing.clientMessageId,
     messageId: incoming.messageId ?? existing.messageId,
     timelineCursor: incoming.timelineCursor ?? existing.timelineCursor,
+    origin: incoming.origin ?? existing.origin,
   });
   if (
     existing.id === merged.id &&
@@ -269,7 +276,8 @@ function produceUserMessage(
     existing.text === merged.text &&
     existing.timestamp === merged.timestamp &&
     existing.images === merged.images &&
-    existing.attachments === merged.attachments
+    existing.attachments === merged.attachments &&
+    existing.origin === merged.origin
   ) {
     return { items, index, message: existing, matched: true };
   }
@@ -786,6 +794,7 @@ export interface NotificationItem {
   timestamp: Date;
   level: NotificationLevel;
   message: string;
+  source?: NotificationSource;
 }
 
 export interface CompactionItem {
@@ -890,6 +899,7 @@ function appendUserMessage(
   clientMessageId?: string,
   timelineCursor?: TimelinePosition,
   turnId?: string,
+  origin?: MessageOrigin,
 ): StreamItem[] {
   const { chunk, hasContent } = normalizeChunk(text);
   if (!hasContent) {
@@ -905,6 +915,7 @@ function appendUserMessage(
     turnId,
     text: chunk,
     timestamp,
+    origin,
   });
   return upsertUserMessage(state, nextItem);
 }
@@ -1512,6 +1523,7 @@ function reduceTimelineEvent(
           item.clientMessageId,
           timelineCursor,
           event.turnId,
+          item.origin,
         ),
       );
     case "assistant_message":
@@ -1560,11 +1572,14 @@ function reduceTimelineEvent(
       const notification: NotificationItem = {
         kind: "notification",
         sourceType: "notification",
-        id: createUniqueTimelineId(state, "notification", item.message, timestamp),
+        id: item.messageId
+          ? `notification:${item.messageId}`
+          : createUniqueTimelineId(state, "notification", item.message, timestamp),
         ...(timelineCursor ? { timelineCursor } : {}),
         timestamp,
         level: item.level,
         message: item.message,
+        ...(item.source ? { source: item.source } : {}),
       };
       return finalizeActiveThoughts(appendNotification(state, notification));
     }
@@ -1885,6 +1900,7 @@ function applyCanonicalUserMessageEvent(params: {
     timelineCursor,
     text: normalized.chunk,
     timestamp,
+    origin: event.item.origin,
   });
   if (unmatchedInsert === "head") {
     const reconciled = upsertUserMessageAcrossStream({

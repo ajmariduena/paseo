@@ -330,6 +330,10 @@ export const zhCN: TranslationResources = {
     },
   },
   message: {
+    attribution: {
+      sentBy: "由 {{title}} 发送",
+      sentByAgent: "由 agent 发送",
+    },
     diagram: {
       diagram: "图表",
       zoomIn: "放大",
@@ -1932,6 +1936,8 @@ export const zhCN: TranslationResources = {
       done: "已完成",
       stopped: "已停止",
       archived: "已归档",
+      finished: "已结束",
+      closed: "已关闭",
     },
     providerBar: {
       working: "运行中 {{duration}}",

@@ -220,7 +220,11 @@ Clicking either kind opens a workspace tab. A Paseo subagent tab is a normal int
 
 The parent's timeline also shows each child where it was started, as a subagent row in place of the spawning tool call (`packages/app/src/subagents/timeline/`). A `create_agent` call becomes a row once its result names the agent; one that failed has no child and stays a tool call. A provider `sub_agent` call finds its descriptor through `descriptor.toolCallId`. Spawn calls run separately from tool work in the overview grouping, so adjacent spawns become one group, and a collapsed turn keeps them visible. Settled Paseo rows show no duration: the snapshot has no turn end time.
 
+When a child reports back, the wake the parent receives shows in its timeline as the same row, drawn from the notification's `source.subagents`. The dot and word are the reported event (Finished, Failed, Needs input, Closed) and do not follow the child afterwards; the trailing slot is the time the wake arrived. A batched wake holds one row per child in a card. The wake starts a new visible response, as a user message does, and a collapsed turn keeps it visible. A child the client no longer knows keeps the wake's title and still opens by id. Notifications without a source render as before.
+
 A subagent's own timeline starts with "Subagent of {parent}" in the history-start slot, so it shows once history is fully loaded and scrolls away with it. It opens the Lineage surface (`packages/app/src/lineage/`): the parent, the subagents still worth a look (working, waiting, or finished and unread), previous subagents behind a toggle, and archived ones on request through `fetch_agents` with the parent label. Rows keep creation order, so a child finishing or waking never moves.
+
+A user message another agent sent (a `create_agent` initial prompt or a `send_agent_prompt`) carries `origin: { kind: "agent", agentId }` and shows "Sent by {sender}" above the bubble, which opens the sender. It reads "Sent by an agent" while the client does not know the sender's title. The bubble is unchanged: the provider received it as a user turn.
 
 Provider timelines use the same structural timeline item format but deliberately have a separate lifecycle and transport. A provider thread/session identifier is not a Paseo agent identifier, and closing its tab is always layout-only.
 

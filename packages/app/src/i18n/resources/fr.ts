@@ -336,6 +336,10 @@ export const fr: TranslationResources = {
     },
   },
   message: {
+    attribution: {
+      sentBy: "Envoyé par {{title}}",
+      sentByAgent: "Envoyé par un agent",
+    },
     diagram: {
       diagram: "Diagramme",
       zoomIn: "Zoomer",
@@ -2009,6 +2013,8 @@ export const fr: TranslationResources = {
       done: "Terminé",
       stopped: "Arrêté",
       archived: "Archivé",
+      finished: "Fini",
+      closed: "Fermé",
     },
     providerBar: {
       working: "En cours depuis {{duration}}",
