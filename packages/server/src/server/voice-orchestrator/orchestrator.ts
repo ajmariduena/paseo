@@ -26,6 +26,7 @@ import {
   buildDelegationPrompt,
   buildNoticePrompt,
   buildNarrationPrompt,
+  clipAgentMessage,
   clipForSpeech,
   type VoiceFleetEntry,
 } from "./prompt.js";
@@ -380,7 +381,7 @@ export class VoiceOrchestrator {
           permission
             ? `pending permission: ${clipForSpeech([permission.title ?? permission.name, permission.description].filter(Boolean).join(": "), 200)}`
             : null,
-          last ? `last message: ${clipForSpeech(last, 400)}` : null,
+          last ? `last message: ${clipAgentMessage(last, 400, agent.id)}` : null,
         ];
         return parts.filter((part): part is string => part !== null).join(" | ");
       }),
@@ -772,7 +773,7 @@ export class VoiceOrchestrator {
           };
         }
         return {
-          text: `${name} finished.${task} Its final message: ${clipForSpeech(message, 700)}${again}`,
+          text: `${name} finished.${task} Its final message: ${clipAgentMessage(message, 700, agent.id)}${again}`,
           urgent: false,
         };
       }
