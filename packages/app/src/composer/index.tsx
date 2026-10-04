@@ -74,6 +74,7 @@ import {
   cancelComposerAgent,
   dispatchComposerAgentMessage,
   editQueuedComposerMessage,
+  enqueueComposerAgentMessage,
   findForgeItemByOption,
   isAttachmentSelectedForForgeItem,
   openComposerAttachment,
@@ -156,6 +157,7 @@ import { useCheckoutPrStatusQuery } from "@/git/use-pr-status-query";
 import { getForgePresentation } from "@/git/forge";
 import { ForgeBrandIcon } from "@/git/forge-icon";
 import { useComposerForgeAutoAttach } from "./forge-auto-attach";
+import { ServerQueueTrack } from "./queue/track";
 import { readClipboardImage } from "./clipboard-image";
 import { normalizeNativePastedImages, type NativePastedFile } from "./native-pasted-image";
 import { PluginResourceAttachmentPill, usePluginAttachmentPicker } from "@/plugins";
@@ -1376,6 +1378,9 @@ function ComposerContentImpl({
   const supportsForgeSearch = useSessionStore(
     (state) => state.sessions[serverId]?.serverInfo?.features?.forgeSearch === true,
   );
+  const supportsServerQueue = useSessionStore(
+    (state) => state.sessions[serverId]?.serverInfo?.features?.serverMessageQueue === true,
+  );
   const forgeAutoAttachRef = useRef<ReturnType<typeof useComposerForgeAutoAttach>>(null);
   const [isForgeResolving, setIsForgeResolving] = useState(false);
   const forgeConfiguration = useMemo(
@@ -1661,28 +1666,68 @@ function ComposerContentImpl({
     [serverId, setQueuedMessages],
   );
 
+  const enqueueOnServer = useCallback(
+    async (text: string, queuedAttachments: ComposerAttachment[]) => {
+      if (!client) {
+        throw new Error(t("workspace.terminal.hostDisconnected"));
+      }
+      await enqueueComposerAgentMessage({
+        client,
+        agentId,
+        text,
+        attachments: queuedAttachments,
+        attachmentSubmitFormat: resolveComposerAttachmentSubmitFormat({
+          supportsForgeAttachments: supportsForgeSearch,
+        }),
+        encodeImages,
+      });
+    },
+    [agentId, client, supportsForgeSearch, t],
+  );
+
   const queueMessage = useCallback(
     (queuedMessage: string, queuedAttachments: ComposerAttachment[]) => {
-      const result = queueComposerMessage({
-        agentId,
-        text: queuedMessage,
-        attachments: queuedAttachments,
-        queue: queueWriter,
-      });
-      if (!result.queued) return;
+      const text = queuedMessage.trim();
+      if (!text && queuedAttachments.length === 0) return;
+      // COMPAT(serverMessageQueue): the client-side queue serves daemons without the server
+      // queue; remove after 2027-10-04.
+      if (!supportsServerQueue) {
+        queueComposerMessage({ agentId, text, attachments: queuedAttachments, queue: queueWriter });
+      }
 
       replaceUserInput("");
       setSelectedAttachments([]);
       resetSuppression();
       clearSentAttachments(queuedAttachments);
+      if (!supportsServerQueue) return;
+
+      setSendError(null);
+      setIsProcessing(true);
+      void enqueueOnServer(text, queuedAttachments)
+        .catch((error: unknown) => {
+          if (!textSource.getSnapshot().trim()) {
+            replaceUserInput(text);
+            setSelectedAttachments(
+              composerWorkspaceAttachment.userAttachmentsOnly(queuedAttachments),
+            );
+          }
+          setSendError(error instanceof Error ? error.message : t("composer.errors.failedToSend"));
+        })
+        .finally(() => {
+          setIsProcessing(false);
+        });
     },
     [
       agentId,
       clearSentAttachments,
+      enqueueOnServer,
       queueWriter,
       resetSuppression,
       setSelectedAttachments,
       replaceUserInput,
+      supportsServerQueue,
+      t,
+      textSource,
     ],
   );
 
@@ -2118,6 +2163,19 @@ function ComposerContentImpl({
   const contextWindowPending = agentState.status === "initializing" || isAgentRunning;
   const contextWindowMeterGlyphSize = isCompactLayout ? ICON_SIZE.md : buttonIconSize;
 
+  const queueCompaction = useCallback(
+    async (text: string) => {
+      // COMPAT(serverMessageQueue): the client-side queue serves daemons without the server
+      // queue; remove after 2027-10-04.
+      if (!supportsServerQueue) {
+        queueComposerMessage({ agentId, text, attachments: [], queue: queueWriter });
+        return;
+      }
+      await enqueueOnServer(text, []);
+    },
+    [agentId, enqueueOnServer, queueWriter, supportsServerQueue],
+  );
+
   const compaction = useCompactConversation({
     serverId,
     agentId,
@@ -2125,7 +2183,7 @@ function ComposerContentImpl({
     usedTokens: contextWindowUsedTokens,
     isAgentRunning,
     submitMessage,
-    queueWriter,
+    queueMessage: queueCompaction,
   });
 
   const contextWindowMeter = useMemo(
@@ -2381,14 +2439,26 @@ function ComposerContentImpl({
 
   const queueList = useMemo(
     () =>
-      renderQueueTrack({
-        queuedMessages,
-        handleEditQueuedMessage,
-        handleSendQueuedNow,
-        editLabel: t("composer.attachments.editQueuedMessage"),
-        sendNowLabel: t("composer.attachments.sendQueuedMessageNow"),
-      }),
-    [handleEditQueuedMessage, handleSendQueuedNow, queuedMessages, t],
+      supportsServerQueue ? (
+        <ServerQueueTrack serverId={serverId} agentId={agentId} />
+      ) : (
+        renderQueueTrack({
+          queuedMessages,
+          handleEditQueuedMessage,
+          handleSendQueuedNow,
+          editLabel: t("composer.attachments.editQueuedMessage"),
+          sendNowLabel: t("composer.attachments.sendQueuedMessageNow"),
+        })
+      ),
+    [
+      agentId,
+      handleEditQueuedMessage,
+      handleSendQueuedNow,
+      queuedMessages,
+      serverId,
+      supportsServerQueue,
+      t,
+    ],
   );
 
   const autocompleteConfiguration = useMemo(

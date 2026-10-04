@@ -26,6 +26,7 @@ import {
   cancelComposerAgent,
   dispatchComposerAgentMessage,
   editQueuedComposerMessage,
+  enqueueComposerAgentMessage,
   findForgeItemByOption,
   isAttachmentSelectedForForgeItem,
   openComposerAttachment,
@@ -38,10 +39,12 @@ import {
   type MessageSubmissionWriter,
   type AttachmentPersister,
   type ComposerCancelClient,
+  type ComposerSendDisposition,
   type ComposerSendClient,
   type QueueWriter,
   type QueuedComposerMessage,
 } from "./actions";
+import { readQueuedText } from "./queue/queued-text";
 
 const imageMetadata: AttachmentMetadata = {
   id: "img-1",
@@ -191,7 +194,11 @@ interface FakeSendCall {
 }
 
 function createFakeSendClient(
-  options: { rejection?: Error; beforeRejection?: (call: FakeSendCall) => void } = {},
+  options: {
+    rejection?: Error;
+    beforeRejection?: (call: FakeSendCall) => void;
+    disposition?: ComposerSendDisposition;
+  } = {},
 ): ComposerSendClient & { calls: FakeSendCall[] } {
   const calls: FakeSendCall[] = [];
   return {
@@ -203,6 +210,7 @@ function createFakeSendClient(
         options.beforeRejection?.(call);
         throw options.rejection;
       }
+      return options.disposition ? { disposition: options.disposition } : {};
     },
     uploadFile: async () => ({ requestId: "test", file: null, error: null }),
   };
@@ -711,6 +719,89 @@ describe("dispatchComposerAgentMessage", () => {
   });
 });
 
+describe("daemon queue sends", () => {
+  it("drops the optimistic row when the daemon queues a send behind the running turn", async () => {
+    const client = createFakeSendClient({ disposition: "queued" });
+    const stream = createFakeStream();
+
+    const disposition = await dispatchComposerAgentMessage({
+      client,
+      agentId: "agent",
+      text: "after this turn",
+      attachments: [],
+      encodeImages: async () => [],
+      submission: stream,
+      activeTurnBehavior: "steer",
+    });
+
+    expect(disposition).toBe("queued");
+    expect(stream.tail.get("agent")).toEqual([]);
+    const messageId = client.calls[0]!.options.messageId;
+    expect(readQueuedText(messageId)).toBe("after this turn");
+  });
+
+  it("keeps the optimistic row for a send that steered", async () => {
+    const client = createFakeSendClient({ disposition: "steered" });
+    const stream = createFakeStream();
+
+    const disposition = await dispatchComposerAgentMessage({
+      client,
+      agentId: "agent",
+      text: "steer now",
+      attachments: [],
+      encodeImages: async () => [],
+      submission: stream,
+      activeTurnBehavior: "steer",
+    });
+
+    expect(disposition).toBe("steered");
+    expect(stream.tail.get("agent")).toMatchObject([{ kind: "user_message", text: "steer now" }]);
+  });
+
+  it("enqueues on the daemon without an optimistic row and remembers the whole text", async () => {
+    const client = createFakeSendClient({ disposition: "queued" });
+    const text = "a".repeat(300);
+
+    const disposition = await enqueueComposerAgentMessage({
+      client,
+      agentId: "agent",
+      text,
+      attachments: [],
+      encodeImages: async () => [],
+    });
+
+    expect(disposition).toBe("queued");
+    expect(client.calls).toEqual([
+      {
+        agentId: "agent",
+        text,
+        options: {
+          messageId: client.calls[0]!.options.messageId,
+          activeTurnBehavior: "queue",
+          images: [],
+          attachments: [],
+        },
+      },
+    ]);
+    expect(readQueuedText(client.calls[0]!.options.messageId)).toBe(text);
+  });
+
+  it("forgets the text and rethrows when the daemon rejects the enqueue", async () => {
+    const client = createFakeSendClient({ rejection: new Error("host offline") });
+
+    await expect(
+      enqueueComposerAgentMessage({
+        client,
+        agentId: "agent",
+        text: "lost",
+        attachments: [],
+        encodeImages: async () => [],
+      }),
+    ).rejects.toThrow("host offline");
+    expect(readQueuedText(client.calls[0]!.options.messageId)).toBeNull();
+  });
+});
+
 describe("queueComposerMessage", () => {
   it("queues a trimmed message under the agent id and returns the new entry", () => {
     const queue = createFakeQueue();
@@ -1060,7 +1151,7 @@ describe("file upload preparation", () => {
     const sent: string[] = [];
     const upload = uploadFileAttachments({
       client: {
-        sendAgentMessage: async () => {},
+        sendAgentMessage: async () => ({}),
         uploadFile: async (file) => {
           sent.push(file.fileName);
           expect(file.bytes).toEqual(new Uint8Array([1, 2]));
@@ -1100,7 +1191,7 @@ describe("file upload preparation", () => {
       await expect(
         uploadFileAttachments({
           client: {
-            sendAgentMessage: async () => {},
+            sendAgentMessage: async () => ({}),
             uploadFile: async () => {
               sends++;
               throw new Error("unexpected send");

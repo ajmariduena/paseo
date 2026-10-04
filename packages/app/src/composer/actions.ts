@@ -1,4 +1,5 @@
 import type { SelectedFile } from "@/attachments/selected-file";
+import type { SendAgentMessageResult } from "@getpaseo/client/internal/daemon-client";
 import type { ForgeSearchItem } from "@getpaseo/protocol/messages";
 import type { ActiveTurnBehavior } from "@getpaseo/protocol/messages";
 import type {
@@ -18,6 +19,7 @@ import { createUserMessage, generateMessageId, type UserMessageItem } from "@/ty
 import type { MessageSubmissionRejectionOutcome } from "@/composer/submission/model";
 import type { PickedImageAttachmentInput } from "@/hooks/image-attachment-picker";
 import { i18n } from "@/i18n/i18next";
+import { forgetQueuedText, rememberQueuedText } from "@/composer/queue/queued-text";
 
 export interface QueuedComposerMessage {
   id: string;
@@ -54,7 +56,7 @@ export interface ComposerSendClient {
       images: Array<{ data: string; mimeType: string }>;
       attachments: ReturnType<typeof splitComposerAttachmentsForSubmit>["attachments"];
     },
-  ) => Promise<unknown>;
+  ) => Promise<SendAgentMessageResult>;
   uploadFile: (input: { fileName: string; mimeType: string; bytes: Uint8Array }) => Promise<{
     requestId: string;
     file: {
@@ -198,9 +200,11 @@ export interface DispatchComposerAgentMessageInput {
   activeTurnId?: string;
 }
 
+export type ComposerSendDisposition = SendAgentMessageResult["disposition"];
+
 export async function dispatchComposerAgentMessage(
   input: DispatchComposerAgentMessageInput,
-): Promise<void> {
+): Promise<ComposerSendDisposition> {
   const wirePayload = splitComposerAttachmentsForSubmit(input.attachments, {
     format: input.attachmentSubmitFormat,
   });
@@ -218,15 +222,59 @@ export async function dispatchComposerAgentMessage(
   input.submission.begin(input.agentId, userMessage);
   try {
     const imagesData = await input.encodeImages(wirePayload.images);
-    await input.client.sendAgentMessage(input.agentId, input.text, {
+    const result = await input.client.sendAgentMessage(input.agentId, input.text, {
       messageId: clientMessageId,
       ...(input.activeTurnBehavior ? { activeTurnBehavior: input.activeTurnBehavior } : {}),
       images: imagesData ?? [],
       attachments: wirePayload.attachments,
     });
-    input.submission.accept(input.agentId, clientMessageId);
+    if (result.disposition === "queued") {
+      // The daemon queued it behind the running turn: the queue track shows it until it starts,
+      // and the timeline gets the row when it does.
+      rememberQueuedText(clientMessageId, input.text);
+      input.submission.reject(input.agentId, clientMessageId);
+    } else {
+      input.submission.accept(input.agentId, clientMessageId);
+    }
+    return result.disposition;
   } catch (error) {
     input.submission.reject(input.agentId, clientMessageId);
+    throw error;
+  }
+}
+
+export interface EnqueueComposerAgentMessageInput {
+  client: ComposerSendClient;
+  agentId: string;
+  text: string;
+  attachments: ComposerAttachment[];
+  attachmentSubmitFormat?: ComposerAttachmentSubmitFormat;
+  encodeImages: DispatchComposerAgentMessageInput["encodeImages"];
+}
+
+/**
+ * Puts a message in the daemon's queue for the agent. No optimistic timeline row: the message
+ * shows in the queue track, and the timeline gets it when the daemon starts it.
+ */
+export async function enqueueComposerAgentMessage(
+  input: EnqueueComposerAgentMessageInput,
+): Promise<ComposerSendDisposition> {
+  const wirePayload = splitComposerAttachmentsForSubmit(input.attachments, {
+    format: input.attachmentSubmitFormat,
+  });
+  const messageId = generateMessageId();
+  rememberQueuedText(messageId, input.text);
+  try {
+    const imagesData = await input.encodeImages(wirePayload.images);
+    const result = await input.client.sendAgentMessage(input.agentId, input.text, {
+      messageId,
+      activeTurnBehavior: "queue",
+      images: imagesData ?? [],
+      attachments: wirePayload.attachments,
+    });
+    return result.disposition;
+  } catch (error) {
+    forgetQueuedText(messageId);
     throw error;
   }
 }

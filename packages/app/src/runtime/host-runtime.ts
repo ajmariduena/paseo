@@ -2394,6 +2394,9 @@ export class HostRuntimeStore {
     if (this.queuedAgentDrainInFlight.has(drainKey)) return;
     const store = useSessionStore.getState();
     const session = store.sessions[serverId];
+    // COMPAT(serverMessageQueue): a daemon with the server queue drains it itself; the client
+    // queue drains only for older daemons. Remove after 2027-10-04.
+    if (session?.serverInfo?.features?.serverMessageQueue === true) return;
     const queue = session?.queuedMessages.get(agentId);
     const client = session?.client;
     if (!client || !queue?.length || session.initializingAgents.get(agentId) === true) {
