@@ -7,7 +7,7 @@ import {
   type TextStyle,
   type ViewStyle,
 } from "react-native";
-import { UITextView } from "react-native-uitextview";
+import { UITextView } from "@bsky.app/react-native-uitextview";
 import { resolvePlainMarkdownTextStyle } from "@/components/markdown-text-style";
 import {
   iosMarkdownTextIsSelectable,
