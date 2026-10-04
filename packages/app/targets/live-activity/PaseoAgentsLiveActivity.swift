@@ -7,6 +7,7 @@ struct PaseoAgentsAttributes: ActivityAttributes {
   public struct Line: Codable, Hashable {
     var id: String
     var title: String
+    var subtitle: String?
     var state: String
     var label: String
     var since: Double
@@ -60,9 +61,9 @@ private struct LineRow: View {
   var body: some View {
     HStack(spacing: 8) {
       StateMark(state: line.state)
-      Text(line.title)
+      (Text(line.title).foregroundColor(.white)
+        + Text(subtitleSuffix).foregroundColor(Palette.muted))
         .font(.system(size: 14))
-        .foregroundStyle(.white)
         .lineLimit(1)
       Spacer(minLength: 8)
       detail
@@ -70,6 +71,11 @@ private struct LineRow: View {
         .foregroundStyle(line.state == "permission" ? Palette.warning : Palette.muted)
         .lineLimit(1)
     }
+  }
+
+  private var subtitleSuffix: String {
+    guard let subtitle = line.subtitle, !subtitle.isEmpty else { return "" }
+    return " · \(subtitle)"
   }
 
   @ViewBuilder private var detail: some View {

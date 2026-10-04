@@ -12,6 +12,7 @@ export interface AgentsLiveActivityDeps {
   native: LiveActivityNative;
   title: string;
   labels: () => LiveActivityLabels;
+  workspaceName?: (agent: AgentDirectoryEntry) => string | null;
   isForeground: () => boolean;
   now?: () => number;
   onError?: (error: unknown) => void;
@@ -39,6 +40,7 @@ export class AgentsLiveActivity {
       since: this.since ?? now,
       runningSince: this.runningSince,
       labels: this.deps.labels(),
+      workspaceName: this.deps.workspaceName,
     });
     const { native } = this.deps;
 

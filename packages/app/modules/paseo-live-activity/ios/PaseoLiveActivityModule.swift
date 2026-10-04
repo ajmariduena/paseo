@@ -9,6 +9,7 @@ struct PaseoAgentsAttributes: ActivityAttributes {
   public struct Line: Codable, Hashable {
     var id: String
     var title: String
+    var subtitle: String?
     var state: String
     var label: String
     var since: Double

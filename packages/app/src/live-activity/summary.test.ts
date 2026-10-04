@@ -56,9 +56,23 @@ describe("summarizeAgents", () => {
       workingLabel: "working 1",
       waitingLabel: "waiting 1",
       lines: [
-        { id: "s1:ask", title: "ask", state: "permission", label: "permission", since: 0 },
-        { id: "s1:busy", title: "busy", state: "working", label: "", since: 4 },
-        { id: "s1:done", title: "done", state: "finished", label: "finished", since: 0 },
+        {
+          id: "s1:ask",
+          title: "ask",
+          subtitle: "",
+          state: "permission",
+          label: "permission",
+          since: 0,
+        },
+        { id: "s1:busy", title: "busy", subtitle: "", state: "working", label: "", since: 4 },
+        {
+          id: "s1:done",
+          title: "done",
+          subtitle: "",
+          state: "finished",
+          label: "finished",
+          since: 0,
+        },
       ],
     });
   });
@@ -93,5 +107,17 @@ describe("summarizeAgents", () => {
     expect(content?.working).toBe(4);
     expect(content?.lines).toHaveLength(3);
     expect(content?.lines[0]?.title).toBe("New session");
+  });
+
+  it("leads each line with the agent's workspace when it has one", () => {
+    const content = summarizeAgents({
+      agents: [agent({ id: "a", title: "Fix login", status: "running", workspaceId: "w1" })],
+      since: 0,
+      runningSince: new Map(),
+      labels,
+      workspaceName: (entry) => (entry.workspaceId === "w1" ? "paseo" : null),
+    });
+
+    expect(content?.lines[0]).toMatchObject({ title: "paseo", subtitle: "Fix login" });
   });
 });

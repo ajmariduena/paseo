@@ -6,6 +6,7 @@ export type LiveActivityLineState = "permission" | "working" | "error" | "finish
 export interface LiveActivityLine {
   id: string;
   title: string;
+  subtitle: string;
   state: LiveActivityLineState;
   label: string;
   since: number;
@@ -58,6 +59,7 @@ export function summarizeAgents(input: {
   since: number;
   runningSince: ReadonlyMap<string, number>;
   labels: LiveActivityLabels;
+  workspaceName?: (agent: AgentDirectoryEntry) => string | null;
 }): LiveActivityContent | null {
   const { labels } = input;
   const entries: Array<{ agent: AgentDirectoryEntry; state: LiveActivityLineState }> = [];
@@ -83,9 +85,12 @@ export function summarizeAgents(input: {
     if (state === "permission") label = labels.permission;
     else if (state === "error") label = labels.failed;
     else if (state === "working") label = "";
+    const agentTitle = agent.title?.trim() || labels.untitled;
+    const workspace = input.workspaceName?.(agent)?.trim();
     return {
       id: key,
-      title: agent.title?.trim() || labels.untitled,
+      title: workspace || agentTitle,
+      subtitle: workspace ? agentTitle : "",
       state,
       label,
       since: state === "working" ? Math.floor((input.runningSince.get(key) ?? 0) / 1000) : 0,

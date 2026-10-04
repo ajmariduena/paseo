@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AppState } from "react-native";
 import { useAggregatedAgents } from "@/hooks/use-aggregated-agents";
+import { useSessionStore } from "@/stores/session-store";
+import type { AgentDirectoryEntry } from "@/types/agent-directory";
 import { AgentsLiveActivity } from "./controller";
 import { liveActivityNative } from "./native";
 import type { LiveActivityLabels } from "./summary";
@@ -31,6 +33,14 @@ function useLabels(): () => LiveActivityLabels {
   }).current;
 }
 
+function workspaceName(agent: AgentDirectoryEntry): string | null {
+  if (!agent.workspaceId) return null;
+  return (
+    useSessionStore.getState().sessions[agent.serverId]?.workspaces.get(agent.workspaceId)?.name ??
+    null
+  );
+}
+
 /** Mirrors the agents across every host into the iOS Live Activity. */
 export function AgentsLiveActivitySync() {
   const native = liveActivityNative;
@@ -42,6 +52,7 @@ export function AgentsLiveActivitySync() {
           native,
           title: "Paseo",
           labels,
+          workspaceName,
           isForeground: () => AppState.currentState === "active",
           onError: (error) => console.warn("[live-activity]", error),
         })
