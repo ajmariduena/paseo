@@ -35,6 +35,7 @@ import type {
   AgentPersistenceHandle,
 } from "@getpaseo/protocol/agent-types";
 import type {
+  AgentQueueSnapshot,
   ServerInfoStatusPayload,
   ProjectPlacementPayload,
   ServerCapabilities,
@@ -88,6 +89,8 @@ export interface Agent {
   runtimeInfo?: AgentRuntimeInfo;
   lastUsage?: AgentUsage;
   backgroundTasks?: AgentBackgroundTask[];
+  /** The daemon's queue; absent from daemons without serverMessageQueue and when empty. */
+  queue?: AgentQueueSnapshot;
   lastError?: string | null;
   title: string | null;
   cwd: string;

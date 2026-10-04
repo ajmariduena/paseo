@@ -4,7 +4,6 @@ import { AGENT_PROVIDER_DEFINITIONS } from "@getpaseo/protocol/provider-manifest
 import type { ComposerAttachment } from "@/attachments/types";
 import type { ContextWindowCompaction } from "@/components/context-window-meter";
 import { formatTokenCount } from "@/components/context-window-meter.utils";
-import { queueComposerMessage, type QueueWriter } from "@/composer/actions";
 import {
   canCompactConversation,
   COMPACT_COMMAND_TEXT,
@@ -32,9 +31,10 @@ export function useCompactConversation(input: {
   usedTokens: number | null;
   isAgentRunning: boolean;
   submitMessage: (text: string, attachments: ComposerAttachment[]) => Promise<void>;
-  queueWriter: QueueWriter;
+  /** Puts the text in the composer's queue, which runs it when the turn ends. */
+  queueMessage: (text: string) => Promise<void>;
 }): ContextWindowCompaction | null {
-  const { serverId, agentId, provider, usedTokens, isAgentRunning, submitMessage, queueWriter } =
+  const { serverId, agentId, provider, usedTokens, isAgentRunning, submitMessage, queueMessage } =
     input;
   const { t } = useTranslation();
   const toast = useToast();
@@ -58,22 +58,17 @@ export function useCompactConversation(input: {
       useSessionStore.getState().sessions[serverId],
       agentId,
     ).isActive;
-    if (resolveCompactTiming(running) === "after-turn") {
-      queueComposerMessage({
-        agentId,
-        text: COMPACT_COMMAND_TEXT,
-        attachments: [],
-        queue: queueWriter,
-      });
-      return;
-    }
     try {
+      if (resolveCompactTiming(running) === "after-turn") {
+        await queueMessage(COMPACT_COMMAND_TEXT);
+        return;
+      }
       await submitMessage(COMPACT_COMMAND_TEXT, []);
     } catch (error) {
       console.error("[Composer] Failed to compact the conversation:", error);
       toast.error(t("contextWindow.compact.failed"));
     }
-  }, [agentId, provider, queueWriter, serverId, submitMessage, t, toast, usedTokens]);
+  }, [agentId, provider, queueMessage, serverId, submitMessage, t, toast, usedTokens]);
 
   const handleCompact = useCallback(() => {
     void compact();

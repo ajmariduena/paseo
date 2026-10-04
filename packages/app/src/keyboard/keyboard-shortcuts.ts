@@ -205,6 +205,7 @@ export const SHORTCUT_HELP_ROW_ORDER: Record<ShortcutSectionId, readonly string[
     "voice-toggle",
     "dictation-toggle",
     "agent-interrupt",
+    "steer-queued-message",
     "voice-mute-toggle",
   ],
 };
@@ -257,6 +258,7 @@ const SHORTCUT_HELP_LABEL_KEYS: Record<string, string> = {
   "voice-toggle": "settings.shortcuts.help.toggleVoiceMode",
   "dictation-toggle": "settings.shortcuts.help.startStopDictation",
   "agent-interrupt": "settings.shortcuts.help.interruptAgent",
+  "steer-queued-message": "settings.shortcuts.help.steerQueuedMessage",
   "voice-mute-toggle": "settings.shortcuts.help.muteUnmuteVoiceMode",
 };
 
@@ -1256,6 +1258,32 @@ const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
       id: "agent-interrupt",
       section: "agent-input",
       label: "Interrupt agent",
+    },
+  },
+  {
+    id: "message-input-steer-queued-cmd-shift-enter-mac",
+    action: "message-input.action",
+    combo: "Cmd+Shift+Enter",
+    repeat: false,
+    when: { mac: true, commandCenter: false, focusScope: ["message-input", "other"] },
+    payload: { type: "message-input", kind: "steer-queued" },
+    help: {
+      id: "steer-queued-message",
+      section: "agent-input",
+      label: "Steer first queued message",
+    },
+  },
+  {
+    id: "message-input-steer-queued-ctrl-shift-enter-non-mac",
+    action: "message-input.action",
+    combo: "Ctrl+Shift+Enter",
+    repeat: false,
+    when: { mac: false, commandCenter: false, focusScope: ["message-input", "other"] },
+    payload: { type: "message-input", kind: "steer-queued" },
+    help: {
+      id: "steer-queued-message",
+      section: "agent-input",
+      label: "Steer first queued message",
     },
   },
   {

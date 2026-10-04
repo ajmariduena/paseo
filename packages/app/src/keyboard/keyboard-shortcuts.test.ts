@@ -267,6 +267,20 @@ describe("keyboard-shortcuts", () => {
       payload: { delta: -1 },
     },
     {
+      name: "matches Cmd+Shift+Enter to steer the first queued message on mac",
+      event: { key: "Enter", code: "Enter", metaKey: true, shiftKey: true },
+      context: { isMac: true, focusScope: "message-input" },
+      action: "message-input.action",
+      payload: { kind: "steer-queued" },
+    },
+    {
+      name: "matches Ctrl+Shift+Enter to steer the first queued message off mac",
+      event: { key: "Enter", code: "Enter", ctrlKey: true, shiftKey: true },
+      context: { isMac: false, focusScope: "message-input" },
+      action: "message-input.action",
+      payload: { kind: "steer-queued" },
+    },
+    {
       name: "matches tab relative navigation via Alt+Shift+]",
       event: { key: "}", code: "BracketRight", altKey: true, shiftKey: true },
       action: "workspace.tab.navigate.relative",
@@ -550,6 +564,11 @@ describe("keyboard-shortcuts", () => {
       name: "does not bind Ctrl+Enter as a rebindable message queue shortcut",
       event: { key: "Enter", code: "Enter", ctrlKey: true },
       context: { isMac: false, focusScope: "message-input" },
+    },
+    {
+      name: "does not steer a queued message from the terminal",
+      event: { key: "Enter", code: "Enter", metaKey: true, shiftKey: true },
+      context: { isMac: true, focusScope: "terminal" },
     },
     {
       name: "does not interrupt agent when terminal is focused",

@@ -1,5 +1,31 @@
 import type { TFunction } from "i18next";
 import type { SendBehavior } from "@/hooks/use-settings/storage";
+import type { ComposerSendAction } from "./state";
+
+const SEND_ACTION_LABEL_KEYS: Record<ComposerSendAction, string> = {
+  steer: "composer.input.sendAndSteer",
+  queue: "composer.input.queueMessage",
+  interrupt: "composer.input.sendAndInterrupt",
+};
+
+export function resolveSendActionLabel(action: ComposerSendAction, t: TFunction): string {
+  return t(SEND_ACTION_LABEL_KEYS[action]);
+}
+
+/**
+ * What Cmd/Ctrl+Enter does while a turn runs, for the send tooltip's second row: the opposite of
+ * the default, as `runAlternateSendAction` resolves it. Null when it does nothing.
+ */
+export function resolveAlternateSendTooltipLabel(input: {
+  defaultSendBehavior: SendBehavior;
+  isAgentRunning: boolean;
+  canQueue: boolean;
+  t: TFunction;
+}): string | null {
+  if (!input.isAgentRunning) return null;
+  if (input.defaultSendBehavior === "queue") return resolveSendActionLabel("interrupt", input.t);
+  return input.canQueue ? resolveSendActionLabel("queue", input.t) : null;
+}
 
 export function resolveSubmitAccessibilityLabel(input: {
   submitButtonAccessibilityLabel: string | undefined;

@@ -49,6 +49,8 @@ import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { ReadAloudButton } from "@/read-aloud/button";
 import { AgentMessageAttribution } from "@/subagents/timeline/message-attribution";
+import { SendMarkerLabel } from "@/composer/submission/send-marker-label";
+import type { SendMarker } from "@/composer/submission/send-markers";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import Animated, {
   Easing,
@@ -139,6 +141,8 @@ interface UserMessageProps {
   disableOuterSpacing?: boolean;
   /** The agent that wrote the message through its Paseo tools; absent means the user. */
   senderAgentId?: string;
+  /** Set when this app sent the message and it steered or waited in the queue. */
+  sendMarker?: SendMarker;
 }
 
 const MessageOuterSpacingContext = createContext(false);
@@ -448,6 +452,7 @@ export const UserMessage = memo(function UserMessage({
   isPending = false,
   disableOuterSpacing,
   senderAgentId,
+  sendMarker,
 }: UserMessageProps) {
   const isCompact = useIsCompactFormFactor();
   const { t } = useTranslation();
@@ -522,6 +527,7 @@ export const UserMessage = memo(function UserMessage({
         onPointerLeave={handlePointerLeave}
       >
         {senderAgentId ? <AgentMessageAttribution senderAgentId={senderAgentId} /> : null}
+        {sendMarker ? <SendMarkerLabel marker={sendMarker} /> : null}
         <View style={userMessageStylesheet.bubble}>
           {hasImages ? (
             <View style={imagePreviewContainerStyle}>

@@ -3,6 +3,7 @@ import {
   applyDictationTranscript,
   computeCanStartDictation,
   resolveActiveSendBehavior,
+  resolveAlternateSendActions,
   resolveComposerSurfacePresentation,
   runAlternateSendAction,
   runDefaultSendAction,
@@ -272,6 +273,49 @@ describe("composer send behavior", () => {
 
     expect(defaultAction.calls).toEqual(["queue"]);
     expect(alternateAction.calls).toEqual(["send"]);
+  });
+});
+
+describe("resolveAlternateSendActions", () => {
+  it("offers every send action except the default while a turn runs", () => {
+    expect(
+      resolveAlternateSendActions({
+        defaultSendBehavior: "steer",
+        isAgentRunning: true,
+        canQueue: true,
+      }),
+    ).toEqual(["queue", "interrupt"]);
+    expect(
+      resolveAlternateSendActions({
+        defaultSendBehavior: "queue",
+        isAgentRunning: true,
+        canQueue: true,
+      }),
+    ).toEqual(["steer", "interrupt"]);
+    expect(
+      resolveAlternateSendActions({
+        defaultSendBehavior: "interrupt",
+        isAgentRunning: true,
+        canQueue: true,
+      }),
+    ).toEqual(["steer", "queue"]);
+  });
+
+  it("offers nothing on an idle agent, and no queue where the composer cannot queue", () => {
+    expect(
+      resolveAlternateSendActions({
+        defaultSendBehavior: "steer",
+        isAgentRunning: false,
+        canQueue: true,
+      }),
+    ).toEqual([]);
+    expect(
+      resolveAlternateSendActions({
+        defaultSendBehavior: "steer",
+        isAgentRunning: true,
+        canQueue: false,
+      }),
+    ).toEqual(["interrupt"]);
   });
 });
 
