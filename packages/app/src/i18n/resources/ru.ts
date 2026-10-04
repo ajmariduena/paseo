@@ -1988,6 +1988,8 @@ export const ru: TranslationResources = {
       done: "Готово",
       stopped: "Остановлен",
       archived: "В архиве",
+      finished: "Завершён",
+      closed: "Закрыт",
     },
     providerBar: {
       working: "В работе {{duration}}",

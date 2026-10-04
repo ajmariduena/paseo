@@ -1932,6 +1932,8 @@ export const zhCN: TranslationResources = {
       done: "已完成",
       stopped: "已停止",
       archived: "已归档",
+      finished: "已结束",
+      closed: "已关闭",
     },
     providerBar: {
       working: "运行中 {{duration}}",

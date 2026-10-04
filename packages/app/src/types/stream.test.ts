@@ -2304,4 +2304,50 @@ describe("notification timeline items", () => {
     ]);
     expect(new Set(state.map((item) => item.id)).size).toBe(state.length);
   });
+
+  it("keeps a wake's subagent source and collapses a replayed wake into one row", () => {
+    const timestamp = new Date("2026-07-26T10:00:00.000Z");
+    const wake = {
+      type: "timeline" as const,
+      provider: "claude" as const,
+      turnId: "turn-2",
+      item: {
+        type: "notification" as const,
+        level: "info" as const,
+        message: "Review diff finished",
+        messageId: "wake-1",
+        source: {
+          kind: "subagent" as const,
+          subagents: [
+            {
+              agentId: "child-1",
+              reason: "finished" as const,
+              title: "Review diff",
+              durationMs: 192000,
+            },
+          ],
+        },
+      },
+    };
+    const state = hydrateStreamState(
+      [
+        { event: wake, timestamp },
+        { event: wake, timestamp },
+      ],
+      { source: "canonical" },
+    );
+
+    expect(state).toEqual([
+      {
+        kind: "notification",
+        sourceType: "notification",
+        id: "notification:wake-1",
+        turnId: "turn-2",
+        timestamp,
+        level: "info",
+        message: "Review diff finished",
+        source: wake.item.source,
+      },
+    ]);
+  });
 });

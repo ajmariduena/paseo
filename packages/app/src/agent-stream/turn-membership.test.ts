@@ -17,6 +17,19 @@ function assistant(id: string, second: number, turnId: string): StreamItem {
   return { kind: "assistant_message", id, text: id, timestamp: at(second), turnId };
 }
 
+function wake(id: string, second: number, turnId: string): StreamItem {
+  return {
+    kind: "notification",
+    sourceType: "notification",
+    id,
+    timestamp: at(second),
+    turnId,
+    level: "info",
+    message: "Review finished",
+    source: { kind: "subagent", subagents: [{ agentId: "child", reason: "finished" }] },
+  };
+}
+
 function runningTool(id: string, second: number, turnId: string): StreamItem {
   return {
     kind: "tool_call",
@@ -93,6 +106,19 @@ describe("canonical turn membership", () => {
       completedAt: at(6),
       durationMs: null,
     });
+  });
+
+  it("starts a new visible response at a subagent wake", () => {
+    const items = [
+      user("prompt", 1, "turn-1"),
+      assistant("waiting on the subagent", 2, "turn-1"),
+      wake("wake", 3, "turn-2"),
+      assistant("synthesis", 4, "turn-2"),
+    ];
+
+    const completed = layoutFor(items, false);
+
+    expect(completedFooterIds(completed.layout)).toEqual(["waiting on the subagent", "synthesis"]);
   });
 
   it.each([

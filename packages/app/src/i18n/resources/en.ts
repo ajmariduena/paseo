@@ -1980,6 +1980,8 @@ export const en = {
       done: "Done",
       stopped: "Stopped",
       archived: "Archived",
+      finished: "Finished",
+      closed: "Closed",
     },
     providerBar: {
       working: "Working {{duration}}",

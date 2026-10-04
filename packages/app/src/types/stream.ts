@@ -2,6 +2,7 @@ import type {
   AgentProvider,
   AgentTimelineItem,
   JsonValue,
+  NotificationSource,
   ToolCallDetail,
 } from "@getpaseo/protocol/agent-types";
 import { timelineItemIdentity } from "@getpaseo/protocol/timeline-identity";
@@ -786,6 +787,7 @@ export interface NotificationItem {
   timestamp: Date;
   level: NotificationLevel;
   message: string;
+  source?: NotificationSource;
 }
 
 export interface CompactionItem {
@@ -1560,11 +1562,14 @@ function reduceTimelineEvent(
       const notification: NotificationItem = {
         kind: "notification",
         sourceType: "notification",
-        id: createUniqueTimelineId(state, "notification", item.message, timestamp),
+        id: item.messageId
+          ? `notification:${item.messageId}`
+          : createUniqueTimelineId(state, "notification", item.message, timestamp),
         ...(timelineCursor ? { timelineCursor } : {}),
         timestamp,
         level: item.level,
         message: item.message,
+        ...(item.source ? { source: item.source } : {}),
       };
       return finalizeActiveThoughts(appendNotification(state, notification));
     }

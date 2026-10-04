@@ -66,7 +66,12 @@ function sourceTimelineItem(item: StreamItem): AgentTimelineItem | null {
     case "notification":
       return item.sourceType === "error"
         ? { type: "error", message: item.message }
-        : { type: "notification", level: item.level, message: item.message };
+        : {
+            type: "notification",
+            level: item.level,
+            message: item.message,
+            ...(item.source ? { source: item.source } : {}),
+          };
     case "compaction":
       return {
         type: "compaction",

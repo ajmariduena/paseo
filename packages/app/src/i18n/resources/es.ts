@@ -2004,6 +2004,8 @@ export const es: TranslationResources = {
       done: "Finalizado",
       stopped: "Detenido",
       archived: "Archivado",
+      finished: "Terminó",
+      closed: "Cerrado",
     },
     providerBar: {
       working: "En ejecución {{duration}}",

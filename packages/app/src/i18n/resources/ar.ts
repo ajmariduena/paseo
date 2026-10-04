@@ -1954,6 +1954,8 @@ export const ar: TranslationResources = {
       done: "مكتمل",
       stopped: "متوقف",
       archived: "مؤرشف",
+      finished: "انتهى",
+      closed: "مغلق",
     },
     providerBar: {
       working: "قيد التشغيل {{duration}}",

@@ -1,5 +1,6 @@
 import type { StreamItem, ToolCallItem, UserMessageItem } from "@/types/stream";
 import { describeToolCall } from "@/tool-calls/detail-level/grouping";
+import { isSubagentNotification } from "@/subagents/timeline/notification-source";
 import { isSubagentSpawnCall } from "@/subagents/timeline/spawn-call";
 import {
   summarizeOverviewToolCalls,
@@ -167,7 +168,7 @@ function isPinnedCall(call: ToolCallItem): boolean {
 function isPinnedRow(row: StreamItem, getToolCalls: TurnFoldInput["getToolCalls"]): boolean {
   // An agent can answer and then run a tool, so any message may hold the answer.
   if (row.kind === "assistant_message") return true;
-  if (row.kind === "notification") return row.level !== "info";
+  if (row.kind === "notification") return row.level !== "info" || isSubagentNotification(row);
   if (row.kind !== "tool_call") return false;
   return getToolCalls(row).some(isPinnedCall);
 }

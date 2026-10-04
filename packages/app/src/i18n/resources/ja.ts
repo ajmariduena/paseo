@@ -1974,6 +1974,8 @@ export const ja: TranslationResources = {
       done: "完了",
       stopped: "停止",
       archived: "アーカイブ済み",
+      finished: "終了",
+      closed: "クローズ済み",
     },
     providerBar: {
       working: "実行中 {{duration}}",

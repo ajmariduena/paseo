@@ -2009,6 +2009,8 @@ export const fr: TranslationResources = {
       done: "Terminé",
       stopped: "Arrêté",
       archived: "Archivé",
+      finished: "Fini",
+      closed: "Fermé",
     },
     providerBar: {
       working: "En cours depuis {{duration}}",
