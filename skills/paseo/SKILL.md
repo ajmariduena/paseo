@@ -51,7 +51,9 @@ paseo script stop <name> [--cwd <path> | --workspace <workspace-id>]
 
 ## Agents
 
-**`create_agent`** — required: `title`, `provider` (`claude/opus`, `codex/gpt-5.4`, …), `initialPrompt`. Optional: `workspaceId`, `notifyOnFinish`, `settings`, `labels`. Returns `{ agentId, workspaceId, … }`.
+Agents with Paseo tools also get Paseo's orchestration instructions in their system prompt. Those own the behavior rules (when to delegate, waiting, retries); this section is the parameter reference.
+
+**`create_agent`** — required: `title`, `provider` (`claude/opus`, `codex/gpt-5.4`, …), `initialPrompt`. Optional: `workspaceId`, `settings`, `labels`, `clientRequestId`, `notifyOnFinish`. Returns `{ agentId, workspaceId, … }`, plus `deduplicated: true` when a retry with the same `clientRequestId` returned the agent it already created.
 
 Initial runtime settings live under `settings`: `modeId`, `thinkingOptionId`, and provider-specific `features`. Agent profiles are the preferred source for these values. For Codex fast mode, pass `settings: { features: { "fast_mode": true } }` when creating the agent.
 
@@ -59,19 +61,25 @@ Agent-scoped creation always creates your subagent. Omit `workspaceId` to use yo
 
 Detach is an explicit user action in the subagents track, not an agent tool. A cross-workspace child remains your subagent even though it also appears as a normal tab in its workspace.
 
-Agent-scoped `create_agent` defaults `notifyOnFinish` to true. Set it to `false` only for truly fire-and-forget agents.
+**`send_agent_prompt`** — `{ agentId, prompt }`, optional `delivery`, `clientRequestId`. `delivery` decides what happens when the agent is busy: `auto` (default for agents) steers into the running turn when the provider can and otherwise runs after it; `queue` runs after it; `steer` fails when the provider can't steer; `restart` interrupts the turn and starts over. Top-level callers default to `restart` and block; agent callers return at once (`background: true`). The result's `disposition` says what happened: `started`, `steered`, `queued`, `restarted`, or `duplicate` for a retried `clientRequestId`.
 
-**`send_agent_prompt`** — `{ agentId, prompt }`. Use for follow-ups to an existing agent. Agent-scoped prompt calls default to `background: true` and `notifyOnFinish: true`; top-level calls default to blocking with no callback. For a synchronous follow-up, pass `background: false` and use the returned result.
+**`wait_for_agent`** — `{ agentId, timeoutMs? }`. Blocks until the agent is idle, errored, or needs permission. `timeoutMs` defaults to 10 minutes and is clamped to `limits.maxWaitMs`; `timedOut: true` does not stop the agent. Returns your delegated task's result when it has one.
+
+**`get_agent_activity`** — `{ agentId }` returns a curated summary of recent work. For the full text, pass `view: "messages"` and `afterPosition: 0`, then each `nextPosition` until `hasMore` is false.
 
 **`update_agent`** — `{ agentId, name?, labels?, settings? }`. Use `settings` for runtime changes on an existing agent: `modeId`, `model`, `thinkingOptionId`, and provider-specific `features`. For Codex fast mode, pass `settings: { features: { "fast_mode": true } }`.
 
-**`list_agents`** — filter by `cwd`, `statuses`, `sinceHours`, `includeArchived`.
+**`list_agents`** — `scope`: `cwd` (default, under your working directory), `children` (your subagents in any workspace), `workspace`, `project`, or `all`. Also filters by `parentAgentId`, `titleContains`, `statuses`, `sinceHours`, `includeArchived`.
+
+**`cancel_agent`** — `{ agentId }`. Stops the current run and keeps the agent; your pending notification for it is dropped.
 
 **`archive_agent`** — `{ agentId }`. Interrupts if running, removes from active list.
 
 ## Agent profiles and provider discovery
 
-**`list_profiles`** — named launch bundles configured by the human. Before choosing how to launch a delegated agent, call this tool and read every profile's `notes`. Pick a named profile the user requested, or the profile whose notes best match the work.
+**`get_orchestration_capabilities`** — one call before delegating: every provider you can start a child on, including provider aliases (separate accounts of the provider they `extends`), health, models with thinking options, modes, `agentProfiles`, wait `limits`, and the orchestration `features` this daemon has.
+
+**`list_profiles`** — the same agent profiles on their own: named launch bundles configured by the human. Read every profile's `notes` before choosing how to launch a delegated agent. Pick a named profile the user requested, or the profile whose notes best match the work.
 
 There is no `profile` parameter on `create_agent`. Materialize the selected profile into the call:
 
@@ -82,21 +90,25 @@ There is no `profile` parameter on `create_agent`. Materialize the selected prof
 
 Omit absent values. Do not remember a selected profile or infer drift later; a profile is only launch configuration.
 
-If no profile fits, or no profiles are configured, use the provider discovery tools below rather than guessing. Tell the user when you fall back because no configured profile fits.
+If no profile fits, or no profiles are configured, choose from the capabilities result rather than guessing, and tell the user you fell back. The narrower tools below read one slice of it.
 
 **`list_providers`** — compact provider availability and modes.
 
-**`list_models`** — full model list for one provider. Use only when you need model IDs or thinking options; the list can be large.
+**`list_models`** — full model list for one provider. The list can be large.
 
 **`inspect_provider`** — compact provider capability and feature inspection. Required: `provider`; pass `cwd` when you are not in an agent-scoped session. Optional: `settings` with draft `model`, `modeId`, `thinkingOptionId`, and `features`.
 
 Only set feature IDs returned by `inspect_provider`. For Codex fast mode, look for `fast_mode` and pass `settings: { features: { "fast_mode": true } }` to `create_agent` or `update_agent`.
 
+## Pull requests
+
+**`watch_pull_request`** — `{ number?, url? }`; omit both for your workspace branch's pull request. Paseo checks it every minute and wakes you when a check fails, the required checks pass, someone else comments or reviews, or the branch starts to conflict. The result reports the checks as they are now. Watching ends on merge or close, after 15 minutes of failed reads, when you are archived, or with **`unwatch_pull_request`**.
+
 ## Schedules and heartbeats
 
 **`create_schedule`** — starts a new agent on a cron cadence. Required: `prompt`, `cron`, `provider`. Optional: `timezone`, `name`, `cwd`, `maxRuns`, `expiresIn`. Use when the recurring work should live in fresh agents.
 
-**`create_heartbeat`** — sends you a prompt on a cron cadence. Required: `prompt`, `cron`. Optional: `timezone`, `name`, `maxRuns`, `expiresIn`. Use for reminders, PR/build babysitting, and status checks that should return to this conversation.
+**`create_heartbeat`** — sends you a prompt on a cron cadence. Required: `prompt`, `cron`. Optional: `timezone`, `name`, `maxRuns`, `expiresIn`. Use for reminders and status checks that should return to this conversation. To follow a pull request, use `watch_pull_request` instead.
 
 **`delete_heartbeat`** stops it. MCP intentionally exposes no heartbeat update tool; delete and recreate when its task or cadence changes.
 
@@ -104,11 +116,7 @@ Schedules have the full list/inspect/update/pause/resume/run-once/log/delete sur
 
 ## Waiting
 
-Agents take time — 10–30+ minutes is routine. Favor asynchronous workflows.
-
-For agent-scoped `create_agent` and background `send_agent_prompt`, leave `notifyOnFinish` omitted or set it to `true` unless the work is truly fire-and-forget. You will get notified when the target agent finishes, errors, or needs permission. Move on to other work. The notification arrives on its own.
-
-Don't poll `list_agents` or `get_agent_status` to "check on" a running agent. The notification will tell you.
+Agents take time — 10–30+ minutes is routine. `create_agent` and agent-scoped `send_agent_prompt` return at once, and a notification wakes you when the agent finishes, fails, or needs permission; a pull request you watch wakes you the same way. End your turn or do independent work. Don't poll `get_agent_status` or `list_agents`, and don't loop on sleeps. Call `wait_for_agent` only when this turn can't continue without the result.
 
 ## CLI semantics
 

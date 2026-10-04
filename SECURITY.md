@@ -92,6 +92,8 @@ Paseo wraps agent CLIs (Claude Code, Codex, OpenCode) but does not manage their 
 
 Paseo only talks to a forge host that is either a known cloud host or one the forge CLI is already authenticated to. It never probes or routes credentials to an unauthenticated, remote-derived host.
 
+A pull request an agent watches with `watch_pull_request` brings other people's text into that agent's conversation without a human in between: each wake quotes up to 200 characters of every new comment or review, from anyone who can comment on the pull request. Treat a watching agent the way you treat one you asked to read the pull request, and don't run it unattended with broader permissions than you would give that content. Paseo reads the pull request with the forge CLI's own credentials and writes nothing to the forge.
+
 ## Reporting vulnerabilities
 
 If you discover a security vulnerability, please report it privately by emailing hello@moboudra.com. Do not open a public issue.

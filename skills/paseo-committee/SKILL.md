@@ -12,7 +12,7 @@ Two agents from contrasting profiles, fresh context, planning a solution in para
 
 ## Prerequisites
 
-Read the **paseo** skill. Call `list_profiles` before choosing committee members. Do not create committee agents until you have read the configured profiles and their `notes`.
+Read the **paseo** skill. Read the configured agent profiles and their `notes` (`agentProfiles` from `get_orchestration_capabilities`, or `list_profiles`) before choosing committee members.
 
 Contrast is the point of a committee, so pick profiles from different provider families when possible. Materialize each profile into `create_agent`.
 
@@ -33,14 +33,14 @@ If the user names profiles, use those. If fewer than two suitable profiles are c
   This is analysis only. Do NOT edit, create, or delete any files. Do NOT write code.
   ```
 
-- **Trust the finish notification.** Do not poll, send hurry-ups, or interrupt. Models can reason for 15–30 minutes. You can go idle and Paseo will notify you.
+- **Trust the wake.** Do not poll, send hurry-ups, or interrupt. Models can reason for 15–30 minutes. End your turn: members that finish together report back in one wake.
 
 ## Workflow
 
 1. Write a problem-level prompt
-2. Create both agents in parallel via Paseo with `[Committee] <task>` titles and the same prompt
-3. Wait for both responses
-4. Resolve disagreements by passing their arguments between each other
+2. Create both agents in parallel via Paseo with `[Committee] <task>` titles, the same prompt, and a `clientRequestId` each
+3. End your turn until both have reported back
+4. If they disagree, run a new round: two new `create_agent` calls whose prompt carries the original brief, both positions, and the unresolved objections
 5. Keep going until they converge into a response
 
 Share the consensus with the user. Summarize where the agents diverged and how they resolved it.

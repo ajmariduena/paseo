@@ -614,7 +614,7 @@ One file per parent agent, because every transition (finalize a child's result, 
 Messages that arrived while the agent's turn was running, delivered one per settled run: delegation wakes first, then by `position`. Each `AgentQueueStore` method is one atomic write of the agent's file; the file is deleted when the queue empties, and an empty queue is never held. Schema: `packages/server/src/server/agent-queue/store.ts`.
 
 - **Entry:** `origin` is `user`, `agent` (with `senderAgentId`), `delegation_wake`, or `system`. A wake entry stores only its cohort reference; its text is rendered from the delegation store at delivery, so results that joined it while it waited go out with it. User and agent entries keep their prompt in a separate file so images do not inflate the queue file, capped at 32 MiB per entry and 200 entries per agent.
-- **Hold:** `held` with `heldReason` `failure` (the turn that just ended failed), `user_stop`, or `restart`. A held queue delivers nothing until `agent.queue.resume`; a message sent to an idle agent still starts.
+- **Hold:** `held` with `heldReason` `failure` (the turn that just ended failed), `user_stop`, or `restart`. What a hold blocks is in [agent-lifecycle.md](agent-lifecycle.md#relationships).
 
 The prompt file is written before the queue file references it and deleted after the queue file stops referencing it. `load` at boot removes prompt files nothing references.
 

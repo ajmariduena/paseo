@@ -13,7 +13,7 @@ Single agent. Reads the situation you're in. Gives a judgment. You decide what t
 
 ## Prerequisites
 
-Read the **paseo** skill. Call `list_profiles` before choosing the advisor. Do not create the advisor until you have read the configured profiles and their `notes`.
+Read the **paseo** skill. Read the configured agent profiles and their `notes` (`agentProfiles` from `get_orchestration_capabilities`, or `list_profiles`) before choosing the advisor.
 
 ## Picking the advisor
 
@@ -56,7 +56,7 @@ Pass through any remaining arguments after the skill name as the skill's own inp
 
 ## Launch and synthesize
 
-Create the advisor agent via Paseo with a `[Advisor] <topic>` title and the briefing as the initial prompt. Wait for it to finish. Read its response. Synthesize for the user — the advisor's verdict + your recommendation.
+Create the advisor agent via Paseo with a `[Advisor] <topic>` title and the briefing as the initial prompt. Its response arrives in a wake when it finishes; end your turn, or call `wait_for_agent` when you can't continue without it. Synthesize for the user — the advisor's verdict + your recommendation.
 
 ## Persistent advisor
 

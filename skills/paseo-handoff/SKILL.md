@@ -12,7 +12,7 @@ Transfer the current task â€” context, decisions, failed attempts, constraints â
 
 ## Prerequisites
 
-Read the **paseo** skill. Call `list_profiles` before choosing the receiving agent. Do not create it until you have read the configured profiles and their `notes`.
+Read the **paseo** skill. Read the configured agent profiles and their `notes` (`agentProfiles` from `get_orchestration_capabilities`, or `list_profiles`) before choosing the receiving agent.
 
 ## Parsing arguments
 
@@ -57,7 +57,7 @@ The receiving agent has zero context. Include:
 Prepare the handoff in a dedicated workspace:
 
 1. Select the current workspace or call `create_workspace` with the requested isolation.
-2. Call `create_agent` with a `[Handoff] <task>` title, the briefing as initial prompt, and the selected `workspaceId` when explicit placement is needed.
+2. Call `create_agent` with a `[Handoff] <task>` title, the briefing as initial prompt, a `clientRequestId`, and the selected `workspaceId` when explicit placement is needed.
 3. Return the agent and workspace to the user, explaining that it remains in your subagent track until they detach it manually.
 
 Do not encode independence as a create mode and do not invoke CLI or wire-level detach operations. Detach is a user gesture in the subagents track.
