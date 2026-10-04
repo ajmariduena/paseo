@@ -242,3 +242,56 @@ test("disposal is final and repeatable", async () => {
   });
   expect(file?.tasks.a.completionDelivery.state).toBe("disposed");
 });
+
+test("a result held by a wait is offered when the wait releases it, never twice", async () => {
+  const store = createStore();
+  await store.createTask(
+    "parent",
+    {
+      id: "a",
+      childAgentId: "child-a",
+      spawningRunKey: "run-1",
+      source: "create_agent",
+      title: "Task a",
+      prompt: "do it",
+      completionWake: "always",
+    },
+    NOW,
+  );
+  const waitingOnRun2: PlanContext = {
+    isRunLive: (runKey) => runKey === "run-2",
+    parentArchived: false,
+  };
+  await store.setWakePolicy(
+    "parent",
+    "child-a",
+    { completionWake: "settled_only", waitRunKey: "run-2" },
+    waitingOnRun2,
+    NOW,
+  );
+  const held = await store.finalizeTask(
+    "parent",
+    "a",
+    { status: "completed", result: "result a", wake: true },
+    waitingOnRun2,
+    NOW,
+  );
+  expect(held).toBeNull();
+
+  const released = await store.setWakePolicy(
+    "parent",
+    "child-a",
+    { completionWake: "always", waitRunKey: null },
+    waitingOnRun2,
+    NOW,
+  );
+  expect(released).toMatchObject({ cohortKey: "run-1", generation: 1 });
+  const again = await store.setWakePolicy(
+    "parent",
+    "child-a",
+    { completionWake: "always", waitRunKey: null },
+    waitingOnRun2,
+    NOW,
+  );
+  expect(again).toBeNull();
+});

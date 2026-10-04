@@ -1466,6 +1466,7 @@ export async function createPaseoDaemon(
     worktreesRoot: config.worktreesRoot,
     delegations,
     callerAgentId: runtime.callerAgentId,
+    transport: runtime.transport,
     enableVoiceTools: runtime.enableVoiceTools,
     voiceOnly: runtime.voiceOnly,
     resolveSpeakHandler: (agentId) => wsServer?.resolveVoiceSpeakHandler(agentId) ?? null,

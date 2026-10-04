@@ -99,7 +99,7 @@ Each notified prompt is a durable delegated task (see [data-model.md](data-model
 - A wake never interrupts the parent. It steers into a running turn when the provider can steer; otherwise it waits for the turn to end and starts a new one.
 - Children of the same parent turn that finish together share one wake. A child finishing while that wake's turn runs goes out in the next wake.
 - The wake inlines each result, capped at 4000 characters, with the task id and a pointer to `get_agent_activity` for the rest.
-- Reading a finished child's result through `get_agent_status` or `get_agent_activity` acknowledges it and cancels a wake that has not started yet.
+- Reading a finished child's result through `get_agent_status`, `get_agent_activity`, or `wait_for_agent` acknowledges it and cancels a wake that has not started yet. While the parent blocks in `wait_for_agent`, the child's wake is held for the parent's current turn; a wait that times out or is aborted releases it, so the child still reports back. A timeout never stops the child.
 - A user Stop of the parent turn drops later results of the children it spawned. Archiving the parent drops all of them. The parent's `cancel_agent` on a child drops that child's results.
 - A child that closes before it finishes reports as stopped, so delegated work cannot disappear silently during archive or workspace teardown.
 

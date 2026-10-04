@@ -888,14 +888,13 @@ function toCodexMcpConfig(config: McpServerConfig): CodexMcpServerConfig {
         env: config.env,
       };
     case "http":
-      return {
-        url: config.url,
-        http_headers: config.headers,
-      };
     case "sse":
       return {
         url: config.url,
         http_headers: config.headers,
+        ...(config.toolTimeoutMs !== undefined
+          ? { tool_timeout_sec: config.toolTimeoutMs / 1000 }
+          : {}),
       };
     default: {
       const _exhaustive = config as { type: never };

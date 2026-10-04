@@ -37,6 +37,8 @@ export interface PaseoToolCatalog {
 
 export interface PaseoToolRuntimeContext {
   callerAgentId?: string;
+  /** `native` catalogs run in-process, with no MCP client timeout between caller and tool. */
+  transport?: "mcp" | "native";
   paseoToolPolicy?: ProviderPaseoToolsPolicy;
   enableVoiceTools?: boolean;
   voiceOnly?: boolean;

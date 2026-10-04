@@ -54,6 +54,8 @@ export interface McpHttpServerConfig {
    * and never deferred behind tool search. Honored by the Claude provider.
    */
   alwaysLoad?: boolean;
+  /** Per-call tool timeout the MCP client should allow. Honored by the Claude and Codex providers. */
+  toolTimeoutMs?: number;
 }
 
 /**
@@ -68,6 +70,8 @@ export interface McpSseServerConfig {
    * and never deferred behind tool search. Honored by the Claude provider.
    */
   alwaysLoad?: boolean;
+  /** Per-call tool timeout the MCP client should allow. Honored by the Claude and Codex providers. */
+  toolTimeoutMs?: number;
 }
 
 /**

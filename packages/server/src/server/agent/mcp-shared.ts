@@ -60,6 +60,11 @@ export const AgentModelSchema = z
 // 30 seconds - surface friendly message before SDK tool timeout (~60s)
 export const AGENT_WAIT_TIMEOUT_MS = 30000;
 
+export const DEFAULT_AGENT_WAIT_MS = 10 * 60 * 1000;
+export const MAX_AGENT_WAIT_MS = 60 * 60 * 1000;
+/** For MCP clients whose per-call timeout Paseo has not verified or raised. */
+export const UNVERIFIED_CLIENT_MAX_WAIT_MS = 50 * 1000;
+
 export interface ResolvedProviderModel {
   provider: AgentProvider;
   model: string | undefined;

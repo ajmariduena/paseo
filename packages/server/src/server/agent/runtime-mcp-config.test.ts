@@ -1,7 +1,8 @@
 import { describe, expect, test } from "vitest";
 
 import type { AgentSessionConfig } from "./agent-sdk-types.js";
-import { withRuntimePaseoMcpServer } from "./runtime-mcp-config.js";
+import { MAX_AGENT_WAIT_MS } from "./mcp-shared.js";
+import { PASEO_MCP_TOOL_TIMEOUT_MS, withRuntimePaseoMcpServer } from "./runtime-mcp-config.js";
 
 const BASE_CONFIG: AgentSessionConfig = {
   provider: "claude",
@@ -20,6 +21,7 @@ describe("withRuntimePaseoMcpServer", () => {
     expect(result.mcpServers?.paseo).toEqual({
       type: "http",
       url: "http://127.0.0.1:6767/mcp/agents?callerAgentId=agent-1",
+      toolTimeoutMs: PASEO_MCP_TOOL_TIMEOUT_MS,
       headers: { Authorization: "Bearer cap-token" },
     });
   });
@@ -35,7 +37,12 @@ describe("withRuntimePaseoMcpServer", () => {
     expect(result.mcpServers?.paseo).toEqual({
       type: "http",
       url: "http://127.0.0.1:6767/mcp/agents?callerAgentId=agent-1",
+      toolTimeoutMs: PASEO_MCP_TOOL_TIMEOUT_MS,
     });
+  });
+
+  test("lets a client outlast the longest blocking Paseo tool call", () => {
+    expect(PASEO_MCP_TOOL_TIMEOUT_MS).toBeGreaterThan(MAX_AGENT_WAIT_MS);
   });
 
   test("does not inject when no MCP base URL is configured", () => {

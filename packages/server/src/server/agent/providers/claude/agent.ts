@@ -999,6 +999,10 @@ function coerceSessionMetadata(metadata: AgentMetadata | undefined): Partial<Age
 
 export function toClaudeSdkMcpConfig(config: McpServerConfig): ClaudeSdkMcpServerConfig {
   const eagerTools = config.alwaysLoad === true ? { alwaysLoad: true } : {};
+  const timeout =
+    config.type !== "stdio" && config.toolTimeoutMs !== undefined
+      ? { timeout: config.toolTimeoutMs }
+      : {};
   switch (config.type) {
     case "stdio":
       return {
@@ -1014,6 +1018,7 @@ export function toClaudeSdkMcpConfig(config: McpServerConfig): ClaudeSdkMcpServe
         url: config.url,
         headers: config.headers,
         ...eagerTools,
+        ...timeout,
       };
     case "sse":
       return {
@@ -1021,6 +1026,7 @@ export function toClaudeSdkMcpConfig(config: McpServerConfig): ClaudeSdkMcpServe
         url: config.url,
         headers: config.headers,
         ...eagerTools,
+        ...timeout,
       };
   }
   throw new Error("Unhandled MCP server config type");

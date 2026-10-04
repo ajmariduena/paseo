@@ -5479,6 +5479,7 @@ export class AgentManager {
       context.paseoTools = await this.paseoToolCatalogFactory({
         callerAgentId: agentId,
         paseoToolPolicy,
+        transport: "native",
       });
     }
     return context;

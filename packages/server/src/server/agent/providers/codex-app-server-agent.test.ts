@@ -1250,6 +1250,47 @@ describe("Codex app-server provider", () => {
     expect(startCall?.params).toMatchObject({ ephemeral: true });
   });
 
+  test("raises the MCP tool timeout to the server config's toolTimeoutMs", async () => {
+    const requests: Array<{ method: string; params: unknown }> = [];
+    const fakeClient: CodexClientLike = {
+      async request(method: string, params?: unknown) {
+        requests.push({ method, params });
+        if (method === "thread/start") {
+          return { thread: { id: "timeout-thread" } };
+        }
+        return null;
+      },
+    };
+
+    const session = new CodexAppServerAgentSession(
+      createConfig({
+        thinkingOptionId: "medium",
+        mcpServers: {
+          paseo: {
+            type: "http",
+            url: "http://127.0.0.1:6767/mcp/agents?callerAgentId=agent-1",
+            toolTimeoutMs: 3_900_000,
+          },
+          other: { type: "http", url: "https://example.com/mcp" },
+        },
+      }),
+      null,
+      createTestLogger(),
+      () => {
+        throw new Error("Test session cannot spawn Codex app-server");
+      },
+    );
+    castInternals<{ client: CodexClientLike }>(session).client = fakeClient;
+
+    await castInternals<{ ensureThread: () => Promise<void> }>(session).ensureThread();
+
+    const startCall = requests.find((req) => req.method === "thread/start");
+    expect(startCall?.params).toMatchObject({
+      config: { mcp_servers: { paseo: { tool_timeout_sec: 3900 } } },
+    });
+    expect(startCall?.params).not.toHaveProperty("config.mcp_servers.other.tool_timeout_sec");
+  });
+
   test("omits ephemeral from thread/start by default", async () => {
     const requests: Array<{ method: string; params: unknown }> = [];
     const fakeClient: CodexClientLike = {

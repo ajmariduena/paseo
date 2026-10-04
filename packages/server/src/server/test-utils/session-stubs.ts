@@ -158,6 +158,7 @@ export interface ProviderSnapshotManagerSpies {
     typeof vi.fn<ProviderSnapshotManager["listRegisteredProviderIds"]>
   >;
   hasProvider: ReturnType<typeof vi.fn<ProviderSnapshotManager["hasProvider"]>>;
+  getProviderExtends: ReturnType<typeof vi.fn<ProviderSnapshotManager["getProviderExtends"]>>;
   getProviderLabel: ReturnType<typeof vi.fn<ProviderSnapshotManager["getProviderLabel"]>>;
   getAgentManagerProviderState: ReturnType<
     typeof vi.fn<ProviderSnapshotManager["getAgentManagerProviderState"]>
@@ -197,6 +198,7 @@ export function createProviderSnapshotManagerStub(): {
     () => [],
   );
   const hasProvider = vi.fn<ProviderSnapshotManager["hasProvider"]>(() => false);
+  const getProviderExtends = vi.fn<ProviderSnapshotManager["getProviderExtends"]>(() => null);
   const getProviderLabel = vi.fn<ProviderSnapshotManager["getProviderLabel"]>((provider) => {
     try {
       return getAgentProviderDefinition(provider).label;
@@ -245,6 +247,7 @@ export function createProviderSnapshotManagerStub(): {
     warmUpSnapshotForCwd,
     listRegisteredProviderIds,
     hasProvider,
+    getProviderExtends,
     getProviderLabel,
     getAgentManagerProviderState,
     listProviders,
@@ -271,6 +274,7 @@ export function createProviderSnapshotManagerStub(): {
     warmUpSnapshotForCwd,
     listRegisteredProviderIds,
     hasProvider,
+    getProviderExtends,
     getProviderLabel,
     getAgentManagerProviderState,
     listProviders,

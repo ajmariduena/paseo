@@ -348,6 +348,11 @@ export class ProviderSnapshotManager {
     return Object.prototype.hasOwnProperty.call(this.generation.definitions, provider);
   }
 
+  /** The registered provider an alias extends, for example `claude` for `claude-work`. */
+  getProviderExtends(provider: AgentProvider): AgentProvider | null {
+    return this.generation.definitions[provider]?.derivedFromProviderId ?? null;
+  }
+
   getProviderLabel(provider: AgentProvider): string {
     return this.generation.definitions[provider]?.label ?? provider;
   }

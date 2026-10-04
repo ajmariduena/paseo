@@ -15,6 +15,8 @@ const DelegationTaskSchema = z.object({
   title: z.string(),
   promptPreview: z.string(),
   completionWake: z.enum(["always", "settled_only"]),
+  /** A settled_only wake waits for this parent run instead of the spawning one. */
+  waitRunKey: z.string().nullable().optional(),
   status: TaskStatusSchema,
   result: z.string().nullable(),
   resultTruncated: z.boolean(),
@@ -164,7 +166,7 @@ export function planDelivery(
     setDeliveryState(task, "disposed", now);
     return null;
   }
-  if (task.completionWake === "settled_only" && context.isRunLive(cohortKey)) {
+  if (task.completionWake === "settled_only" && context.isRunLive(task.waitRunKey ?? cohortKey)) {
     return null;
   }
   const outstanding = cohort.delivery;
@@ -432,6 +434,35 @@ export class DelegationStore {
         withdrawFromUnstartedWake(file, task);
       }
       return latest;
+    });
+  }
+
+  /**
+   * Port of T3's wake-policy switch for a blocking wait: `settled_only` holds the child's
+   * result while `waitRunKey` is live, `always` releases it and plans a wake for a result
+   * that arrived meanwhile.
+   */
+  async setWakePolicy(
+    parentAgentId: string,
+    childAgentId: string,
+    policy: { completionWake: DelegationTask["completionWake"]; waitRunKey: string | null },
+    context: PlanContext,
+    now: string,
+  ): Promise<WakeOffer | null> {
+    return await this.mutateExisting(parentAgentId, null, (file) => {
+      let offer: WakeOffer | null = null;
+      for (const task of Object.values(file.tasks)) {
+        if (task.childAgentId !== childAgentId || isDeliveryFinal(task)) continue;
+        task.completionWake = policy.completionWake;
+        task.waitRunKey = policy.waitRunKey;
+        task.updatedAt = now;
+        const unclaimedResult =
+          task.status !== "running" && task.completionDelivery.state === "pending";
+        if (unclaimedResult) {
+          offer = planDelivery(file, task.id, context, now) ?? offer;
+        }
+      }
+      return offer;
     });
   }
 

@@ -3327,6 +3327,21 @@ describe("toClaudeSdkMcpConfig", () => {
     });
   });
 
+  test("maps toolTimeoutMs to the SDK's per-server timeout", () => {
+    expect(
+      toClaudeSdkMcpConfig({
+        type: "http",
+        url: "https://example.com/mcp",
+        toolTimeoutMs: 3_900_000,
+      }),
+    ).toEqual({
+      type: "http",
+      url: "https://example.com/mcp",
+      headers: undefined,
+      timeout: 3_900_000,
+    });
+  });
+
   test("leaves alwaysLoad undefined when not provided (preserves default deferral)", () => {
     const result = toClaudeSdkMcpConfig({
       type: "stdio",

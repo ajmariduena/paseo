@@ -9,6 +9,7 @@ import type {
   AgentPermissionRequest,
   AgentProvider,
   AgentSessionConfig,
+  ProviderSnapshotEntry,
 } from "../agent-sdk-types.js";
 import type { AgentManager } from "../agent-manager.js";
 import { AgentProfileSchema } from "@getpaseo/protocol/messages";
@@ -66,6 +67,9 @@ import {
   serializeSnapshotWithMetadata,
   toScheduleSummary,
   AGENT_WAIT_TIMEOUT_MS,
+  DEFAULT_AGENT_WAIT_MS,
+  MAX_AGENT_WAIT_MS,
+  UNVERIFIED_CLIENT_MAX_WAIT_MS,
   waitForAgentWithTimeout,
 } from "../mcp-shared.js";
 import { prepareAgentForPrompt, waitForAgentRunStartWithTimeout } from "../agent-prompt.js";
@@ -107,6 +111,7 @@ import type {
   PaseoToolDefinition,
   PaseoToolExecutionContext,
   PaseoToolResult,
+  PaseoToolRuntimeContext,
 } from "./types.js";
 import type { ProviderPaseoToolsPolicy } from "@getpaseo/protocol/provider-config";
 import { isPaseoToolEnabled } from "../paseo-tool-policy.js";
@@ -151,8 +156,15 @@ export interface PaseoToolHostDependencies {
   worktreesRoot?: string;
   delegations?: Pick<
     DelegationService,
-    "delegate" | "acknowledgeChildResults" | "disposeChildTasks" | "refreshChild"
+    | "delegate"
+    | "acknowledgeChildResults"
+    | "disposeChildTasks"
+    | "refreshChild"
+    | "beginWait"
+    | "endWait"
+    | "waitForChildResult"
   >;
+  transport?: PaseoToolRuntimeContext["transport"];
   /**
    * ID of the agent that is using this tool catalog.
    * Used for cwd/mode inheritance when agents spawn child agents.
@@ -574,6 +586,63 @@ function resolveTerminalKeyToken(key: string, literal: boolean): string {
       return key;
   }
 }
+
+const DelegatedTaskResultSchema = z.object({
+  taskId: z.string(),
+  status: z.enum(["completed", "failed", "cancelled", "interrupted"]),
+  result: z.string().nullable(),
+  resultTruncated: z.boolean(),
+});
+
+/** Reported for parity with T3's cap; Paseo does not enforce it yet. */
+const MAX_PROMPT_CHARS = 120_000;
+
+const OrchestrationCapabilitiesSchema = {
+  caller: z
+    .object({
+      agentId: z.string(),
+      provider: z.string(),
+      extends: z.string().nullable(),
+      model: z.string().nullable(),
+      modeId: z.string().nullable(),
+      workspaceId: z.string().nullable(),
+    })
+    .nullable(),
+  providers: z.array(
+    z.object({
+      id: z.string(),
+      extends: z.string().nullable(),
+      label: z.string().nullable(),
+      status: z.string(),
+      canRunChild: z.boolean(),
+      constraints: z.array(z.string()),
+      defaultModelId: z.string().nullable(),
+      defaultModeId: z.string().nullable(),
+      modes: z.array(z.object({ id: z.string(), label: z.string(), unattended: z.boolean() })),
+      models: z
+        .array(
+          z.object({
+            id: z.string(),
+            label: z.string(),
+            isDefault: z.boolean(),
+            thinkingOptionIds: z.array(z.string()),
+            defaultThinkingOptionId: z.string().nullable(),
+          }),
+        )
+        .optional(),
+    }),
+  ),
+  agentProfiles: z.array(AgentProfileSchema),
+  limits: z.object({
+    maxWaitMs: z.number(),
+    defaultWaitMs: z.number(),
+    maxPromptChars: z.number(),
+  }),
+  features: z.record(z.string(), z.boolean()),
+};
+
+/** Providers whose MCP client Paseo configures to allow a full wait_for_agent call. */
+const RAISED_TOOL_TIMEOUT_PROVIDERS = new Set(["claude", "codex"]);
 
 type SendDisposition = "started" | "steered" | "queued" | "restarted" | "out_of_band" | "duplicate";
 
@@ -2230,13 +2299,15 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
 
   // Reading a delegated child's terminal result acknowledges it, which cancels a wake for that
   // result that has not started yet.
-  async function readDelegatedResult(childAgentId: string) {
+  async function readDelegatedResult(
+    childAgentId: string,
+  ): Promise<z.infer<typeof DelegatedTaskResultSchema> | null> {
     if (!callerAgentId || !options.delegations) return null;
     const task = await options.delegations.acknowledgeChildResults({
       parentAgentId: callerAgentId,
       childAgentId,
     });
-    if (!task) return null;
+    if (!task || task.status === "running") return null;
     return {
       taskId: task.id,
       status: task.status,
@@ -2257,14 +2328,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       outputSchema: {
         status: AgentStatusEnum,
         snapshot: AgentSnapshotPayloadSchema,
-        delegatedTask: z
-          .object({
-            taskId: z.string(),
-            status: z.enum(["completed", "failed", "cancelled", "interrupted"]),
-            result: z.string().nullable(),
-            resultTruncated: z.boolean(),
-          })
-          .optional(),
+        delegatedTask: DelegatedTaskResultSchema.optional(),
       },
     },
     async ({ agentId }) => {
@@ -2306,6 +2370,160 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       };
     },
   );
+
+  function resolveBaseProvider(provider: string): string {
+    let current = provider;
+    for (let depth = 0; depth < 8; depth += 1) {
+      const next = providerSnapshotManager.getProviderExtends(current);
+      if (!next) return current;
+      current = next;
+    }
+    return current;
+  }
+
+  /** The longest wait the caller's MCP client lets one tool call run. */
+  function resolveMaxWaitMs(): number {
+    if (options.transport === "native") return MAX_AGENT_WAIT_MS;
+    const caller = callerAgentId ? agentManager.getAgent(callerAgentId) : null;
+    if (caller && RAISED_TOOL_TIMEOUT_PROVIDERS.has(resolveBaseProvider(caller.provider))) {
+      return MAX_AGENT_WAIT_MS;
+    }
+    return UNVERIFIED_CLIENT_MAX_WAIT_MS;
+  }
+
+  registerTool(
+    "wait_for_agent",
+    {
+      title: "Wait for agent",
+      description:
+        "Block until an agent is idle, errored, or needs permission, or the wait times out. Returns at once for an agent that is not working. Timing out does not stop the agent; your delegated agent then notifies you when it finishes. Reading a finished delegated result here means you will not also be notified of it.",
+      inputSchema: {
+        agentId: z.string(),
+        timeoutMs: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe(
+            "Wait budget in ms. Default 600000, clamped to limits.maxWaitMs from get_orchestration_capabilities.",
+          ),
+      },
+      outputSchema: {
+        agentId: z.string(),
+        status: AgentStatusEnum,
+        timedOut: z.boolean(),
+        lastMessage: z.string().nullable(),
+        permission: AgentPermissionRequestPayloadSchema.nullable(),
+        delegatedTask: DelegatedTaskResultSchema.optional(),
+        guidance: z.string().optional(),
+      },
+    },
+    async ({ agentId, timeoutMs }, context) => {
+      const budgetMs = Math.min(
+        resolveMaxWaitMs(),
+        Math.max(1, timeoutMs ?? DEFAULT_AGENT_WAIT_MS),
+      );
+      if (!agentManager.getAgent(agentId)) {
+        const record = await agentStorage.get(agentId);
+        if (!record || record.internal) {
+          throw new Error(`Agent ${agentId} not found`);
+        }
+        return waitResponse(agentId, {
+          status: record.lastStatus,
+          timedOut: false,
+          lastMessage: null,
+          permission: null,
+          delegatedTask: await readDelegatedResult(agentId),
+        });
+      }
+      const outcome = await waitForAgentOutcome(agentId, budgetMs, context.signal);
+      const status = agentManager.getAgent(agentId)?.lifecycle ?? outcome.status;
+      if (outcome.timedOut) {
+        return waitResponse(agentId, {
+          status,
+          timedOut: true,
+          lastMessage: null,
+          permission: null,
+          guidance: `Waited ${Math.round(budgetMs / 1000)}s and the agent is still working; it was not stopped. Continue with other work: you will be notified when your delegated agent finishes, or call wait_for_agent again.`,
+        });
+      }
+      return waitResponse(agentId, {
+        status,
+        timedOut: false,
+        lastMessage: outcome.lastMessage,
+        permission: outcome.permission,
+        delegatedTask: outcome.permission ? null : await readDelegatedResult(agentId),
+      });
+    },
+  );
+
+  /**
+   * Waits for the agent, then for the caller's delegated task on it to settle. The caller's
+   * wake for that task is held for the wait and released unless the wait read the result.
+   */
+  async function waitForAgentOutcome(
+    agentId: string,
+    budgetMs: number,
+    requestSignal: AbortSignal | undefined,
+  ): Promise<{
+    status: z.infer<typeof AgentStatusEnum>;
+    timedOut: boolean;
+    lastMessage: string | null;
+    permission: AgentPermissionRequest | null;
+  }> {
+    const deadline = new AbortController();
+    const timer = setTimeout(() => deadline.abort(new Error("wait timeout")), budgetMs);
+    const signal = requestSignal
+      ? AbortSignal.any([deadline.signal, requestSignal])
+      : deadline.signal;
+    const delegation =
+      callerAgentId && options.delegations
+        ? { delegations: options.delegations, parentAgentId: callerAgentId, childAgentId: agentId }
+        : null;
+    let readsResult = false;
+    try {
+      await delegation?.delegations.beginWait(delegation);
+      const result = await agentManager.waitForAgentEvent(agentId, { signal });
+      if (!result.permission && delegation) {
+        await delegation.delegations.waitForChildResult({ ...delegation, signal });
+      }
+      readsResult = !result.permission;
+      return { ...result, timedOut: false };
+    } catch (error) {
+      if (!deadline.signal.aborted) throw error;
+      return { status: "running", timedOut: true, lastMessage: null, permission: null };
+    } finally {
+      clearTimeout(timer);
+      if (delegation && !readsResult) {
+        await delegation.delegations.endWait(delegation);
+      }
+    }
+  }
+
+  function waitResponse(
+    agentId: string,
+    data: {
+      status: z.infer<typeof AgentStatusEnum>;
+      timedOut: boolean;
+      lastMessage: string | null;
+      permission: AgentPermissionRequest | null;
+      delegatedTask?: z.infer<typeof DelegatedTaskResultSchema> | null;
+      guidance?: string;
+    },
+  ) {
+    return {
+      content: [],
+      structuredContent: ensureValidJson({
+        agentId,
+        status: data.status,
+        timedOut: data.timedOut,
+        lastMessage: data.lastMessage,
+        permission: sanitizePermissionRequest(data.permission),
+        ...(data.delegatedTask ? { delegatedTask: data.delegatedTask } : {}),
+        ...(data.guidance ? { guidance: data.guidance } : {}),
+      }),
+    };
+  }
 
   registerTool(
     "list_agents",
@@ -3192,6 +3410,104 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       };
     },
   );
+
+  registerTool(
+    "get_orchestration_capabilities",
+    {
+      title: "Get orchestration capabilities",
+      description:
+        "One call before delegating: every provider you can start a child on (provider aliases such as claude-work are separate accounts of the provider they extend), its health, models with thinking options, modes, agent profiles, wait limits, and which orchestration features this daemon has. Pass a provider as <id>/<model> to create_agent.",
+      inputSchema: {
+        provider: z
+          .string()
+          .optional()
+          .describe("Limit to one provider id or alias, for example codex or claude-work."),
+        includeModels: z.boolean().optional().default(true),
+      },
+      outputSchema: OrchestrationCapabilitiesSchema,
+    },
+    async ({ provider, includeModels = true }) => {
+      const caller = callerAgentId ? agentManager.getAgent(callerAgentId) : null;
+      const entries = await providerSnapshotManager.listProviders({
+        wait: true,
+        ...(caller ? { cwd: caller.cwd } : {}),
+        ...(provider ? { providers: [provider] } : {}),
+      });
+      return {
+        content: [],
+        structuredContent: ensureValidJson({
+          caller: caller
+            ? {
+                agentId: caller.id,
+                provider: caller.provider,
+                extends: providerSnapshotManager.getProviderExtends(caller.provider),
+                model: caller.config.model ?? null,
+                modeId: caller.currentModeId ?? null,
+                workspaceId: caller.workspaceId ?? null,
+              }
+            : null,
+          providers: entries.map((entry) => toProviderCapabilities(entry, includeModels)),
+          agentProfiles: daemonConfigStore?.get().agentProfiles ?? [],
+          limits: {
+            maxWaitMs: resolveMaxWaitMs(),
+            defaultWaitMs: Math.min(DEFAULT_AGENT_WAIT_MS, resolveMaxWaitMs()),
+            maxPromptChars: MAX_PROMPT_CHARS,
+          },
+          features: {
+            crossProviderSubagents: tools.has("create_agent"),
+            waitForAgent: tools.has("wait_for_agent"),
+            sendDeliveryModes: tools.has("send_agent_prompt"),
+            clientRequestId: true,
+            worktreeWorkspaces:
+              tools.has("create_workspace") && Boolean(options.createPaseoWorktree),
+            terminals: tools.has("create_terminal"),
+            workspaceScripts: tools.has("start_workspace_script"),
+            schedules: tools.has("create_schedule"),
+            heartbeats: tools.has("create_heartbeat"),
+            browser: tools.has("browser_navigate"),
+          },
+        }),
+      };
+    },
+  );
+
+  function toProviderCapabilities(entry: ProviderSnapshotEntry, includeModels: boolean) {
+    const constraints = [
+      ...(entry.enabled ? [] : ["disabled"]),
+      ...(entry.status === "ready"
+        ? []
+        : [entry.error ? `${entry.status}: ${entry.error}` : entry.status]),
+    ];
+    return {
+      id: entry.provider,
+      extends: providerSnapshotManager.getProviderExtends(entry.provider),
+      label: entry.label ?? null,
+      status: entry.status,
+      canRunChild: constraints.length === 0,
+      constraints,
+      defaultModelId:
+        (entry.models?.find((model) => model.isDefault) ?? entry.models?.[0])?.id ?? null,
+      defaultModeId: entry.defaultModeId ?? null,
+      modes: (entry.modes ?? []).map((mode) => ({
+        id: mode.id,
+        label: mode.label,
+        unattended: mode.isUnattended ?? false,
+      })),
+      ...(includeModels
+        ? {
+            models: (entry.models ?? [])
+              .filter((model) => model.isSelectable !== false)
+              .map((model) => ({
+                id: model.id,
+                label: model.label,
+                isDefault: model.isDefault ?? false,
+                thinkingOptionIds: (model.thinkingOptions ?? []).map((option) => option.id),
+                defaultThinkingOptionId: model.defaultThinkingOptionId ?? null,
+              })),
+          }
+        : {}),
+    };
+  }
 
   registerTool(
     "list_providers",

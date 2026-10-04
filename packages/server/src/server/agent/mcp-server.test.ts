@@ -4610,6 +4610,231 @@ describe("create_agent clientRequestId", () => {
   });
 });
 
+describe("wait_for_agent", () => {
+  interface WaitScenario {
+    host: ControlledHost;
+    trace: ReturnType<typeof createTraceRecorder>;
+    delegations: DelegationService;
+    parentId: string;
+    childId: string;
+    call(name: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;
+  }
+  let scenario: WaitScenario | null = null;
+
+  afterEach(async () => {
+    scenario?.delegations.close();
+    await scenario?.host.cleanup();
+    scenario = null;
+  });
+
+  async function startWaitScenario(options: { parentSteerable: boolean }): Promise<WaitScenario> {
+    const host = createControlledHost();
+    const trace = createTraceRecorder();
+    const delegations = new DelegationService({
+      store: new DelegationStore(join(host.root, "delegations")),
+      agentManager: host.agentManager,
+      agentStorage: host.agentStorage,
+      logger: trace.logger,
+    });
+    const parentId = await host.createAgent({ steerable: options.parentSteerable });
+    const childId = await host.createAgent({
+      steerable: false,
+      labels: { [PARENT_AGENT_ID_LABEL]: parentId },
+    });
+    await host.startTurn(parentId, "parent work");
+    await host.startTurn(childId, "child work");
+    await delegations.delegate({
+      parentAgentId: parentId,
+      childAgentId: childId,
+      source: "create_agent",
+      title: "Child",
+      prompt: "child work",
+      requireParentOwnership: true,
+    });
+    const server = await createAgentMcpServer({
+      agentManager: host.agentManager,
+      agentStorage: host.agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      callerAgentId: parentId,
+      delegations,
+      logger: trace.logger,
+    });
+    scenario = {
+      host,
+      trace,
+      delegations,
+      parentId,
+      childId,
+      async call(name, input) {
+        const response = await invokeToolWithParsedInput(registeredTool(server, name), input);
+        return response.structuredContent;
+      },
+    };
+    return scenario;
+  }
+
+  it("returns at once for an agent that is not working", async () => {
+    const { host, childId, call } = await startWaitScenario({ parentSteerable: false });
+    host.session(childId).completeTurn("done already");
+    await vi.waitFor(() => expect(host.agentManager.getAgent(childId)?.lifecycle).toBe("idle"));
+
+    const waited = await call("wait_for_agent", { agentId: childId });
+
+    expect(waited).toMatchObject({ status: "idle", timedOut: false, lastMessage: "done already" });
+  });
+
+  it("returns the child's result and holds its wake so the parent hears it once", async () => {
+    const { host, trace, parentId, childId, call } = await startWaitScenario({
+      parentSteerable: true,
+    });
+    const parent = host.session(parentId);
+
+    const waiting = call("wait_for_agent", { agentId: childId, timeoutMs: 10_000 });
+    await vi.waitFor(async () => {
+      const file = await scenario!.delegations["store"].get(parentId);
+      expect(Object.values(file?.tasks ?? {})[0]?.completionWake).toBe("settled_only");
+    });
+    host.session(childId).completeTurn("child result");
+    const waited = await waiting;
+
+    expect(waited).toMatchObject({
+      status: "idle",
+      timedOut: false,
+      lastMessage: "child result",
+      delegatedTask: { status: "completed", result: "child result" },
+    });
+    await trace.waitFor("delegation.finalized");
+    parent.completeTurn("parent done");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(parent.steerPrompts).toEqual([]);
+    expect(parent.startPrompts).toEqual(["parent work"]);
+  });
+
+  it("times out without stopping the child, and the child still reports back", async () => {
+    const { host, parentId, childId, call } = await startWaitScenario({ parentSteerable: false });
+    const parent = host.session(parentId);
+    const child = host.session(childId);
+
+    const waited = await call("wait_for_agent", { agentId: childId, timeoutMs: 20 });
+
+    expect(waited).toMatchObject({ status: "running", timedOut: true });
+    expect(child.interruptCount).toBe(0);
+    child.completeTurn("late result");
+    parent.completeTurn("parent done");
+    await vi.waitFor(() => expect(parent.startPrompts).toHaveLength(2));
+    expect(parent.startPrompts[1]).toContain("late result");
+  });
+});
+
+describe("get_orchestration_capabilities", () => {
+  function providerEntry(overrides: Partial<ProviderSnapshotEntry>): ProviderSnapshotEntry {
+    return {
+      provider: "claude",
+      status: "ready",
+      enabled: true,
+      label: "Claude",
+      modes: [{ id: "default", label: "Default" }],
+      models: [
+        {
+          provider: "claude",
+          id: "opus",
+          label: "Opus",
+          isDefault: true,
+          thinkingOptions: [{ id: "high", label: "High" }],
+          defaultThinkingOptionId: "high",
+        },
+      ],
+      ...overrides,
+    };
+  }
+
+  async function capabilitiesFor(callerAgentId: string | undefined) {
+    const { agentManager, agentStorage, spies } = createTestDeps();
+    spies.agentManager.getAgent.mockImplementation((agentId: string) =>
+      agentId === "caller"
+        ? ({
+            id: "caller",
+            provider: "claude-work",
+            cwd: process.cwd(),
+            workspaceId: "wks_1",
+            currentModeId: "default",
+            config: { model: "opus" },
+          } as unknown as ManagedAgent)
+        : null,
+    );
+    const stub = createProviderSnapshotManagerStub();
+    stub.listProviders.mockResolvedValue([
+      providerEntry({}),
+      providerEntry({ provider: "claude-work", label: "Claude (work)" }),
+      providerEntry({ provider: "gemini", enabled: false, status: "unavailable", models: [] }),
+    ]);
+    stub.getProviderExtends.mockImplementation((provider) =>
+      provider === "claude-work" ? "claude" : null,
+    );
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: stub.manager,
+      ...(callerAgentId ? { callerAgentId } : {}),
+      logger: createTestLogger(),
+    });
+    const response = await invokeToolWithParsedInput(
+      registeredTool(server, "get_orchestration_capabilities"),
+      {},
+    );
+    return response.structuredContent;
+  }
+
+  it("reports aliases as accounts of the provider they extend, with health and models", async () => {
+    const capabilities = await capabilitiesFor("caller");
+
+    expect(capabilities.caller).toEqual({
+      agentId: "caller",
+      provider: "claude-work",
+      extends: "claude",
+      model: "opus",
+      modeId: "default",
+      workspaceId: "wks_1",
+    });
+    expect(capabilities.providers).toEqual([
+      expect.objectContaining({ id: "claude", extends: null, canRunChild: true, constraints: [] }),
+      expect.objectContaining({
+        id: "claude-work",
+        extends: "claude",
+        canRunChild: true,
+        defaultModelId: "opus",
+        models: [
+          {
+            id: "opus",
+            label: "Opus",
+            isDefault: true,
+            thinkingOptionIds: ["high"],
+            defaultThinkingOptionId: "high",
+          },
+        ],
+      }),
+      expect.objectContaining({
+        id: "gemini",
+        canRunChild: false,
+        constraints: ["disabled", "unavailable"],
+      }),
+    ]);
+    expect(capabilities.features).toMatchObject({ waitForAgent: true, clientRequestId: true });
+  });
+
+  it("clamps waits to what the caller's MCP client allows", async () => {
+    expect((await capabilitiesFor("caller")).limits).toEqual({
+      maxWaitMs: 3_600_000,
+      defaultWaitMs: 600_000,
+      maxPromptChars: 120_000,
+    });
+    expect((await capabilitiesFor(undefined)).limits).toMatchObject({
+      maxWaitMs: 50_000,
+      defaultWaitMs: 50_000,
+    });
+  });
+});
+
 describe("cancel_agent delegation", () => {
   it("drops the caller's pending wake for the cancelled child", async () => {
     const host = createControlledHost();

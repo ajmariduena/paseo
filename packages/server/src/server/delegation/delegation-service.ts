@@ -49,6 +49,7 @@ export class DelegationService {
   private readonly runningChildren = new Map<string, Set<string>>();
   private readonly childChecks = new Map<string, Promise<void>>();
   private readonly queuedChildChecks = new Set<string>();
+  private readonly finalizeWaiters = new Set<() => void>();
   private readonly unsubscribe: () => void;
 
   constructor(options: DelegationServiceOptions) {
@@ -121,6 +122,70 @@ export class DelegationService {
     );
     this.logger.trace({ ...input, taskId: task?.id ?? null }, "delegation.acknowledged");
     return task;
+  }
+
+  /**
+   * A parent blocking on its child holds the child's wake while its current run is live, so
+   * the result it is about to read does not also arrive as a wake. Pair with `endWait`.
+   */
+  async beginWait(input: { parentAgentId: string; childAgentId: string }): Promise<void> {
+    const waitRunKey = this.agentManager.getActiveRun(input.parentAgentId)?.key ?? null;
+    if (!waitRunKey) return;
+    await this.store.setWakePolicy(
+      input.parentAgentId,
+      input.childAgentId,
+      { completionWake: "settled_only", waitRunKey },
+      await this.planContext(input.parentAgentId),
+      new Date().toISOString(),
+    );
+  }
+
+  /** A wait that ended without reading the result upgrades it to wake the parent. */
+  async endWait(input: { parentAgentId: string; childAgentId: string }): Promise<void> {
+    const offer = await this.store.setWakePolicy(
+      input.parentAgentId,
+      input.childAgentId,
+      { completionWake: "always", waitRunKey: null },
+      await this.planContext(input.parentAgentId),
+      new Date().toISOString(),
+    );
+    if (offer) this.mailbox.offer(offer);
+  }
+
+  /** Resolves once the parent has no running task for the child, or rejects on abort. */
+  async waitForChildResult(input: {
+    parentAgentId: string;
+    childAgentId: string;
+    signal: AbortSignal;
+  }): Promise<void> {
+    for (;;) {
+      input.signal.throwIfAborted();
+      const finalized = this.nextFinalize(input.signal);
+      if ((await this.runningTaskIds(input.parentAgentId, input.childAgentId)).length === 0) {
+        finalized.cancel();
+        return;
+      }
+      await finalized.promise;
+    }
+  }
+
+  private nextFinalize(signal: AbortSignal): { promise: Promise<void>; cancel: () => void } {
+    let settle: () => void = () => undefined;
+    const promise = new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        this.finalizeWaiters.delete(settle);
+        reject(signal.reason);
+      };
+      settle = () => {
+        this.finalizeWaiters.delete(settle);
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      };
+      this.finalizeWaiters.add(settle);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+    promise.catch(() => undefined);
+    return { promise, cancel: () => settle() };
   }
 
   /** The parent cancelled its child, so the child's results no longer wake it. */
@@ -260,6 +325,7 @@ export class DelegationService {
     if ((await this.runningTaskIds(input.parentAgentId, input.childAgentId)).length === 0) {
       this.untrackRunningChild(input.childAgentId, input.parentAgentId);
     }
+    for (const notify of this.finalizeWaiters) notify();
     if (this.runningChildren.has(input.parentAgentId)) {
       this.scheduleChildCheck(input.parentAgentId);
     }

@@ -3,6 +3,12 @@ import type { AgentSessionConfig, McpServerConfig } from "./agent-sdk-types.js";
 const PASEO_MCP_SERVER_NAME = "paseo";
 const PASEO_MCP_PATHNAME = "/mcp/agents";
 
+/**
+ * Must stay above the longest blocking Paseo tool call (wait_for_agent, 60 min). Claude Code
+ * aborts an HTTP MCP call after 60 s and Codex after 300 s unless the server config raises it.
+ */
+export const PASEO_MCP_TOOL_TIMEOUT_MS = 65 * 60 * 1000;
+
 export function stripInternalPaseoMcpServer(config: AgentSessionConfig): AgentSessionConfig {
   const mcpServers = config.mcpServers;
   if (!mcpServers) {
@@ -48,6 +54,7 @@ export function withRuntimePaseoMcpServer(params: {
       [PASEO_MCP_SERVER_NAME]: {
         type: "http",
         url: `${params.mcpBaseUrl}?callerAgentId=${params.agentId}`,
+        toolTimeoutMs: PASEO_MCP_TOOL_TIMEOUT_MS,
         ...(params.mcpAuthToken
           ? { headers: { Authorization: `Bearer ${params.mcpAuthToken}` } }
           : {}),
