@@ -130,7 +130,12 @@ import type { OpenAiSpeechProviderConfig } from "./speech/providers/openai/confi
 import type { ElevenLabsSpeechProviderConfig } from "./speech/providers/elevenlabs/runtime.js";
 import type { LocalSpeechProviderConfig } from "./speech/providers/local/config.js";
 import type { RequestedSpeechProviders } from "./speech/speech-types.js";
-import { createSpeechService } from "./speech/speech-runtime.js";
+import {
+  createSpeechService,
+  type SpeechService,
+  type SpeechServiceConfig,
+} from "./speech/speech-runtime.js";
+import { describeDictationStt } from "./speech/dictation-selection.js";
 import type { ReadAloudConfig } from "./speech/read-aloud/config.js";
 import { ReadAloudService } from "./speech/read-aloud/service.js";
 import { VoiceOrchestrator, type GptLiveEngineConfig } from "./voice-orchestrator/orchestrator.js";
@@ -442,6 +447,7 @@ export interface PaseoDaemonConfig {
   auth?: DaemonAuthConfig;
   openai?: PaseoOpenAIConfig;
   speech?: PaseoSpeechConfig;
+  dictationStt?: { provider?: string; model?: string; language?: string };
   readAloud?: ReadAloudConfig;
   voiceLlmProvider?: AgentProvider | null;
   voiceLlmProviderExplicit?: boolean;
@@ -574,6 +580,7 @@ function createInitialMutableDaemonConfig(config: PaseoDaemonConfig): MutableDae
     pluginsEnabled: config.pluginsEnabled ?? false,
     plugins: config.plugins ?? {},
     skills: { selection: config.skillSelection },
+    ...createInitialDictationConfig(config),
   };
 
   if (config.terminalProfiles !== undefined) {
@@ -585,6 +592,59 @@ function createInitialMutableDaemonConfig(config: PaseoDaemonConfig): MutableDae
   }
 
   return initialConfig;
+}
+
+function createInitialDictationConfig(
+  config: PaseoDaemonConfig,
+): Pick<MutableDaemonConfig, "dictation"> {
+  return config.dictationStt ? { dictation: { stt: config.dictationStt } } : {};
+}
+
+function createDictationAwareSpeechService(params: {
+  config: PaseoDaemonConfig;
+  logger: Logger;
+  daemonConfigStore: DaemonConfigStore;
+}): SpeechService {
+  const { config, logger, daemonConfigStore } = params;
+  const env = config.configReload?.env ?? process.env;
+  const buildSpeechServiceConfig = (
+    persisted: PersistedConfig,
+    resolved: Pick<PaseoDaemonConfig, "openai" | "speech">,
+  ): SpeechServiceConfig => ({
+    openaiConfig: resolved.openai,
+    speechConfig: resolved.speech,
+    describeDictationStt: () =>
+      describeDictationStt({
+        paseoHome: config.paseoHome,
+        env,
+        persisted,
+        speech: resolved.speech,
+        openai: resolved.openai,
+      }),
+  });
+  const speechService = createSpeechService({
+    logger,
+    ...buildSpeechServiceConfig(
+      config.configReload?.startupPersisted ?? loadPersistedConfig(config.paseoHome),
+      config,
+    ),
+  });
+  daemonConfigStore.onFieldChange("dictation", () => {
+    try {
+      const persisted = loadPersistedConfig(config.paseoHome);
+      const reloaded = resolveConfigFromPersisted(config.paseoHome, persisted, {
+        env,
+        cli: config.configReload?.cli,
+        relayEnabledFallback: config.configReload?.relayEnabledFallback,
+      });
+      void speechService
+        .reconfigure(buildSpeechServiceConfig(persisted, reloaded))
+        .catch((error) => logger.error({ err: error }, "Failed to apply dictation settings"));
+    } catch (error) {
+      logger.error({ err: error }, "Failed to resolve dictation settings");
+    }
+  });
+  return speechService;
 }
 
 export async function createPaseoDaemon(
@@ -1595,11 +1655,7 @@ export async function createPaseoDaemon(
     logger.info({ route: agentMcpRoute, enabled: mcpEnabled }, "Agent MCP route mounted");
   }
 
-  const speechService = createSpeechService({
-    logger,
-    openaiConfig: config.openai,
-    speechConfig: config.speech,
-  });
+  const speechService = createDictationAwareSpeechService({ config, logger, daemonConfigStore });
   logger.info({ elapsed: elapsed() }, "Speech service created");
   const readAloudService = config.readAloud
     ? new ReadAloudService({

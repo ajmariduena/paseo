@@ -9,6 +9,7 @@ import {
   MutableDaemonConfigPatchSchema,
 } from "@getpaseo/protocol/messages";
 import type { AgentSkillSelection } from "@getpaseo/protocol/messages";
+import { LOCAL_STT_MODEL_IDS } from "./speech/providers/local/sherpa/model-catalog.js";
 
 export type { MutableDaemonConfig, MutableDaemonConfigPatch } from "@getpaseo/protocol/messages";
 
@@ -31,7 +32,16 @@ interface SupportedMutableConfigPatch {
   skills?: MutableDaemonConfig["skills"];
   pluginsEnabled?: boolean;
   plugins?: MutableDaemonConfig["plugins"];
+  dictation?: { stt: DictationSttPatch };
 }
+
+interface DictationSttPatch {
+  provider?: string;
+  model?: string;
+  language?: string;
+}
+
+const DICTATION_STT_PROVIDERS = new Set(["local", "openai", "elevenlabs"]);
 
 interface LoggerLike {
   child(bindings: Record<string, unknown>): LoggerLike;
@@ -189,6 +199,7 @@ const RELOADABLE_PATHS = [
   "agents.metadataGeneration",
   "agents.skills.selection",
   "pluginsEnabled",
+  "features.dictation.stt",
 ] as const;
 
 const PERSISTED_TO_MUTABLE_PATH = new Map<string, string>([
@@ -212,6 +223,7 @@ const PERSISTED_TO_MUTABLE_PATH = new Map<string, string>([
   ["agents.metadataGeneration", "metadataGeneration"],
   ["agents.skills.selection", "skills.selection"],
   ["pluginsEnabled", "pluginsEnabled"],
+  ["features.dictation.stt", "dictation.stt"],
 ]);
 
 function pathBelongsTo(path: string, owner: string): boolean {
@@ -249,8 +261,32 @@ function compactOwnedPaths(paths: readonly string[], owners: readonly string[]):
   return Array.from(compacted).sort();
 }
 
+function pickDictationSttPatch(
+  stt: NonNullable<MutableDaemonConfigPatch["dictation"]>["stt"],
+): DictationSttPatch | undefined {
+  if (!stt) return undefined;
+  if (stt.provider !== undefined && !DICTATION_STT_PROVIDERS.has(stt.provider)) {
+    throw new Error(`Unknown dictation speech-to-text provider: ${stt.provider}`);
+  }
+  if (
+    stt.provider === "local" &&
+    stt.model !== undefined &&
+    !(LOCAL_STT_MODEL_IDS as readonly string[]).includes(stt.model)
+  ) {
+    throw new Error(`Unknown local dictation model: ${stt.model}`);
+  }
+  const picked: DictationSttPatch = {
+    ...(stt.provider !== undefined ? { provider: stt.provider } : {}),
+    ...(stt.model !== undefined ? { model: stt.model } : {}),
+    ...(stt.language !== undefined ? { language: stt.language } : {}),
+  };
+  return Object.keys(picked).length > 0 ? picked : undefined;
+}
+
 function pickSupportedPatchFields(patch: MutableDaemonConfigPatch): SupportedMutableConfigPatch {
+  const dictationStt = pickDictationSttPatch(patch.dictation?.stt);
   return {
+    ...(dictationStt ? { dictation: { stt: dictationStt } } : {}),
     ...(patch.relay?.enabled !== undefined ? { relay: { enabled: patch.relay.enabled } } : {}),
     ...(patch.mcp?.injectIntoAgents !== undefined
       ? { mcp: { injectIntoAgents: patch.mcp.injectIntoAgents } }
@@ -584,8 +620,20 @@ function mergeMutablePatchIntoPersistedConfig(params: {
   const { persisted, patch, removeProviders, persistRelayEnabled } = params;
   const daemon = mergeMutableDaemonPatch(persisted.daemon, patch, persistRelayEnabled);
   const agents = mergeMutableAgentPatch(persisted.agents, patch, removeProviders);
+  const features = patch.dictation
+    ? {
+        features: {
+          ...persisted.features,
+          dictation: {
+            ...persisted.features?.dictation,
+            stt: { ...persisted.features?.dictation?.stt, ...patch.dictation.stt },
+          },
+        },
+      }
+    : {};
   return {
     ...persisted,
+    ...features,
     ...(patch.pluginsEnabled !== undefined ? { pluginsEnabled: patch.pluginsEnabled } : {}),
     ...(patch.plugins !== undefined ? { plugins: patch.plugins } : {}),
     ...(daemon ? { daemon } : { daemon: undefined }),

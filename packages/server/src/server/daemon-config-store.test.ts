@@ -682,6 +682,61 @@ describe("DaemonConfigStore", () => {
     expect(persisted.daemon?.appendSystemPrompt).toBe("Prefer terse replies.");
   });
 
+  test("patch persists the dictation model and keeps other dictation settings", () => {
+    const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-daemon-config-store-"));
+    tempDirs.push(paseoHome);
+    writeFileSync(
+      path.join(paseoHome, "config.json"),
+      JSON.stringify({
+        version: 1,
+        features: { dictation: { stt: { confidenceThreshold: -2 } } },
+      }),
+    );
+    const store = new DaemonConfigStore(paseoHome, {
+      mcp: { injectIntoAgents: false },
+      browserTools: { enabled: false },
+      providers: {},
+      metadataGeneration: { providers: [] },
+      autoArchiveAfterMerge: false,
+      appendSystemPrompt: "",
+    });
+    const changes: unknown[] = [];
+    store.onFieldChange("dictation", (value) => changes.push(value));
+
+    store.patch({
+      dictation: { stt: { provider: "elevenlabs", model: "scribe_v2", language: "es" } },
+    });
+
+    expect(changes).toEqual([
+      { stt: { provider: "elevenlabs", model: "scribe_v2", language: "es" } },
+    ]);
+    expect(loadPersistedConfig(paseoHome).features?.dictation?.stt).toEqual({
+      confidenceThreshold: -2,
+      provider: "elevenlabs",
+      model: "scribe_v2",
+      language: "es",
+    });
+  });
+
+  test.each([
+    ["an unknown provider", { provider: "whisperx" }],
+    ["an unknown local model", { provider: "local", model: "not-a-model" }],
+  ])("rejects a dictation patch with %s", (_, stt) => {
+    const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-daemon-config-store-"));
+    tempDirs.push(paseoHome);
+    const store = new DaemonConfigStore(paseoHome, {
+      mcp: { injectIntoAgents: false },
+      browserTools: { enabled: false },
+      providers: {},
+      metadataGeneration: { providers: [] },
+      autoArchiveAfterMerge: false,
+      appendSystemPrompt: "",
+    });
+
+    expect(() => store.patch({ dictation: { stt } })).toThrow();
+    expect(loadPersistedConfig(paseoHome).features?.dictation).toBeUndefined();
+  });
+
   test("patch persists browser tools opt-in into config.json", () => {
     const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-daemon-config-store-"));
     tempDirs.push(paseoHome);

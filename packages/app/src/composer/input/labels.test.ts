@@ -136,6 +136,14 @@ describe("composer input labels", () => {
       }),
     ).toBe("Dictation");
     expect(
+      resolveVoiceTooltipText({
+        isRealtimeVoiceForCurrentAgent: false,
+        isMuted: false,
+        dictationModelLabel: "ElevenLabs Scribe v2",
+        t,
+      }),
+    ).toBe("Dictation · ElevenLabs Scribe v2");
+    expect(
       resolveSendTooltipLabel({
         submitButtonAccessibilityLabel: undefined,
         defaultActionQueues: true,

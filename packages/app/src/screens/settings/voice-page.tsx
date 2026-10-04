@@ -16,6 +16,7 @@ import { buildSelectableProviderSelectorProviders } from "@/provider-selection/p
 import { useSessionStore } from "@/stores/session-store";
 import { ICON_SIZE } from "@/styles/theme";
 import { settingsStyles } from "@/styles/settings";
+import { DictationSettingsSection } from "./dictation-settings";
 
 type ElevenLabsModel =
   | "eleven_flash_v2_5"
@@ -96,6 +97,7 @@ export function VoicePage({ serverId }: { serverId: string }) {
 
   return (
     <View>
+      <DictationSettingsSection serverId={serverId} />
       <SettingsSection
         title={t("settings.readAloud.title")}
         info={t("settings.readAloud.description")}

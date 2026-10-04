@@ -40,6 +40,7 @@ export function resolveVoiceAccessibilityLabel(input: {
 export function resolveVoiceTooltipText(input: {
   isRealtimeVoiceForCurrentAgent: boolean;
   isMuted: boolean;
+  dictationModelLabel?: string | null;
   t: TFunction;
 }): string {
   if (input.isRealtimeVoiceForCurrentAgent) {
@@ -47,7 +48,8 @@ export function resolveVoiceTooltipText(input: {
       ? input.t("composer.voice.unmuteVoice")
       : input.t("composer.voice.muteVoice");
   }
-  return input.t("composer.voice.dictation");
+  const dictation = input.t("composer.voice.dictation");
+  return input.dictationModelLabel ? `${dictation} · ${input.dictationModelLabel}` : dictation;
 }
 
 export function resolveSendTooltipLabel(input: {

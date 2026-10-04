@@ -396,6 +396,7 @@ function buildServerCapabilities(params: {
   }
   return {
     ...readAloud,
+    ...(readiness.dictationStt ? { dictationStt: readiness.dictationStt } : {}),
     voice: {
       dictation: toServerCapabilityState({
         state: readiness.dictation,
