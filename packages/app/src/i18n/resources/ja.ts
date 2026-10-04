@@ -335,6 +335,10 @@ export const ja: TranslationResources = {
     },
   },
   message: {
+    attribution: {
+      sentBy: "{{title}} から送信",
+      sentByAgent: "エージェントから送信",
+    },
     diagram: {
       diagram: "図",
       zoomIn: "拡大",

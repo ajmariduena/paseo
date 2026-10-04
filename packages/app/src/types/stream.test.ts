@@ -2213,6 +2213,52 @@ describe("turn lifecycle events", () => {
   });
 });
 
+describe("user message origin", () => {
+  it("keeps the agent that wrote a canonical user message and drops a plain user origin", () => {
+    const timestamp = new Date("2026-07-26T10:00:00.000Z");
+    const state = hydrateStreamState(
+      [
+        {
+          event: {
+            type: "timeline",
+            provider: "claude",
+            item: {
+              type: "user_message",
+              text: "Review the diff panel",
+              messageId: "msg-1",
+              origin: { kind: "agent", agentId: "agt_parent" },
+            },
+          },
+          timestamp,
+        },
+        {
+          event: {
+            type: "timeline",
+            provider: "claude",
+            item: {
+              type: "user_message",
+              text: "Thanks",
+              messageId: "msg-2",
+              origin: { kind: "user" },
+            },
+          },
+          timestamp,
+        },
+      ],
+      { source: "canonical" },
+    );
+
+    expect(
+      state.map((item) =>
+        item.kind === "user_message" ? { id: item.id, origin: item.origin } : { id: item.id },
+      ),
+    ).toEqual([
+      { id: "msg-1", origin: { kind: "agent", agentId: "agt_parent" } },
+      { id: "msg-2", origin: undefined },
+    ]);
+  });
+});
+
 describe("notification timeline items", () => {
   it("maps notification items to activity log entries with the matching level", () => {
     const timestamp = new Date("2026-07-26T10:00:00.000Z");

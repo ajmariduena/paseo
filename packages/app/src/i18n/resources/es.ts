@@ -335,6 +335,10 @@ export const es: TranslationResources = {
     },
   },
   message: {
+    attribution: {
+      sentBy: "Enviado por {{title}}",
+      sentByAgent: "Enviado por un agente",
+    },
     diagram: {
       diagram: "Diagrama",
       zoomIn: "Acercar",

@@ -330,6 +330,10 @@ export const ar: TranslationResources = {
     },
   },
   message: {
+    attribution: {
+      sentBy: "أرسلها {{title}}",
+      sentByAgent: "أرسلها وكيل",
+    },
     diagram: {
       diagram: "مخطط",
       zoomIn: "تكبير",

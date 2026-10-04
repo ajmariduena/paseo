@@ -327,6 +327,10 @@ export const en = {
     },
   },
   message: {
+    attribution: {
+      sentBy: "Sent by {{title}}",
+      sentByAgent: "Sent by an agent",
+    },
     diagram: {
       diagram: "Diagram",
       zoomIn: "Zoom in",

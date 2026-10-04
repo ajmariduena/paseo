@@ -115,6 +115,7 @@ import { useStreamHistoryWindow } from "./use-stream-history-window";
 import { PluginTimelineItemView, useInstalledTimelineTransform } from "@/plugins/timeline";
 import { SubagentTimelineProvider } from "@/subagents/timeline/context";
 import { LineageMarker } from "@/subagents/timeline/lineage-marker";
+import { readAgentMessageSender } from "@/subagents/timeline/message-sender";
 import { SubagentNotificationRows } from "@/subagents/timeline/notification-row";
 import { readSubagentNotificationEntries } from "@/subagents/timeline/notification-source";
 import { SubagentSpawnGroup } from "@/subagents/timeline/spawn-group";
@@ -757,6 +758,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
               item.clientMessageId !== undefined &&
               pendingClientMessageIds.has(item.clientMessageId)
             }
+            senderAgentId={readAgentMessageSender(item.origin) ?? undefined}
           />
         );
       },

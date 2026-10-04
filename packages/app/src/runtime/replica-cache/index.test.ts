@@ -559,6 +559,30 @@ describe("ReplicaCache", () => {
     expect((await reader.readTimeline(SERVER_ID, "agent-1"))?.items).toEqual([pluginItem]);
   });
 
+  it("round-trips the agent that wrote a user message", async () => {
+    const storage = new MemoryStorage();
+    const writer = createCache(storage);
+    const prompt: StreamItem = {
+      kind: "user_message",
+      id: "msg-1",
+      messageId: "msg-1",
+      text: "Review the diff panel",
+      origin: { kind: "agent", agentId: "agt_parent" },
+      timestamp: new Date("2026-07-18T08:02:00.000Z"),
+      timelineCursor: { epoch: "epoch-1", seq: 12 },
+    };
+    writer.commitTimeline(SERVER_ID, "agent-1", {
+      agentId: "agent-1",
+      items: [prompt],
+      range: { epoch: "epoch-1", startSeq: 12, endSeq: 12 },
+      hasOlder: true,
+    });
+    await writer.flush();
+
+    const reader = createCache(storage);
+    expect((await reader.readTimeline(SERVER_ID, "agent-1"))?.items).toEqual([prompt]);
+  });
+
   it("round-trips a wake notification's subagent source", async () => {
     const storage = new MemoryStorage();
     const writer = createCache(storage);

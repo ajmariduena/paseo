@@ -334,6 +334,10 @@ export const ptBR: TranslationResources = {
     },
   },
   message: {
+    attribution: {
+      sentBy: "Enviado por {{title}}",
+      sentByAgent: "Enviado por um agente",
+    },
     diagram: {
       diagram: "Diagrama",
       zoomIn: "Aproximar",

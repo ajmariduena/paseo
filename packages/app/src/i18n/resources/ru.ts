@@ -334,6 +334,10 @@ export const ru: TranslationResources = {
     },
   },
   message: {
+    attribution: {
+      sentBy: "Отправил {{title}}",
+      sentByAgent: "Отправил агент",
+    },
     diagram: {
       diagram: "Диаграмма",
       zoomIn: "Увеличить масштаб",

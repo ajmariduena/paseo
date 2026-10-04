@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   AgentStatusSchema,
   AgentTimelineItemPayloadSchema,
+  MessageOriginSchema,
   NotificationSourceSchema,
   WorkspaceGitHubRuntimePayloadSchema,
 } from "@getpaseo/protocol/messages";
@@ -119,6 +120,7 @@ const StoredTimelineItemSchema = z.discriminatedUnion("kind", [
     clientMessageId: z.string().optional(),
     messageId: z.string().optional(),
     text: z.string(),
+    origin: MessageOriginSchema.optional(),
   }),
   z.strictObject({
     ...TimelineItemBaseShape,
@@ -446,6 +448,7 @@ function serializeTimelineItem(item: StreamItem): StoredTimelineItem | null {
         ...(item.clientMessageId ? { clientMessageId: item.clientMessageId } : {}),
         ...(item.messageId ? { messageId: item.messageId } : {}),
         text: item.text,
+        ...(item.origin ? { origin: item.origin } : {}),
       };
     case "assistant_message":
       return {
@@ -537,6 +540,7 @@ function deserializeBuiltinTimelineItem(
         ...(item.clientMessageId ? { clientMessageId: item.clientMessageId } : {}),
         ...(item.messageId ? { messageId: item.messageId } : {}),
         text: item.text,
+        ...(item.origin ? { origin: item.origin } : {}),
       };
     case "assistant_message":
       return {

@@ -330,6 +330,10 @@ export const zhCN: TranslationResources = {
     },
   },
   message: {
+    attribution: {
+      sentBy: "由 {{title}} 发送",
+      sentByAgent: "由 agent 发送",
+    },
     diagram: {
       diagram: "图表",
       zoomIn: "放大",

@@ -331,6 +331,10 @@ export const ko: TranslationResources = {
     },
   },
   message: {
+    attribution: {
+      sentBy: "{{title}}에서 보냄",
+      sentByAgent: "에이전트가 보냄",
+    },
     diagram: {
       diagram: "다이어그램",
       zoomIn: "확대",
