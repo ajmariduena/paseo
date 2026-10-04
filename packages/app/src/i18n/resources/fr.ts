@@ -2010,6 +2010,12 @@ export const fr: TranslationResources = {
       stopped: "Arrêté",
       archived: "Archivé",
     },
+    providerBar: {
+      working: "En cours depuis {{duration}}",
+      completedIn: "Terminé en {{duration}}",
+      openParent: "Ouvrir le parent",
+    },
+    providerPaneUnsupported: "Mettez à jour cet hôte pour voir les sous-agents du fournisseur",
   },
   panels: {
     draft: {

@@ -1965,6 +1965,12 @@ export const ko: TranslationResources = {
       stopped: "중지됨",
       archived: "보관됨",
     },
+    providerBar: {
+      working: "실행 중 {{duration}}",
+      completedIn: "{{duration}} 만에 완료",
+      openParent: "상위 에이전트 열기",
+    },
+    providerPaneUnsupported: "공급자 하위 에이전트를 보려면 이 호스트를 업데이트하세요",
   },
   panels: {
     draft: {

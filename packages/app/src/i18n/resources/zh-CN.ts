@@ -1933,6 +1933,12 @@ export const zhCN: TranslationResources = {
       stopped: "已停止",
       archived: "已归档",
     },
+    providerBar: {
+      working: "运行中 {{duration}}",
+      completedIn: "用时 {{duration}} 完成",
+      openParent: "打开父级",
+    },
+    providerPaneUnsupported: "请更新此主机以查看提供方的 subagent",
   },
   panels: {
     draft: {

@@ -1989,6 +1989,12 @@ export const ptBR: TranslationResources = {
       stopped: "Interrompido",
       archived: "Arquivado",
     },
+    providerBar: {
+      working: "Em execução {{duration}}",
+      completedIn: "Concluído em {{duration}}",
+      openParent: "Abrir agente pai",
+    },
+    providerPaneUnsupported: "Atualize este host para ver os subagentes do provedor",
   },
   panels: {
     draft: {

@@ -1989,6 +1989,12 @@ export const ru: TranslationResources = {
       stopped: "Остановлен",
       archived: "В архиве",
     },
+    providerBar: {
+      working: "В работе {{duration}}",
+      completedIn: "Завершено за {{duration}}",
+      openParent: "Открыть родителя",
+    },
+    providerPaneUnsupported: "Обновите этот хост, чтобы видеть субагентов провайдера",
   },
   panels: {
     draft: {

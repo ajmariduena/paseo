@@ -1955,6 +1955,12 @@ export const ar: TranslationResources = {
       stopped: "متوقف",
       archived: "مؤرشف",
     },
+    providerBar: {
+      working: "قيد التشغيل {{duration}}",
+      completedIn: "اكتمل في {{duration}}",
+      openParent: "فتح الوكيل الأصل",
+    },
+    providerPaneUnsupported: "حدّث هذا المضيف لعرض الوكلاء الفرعيين للمزوّد",
   },
   panels: {
     draft: {

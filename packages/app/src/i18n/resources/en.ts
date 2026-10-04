@@ -1981,6 +1981,12 @@ export const en = {
       stopped: "Stopped",
       archived: "Archived",
     },
+    providerBar: {
+      working: "Working {{duration}}",
+      completedIn: "Completed in {{duration}}",
+      openParent: "Open parent",
+    },
+    providerPaneUnsupported: "Update this host to view provider subagents",
   },
   panels: {
     draft: {

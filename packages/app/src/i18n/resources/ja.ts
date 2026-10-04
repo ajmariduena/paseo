@@ -1975,6 +1975,13 @@ export const ja: TranslationResources = {
       stopped: "停止",
       archived: "アーカイブ済み",
     },
+    providerBar: {
+      working: "実行中 {{duration}}",
+      completedIn: "{{duration}}で完了",
+      openParent: "親を開く",
+    },
+    providerPaneUnsupported:
+      "プロバイダーのサブエージェントを表示するには、このホストを更新してください",
   },
   panels: {
     draft: {

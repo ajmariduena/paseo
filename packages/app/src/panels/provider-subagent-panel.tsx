@@ -10,6 +10,11 @@ import {
   resolveComposerTrackTailClearance,
 } from "@/composer/pill-styles";
 import { ComposerTrackBar } from "@/composer/tracks";
+import { ProviderSubagentBar } from "@/subagents/provider-bar";
+import {
+  resolveProviderSubagentBarStatus,
+  resolveProviderSubagentParentTarget,
+} from "@/subagents/provider-bar-status";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import type { AgentScreenAgent } from "@/hooks/use-agent-screen-state-machine";
 import { usePaneContext } from "@/panels/pane-context";
@@ -27,6 +32,8 @@ import {
 import { useTranslation } from "react-i18next";
 import type { PendingPermission } from "@/types/shared";
 import type { StreamItem } from "@/types/stream";
+import type { WorkspaceTabTarget } from "@/workspace-tabs/model";
+import type { ProviderSubagentDescriptorPayload } from "@getpaseo/protocol/messages";
 import { deriveSidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { TIMELINE_FETCH_PAGE_SIZE } from "@/timeline/timeline-fetch-policy";
 import type { TurnPresentation } from "@/timeline/turn-liveness";
@@ -105,6 +112,39 @@ function useProviderSubagentDescriptor(
         })
       : null,
   };
+}
+
+function ProviderSubagentPaneBar({
+  serverId,
+  parentAgentId,
+  descriptor,
+  parentProvider,
+  openTab,
+}: {
+  serverId: string;
+  parentAgentId: string;
+  descriptor: ProviderSubagentDescriptorPayload | null;
+  parentProvider: string | null;
+  openTab: (target: WorkspaceTabTarget) => void;
+}) {
+  const provider = descriptor?.provider ?? parentProvider ?? "agent";
+  const label =
+    descriptor?.subtitle?.trim() ||
+    descriptor?.title?.trim() ||
+    `${formatProviderLabel(provider)} subagent`;
+  const parentSubagentId = descriptor?.parentSubagentId;
+  const openParent = useCallback(() => {
+    openTab(resolveProviderSubagentParentTarget({ parentAgentId, parentSubagentId }));
+  }, [openTab, parentAgentId, parentSubagentId]);
+  return (
+    <ProviderSubagentBar
+      serverId={serverId}
+      provider={provider}
+      label={label}
+      status={resolveProviderSubagentBarStatus(descriptor)}
+      onOpenParent={openParent}
+    />
+  );
 }
 
 function ProviderSubagentPanel() {
@@ -200,8 +240,6 @@ function ProviderSubagentPanel() {
   const firstTimelineSeq = timeline?.cursor?.startSeq ?? null;
   const progressKey =
     timeline?.epoch && firstTimelineSeq !== null ? `${timeline.epoch}:${firstTimelineSeq}` : null;
-  const subtitle = descriptor?.subtitle?.trim();
-
   const streamContext = useMemo<AgentScreenAgent>(
     () => ({
       serverId,
@@ -236,44 +274,42 @@ function ProviderSubagentPanel() {
   if (serverInfo && !supported) {
     return (
       <View style={styles.unsupported} testID="provider-subagent-panel-unsupported">
-        <Text style={styles.unsupportedText}>{t("message.actions.forkUnavailable")}</Text>
+        <Text style={styles.unsupportedText}>{t("subagents.providerPaneUnsupported")}</Text>
       </View>
     );
   }
 
   return (
     <View style={styles.container} testID="provider-subagent-panel">
-      {subtitle ? (
-        <View style={styles.subtitleHeader}>
-          <Text
-            style={styles.subtitleText}
-            numberOfLines={1}
-            testID="provider-subagent-pane-subtitle"
-          >
-            {subtitle}
-          </Text>
-        </View>
-      ) : null}
-      <AgentStreamView
-        agentId={streamId}
+      <View style={styles.transcript}>
+        <AgentStreamView
+          agentId={streamId}
+          serverId={serverId}
+          context={streamContext}
+          streamItems={timeline?.tail ?? EMPTY_STREAM_ITEMS}
+          streamHead={timeline?.head ?? EMPTY_STREAM_ITEMS}
+          turnPresentation={turnPresentation}
+          pendingPermissions={EMPTY_PERMISSIONS}
+          isAuthoritativeHistoryReady
+          onOpenWorkspaceFile={openFileInWorkspace}
+          readOnly
+          subagentParentId={target.parentAgentId}
+          historyPagination={historyPagination}
+          bottomOverlayTailClearance={childTrackClearance.tail}
+          bottomOverlayControlClearance={childTrackClearance.controls}
+        />
+        <ProviderSubagentChildTrack
+          serverId={serverId}
+          rows={childRows}
+          onOpenProviderSubagent={openProviderChild}
+        />
+      </View>
+      <ProviderSubagentPaneBar
         serverId={serverId}
-        context={streamContext}
-        streamItems={timeline?.tail ?? EMPTY_STREAM_ITEMS}
-        streamHead={timeline?.head ?? EMPTY_STREAM_ITEMS}
-        turnPresentation={turnPresentation}
-        pendingPermissions={EMPTY_PERMISSIONS}
-        isAuthoritativeHistoryReady
-        onOpenWorkspaceFile={openFileInWorkspace}
-        readOnly
-        subagentParentId={target.parentAgentId}
-        historyPagination={historyPagination}
-        bottomOverlayTailClearance={childTrackClearance.tail}
-        bottomOverlayControlClearance={childTrackClearance.controls}
-      />
-      <ProviderSubagentChildTrack
-        serverId={serverId}
-        rows={childRows}
-        onOpenProviderSubagent={openProviderChild}
+        parentAgentId={target.parentAgentId}
+        descriptor={descriptor}
+        parentProvider={parent?.provider ?? null}
+        openTab={openTab}
       />
     </View>
   );
@@ -281,16 +317,7 @@ function ProviderSubagentPanel() {
 
 const styles = StyleSheet.create((theme) => ({
   container: { flex: 1, minHeight: 0 },
-  subtitleHeader: {
-    paddingHorizontal: theme.spacing[3],
-    paddingVertical: theme.spacing[1],
-    borderBottomWidth: theme.borderWidth[1],
-    borderBottomColor: theme.colors.border,
-  },
-  subtitleText: {
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.sm,
-  },
+  transcript: { flex: 1, minHeight: 0 },
   unsupported: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 },
   unsupportedText: { color: theme.colors.foregroundMuted, textAlign: "center" },
 }));

@@ -2005,6 +2005,12 @@ export const es: TranslationResources = {
       stopped: "Detenido",
       archived: "Archivado",
     },
+    providerBar: {
+      working: "En ejecución {{duration}}",
+      completedIn: "Completado en {{duration}}",
+      openParent: "Abrir agente principal",
+    },
+    providerPaneUnsupported: "Actualiza este host para ver los subagentes del proveedor",
   },
   panels: {
     draft: {
