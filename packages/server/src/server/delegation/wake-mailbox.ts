@@ -105,6 +105,10 @@ export class WakeMailbox {
           rendered = wake?.taskIds ?? [];
           return wake?.message ?? null;
         },
+        queueAs: {
+          origin: "delegation_wake",
+          wake: { cohortKey: offer.cohortKey, generation: offer.generation },
+        },
         onQueued: async () => {
           await store.markQueued(parentAgentId, offer);
         },

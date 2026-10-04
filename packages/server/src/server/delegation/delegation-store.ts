@@ -493,6 +493,18 @@ export class DelegationStore {
     });
   }
 
+  /** The user removed a wake that had not started from the parent's queue. */
+  async disposeWake(parentAgentId: string, messageId: string, now: string): Promise<void> {
+    await this.mutateExisting(parentAgentId, undefined, (file) => {
+      for (const [cohortKey, cohort] of Object.entries(file.cohorts)) {
+        const delivery = cohort.delivery;
+        if (delivery?.messageId === messageId && delivery.dispatch.kind !== "started") {
+          disposeCohort(file, cohortKey, "disposed", now);
+        }
+      }
+    });
+  }
+
   async disposeAll(parentAgentId: string, now: string): Promise<void> {
     await this.mutateExisting(parentAgentId, undefined, (file) => {
       for (const cohortKey of Object.keys(file.cohorts)) {

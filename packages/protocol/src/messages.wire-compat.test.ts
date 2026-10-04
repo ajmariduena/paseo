@@ -352,6 +352,119 @@ describe("wire schema compatibility", () => {
     });
   });
 
+  test("agent snapshots carry the server queue, and old clients still parse them", () => {
+    const snapshot = {
+      id: "agent-1",
+      provider: "claude",
+      cwd: "/tmp/project",
+      model: null,
+      createdAt: "2026-10-04T00:00:00.000Z",
+      updatedAt: "2026-10-04T00:00:00.000Z",
+      lastUserMessageAt: null,
+      status: "running",
+      capabilities: {
+        supportsStreaming: true,
+        supportsSessionPersistence: true,
+        supportsDynamicModes: true,
+        supportsMcpServers: true,
+        supportsReasoningStream: true,
+        supportsToolInvocations: true,
+      },
+      currentModeId: null,
+      availableModes: [],
+      pendingPermissions: [],
+      persistence: null,
+      title: null,
+      labels: {},
+    };
+    const queue = {
+      held: true,
+      heldReason: "restart",
+      entries: [
+        {
+          id: "wake:agent-1:run-1:1",
+          origin: "delegation_wake",
+          senderAgentId: null,
+          position: 2,
+          textPreview: "Review finished",
+          attachmentCount: 0,
+          createdAt: "2026-10-04T00:00:01.000Z",
+        },
+        {
+          id: "msg-1",
+          origin: "user",
+          senderAgentId: null,
+          position: 1,
+          textPreview: "next task",
+          attachmentCount: 1,
+          createdAt: "2026-10-04T00:00:00.000Z",
+        },
+      ],
+    };
+    expect(AgentSnapshotPayloadSchema.parse({ ...snapshot, queue }).queue).toEqual(queue);
+    expect(AgentSnapshotPayloadSchema.parse(snapshot).queue).toBeUndefined();
+
+    // Copied from v0.11.0-beta.3, before agent snapshots had a queue.
+    const LegacySnapshotSchema = AgentSnapshotPayloadSchema.omit({ queue: true });
+    expect(LegacySnapshotSchema.parse({ ...snapshot, queue })).not.toHaveProperty("queue");
+  });
+
+  test("send responses carry the disposition, and old clients still parse them", () => {
+    const response = {
+      type: "send_agent_message_response",
+      payload: {
+        requestId: "request-1",
+        agentId: "agent-1",
+        accepted: true,
+        error: null,
+        disposition: "queued",
+      },
+    };
+    expect(SessionOutboundMessageSchema.parse(response)).toEqual(response);
+
+    // Copied from v0.11.0-beta.3, before send responses had a disposition.
+    const LegacySendResponseSchema = z.object({
+      type: z.literal("send_agent_message_response"),
+      payload: z.object({
+        requestId: z.string(),
+        agentId: z.string(),
+        accepted: z.boolean(),
+        error: z.string().nullable(),
+      }),
+    });
+    expect(LegacySendResponseSchema.parse(response).payload).toEqual({
+      requestId: "request-1",
+      agentId: "agent-1",
+      accepted: true,
+      error: null,
+    });
+    const { disposition: _omitted, ...oldPayload } = response.payload;
+    expect(SessionOutboundMessageSchema.parse({ ...response, payload: oldPayload })).toEqual({
+      ...response,
+      payload: oldPayload,
+    });
+  });
+
+  test("queue RPC responses carry the queue after the operation", () => {
+    const response = {
+      type: "agent.queue.promote_to_steer.response",
+      payload: {
+        requestId: "request-1",
+        agentId: "agent-1",
+        accepted: true,
+        error: null,
+        queue: { held: false, heldReason: null, entries: [] },
+        disposition: "steered",
+      },
+    };
+    expect(SessionOutboundMessageSchema.parse(response)).toEqual(response);
+  });
+
+  test("server info advertises the server message queue as an optional feature", () => {
+    const info = { status: "server_info", serverId: "srv", features: { serverMessageQueue: true } };
+    expect(ServerInfoStatusPayloadSchema.parse(info).features?.serverMessageQueue).toBe(true);
+  });
+
   test("notification timeline items parse their level and message", () => {
     expect(
       AgentTimelineItemPayloadSchema.parse({

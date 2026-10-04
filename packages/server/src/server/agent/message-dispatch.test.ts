@@ -59,7 +59,7 @@ test("a late steer becomes a new turn with the same messageId", async () => {
     agentStorage: host.agentStorage,
     agentId,
     messageId: "msg-late",
-    policy: { kind: "intent", intent: "auto", prompt: "follow-up" },
+    policy: { kind: "intent", intent: "auto", prompt: "follow-up", steerUnavailable: "fail" },
     logger: host.logger,
   });
 
@@ -100,6 +100,7 @@ test("a steered system message reaches the provider as its prompt and the timeli
       kind: "system",
       maySteer: true,
       prepare: async () => ({ prompt: "<paseo-system>\nask\n</paseo-system>", notification }),
+      queueAs: { origin: "system" },
     },
     logger: host.logger,
   });
@@ -128,6 +129,7 @@ test("a prompt another agent sent records its origin on the user message", async
       kind: "intent",
       intent: "auto",
       prompt: "Review the diff",
+      steerUnavailable: "fail",
       origin: { kind: "agent", agentId: "parent-agent" },
     },
     logger: host.logger,
@@ -154,7 +156,7 @@ test("a queued message waits for the running turn instead of replacing it", asyn
     agentStorage: host.agentStorage,
     agentId,
     messageId: "msg-queued",
-    policy: { kind: "intent", intent: "auto", prompt: "next task" },
+    policy: { kind: "intent", intent: "auto", prompt: "next task", steerUnavailable: "fail" },
     logger: trace.logger,
   });
   await trace.waitFor("agent.dispatch.wait_for_turn");
@@ -178,7 +180,7 @@ test("an explicit steer the provider cannot take fails without touching the turn
       agentStorage: host.agentStorage,
       agentId,
       messageId: "msg-steer",
-      policy: { kind: "intent", intent: "steer", prompt: "steer this" },
+      policy: { kind: "intent", intent: "steer", prompt: "steer this", steerUnavailable: "fail" },
       logger: host.logger,
     }),
   ).rejects.toBeInstanceOf(SteerUnavailableError);
@@ -197,7 +199,7 @@ test("a restart replaces the running turn and says so", async () => {
     agentStorage: host.agentStorage,
     agentId,
     messageId: "msg-restart",
-    policy: { kind: "intent", intent: "restart", prompt: "start over" },
+    policy: { kind: "intent", intent: "restart", prompt: "start over", steerUnavailable: "fail" },
     logger: host.logger,
   });
 
@@ -217,8 +219,7 @@ test("a background dispatch reports queued and keeps the message pending until i
     agentStorage: host.agentStorage,
     agentId,
     messageId: "msg-queued",
-    intent: "queue",
-    prompt: "next task",
+    policy: { intent: "queue", prompt: "next task", steerUnavailable: "fail" },
     logger: host.logger,
   });
 

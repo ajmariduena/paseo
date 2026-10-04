@@ -1,12 +1,24 @@
 import type { Logger } from "pino";
 
-import { AgentRunActiveError, type ActiveRun, type AgentManager } from "./agent-manager.js";
+import {
+  ActiveTurnChangedError,
+  AgentRunActiveError,
+  type ActiveRun,
+  type AgentManager,
+} from "./agent-manager.js";
 import type { AgentPromptInput } from "./agent-sdk-types.js";
 import type { AgentStorage } from "./agent-storage.js";
 import { ensureAgentLoaded } from "./agent-loading.js";
 import { startAgentRun, type StartAgentRunOptions } from "./agent-prompt.js";
 import type { NotificationAnnotation } from "./prompt-annotations.js";
 import type { MessageOrigin } from "@getpaseo/protocol/agent-types";
+import type { ActiveTurnBehavior } from "@getpaseo/protocol/messages";
+import type {
+  FallbackQueueDeliverer,
+  QueueDelivery,
+  QueueDeliveryResult,
+} from "../agent-queue/runner.js";
+import type { NewQueueEntry, QueueWakeRef } from "../agent-queue/store.js";
 
 export type DispatchIntent = "auto" | "steer" | "restart" | "queue";
 
@@ -50,25 +62,38 @@ export interface SystemMessage {
   notification: Omit<NotificationAnnotation, "kind">;
 }
 
+/** How a waiting system message appears in the agent's queue. */
+export type SystemQueueEntry =
+  | { origin: "delegation_wake"; wake: QueueWakeRef }
+  | { origin: "system" };
+
 /**
  * `system` messages (notifications, wakes) never interrupt or replace a turn: they steer into
- * a running turn when `maySteer` and the provider can steer, otherwise they wait for the turn
- * to settle. Their text is prepared right before each steer or start, so a message that went
- * stale while waiting is dropped instead of delivered.
+ * a running turn when `maySteer` and the provider can steer, otherwise they wait in the queue
+ * for the turn to settle. Their text is prepared right before each steer or start, so a
+ * message that went stale while waiting is dropped instead of delivered.
  */
 export type DispatchPolicy =
   | {
       kind: "intent";
       intent: DispatchIntent;
       prompt: AgentPromptInput;
+      /**
+       * `replace` keeps the app's steer: a provider that cannot steer gets its turn replaced.
+       * `fail` throws SteerUnavailableError instead.
+       */
+      steerUnavailable: "replace" | "fail";
       /** Omitted for the user's own prompts. */
       origin?: MessageOrigin;
+      /** A message from the human answers any permission the agent is blocked on. */
+      clearPendingPermissions?: boolean;
       onQueued?: () => void;
     }
   | {
       kind: "system";
       maySteer: boolean;
       prepare: () => Promise<SystemMessage | null>;
+      queueAs: SystemQueueEntry;
       onQueued?: () => Promise<void>;
     };
 
@@ -124,6 +149,10 @@ export interface DispatchAgentMessageParams {
   logger: Logger;
 }
 
+export function toDispatchIntent(behavior: ActiveTurnBehavior): DispatchIntent {
+  return behavior === "interrupt" ? "restart" : behavior;
+}
+
 export async function dispatchAgentMessage(
   params: DispatchAgentMessageParams,
 ): Promise<MessageDisposition> {
@@ -136,18 +165,23 @@ export async function dispatchAgentMessage(
     const mode = resolveMode(params);
     switch (mode.kind) {
       case "steer":
-        return await steer(params);
+        return await steer(params, { explicit: isExplicitSteer(params.policy) });
       case "restart": {
         const disposition = await start(params, { replaceRunning: true });
         return disposition === "started" ? "restarted" : disposition;
       }
       case "start":
+        return await startOrQueue(params);
       case "queue":
-        return await startWhenIdle(params);
+        return await enqueue(params);
     }
   } finally {
     untrack();
   }
+}
+
+function isExplicitSteer(policy: DispatchPolicy): boolean {
+  return policy.kind === "intent" && policy.intent === "steer";
 }
 
 function resolveMode(params: DispatchAgentMessageParams): DispatchMode {
@@ -186,48 +220,140 @@ async function preparePrompt(params: DispatchAgentMessageParams): Promise<AgentP
   return message.prompt;
 }
 
-/** Never replaces the running turn; an explicit steer the provider cannot take fails instead. */
-async function steer(params: DispatchAgentMessageParams): Promise<MessageDisposition> {
+/**
+ * Never replaces a turn on its own: only an intent policy with `steerUnavailable: "replace"`
+ * replaces, and only the turn the steer was admitted against. A turn that ended first makes the
+ * message a new turn with the same messageId, or queues it behind a newer run.
+ */
+async function steer(
+  params: DispatchAgentMessageParams,
+  options: { explicit: boolean },
+): Promise<MessageDisposition> {
   const prompt = await preparePrompt(params);
   if (prompt === null) {
     return "dropped";
   }
+  const { policy } = params;
+  if (policy.kind === "intent" && policy.steerUnavailable === "replace") {
+    return await steerOrReplace(params, prompt);
+  }
   const result = await params.agentManager.steerAgentRun(params.agentId, prompt, {
     clientMessageId: params.messageId,
+    ...(policy.kind === "intent" && policy.clearPendingPermissions
+      ? { clearPendingPermissions: true }
+      : {}),
   });
   if (result.status === "accepted") {
     return "steered";
   }
-  const explicitSteer = params.policy.kind === "intent" && params.policy.intent === "steer";
-  if (explicitSteer && result.status === "unavailable") {
+  if (options.explicit && result.status === "unavailable") {
     throw new SteerUnavailableError(params.agentId);
   }
-  // A late steer becomes a new turn carrying the same messageId.
-  return await startWhenIdle(params);
+  return await startOrQueue(params);
 }
 
-async function startWhenIdle(params: DispatchAgentMessageParams): Promise<MessageDisposition> {
-  let queued = false;
-  for (;;) {
-    if (!queued && params.agentManager.hasInFlightRun(params.agentId)) {
-      queued = true;
-      params.logger.trace(
-        { agentId: params.agentId, messageId: params.messageId },
-        "agent.dispatch.wait_for_turn",
-      );
-      await params.policy.onQueued?.();
+async function steerOrReplace(
+  params: DispatchAgentMessageParams,
+  prompt: AgentPromptInput,
+): Promise<MessageDisposition> {
+  const clearPendingPermissions =
+    params.policy.kind === "intent" && params.policy.clearPendingPermissions === true;
+  try {
+    const { disposition } = await startAgentRun(
+      params.agentManager,
+      params.agentId,
+      prompt,
+      params.logger,
+      {
+        activeTurnBehavior: "steer",
+        clearPendingPermissions,
+        runOptions: { clientMessageId: params.messageId },
+      },
+    );
+    return disposition === "turn_started" ? "started" : disposition;
+  } catch (error) {
+    if (error instanceof AgentRunActiveError || error instanceof ActiveTurnChangedError) {
+      return await enqueue(params);
     }
-    await params.agentManager.waitForRunToSettle(params.agentId);
-    if (params.policy.kind === "system" && (await isArchived(params))) {
-      return "skipped_archived";
-    }
-    await loadAgent(params);
-    try {
-      return await start(params, { replaceRunning: false });
-    } catch (error) {
-      if (!(error instanceof AgentRunActiveError)) throw error;
-    }
+    throw error;
   }
+}
+
+async function startOrQueue(params: DispatchAgentMessageParams): Promise<MessageDisposition> {
+  const disposition = await tryStart(params);
+  return disposition === "busy" ? await enqueue(params) : disposition;
+}
+
+async function tryStart(params: DispatchAgentMessageParams): Promise<QueueDeliveryResult> {
+  try {
+    return await start(params, { replaceRunning: false });
+  } catch (error) {
+    if (error instanceof AgentRunActiveError) return "busy";
+    throw error;
+  }
+}
+
+/** Waits in the agent's durable queue; resolves once the queue delivered or dropped it. */
+async function enqueue(params: DispatchAgentMessageParams): Promise<MessageDisposition> {
+  const entry = await queueEntry(params);
+  if (!entry) {
+    return "dropped";
+  }
+  const queued = await params.agentManager.messageQueue.enqueue(params.agentId, entry, (delivery) =>
+    deliverQueued(params, delivery),
+  );
+  params.logger.trace(
+    { agentId: params.agentId, messageId: params.messageId },
+    "agent.dispatch.wait_for_turn",
+  );
+  await params.policy.onQueued?.();
+  return await queued.settled;
+}
+
+async function queueEntry(params: DispatchAgentMessageParams): Promise<NewQueueEntry | null> {
+  const { policy } = params;
+  if (policy.kind === "intent") {
+    const senderAgentId = policy.origin?.kind === "agent" ? policy.origin.agentId : null;
+    return {
+      id: params.messageId,
+      origin: senderAgentId ? "agent" : "user",
+      senderAgentId,
+      textPreview: "",
+      prompt: policy.prompt,
+      wake: null,
+    };
+  }
+  // Rendered here only for the queue preview; delivery renders it again from current state.
+  const message = await policy.prepare();
+  if (!message) {
+    return null;
+  }
+  return {
+    id: params.messageId,
+    origin: policy.queueAs.origin,
+    senderAgentId: null,
+    textPreview: message.notification.message,
+    prompt: null,
+    wake: policy.queueAs.origin === "delegation_wake" ? policy.queueAs.wake : null,
+  };
+}
+
+async function deliverQueued(
+  params: DispatchAgentMessageParams,
+  delivery: QueueDelivery,
+): Promise<QueueDeliveryResult> {
+  const queuedParams =
+    params.policy.kind === "intent" && delivery.prompt !== null
+      ? { ...params, policy: { ...params.policy, prompt: delivery.prompt } }
+      : params;
+  if (queuedParams.policy.kind === "system" && (await isArchived(queuedParams))) {
+    return "skipped_archived";
+  }
+  await loadAgent(queuedParams);
+  if (delivery.mode === "steer") {
+    return await steer(queuedParams, { explicit: true });
+  }
+  return await tryStart(queuedParams);
 }
 
 async function start(
@@ -261,6 +387,37 @@ async function loadAgent(params: DispatchAgentMessageParams): Promise<void> {
   });
 }
 
+/**
+ * Delivers a queued user or agent message that has no in-process sender, such as one that
+ * survived a restart. System entries are process-bound and are dropped.
+ */
+export function createRestoredEntryDeliverer(
+  deps: Pick<DispatchAgentMessageParams, "agentManager" | "agentStorage" | "logger">,
+): FallbackQueueDeliverer {
+  return async (agentId, delivery) => {
+    const { entry, prompt } = delivery;
+    if (prompt === null) {
+      deps.logger.info({ agentId, entryId: entry.id }, "agent.queue.dropped_process_bound");
+      return "dropped";
+    }
+    const sender = entry.senderAgentId;
+    const params: DispatchAgentMessageParams = {
+      ...deps,
+      agentId,
+      messageId: entry.id,
+      policy: {
+        kind: "intent",
+        intent: "queue",
+        prompt,
+        steerUnavailable: sender ? "fail" : "replace",
+        ...(sender ? { origin: { kind: "agent", agentId: sender } } : {}),
+        clearPendingPermissions: sender === null,
+      },
+    };
+    return await deliverQueued(params, delivery);
+  };
+}
+
 export interface BackgroundDispatch {
   /** `queued` means the message waits for the running turn and keeps going in `settled`. */
   disposition: MessageDisposition | "queued";
@@ -270,19 +427,17 @@ export interface BackgroundDispatch {
 /** Dispatches an intent and returns as soon as the message steered, started, or got queued. */
 export async function dispatchAgentMessageInBackground(
   params: Omit<DispatchAgentMessageParams, "policy"> & {
-    intent: DispatchIntent;
-    prompt: AgentPromptInput;
-    origin?: MessageOrigin;
+    policy: Omit<Extract<DispatchPolicy, { kind: "intent" }>, "kind" | "onQueued">;
   },
 ): Promise<BackgroundDispatch> {
-  const { intent, prompt, origin, ...rest } = params;
+  const { policy, ...rest } = params;
   let markQueued: () => void = () => undefined;
   const queued = new Promise<"queued">((resolve) => {
     markQueued = () => resolve("queued");
   });
   const settled = dispatchAgentMessage({
     ...rest,
-    policy: { kind: "intent", intent, prompt, origin, onQueued: markQueued },
+    policy: { ...policy, kind: "intent", onQueued: markQueued },
   });
   const disposition = await Promise.race([settled, queued]);
   return { disposition, settled };
@@ -295,6 +450,9 @@ export function isMessageAlreadyDispatched(
   messageId: string,
 ): boolean {
   if (hasPendingDispatch(agentManager, agentId, messageId)) return true;
+  if (agentManager.messageQueue.entries(agentId).some((entry) => entry.id === messageId)) {
+    return true;
+  }
   return agentManager
     .getTimeline(agentId)
     .some(

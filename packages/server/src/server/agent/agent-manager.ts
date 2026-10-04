@@ -93,6 +93,8 @@ import {
   type NotificationAnnotation,
   type PromptAnnotation,
 } from "./prompt-annotations.js";
+import { AgentQueueRunner } from "../agent-queue/runner.js";
+import { AgentQueueStore } from "../agent-queue/store.js";
 import {
   ProviderSubagentStore,
   type ProviderSubagentDescriptor,
@@ -403,6 +405,8 @@ export interface AgentManagerOptions {
   durableTimelineStore?: AgentTimelineStore;
   /** Defaults to an in-memory store, so annotations do not survive a restart. */
   promptAnnotations?: PromptAnnotationStore;
+  /** Defaults to an in-memory store, so queued messages do not survive a restart. */
+  messageQueueStore?: AgentQueueStore;
   terminalManager?: TerminalManager | null;
   mcpBaseUrl?: string;
   mcpAuthToken?: string;
@@ -829,6 +833,8 @@ export class AgentManager {
   private readonly registry?: AgentStorage;
   private readonly durableTimelineStore?: AgentTimelineStore;
   private readonly promptAnnotations: PromptAnnotationStore;
+  /** Messages waiting for an agent's running turn to end. */
+  readonly messageQueue: AgentQueueRunner;
   private readonly previousStatuses = new Map<string, AgentLifecycleStatus>();
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly agentRegistrationTasks = new Set<Promise<void>>();
@@ -893,6 +899,26 @@ export class AgentManager {
       providerDefinitions: options.providerDefinitions ?? {},
       clients: options.clients ?? {},
     });
+    this.messageQueue = this.createMessageQueue(options.messageQueueStore);
+  }
+
+  private createMessageQueue(store: AgentQueueStore | undefined): AgentQueueRunner {
+    const queue = new AgentQueueRunner(
+      store ?? new AgentQueueStore(null),
+      {
+        waitForRunToSettle: (agentId) => this.waitForRunToSettle(agentId),
+        subscribe: (callback) => this.subscribe(callback, { replayState: false }),
+        isArchived: async (agentId) => Boolean((await this.registry?.get(agentId))?.archivedAt),
+        publish: (agentId) => {
+          void this.publishAgentState(agentId).catch((error: unknown) => {
+            this.logger.warn({ err: error, agentId }, "Failed to publish agent queue state");
+          });
+        },
+      },
+      this.logger,
+    );
+    queue.start();
+    return queue;
   }
 
   private configurePaseoTools(options: AgentManagerOptions): void {
@@ -956,6 +982,7 @@ export class AgentManager {
 
   prepareForShutdown(): void {
     this.acceptingAgentRegistrations = false;
+    this.messageQueue.close();
     for (const agentId of this.idleBackendTimers.keys()) {
       this.cancelIdleBackendTimer(agentId);
     }
@@ -2074,6 +2101,11 @@ export class AgentManager {
   }
 
   private async fireAgentArchived(agentId: string): Promise<void> {
+    try {
+      await this.messageQueue.clear(agentId);
+    } catch (error) {
+      this.logger.warn({ err: error, agentId }, "Failed to clear the queue of an archived agent");
+    }
     const callback = this.onAgentArchived;
     if (!callback) {
       return;
@@ -2327,6 +2359,19 @@ export class AgentManager {
       throw new Error(`Agent not found in storage after detach: ${agentId}`);
     }
     return { record: result.record, live: false, previousParentAgentId };
+  }
+
+  /** Re-publishes an agent without touching it, live or stored. */
+  private async publishAgentState(agentId: string): Promise<void> {
+    const agent = this.agents.get(agentId);
+    if (agent) {
+      if (!agent.internal) this.emitState(agent, { persist: false });
+      return;
+    }
+    const record = await this.registry?.get(agentId);
+    if (record && !record.internal && !this.agents.has(agentId)) {
+      this.dispatchStoredAgentState(record);
+    }
   }
 
   notifyAgentState(agentId: string): void {

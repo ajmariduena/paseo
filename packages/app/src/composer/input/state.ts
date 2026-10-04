@@ -3,7 +3,7 @@ import type { ActiveTurnBehavior } from "@getpaseo/protocol/messages";
 import type { MessagePayload } from "@/composer/types";
 import type { MessageInputKeyboardActionKind } from "@/keyboard/actions";
 
-export type SendBehavior = ActiveTurnBehavior | "queue";
+export type SendBehavior = Extract<ActiveTurnBehavior, "interrupt" | "steer"> | "queue";
 
 export function resolveActiveSendBehavior(
   sendBehavior: SendBehavior,

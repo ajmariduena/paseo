@@ -67,7 +67,6 @@ interface SessionHandlerInternals {
     messageId?: string,
     images?: Array<{ data: string; mimeType: string }>,
     attachments?: unknown[],
-    runOptions?: unknown,
     options?: { spokenInput?: boolean },
   ): Promise<{ ok: true } | { ok: false; error: string }>;
   handleCheckoutMergeRequest(params: unknown): Promise<unknown>;

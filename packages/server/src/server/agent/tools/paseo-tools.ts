@@ -2295,9 +2295,12 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         agentStorage,
         agentId: input.agentId,
         messageId: input.messageId,
-        intent: input.delivery,
-        prompt: input.prompt,
-        ...(callerAgentId ? { origin: { kind: "agent" as const, agentId: callerAgentId } } : {}),
+        policy: {
+          intent: input.delivery,
+          prompt: input.prompt,
+          steerUnavailable: "fail",
+          ...(callerAgentId ? { origin: { kind: "agent" as const, agentId: callerAgentId } } : {}),
+        },
         logger: childLogger,
       });
     } catch (error) {

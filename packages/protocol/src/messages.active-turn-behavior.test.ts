@@ -18,6 +18,18 @@ describe("send_agent_message_request active-turn behavior", () => {
       }).activeTurnBehavior,
     ).toBe("steer");
 
+    for (const behavior of ["queue", "auto"] as const) {
+      expect(
+        SendAgentMessageRequestSchema.parse({
+          type: "send_agent_message_request",
+          requestId: "request-queue",
+          agentId: "agent-1",
+          text: "After this turn",
+          activeTurnBehavior: behavior,
+        }).activeTurnBehavior,
+      ).toBe(behavior);
+    }
+
     expect(
       SendAgentMessageRequestSchema.parse({
         type: "send_agent_message_request",

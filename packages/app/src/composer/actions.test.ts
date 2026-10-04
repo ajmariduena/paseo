@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import type { AgentAttachment, ForgeSearchItem } from "@getpaseo/protocol/messages";
+import type {
+  ActiveTurnBehavior,
+  AgentAttachment,
+  ForgeSearchItem,
+} from "@getpaseo/protocol/messages";
 import type {
   AttachmentMetadata,
   ComposerAttachment,
@@ -180,7 +184,7 @@ interface FakeSendCall {
   text: string;
   options: {
     messageId: string;
-    activeTurnBehavior?: "interrupt" | "steer";
+    activeTurnBehavior?: ActiveTurnBehavior;
     images: Array<{ data: string; mimeType: string }>;
     attachments: AgentAttachment[];
   };

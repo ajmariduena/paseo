@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { Logger } from "pino";
 
 import type {
@@ -9,7 +10,13 @@ import type { AgentManager, ManagedAgent } from "./agent-manager.js";
 import type { AgentStorage } from "./agent-storage.js";
 import { ensureAgentLoaded } from "./agent-loading.js";
 import { isStaleProviderSessionError } from "./stale-provider-session-error.js";
-import { dispatchAgentMessage, type SystemMessage } from "./message-dispatch.js";
+import {
+  dispatchAgentMessage,
+  dispatchAgentMessageInBackground,
+  toDispatchIntent,
+  type BackgroundDispatch,
+  type SystemMessage,
+} from "./message-dispatch.js";
 import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
 import type { ActiveTurnBehavior } from "@getpaseo/protocol/messages";
 
@@ -229,8 +236,8 @@ export interface SendPromptToAgentParams {
   /** Prompt to dispatch to the provider (may include image blocks or wrapped text). */
   prompt: AgentPromptInput;
   messageId?: string;
+  /** Defaults to `interrupt`. */
   activeTurnBehavior?: ActiveTurnBehavior;
-  runOptions?: AgentRunOptions;
   /** Optional mode to set on the agent before the run starts. */
   sessionMode?: string;
   /**
@@ -239,7 +246,7 @@ export interface SendPromptToAgentParams {
    * schedule fires, notify-on-finish).
    */
   unarchive?: boolean;
-  /** See {@link StartAgentRunOptions.clearPendingPermissions}. */
+  /** A message from the human answers any permission the agent is blocked on. */
   clearPendingPermissions?: boolean;
   logger: Logger;
 }
@@ -294,32 +301,30 @@ export async function waitForAgentRunStartWithTimeout(
 }
 
 /**
- * Full send-prompt orchestration: (optional unarchive) → load → (optional
- * mode change) → start run.
+ * A prompt from a person: (optional unarchive) → load → (optional mode change) → dispatch.
+ * Returns once the prompt steered, started, or got queued behind the running turn.
  *
- * Every surface that sends a prompt to an agent (Session/WS, MCP, CLI-through-MCP,
- * chat mentions, notify-on-finish) MUST go through this so behavior can never
- * drift between them.
- *
- * When `unarchive` is false and the agent is archived, the call is a silent
- * no-op (returns the normal turn-start disposition) — the agent is not run.
+ * Every surface that sends a person's prompt to an agent (Session/WS, voice) goes through this
+ * so behavior can never drift between them.
  */
 export async function sendPromptToAgent(
   params: SendPromptToAgentParams,
-): Promise<{ disposition: PromptDispatchDisposition }> {
+): Promise<BackgroundDispatch> {
   if (!(await prepareAgentForPrompt(params))) {
-    return { disposition: "turn_started" };
+    return { disposition: "skipped_archived", settled: Promise.resolve("skipped_archived") };
   }
-
-  const runOptions = params.messageId
-    ? { ...params.runOptions, clientMessageId: params.messageId }
-    : params.runOptions;
-
-  return await startAgentRun(params.agentManager, params.agentId, params.prompt, params.logger, {
-    replaceRunning: true,
-    activeTurnBehavior: params.activeTurnBehavior,
-    clearPendingPermissions: params.clearPendingPermissions,
-    runOptions,
+  return await dispatchAgentMessageInBackground({
+    agentManager: params.agentManager,
+    agentStorage: params.agentStorage,
+    agentId: params.agentId,
+    messageId: params.messageId ?? `send:${randomUUID()}`,
+    policy: {
+      intent: toDispatchIntent(params.activeTurnBehavior ?? "interrupt"),
+      prompt: params.prompt,
+      steerUnavailable: "replace",
+      clearPendingPermissions: params.clearPendingPermissions,
+    },
+    logger: params.logger,
   });
 }
 
@@ -492,6 +497,7 @@ export function setupPermissionNotification(params: SetupPermissionNotificationP
             kind: "system",
             maySteer: true,
             prepare: () => preparePermissionPrompt(permissionRequest),
+            queueAs: { origin: "system" },
           },
           logger,
         });

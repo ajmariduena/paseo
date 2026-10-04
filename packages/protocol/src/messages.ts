@@ -875,6 +875,23 @@ const AgentActiveTurnPayloadSchema = z.object({
   startedAt: z.string().nullable(),
 });
 
+export const AgentQueueEntryPayloadSchema = z.object({
+  id: z.string(),
+  origin: z.enum(["user", "agent", "delegation_wake", "system"]),
+  senderAgentId: z.string().nullable(),
+  position: z.number().int(),
+  textPreview: z.string(),
+  attachmentCount: z.number().int(),
+  createdAt: z.string(),
+});
+
+/** Messages waiting for the agent's running turn to end, in delivery order. */
+export const AgentQueueSnapshotSchema = z.object({
+  held: z.boolean(),
+  heldReason: z.enum(["restart", "failure", "user_stop"]).nullable(),
+  entries: z.array(AgentQueueEntryPayloadSchema),
+});
+
 export const AgentSnapshotPayloadSchema = z.object({
   id: z.string(),
   provider: AgentProviderSchema,
@@ -905,9 +922,12 @@ export const AgentSnapshotPayloadSchema = z.object({
   attentionTimestamp: z.string().nullable().optional(),
   archivedAt: z.string().nullable().optional(),
   providerUnavailable: z.boolean().optional(),
+  // COMPAT(serverMessageQueue): added in v0.11.0, keep optional; absent means an empty queue.
+  queue: AgentQueueSnapshotSchema.optional(),
 });
 
 export type AgentSnapshotPayload = z.infer<typeof AgentSnapshotPayloadSchema>;
+export type AgentQueueSnapshot = z.infer<typeof AgentQueueSnapshotSchema>;
 
 export const AgentListItemPayloadSchema = z.object({
   id: z.string(),
@@ -1262,7 +1282,8 @@ const ImageAttachmentSchema = z.object({
   mimeType: z.string(), // e.g., "image/jpeg", "image/png"
 });
 
-export const ActiveTurnBehaviorSchema = z.enum(["interrupt", "steer"]);
+// Widened in v0.11.0 for serverMessageQueue; apps send queue/auto only to daemons that advertise it.
+export const ActiveTurnBehaviorSchema = z.enum(["interrupt", "steer", "queue", "auto"]);
 export type ActiveTurnBehavior = z.infer<typeof ActiveTurnBehaviorSchema>;
 
 export const SendAgentMessageSchema = z.object({
@@ -1975,6 +1996,49 @@ export const AgentForkContextRequestMessageSchema = z.object({
   agentId: z.string(),
   boundaryCursor: AgentTimelineCursorSchema.optional(),
   boundaryMessageId: z.string().optional(),
+  requestId: z.string(),
+});
+
+export const AgentQueueListRequestMessageSchema = z.object({
+  type: z.literal("agent.queue.list.request"),
+  agentId: z.string(),
+  requestId: z.string(),
+});
+
+export const AgentQueueResumeRequestMessageSchema = z.object({
+  type: z.literal("agent.queue.resume.request"),
+  agentId: z.string(),
+  requestId: z.string(),
+});
+
+export const AgentQueueCancelEntryRequestMessageSchema = z.object({
+  type: z.literal("agent.queue.cancel_entry.request"),
+  agentId: z.string(),
+  entryId: z.string(),
+  requestId: z.string(),
+});
+
+export const AgentQueueReorderRequestMessageSchema = z.object({
+  type: z.literal("agent.queue.reorder.request"),
+  agentId: z.string(),
+  /** Moved to the front in this order; unlisted entries keep their order after them. */
+  entryIds: z.array(z.string()),
+  requestId: z.string(),
+});
+
+export const AgentQueueEditEntryRequestMessageSchema = z.object({
+  type: z.literal("agent.queue.edit_entry.request"),
+  agentId: z.string(),
+  entryId: z.string(),
+  /** Replaces the text; images and attachments stay as queued. */
+  text: z.string(),
+  requestId: z.string(),
+});
+
+export const AgentQueuePromoteToSteerRequestMessageSchema = z.object({
+  type: z.literal("agent.queue.promote_to_steer.request"),
+  agentId: z.string(),
+  entryId: z.string(),
   requestId: z.string(),
 });
 
@@ -3482,6 +3546,12 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ProviderSubagentTimelineRequestMessageSchema,
   SetAgentTimelineSubscriptionRequestMessageSchema,
   AgentForkContextRequestMessageSchema,
+  AgentQueueListRequestMessageSchema,
+  AgentQueueResumeRequestMessageSchema,
+  AgentQueueCancelEntryRequestMessageSchema,
+  AgentQueueReorderRequestMessageSchema,
+  AgentQueueEditEntryRequestMessageSchema,
+  AgentQueuePromoteToSteerRequestMessageSchema,
   SetAgentModeRequestMessageSchema,
   SetAgentModelRequestMessageSchema,
   SetAgentThinkingRequestMessageSchema,
@@ -3899,6 +3969,8 @@ export const ServerInfoStatusPayloadSchema = z
         voiceLiveWebrtc: z.boolean().optional(),
         // COMPAT(voiceCallMute): added in v0.11.0, remove gate after 2027-10-03.
         voiceCallMute: z.boolean().optional(),
+        // COMPAT(serverMessageQueue): added in v0.11.0, remove gate after 2027-10-04.
+        serverMessageQueue: z.boolean().optional(),
         // COMPAT(projectRemove): added in v0.1.97, drop the gate when floor >= v0.1.97.
         projectRemove: z.boolean().optional(),
         // COMPAT(projectAdd): added in v0.1.97, drop the gate when floor >= v0.1.97.
@@ -5083,6 +5155,47 @@ export const AgentForkContextResponseMessageSchema = z.object({
   }),
 });
 
+const AgentQueueResponsePayloadSchema = z.object({
+  requestId: z.string(),
+  agentId: z.string(),
+  accepted: z.boolean(),
+  error: z.string().nullable(),
+  /** The queue after the operation. */
+  queue: AgentQueueSnapshotSchema.nullable(),
+});
+
+export const AgentQueueListResponseMessageSchema = z.object({
+  type: z.literal("agent.queue.list.response"),
+  payload: AgentQueueResponsePayloadSchema,
+});
+
+export const AgentQueueResumeResponseMessageSchema = z.object({
+  type: z.literal("agent.queue.resume.response"),
+  payload: AgentQueueResponsePayloadSchema,
+});
+
+export const AgentQueueCancelEntryResponseMessageSchema = z.object({
+  type: z.literal("agent.queue.cancel_entry.response"),
+  payload: AgentQueueResponsePayloadSchema,
+});
+
+export const AgentQueueReorderResponseMessageSchema = z.object({
+  type: z.literal("agent.queue.reorder.response"),
+  payload: AgentQueueResponsePayloadSchema,
+});
+
+export const AgentQueueEditEntryResponseMessageSchema = z.object({
+  type: z.literal("agent.queue.edit_entry.response"),
+  payload: AgentQueueResponsePayloadSchema,
+});
+
+export const AgentQueuePromoteToSteerResponseMessageSchema = z.object({
+  type: z.literal("agent.queue.promote_to_steer.response"),
+  payload: AgentQueueResponsePayloadSchema.extend({
+    disposition: z.enum(["steered", "started", "queued"]).nullable(),
+  }),
+});
+
 export const CancelAgentResponseMessageSchema = z.object({
   type: z.literal("cancel_agent_response"),
   payload: z.object({
@@ -5347,6 +5460,9 @@ export const SendAgentMessageResponseMessageSchema = z.object({
     agentId: z.string(),
     accepted: z.boolean(),
     error: z.string().nullable(),
+    // COMPAT(serverMessageQueue): added in v0.11.0; older daemons never send it, and a retried
+    // messageId whose first send already completed omits it.
+    disposition: z.enum(["steered", "started", "queued"]).optional(),
   }),
 });
 
@@ -7322,6 +7438,12 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   SetAgentTimelineSubscriptionResponseMessageSchema,
   AgentAttentionRequiredMessageSchema,
   AgentForkContextResponseMessageSchema,
+  AgentQueueListResponseMessageSchema,
+  AgentQueueResumeResponseMessageSchema,
+  AgentQueueCancelEntryResponseMessageSchema,
+  AgentQueueReorderResponseMessageSchema,
+  AgentQueueEditEntryResponseMessageSchema,
+  AgentQueuePromoteToSteerResponseMessageSchema,
   CancelAgentResponseMessageSchema,
   ClearAgentAttentionResponseMessageSchema,
   WorkspaceCreateResponseSchema,
@@ -7559,6 +7681,10 @@ export type AgentTimelineListPromptsResponseMessage = z.infer<
   typeof AgentTimelineListPromptsResponseMessageSchema
 >;
 export type AgentForkContextResponseMessage = z.infer<typeof AgentForkContextResponseMessageSchema>;
+export type AgentQueueListResponseMessage = z.infer<typeof AgentQueueListResponseMessageSchema>;
+export type AgentQueuePromoteToSteerResponseMessage = z.infer<
+  typeof AgentQueuePromoteToSteerResponseMessageSchema
+>;
 export type CancelAgentResponseMessage = z.infer<typeof CancelAgentResponseMessageSchema>;
 export type SendAgentMessageResponseMessage = z.infer<typeof SendAgentMessageResponseMessageSchema>;
 export type SetVoiceModeResponseMessage = z.infer<typeof SetVoiceModeResponseMessageSchema>;

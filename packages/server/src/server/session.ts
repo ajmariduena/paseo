@@ -3,7 +3,9 @@ import type { BrowserToolsBroker } from "./browser-tools/broker.js";
 import type { BrowserScreencastBroker } from "./browser-screencast/stream-broker.js";
 import { BrowserAutomationHostCapabilitySchema } from "@getpaseo/protocol/browser-automation/capabilities";
 import type {
+  AgentQueueSnapshot,
   SessionEventSubscription,
+  SendAgentMessageResponseMessage,
   UsageReportEntry,
   ProviderUsage,
 } from "@getpaseo/protocol/messages";
@@ -128,12 +130,12 @@ import { assertPluginTimelineDataSize } from "./agent/agent-timeline-content.js"
 import { parsePluginClientId } from "./plugins/plugin-session-identity.js";
 import { buildAgentForkContextAttachment } from "./agent/activity-curator.js";
 import { buildAgentPrompt } from "./agent/prompt-attachments.js";
+import type { BackgroundDispatch } from "./agent/message-dispatch.js";
 import type { StructuredGenerationDaemonConfig } from "./agent/structured-generation-providers.js";
 import {
   getAgentStreamEventTurnId,
   type AgentPersistenceHandle,
   type AgentPermissionResponse,
-  type AgentRunOptions,
   type AgentSessionConfig,
 } from "./agent/agent-sdk-types.js";
 import type { StoredAgentRecord } from "./agent/agent-storage.js";
@@ -294,6 +296,60 @@ type ProviderSubagentManagerEvent = Extract<
 const LEGACY_PROVIDER_IDS = new Set(["claude", "codex", "opencode"]);
 const MIN_VERSION_ALL_PROVIDERS = "0.1.45";
 const MIN_VERSION_EXPLICIT_WORKSPACE_RECOVERY = "0.1.105";
+type AgentQueueRequest = Extract<
+  SessionInboundMessage,
+  {
+    type:
+      | "agent.queue.list.request"
+      | "agent.queue.resume.request"
+      | "agent.queue.cancel_entry.request"
+      | "agent.queue.reorder.request"
+      | "agent.queue.edit_entry.request"
+      | "agent.queue.promote_to_steer.request";
+  }
+>;
+
+const EMPTY_AGENT_QUEUE: AgentQueueSnapshot = { held: false, heldReason: null, entries: [] };
+
+function queueResponseType(
+  type: Exclude<AgentQueueRequest["type"], "agent.queue.promote_to_steer.request">,
+) {
+  switch (type) {
+    case "agent.queue.list.request":
+      return "agent.queue.list.response" as const;
+    case "agent.queue.resume.request":
+      return "agent.queue.resume.response" as const;
+    case "agent.queue.cancel_entry.request":
+      return "agent.queue.cancel_entry.response" as const;
+    case "agent.queue.reorder.request":
+      return "agent.queue.reorder.response" as const;
+    case "agent.queue.edit_entry.request":
+      return "agent.queue.edit_entry.response" as const;
+  }
+}
+
+type SendAgentMessageDisposition = NonNullable<
+  SendAgentMessageResponseMessage["payload"]["disposition"]
+>;
+
+/** The marker the app shows on a sent message: an interrupt or out-of-band run counts as a start. */
+function toSendAgentMessageDisposition(
+  disposition: BackgroundDispatch["disposition"],
+): SendAgentMessageDisposition | undefined {
+  switch (disposition) {
+    case "steered":
+    case "queued":
+      return disposition;
+    case "started":
+    case "restarted":
+    case "out_of_band":
+      return "started";
+    case "skipped_archived":
+    case "dropped":
+      return undefined;
+  }
+}
+
 function errorToFriendlyMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
@@ -474,7 +530,7 @@ export interface SessionOptions {
   workspaceLabelService?: WorkspaceLabelService;
   readAloud?: ReadAloudService;
   voiceOrchestrator?: VoiceOrchestrator | null;
-  delegations?: Pick<DelegationService, "stopActiveTurn"> | null;
+  delegations?: Pick<DelegationService, "stopActiveTurn" | "disposeQueuedWake"> | null;
   filesystem?: SessionFileSystem;
   scheduleService: ScheduleService;
   checkoutDiffManager: CheckoutDiffManager;
@@ -781,7 +837,10 @@ export class Session {
   private readonly workspaceLabelService: WorkspaceLabelService | null;
   private readonly readAloud: ReadAloudService | undefined;
   private readonly voiceOrchestrator: VoiceOrchestrator | null | undefined;
-  private readonly delegations: Pick<DelegationService, "stopActiveTurn"> | null | undefined;
+  private readonly delegations:
+    | Pick<DelegationService, "stopActiveTurn" | "disposeQueuedWake">
+    | null
+    | undefined;
   private readonly voiceMessages: VoiceMessagesSessionHandler;
   private readonly eventSubscriptions = new Map<
     string,
@@ -1217,15 +1276,9 @@ export class Session {
           reloadAgentSession: (agentId, overrides) =>
             this.agentManager.reloadAgentSession(agentId, overrides),
           sendSpokenInput: async (agentId, text) => {
-            await this.handleSendAgentMessage(
-              agentId,
-              text,
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              { spokenInput: true },
-            );
+            await this.handleSendAgentMessage(agentId, text, undefined, undefined, undefined, {
+              spokenInput: true,
+            });
           },
           interruptAgentIfRunning: (agentId) => this.interruptAgentIfRunning(agentId),
           hasActiveAgentRun: (agentId) => this.hasActiveAgentRun(agentId),
@@ -2069,6 +2122,14 @@ export class Session {
     const storedRecord = await this.agentStorage.get(payload.id);
     payload.title = storedRecord?.title ?? null;
     payload.archivedAt = storedRecord?.archivedAt ?? null;
+    return this.withQueue(payload);
+  }
+
+  private withQueue(payload: AgentSnapshotPayload): AgentSnapshotPayload {
+    const queue = this.agentManager.messageQueue.snapshot(payload.id);
+    if (queue) {
+      payload.queue = queue;
+    }
     return payload;
   }
 
@@ -2080,7 +2141,7 @@ export class Session {
     record: StoredAgentRecord,
     registeredProviderIds = new Set(this.providerSnapshotManager.listRegisteredProviderIds()),
   ): AgentSnapshotPayload {
-    return buildStoredAgentPayload(record, registeredProviderIds);
+    return this.withQueue(buildStoredAgentPayload(record, registeredProviderIds));
   }
 
   private isProviderVisibleToClient(provider: string): boolean {
@@ -2990,6 +3051,13 @@ export class Session {
       }
       case "agent.fork_context.request":
         return this.handleAgentForkContextRequest(msg);
+      case "agent.queue.list.request":
+      case "agent.queue.resume.request":
+      case "agent.queue.cancel_entry.request":
+      case "agent.queue.reorder.request":
+      case "agent.queue.edit_entry.request":
+      case "agent.queue.promote_to_steer.request":
+        return this.handleAgentQueueRequest(msg);
       default:
         return undefined;
     }
@@ -4169,7 +4237,6 @@ export class Session {
     messageId?: string,
     images?: Array<{ data: string; mimeType: string }>,
     attachments?: AgentAttachment[],
-    runOptions?: AgentRunOptions,
     options?: { spokenInput?: boolean },
   ): Promise<{ ok: true } | { ok: false; error: string }> {
     this.sessionLogger.info(
@@ -4192,17 +4259,17 @@ export class Session {
     const prompt = buildAgentPrompt(promptText, images, attachments);
 
     try {
-      await sendPromptToAgent({
+      const dispatch = await sendPromptToAgent({
         agentManager: this.agentManager,
         agentStorage: this.agentStorage,
         agentId,
         prompt,
         messageId,
-        runOptions,
-        // A typed or spoken message from the human answers any permission the
-        // agent is blocked on.
         clearPendingPermissions: true,
         logger: this.sessionLogger,
+      });
+      void dispatch.settled.catch((error: unknown) => {
+        this.handleAgentRunError(agentId, error, "Failed to deliver a queued agent message");
       });
       return { ok: true };
     } catch (error) {
@@ -4956,6 +5023,7 @@ export class Session {
     this.sessionLogger.info({ agentId }, `Cancel request received for agent ${agentId}`);
 
     try {
+      await this.agentManager.messageQueue.hold(agentId, "user_stop");
       await this.delegations?.stopActiveTurn(agentId);
       await cancelAgentRunCommand(
         { agentManager: this.agentManager, logger: this.sessionLogger },
@@ -8417,6 +8485,72 @@ export class Session {
     }
   }
 
+  private async handleAgentQueueRequest(msg: AgentQueueRequest): Promise<void> {
+    const queue = this.agentManager.messageQueue;
+    const { agentId, requestId } = msg;
+    let disposition: SendAgentMessageDisposition | null = null;
+    let error: string | null = null;
+    try {
+      switch (msg.type) {
+        case "agent.queue.list.request":
+          break;
+        case "agent.queue.resume.request":
+          await queue.resume(agentId);
+          break;
+        case "agent.queue.cancel_entry.request": {
+          const removed = await queue.cancel(agentId, msg.entryId);
+          if (!removed) error = "The message already left the queue.";
+          if (removed?.origin === "delegation_wake") {
+            await this.delegations?.disposeQueuedWake(agentId, removed.id);
+          }
+          break;
+        }
+        case "agent.queue.reorder.request":
+          if (!(await queue.reorder(agentId, msg.entryIds))) {
+            error = "The queue changed; refresh and try again.";
+          }
+          break;
+        case "agent.queue.edit_entry.request":
+          if (!(await queue.edit(agentId, msg.entryId, msg.text))) {
+            error = "Only a queued message you or an agent sent can be edited.";
+          }
+          break;
+        case "agent.queue.promote_to_steer.request": {
+          await ensureAgentLoaded(agentId, {
+            agentManager: this.agentManager,
+            agentStorage: this.agentStorage,
+            logger: this.sessionLogger,
+          });
+          const promoted = await queue.promoteToSteer(agentId, msg.entryId);
+          if (promoted === null) error = "The message already left the queue.";
+          disposition = promoted ? (toSendAgentMessageDisposition(promoted) ?? null) : null;
+          break;
+        }
+      }
+    } catch (caught) {
+      this.sessionLogger.error(
+        { err: caught, agentId, type: msg.type },
+        "Agent queue request failed",
+      );
+      error = errorToFriendlyMessage(caught);
+    }
+    const payload = {
+      requestId,
+      agentId,
+      accepted: error === null,
+      error,
+      queue: queue.snapshot(agentId) ?? EMPTY_AGENT_QUEUE,
+    };
+    if (msg.type === "agent.queue.promote_to_steer.request") {
+      this.emit({
+        type: "agent.queue.promote_to_steer.response",
+        payload: { ...payload, disposition },
+      });
+      return;
+    }
+    this.emit({ type: queueResponseType(msg.type), payload });
+  }
+
   private async prepareAgentMessage(agentId: string, text: string): Promise<void> {
     await ensureAgentLoaded(agentId, {
       agentManager: this.agentManager,
@@ -8460,8 +8594,9 @@ export class Session {
         },
         "agent.session.send_agent_message",
       );
+      let disposition: SendAgentMessageDisposition | undefined;
       const send = async () => {
-        const result = await sendPromptToAgent({
+        const dispatch = await sendPromptToAgent({
           agentManager: this.agentManager,
           agentStorage: this.agentStorage,
           agentId,
@@ -8471,7 +8606,13 @@ export class Session {
           clearPendingPermissions: true,
           logger: this.sessionLogger,
         });
-        if (result.disposition === "turn_started") {
+        void dispatch.settled.catch((error: unknown) => {
+          this.handleAgentRunError(agentId, error, "Failed to deliver a queued agent message");
+        });
+        disposition = toSendAgentMessageDisposition(dispatch.disposition);
+        const startedTurn =
+          dispatch.disposition === "started" || dispatch.disposition === "restarted";
+        if (startedTurn && this.agentManager.hasInFlightRun(agentId)) {
           await waitForAgentRunStartWithTimeout(
             this.agentManager,
             agentId,
@@ -8500,6 +8641,7 @@ export class Session {
           agentId,
           accepted: true,
           error: null,
+          ...(disposition ? { disposition } : {}),
         },
       });
     } catch (error) {

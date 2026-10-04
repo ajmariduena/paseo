@@ -161,6 +161,8 @@ import { ScheduleService } from "./schedule/service.js";
 import { DelegationService } from "./delegation/delegation-service.js";
 import { DelegationStore } from "./delegation/delegation-store.js";
 import { PromptAnnotationStore } from "./agent/prompt-annotations.js";
+import { AgentQueueStore } from "./agent-queue/store.js";
+import { createRestoredEntryDeliverer } from "./agent/message-dispatch.js";
 import { DaemonConfigStore, type MutableDaemonConfig } from "./daemon-config-store.js";
 import { createOrchestrationSkills } from "./orchestration-skills/index.js";
 import { resolveConfigFromPersisted, type CliConfigOverrides } from "./config.js";
@@ -1018,6 +1020,7 @@ export async function createPaseoDaemon(
     providerDefinitions: initialAgentManagerState.providerDefinitions,
     registry: agentStorage,
     promptAnnotations: new PromptAnnotationStore(path.join(config.paseoHome, "prompt-annotations")),
+    messageQueueStore: new AgentQueueStore(path.join(config.paseoHome, "agent-queues")),
     idleRuntimeTimeoutMs: config.idleRuntimeTimeoutMs,
     appendSystemPrompt: config.appendSystemPrompt,
     onWorkspaceStateMayHaveChanged: ({ cwd }) => {
@@ -1049,6 +1052,10 @@ export async function createPaseoDaemon(
   );
   await agentStorage.initialize();
   logger.info({ elapsed: elapsed() }, "Agent storage initialized");
+  agentManager.messageQueue.setFallbackDeliverer(
+    createRestoredEntryDeliverer({ agentManager, agentStorage, logger }),
+  );
+  await agentManager.messageQueue.load();
   await bootstrapWorkspaceRegistries({
     serverId,
     paseoHome: config.paseoHome,

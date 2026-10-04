@@ -121,6 +121,7 @@ export class DelegationService {
       new Date().toISOString(),
     );
     this.logger.trace({ ...input, taskId: task?.id ?? null }, "delegation.acknowledged");
+    await this.pruneQueuedWakes(input.parentAgentId);
     return task;
   }
 
@@ -195,6 +196,12 @@ export class DelegationService {
       input.childAgentId,
       new Date().toISOString(),
     );
+    await this.pruneQueuedWakes(input.parentAgentId);
+  }
+
+  /** The user cancelled a queued wake: its cohort stops waking the parent. */
+  async disposeQueuedWake(parentAgentId: string, messageId: string): Promise<void> {
+    await this.store.disposeWake(parentAgentId, messageId, new Date().toISOString());
   }
 
   /** Re-checks a child whose queued message finished dispatching without a state change. */
@@ -207,6 +214,24 @@ export class DelegationService {
     const run = this.agentManager.getActiveRun(agentId);
     if (run) {
       await this.store.stopCohortsOfRun(agentId, run.key, new Date().toISOString());
+      await this.pruneQueuedWakes(agentId);
+    }
+  }
+
+  /** Removes queued wakes whose delivery was acknowledged, disposed, or replaced. */
+  private async pruneQueuedWakes(parentAgentId: string): Promise<void> {
+    const queue = this.agentManager.messageQueue;
+    const wakes = queue.entries(parentAgentId).filter((entry) => entry.wake !== null);
+    if (wakes.length === 0) return;
+    const file = await this.store.get(parentAgentId);
+    for (const entry of wakes) {
+      const cohort = entry.wake ? file?.cohorts[entry.wake.cohortKey] : undefined;
+      const delivery = cohort?.delivery;
+      const isCurrent =
+        cohort?.disposition === "open" &&
+        delivery?.messageId === entry.id &&
+        delivery.dispatch.kind !== "started";
+      if (!isCurrent) await queue.cancel(parentAgentId, entry.id);
     }
   }
 

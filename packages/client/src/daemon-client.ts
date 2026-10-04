@@ -43,6 +43,9 @@ import type {
   FileWriteResult,
   FetchAgentTimelineResponseMessage,
   AgentForkContextResponseMessage,
+  AgentQueueListResponseMessage,
+  AgentQueuePromoteToSteerResponseMessage,
+  SendAgentMessageResponseMessage,
   GitSetupOptions,
   CheckoutStatusResponse,
   CheckoutCommit,
@@ -433,6 +436,21 @@ export interface DaemonClientTrace {
   beginSection(name: string, args?: Record<string, string>): void;
   endSection(): void;
 }
+
+export interface SendAgentMessageResult {
+  /** Absent from daemons without serverMessageQueue and for a retried messageId. */
+  disposition?: NonNullable<SendAgentMessageResponseMessage["payload"]["disposition"]>;
+}
+
+type AgentQueueResponseType =
+  | "agent.queue.list.response"
+  | "agent.queue.resume.response"
+  | "agent.queue.cancel_entry.response"
+  | "agent.queue.reorder.response"
+  | "agent.queue.edit_entry.response"
+  | "agent.queue.promote_to_steer.response";
+
+export type AgentQueueResponsePayload = AgentQueueListResponseMessage["payload"];
 
 export interface SendMessageOptions {
   messageId?: string;
@@ -3187,6 +3205,77 @@ export class DaemonClient {
     }
   }
 
+  async listAgentQueue(agentId: string): Promise<AgentQueueResponsePayload> {
+    return await this.sendAgentQueueRequest<"agent.queue.list.response">({
+      type: "agent.queue.list.request",
+      agentId,
+    });
+  }
+
+  /** Releases a held queue so its next message starts when the agent is idle. */
+  async resumeAgentQueue(agentId: string): Promise<AgentQueueResponsePayload> {
+    return await this.sendAgentQueueRequest<"agent.queue.resume.response">({
+      type: "agent.queue.resume.request",
+      agentId,
+    });
+  }
+
+  async cancelQueuedAgentMessage(
+    agentId: string,
+    entryId: string,
+  ): Promise<AgentQueueResponsePayload> {
+    return await this.sendAgentQueueRequest<"agent.queue.cancel_entry.response">({
+      type: "agent.queue.cancel_entry.request",
+      agentId,
+      entryId,
+    });
+  }
+
+  async reorderAgentQueue(agentId: string, entryIds: string[]): Promise<AgentQueueResponsePayload> {
+    return await this.sendAgentQueueRequest<"agent.queue.reorder.response">({
+      type: "agent.queue.reorder.request",
+      agentId,
+      entryIds,
+    });
+  }
+
+  async editQueuedAgentMessage(
+    agentId: string,
+    entryId: string,
+    text: string,
+  ): Promise<AgentQueueResponsePayload> {
+    return await this.sendAgentQueueRequest<"agent.queue.edit_entry.response">({
+      type: "agent.queue.edit_entry.request",
+      agentId,
+      entryId,
+      text,
+    });
+  }
+
+  async promoteQueuedAgentMessageToSteer(
+    agentId: string,
+    entryId: string,
+  ): Promise<AgentQueuePromoteToSteerResponseMessage["payload"]> {
+    return await this.sendAgentQueueRequest<"agent.queue.promote_to_steer.response">({
+      type: "agent.queue.promote_to_steer.request",
+      agentId,
+      entryId,
+    });
+  }
+
+  private async sendAgentQueueRequest<TResponseType extends AgentQueueResponseType>(
+    message: {
+      type: Extract<SessionInboundMessage["type"], `agent.queue.${string}.request`>;
+      agentId: string;
+    } & Record<string, unknown>,
+  ): Promise<CorrelatedResponsePayload<TResponseType>> {
+    const payload = await this.sendNamespacedCorrelatedSessionRequest<TResponseType>({ message });
+    if (!payload.accepted) {
+      throw new Error(payload.error ?? `${message.type} rejected`);
+    }
+    return payload;
+  }
+
   async updateAgent(
     agentId: string,
     updates: { name?: string; labels?: Record<string, string> },
@@ -3676,7 +3765,7 @@ export class DaemonClient {
     agentId: string,
     text: string,
     options?: SendMessageOptions,
-  ): Promise<void> {
+  ): Promise<SendAgentMessageResult> {
     const requestId = this.createRequestId();
     const messageId = options?.messageId ?? crypto.randomUUID();
     const message = SessionInboundMessageSchema.parse({
@@ -3706,6 +3795,7 @@ export class DaemonClient {
     if (!payload.accepted) {
       throw new Error(payload.error ?? "sendAgentMessage rejected");
     }
+    return payload.disposition ? { disposition: payload.disposition } : {};
   }
 
   async sendMessage(agentId: string, text: string, options?: SendMessageOptions): Promise<void> {
