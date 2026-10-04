@@ -49,6 +49,15 @@ const AGENT_FIELDS = [
   "notifyOnFinish",
   "settings",
   "labels",
+  "clientRequestId",
+] as const;
+const SEND_PROMPT_FIELDS = [
+  "agentId",
+  "delivery",
+  "sessionMode",
+  "background",
+  "notifyOnFinish",
+  "clientRequestId",
 ] as const;
 const AUTOMATION_FIELDS = [
   "name",
@@ -99,20 +108,51 @@ const TOOL_SPECS: Readonly<Record<string, ToolDetailSpec>> = {
   create_agent: {
     promptField: "initialPrompt",
     inputOrder: AGENT_FIELDS,
-    outputFields: ["agentId", "status", "currentModeId", "cwd"],
+    outputFields: ["agentId", "status", "currentModeId", "cwd", "deduplicated"],
   },
   send_agent_prompt: {
     promptField: "prompt",
-    inputOrder: AGENT_FIELDS,
-    outputFields: ["status", "lastMessage", "permission"],
+    inputOrder: SEND_PROMPT_FIELDS,
+    outputFields: ["disposition", "status", "lastMessage", "permission"],
   },
-  get_agent_status: { inputOrder: ["agentId"] },
-  list_agents: { inputOrder: ["cwd", "statuses", "sinceHours", "limit", "includeArchived"] },
-  cancel_agent: { inputOrder: ["agentId"] },
+  wait_for_agent: {
+    inputOrder: ["agentId", "timeoutMs"],
+    outputFields: ["status", "timedOut", "lastMessage", "permission", "delegatedTask"],
+  },
+  get_orchestration_capabilities: {
+    inputOrder: ["provider", "includeModels"],
+    outputFields: ["limits", "features"],
+  },
+  get_agent_status: { inputOrder: ["agentId"], outputFields: ["status", "delegatedTask"] },
+  list_agents: {
+    inputOrder: [
+      "scope",
+      "parentAgentId",
+      "titleContains",
+      "cwd",
+      "statuses",
+      "sinceHours",
+      "limit",
+      "includeArchived",
+    ],
+  },
+  cancel_agent: { inputOrder: ["agentId"], outputFields: ["status"] },
   archive_agent: { inputOrder: ["agentId"] },
   kill_agent: { inputOrder: ["agentId"] },
   update_agent: { inputOrder: AGENT_FIELDS },
-  get_agent_activity: { inputOrder: ["agentId", "limit"] },
+  get_agent_activity: {
+    inputOrder: [
+      "agentId",
+      "view",
+      "limit",
+      "afterPosition",
+      "epoch",
+      "itemPosition",
+      "textOffset",
+      "maxCharsPerItem",
+    ],
+    outputFields: ["content", "items", "nextPosition", "hasMore", "hasOlder", "reset"],
+  },
   set_agent_mode: { inputOrder: ["agentId", "modeId"] },
   list_workspace_scripts: { inputOrder: ["workspaceId"] },
   start_workspace_script: { inputOrder: ["workspaceId", "scriptName"] },
@@ -172,30 +212,42 @@ const TOOL_SPECS: Readonly<Record<string, ToolDetailSpec>> = {
 };
 
 const FIELD_LABELS: Readonly<Record<string, string>> = {
+  afterPosition: "After position",
   agentId: "Agent",
   archivedAgentIds: "Archived agents",
   baseBranch: "Base branch",
   branchName: "New branch",
   browserId: "Browser tab",
   clearExpires: "Clear expiry",
+  clientRequestId: "Retry key",
   currentModeId: "Current mode",
   cwd: "Working directory",
   deltaX: "Horizontal delta",
   deltaY: "Vertical delta",
+  delegatedTask: "Delegated result",
+  delivery: "If the agent is busy",
+  disposition: "Outcome",
   doubleClick: "Double click",
   expiresIn: "Expires in",
   expiresAt: "Expires",
   filePaths: "Files",
   fullPage: "Full page",
+  hasMore: "More after this page",
+  hasOlder: "Older entries",
+  includeModels: "Include models",
   initialPrompt: "Prompt",
   id: "ID",
+  itemPosition: "Item position",
   lastMessage: "Last message",
+  maxCharsPerItem: "Characters per item",
   maxEntries: "Maximum entries",
   maxRuns: "Maximum runs",
   modeId: "Mode",
   newMode: "New mode",
+  nextPosition: "Next position",
   nextRunAt: "Next run",
   notifyOnFinish: "Notify on finish",
+  parentAgentId: "Parent agent",
   prNumber: "Change request",
   projectId: "Project",
   removedDirectory: "Removed directory",
@@ -205,12 +257,45 @@ const FIELD_LABELS: Readonly<Record<string, string>> = {
   sinceHours: "Since (hours)",
   sourceRef: "Source",
   targetRef: "Target",
+  taskId: "Task",
   terminalId: "Terminal",
+  textOffset: "Text offset",
   thinkingOptionId: "Thinking",
+  timedOut: "Timed out",
   timeoutMs: "Timeout (ms)",
+  titleContains: "Title contains",
   updateCount: "Updates",
   workspaceId: "Workspace",
   worktreeSlug: "Worktree",
+};
+
+/** Enum values a person reads differently from the wire, per top-level field. */
+const FIELD_VALUE_LABELS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  delivery: {
+    auto: "Steer, or run after its turn",
+    queue: "Run after its turn",
+    steer: "Steer into its turn",
+    restart: "Interrupt and restart",
+  },
+  disposition: {
+    started: "Started a turn",
+    steered: "Steered into the running turn",
+    queued: "Runs after the running turn",
+    restarted: "Interrupted and restarted",
+    out_of_band: "Sent outside a turn",
+    duplicate: "Already sent",
+  },
+  scope: {
+    cwd: "Working directory",
+    children: "My subagents",
+    workspace: "Workspace",
+    project: "Project",
+    all: "All agents",
+  },
+  status: {
+    cancel_requested: "Cancel requested",
+    not_running: "Not running",
+  },
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -253,6 +338,11 @@ function formatValue(value: unknown, depth = 0): string {
   return String(value);
 }
 
+function formatFieldValue(key: string, value: unknown): string {
+  const label = typeof value === "string" ? FIELD_VALUE_LABELS[key]?.[value] : undefined;
+  return label ?? formatValue(value);
+}
+
 function indentMultiline(value: string, spaces: number): string {
   const indentation = " ".repeat(spaces);
   return value.replace(/\n/g, `\n${indentation}`);
@@ -290,7 +380,7 @@ function fieldsFromValue(
   }
   return orderedEntries(value, order, omittedKey, includedKeys).map(([key, child]) => ({
     label: humanizeKey(key),
-    value: formatValue(child),
+    value: formatFieldValue(key, child),
   }));
 }
 
