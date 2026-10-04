@@ -187,6 +187,11 @@ export const ko: TranslationResources = {
       openReview: "리뷰 첨부 열기",
       removeReview: "리뷰 첨부 제거",
     },
+    sendModes: {
+      optionsTitle: "보내기 옵션",
+      steeredMarker: "지시",
+      queuedMarker: "대기 후 전송됨",
+    },
     queue: {
       subagentResults: "하위 에이전트 결과",
       notification: "알림",
@@ -2712,6 +2717,7 @@ export const ko: TranslationResources = {
         interruptAgent: "에이전트 중단",
         sendMessage: "메시지 보내기",
         queueMessage: "메시지 대기열에 추가",
+        steerQueuedMessage: "첫 번째 대기 메시지로 지시 추가",
         muteUnmuteVoiceMode: "음성 모드 음소거/해제",
         switchProject: "프로젝트 전환",
       },

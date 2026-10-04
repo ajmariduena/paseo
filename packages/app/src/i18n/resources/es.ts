@@ -188,6 +188,11 @@ export const es: TranslationResources = {
       openReview: "Abrir archivo adjunto de reseña",
       removeReview: "Eliminar archivo adjunto de reseña",
     },
+    sendModes: {
+      optionsTitle: "Opciones de envío",
+      steeredMarker: "Orientación",
+      queuedMarker: "En cola, luego enviado",
+    },
     queue: {
       subagentResults: "Resultados de subagentes",
       notification: "Notificación",
@@ -2760,6 +2765,7 @@ export const es: TranslationResources = {
         interruptAgent: "agente de interrupción",
         sendMessage: "enviar mensaje",
         queueMessage: "mensaje de cola",
+        steerQueuedMessage: "Orientar con el primer mensaje en cola",
         muteUnmuteVoiceMode: "Silenciar el modo de voz/unmute",
         switchProject: "Cambiar proyecto",
       },

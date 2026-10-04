@@ -187,6 +187,11 @@ export const ar: TranslationResources = {
       openReview: "فتح مرفق المراجعة",
       removeReview: "إزالة مرفق المراجعة",
     },
+    sendModes: {
+      optionsTitle: "خيارات الإرسال",
+      steeredMarker: "توجيه",
+      queuedMarker: "في قائمة الانتظار ثم أُرسلت",
+    },
     queue: {
       subagentResults: "نتائج الوكلاء الفرعيين",
       notification: "إشعار",
@@ -2700,6 +2705,7 @@ export const ar: TranslationResources = {
         interruptAgent: "عامل المقاطعة",
         sendMessage: "أرسل رسالة",
         queueMessage: "رسالة قائمة الانتظار",
+        steerQueuedMessage: "التوجيه بأول رسالة في قائمة الانتظار",
         muteUnmuteVoiceMode: "كتم وضع الصوت /unmute",
         switchProject: "تبديل المشروع",
       },

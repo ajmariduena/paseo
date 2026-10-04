@@ -20,6 +20,7 @@ import type { MessageSubmissionRejectionOutcome } from "@/composer/submission/mo
 import type { PickedImageAttachmentInput } from "@/hooks/image-attachment-picker";
 import { i18n } from "@/i18n/i18next";
 import { forgetQueuedText, rememberQueuedText } from "@/composer/queue/queued-text";
+import { recordSendDisposition } from "@/composer/submission/send-markers";
 
 export interface QueuedComposerMessage {
   id: string;
@@ -228,6 +229,7 @@ export async function dispatchComposerAgentMessage(
       images: imagesData ?? [],
       attachments: wirePayload.attachments,
     });
+    recordSendDisposition(clientMessageId, result.disposition);
     if (result.disposition === "queued") {
       // The daemon queued it behind the running turn: the queue track shows it until it starts,
       // and the timeline gets the row when it does.
@@ -272,6 +274,7 @@ export async function enqueueComposerAgentMessage(
       images: imagesData ?? [],
       attachments: wirePayload.attachments,
     });
+    recordSendDisposition(messageId, result.disposition);
     return result.disposition;
   } catch (error) {
     forgetQueuedText(messageId);

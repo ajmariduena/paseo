@@ -65,7 +65,12 @@ import {
   type ComposerKeyPressEvent,
   type MessageInputRef,
 } from "./input/input";
-import type { ImageAttachment, MessagePayload, TextReplacement } from "./types";
+import type {
+  ActiveTurnSendBehavior,
+  ImageAttachment,
+  MessagePayload,
+  TextReplacement,
+} from "./types";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
 import type { DraftCommandTarget } from "@/hooks/use-agent-commands-query";
 import { encodeImages } from "@/utils/encode-images";
@@ -158,6 +163,8 @@ import { getForgePresentation } from "@/git/forge";
 import { ForgeBrandIcon } from "@/git/forge-icon";
 import { useComposerForgeAutoAttach } from "./forge-auto-attach";
 import { ServerQueueTrack } from "./queue/track";
+import { useServerQueueActions } from "./queue/actions";
+import { resolveFirstQueuedMessageId } from "./queue/model";
 import { readClipboardImage } from "./clipboard-image";
 import { normalizeNativePastedImages, type NativePastedFile } from "./native-pasted-image";
 import { PluginResourceAttachmentPill, usePluginAttachmentPicker } from "@/plugins";
@@ -575,6 +582,8 @@ interface DispatchComposerKeyboardActionArgs {
   isConnected: boolean;
   handleCancelAgent: () => void;
   focusMessageInputForKeyboardAction: () => void;
+  /** Returns whether there was a queued message to steer. */
+  steerFirstQueued: () => boolean;
 }
 
 function dispatchComposerKeyboardAction(args: DispatchComposerKeyboardActionArgs): boolean {
@@ -587,8 +596,14 @@ function dispatchComposerKeyboardAction(args: DispatchComposerKeyboardActionArgs
     isConnected,
     handleCancelAgent,
     focusMessageInputForKeyboardAction,
+    steerFirstQueued,
   } = args;
   if (!isPaneFocused) return false;
+
+  if (action.id === "message-input.steer-queued") {
+    if (!isAgentRunning || !isConnected) return false;
+    return steerFirstQueued();
+  }
 
   if (action.id === "agent.interrupt") {
     if (messageInputRef.current?.runKeyboardAction("dictation-cancel")) return true;
@@ -618,6 +633,7 @@ function ComposerKeyboardRegistration({
   isConnected,
   handleCancelAgent,
   focusMessageInputForKeyboardAction,
+  steerFirstQueued,
   isMessageInputFocused,
   handlerId,
 }: Omit<DispatchComposerKeyboardActionArgs, "action" | "isPaneFocused"> & {
@@ -636,6 +652,7 @@ function ComposerKeyboardRegistration({
         isConnected,
         handleCancelAgent,
         focusMessageInputForKeyboardAction,
+        steerFirstQueued,
       }),
     [
       focusMessageInputForKeyboardAction,
@@ -645,6 +662,7 @@ function ComposerKeyboardRegistration({
       isCancellingAgent,
       isConnected,
       messageInputRef,
+      steerFirstQueued,
     ],
   );
 
@@ -659,6 +677,7 @@ function ComposerKeyboardRegistration({
       "message-input.dictation-confirm",
       "message-input.voice-toggle",
       "message-input.voice-mute-toggle",
+      "message-input.steer-queued",
     ],
     enabled: isActiveComposer,
     priority: resolveKeyboardPriority(isMessageInputFocused),
@@ -1018,6 +1037,19 @@ interface ComposerProps {
 
 const EMPTY_ARRAY: readonly QueuedMessage[] = [];
 const StableMessageInput = memo(MessageInput);
+
+interface OutgoingComposerMessage {
+  text: string;
+  attachments: ComposerAttachment[];
+  forceSend?: boolean;
+  activeTurnBehavior?: ActiveTurnSendBehavior;
+}
+
+function resolveDefaultActiveTurnBehavior(
+  sendBehavior: "interrupt" | "steer" | "queue",
+): ActiveTurnSendBehavior {
+  return sendBehavior === "steer" ? "steer" : "interrupt";
+}
 
 function resolveContextWindowValues(
   rawMax: number | null,
@@ -1521,7 +1553,7 @@ function ComposerContentImpl({
         agentId: string,
         text: string,
         attachments: ComposerAttachment[],
-        activeTurnBehavior: "interrupt" | "steer",
+        activeTurnBehavior: ActiveTurnSendBehavior,
       ) => Promise<void>)
     | null
   >(null);
@@ -1575,7 +1607,11 @@ function ComposerContentImpl({
   }, [focusInput, onFocusInput]);
 
   const submitMessage = useCallback(
-    async (text: string, submitAttachments: ComposerAttachment[]) => {
+    async (
+      text: string,
+      submitAttachments: ComposerAttachment[],
+      activeTurnBehavior?: ActiveTurnSendBehavior,
+    ) => {
       onMessageSent?.();
       if (onSubmitMessageRef.current) {
         await onSubmitMessageRef.current({ text, attachments: submitAttachments, cwd });
@@ -1588,7 +1624,7 @@ function ComposerContentImpl({
         agentIdRef.current,
         text,
         submitAttachments,
-        appSettings.sendBehavior === "steer" ? "steer" : "interrupt",
+        activeTurnBehavior ?? resolveDefaultActiveTurnBehavior(appSettings.sendBehavior),
       );
     },
     [appSettings.sendBehavior, cwd, onMessageSent, t],
@@ -1603,7 +1639,7 @@ function ComposerContentImpl({
       targetAgentId: string,
       text: string,
       sendAttachments: ComposerAttachment[],
-      activeTurnBehavior: "interrupt" | "steer",
+      activeTurnBehavior: ActiveTurnSendBehavior,
     ) => {
       if (!client) {
         throw new Error(t("workspace.terminal.hostDisconnected"));
@@ -1732,17 +1768,14 @@ function ComposerContentImpl({
   );
 
   const sendMessageWithContent = useCallback(
-    async (
-      outgoingMessage: string,
-      outgoingAttachments: ComposerAttachment[],
-      forceSend?: boolean,
-    ) => {
+    async (outgoing: OutgoingComposerMessage) => {
+      const outgoingAttachments = outgoing.attachments;
       const result = await submitAgentInput({
-        message: outgoingMessage,
+        message: outgoing.text,
         attachments: outgoingAttachments,
         hasExternalContent,
         allowEmptySubmit,
-        forceSend,
+        forceSend: outgoing.forceSend,
         submitBehavior,
         isAgentRunning,
         // Parent-managed submits are still valid submit paths even when the
@@ -1755,7 +1788,7 @@ function ComposerContentImpl({
           if (submitBehavior !== "preserve-and-lock") {
             beginSubmit(submitAttachments);
           }
-          await submitMessage(submitText, submitAttachments);
+          await submitMessage(submitText, submitAttachments, outgoing.activeTurnBehavior);
         },
         clearDraft,
         setUserInput: replaceUserInput,
@@ -1810,7 +1843,12 @@ function ComposerContentImpl({
       if (blurOnSubmit) {
         messageInputRef.current?.blur();
       }
-      void sendMessageWithContent(payload.text, outgoingAttachments, payload.forceSend);
+      void sendMessageWithContent({
+        text: payload.text,
+        attachments: outgoingAttachments,
+        forceSend: payload.forceSend,
+        activeTurnBehavior: payload.activeTurnBehavior,
+      });
     },
     [
       attachments,
@@ -2025,7 +2063,7 @@ function ComposerContentImpl({
   );
 
   const handleSendQueuedNow = useCallback(
-    async (id: string) => {
+    async (id: string, activeTurnBehavior?: ActiveTurnSendBehavior) => {
       if (!sendAgentMessageRef.current && !onSubmitMessageRef.current) return;
       // Reuse the regular send path; server-side send atomically interrupts any active run.
       const result = await sendQueuedComposerMessageNow({
@@ -2033,7 +2071,7 @@ function ComposerContentImpl({
         messageId: id,
         queue: queueWriter,
         submitMessage: ({ text, attachments: queuedAttachments }) =>
-          submitMessage(text, queuedAttachments),
+          submitMessage(text, queuedAttachments, activeTurnBehavior),
         failedToSendMessage: t("composer.errors.failedToSend"),
       });
       if (result.status === "failed") {
@@ -2042,6 +2080,33 @@ function ComposerContentImpl({
     },
     [agentId, queueWriter, submitMessage, t],
   );
+
+  const serverQueueActions = useServerQueueActions(serverId, agentId);
+  const sendServerQueueEntryNow = serverQueueActions.sendNow;
+
+  const steerFirstQueued = useCallback((): boolean => {
+    if (supportsServerQueue) {
+      const entries =
+        useSessionStore.getState().sessions[serverId]?.agents.get(agentId)?.queue?.entries ?? [];
+      const entryId = resolveFirstQueuedMessageId(entries);
+      if (!entryId) return false;
+      sendServerQueueEntryNow(entryId);
+      return true;
+    }
+    // COMPAT(serverMessageQueue): the client-side queue serves daemons without the server
+    // queue; remove after 2027-10-04.
+    const head = queueWriter.read(agentId)[0];
+    if (!head) return false;
+    void handleSendQueuedNow(head.id, "steer");
+    return true;
+  }, [
+    agentId,
+    handleSendQueuedNow,
+    queueWriter,
+    sendServerQueueEntryNow,
+    serverId,
+    supportsServerQueue,
+  ]);
 
   const handleQueue = useCallback(
     (payload: MessagePayload) => {
@@ -2440,7 +2505,7 @@ function ComposerContentImpl({
   const queueList = useMemo(
     () =>
       supportsServerQueue ? (
-        <ServerQueueTrack serverId={serverId} agentId={agentId} />
+        <ServerQueueTrack serverId={serverId} agentId={agentId} actions={serverQueueActions} />
       ) : (
         renderQueueTrack({
           queuedMessages,
@@ -2456,6 +2521,7 @@ function ComposerContentImpl({
       handleSendQueuedNow,
       queuedMessages,
       serverId,
+      serverQueueActions,
       supportsServerQueue,
       t,
     ],
@@ -2526,6 +2592,7 @@ function ComposerContentImpl({
         isConnected={isConnected}
         handleCancelAgent={handleCancelAgent}
         focusMessageInputForKeyboardAction={focusMessageInputForKeyboardAction}
+        steerFirstQueued={steerFirstQueued}
         isMessageInputFocused={isMessageInputFocused}
       />
       <View style={animatedStaticStyles.container}>

@@ -76,3 +76,13 @@ function swap(ids: readonly string[], from: number, to: number): string[] {
   next[to] = ids[from];
   return next;
 }
+
+/**
+ * The entry the steer-first-queued shortcut sends into the running turn: the oldest message a
+ * user or agent wrote. Subagent results and notifications already steer on their own when the
+ * provider can take them, so one still queued is waiting for the turn to end.
+ */
+export function resolveFirstQueuedMessageId(entries: readonly ServerQueueEntry[]): string | null {
+  const first = entries.find((entry) => entry.origin === "user" || entry.origin === "agent");
+  return first?.id ?? null;
+}

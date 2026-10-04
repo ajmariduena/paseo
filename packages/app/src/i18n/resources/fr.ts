@@ -190,6 +190,11 @@ export const fr: TranslationResources = {
       openReview: "Ouvrir la pièce jointe de l'avis",
       removeReview: "Supprimer la pièce jointe de l'avis",
     },
+    sendModes: {
+      optionsTitle: "Options d'envoi",
+      steeredMarker: "Guidage",
+      queuedMarker: "Mis en file, puis envoyé",
+    },
     queue: {
       subagentResults: "Résultats des sous-agents",
       notification: "Notification",
@@ -2762,6 +2767,7 @@ export const fr: TranslationResources = {
         interruptAgent: "Agent d'interruption",
         sendMessage: "Envoyer un message",
         queueMessage: "Message de file d'attente",
+        steerQueuedMessage: "Guider avec le premier message en file d'attente",
         muteUnmuteVoiceMode: "Mode vocal/unmutemuet",
         switchProject: "Changer de projet",
       },

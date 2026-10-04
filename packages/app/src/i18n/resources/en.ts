@@ -183,6 +183,11 @@ export const en = {
       openReview: "Open review attachment",
       removeReview: "Remove review attachment",
     },
+    sendModes: {
+      optionsTitle: "Send options",
+      steeredMarker: "Steer",
+      queuedMarker: "Queued, then sent",
+    },
     queue: {
       subagentResults: "Subagent results",
       notification: "Notification",
@@ -2824,6 +2829,7 @@ export const en = {
         interruptAgent: "Interrupt agent",
         sendMessage: "Send message",
         queueMessage: "Queue message",
+        steerQueuedMessage: "Steer first queued message",
         muteUnmuteVoiceMode: "Mute/unmute voice mode",
         switchProject: "Switch project",
       },

@@ -116,6 +116,7 @@ import { PluginTimelineItemView, useInstalledTimelineTransform } from "@/plugins
 import { SubagentTimelineProvider } from "@/subagents/timeline/context";
 import { LineageMarker } from "@/subagents/timeline/lineage-marker";
 import { readAgentMessageSender } from "@/subagents/timeline/message-sender";
+import { resolveSendMarker, useSendMarkerStore } from "@/composer/submission/send-markers";
 import { SubagentNotificationRows } from "@/subagents/timeline/notification-row";
 import { readSubagentNotificationEntries } from "@/subagents/timeline/notification-source";
 import { SubagentSpawnGroup } from "@/subagents/timeline/spawn-group";
@@ -739,6 +740,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       });
     }, []);
 
+    const sendMarkers = useSendMarkerStore((state) => state.markers);
     const renderUserMessageItem = useCallback(
       (layoutItem: StreamLayoutItem, item: Extract<StreamItem, { kind: "user_message" }>) => {
         return (
@@ -759,10 +761,18 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
               pendingClientMessageIds.has(item.clientMessageId)
             }
             senderAgentId={readAgentMessageSender(item.origin) ?? undefined}
+            sendMarker={resolveSendMarker(sendMarkers, item) ?? undefined}
           />
         );
       },
-      [context.capabilities, agentId, client, pendingClientMessageIds, resolvedServerId],
+      [
+        context.capabilities,
+        agentId,
+        client,
+        pendingClientMessageIds,
+        resolvedServerId,
+        sendMarkers,
+      ],
     );
 
     const renderAssistantMessageItem = useCallback(

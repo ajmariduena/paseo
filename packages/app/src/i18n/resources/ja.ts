@@ -188,6 +188,11 @@ export const ja: TranslationResources = {
       openReview: "レビュー添付ファイルを開く",
       removeReview: "レビュー添付ファイルを削除",
     },
+    sendModes: {
+      optionsTitle: "送信オプション",
+      steeredMarker: "指示",
+      queuedMarker: "キュー後に送信",
+    },
     queue: {
       subagentResults: "サブエージェントの結果",
       notification: "通知",
@@ -2733,6 +2738,7 @@ export const ja: TranslationResources = {
         interruptAgent: "エージェントを中断",
         sendMessage: "メッセージを送信",
         queueMessage: "メッセージをキューに追加",
+        steerQueuedMessage: "最初のキューメッセージで指示を追加",
         muteUnmuteVoiceMode: "音声モードのミュートを切り替え",
         switchProject: "プロジェクトを切り替え",
       },

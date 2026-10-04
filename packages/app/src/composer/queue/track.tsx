@@ -3,7 +3,6 @@ import { Pressable, Text, View, type PressableStateCallbackType } from "react-na
 import { useTranslation } from "react-i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { ArrowDown, ArrowUp, MoreVertical, Pencil, Trash2 } from "lucide-react-native";
-import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -14,75 +13,44 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { FormTextInput } from "@/components/ui/form-field";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
-import { useHostRuntimeClient } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
 import { formatSentByLabel } from "@/subagents/timeline/message-sender";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { confirmDialog } from "@/utils/confirm-dialog";
-import { toErrorMessage } from "@/utils/error-messages";
 import {
   resolveEditableQueueText,
   resolveQueueEntryMoves,
   resolveQueueEntrySource,
   type ServerQueueEntry,
 } from "./model";
+import {
+  IDLE_QUEUE_ACTION,
+  type QueueActionState,
+  type RunQueueAction,
+  type ServerQueueActions,
+} from "./actions";
 import { forgetQueuedText, readQueuedText, rememberQueuedText } from "./queued-text";
 
-type QueueEntryAction = "remove" | "edit" | "move" | "sendNow";
-
-/** One queue action runs at a time; its failure stays under the row until the next action. */
-type QueueActionState =
-  | { status: "idle" }
-  | { status: "pending"; entryId: string; action: QueueEntryAction }
-  | { status: "failed"; entryId: string; action: QueueEntryAction; message: string };
-
-const IDLE: QueueActionState = { status: "idle" };
-
 function actionStateForEntry(state: QueueActionState, entryId: string): QueueActionState {
-  if (state.status === "idle" || state.entryId !== entryId) return IDLE;
+  if (state.status === "idle" || state.entryId !== entryId) return IDLE_QUEUE_ACTION;
   return state;
 }
-
-type RunQueueAction = (
-  entryId: string,
-  action: QueueEntryAction,
-  operation: (client: DaemonClient) => Promise<unknown>,
-) => Promise<void>;
 
 /** The daemon's queue for one agent, above the composer input. */
 export const ServerQueueTrack = memo(function ServerQueueTrack({
   serverId,
   agentId,
+  actions,
 }: {
   serverId: string;
   agentId: string;
+  actions: ServerQueueActions;
 }): ReactElement | null {
-  const { t } = useTranslation();
   const queue = useSessionStore((state) => state.sessions[serverId]?.agents.get(agentId)?.queue);
-  const client = useHostRuntimeClient(serverId);
-  const [actionState, setActionState] = useState<QueueActionState>(IDLE);
-
-  const runAction = useCallback<RunQueueAction>(
-    async (entryId, action, operation) => {
-      if (!client) {
-        const message = t("workspace.terminal.hostDisconnected");
-        setActionState({ status: "failed", entryId, action, message });
-        return;
-      }
-      setActionState({ status: "pending", entryId, action });
-      try {
-        await operation(client);
-        setActionState(IDLE);
-      } catch (error) {
-        setActionState({ status: "failed", entryId, action, message: toErrorMessage(error) });
-      }
-    },
-    [client, t],
-  );
 
   const entries = queue?.entries;
   if (!entries?.length) return null;
-  const isBusy = actionState.status === "pending";
+  const isBusy = actions.state.status === "pending";
 
   return (
     <View style={styles.track} testID="server-queue-track">
@@ -93,9 +61,10 @@ export const ServerQueueTrack = memo(function ServerQueueTrack({
           agentId={agentId}
           entry={entry}
           entries={entries}
-          actionState={actionStateForEntry(actionState, entry.id)}
+          actionState={actionStateForEntry(actions.state, entry.id)}
           isTrackBusy={isBusy}
-          runAction={runAction}
+          runAction={actions.run}
+          sendNow={actions.sendNow}
         />
       ))}
     </View>
@@ -110,6 +79,7 @@ interface ServerQueueRowProps {
   actionState: QueueActionState;
   isTrackBusy: boolean;
   runAction: RunQueueAction;
+  sendNow: (entryId: string) => void;
 }
 
 function ServerQueueRow({
@@ -120,6 +90,7 @@ function ServerQueueRow({
   actionState,
   isTrackBusy,
   runAction,
+  sendNow,
 }: ServerQueueRowProps): ReactElement {
   const { t } = useTranslation();
   const [draft, setDraft] = useState<string | null>(null);
@@ -140,12 +111,7 @@ function ServerQueueRow({
     });
   }, [agentId, draft, entry.id, runAction]);
 
-  const handleSendNow = useCallback(() => {
-    void runAction(entry.id, "sendNow", async (client) => {
-      await client.promoteQueuedAgentMessageToSteer(agentId, entry.id);
-      forgetQueuedText(entry.id);
-    });
-  }, [agentId, entry.id, runAction]);
+  const handleSendNow = useCallback(() => sendNow(entry.id), [entry.id, sendNow]);
 
   const handleMove = useCallback(
     (order: string[]) => {

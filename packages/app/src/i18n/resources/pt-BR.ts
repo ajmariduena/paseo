@@ -188,6 +188,11 @@ export const ptBR: TranslationResources = {
       openReview: "Abrir anexo de revisão",
       removeReview: "Remover anexo de revisão",
     },
+    sendModes: {
+      optionsTitle: "Opções de envio",
+      steeredMarker: "Orientação",
+      queuedMarker: "Na fila, depois enviada",
+    },
     queue: {
       subagentResults: "Resultados de subagentes",
       notification: "Notificação",
@@ -2740,6 +2745,7 @@ export const ptBR: TranslationResources = {
         interruptAgent: "Interromper agente",
         sendMessage: "Enviar mensagem",
         queueMessage: "Enfileirar mensagem",
+        steerQueuedMessage: "Orientar com a primeira mensagem da fila",
         muteUnmuteVoiceMode: "Silenciar/ativar modo de voz",
         switchProject: "Trocar projeto",
       },

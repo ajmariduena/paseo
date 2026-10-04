@@ -188,6 +188,11 @@ export const ru: TranslationResources = {
       openReview: "Открыть вложение проверки",
       removeReview: "Удалить вложение проверки",
     },
+    sendModes: {
+      optionsTitle: "Варианты отправки",
+      steeredMarker: "Направление",
+      queuedMarker: "Из очереди",
+    },
     queue: {
       subagentResults: "Результаты субагентов",
       notification: "Уведомление",
@@ -2750,6 +2755,7 @@ export const ru: TranslationResources = {
         interruptAgent: "Прервать агента",
         sendMessage: "Отправить сообщение",
         queueMessage: "Поставить сообщение в очередь",
+        steerQueuedMessage: "Направить первым сообщением из очереди",
         muteUnmuteVoiceMode: "Выключить/включить звук в голосовом режиме",
         switchProject: "Сменить проект",
       },

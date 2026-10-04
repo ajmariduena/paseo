@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   resolveEditableQueueText,
+  resolveFirstQueuedMessageId,
   resolveQueueEntryMoves,
   resolveQueueEntrySource,
   type ServerQueueEntry,
@@ -92,5 +93,23 @@ describe("resolveQueueEntryMoves", () => {
 
   it("never moves subagent results", () => {
     expect(resolveQueueEntryMoves(queue, "wake")).toEqual({ up: null, down: null });
+  });
+});
+
+describe("resolveFirstQueuedMessageId", () => {
+  it("picks the oldest written message, skipping subagent results and notifications", () => {
+    expect(
+      resolveFirstQueuedMessageId([
+        entry("wake", { origin: "delegation_wake" }),
+        entry("notice", { origin: "system" }),
+        entry("from-parent", { origin: "agent", senderAgentId: "p" }),
+        entry("mine"),
+      ]),
+    ).toBe("from-parent");
+  });
+
+  it("has nothing to steer when only subagent results wait", () => {
+    expect(resolveFirstQueuedMessageId([entry("wake", { origin: "delegation_wake" })])).toBeNull();
+    expect(resolveFirstQueuedMessageId([])).toBeNull();
   });
 });

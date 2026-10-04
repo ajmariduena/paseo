@@ -187,6 +187,11 @@ export const zhCN: TranslationResources = {
       openReview: "打开 review 附件",
       removeReview: "移除 review 附件",
     },
+    sendModes: {
+      optionsTitle: "发送选项",
+      steeredMarker: "引导",
+      queuedMarker: "排队后发送",
+    },
     queue: {
       subagentResults: "子 Agent 结果",
       notification: "通知",
@@ -2668,6 +2673,7 @@ export const zhCN: TranslationResources = {
         interruptAgent: "中断 Agent",
         sendMessage: "发送消息",
         queueMessage: "消息排队",
+        steerQueuedMessage: "用第一条排队消息引导",
         muteUnmuteVoiceMode: "静音/取消静音语音模式",
         switchProject: "切换项目",
       },

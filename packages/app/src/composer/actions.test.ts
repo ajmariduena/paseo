@@ -45,6 +45,7 @@ import {
   type QueuedComposerMessage,
 } from "./actions";
 import { readQueuedText } from "./queue/queued-text";
+import { resolveSendMarker, useSendMarkerStore } from "./submission/send-markers";
 
 const imageMetadata: AttachmentMetadata = {
   id: "img-1",
@@ -756,6 +757,10 @@ describe("daemon queue sends", () => {
 
     expect(disposition).toBe("steered");
     expect(stream.tail.get("agent")).toMatchObject([{ kind: "user_message", text: "steer now" }]);
+    const clientMessageId = client.calls[0]!.options.messageId;
+    expect(resolveSendMarker(useSendMarkerStore.getState().markers, { clientMessageId })).toBe(
+      "steered",
+    );
   });
 
   it("enqueues on the daemon without an optimistic row and remembers the whole text", async () => {
@@ -784,6 +789,8 @@ describe("daemon queue sends", () => {
       },
     ]);
     expect(readQueuedText(client.calls[0]!.options.messageId)).toBe(text);
+    const messageId = client.calls[0]!.options.messageId;
+    expect(resolveSendMarker(useSendMarkerStore.getState().markers, { messageId })).toBe("queued");
   });
 
   it("forgets the text and rethrows when the daemon rejects the enqueue", async () => {

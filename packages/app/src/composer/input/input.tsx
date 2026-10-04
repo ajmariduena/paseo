@@ -6,6 +6,7 @@ import {
   NativeSyntheticEvent,
   TextInputKeyPressEventData,
   TextInputSelectionChangeEventData,
+  type GestureResponderEvent,
   type LayoutChangeEvent,
 } from "react-native";
 import {
@@ -72,6 +73,7 @@ const ComposerTextInput = withUnistyles(EditingTextInput, (theme) => ({
   placeholderTextColor: theme.colors.surface4,
 }));
 import {
+  resolveAlternateSendTooltipLabel,
   resolveSendTooltipLabel,
   resolveSubmitAccessibilityLabel,
   resolveVoiceAccessibilityLabel,
@@ -80,14 +82,19 @@ import {
 import {
   applyDictationTranscript,
   computeCanStartDictation,
+  resolveAlternateSendActions,
   resolveComposerSurfacePresentation,
   runAlternateSendAction,
   runDefaultSendAction,
   runMessageInputKeyboardAction,
   stopRealtimeVoice,
+  type ComposerSendAction,
 } from "./state";
+import { SendAlternates } from "./send-alternates";
+import type { ActiveTurnSendBehavior } from "@/composer/types";
 
 const DEFAULT_SEND_KEYS: ShortcutKey[][] = [["Enter"]];
+const ALTERNATE_SEND_KEYS: ShortcutKey[][] = [["mod", "Enter"]];
 const COMPOSER_INPUT_DATASET = { composerInput: "" } as const;
 
 export interface AttachmentMenuItem {
@@ -353,14 +360,24 @@ function VoiceTooltipBody({
 function SendTooltipBody({
   label,
   sendKeys,
+  alternateLabel,
 }: {
   label: string;
   sendKeys: ShortcutChord | null | undefined;
+  alternateLabel: string | null;
 }) {
   return (
-    <View style={styles.tooltipRow}>
-      <Text style={styles.tooltipText}>{label}</Text>
-      {sendKeys ? <Shortcut chord={sendKeys} /> : null}
+    <View style={styles.tooltipBody}>
+      <View style={styles.tooltipRow}>
+        <Text style={styles.tooltipText}>{label}</Text>
+        {sendKeys ? <Shortcut chord={sendKeys} /> : null}
+      </View>
+      {alternateLabel ? (
+        <View style={styles.tooltipRow}>
+          <Text style={styles.tooltipTextMuted}>{alternateLabel}</Text>
+          <Shortcut chord={ALTERNATE_SEND_KEYS} />
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -763,6 +780,8 @@ function SendButtonTooltip({
   buttonIconSize,
   sendKeys,
   sendTooltipLabel,
+  alternateSendTooltipLabel,
+  onLongPress,
 }: {
   shouldShow: boolean;
   canPressLoadingButton: boolean;
@@ -778,6 +797,8 @@ function SendButtonTooltip({
   buttonIconSize: number;
   sendKeys: ShortcutChord | null | undefined;
   sendTooltipLabel: string;
+  alternateSendTooltipLabel: string | null;
+  onLongPress?: (event: GestureResponderEvent) => void;
 }) {
   const hitSlop = useTouchHitSlop(COMPOSER_TOOLBAR_GEOMETRY.primaryTouchSize);
   if (!shouldShow) return null;
@@ -786,6 +807,7 @@ function SendButtonTooltip({
       <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
         <TooltipTrigger
           onPress={canPressLoadingButton ? onSubmitLoadingPress : onDefaultSendAction}
+          onLongPress={canPressLoadingButton ? undefined : onLongPress}
           disabled={isSendButtonDisabled}
           accessibilityLabel={submitAccessibilityLabel}
           accessibilityRole="button"
@@ -801,7 +823,11 @@ function SendButtonTooltip({
           />
         </TooltipTrigger>
         <TooltipContent side="top" align="center" offset={8}>
-          <SendTooltipBody label={sendTooltipLabel} sendKeys={sendKeys} />
+          <SendTooltipBody
+            label={sendTooltipLabel}
+            sendKeys={sendKeys}
+            alternateLabel={alternateSendTooltipLabel}
+          />
         </TooltipContent>
       </Tooltip>
     </TouchTarget>
@@ -833,14 +859,22 @@ function resolvePrimaryActionKind(input: {
 function PrimaryAction({
   kind,
   activeActionContent,
+  alternateSendActions,
+  onSendAction,
   ...sendButtonProps
 }: {
   kind: PrimaryActionKind;
   activeActionContent: React.ReactNode;
-} & React.ComponentProps<typeof SendButtonTooltip>) {
+  alternateSendActions: readonly ComposerSendAction[];
+  onSendAction: (action: ComposerSendAction) => void;
+} & Omit<React.ComponentProps<typeof SendButtonTooltip>, "onLongPress">) {
   if (kind === "active") return activeActionContent;
-  if (kind === "send") return <SendButtonTooltip {...sendButtonProps} />;
-  return null;
+  if (kind !== "send") return null;
+  return (
+    <SendAlternates actions={alternateSendActions} onSelect={onSendAction}>
+      {(onLongPress) => <SendButtonTooltip {...sendButtonProps} onLongPress={onLongPress} />}
+    </SendAlternates>
+  );
 }
 interface ToggleRealtimeVoiceContext {
   voice:
@@ -931,6 +965,7 @@ interface SendMessageContext {
   onSubmit: (payload: MessagePayload) => void;
   onMinimizeHeight: () => void;
   preserveHeightOnSubmit: boolean;
+  activeTurnBehavior?: ActiveTurnSendBehavior;
 }
 
 function sendMessageImpl(ctx: SendMessageContext): void {
@@ -948,6 +983,7 @@ function sendMessageImpl(ctx: SendMessageContext): void {
     attachments: ctx.attachments,
     cwd: ctx.cwd,
     forceSend: ctx.isAgentRunning || undefined,
+    ...(ctx.activeTurnBehavior ? { activeTurnBehavior: ctx.activeTurnBehavior } : {}),
   });
   // When the host preserves and locks the composer (e.g. new-workspace creation),
   // the text stays put — collapsing the height would clip it. Keep it grown.
@@ -1519,33 +1555,38 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       resetComposerHeight?.();
     }, [resetComposerHeight]);
 
-    const handleSendMessage = useCallback(() => {
-      const liveValue = textInputRef.current?.getText() ?? valueRef.current;
-      if (!preserveHeightOnSubmit) {
-        updateLiveTextPresence("");
-      }
-      sendMessageImpl({
-        value: liveValue,
-        attachments,
-        hasExternalContent,
+    const sendWithBehavior = useCallback(
+      (activeTurnBehavior?: ActiveTurnSendBehavior) => {
+        const liveValue = textInputRef.current?.getText() ?? valueRef.current;
+        if (!preserveHeightOnSubmit) {
+          updateLiveTextPresence("");
+        }
+        sendMessageImpl({
+          value: liveValue,
+          attachments,
+          hasExternalContent,
+          allowEmptySubmit,
+          cwd,
+          isAgentRunning,
+          onSubmit,
+          onMinimizeHeight: minimizeInputHeight,
+          preserveHeightOnSubmit,
+          activeTurnBehavior,
+        });
+      },
+      [
         allowEmptySubmit,
+        attachments,
         cwd,
-        isAgentRunning,
         onSubmit,
-        onMinimizeHeight: minimizeInputHeight,
+        isAgentRunning,
+        hasExternalContent,
+        minimizeInputHeight,
         preserveHeightOnSubmit,
-      });
-    }, [
-      allowEmptySubmit,
-      attachments,
-      cwd,
-      onSubmit,
-      isAgentRunning,
-      hasExternalContent,
-      minimizeInputHeight,
-      preserveHeightOnSubmit,
-      updateLiveTextPresence,
-    ]);
+        updateLiveTextPresence,
+      ],
+    );
+    const handleSendMessage = useCallback(() => sendWithBehavior(), [sendWithBehavior]);
 
     const handleQueueMessage = useCallback(
       () =>
@@ -1569,6 +1610,17 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         handleQueueMessage,
       });
     }, [defaultSendBehavior, isAgentRunning, onQueue, handleQueueMessage, handleSendMessage]);
+
+    const handleSendAction = useCallback(
+      (action: ComposerSendAction) => {
+        if (action === "queue") {
+          handleQueueMessage();
+          return;
+        }
+        sendWithBehavior(action);
+      },
+      [handleQueueMessage, sendWithBehavior],
+    );
 
     const handleAlternateSendAction = useCallback(() => {
       runAlternateSendAction({
@@ -1694,6 +1746,17 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       defaultActionQueues,
       t,
     });
+    const canQueue = onQueue !== undefined;
+    const alternateSendTooltipLabel = resolveAlternateSendTooltipLabel({
+      defaultSendBehavior,
+      isAgentRunning,
+      canQueue,
+      t,
+    });
+    const alternateSendActions = useMemo(
+      () => resolveAlternateSendActions({ defaultSendBehavior, isAgentRunning, canQueue }),
+      [canQueue, defaultSendBehavior, isAgentRunning],
+    );
 
     const handleInputChange = useCallback(
       (nextValue: string) => {
@@ -1909,6 +1972,9 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
                 buttonIconSize={buttonIconSize}
                 sendKeys={DEFAULT_SEND_KEYS}
                 sendTooltipLabel={sendTooltipLabel}
+                alternateSendTooltipLabel={alternateSendTooltipLabel}
+                alternateSendActions={alternateSendActions}
+                onSendAction={handleSendAction}
               />
             </View>
           </View>
@@ -2100,9 +2166,16 @@ const styles = StyleSheet.create((theme: Theme) => ({
     alignItems: "center",
     gap: theme.spacing[2],
   },
+  tooltipBody: {
+    gap: theme.spacing[1],
+  },
   tooltipText: {
     fontSize: theme.fontSize.base,
     color: theme.colors.popoverForeground,
+  },
+  tooltipTextMuted: {
+    fontSize: theme.fontSize.base,
+    color: theme.colors.foregroundMuted,
   },
   buttonDisabled: {
     opacity: 0.5,

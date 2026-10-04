@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  resolveAlternateSendTooltipLabel,
   resolveSendTooltipLabel,
   resolveSubmitAccessibilityLabel,
   resolveVoiceAccessibilityLabel,
@@ -157,5 +158,40 @@ describe("composer input labels", () => {
         t,
       }),
     ).toBe("Send");
+  });
+
+  it("names what Mod+Enter does while a turn runs", () => {
+    expect(
+      resolveAlternateSendTooltipLabel({
+        defaultSendBehavior: "steer",
+        isAgentRunning: true,
+        canQueue: true,
+        t,
+      }),
+    ).toBe("Queue message");
+    expect(
+      resolveAlternateSendTooltipLabel({
+        defaultSendBehavior: "queue",
+        isAgentRunning: true,
+        canQueue: true,
+        t,
+      }),
+    ).toBe("Send and interrupt");
+    expect(
+      resolveAlternateSendTooltipLabel({
+        defaultSendBehavior: "steer",
+        isAgentRunning: false,
+        canQueue: true,
+        t,
+      }),
+    ).toBeNull();
+    expect(
+      resolveAlternateSendTooltipLabel({
+        defaultSendBehavior: "steer",
+        isAgentRunning: true,
+        canQueue: false,
+        t,
+      }),
+    ).toBeNull();
   });
 });

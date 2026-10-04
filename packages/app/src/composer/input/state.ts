@@ -125,6 +125,22 @@ export function runDefaultSendAction(ctx: SendActionContext): void {
   ctx.handleSendMessage();
 }
 
+export type ComposerSendAction = "steer" | "queue" | "interrupt";
+
+const SEND_ACTION_ORDER: readonly ComposerSendAction[] = ["steer", "queue", "interrupt"];
+
+/** While a turn runs, every send action other than the default, for the long-press sheet. */
+export function resolveAlternateSendActions(input: {
+  defaultSendBehavior: SendBehavior;
+  isAgentRunning: boolean;
+  canQueue: boolean;
+}): ComposerSendAction[] {
+  if (!input.isAgentRunning) return [];
+  return SEND_ACTION_ORDER.filter(
+    (action) => action !== input.defaultSendBehavior && (action !== "queue" || input.canQueue),
+  );
+}
+
 export function runAlternateSendAction(ctx: SendActionContext): void {
   if (ctx.defaultSendBehavior === "queue") {
     ctx.handleSendMessage();
