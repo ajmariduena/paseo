@@ -6139,10 +6139,32 @@ function isProviderImageMessage(item: AgentTimelineItem): boolean {
   return item.type === "assistant_message" && isProviderImageMarkdown(item.text);
 }
 
+// A prompt Claude absorbs into the running turn is never written as a user record: the transcript
+// keeps it only as a queued_command attachment, so replay has to read it from there.
+function convertSteeredPromptHistoryEntry(entry: ClaudeHistoryEntry): AgentTimelineItem[] | null {
+  if (entry.type !== "attachment" || entry.isMeta === true) return null;
+  const attachment = toObjectRecord(entry.attachment);
+  if (
+    attachment?.type !== "queued_command" ||
+    attachment.commandMode !== "prompt" ||
+    attachment.isMeta === true
+  ) {
+    return null;
+  }
+  const text = extractUserMessageText(attachment.prompt);
+  if (!text) return [];
+  const messageId = readTrimmedString(attachment.source_uuid) ?? readTrimmedString(entry.uuid);
+  return [{ type: "user_message", text, ...(messageId ? { messageId } : {}) }];
+}
+
 export function convertClaudeHistoryEntry(
   entry: ClaudeHistoryEntry,
   mapBlocks: (content: string | ClaudeContentChunk[]) => AgentTimelineItem[],
 ): AgentTimelineItem[] {
+  const steeredPrompt = convertSteeredPromptHistoryEntry(entry);
+  if (steeredPrompt) {
+    return steeredPrompt;
+  }
   const preamble = convertClaudeHistoryEntryPreamble(entry);
   if ("shortCircuit" in preamble) {
     return preamble.shortCircuit;
