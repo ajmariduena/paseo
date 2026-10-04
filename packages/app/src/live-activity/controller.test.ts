@@ -12,6 +12,7 @@ const labels: LiveActivityLabels = {
   finished: "finished",
   failed: "failed",
   untitled: "New session",
+  chip: (state, count) => ({ text: `${count} ${state}`, short: state }),
 };
 
 function agent(overrides: Partial<AgentDirectoryEntry> & { id: string }): AgentDirectoryEntry {
@@ -52,10 +53,34 @@ function setup(options: { foreground?: boolean; running?: boolean } = {}) {
     now: () => state.now,
   });
   const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
-  return { activity, calls, state, settle };
+  return { activity, calls, native, state, settle };
 }
 
 describe("AgentsLiveActivity", () => {
+  it("retries the start after it fails", async () => {
+    const { activity, calls, native, settle } = setup();
+    native.start = async () => {
+      throw new Error("denied");
+    };
+    activity.sync([agent({ id: "a", status: "running" })]);
+    await settle();
+    native.start = async (...args) => {
+      calls.push(["start", ...args]);
+    };
+    activity.sync([agent({ id: "a", status: "running" })]);
+    await settle();
+
+    expect(calls.map(([name]) => name)).toEqual(["start"]);
+  });
+
+  it("stamps each push with when it was sent", async () => {
+    const { activity, calls, settle } = setup();
+    activity.sync([agent({ id: "a", status: "running" })]);
+    await settle();
+
+    expect(JSON.parse(calls[0]?.[2] as string)).toMatchObject({ updatedAt: 10 });
+  });
+
   it("starts when an agent starts working, updates on change, ends showing the result", async () => {
     const { activity, calls, state, settle } = setup();
     activity.sync([agent({ id: "a", status: "running" })]);

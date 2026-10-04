@@ -15,6 +15,8 @@ export const ja: TranslationResources = {
     permission: "許可",
     doneLabel: "完了",
     failed: "失敗",
+    failedCount_one: "{{count}} 件失敗",
+    failedCount_other: "{{count}} 件失敗",
   },
   paneFind: {
     connectionFailure:

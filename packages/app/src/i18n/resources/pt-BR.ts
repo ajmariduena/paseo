@@ -15,6 +15,8 @@ export const ptBR: TranslationResources = {
     permission: "permissão",
     doneLabel: "terminou",
     failed: "falhou",
+    failedCount_one: "{{count}} falhou",
+    failedCount_other: "{{count}} falharam",
   },
   paneFind: {
     connectionFailure:

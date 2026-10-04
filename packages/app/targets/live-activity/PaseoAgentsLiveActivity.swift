@@ -11,6 +11,14 @@ struct PaseoAgentsAttributes: ActivityAttributes {
     var state: String
     var label: String
     var since: Double
+    var url: String?
+  }
+
+  public struct Chip: Codable, Hashable {
+    var state: String
+    var count: Int
+    var text: String
+    var short: String
   }
 
   public struct ContentState: Codable, Hashable {
@@ -20,6 +28,9 @@ struct PaseoAgentsAttributes: ActivityAttributes {
     var workingLabel: String
     var waitingLabel: String
     var lines: [Line]
+    // Optional so activities started by an older JS bundle still decode.
+    var chips: [Chip]?
+    var updatedAt: Double?
   }
 
   var title: String
@@ -35,31 +46,43 @@ private enum Palette {
   static let danger = Color(red: 0.776, green: 0.310, blue: 0.263)
 }
 
+private func stateColor(_ state: String) -> Color {
+  switch state {
+  case "permission": return Palette.warning
+  case "error": return Palette.danger
+  default: return Palette.accent
+  }
+}
+
+private func linkURL(_ line: PaseoAgentsAttributes.Line?) -> URL? {
+  guard let raw = line?.url else { return nil }
+  return URL(string: raw)
+}
+
 private struct StateMark: View {
   let state: String
 
   var body: some View {
-    switch state {
-    case "working":
-      Circle()
-        .trim(from: 0, to: 0.7)
-        .stroke(Palette.accent, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-        .frame(width: 9, height: 9)
-    case "permission":
-      Circle().fill(Palette.warning).frame(width: 9, height: 9)
-    case "error":
-      Circle().fill(Palette.danger).frame(width: 9, height: 9)
-    default:
-      Circle().fill(Palette.accent).frame(width: 9, height: 9)
+    Group {
+      if state == "working" {
+        Circle()
+          .trim(from: 0, to: 0.7)
+          .stroke(Palette.accent, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+      } else {
+        Circle().fill(stateColor(state))
+      }
     }
+    .frame(width: 9, height: 9)
+    .accessibilityHidden(true)
   }
 }
 
 private struct LineRow: View {
   let line: PaseoAgentsAttributes.Line
+  let isStale: Bool
 
   var body: some View {
-    HStack(spacing: 8) {
+    let content = HStack(spacing: 8) {
       StateMark(state: line.state)
       (Text(line.title).foregroundColor(.white)
         + Text(subtitleSuffix).foregroundColor(Palette.muted))
@@ -68,8 +91,36 @@ private struct LineRow: View {
       Spacer(minLength: 8)
       detail
         .font(.system(size: 12))
-        .foregroundStyle(line.state == "permission" ? Palette.warning : Palette.muted)
+        .foregroundStyle(detailColor)
         .lineLimit(1)
+      if line.url != nil {
+        Image(systemName: "chevron.right")
+          .font(.system(size: 10, weight: .semibold))
+          .foregroundStyle(Palette.track)
+          .accessibilityHidden(true)
+      }
+    }
+    .padding(.vertical, line.state == "permission" ? 5 : 0)
+    .padding(.horizontal, line.state == "permission" ? 8 : 0)
+    .background(
+      RoundedRectangle(cornerRadius: 9)
+        .fill(line.state == "permission" ? Palette.warning.opacity(0.12) : .clear)
+    )
+    .padding(.horizontal, line.state == "permission" ? -8 : 0)
+    .accessibilityElement(children: .combine)
+
+    if let url = linkURL(line) {
+      Link(destination: url) { content }
+    } else {
+      content
+    }
+  }
+
+  private var detailColor: Color {
+    switch line.state {
+    case "permission": return Palette.warning
+    case "error": return Palette.danger
+    default: return Palette.muted
     }
   }
 
@@ -80,12 +131,59 @@ private struct LineRow: View {
 
   @ViewBuilder private var detail: some View {
     if line.state == "working" && line.since > 0 {
-      Text(Date(timeIntervalSince1970: line.since), style: .timer)
-        .monospacedDigit()
-        .multilineTextAlignment(.trailing)
-        .frame(maxWidth: 64, alignment: .trailing)
+      // A stale activity can't tell whether the agent is still running, so the timer stops.
+      if isStale {
+        Text("—")
+      } else {
+        Text(Date(timeIntervalSince1970: line.since), style: .timer)
+          .monospacedDigit()
+          .multilineTextAlignment(.trailing)
+          .frame(maxWidth: 64, alignment: .trailing)
+      }
     } else {
       Text(line.label)
+    }
+  }
+}
+
+private struct ChipView: View {
+  let chip: PaseoAgentsAttributes.Chip
+
+  var body: some View {
+    HStack(spacing: 5) {
+      if chip.state == "working" {
+        StateMark(state: chip.state)
+      }
+      Text(chip.text)
+        .font(.system(size: 12, weight: .medium))
+        .lineLimit(1)
+    }
+    .foregroundStyle(chip.state == "working" ? Color.white.opacity(0.88) : stateColor(chip.state))
+    .padding(.horizontal, 9)
+    .padding(.vertical, 3)
+    .background(
+      Capsule().fill(
+        chip.state == "working" || chip.state == "finished"
+          ? Color.white.opacity(0.08) : stateColor(chip.state).opacity(0.16))
+    )
+  }
+}
+
+private struct UpdatedAgo: View {
+  let updatedAt: Double?
+
+  var body: some View {
+    if let updatedAt {
+      HStack(spacing: 3) {
+        Image(systemName: "clock")
+        Text(Date(timeIntervalSince1970: updatedAt), style: .relative)
+      }
+      .font(.system(size: 11))
+      .foregroundStyle(Palette.muted)
+    } else {
+      Image(systemName: "arrow.clockwise")
+        .font(.system(size: 11))
+        .foregroundStyle(Palette.muted)
     }
   }
 }
@@ -108,18 +206,25 @@ private struct LockScreenView: View {
           .lineLimit(1)
         Spacer()
         if isStale {
-          Image(systemName: "arrow.clockwise")
-            .font(.system(size: 11))
-            .foregroundStyle(Palette.muted)
+          UpdatedAgo(updatedAt: state.updatedAt)
         }
       }
-      Text(state.headline)
-        .font(.system(size: 17, weight: .semibold))
-        .foregroundStyle(.white)
-        .lineLimit(1)
+      if let chips = state.chips, !chips.isEmpty {
+        HStack(spacing: 6) {
+          ForEach(chips, id: \.state) { chip in
+            ChipView(chip: chip)
+          }
+        }
+        .accessibilityElement(children: .combine)
+      } else {
+        Text(state.headline)
+          .font(.system(size: 17, weight: .semibold))
+          .foregroundStyle(.white)
+          .lineLimit(1)
+      }
       VStack(alignment: .leading, spacing: 5) {
         ForEach(state.lines, id: \.id) { line in
-          LineRow(line: line)
+          LineRow(line: line, isStale: isStale)
         }
       }
     }
@@ -136,9 +241,37 @@ private struct CountView: View {
   var body: some View {
     VStack(alignment: alignment, spacing: 0) {
       Text("\(value)").font(.system(size: 26, weight: .semibold)).foregroundStyle(color)
-      Text(label).font(.system(size: 12)).foregroundStyle(Palette.muted)
+      Text(label).font(.system(size: 12)).foregroundStyle(Palette.muted).lineLimit(1)
     }
+    .accessibilityElement(children: .combine)
   }
+}
+
+/// The two counts the expanded island shows: only non-zero ones, most urgent first.
+private func islandCounts(_ state: PaseoAgentsAttributes.ContentState)
+  -> [PaseoAgentsAttributes.Chip]
+{
+  if let chips = state.chips { return Array(chips.prefix(2)) }
+  var counts: [PaseoAgentsAttributes.Chip] = []
+  if state.waiting > 0 {
+    counts.append(.init(state: "permission", count: state.waiting, text: "", short: state.waitingLabel))
+  }
+  if state.working > 0 {
+    counts.append(.init(state: "working", count: state.working, text: "", short: state.workingLabel))
+  }
+  return counts
+}
+
+private func compactState(_ state: PaseoAgentsAttributes.ContentState) -> String {
+  if state.waiting > 0 { return "permission" }
+  if state.working > 0 { return "working" }
+  return state.chips?.first?.state ?? "finished"
+}
+
+private func compactCount(_ state: PaseoAgentsAttributes.ContentState) -> Int {
+  if state.waiting > 0 { return state.waiting }
+  if state.working > 0 { return state.working }
+  return state.chips?.first?.count ?? 0
 }
 
 struct PaseoAgentsLiveActivity: Widget {
@@ -151,23 +284,28 @@ struct PaseoAgentsLiveActivity: Widget {
       )
       .activityBackgroundTint(Palette.surface.opacity(0.92))
       .activitySystemActionForegroundColor(.white)
+      .widgetURL(linkURL(context.state.lines.first))
     } dynamicIsland: { context in
-      DynamicIsland {
+      let counts = islandCounts(context.state)
+      return DynamicIsland {
         DynamicIslandExpandedRegion(.leading) {
-          CountView(
-            value: context.state.working,
-            label: context.state.workingLabel,
-            color: .white,
-            alignment: .leading
-          )
-          .padding(.leading, 6)
+          if let first = counts.first {
+            CountView(
+              value: first.count,
+              label: first.short,
+              color: first.state == "working" ? .white : stateColor(first.state),
+              alignment: .leading
+            )
+            .padding(.leading, 6)
+          }
         }
         DynamicIslandExpandedRegion(.trailing) {
-          if context.state.waiting > 0 {
+          if counts.count > 1 {
+            let second = counts[1]
             CountView(
-              value: context.state.waiting,
-              label: context.state.waitingLabel,
-              color: Palette.warning,
+              value: second.count,
+              label: second.short,
+              color: second.state == "working" ? .white : stateColor(second.state),
               alignment: .trailing
             )
             .padding(.trailing, 6)
@@ -176,27 +314,28 @@ struct PaseoAgentsLiveActivity: Widget {
         DynamicIslandExpandedRegion(.bottom) {
           VStack(alignment: .leading, spacing: 5) {
             ForEach(context.state.lines.prefix(2), id: \.id) { line in
-              LineRow(line: line)
+              LineRow(line: line, isStale: context.isStale)
             }
           }
           .padding(.horizontal, 6)
         }
       } compactLeading: {
         HStack(spacing: 4) {
-          StateMark(state: context.state.waiting > 0 ? "permission" : "working")
-          Text("\(context.state.waiting > 0 ? context.state.waiting : context.state.working)")
+          StateMark(state: compactState(context.state))
+          Text("\(compactCount(context.state))")
             .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(context.state.waiting > 0 ? Palette.warning : Palette.accent)
+            .foregroundStyle(stateColor(compactState(context.state)))
         }
       } compactTrailing: {
         Text(context.state.lines.first?.title ?? "")
           .font(.system(size: 12, weight: .semibold))
-          .foregroundStyle(.white)
+          .foregroundStyle(context.state.waiting > 0 ? Palette.warning : .white)
           .lineLimit(1)
           .frame(maxWidth: 76)
       } minimal: {
-        StateMark(state: context.state.waiting > 0 ? "permission" : "working")
+        StateMark(state: compactState(context.state))
       }
+      .widgetURL(linkURL(context.state.lines.first))
       .keylineTint(Palette.accent)
     }
   }

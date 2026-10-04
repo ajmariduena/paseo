@@ -15,6 +15,8 @@ export const ar: TranslationResources = {
     permission: "إذن",
     doneLabel: "انتهى",
     failed: "فشل",
+    failedCount_one: "{{count}} فشل",
+    failedCount_other: "{{count}} فشلوا",
   },
   paneFind: {
     connectionFailure: "تعذر البحث في هذه المحادثة. تحقق من الاتصال بالمضيف وأعد المحاولة.",

@@ -15,6 +15,8 @@ export const zhCN: TranslationResources = {
     permission: "授权",
     doneLabel: "已完成",
     failed: "失败",
+    failedCount_one: "{{count}} 个失败",
+    failedCount_other: "{{count}} 个失败",
   },
   paneFind: {
     connectionFailure: "无法搜索此聊天。请检查主机连接后重试。",

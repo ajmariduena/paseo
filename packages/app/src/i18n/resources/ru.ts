@@ -15,6 +15,8 @@ export const ru: TranslationResources = {
     permission: "разрешение",
     doneLabel: "завершён",
     failed: "ошибка",
+    failedCount_one: "{{count}} с ошибкой",
+    failedCount_other: "С ошибкой: {{count}}",
   },
   paneFind: {
     connectionFailure:

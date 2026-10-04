@@ -10,6 +10,7 @@ const labels: LiveActivityLabels = {
   finished: "finished",
   failed: "failed",
   untitled: "New session",
+  chip: (state, count) => ({ text: `${count} ${state}`, short: state }),
 };
 
 function agent(overrides: Partial<AgentDirectoryEntry> & { id: string }): AgentDirectoryEntry {
@@ -74,7 +75,34 @@ describe("summarizeAgents", () => {
           since: 0,
         },
       ],
+      chips: [
+        { state: "permission", count: 1, text: "1 permission", short: "permission" },
+        { state: "working", count: 1, text: "1 working", short: "working" },
+        { state: "finished", count: 1, text: "1 finished", short: "finished" },
+      ],
     });
+  });
+
+  it("counts failures apart, clips long names, and links each line to its agent", () => {
+    const content = summarizeAgents({
+      agents: [
+        agent({ id: "busy", title: "x".repeat(200), status: "running" }),
+        agent({
+          id: "broke",
+          requiresAttention: true,
+          attentionReason: "error",
+          attentionTimestamp: new Date(6_000),
+        }),
+      ],
+      since: 2_000,
+      runningSince: new Map(),
+      labels,
+      agentUrl: (entry) => `paseo://h/${entry.serverId}/agent/${entry.id}`,
+    });
+
+    expect(content?.chips.map((chip) => chip.state)).toEqual(["working", "error"]);
+    expect(content?.lines[0]?.title.length).toBeLessThanOrEqual(48);
+    expect(content?.lines[1]?.url).toBe("paseo://h/s1/agent/broke");
   });
 
   it("ignores results from before the activity started and archived agents", () => {

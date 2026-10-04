@@ -13,6 +13,14 @@ struct PaseoAgentsAttributes: ActivityAttributes {
     var state: String
     var label: String
     var since: Double
+    var url: String?
+  }
+
+  public struct Chip: Codable, Hashable {
+    var state: String
+    var count: Int
+    var text: String
+    var short: String
   }
 
   public struct ContentState: Codable, Hashable {
@@ -22,6 +30,9 @@ struct PaseoAgentsAttributes: ActivityAttributes {
     var workingLabel: String
     var waitingLabel: String
     var lines: [Line]
+    // Optional so activities started by an older JS bundle still decode.
+    var chips: [Chip]?
+    var updatedAt: Double?
   }
 
   var title: String

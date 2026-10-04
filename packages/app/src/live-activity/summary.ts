@@ -10,6 +10,14 @@ export interface LiveActivityLine {
   state: LiveActivityLineState;
   label: string;
   since: number;
+  url?: string;
+}
+
+export interface LiveActivityChip {
+  state: LiveActivityLineState;
+  count: number;
+  text: string;
+  short: string;
 }
 
 export interface LiveActivityContent {
@@ -19,6 +27,8 @@ export interface LiveActivityContent {
   workingLabel: string;
   waitingLabel: string;
   lines: LiveActivityLine[];
+  chips: LiveActivityChip[];
+  updatedAt?: number;
 }
 
 export interface LiveActivityLabels {
@@ -29,9 +39,16 @@ export interface LiveActivityLabels {
   finished: string;
   failed: string;
   untitled: string;
+  chip(state: LiveActivityLineState, count: number): { text: string; short: string };
 }
 
 const MAX_LINES = 3;
+// ActivityKit rejects content states over 4 KB, so long agent and workspace names are clipped.
+const MAX_TEXT_LENGTH = 48;
+
+function clip(text: string): string {
+  return text.length > MAX_TEXT_LENGTH ? `${text.slice(0, MAX_TEXT_LENGTH - 1)}…` : text;
+}
 const ORDER: Record<LiveActivityLineState, number> = {
   permission: 0,
   working: 1,
@@ -60,6 +77,7 @@ export function summarizeAgents(input: {
   runningSince: ReadonlyMap<string, number>;
   labels: LiveActivityLabels;
   workspaceName?: (agent: AgentDirectoryEntry) => string | null;
+  agentUrl?: (agent: AgentDirectoryEntry) => string;
 }): LiveActivityContent | null {
   const { labels } = input;
   const entries: Array<{ agent: AgentDirectoryEntry; state: LiveActivityLineState }> = [];
@@ -72,7 +90,8 @@ export function summarizeAgents(input: {
     entries.filter((entry) => entry.state === state).length;
   const working = count("working");
   const waiting = count("permission");
-  const finished = count("finished") + count("error");
+  const failed = count("error");
+  const finished = count("finished") + failed;
 
   entries.sort(
     (left, right) =>
@@ -87,15 +106,30 @@ export function summarizeAgents(input: {
     else if (state === "working") label = "";
     const agentTitle = agent.title?.trim() || labels.untitled;
     const workspace = input.workspaceName?.(agent)?.trim();
-    return {
+    const line: LiveActivityLine = {
       id: key,
-      title: workspace || agentTitle,
-      subtitle: workspace ? agentTitle : "",
+      title: clip(workspace || agentTitle),
+      subtitle: workspace ? clip(agentTitle) : "",
       state,
       label,
       since: state === "working" ? Math.floor((input.runningSince.get(key) ?? 0) / 1000) : 0,
     };
+    const url = input.agentUrl?.(agent);
+    if (url) line.url = url;
+    return line;
   });
+  const chipCounts: Array<[LiveActivityLineState, number]> = [
+    ["permission", waiting],
+    ["working", working],
+    ["error", failed],
+    ["finished", count("finished")],
+  ];
+  const chips = chipCounts
+    .filter(([, value]) => value > 0)
+    .map(([state, value]): LiveActivityChip => {
+      const { text, short } = labels.chip(state, value);
+      return { state, count: value, text, short };
+    });
 
   return {
     headline: labels.headline({ working, waiting, finished }),
@@ -104,6 +138,7 @@ export function summarizeAgents(input: {
     workingLabel: labels.working(working),
     waitingLabel: labels.waiting(waiting),
     lines,
+    chips,
   };
 }
 

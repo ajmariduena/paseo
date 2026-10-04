@@ -1,6 +1,11 @@
 import type { AgentDirectoryEntry } from "@/types/agent-directory";
 import type { LiveActivityNative } from "./native-types";
-import { hasActiveWork, summarizeAgents, type LiveActivityLabels } from "./summary";
+import {
+  hasActiveWork,
+  summarizeAgents,
+  type LiveActivityContent,
+  type LiveActivityLabels,
+} from "./summary";
 
 // The app stops updating once iOS suspends it, so the activity marks itself stale instead of
 // showing old counts as current. Foreground updates keep pushing this out.
@@ -13,6 +18,7 @@ export interface AgentsLiveActivityDeps {
   title: string;
   labels: () => LiveActivityLabels;
   workspaceName?: (agent: AgentDirectoryEntry) => string | null;
+  agentUrl?: (agent: AgentDirectoryEntry) => string;
   isForeground: () => boolean;
   now?: () => number;
   onError?: (error: unknown) => void;
@@ -41,6 +47,7 @@ export class AgentsLiveActivity {
       runningSince: this.runningSince,
       labels: this.deps.labels(),
       workspaceName: this.deps.workspaceName,
+      agentUrl: this.deps.agentUrl,
     });
     const { native } = this.deps;
 
@@ -49,7 +56,15 @@ export class AgentsLiveActivity {
       if (!this.deps.isForeground() || !native.isEnabled()) return;
       this.since = now;
       const state = this.remember(content, now);
-      this.enqueue(() => native.start(this.deps.title, state, STALE_AFTER_SECONDS));
+      this.enqueue(async () => {
+        try {
+          await native.start(this.deps.title, state, STALE_AFTER_SECONDS);
+        } catch (error) {
+          this.since = null;
+          this.lastState = null;
+          throw error;
+        }
+      });
       return;
     }
 
@@ -61,17 +76,18 @@ export class AgentsLiveActivity {
       return;
     }
 
-    const state = JSON.stringify(content);
-    if (state === this.lastState && now - this.lastPushedAt < REFRESH_AFTER_MS) return;
-    this.remember(content, now);
+    if (JSON.stringify(content) === this.lastState && now - this.lastPushedAt < REFRESH_AFTER_MS) {
+      return;
+    }
+    const state = this.remember(content, now);
     this.enqueue(() => native.update(state, STALE_AFTER_SECONDS));
   }
 
-  private remember(content: object, now: number): string {
-    const state = JSON.stringify(content);
-    this.lastState = state;
+  /** Returns the state to push; `updatedAt` stays out of the dedupe key so it doesn't force pushes. */
+  private remember(content: LiveActivityContent, now: number): string {
+    this.lastState = JSON.stringify(content);
     this.lastPushedAt = now;
-    return state;
+    return JSON.stringify({ ...content, updatedAt: Math.floor(now / 1000) });
   }
 
   private trackRunning(agents: readonly AgentDirectoryEntry[], now: number): void {

@@ -15,6 +15,8 @@ export const ko: TranslationResources = {
     permission: "권한",
     doneLabel: "완료",
     failed: "실패",
+    failedCount_one: "{{count}}개 실패",
+    failedCount_other: "{{count}}개 실패",
   },
   paneFind: {
     connectionFailure: "이 채팅을 검색할 수 없습니다. 호스트 연결을 확인하고 다시 시도하세요.",

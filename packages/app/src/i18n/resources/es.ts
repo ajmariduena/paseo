@@ -15,6 +15,8 @@ export const es: TranslationResources = {
     permission: "permiso",
     doneLabel: "terminó",
     failed: "falló",
+    failedCount_one: "{{count}} falló",
+    failedCount_other: "{{count}} fallaron",
   },
   paneFind: {
     connectionFailure:

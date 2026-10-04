@@ -12,6 +12,8 @@ export const en = {
     permission: "permission",
     doneLabel: "finished",
     failed: "failed",
+    failedCount_one: "{{count}} failed",
+    failedCount_other: "{{count}} failed",
   },
   paneFind: {
     connectionFailure: "Could not search this chat. Check the host connection and retry.",
