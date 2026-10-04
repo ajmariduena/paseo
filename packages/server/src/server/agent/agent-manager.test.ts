@@ -5376,6 +5376,43 @@ test("setTitle bumps updatedAt and persists title in the same snapshot write", a
   expect(live!.updatedAt.getTime()).toBeGreaterThan(Date.parse(before!.updatedAt));
 });
 
+test("replaceTitleIfUnchanged keeps a title the user renamed", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-replace-title-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const manager = new AgentManager({
+    clients: {
+      codex: new TestAgentClient(),
+    },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000129",
+  });
+  const snapshot = await manager.createAgent(
+    {
+      provider: "codex",
+      cwd: workdir,
+    },
+    undefined,
+    { workspaceId: undefined },
+  );
+  await manager.setTitle(snapshot.id, "fix the login bug on safari");
+
+  expect(
+    await manager.replaceTitleIfUnchanged(
+      snapshot.id,
+      "fix the login bug on safari",
+      "Fix Safari login bug",
+    ),
+  ).toBe(true);
+  expect((await storage.get(snapshot.id))?.title).toBe("Fix Safari login bug");
+
+  await manager.updateAgentMetadata(snapshot.id, { title: "My name" });
+  expect(
+    await manager.replaceTitleIfUnchanged(snapshot.id, "Fix Safari login bug", "Something else"),
+  ).toBe(false);
+  expect((await storage.get(snapshot.id))?.title).toBe("My name");
+});
+
 test("updateAgentMetadata bumps updatedAt for stored agents", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-stored-metadata-updated-at-"));
   const storagePath = join(workdir, "agents");

@@ -2399,6 +2399,21 @@ export class AgentManager {
     );
   }
 
+  async replaceTitleIfUnchanged(
+    agentId: string,
+    expectedTitle: string,
+    nextTitle: string,
+  ): Promise<boolean> {
+    return this.runLifecycleMutation(agentId, async () => {
+      const record = this.registry ? await this.registry.get(agentId) : null;
+      if (!record || record.title?.trim() !== expectedTitle.trim()) {
+        return false;
+      }
+      await this.updateAgentMetadataUnlocked(agentId, { title: nextTitle });
+      return true;
+    });
+  }
+
   private async updateAgentMetadataUnlocked(
     agentId: string,
     updates: {

@@ -4571,7 +4571,7 @@ export class Session {
         throw new Error(`Working directory does not exist or is not a directory: ${requestedCwd}`);
       }
       const trimmedPrompt = initialPrompt?.trim();
-      const { provisionalTitle } = resolveCreateAgentTitles({
+      const { explicitTitle, provisionalTitle } = resolveCreateAgentTitles({
         configTitle: config.title,
         initialPrompt: trimmedPrompt,
       });
@@ -4633,6 +4633,17 @@ export class Session {
       );
       createdAgentId = snapshot.id;
       await this.agentUpdates.forwardLiveAgent(snapshot);
+      if (!explicitTitle && provisionalTitle) {
+        this.workspaceAutoName.scheduleForAgent(
+          {
+            agentId: snapshot.id,
+            cwd: resolvedIntent.config.cwd,
+            firstAgentContext,
+            provisionalTitle,
+          },
+          { currentSelection: this.getFocusedAgentSelectionForCwd(resolvedIntent.config.cwd) },
+        );
+      }
       if (resolvedIntent.createdDirectoryWorkspace && trimmedPrompt) {
         this.workspaceAutoName.scheduleForDirectory(
           {
@@ -8420,7 +8431,18 @@ export class Session {
     const stored = await this.agentStorage.get(agentId);
     if (stored && !stored.title && !stored.lastUserMessageAt) {
       const { provisionalTitle } = resolveCreateAgentTitles({ initialPrompt: text });
-      if (provisionalTitle) await this.agentManager.setTitle(agentId, provisionalTitle);
+      if (provisionalTitle) {
+        await this.agentManager.setTitle(agentId, provisionalTitle);
+        this.workspaceAutoName.scheduleForAgent(
+          {
+            agentId,
+            cwd: stored.cwd,
+            firstAgentContext: { prompt: text.trim() },
+            provisionalTitle,
+          },
+          { currentSelection: this.getFocusedAgentSelectionForCwd(stored.cwd) },
+        );
+      }
     }
   }
 
