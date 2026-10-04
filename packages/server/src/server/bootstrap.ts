@@ -165,6 +165,7 @@ import { AgentQueueStore } from "./agent-queue/store.js";
 import { createRestoredEntryDeliverer } from "./agent/message-dispatch.js";
 import { RestartIntentStore } from "./restart/restart-intent-store.js";
 import { RestartRecovery } from "./restart/restart-recovery.js";
+import { MessageReceipts } from "./message-receipts/index.js";
 import { DaemonConfigStore, type MutableDaemonConfig } from "./daemon-config-store.js";
 import { createOrchestrationSkills } from "./orchestration-skills/index.js";
 import { resolveConfigFromPersisted, type CliConfigOverrides } from "./config.js";
@@ -467,6 +468,8 @@ export interface PaseoDaemonConfig {
   agentProviderSettings?: AgentProviderRuntimeSettingsMap;
   providerCatalogRefreshTimeoutMs?: number;
   idleRuntimeTimeoutMs?: number;
+  /** Continue a turn a daemon restart cut, with one "Continue where you left off." */
+  continueAfterRestart?: boolean;
   metadataGeneration?: {
     providers?: Array<{
       provider: string;
@@ -582,6 +585,7 @@ function createInitialMutableDaemonConfig(config: PaseoDaemonConfig): MutableDae
       providers: config.metadataGeneration?.providers ?? [],
     },
     autoArchiveAfterMerge: config.autoArchiveAfterMerge ?? false,
+    continueAfterRestart: config.continueAfterRestart === true,
     enableTerminalAgentHooks: config.enableTerminalAgentHooks ?? false,
     appendSystemPrompt: config.appendSystemPrompt ?? "",
     pluginsEnabled: config.pluginsEnabled ?? false,
@@ -1041,9 +1045,11 @@ export async function createPaseoDaemon(
   });
   const restartRecovery = new RestartRecovery({
     intents: RestartIntentStore.at(config.paseoHome),
+    receipts: new MessageReceipts(path.join(config.paseoHome, "agent-requests")),
     agentManager,
     agentStorage,
     delegations,
+    continueAfterRestart: () => daemonConfigStore.get().continueAfterRestart ?? false,
     logger,
   });
   const syncPluginProviders = () => {
@@ -1879,11 +1885,14 @@ export async function createPaseoDaemon(
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();
             providerSnapshotManager.settlePluginProviders();
-            await restartRecovery
-              .recoverDelegations()
-              .catch((error: unknown) =>
-                logger.error({ err: error }, "Failed to recover delegations after restart"),
+            try {
+              const { continuations } = await restartRecovery.recoverAfterRestart();
+              void continuations.catch((error: unknown) =>
+                logger.error({ err: error }, "Failed to continue runs cut by the restart"),
               );
+            } catch (error) {
+              logger.error({ err: error }, "Failed to recover after restart");
+            }
             wsServer.beginAcceptingConnections();
             relayRuntime = createRelayRuntime({
               config: {

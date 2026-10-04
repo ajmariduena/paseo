@@ -56,7 +56,7 @@ import {
   type ListImportableSessionsOptions,
 } from "./agent-sdk-types.js";
 import { buildArchivedAgentRecord, type ArchivedStoredAgentRecord } from "./agent-archive.js";
-import type { StoredAgentRecord, AgentStorage } from "./agent-storage.js";
+import type { StoredAgentRecord, AgentStorage, RestartCancelledWork } from "./agent-storage.js";
 import type { AgentOwner } from "./agent-owner.js";
 import {
   InMemoryAgentTimelineStore,
@@ -93,6 +93,7 @@ import {
   type NotificationAnnotation,
   type PromptAnnotation,
 } from "./prompt-annotations.js";
+import { prependRestartNote } from "../restart/background-note.js";
 import { AgentQueueRunner } from "../agent-queue/runner.js";
 import { AgentQueueStore } from "../agent-queue/store.js";
 import {
@@ -842,6 +843,12 @@ export class AgentManager {
   private readonly reloadedSessionCloses = new WeakMap<AgentSession, Promise<void>>();
   private readonly lifecycleMutationTails = new Map<string, Promise<void>>();
   private readonly inFlightOutOfBand = new Map<string, number>();
+  private readonly stopRequests = new Set<string>();
+  /** Turns that carried a pending restart note; it is cleared once that turn completes. */
+  private readonly restartNoteTurns = new Map<
+    string,
+    { turnId: string; work: RestartCancelledWork[] }
+  >();
   private readonly idleBackendTimers = new Map<
     string,
     { session: AgentSession; timer: NodeJS.Timeout }
@@ -2789,13 +2796,17 @@ export class AgentManager {
     const streamForwarder = async function* streamForwarder(this: AgentManager) {
       let turnId: string;
       let turnStream: ReturnType<AgentRunState["createTurnStream"]> | null = null;
+      const restartNote = this.registry ? await this.pendingRestartNote(agentId, prompt) : null;
       turnId = await this.startPendingForegroundTurn({
         agent,
         agentId,
         pendingRun,
-        prompt,
+        prompt: restartNote ? prependRestartNote(prompt, restartNote) : prompt,
         options,
       });
+      if (restartNote) {
+        this.restartNoteTurns.set(agentId, { turnId, work: restartNote });
+      }
 
       if (isReplacement) {
         agent.pendingReplacement = false;
@@ -2878,6 +2889,26 @@ export class AgentManager {
     }.call(this);
 
     return streamForwarder;
+  }
+
+  /** System envelopes stay intact so their timeline rows survive history replay. */
+  private async pendingRestartNote(
+    agentId: string,
+    prompt: AgentPromptInput,
+  ): Promise<RestartCancelledWork[] | null> {
+    if (typeof prompt === "string" && isSystemInjectedEnvelope(prompt)) return null;
+    const pending = (await this.registry?.get(agentId))?.pendingRestartNote;
+    return pending && pending.length > 0 ? pending : null;
+  }
+
+  private settleRestartNote(agentId: string, turnId: string | undefined, completed: boolean): void {
+    const carried = this.restartNoteTurns.get(agentId);
+    if (!carried || carried.turnId !== turnId) return;
+    this.restartNoteTurns.delete(agentId);
+    if (!completed || !this.registry) return;
+    void this.registry.clearPendingRestartNote(agentId, carried.work).catch((error: unknown) => {
+      this.logger.warn({ err: error, agentId }, "Failed to clear the pending restart note");
+    });
   }
 
   private finalizeForegroundTurn(agent: ActiveManagedAgent, turnId?: string): void {
@@ -3347,8 +3378,22 @@ export class AgentManager {
     }
   }
 
+  /** Someone asked the agent to stop; a restart that cuts the run must not continue it. */
   async cancelAgentRun(agentId: string): Promise<AgentRunCancellationResult> {
-    return this.runForegroundMutation(agentId, () => this.cancelAgentRunNow(agentId));
+    this.stopRequests.add(agentId);
+    try {
+      return await this.runForegroundMutation(agentId, () => this.cancelAgentRunNow(agentId));
+    } finally {
+      this.stopRequests.delete(agentId);
+    }
+  }
+
+  isStopRequested(agentId: string): boolean {
+    return this.stopRequests.has(agentId);
+  }
+
+  hasOutOfBandInFlight(agentId: string): boolean {
+    return this.inFlightOutOfBand.has(agentId);
   }
 
   private async cancelAgentRunNow(agentId: string): Promise<AgentRunCancellationResult> {
@@ -3420,7 +3465,7 @@ export class AgentManager {
     agentId: string,
     action: "reload" | "replace" | "rewind",
   ): Promise<void> {
-    const result = await this.cancelAgentRun(agentId);
+    const result = await this.runForegroundMutation(agentId, () => this.cancelAgentRunNow(agentId));
     if (result.status === "refused") {
       throw new AgentRunCancellationError(agentId, action);
     }
@@ -4850,6 +4895,7 @@ export class AgentManager {
       "agent.manager.turn.completed",
     );
     if (terminalDisposition === "stale") return;
+    this.settleRestartNote(agent.id, eventTurnId, true);
     if (event.usage) {
       agent.lastUsage = { ...agent.lastUsage, ...event.usage };
     }
@@ -4894,6 +4940,7 @@ export class AgentManager {
       "handleStreamEvent: turn_failed",
     );
     if (terminalDisposition === "stale") return;
+    this.settleRestartNote(agent.id, eventTurnId, false);
     if (!isForegroundEvent && !agent.activeForegroundTurnId) {
       agent.lifecycle = "error";
     }
@@ -4936,6 +4983,7 @@ export class AgentManager {
       "agent.manager.turn.canceled",
     );
     if (terminalDisposition === "stale") return;
+    this.settleRestartNote(agent.id, eventTurnId, false);
     if (!isForegroundEvent && !agent.activeForegroundTurnId && !agent.pendingReplacement) {
       agent.lifecycle = "idle";
     }

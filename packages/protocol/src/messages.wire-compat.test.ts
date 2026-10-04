@@ -9,6 +9,8 @@ import {
   WorkspaceSetupSnapshotSchema,
   WorkspaceSetupProgressMessageSchema,
   AgentTimelineEntryPayloadSchema,
+  MutableDaemonConfigPatchSchema,
+  MutableDaemonConfigSchema,
 } from "./messages.js";
 
 test("terminal listings accept older rows and retain new per-terminal directories", () => {
@@ -463,6 +465,27 @@ describe("wire schema compatibility", () => {
   test("server info advertises the server message queue as an optional feature", () => {
     const info = { status: "server_info", serverId: "srv", features: { serverMessageQueue: true } };
     expect(ServerInfoStatusPayloadSchema.parse(info).features?.serverMessageQueue).toBe(true);
+  });
+
+  test("daemon config carries the restart continuation setting only when the daemon has it", () => {
+    const config = {
+      relay: { enabled: false },
+      mcp: { enabled: true, injectIntoAgents: false },
+    };
+    expect(MutableDaemonConfigSchema.parse(config).continueAfterRestart).toBeUndefined();
+    expect(
+      MutableDaemonConfigSchema.parse({ ...config, continueAfterRestart: true })
+        .continueAfterRestart,
+    ).toBe(true);
+    expect(
+      MutableDaemonConfigPatchSchema.parse({ continueAfterRestart: false }).continueAfterRestart,
+    ).toBe(false);
+    const info = {
+      status: "server_info",
+      serverId: "srv",
+      features: { restartContinuation: true },
+    };
+    expect(ServerInfoStatusPayloadSchema.parse(info).features?.restartContinuation).toBe(true);
   });
 
   test("notification timeline items parse their level and message", () => {

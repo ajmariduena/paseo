@@ -362,6 +362,7 @@ export const PersistedConfigSchema = z
         idleRuntimeTimeoutMs: z
           .union([z.literal(0), z.number().int().min(60_000).max(2_147_483_647)])
           .optional(),
+        continueAfterRestart: z.boolean().optional(),
         metadataGeneration: AgentMetadataGenerationSchema.optional(),
         skills: z.object({ selection: AgentSkillSelectionSchema.optional() }).strict().optional(),
       })

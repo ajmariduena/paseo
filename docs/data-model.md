@@ -115,6 +115,7 @@ Each agent is stored as a separate JSON file, grouped by project directory.
 | `attentionTimestamp` | `string?` (ISO 8601)                     | When attention was flagged                                                                                                                                                                                                                                                                                                                                                          |
 | `internal`           | `boolean?`                               | Whether this is a system-internal agent                                                                                                                                                                                                                                                                                                                                             |
 | `archivedAt`         | `string?` (ISO 8601)                     | Soft-delete timestamp                                                                                                                                                                                                                                                                                                                                                               |
+| `pendingRestartNote` | `{ kind, label, id }[]?`                 | Background work a daemon restart cancelled. The agent's next foreground turn that is not a `<paseo-system>` envelope gets it prepended, and it is removed once that turn completes.                                                                                                                                                                                                 |
 
 ### Nested: SerializableConfig
 
@@ -251,7 +252,8 @@ snapshot so a mixed edit can apply its live subset and still name the paths that
     providers: Record<providerId, ProviderOverride>,
     metadataGeneration: {
       providers: [{ provider, model?, thinkingOptionId? }]
-    }
+    },
+    continueAfterRestart?: boolean  // default false; mutable as `continueAfterRestart`
   },
   pluginsEnabled: boolean,
   plugins: Record<pluginId, { source: "directory", path: string, enabled?: boolean }>,
@@ -621,7 +623,7 @@ The prompt file is written before the queue file references it and deleted after
 
 **Path:** `$PASEO_HOME/runtime/restart-intents.json`
 
-Written by a graceful shutdown before agents close, because closing persists every agent as `closed` and the record no longer says which ones were mid-turn. It lists the cut runs (`agentId`, `provider`, in-memory `runKey`, `cutAt`). Boot reads it, adds every agent whose record still says `running` or `initializing` (a crash writes no intents), settles delegations, and deletes the file. Schema: `packages/server/src/server/restart/restart-intent-store.ts`.
+Written by a graceful shutdown before agents close, because closing persists every agent as `closed` and the record no longer says which ones were mid-turn. It lists the cut runs (`agentId`, `provider`, in-memory `runKey`, `cutAt`, `stopRequested`, `outOfBand`) and the background tasks every agent held. Boot reads it, adds every agent whose record still says `running` or `initializing` (a crash writes no intents), decides continuations, moves lost background work of agents it does not continue into `pendingRestartNote`, settles delegations, and deletes the file. A continuation's prompt goes through the message receipts under `restart-continuation:{agentId}:{runKey}`, so a repeated boot does not send it twice. Schema: `packages/server/src/server/restart/restart-intent-store.ts`.
 
 ---
 

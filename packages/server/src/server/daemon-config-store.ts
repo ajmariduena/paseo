@@ -25,6 +25,7 @@ interface SupportedMutableConfigPatch {
   removeProviders?: string[];
   metadataGeneration?: MutableDaemonConfig["metadataGeneration"];
   autoArchiveAfterMerge?: boolean;
+  continueAfterRestart?: boolean;
   enableTerminalAgentHooks?: boolean;
   appendSystemPrompt?: string;
   terminalProfiles?: MutableDaemonConfig["terminalProfiles"];
@@ -198,6 +199,7 @@ const RELOADABLE_PATHS = [
   "agents.catalogRefreshTimeoutMs",
   "agents.metadataGeneration",
   "agents.skills.selection",
+  "agents.continueAfterRestart",
   "pluginsEnabled",
   "features.dictation.stt",
 ] as const;
@@ -222,6 +224,7 @@ const PERSISTED_TO_MUTABLE_PATH = new Map<string, string>([
   ["agents.catalogRefreshTimeoutMs", "catalogRefreshTimeoutMs"],
   ["agents.metadataGeneration", "metadataGeneration"],
   ["agents.skills.selection", "skills.selection"],
+  ["agents.continueAfterRestart", "continueAfterRestart"],
   ["pluginsEnabled", "pluginsEnabled"],
   ["features.dictation.stt", "dictation.stt"],
 ]);
@@ -283,6 +286,25 @@ function pickDictationSttPatch(
   return Object.keys(picked).length > 0 ? picked : undefined;
 }
 
+function pickAgentBehaviorFields(
+  patch: MutableDaemonConfigPatch,
+): Pick<
+  SupportedMutableConfigPatch,
+  "autoArchiveAfterMerge" | "continueAfterRestart" | "enableTerminalAgentHooks"
+> {
+  return {
+    ...(patch.autoArchiveAfterMerge !== undefined
+      ? { autoArchiveAfterMerge: patch.autoArchiveAfterMerge }
+      : {}),
+    ...(patch.continueAfterRestart !== undefined
+      ? { continueAfterRestart: patch.continueAfterRestart }
+      : {}),
+    ...(patch.enableTerminalAgentHooks !== undefined
+      ? { enableTerminalAgentHooks: patch.enableTerminalAgentHooks }
+      : {}),
+  };
+}
+
 function pickSupportedPatchFields(patch: MutableDaemonConfigPatch): SupportedMutableConfigPatch {
   const dictationStt = pickDictationSttPatch(patch.dictation?.stt);
   return {
@@ -299,12 +321,7 @@ function pickSupportedPatchFields(patch: MutableDaemonConfigPatch): SupportedMut
     ...(patch.metadataGeneration?.providers !== undefined
       ? { metadataGeneration: { providers: patch.metadataGeneration.providers } }
       : {}),
-    ...(patch.autoArchiveAfterMerge !== undefined
-      ? { autoArchiveAfterMerge: patch.autoArchiveAfterMerge }
-      : {}),
-    ...(patch.enableTerminalAgentHooks !== undefined
-      ? { enableTerminalAgentHooks: patch.enableTerminalAgentHooks }
-      : {}),
+    ...pickAgentBehaviorFields(patch),
     ...(patch.appendSystemPrompt !== undefined
       ? { appendSystemPrompt: patch.appendSystemPrompt }
       : {}),
@@ -650,6 +667,7 @@ function mergeMutableAgentPatch(
     patch.providers === undefined &&
     patch.metadataGeneration === undefined &&
     patch.skills === undefined &&
+    patch.continueAfterRestart === undefined &&
     removeProviders.length === 0
   ) {
     return persistedAgents;
@@ -680,6 +698,10 @@ function mergeMutableAgentPatch(
 
   if (patch.skills?.selection !== undefined) {
     next["skills"] = { selection: patch.skills.selection };
+  }
+
+  if (patch.continueAfterRestart !== undefined) {
+    next["continueAfterRestart"] = patch.continueAfterRestart;
   }
 
   return Object.keys(next).length > 0 ? (next as PersistedConfig["agents"]) : undefined;

@@ -1,9 +1,9 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { experimental_createMCPClient } from "ai";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import type { AgentStreamEvent } from "../agent/agent-sdk-types.js";
 import type { DelegationFile } from "../delegation/delegation-store.js";
@@ -31,12 +31,15 @@ afterEach(async () => {
   await rm(homeRoot, { recursive: true, force: true });
 }, 30_000);
 
-async function startDaemon(): Promise<RunningDaemon> {
+async function startDaemon(
+  options: { continueAfterRestart?: boolean } = {},
+): Promise<RunningDaemon> {
   const provider = new ControlledAgentClient("claude", { steerable: false, histories });
   const daemon = await createTestPaseoDaemon({
     paseoHomeRoot: homeRoot,
     cleanup: false,
     agentClients: { claude: provider },
+    continueAfterRestart: options.continueAfterRestart,
   });
   const client = new DaemonClient({
     url: `ws://127.0.0.1:${daemon.port}/ws`,
@@ -236,4 +239,137 @@ test("a child that settled before a crash reports the result its history holds",
 
   expect(wake).toContain(`agent ${childId}, "Review auth") finished.`);
   expect(wake).toContain("auth looks fine");
+});
+
+async function readRecord(instance: RunningDaemon, agentId: string) {
+  return await instance.daemon.daemon.agentStorage.get(agentId);
+}
+
+async function editRecord(
+  agentId: string,
+  edit: (record: Record<string, unknown>) => void,
+): Promise<void> {
+  const agentsDir = path.join(homeRoot, ".paseo", "agents");
+  for (const entry of await readdir(agentsDir, { recursive: true })) {
+    if (path.basename(entry) !== `${agentId}.json`) continue;
+    const filePath = path.join(agentsDir, entry);
+    const record = JSON.parse(await readFile(filePath, "utf8")) as Record<string, unknown>;
+    edit(record);
+    await writeFile(filePath, JSON.stringify(record));
+    return;
+  }
+  throw new Error(`No record for agent ${agentId}`);
+}
+
+describe("restart continuation", () => {
+  test("a cut turn continues with one stable-id prompt shown as a notification", async () => {
+    const first = await startDaemon();
+    const agent = await first.client.createAgent({ provider: "claude", cwd: homeRoot });
+    await first.client.sendAgentMessage(agent.id, "long task");
+    const runKey = first.daemon.daemon.agentManager.getActiveRun(agent.id)?.key;
+    await stopDaemon(first);
+
+    const second = await startDaemon({ continueAfterRestart: true });
+    const prompts = await waitForStartPrompts(second, agent.id, 1);
+
+    expect(prompts).toEqual(["Continue where you left off."]);
+    expect(second.daemon.daemon.agentManager.getTimeline(agent.id)).toContainEqual({
+      type: "notification",
+      level: "info",
+      message: "Continued after the daemon restarted",
+      messageId: `restart-continuation:${agent.id}:${runKey}`,
+    });
+  });
+
+  test("with the setting off a cut turn stays stopped", async () => {
+    const first = await startDaemon();
+    const agent = await first.client.createAgent({ provider: "claude", cwd: homeRoot });
+    await first.client.sendAgentMessage(agent.id, "long task");
+    await stopDaemon(first);
+
+    const second = await startDaemon();
+    await second.client.sendAgentMessage(agent.id, "what happened?");
+
+    expect(sessionOf(second, agent.id).startPrompts).toEqual(["what happened?"]);
+  });
+
+  test("an idle agent that lost background work stays asleep and its next prompt carries the note once", async () => {
+    const first = await startDaemon({ continueAfterRestart: true });
+    const agent = await first.client.createAgent({ provider: "claude", cwd: homeRoot });
+    await first.client.sendAgentMessage(agent.id, "start the dev server");
+    const firstSession = sessionOf(first, agent.id);
+    firstSession.setBackgroundTasks([
+      {
+        id: "bg-1",
+        taskType: "shell",
+        description: "npm run dev",
+        startedAt: "2026-10-04T12:00:00.000Z",
+      },
+    ]);
+    firstSession.completeTurn("dev server is up");
+    await first.client.waitForAgentUpsert(
+      agent.id,
+      (snapshot) => snapshot.status === "idle" && (snapshot.backgroundTasks?.length ?? 0) === 1,
+    );
+    await stopDaemon(first);
+
+    const second = await startDaemon({ continueAfterRestart: true });
+    expect(second.daemon.daemon.agentManager.getAgent(agent.id)).toBeNull();
+    expect((await readRecord(second, agent.id))?.pendingRestartNote).toEqual([
+      { kind: "shell", label: "npm run dev", id: "bg-1" },
+    ]);
+
+    await second.client.sendAgentMessage(agent.id, "is it still running?");
+    const [withNote] = await waitForStartPrompts(second, agent.id, 1);
+    expect(withNote).toBe(
+      [
+        "Note: the Paseo daemon restarted, and this background work was cancelled before it finished. It will not report back:",
+        "- shell: npm run dev",
+        "",
+        "is it still running?",
+      ].join("\n"),
+    );
+    sessionOf(second, agent.id).completeTurn("it stopped");
+    await expect
+      .poll(async () => (await readRecord(second, agent.id))?.pendingRestartNote)
+      .toBeUndefined();
+
+    await second.client.sendAgentMessage(agent.id, "start it again");
+    const prompts = await waitForStartPrompts(second, agent.id, 2);
+    expect(prompts[1]).toBe("start it again");
+  });
+
+  test("a continued child reports its result once its continued turn settles", async () => {
+    const first = await startDaemon();
+    const parent = await first.client.createAgent({ provider: "claude", cwd: homeRoot });
+    const childId = await createChild(first, parent.id);
+    await expect.poll(async () => (await readDelegations(parent.id)).tasks).not.toEqual({});
+    await stopDaemon(first);
+
+    const second = await startDaemon({ continueAfterRestart: true });
+    expect(await waitForStartPrompts(second, childId, 1)).toEqual(["Continue where you left off."]);
+    expect(Object.values((await readDelegations(parent.id)).tasks)[0]?.status).toBe("running");
+
+    sessionOf(second, childId).completeTurn("auth reviewed after the restart");
+    const [wake] = await waitForStartPrompts(second, parent.id, 1);
+    expect(wake).toContain(`agent ${childId}, "Review auth") finished.`);
+    expect(wake).toContain("auth reviewed after the restart");
+  });
+
+  test("a delegated child whose continuation declines still reports to its parent", async () => {
+    const first = await startDaemon();
+    const parent = await first.client.createAgent({ provider: "claude", cwd: homeRoot });
+    const childId = await createChild(first, parent.id);
+    await expect.poll(async () => (await readDelegations(parent.id)).tasks).not.toEqual({});
+    await stopDaemon(first);
+    await editRecord(childId, (record) => {
+      record["lastUserMessageAt"] = "2999-01-01T00:00:00.000Z";
+    });
+
+    const second = await startDaemon({ continueAfterRestart: true });
+    const [wake] = await waitForStartPrompts(second, parent.id, 1);
+
+    expect(wake).toContain(`agent ${childId}, "Review auth") was stopped.`);
+    expect(wake).toContain("Child task ended with status cancelled.");
+  });
 });

@@ -1912,6 +1912,8 @@ export class VoiceAssistantWebSocketServer {
         voiceCallMute: Boolean(this.voiceOrchestrator),
         // COMPAT(serverMessageQueue): added in v0.11.0, remove gate after 2027-10-04.
         serverMessageQueue: true,
+        // COMPAT(restartContinuation): added in v0.11.0, remove gate after 2027-10-04.
+        restartContinuation: true,
         // COMPAT(projectRemove): added in v0.1.97, drop the gate when floor >= v0.1.97.
         projectRemove: true,
         // COMPAT(projectAdd): added in v0.1.97, drop the gate when floor >= v0.1.97.

@@ -42,6 +42,12 @@ const PERSISTENCE_HANDLE_SCHEMA = z
   .nullable()
   .optional();
 
+const RestartCancelledWorkSchema = z.object({
+  kind: z.string(),
+  label: z.string(),
+  id: z.string(),
+});
+
 const STORED_AGENT_SCHEMA = z.object({
   id: z.string(),
   provider: z.string(),
@@ -81,6 +87,8 @@ const STORED_AGENT_SCHEMA = z.object({
       clientRequestId: z.string(),
     })
     .optional(),
+  /** Background work a restart cancelled, told to the agent's next turn once it completes. */
+  pendingRestartNote: z.array(RestartCancelledWorkSchema).optional(),
 });
 
 export type SerializableAgentConfig = Pick<
@@ -96,6 +104,7 @@ export type SerializableAgentConfig = Pick<
 >;
 
 export type StoredAgentRecord = z.infer<typeof STORED_AGENT_SCHEMA>;
+export type RestartCancelledWork = z.infer<typeof RestartCancelledWorkSchema>;
 export type AgentCreationRequest = NonNullable<StoredAgentRecord["creation"]>;
 export function parseStoredAgentRecord(value: unknown): StoredAgentRecord {
   return STORED_AGENT_SCHEMA.parse(value);
@@ -269,7 +278,46 @@ export class AgentStorage {
       if (existing?.creation) {
         record.creation = existing.creation;
       }
+      if (existing?.pendingRestartNote) {
+        record.pendingRestartNote = existing.pendingRestartNote;
+      }
       return record;
+    });
+  }
+
+  /** Adds work to the agent's pending restart note; entries dedupe by id. */
+  async addPendingRestartNote(
+    agentId: string,
+    work: readonly RestartCancelledWork[],
+  ): Promise<void> {
+    await this.load();
+    await this.queueRecordMutation(agentId, (existing) => {
+      if (!existing) {
+        throw new Error(`Agent ${agentId} not found`);
+      }
+      const pending = [...(existing.pendingRestartNote ?? [])];
+      for (const entry of work) {
+        if (!pending.some((candidate) => candidate.id === entry.id)) pending.push(entry);
+      }
+      return { ...existing, pendingRestartNote: pending };
+    });
+  }
+
+  /** A completed turn carried the note, so the agent has heard it. */
+  async clearPendingRestartNote(
+    agentId: string,
+    delivered: readonly RestartCancelledWork[],
+  ): Promise<void> {
+    await this.load();
+    await this.queueRecordMutation(agentId, (existing) => {
+      if (!existing) {
+        throw new Error(`Agent ${agentId} not found`);
+      }
+      const remaining = (existing.pendingRestartNote ?? []).filter(
+        (entry) => !delivered.some((heard) => heard.id === entry.id),
+      );
+      const { pendingRestartNote: _cleared, ...rest } = existing;
+      return remaining.length > 0 ? { ...rest, pendingRestartNote: remaining } : rest;
     });
   }
 

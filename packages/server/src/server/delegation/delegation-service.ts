@@ -55,6 +55,8 @@ export class DelegationService {
   private readonly finalizeWaiters = new Set<() => void>();
   private readonly unsubscribe: () => void;
   private closed = false;
+  /** child → parents whose tasks wait for the child's restart continuation. */
+  private readonly continuingChildren = new Map<string, string[]>();
 
   constructor(options: DelegationServiceOptions) {
     this.store = options.store;
@@ -247,7 +249,11 @@ export class DelegationService {
    * stays there, held with the rest of the queue. A child that had settled before the restart
    * but whose result was not recorded yet is reloaded so its result comes from its history.
    */
-  async recoverAfterRestart(cutAgentIds: ReadonlySet<string>): Promise<void> {
+  async recoverAfterRestart(input: {
+    cut: ReadonlySet<string>;
+    /** Cut children a restart continuation resumes; they report when they settle. */
+    continuing: ReadonlySet<string>;
+  }): Promise<void> {
     const offers = new Map<string, WakeOffer>();
     const settledChildren = new Map<string, string[]>();
     for (const parentAgentId of await this.store.listParents()) {
@@ -261,13 +267,16 @@ export class DelegationService {
       for (const task of runningTasks) {
         const childRecord = await this.agentStorage.get(task.childAgentId);
         const childGone = !childRecord || Boolean(childRecord.archivedAt);
-        if (childGone || cutAgentIds.has(task.childAgentId)) {
+        if (!childGone && input.continuing.has(task.childAgentId)) {
+          addParent(this.continuingChildren, task.childAgentId, parentAgentId);
+          continue;
+        }
+        if (childGone || input.cut.has(task.childAgentId)) {
           const offer = await this.finalizeCutTask(parentAgentId, task, childGone);
           if (offer) offers.set(offer.messageId, offer);
           continue;
         }
-        const parents = settledChildren.get(task.childAgentId) ?? [];
-        settledChildren.set(task.childAgentId, [...parents, parentAgentId]);
+        addParent(settledChildren, task.childAgentId, parentAgentId);
       }
     }
     this.logger.info(
@@ -277,6 +286,32 @@ export class DelegationService {
     for (const offer of offers.values()) this.mailbox.offer(offer);
     for (const [childAgentId, parents] of settledChildren) {
       void this.reloadSettledChild(childAgentId, parents);
+    }
+  }
+
+  /** The restart continuation started the child's turn; its settle reports as usual. */
+  adoptContinuedChild(childAgentId: string): void {
+    const parents = this.continuingChildren.get(childAgentId);
+    if (!parents) return;
+    this.continuingChildren.delete(childAgentId);
+    for (const parentAgentId of parents) this.trackRunningChild(childAgentId, parentAgentId);
+    this.scheduleChildCheck(childAgentId);
+  }
+
+  /** The restart continuation declined or failed: the child reports as cut. */
+  async reportCutChild(childAgentId: string): Promise<void> {
+    const parents = this.continuingChildren.get(childAgentId);
+    if (!parents) return;
+    this.continuingChildren.delete(childAgentId);
+    for (const parentAgentId of parents) {
+      const file = await this.store.get(parentAgentId);
+      const running = Object.values(file?.tasks ?? {}).filter(
+        (task) => task.childAgentId === childAgentId && task.status === "running",
+      );
+      for (const task of running) {
+        const offer = await this.finalizeCutTask(parentAgentId, task, false);
+        if (offer) this.mailbox.offer(offer);
+      }
     }
   }
 
@@ -552,6 +587,11 @@ export class DelegationService {
       isRunLive: (runKey) => this.agentManager.isRunLive(parentAgentId, runKey),
     };
   }
+}
+
+function addParent(byChild: Map<string, string[]>, childAgentId: string, parentAgentId: string) {
+  const parents = byChild.get(childAgentId) ?? [];
+  if (!parents.includes(parentAgentId)) byChild.set(childAgentId, [...parents, parentAgentId]);
 }
 
 function turnOutcome(type: string): TurnOutcome | null {
