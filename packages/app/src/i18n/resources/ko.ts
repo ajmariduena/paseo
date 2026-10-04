@@ -207,6 +207,17 @@ export const ko: TranslationResources = {
       removeConfirmTitle: "대기 중인 메시지를 제거할까요?",
       removeConfirmMessage: "에이전트에게 전송되지 않습니다.",
       removeResultsConfirmMessage: "포함된 하위 에이전트 결과가 이 에이전트에 전달되지 않습니다.",
+      held: {
+        restart: "재시작 후 대기열 일시 중지됨",
+        failure: "턴 실패 후 대기열 일시 중지됨",
+        userStop: "에이전트를 중지해서 대기열 일시 중지됨",
+        paused: "대기열 일시 중지됨",
+        count_one: "메시지 {{count}}개 보류됨",
+        count_other: "메시지 {{count}}개 보류됨",
+        resume: "재개",
+        tag: "보류됨",
+        resumeFailed: "대기열을 재개할 수 없습니다: {{message}}",
+      },
       errors: {
         remove: "대기 중인 메시지를 제거할 수 없습니다: {{message}}",
         edit: "대기 중인 메시지를 저장할 수 없습니다: {{message}}",
@@ -2853,6 +2864,14 @@ export const ko: TranslationResources = {
           update: "스킬 업데이트",
           delete: "스킬 삭제",
         },
+      },
+      restartContinuation: {
+        sectionTitle: "데몬 재시작 후",
+        sectionInfo:
+          "데몬이 멈췄을 때 작업 중이던 에이전트를 어떻게 할지 정합니다. 대기 중인 메시지는 항상 재개를 기다립니다.",
+        title: "중단된 에이전트 계속",
+        hint: '데몬이 재시작될 때 턴 중이던 에이전트에게 "중단한 곳에서 계속"을 보냅니다. 대기 중인 메시지는 어느 경우에도 보류됩니다',
+        updateFailed: "설정을 업데이트할 수 없습니다: {{message}}",
       },
       orchestration: {
         title: "오케스트레이션",

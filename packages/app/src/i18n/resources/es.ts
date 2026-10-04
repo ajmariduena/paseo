@@ -209,6 +209,17 @@ export const es: TranslationResources = {
       removeConfirmMessage: "No se enviará al agente.",
       removeResultsConfirmMessage:
         "Los resultados de subagentes que contiene no llegarán a este agente.",
+      held: {
+        restart: "Cola en pausa tras el reinicio",
+        failure: "Cola en pausa tras un turno fallido",
+        userStop: "Cola en pausa porque detuviste el agente",
+        paused: "Cola en pausa",
+        count_one: "{{count}} mensaje retenido",
+        count_other: "{{count}} mensajes retenidos",
+        resume: "Reanudar",
+        tag: "Retenido",
+        resumeFailed: "No se pudo reanudar la cola: {{message}}",
+      },
       errors: {
         remove: "No se pudo quitar el mensaje en cola: {{message}}",
         edit: "No se pudo guardar el mensaje en cola: {{message}}",
@@ -2902,6 +2913,14 @@ export const es: TranslationResources = {
           update: "Actualizar habilidad",
           delete: "Eliminar habilidad",
         },
+      },
+      restartContinuation: {
+        sectionTitle: "Tras reiniciar el daemon",
+        sectionInfo:
+          "Qué pasa con los agentes que trabajaban cuando se detuvo el daemon. Los mensajes en cola siempre esperan a Reanudar.",
+        title: "Continuar agentes interrumpidos",
+        hint: 'Envía "Continúa donde lo dejaste" a los agentes que estaban a mitad de turno cuando se reinició el daemon. Los mensajes en cola siguen retenidos en cualquier caso',
+        updateFailed: "No se pudo actualizar el ajuste: {{message}}",
       },
       orchestration: {
         title: "Orquestación",

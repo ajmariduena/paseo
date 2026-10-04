@@ -208,6 +208,17 @@ export const ptBR: TranslationResources = {
       removeConfirmTitle: "Remover a mensagem da fila?",
       removeConfirmMessage: "Ela não será enviada ao agente.",
       removeResultsConfirmMessage: "Os resultados de subagentes nela não chegarão a este agente.",
+      held: {
+        restart: "Fila pausada após reiniciar",
+        failure: "Fila pausada após um turno com falha",
+        userStop: "Fila pausada porque você parou o agente",
+        paused: "Fila pausada",
+        count_one: "{{count}} mensagem retida",
+        count_other: "{{count}} mensagens retidas",
+        resume: "Retomar",
+        tag: "Retida",
+        resumeFailed: "Não foi possível retomar a fila: {{message}}",
+      },
       errors: {
         remove: "Não foi possível remover a mensagem da fila: {{message}}",
         edit: "Não foi possível salvar a mensagem da fila: {{message}}",
@@ -2883,6 +2894,14 @@ export const ptBR: TranslationResources = {
           update: "Atualizar skill",
           delete: "Excluir skill",
         },
+      },
+      restartContinuation: {
+        sectionTitle: "Depois de reiniciar o daemon",
+        sectionInfo:
+          "O que acontece com os agentes que estavam trabalhando quando o daemon parou. Mensagens na fila sempre esperam Retomar.",
+        title: "Continuar agentes interrompidos",
+        hint: 'Envia "Continue de onde parou" aos agentes que estavam no meio de um turno quando o daemon reiniciou. Mensagens na fila continuam retidas de qualquer forma',
+        updateFailed: "Não foi possível atualizar a configuração: {{message}}",
       },
       orchestration: {
         title: "Orquestração",

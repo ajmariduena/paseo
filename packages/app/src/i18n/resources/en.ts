@@ -203,6 +203,17 @@ export const en = {
       removeConfirmTitle: "Remove queued message?",
       removeConfirmMessage: "It will not be sent to the agent.",
       removeResultsConfirmMessage: "The subagent results in it will not reach this agent.",
+      held: {
+        restart: "Queue paused after restart",
+        failure: "Queue paused after a failed turn",
+        userStop: "Queue paused after you stopped the agent",
+        paused: "Queue paused",
+        count_one: "{{count}} message held",
+        count_other: "{{count}} messages held",
+        resume: "Resume",
+        tag: "Held",
+        resumeFailed: "Unable to resume the queue: {{message}}",
+      },
       errors: {
         remove: "Unable to remove the queued message: {{message}}",
         edit: "Unable to save the queued message: {{message}}",
@@ -2968,6 +2979,14 @@ export const en = {
           update: "Update skill",
           delete: "Delete skill",
         },
+      },
+      restartContinuation: {
+        sectionTitle: "After a daemon restart",
+        sectionInfo:
+          "What happens to agents that were working when the daemon stopped. Queued messages always wait for Resume.",
+        title: "Continue interrupted agents",
+        hint: 'Sends "Continue where you left off" to agents that were mid-turn when the daemon restarted. Queued messages stay held either way',
+        updateFailed: "Unable to update the setting: {{message}}",
       },
       orchestration: {
         title: "Orchestration",

@@ -211,6 +211,17 @@ export const fr: TranslationResources = {
       removeConfirmMessage: "Il ne sera pas envoyé à l'agent.",
       removeResultsConfirmMessage:
         "Les résultats des sous-agents qu'il contient n'atteindront pas cet agent.",
+      held: {
+        restart: "File d'attente en pause après le redémarrage",
+        failure: "File d'attente en pause après un tour en échec",
+        userStop: "File d'attente en pause car vous avez arrêté l'agent",
+        paused: "File d'attente en pause",
+        count_one: "{{count}} message retenu",
+        count_other: "{{count}} messages retenus",
+        resume: "Reprendre",
+        tag: "Retenu",
+        resumeFailed: "Impossible de reprendre la file d'attente : {{message}}",
+      },
       errors: {
         remove: "Impossible de retirer le message en file d'attente : {{message}}",
         edit: "Impossible d'enregistrer le message en file d'attente : {{message}}",
@@ -2907,6 +2918,14 @@ export const fr: TranslationResources = {
           update: "Mettre à jour la compétence",
           delete: "Supprimer la compétence",
         },
+      },
+      restartContinuation: {
+        sectionTitle: "Après un redémarrage du daemon",
+        sectionInfo:
+          "Ce qui arrive aux agents qui travaillaient quand le daemon s'est arrêté. Les messages en file d'attente attendent toujours Reprendre.",
+        title: "Poursuivre les agents interrompus",
+        hint: "Envoie « Reprends où tu t'étais arrêté » aux agents qui étaient en plein tour au redémarrage du daemon. Les messages en file d'attente restent en pause dans tous les cas",
+        updateFailed: "Impossible de mettre à jour le réglage : {{message}}",
       },
       orchestration: {
         title: "Orchestration",

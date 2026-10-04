@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   resolveEditableQueueText,
   resolveFirstQueuedMessageId,
+  resolveHeldQueueTitleKey,
   resolveQueueEntryMoves,
   resolveQueueEntrySource,
   type ServerQueueEntry,
@@ -111,5 +112,14 @@ describe("resolveFirstQueuedMessageId", () => {
   it("has nothing to steer when only subagent results wait", () => {
     expect(resolveFirstQueuedMessageId([entry("wake", { origin: "delegation_wake" })])).toBeNull();
     expect(resolveFirstQueuedMessageId([])).toBeNull();
+  });
+});
+
+describe("resolveHeldQueueTitleKey", () => {
+  it("names the reason the daemon held the queue", () => {
+    expect(resolveHeldQueueTitleKey("restart")).toBe("composer.queue.held.restart");
+    expect(resolveHeldQueueTitleKey("failure")).toBe("composer.queue.held.failure");
+    expect(resolveHeldQueueTitleKey("user_stop")).toBe("composer.queue.held.userStop");
+    expect(resolveHeldQueueTitleKey(null)).toBe("composer.queue.held.paused");
   });
 });

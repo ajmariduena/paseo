@@ -208,6 +208,17 @@ export const ja: TranslationResources = {
       removeConfirmTitle: "キューに入れたメッセージを削除しますか？",
       removeConfirmMessage: "エージェントには送信されません。",
       removeResultsConfirmMessage: "含まれるサブエージェントの結果はこのエージェントに届きません。",
+      held: {
+        restart: "再起動後にキューを一時停止",
+        failure: "ターンが失敗したためキューを一時停止",
+        userStop: "エージェントを停止したためキューを一時停止",
+        paused: "キューを一時停止中",
+        count_one: "{{count}} 件のメッセージを保留中",
+        count_other: "{{count}} 件のメッセージを保留中",
+        resume: "再開",
+        tag: "保留中",
+        resumeFailed: "キューを再開できません: {{message}}",
+      },
       errors: {
         remove: "キューに入れたメッセージを削除できません: {{message}}",
         edit: "キューに入れたメッセージを保存できません: {{message}}",
@@ -2877,6 +2888,14 @@ export const ja: TranslationResources = {
           update: "スキルを更新",
           delete: "スキルを削除",
         },
+      },
+      restartContinuation: {
+        sectionTitle: "デーモン再起動後",
+        sectionInfo:
+          "デーモン停止時に作業中だったエージェントの扱い。キュー内のメッセージは常に「再開」を待ちます。",
+        title: "中断されたエージェントを続行",
+        hint: "デーモン再起動時にターンの途中だったエージェントに「中断したところから続けて」を送ります。キュー内のメッセージはどちらの場合も保留されたままです",
+        updateFailed: "設定を更新できません: {{message}}",
       },
       orchestration: {
         title: "オーケストレーション",

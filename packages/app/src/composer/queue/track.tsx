@@ -29,6 +29,7 @@ import {
   type RunQueueAction,
   type ServerQueueActions,
 } from "./actions";
+import { HeldQueueCallout } from "./held-callout";
 import { forgetQueuedText, readQueuedText, rememberQueuedText } from "./queued-text";
 
 function actionStateForEntry(state: QueueActionState, entryId: string): QueueActionState {
@@ -48,12 +49,20 @@ export const ServerQueueTrack = memo(function ServerQueueTrack({
 }): ReactElement | null {
   const queue = useSessionStore((state) => state.sessions[serverId]?.agents.get(agentId)?.queue);
 
-  const entries = queue?.entries;
-  if (!entries?.length) return null;
+  if (!queue || queue.entries.length === 0) return null;
+  const { entries } = queue;
   const isBusy = actions.state.status === "pending";
 
   return (
     <View style={styles.track} testID="server-queue-track">
+      {queue.held ? (
+        <HeldQueueCallout
+          serverId={serverId}
+          agentId={agentId}
+          heldReason={queue.heldReason}
+          count={entries.length}
+        />
+      ) : null}
       {entries.map((entry) => (
         <ServerQueueRow
           key={entry.id}
@@ -62,6 +71,7 @@ export const ServerQueueTrack = memo(function ServerQueueTrack({
           entry={entry}
           entries={entries}
           actionState={actionStateForEntry(actions.state, entry.id)}
+          isHeld={queue.held}
           isTrackBusy={isBusy}
           runAction={actions.run}
           sendNow={actions.sendNow}
@@ -77,6 +87,7 @@ interface ServerQueueRowProps {
   entry: ServerQueueEntry;
   entries: readonly ServerQueueEntry[];
   actionState: QueueActionState;
+  isHeld: boolean;
   isTrackBusy: boolean;
   runAction: RunQueueAction;
   sendNow: (entryId: string) => void;
@@ -88,6 +99,7 @@ function ServerQueueRow({
   entry,
   entries,
   actionState,
+  isHeld,
   isTrackBusy,
   runAction,
   sendNow,
@@ -200,6 +212,7 @@ function ServerQueueRow({
           <ServerQueueRowActions
             entryId={entry.id}
             isPending={isPending}
+            isHeld={isHeld}
             isDisabled={isTrackBusy}
             canEdit={editableText !== null}
             canMoveUp={moves.up !== null}
@@ -243,6 +256,8 @@ function useQueueEntryMeta(serverId: string, entry: ServerQueueEntry): string | 
 interface ServerQueueRowActionsProps {
   entryId: string;
   isPending: boolean;
+  /** A held queue starts nothing on its own, so sending now is no longer the obvious next step. */
+  isHeld: boolean;
   isDisabled: boolean;
   canEdit: boolean;
   canMoveUp: boolean;
@@ -257,6 +272,7 @@ interface ServerQueueRowActionsProps {
 function ServerQueueRowActions({
   entryId,
   isPending,
+  isHeld,
   isDisabled,
   canEdit,
   canMoveUp,
@@ -278,8 +294,11 @@ function ServerQueueRowActions({
     );
   }
   const actionStyle = isDisabled ? styles.disabled : undefined;
+  const sendButtonStyle = isHeld ? undefined : styles.sendButton;
+  const sendIconMapping = isHeld ? mutedColorMapping : accentForegroundColorMapping;
   return (
     <View style={[styles.actions, actionStyle]}>
+      {isHeld ? <Text style={styles.heldTag}>{t("composer.queue.held.tag")}</Text> : null}
       {canEdit ? (
         <Pressable
           onPress={onEdit}
@@ -295,12 +314,12 @@ function ServerQueueRowActions({
       <Pressable
         onPress={onSendNow}
         disabled={isDisabled}
-        style={[styles.actionButton, styles.sendButton]}
+        style={[styles.actionButton, sendButtonStyle]}
         accessibilityLabel={t("composer.attachments.sendQueuedMessageNow")}
         accessibilityRole="button"
         testID={`server-queue-send-now-${entryId}`}
       >
-        <ThemedArrowUp size={ICON_SIZE.sm} uniProps={accentForegroundColorMapping} />
+        <ThemedArrowUp size={ICON_SIZE.sm} uniProps={sendIconMapping} />
       </Pressable>
       <DropdownMenu>
         <DropdownMenuTrigger
@@ -417,6 +436,14 @@ const styles = StyleSheet.create((theme: Theme) => ({
   },
   sendButton: {
     backgroundColor: theme.colors.accent,
+  },
+  heldTag: {
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foregroundMuted,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.base,
+    paddingHorizontal: theme.spacing[1],
   },
   kebabTrigger: {
     padding: 2,

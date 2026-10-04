@@ -86,3 +86,16 @@ export function resolveFirstQueuedMessageId(entries: readonly ServerQueueEntry[]
   const first = entries.find((entry) => entry.origin === "user" || entry.origin === "agent");
   return first?.id ?? null;
 }
+
+type HeldReason = AgentQueueSnapshot["heldReason"];
+
+const HELD_TITLE_KEYS: Record<NonNullable<HeldReason>, string> = {
+  restart: "composer.queue.held.restart",
+  failure: "composer.queue.held.failure",
+  user_stop: "composer.queue.held.userStop",
+};
+
+/** Why the daemon stopped draining the queue, as the held callout says it. */
+export function resolveHeldQueueTitleKey(reason: HeldReason): string {
+  return reason ? HELD_TITLE_KEYS[reason] : "composer.queue.held.paused";
+}

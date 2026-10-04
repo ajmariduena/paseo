@@ -207,6 +207,17 @@ export const zhCN: TranslationResources = {
       removeConfirmTitle: "移除排队消息？",
       removeConfirmMessage: "它不会发送给 Agent。",
       removeResultsConfirmMessage: "其中的子 Agent 结果不会送达此 Agent。",
+      held: {
+        restart: "重启后队列已暂停",
+        failure: "回合失败后队列已暂停",
+        userStop: "你停止了 Agent，队列已暂停",
+        paused: "队列已暂停",
+        count_one: "{{count}} 条消息已暂留",
+        count_other: "{{count}} 条消息已暂留",
+        resume: "继续",
+        tag: "已暂留",
+        resumeFailed: "无法继续队列：{{message}}",
+      },
       errors: {
         remove: "无法移除排队消息：{{message}}",
         edit: "无法保存排队消息：{{message}}",
@@ -2808,6 +2819,13 @@ export const zhCN: TranslationResources = {
           update: "更新 skill",
           delete: "删除 skill",
         },
+      },
+      restartContinuation: {
+        sectionTitle: "守护进程重启后",
+        sectionInfo: "守护进程停止时仍在工作的 Agent 如何处理。排队消息始终等待“继续”。",
+        title: "继续被中断的 Agent",
+        hint: "向守护进程重启时正处于回合中的 Agent 发送“从中断处继续”。排队消息无论如何都会保持暂停",
+        updateFailed: "无法更新设置：{{message}}",
       },
       orchestration: {
         title: "编排",
