@@ -80,6 +80,7 @@ export const zhCN: TranslationResources = {
       daemonClientUnavailable: "Daemon client 不可用",
       daemonClientDisconnected: "Daemon client 已断开连接",
       noFileFound: "未找到 {{token}} 对应的文件",
+      linkIsFolder: "{{path}} 是文件夹，不是文件",
       unexpectedDictationError: "处理听写时发生意外错误。",
     },
     connectionStatus: {
