@@ -5,7 +5,7 @@ import { File, Paths } from "expo-file-system";
 import { reportCapturedPcm16 } from "./audio-levels";
 import { createPlaybackQueue } from "./playback";
 import { playFile } from "./file-playback";
-import { playPcm16 } from "./pcm";
+import { pausePcm16, playPcm16, resumePcm16 } from "./pcm";
 
 export function createAudioEngine(
   callbacks: AudioEngineCallbacks,
@@ -222,6 +222,12 @@ export function createAudioEngine(
     stop: playback.stop,
     clearQueue: playback.clearQueue,
     isPlaying: playback.isPlaying,
+    pause() {
+      pausePcm16(native);
+    },
+    resume() {
+      resumePcm16(native);
+    },
 
     async suspend() {
       playback.stop();

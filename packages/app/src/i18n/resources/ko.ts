@@ -330,6 +330,8 @@ export const ko: TranslationResources = {
       copyTurn: "턴 복사",
       readAloud: "소리 내어 읽기",
       stopReadingAloud: "소리 내어 읽기 중지",
+      pauseReadingAloud: "읽기 일시정지",
+      resumeReadingAloud: "읽기 다시 시작",
       copyMessage: "메시지 복사",
       forkMenu: "여기에서 채팅 분기",
       forkInNewTab: "새 탭으로 분기",

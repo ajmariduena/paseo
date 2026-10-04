@@ -333,6 +333,8 @@ export const ru: TranslationResources = {
       copyTurn: "Скопировать ответ",
       readAloud: "Прочитать вслух",
       stopReadingAloud: "Остановить чтение вслух",
+      pauseReadingAloud: "Приостановить чтение",
+      resumeReadingAloud: "Продолжить чтение",
       copyMessage: "Копировать сообщение",
       forkMenu: "Форкнуть чат отсюда",
       forkInNewTab: "Создать форк в новой вкладке",

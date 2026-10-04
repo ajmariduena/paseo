@@ -6,14 +6,23 @@ import type { AudioEngine, AudioPlaybackSource } from "@/audio/audio-engine-type
 const MAX_SEGMENTS_AHEAD = 2;
 const MAX_STITCHING_REQUEST_IDS = 3;
 
-export type ReadAloudStatus = "preparing" | "playing";
+export type ReadAloudStatus = "preparing" | "playing" | "paused";
+
+export interface ReadAloudTrack {
+  serverId: string;
+  agentId: string;
+  preview: string;
+}
 
 interface ReadAloudState {
   activeKey: string | null;
   status: ReadAloudStatus | null;
+  track: ReadAloudTrack | null;
 }
 
-export const useReadAloudStore = create<ReadAloudState>(() => ({ activeKey: null, status: null }));
+const IDLE: ReadAloudState = { activeKey: null, status: null, track: null };
+
+export const useReadAloudStore = create<ReadAloudState>(() => IDLE);
 
 export interface ReadAloudClient {
   prepareReadAloud(params: { text: string; agentId?: string }): Promise<string[]>;
@@ -34,6 +43,7 @@ let active: ActivePlayback | null = null;
 export async function startReadAloud(input: {
   key: string;
   text: string;
+  serverId?: string;
   agentId?: string;
   client: ReadAloudClient;
   engine: AudioEngine;
@@ -41,7 +51,14 @@ export async function startReadAloud(input: {
   stopReadAloud();
   const playback: ActivePlayback = { key: input.key, engine: input.engine, cancelled: false };
   active = playback;
-  useReadAloudStore.setState({ activeKey: input.key, status: "preparing" });
+  useReadAloudStore.setState({
+    activeKey: input.key,
+    status: "preparing",
+    track:
+      input.serverId && input.agentId
+        ? { serverId: input.serverId, agentId: input.agentId, preview: toPreview(input.text) }
+        : null,
+  });
 
   try {
     const segments = await input.client.prepareReadAloud({
@@ -78,7 +95,7 @@ export async function startReadAloud(input: {
   } finally {
     if (active === playback) {
       active = null;
-      useReadAloudStore.setState({ activeKey: null, status: null });
+      useReadAloudStore.setState(IDLE);
     }
   }
 }
@@ -90,7 +107,30 @@ export function stopReadAloud(): void {
   active = null;
   playback.engine.clearQueue();
   playback.engine.stop();
-  useReadAloudStore.setState({ activeKey: null, status: null });
+  useReadAloudStore.setState(IDLE);
+}
+
+export function pauseReadAloud(): void {
+  if (!active?.engine.pause || useReadAloudStore.getState().status !== "playing") return;
+  active.engine.pause();
+  useReadAloudStore.setState({ status: "paused" });
+}
+
+export function resumeReadAloud(): void {
+  if (!active?.engine.resume || useReadAloudStore.getState().status !== "paused") return;
+  active.engine.resume();
+  useReadAloudStore.setState({ status: "playing" });
+}
+
+const PREVIEW_LENGTH = 140;
+
+function toPreview(text: string): string {
+  const plain = text
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/[*_`#>|[\]]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return plain.length > PREVIEW_LENGTH ? `${plain.slice(0, PREVIEW_LENGTH).trimEnd()}…` : plain;
 }
 
 function toPlaybackSource(base64: string, format: string): AudioPlaybackSource {

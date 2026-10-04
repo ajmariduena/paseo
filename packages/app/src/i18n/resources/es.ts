@@ -334,6 +334,8 @@ export const es: TranslationResources = {
       copyTurn: "Copiar turno",
       readAloud: "Leer en voz alta",
       stopReadingAloud: "Dejar de leer en voz alta",
+      pauseReadingAloud: "Pausar la lectura",
+      resumeReadingAloud: "Reanudar la lectura",
       copyMessage: "Copiar mensaje",
       forkMenu: "Bifurcar mensaje",
       forkInNewTab: "Bifurcar en una pestaña nueva",

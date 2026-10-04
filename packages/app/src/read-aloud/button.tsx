@@ -56,10 +56,12 @@ export const ReadAloudButton = memo(function ReadAloudButton({
     }
     const text = getContent();
     const client = serverId ? getHostRuntimeStore().getClient(serverId) : null;
-    if (!playbackKey || !engine || !client || !agentId || !text) return;
-    startReadAloud({ key: playbackKey, text, agentId, client, engine }).catch((error: unknown) => {
-      target?.toast?.error(error instanceof Error ? error.message : String(error));
-    });
+    if (!playbackKey || !engine || !client || !serverId || !agentId || !text) return;
+    startReadAloud({ key: playbackKey, text, serverId, agentId, client, engine }).catch(
+      (error: unknown) => {
+        target?.toast?.error(error instanceof Error ? error.message : String(error));
+      },
+    );
   }, [status, getContent, serverId, playbackKey, engine, agentId, target]);
 
   const inVoiceMode = serverId && agentId ? voice?.isVoiceModeForAgent(serverId, agentId) : false;
@@ -84,7 +86,9 @@ export const ReadAloudButton = memo(function ReadAloudButton({
             {status === "preparing" ? (
               <LoadingSpinner color={iconColor} style={styles.spinner} />
             ) : null}
-            {status === "playing" ? <Square size={ICON_SIZE.sm} color={iconColor} /> : null}
+            {status === "playing" || status === "paused" ? (
+              <Square size={ICON_SIZE.sm} color={iconColor} />
+            ) : null}
             {status === null ? <Volume2 size={SPEAKER_ICON_SIZE} color={iconColor} /> : null}
           </View>
         );

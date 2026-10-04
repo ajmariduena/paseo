@@ -27,6 +27,7 @@ import type { Theme } from "@/styles/theme";
 import invariant from "tiny-invariant";
 import { SidebarMenuToggle } from "@/components/headers/menu-header";
 import { GlobalVoiceHeaderButton } from "@/components/global-voice/global-voice-header-button";
+import { NowPlayingStrip } from "@/read-aloud/now-playing-strip";
 import { ScreenHeader } from "@/components/headers/screen-header";
 import { ScreenTitle } from "@/components/headers/screen-title";
 import { HostBadge } from "@/hosts/host-badge";
@@ -1542,6 +1543,10 @@ function useLastMainPane(input: {
     lastMainPaneRef.current.paneId = focusedPaneId;
   }
   return lastMainPaneRef;
+}
+
+function agentIdOfTab(descriptor: WorkspaceTabDescriptor | null): string | null {
+  return descriptor?.target.kind === "agent" ? descriptor.target.agentId : null;
 }
 
 function WorkspaceScreenContent({
@@ -3933,46 +3938,51 @@ function WorkspaceScreenContent({
       `${WORKSPACE_FLOATING_PANEL_PORTAL_HOST_PREFIX}:${normalizedServerId}:${normalizedWorkspaceId}`,
     [normalizedServerId, normalizedWorkspaceId],
   );
+  const visibleAgentId = agentIdOfTab(activeTabDescriptor);
   const renderWorkspaceScreenHeader = useCallback(
-    () =>
-      showScreenHeader ? (
-        <ScreenHeader
-          left={
-            <>
-              <SidebarMenuToggle />
-              <WorkspaceHeaderTitleBar
-                isLoading={isWorkspaceHeaderLoading}
-                title={workspaceHeaderTitle}
-                subtitle={workspaceHeaderSubtitle}
-                isSubtitleDistinct={isWorkspaceHeaderSubtitleDistinct}
-                currentBranchName={currentBranchName}
-                normalizedServerId={normalizedServerId}
-                normalizedWorkspaceId={normalizedWorkspaceId}
-                workspaceScripts={workspaceScripts}
-                liveTerminalIds={liveTerminalIds}
-                showWorkspaceSetup={showWorkspaceSetup}
-                showCreateBrowserTab={showCreateBrowserTab}
-                isMobile={isMobile}
-                createTerminalDisabled={createTerminalDisabled}
-                importAgentDisabled={!canOpenImportSheet}
-                copyPathDisabled={!workspaceDirectory}
-                onCreateDraftTab={handleCreateDraftTab}
-                onCreateTerminal={handleCreateTerminal}
-                onCreateTerminalWithProfile={handleCreateTerminalWithProfile}
-                onCreateBrowser={handleCreateBrowserTab}
-                onOpenImportSheet={openImportSheet}
-                onCopyWorkspacePath={handleCopyWorkspacePath}
-                onCopyBranchName={handleCopyBranchName}
-                onOpenSetupTab={handleOpenSetupTab}
-                onScriptTerminalStarted={handleScriptTerminalStarted}
-                onViewScriptTerminal={handleViewScriptTerminal}
-                onOpenUrlInBrowserTab={handleOpenUrlInBrowserTab}
-              />
-            </>
-          }
-          right={headerRight}
-        />
-      ) : null,
+    () => (
+      <>
+        {showScreenHeader ? (
+          <ScreenHeader
+            left={
+              <>
+                <SidebarMenuToggle />
+                <WorkspaceHeaderTitleBar
+                  isLoading={isWorkspaceHeaderLoading}
+                  title={workspaceHeaderTitle}
+                  subtitle={workspaceHeaderSubtitle}
+                  isSubtitleDistinct={isWorkspaceHeaderSubtitleDistinct}
+                  currentBranchName={currentBranchName}
+                  normalizedServerId={normalizedServerId}
+                  normalizedWorkspaceId={normalizedWorkspaceId}
+                  workspaceScripts={workspaceScripts}
+                  liveTerminalIds={liveTerminalIds}
+                  showWorkspaceSetup={showWorkspaceSetup}
+                  showCreateBrowserTab={showCreateBrowserTab}
+                  isMobile={isMobile}
+                  createTerminalDisabled={createTerminalDisabled}
+                  importAgentDisabled={!canOpenImportSheet}
+                  copyPathDisabled={!workspaceDirectory}
+                  onCreateDraftTab={handleCreateDraftTab}
+                  onCreateTerminal={handleCreateTerminal}
+                  onCreateTerminalWithProfile={handleCreateTerminalWithProfile}
+                  onCreateBrowser={handleCreateBrowserTab}
+                  onOpenImportSheet={openImportSheet}
+                  onCopyWorkspacePath={handleCopyWorkspacePath}
+                  onCopyBranchName={handleCopyBranchName}
+                  onOpenSetupTab={handleOpenSetupTab}
+                  onScriptTerminalStarted={handleScriptTerminalStarted}
+                  onViewScriptTerminal={handleViewScriptTerminal}
+                  onOpenUrlInBrowserTab={handleOpenUrlInBrowserTab}
+                />
+              </>
+            }
+            right={headerRight}
+          />
+        ) : null}
+        <NowPlayingStrip serverId={normalizedServerId} visibleAgentId={visibleAgentId} />
+      </>
+    ),
     [
       canOpenImportSheet,
       createTerminalDisabled,
@@ -3997,6 +4007,7 @@ function WorkspaceScreenContent({
       showCreateBrowserTab,
       showScreenHeader,
       showWorkspaceSetup,
+      visibleAgentId,
       workspaceDirectory,
       workspaceHeaderSubtitle,
       workspaceHeaderTitle,

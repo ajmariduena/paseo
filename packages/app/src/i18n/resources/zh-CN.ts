@@ -329,6 +329,8 @@ export const zhCN: TranslationResources = {
       copyTurn: "复制回合",
       readAloud: "朗读",
       stopReadingAloud: "停止朗读",
+      pauseReadingAloud: "暂停朗读",
+      resumeReadingAloud: "继续朗读",
       copyMessage: "复制消息",
       forkMenu: "分叉消息",
       forkInNewTab: "分叉到新标签页",

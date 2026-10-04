@@ -329,6 +329,8 @@ export const ar: TranslationResources = {
       copyTurn: "نسخ بدوره",
       readAloud: "القراءة بصوت عالٍ",
       stopReadingAloud: "إيقاف القراءة بصوت عالٍ",
+      pauseReadingAloud: "إيقاف القراءة مؤقتًا",
+      resumeReadingAloud: "استئناف القراءة",
       copyMessage: "انسخ الرسالة",
       forkMenu: "تفريع الرسالة",
       forkInNewTab: "تفريع في تبويب جديد",

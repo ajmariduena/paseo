@@ -1,6 +1,6 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { createPlayAudio } from "./play-audio";
-import { playPcm16, parsePcmSampleRate, resampleToPcm16 } from "./pcm";
+import { pausePcm16, playPcm16, parsePcmSampleRate, resampleToPcm16, resumePcm16 } from "./pcm";
 import { playFile, type FilePlaybackStatus, type FilePlayer } from "./file-playback";
 
 const source = { base64: "UklGRg==", mimeType: "audio/wav" };
@@ -97,6 +97,79 @@ test("voice PCM cancellation stops native output and rejects", async () => {
   owner.abort();
   await expect(result).rejects.toThrow("Playback stopped");
   expect(stopped).toBe(true);
+});
+
+test("voice PCM pause holds completion until resumed, then shifts it by the pause", async () => {
+  vi.useFakeTimers();
+  try {
+    const native: string[] = [];
+    const output = {
+      resumePlayback: () => native.push("resume"),
+      pausePlayback: () => native.push("pause"),
+      playPCMData: () => native.push("data"),
+      stopPlayback: () => native.push("stop"),
+    };
+    let finished = false;
+    const result = playPcm16(
+      new Uint8Array(32000),
+      "audio/pcm;rate=16000;bits=16",
+      new AbortController().signal,
+      output,
+    ).then(() => {
+      finished = true;
+      return undefined;
+    });
+
+    await vi.advanceTimersByTimeAsync(400);
+    pausePcm16(output);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(finished).toBe(false);
+
+    resumePcm16(output);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(finished).toBe(false);
+    await vi.advanceTimersByTimeAsync(200);
+    await result;
+    expect(finished).toBe(true);
+    expect(native).toEqual(["resume", "data", "pause", "resume"]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("voice PCM queued while paused stays paused and does not restart the output", async () => {
+  vi.useFakeTimers();
+  try {
+    const native: string[] = [];
+    const output = {
+      resumePlayback: () => native.push("resume"),
+      pausePlayback: () => native.push("pause"),
+      playPCMData: () => native.push("data"),
+      stopPlayback: () => native.push("stop"),
+    };
+    pausePcm16(output);
+    const owner = new AbortController();
+    const result = playPcm16(
+      new Uint8Array(3200),
+      "audio/pcm;rate=16000;bits=16",
+      owner.signal,
+      output,
+    );
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(native).toEqual(["pause", "data"]);
+
+    owner.abort();
+    await expect(result).rejects.toThrow("Playback stopped");
+    playPcm16(
+      new Uint8Array(2),
+      "audio/pcm;rate=16000;bits=16",
+      new AbortController().signal,
+      output,
+    );
+    expect(native).toEqual(["pause", "data", "stop", "resume", "data"]);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 function filePlayer() {

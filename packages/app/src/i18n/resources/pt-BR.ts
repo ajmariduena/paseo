@@ -333,6 +333,8 @@ export const ptBR: TranslationResources = {
       copyTurn: "Copiar turno",
       readAloud: "Ler em voz alta",
       stopReadingAloud: "Parar de ler em voz alta",
+      pauseReadingAloud: "Pausar a leitura",
+      resumeReadingAloud: "Retomar a leitura",
       copyMessage: "Copiar mensagem",
       forkMenu: "Bifurcar mensagem",
       forkInNewTab: "Bifurcar em uma nova aba",

@@ -334,6 +334,8 @@ export const ja: TranslationResources = {
       copyTurn: "ターンをコピー",
       readAloud: "読み上げ",
       stopReadingAloud: "読み上げを停止",
+      pauseReadingAloud: "読み上げを一時停止",
+      resumeReadingAloud: "読み上げを再開",
       copyMessage: "メッセージをコピー",
       forkMenu: "メッセージをフォーク",
       forkInNewTab: "新しいタブにフォーク",

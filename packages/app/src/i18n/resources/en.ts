@@ -326,6 +326,8 @@ export const en = {
       copyTurn: "Copy turn",
       readAloud: "Read aloud",
       stopReadingAloud: "Stop reading aloud",
+      pauseReadingAloud: "Pause reading aloud",
+      resumeReadingAloud: "Resume reading aloud",
       copyMessage: "Copy message",
       forkMenu: "Fork chat from here",
       forkInNewTab: "Fork in a new tab",

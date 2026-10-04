@@ -24,6 +24,9 @@ export interface AudioEngine {
   stop(): void;
   clearQueue(): void;
   isPlaying(): boolean;
+  /** Freezes playback in place, queued audio included, until `resume` or `stop`. */
+  pause?(): void;
+  resume?(): void;
   /** Releases the native audio unit so another stack (WebRTC) can own the session; `initialize` brings it back. */
   suspend?(): Promise<void>;
 }
