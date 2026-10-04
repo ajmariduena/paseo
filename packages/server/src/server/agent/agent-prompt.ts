@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { Logger } from "pino";
 
 import type {
@@ -373,7 +372,7 @@ export async function startCreatedAgentInitialPrompt(
   return refreshedSnapshot;
 }
 
-export interface SetupFinishNotificationParams {
+export interface SetupPermissionNotificationParams {
   agentManager: AgentManager;
   agentStorage: AgentStorage;
   childAgentId: string;
@@ -382,57 +381,37 @@ export interface SetupFinishNotificationParams {
   logger: Logger;
 }
 
-type FinishNotificationReason = "finished" | "errored" | "needs permission" | "was closed";
-
-const FINISH_NOTIFICATION_MESSAGE_LIMIT = 4000;
-
-interface FinishNotificationBodyInput {
+function formatPermissionNotificationBody(params: {
   childAgentId: string;
   title: string;
-  reason: FinishNotificationReason;
-  lastAssistantMessage: string | null;
-  permissionRequest?: AgentPermissionRequest;
+  permissionRequest: AgentPermissionRequest;
+}): string {
+  return [
+    `Agent ${params.childAgentId} (${params.title}) needs permission.`,
+    "Respond with `respond_to_permission` using the `agentId` and `requestId` below.",
+    `<permission-request>\n${JSON.stringify(
+      {
+        agentId: params.childAgentId,
+        requestId: params.permissionRequest.id,
+        request: params.permissionRequest,
+      },
+      null,
+      2,
+    )}\n</permission-request>`,
+  ].join("\n\n");
 }
 
-function formatFinishNotificationBody(params: FinishNotificationBodyInput): string {
-  const statusLine = `Agent ${params.childAgentId} (${params.title}) ${params.reason}.`;
-  const sections = [statusLine];
-  if (params.reason === "needs permission" && params.permissionRequest) {
-    sections.push(
-      "Respond with `respond_to_permission` using the `agentId` and `requestId` below.",
-      `<permission-request>\n${JSON.stringify(
-        {
-          agentId: params.childAgentId,
-          requestId: params.permissionRequest.id,
-          request: params.permissionRequest,
-        },
-        null,
-        2,
-      )}\n</permission-request>`,
-    );
-  }
-  let lastAssistantMessage = params.lastAssistantMessage?.trim();
-  if (lastAssistantMessage) {
-    if (lastAssistantMessage.length > FINISH_NOTIFICATION_MESSAGE_LIMIT) {
-      const omitted = lastAssistantMessage.length - FINISH_NOTIFICATION_MESSAGE_LIMIT;
-      lastAssistantMessage = `${lastAssistantMessage.slice(0, FINISH_NOTIFICATION_MESSAGE_LIMIT)}\n[truncated ${omitted} chars; use get_agent_activity for the full response]`;
-    }
-    sections.push(`<agent-response>\n${lastAssistantMessage}\n</agent-response>`);
-  }
-  return sections.join("\n\n");
-}
+// A caller watches a child through one armed watcher. Arming again, such as a follow-up
+// prompt while the child still runs, replaces the earlier one so each request reaches the
+// caller once.
+const armedPermissionNotifications = new WeakMap<AgentManager, Map<string, () => void>>();
 
-interface NotifySafelyOptions {
-  terminal?: boolean;
-  permissionRequest?: AgentPermissionRequest;
-}
-
-// A caller waits on a child through one armed notification. Arming again, such as a
-// follow-up prompt while the child still runs, replaces the earlier one so the child's
-// next finish reaches the caller once.
-const armedFinishNotifications = new WeakMap<AgentManager, Map<string, () => void>>();
-
-export function setupFinishNotification(params: SetupFinishNotificationParams): void {
+/**
+ * Tells the caller when a delegated child pauses for a permission decision, until the child's
+ * run ends. Process-bound: pending permissions do not survive a restart, and a request that
+ * resolves before the caller's turn can take it is dropped.
+ */
+export function setupPermissionNotification(params: SetupPermissionNotificationParams): void {
   const {
     agentManager,
     agentStorage,
@@ -445,10 +424,10 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
   let stopped = false;
   const notifiedPermissionRequestIds = new Set<string>();
   let unsubscribe: (() => void) | null = null;
-  let notificationQueue = Promise.resolve();
+  let notificationQueue: Promise<unknown> = Promise.resolve();
 
-  const armedByManager = armedFinishNotifications.get(agentManager) ?? new Map();
-  armedFinishNotifications.set(agentManager, armedByManager);
+  const armedByManager = armedPermissionNotifications.get(agentManager) ?? new Map();
+  armedPermissionNotifications.set(agentManager, armedByManager);
   const armedKey = JSON.stringify([childAgentId, callerAgentId]);
   armedByManager.get(armedKey)?.();
   armedByManager.set(armedKey, stop);
@@ -462,43 +441,43 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
     }
   }
 
-  async function notify(
-    reason: FinishNotificationReason,
-    permissionRequest?: AgentPermissionRequest,
-  ): Promise<void> {
+  async function preparePermissionPrompt(
+    permissionRequest: AgentPermissionRequest,
+  ): Promise<string | null> {
+    if (!agentManager.getAgent(childAgentId)?.pendingPermissions.has(permissionRequest.id)) {
+      return null;
+    }
     const record = await agentStorage.get(childAgentId);
     if (requireParentOwnership && getParentAgentIdFromLabels(record?.labels) !== callerAgentId) {
-      return;
+      return null;
     }
-    const title = record?.title ?? childAgentId;
-    const lastAssistantMessage = await agentManager.getLastAssistantMessage(childAgentId);
-    const body = formatFinishNotificationBody({
+    const body = formatPermissionNotificationBody({
       childAgentId,
-      title,
-      reason,
-      lastAssistantMessage,
+      title: record?.title ?? childAgentId,
       permissionRequest,
     });
-
-    await dispatchAgentMessage({
-      agentManager,
-      agentStorage,
-      agentId: callerAgentId,
-      prompt: formatSystemNotificationPrompt(body),
-      messageId: randomUUID(),
-      policy: { kind: "system", maySteer: true },
-      logger,
-    });
+    return formatSystemNotificationPrompt(body);
   }
 
-  function notifySafely(reason: FinishNotificationReason, options: NotifySafelyOptions = {}): void {
-    if (stopped) return;
-    if (options.terminal ?? true) stop();
+  function notify(permissionRequest: AgentPermissionRequest): void {
     notificationQueue = notificationQueue
-      .then(() => notify(reason, options.permissionRequest))
+      .then(async () => {
+        return await dispatchAgentMessage({
+          agentManager,
+          agentStorage,
+          agentId: callerAgentId,
+          messageId: `perm:${childAgentId}:${permissionRequest.id}`,
+          policy: {
+            kind: "system",
+            maySteer: true,
+            prepare: () => preparePermissionPrompt(permissionRequest),
+          },
+          logger,
+        });
+      })
       .catch((error) => {
         logger.error(
-          { err: error, childAgentId, callerAgentId, reason },
+          { err: error, childAgentId, callerAgentId, requestId: permissionRequest.id },
           "Failed to notify caller agent",
         );
       });
@@ -522,17 +501,12 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
           }
           return;
         }
-        if (event.agent.lifecycle === "error") {
-          notifySafely("errored");
-          return;
-        }
-        if (event.agent.lifecycle === "idle" && hasSeenRunning) {
-          notifySafely("finished");
-          return;
-        }
-        if (event.agent.lifecycle === "closed") {
-          notifySafely("was closed");
-          return;
+        const runEnded =
+          event.agent.lifecycle === "error" ||
+          event.agent.lifecycle === "closed" ||
+          (event.agent.lifecycle === "idle" && hasSeenRunning);
+        if (runEnded) {
+          stop();
         }
         return;
       }
@@ -544,14 +518,11 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
       if (event.event.type === "permission_requested") {
         // A permission pause is an intermediate checkpoint. Forget the run
         // observed before it so an idle state during follow-up startup cannot
-        // masquerade as the final completion.
+        // masquerade as the end of the run.
         hasSeenRunning = false;
         if (!notifiedPermissionRequestIds.has(event.event.request.id)) {
           notifiedPermissionRequestIds.add(event.event.request.id);
-          notifySafely("needs permission", {
-            terminal: false,
-            permissionRequest: event.event.request,
-          });
+          notify(event.event.request);
         }
         return;
       }
@@ -567,11 +538,8 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
     { agentId: childAgentId, replayState: false },
   );
 
-  // Check if the child is already running (catches the case where
-  // the lifecycle flipped before our subscribe call was processed).
-  // Do NOT treat an immediate "idle" as "finished" — the agent may
-  // not have started yet (streamAgent sets a pending run before
-  // transitioning to "running").
+  // The lifecycle may have flipped before the subscription. An immediate "idle" is not the
+  // end of the run: streamAgent holds a pending run before it reports "running".
   const childSnapshot = agentManager.getAgent(childAgentId);
   if (!childSnapshot || childSnapshot.lifecycle === "closed") {
     stop();
@@ -579,7 +547,5 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
   }
   if (childSnapshot.lifecycle === "running") {
     hasSeenRunning = true;
-  } else if (childSnapshot.lifecycle === "error") {
-    notifySafely("errored");
   }
 }

@@ -67,6 +67,7 @@ import type { WorkspaceScriptRuntimeStore } from "./workspace-script-runtime-sto
 import type { SpeechReadinessSnapshot, SpeechService } from "./speech/speech-runtime.js";
 import type { ReadAloudService } from "./speech/read-aloud/service.js";
 import type { VoiceOrchestrator } from "./voice-orchestrator/orchestrator.js";
+import type { DelegationService } from "./delegation/delegation-service.js";
 import type { VoiceCallerContext, VoiceSpeakHandler } from "./voice-types.js";
 import {
   computeNotificationPlan,
@@ -555,6 +556,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly workspaceLabelService: WorkspaceLabelService | null;
   private readAloudService!: ReadAloudService | null;
   private readonly voiceOrchestrator: VoiceOrchestrator | null | undefined;
+  private readonly delegations: DelegationService | null | undefined;
   private readonly scheduleService: ScheduleService;
   private readonly checkoutDiffManager: CheckoutDiffManager;
   private readonly github: ForgeService;
@@ -676,9 +678,11 @@ export class VoiceAssistantWebSocketServer {
     workspaceLabelService?: WorkspaceLabelService,
     readAloudService?: ReadAloudService | null,
     voiceOrchestrator?: VoiceOrchestrator | null,
+    delegations?: DelegationService | null,
   ) {
     this.logger = logger.child({ module: "websocket-server" });
     this.voiceOrchestrator = voiceOrchestrator;
+    this.delegations = delegations;
     this.workspaceSetupRuntime = workspaceSetupRuntime;
     this.advertiseDaemonStatusRpc = wsConfig.daemonStatusRpc !== false;
     this.advertiseRelayConfig = wsConfig.relayConfig !== false;
@@ -1513,6 +1517,7 @@ export class VoiceAssistantWebSocketServer {
       workspaceLabelService: this.workspaceLabelService ?? undefined,
       readAloud: this.readAloudService ?? undefined,
       voiceOrchestrator: this.voiceOrchestrator,
+      delegations: this.delegations,
       directorySync: this.directorySync,
       scheduleService: this.scheduleService,
       checkoutDiffManager: this.checkoutDiffManager,

@@ -224,6 +224,7 @@ import type { Resolvable } from "./speech/provider-resolver.js";
 import type { SpeechReadinessSnapshot } from "./speech/speech-runtime.js";
 import type { ReadAloudService } from "./speech/read-aloud/service.js";
 import type { VoiceOrchestrator } from "./voice-orchestrator/orchestrator.js";
+import type { DelegationService } from "./delegation/delegation-service.js";
 import {
   VoiceMessagesSessionHandler,
   isVoiceMessagesRequest,
@@ -473,6 +474,7 @@ export interface SessionOptions {
   workspaceLabelService?: WorkspaceLabelService;
   readAloud?: ReadAloudService;
   voiceOrchestrator?: VoiceOrchestrator | null;
+  delegations?: Pick<DelegationService, "stopActiveTurn"> | null;
   filesystem?: SessionFileSystem;
   scheduleService: ScheduleService;
   checkoutDiffManager: CheckoutDiffManager;
@@ -779,6 +781,7 @@ export class Session {
   private readonly workspaceLabelService: WorkspaceLabelService | null;
   private readonly readAloud: ReadAloudService | undefined;
   private readonly voiceOrchestrator: VoiceOrchestrator | null | undefined;
+  private readonly delegations: Pick<DelegationService, "stopActiveTurn"> | null | undefined;
   private readonly voiceMessages: VoiceMessagesSessionHandler;
   private readonly eventSubscriptions = new Map<
     string,
@@ -841,6 +844,7 @@ export class Session {
       workspaceLabelService,
       readAloud,
       voiceOrchestrator,
+      delegations,
       filesystem,
       scheduleService,
       checkoutDiffManager,
@@ -918,6 +922,7 @@ export class Session {
     this.workspaceLabelService = resolveWorkspaceLabelService(workspaceLabelService);
     this.readAloud = readAloud;
     this.voiceOrchestrator = voiceOrchestrator;
+    this.delegations = delegations;
     this.voiceMessages = new VoiceMessagesSessionHandler({
       orchestrator: voiceOrchestrator,
       emit: (message) => this.emit(message),
@@ -4951,6 +4956,7 @@ export class Session {
     this.sessionLogger.info({ agentId }, `Cancel request received for agent ${agentId}`);
 
     try {
+      await this.delegations?.stopActiveTurn(agentId);
       await cancelAgentRunCommand(
         { agentManager: this.agentManager, logger: this.sessionLogger },
         agentId,

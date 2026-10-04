@@ -2915,6 +2915,13 @@ export class AgentManager {
     );
   }
 
+  async waitForRunSettled(agentId: string, runKey: string): Promise<void> {
+    const run = this.runs.getRun(agentId);
+    if (run?.token === runKey) {
+      await run.settledPromise;
+    }
+  }
+
   /** Resolves once the agent has no in-flight run; returns at once when it is idle or gone. */
   async waitForRunToSettle(agentId: string): Promise<void> {
     for (;;) {

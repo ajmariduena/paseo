@@ -61,11 +61,8 @@ import {
   toScheduleSummary,
   waitForAgentWithTimeout,
 } from "../mcp-shared.js";
-import {
-  sendPromptToAgent,
-  setupFinishNotification,
-  waitForAgentRunStartWithTimeout,
-} from "../agent-prompt.js";
+import { sendPromptToAgent, waitForAgentRunStartWithTimeout } from "../agent-prompt.js";
+import type { DelegationService } from "../../delegation/delegation-service.js";
 import { respondToAgentPermission } from "../permission-response.js";
 import {
   archiveAgentCommand,
@@ -138,6 +135,7 @@ export interface PaseoToolHostDependencies {
   paseoToolPolicy?: ProviderPaseoToolsPolicy;
   paseoHome?: string;
   worktreesRoot?: string;
+  delegations?: Pick<DelegationService, "delegate" | "acknowledgeChildResults">;
   /**
    * ID of the agent that is using this tool catalog.
    * Used for cwd/mode inheritance when agents spawn child agents.
@@ -1507,6 +1505,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           ...(options.ensureWorkspaceForCreate
             ? { ensureWorkspaceForCreate: options.ensureWorkspaceForCreate }
             : {}),
+          delegations: options.delegations,
         },
         {
           kind: "mcp",
@@ -1947,16 +1946,17 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       background = Boolean(callerAgentId),
       notifyOnFinish = Boolean(callerAgentId),
     }) => {
-      function armFinishNotification(): boolean {
+      async function delegateResult(): Promise<boolean> {
         if (!callerAgentId || !notifyOnFinish || callerHearsResultsItself()) {
           return false;
         }
-        setupFinishNotification({
-          agentManager,
-          agentStorage,
+        await options.delegations?.delegate({
+          parentAgentId: callerAgentId,
           childAgentId: agentId,
-          callerAgentId,
-          logger: childLogger,
+          source: "send_agent_prompt",
+          title: (await agentStorage.get(agentId))?.title ?? agentId,
+          prompt,
+          requireParentOwnership: false,
         });
         return true;
       }
@@ -1971,9 +1971,10 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       });
       callerContext?.onAgentPrompted?.(agentId);
 
-      function laterResultGuidance(): string | undefined {
+      async function laterResultGuidance(): Promise<string | undefined> {
         if (callerHearsResultsItself()) return VOICE_ANNOUNCES_RESULT_GUIDANCE;
-        return armFinishNotification() ? PROMPTED_AGENT_NOTIFICATION_GUIDANCE : undefined;
+        if (disposition === "out_of_band") return undefined;
+        return (await delegateResult()) ? PROMPTED_AGENT_NOTIFICATION_GUIDANCE : undefined;
       }
 
       // If not running in background, wait for completion
@@ -1985,7 +1986,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         // instead of in this response.
         const guidance =
           result.timedOut && agentManager.getAgent(agentId)?.lifecycle === "running"
-            ? laterResultGuidance()
+            ? await laterResultGuidance()
             : undefined;
 
         const responseData = {
@@ -2004,11 +2005,16 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         return response;
       }
 
-      const guidance = laterResultGuidance();
-
-      // Return once the provider has accepted the turn, so the status reports it running.
-      if (disposition === "turn_started") {
-        await waitForAgentRunStartWithTimeout(agentManager, agentId);
+      // Awaiting the delegation first would let a fast turn end before the start wait begins.
+      const delegated = laterResultGuidance();
+      let guidance: string | undefined;
+      try {
+        // Return once the provider has accepted the turn, so the status reports it running.
+        if (disposition === "turn_started") {
+          await waitForAgentRunStartWithTimeout(agentManager, agentId);
+        }
+      } finally {
+        guidance = await delegated;
       }
       const currentSnapshot = agentManager.getAgent(agentId);
 
@@ -2029,18 +2035,43 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     },
   );
 
+  // Reading a delegated child's terminal result acknowledges it, which cancels a wake for that
+  // result that has not started yet.
+  async function readDelegatedResult(childAgentId: string) {
+    if (!callerAgentId || !options.delegations) return null;
+    const task = await options.delegations.acknowledgeChildResults({
+      parentAgentId: callerAgentId,
+      childAgentId,
+    });
+    if (!task) return null;
+    return {
+      taskId: task.id,
+      status: task.status,
+      result: task.result,
+      resultTruncated: task.resultTruncated,
+    };
+  }
+
   registerTool(
     "get_agent_status",
     {
       title: "Get agent status",
       description:
-        "Return the latest snapshot for an agent, including lifecycle state, capabilities, and pending permissions.",
+        "Return the latest snapshot for an agent, including lifecycle state, capabilities, and pending permissions. For your own delegated agent that finished, also returns its result.",
       inputSchema: {
         agentId: z.string(),
       },
       outputSchema: {
         status: AgentStatusEnum,
         snapshot: AgentSnapshotPayloadSchema,
+        delegatedTask: z
+          .object({
+            taskId: z.string(),
+            status: z.enum(["completed", "failed", "cancelled", "interrupted"]),
+            result: z.string().nullable(),
+            resultTruncated: z.boolean(),
+          })
+          .optional(),
       },
     },
     async ({ agentId }) => {
@@ -2051,11 +2082,13 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           snapshot,
           childLogger,
         );
+        const delegatedTask = await readDelegatedResult(agentId);
         return {
           content: [],
           structuredContent: ensureValidJson({
             status: snapshot.lifecycle,
             snapshot: structuredSnapshot,
+            ...(delegatedTask ? { delegatedTask } : {}),
           }),
         };
       }
@@ -2069,11 +2102,13 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         record,
         new Set(providerSnapshotManager.listRegisteredProviderIds()),
       );
+      const delegatedTask = await readDelegatedResult(agentId);
       return {
         content: [],
         structuredContent: ensureValidJson({
           status: structuredSnapshot.status,
           snapshot: structuredSnapshot,
+          ...(delegatedTask ? { delegatedTask } : {}),
         }),
       };
     },
@@ -3124,6 +3159,10 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       });
       const curatedContent = curateAgentActivity(selection.items);
       const { totalProjected, shownProjected } = selection;
+      const finalAssistantMessage = timeline.findLast((item) => item.type === "assistant_message");
+      if (finalAssistantMessage && selection.items.includes(finalAssistantMessage)) {
+        await readDelegatedResult(agentId);
+      }
 
       const noun = totalProjected === 1 ? "activity" : "activities";
       const countHeader =

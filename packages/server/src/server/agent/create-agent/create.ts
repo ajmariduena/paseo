@@ -16,7 +16,8 @@ import type { AgentPromptInput, AgentRunOptions, AgentSessionConfig } from "../a
 import type { AgentStorage } from "../agent-storage.js";
 import type { AgentOwner } from "../agent-owner.js";
 import type { ProviderSnapshotManager } from "../provider-snapshot-manager.js";
-import { setupFinishNotification, startCreatedAgentInitialPrompt } from "../agent-prompt.js";
+import { startCreatedAgentInitialPrompt } from "../agent-prompt.js";
+import type { DelegationService } from "../../delegation/delegation-service.js";
 import { resolveCreateAgentTitles } from "../create-agent-title.js";
 import { buildAgentPrompt } from "../prompt-attachments.js";
 import { normalizeClientMessageId, resolveClientMessageId } from "../../client-message-id.js";
@@ -46,6 +47,7 @@ export interface CreateAgentCommandDependencies {
   createPaseoWorktree?: CreatePaseoWorktreeWorkflowFn;
   // Mints a fresh directory workspace for a cwd and returns its id.
   ensureWorkspaceForCreate?: EnsureWorkspaceForCreate;
+  delegations?: Pick<DelegationService, "delegate">;
 }
 
 export type EnsureWorkspaceForCreate = (
@@ -207,13 +209,13 @@ export async function createAgentCommand(
   }
 
   if (input.kind === "mcp" && input.notifyOnFinish && input.callerAgentId && initialPromptStarted) {
-    setupFinishNotification({
-      agentManager: dependencies.agentManager,
-      agentStorage: dependencies.agentStorage,
+    await dependencies.delegations?.delegate({
+      parentAgentId: input.callerAgentId,
       childAgentId: snapshot.id,
-      callerAgentId: input.callerAgentId,
+      source: "create_agent",
+      title: input.title,
+      prompt: input.initialPrompt ?? "",
       requireParentOwnership: true,
-      logger: dependencies.logger,
     });
   }
 

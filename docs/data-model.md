@@ -55,6 +55,9 @@ $PASEO_HOME/
 │       └── {agentId}.json               # One file per agent
 ├── schedules/
 │   └── {scheduleId}.json                # One file per schedule
+├── delegations/
+│   ├── {parentAgentId}.json             # Delegated tasks and wake cohorts of one parent
+│   └── by-child.json                    # childAgentId → parentAgentIds
 ├── projects/
 │   ├── projects.json                    # Project registry
 │   ├── workspaces.json                  # Workspace registry
@@ -579,6 +582,19 @@ These small files are not validated as full Zod schemas but are persisted under 
 | `paseo.pid`           | JSON `{ pid, startedAt, ... }`                                 | PID lock; prevents two daemons sharing one `$PASEO_HOME`.                         |
 | `local-credential`    | 32 random bytes encoded as base64url text                      | Rotated before each listen and deleted on shutdown; mode `0600`.                  |
 | `daemon.log`          | Pino log output                                                | Default location; path/rotation configurable via `log.file` in `config.json`.     |
+
+---
+
+## Delegation Store
+
+**Path:** `$PASEO_HOME/delegations/{parentAgentId}.json`, plus `by-child.json`
+
+One file per parent agent, because every transition (finalize a child's result, plan a wake, accept it, acknowledge it, dispose it) touches one parent's tasks and cohorts together. Each `DelegationStore` method is one atomic write of that file. Schema: `packages/server/src/server/delegation/delegation-store.ts`.
+
+- **Task:** one delegated prompt to a child. `status` is `running` until the child settles, then terminal. The child's result is stored at finalize, capped at 64 KiB. `completionDelivery.state` moves `pending → claimed → delivered`, or ends `acknowledged` (the parent read the result) or `disposed`. Final states never re-plan, so a later policy change cannot wake the parent twice.
+- **Cohort:** keyed by the parent's run key at delegation time (an in-memory token; `idle:{taskId}` when the parent was idle). It holds at most one outstanding wake. The wake's `messageId`, `wake:{parentId}:{runKey}:{generation}`, is stable so a re-delivered wake reuses its timeline row.
+
+`by-child.json` is written after the parent file. A missing entry is recoverable by scanning the parent files.
 
 ---
 

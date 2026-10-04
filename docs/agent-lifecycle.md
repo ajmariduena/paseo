@@ -94,9 +94,16 @@ Runtime ownership is resolved from explicit workspace ID and caller context, nev
 Users can also detach an existing subagent from the subagents track. Detach is deliberately a manual lifecycle gesture, not an agent-facing MCP tool. It removes the parent and open-tab lifecycle labels: it does not stop, archive, move, or restart the agent. The agent keeps its current `cwd` and `workspaceId`, leaves the former parent's track, and behaves like a root agent for tab close, workspace activity, and future parent archive.
 
 `notifyOnFinish` defaults to `true` for agent-scoped creation and background prompt follow-ups because most delegated work needs to report back to the creating agent. Set it to `false` only for truly fire-and-forget agents or prompts.
-Permission requests are notification checkpoints, not the end of that subscription. The caller is notified again after a permission response when the child finishes, errors, or requests another permission.
-The permission notification includes the normalized request plus the child and request IDs, so the caller can inspect it and respond without fetching agent status.
-A watched child that closes before its finish event also notifies the caller so delegated work cannot disappear silently during archive or workspace teardown.
+Each notified prompt is a durable delegated task (see [data-model.md](data-model.md#delegation-store)). The child has a result once it settles: idle, holding no background tasks, and with no open delegated tasks of its own. Paseo then records the result and wakes the parent:
+
+- A wake never interrupts the parent. It steers into a running turn when the provider can steer; otherwise it waits for the turn to end and starts a new one.
+- Children of the same parent turn that finish together share one wake. A child finishing while that wake's turn runs goes out in the next wake.
+- The wake inlines each result, capped at 4000 characters, with the task id and a pointer to `get_agent_activity` for the rest.
+- Reading a finished child's result through `get_agent_status` or `get_agent_activity` acknowledges it and cancels a wake that has not started yet.
+- A user Stop of the parent turn drops later results of the children it spawned. Archiving the parent drops all of them.
+- A child that closes before it finishes reports as stopped, so delegated work cannot disappear silently during archive or workspace teardown.
+
+Permission requests are checkpoints. The parent hears each request as it happens, through the same never-interrupt delivery, with the normalized request plus the child and request IDs so it can respond without fetching agent status. A request resolved before the parent hears it is dropped.
 
 ## Provider-managed child agents
 

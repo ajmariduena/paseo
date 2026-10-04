@@ -43,21 +43,31 @@ export function resolveDispatchIntent(
 }
 
 /**
- * `system` messages (finish notifications, wakes) never interrupt or replace a turn: they
- * steer into a running turn when `maySteer` and the provider can steer, otherwise they wait
- * for the turn to settle.
+ * `system` messages (notifications, wakes) never interrupt or replace a turn: they steer into
+ * a running turn when `maySteer` and the provider can steer, otherwise they wait for the turn
+ * to settle. Their text is prepared right before each steer or start, so a message that went
+ * stale while waiting is dropped instead of delivered.
  */
 export type DispatchPolicy =
-  | { kind: "intent"; intent: DispatchIntent }
-  | { kind: "system"; maySteer: boolean };
+  | { kind: "intent"; intent: DispatchIntent; prompt: AgentPromptInput }
+  | {
+      kind: "system";
+      maySteer: boolean;
+      prepare: () => Promise<AgentPromptInput | null>;
+      onQueued?: () => Promise<void>;
+    };
 
-export type MessageDisposition = "steered" | "started" | "out_of_band" | "skipped_archived";
+export type MessageDisposition =
+  | "steered"
+  | "started"
+  | "out_of_band"
+  | "skipped_archived"
+  | "dropped";
 
 export interface DispatchAgentMessageParams {
   agentManager: AgentManager;
   agentStorage: AgentStorage;
   agentId: string;
-  prompt: AgentPromptInput;
   messageId: string;
   policy: DispatchPolicy;
   logger: Logger;
@@ -94,6 +104,10 @@ function resolveMode(params: DispatchAgentMessageParams): DispatchMode {
   return resolveDispatchIntent(target, params.policy.maySteer ? "auto" : "queue");
 }
 
+async function preparePrompt(params: DispatchAgentMessageParams): Promise<AgentPromptInput | null> {
+  return params.policy.kind === "intent" ? params.policy.prompt : await params.policy.prepare();
+}
+
 async function steer(params: DispatchAgentMessageParams): Promise<MessageDisposition> {
   if (params.policy.kind === "intent" && params.policy.intent === "steer") {
     try {
@@ -103,7 +117,11 @@ async function steer(params: DispatchAgentMessageParams): Promise<MessageDisposi
       return await startWhenIdle(params);
     }
   }
-  const result = await params.agentManager.steerAgentRun(params.agentId, params.prompt, {
+  const prompt = await preparePrompt(params);
+  if (prompt === null) {
+    return "dropped";
+  }
+  const result = await params.agentManager.steerAgentRun(params.agentId, prompt, {
     clientMessageId: params.messageId,
   });
   if (result.status === "accepted") {
@@ -114,12 +132,15 @@ async function steer(params: DispatchAgentMessageParams): Promise<MessageDisposi
 }
 
 async function startWhenIdle(params: DispatchAgentMessageParams): Promise<MessageDisposition> {
+  let queued = false;
   for (;;) {
-    if (params.agentManager.hasInFlightRun(params.agentId)) {
+    if (!queued && params.agentManager.hasInFlightRun(params.agentId)) {
+      queued = true;
       params.logger.trace(
         { agentId: params.agentId, messageId: params.messageId },
         "agent.dispatch.wait_for_turn",
       );
+      if (params.policy.kind === "system") await params.policy.onQueued?.();
     }
     await params.agentManager.waitForRunToSettle(params.agentId);
     if (params.policy.kind === "system" && (await isArchived(params))) {
@@ -138,10 +159,14 @@ async function start(
   params: DispatchAgentMessageParams,
   options: Pick<StartAgentRunOptions, "replaceRunning" | "activeTurnBehavior">,
 ): Promise<MessageDisposition> {
+  const prompt = await preparePrompt(params);
+  if (prompt === null) {
+    return "dropped";
+  }
   const { disposition } = await startAgentRun(
     params.agentManager,
     params.agentId,
-    params.prompt,
+    prompt,
     params.logger,
     { ...options, runOptions: { clientMessageId: params.messageId } },
   );

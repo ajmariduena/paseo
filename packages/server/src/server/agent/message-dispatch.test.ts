@@ -55,9 +55,8 @@ test("a late steer becomes a new turn with the same messageId", async () => {
     agentManager: host.agentManager,
     agentStorage: host.agentStorage,
     agentId,
-    prompt: "follow-up",
     messageId: "msg-late",
-    policy: { kind: "intent", intent: "auto" },
+    policy: { kind: "intent", intent: "auto", prompt: "follow-up" },
     logger: host.logger,
   });
 
@@ -83,9 +82,8 @@ test("a queued message waits for the running turn instead of replacing it", asyn
     agentManager: host.agentManager,
     agentStorage: host.agentStorage,
     agentId,
-    prompt: "next task",
     messageId: "msg-queued",
-    policy: { kind: "intent", intent: "auto" },
+    policy: { kind: "intent", intent: "auto", prompt: "next task" },
     logger: trace.logger,
   });
   await trace.waitFor("agent.dispatch.wait_for_turn");

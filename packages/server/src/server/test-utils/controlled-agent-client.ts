@@ -46,6 +46,7 @@ export class ControlledAgentSession implements AgentSession {
   beforeDispatch: ((prompt: AgentPromptInput) => void) | null = null;
   private readonly subscribers = new Set<(event: AgentStreamEvent) => void>();
   private turnCounter = 0;
+  private pendingTurnStart: { turnId: string; timer: NodeJS.Timeout } | null = null;
 
   constructor(readonly provider: AgentProvider) {}
 
@@ -57,8 +58,17 @@ export class ControlledAgentSession implements AgentSession {
     this.startPrompts.push(prompt);
     const turnId = `turn-${++this.turnCounter}`;
     this.activeTurnId = turnId;
-    setTimeout(() => this.push({ type: "turn_started", provider: this.provider, turnId }), 0);
+    this.pendingTurnStart = { turnId, timer: setTimeout(() => this.flushTurnStart(), 0) };
     return { turnId };
+  }
+
+  /** A provider never reports a turn's start after its end. */
+  private flushTurnStart(): void {
+    const pending = this.pendingTurnStart;
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pendingTurnStart = null;
+    this.push({ type: "turn_started", provider: this.provider, turnId: pending.turnId });
   }
 
   completeTurn(assistantText?: string): void {
@@ -127,6 +137,7 @@ export class ControlledAgentSession implements AgentSession {
     this.interruptCount += 1;
     const turnId = this.activeTurnId;
     if (!turnId) return;
+    this.flushTurnStart();
     this.activeTurnId = null;
     this.push({ type: "turn_canceled", provider: this.provider, turnId, reason: "interrupted" });
   }
@@ -143,6 +154,7 @@ export class ControlledAgentSession implements AgentSession {
     if (!this.activeTurnId) {
       throw new Error("No active turn");
     }
+    this.flushTurnStart();
     return this.activeTurnId;
   }
 }
@@ -276,31 +288,36 @@ export function createControlledHost(): ControlledHost {
 
 export interface TraceRecorder {
   logger: Logger;
-  /** Resolves once a log record with this message has been written. */
-  waitFor(message: string): Promise<void>;
+  /** Resolves once `count` log records with this message have been written. */
+  waitFor(message: string, count?: number): Promise<void>;
 }
 
 /** A trace-level logger whose records tests can wait on, for decisions with no other signal. */
 export function createTraceRecorder(): TraceRecorder {
-  const seen = new Set<string>();
-  const waiters = new Map<string, Array<() => void>>();
+  const counts = new Map<string, number>();
+  const waiters = new Set<{ message: string; count: number; resolve: () => void }>();
   const logger = pino(
     { level: "trace" },
     {
       write(line: string) {
         const { msg } = JSON.parse(line) as { msg: string };
-        seen.add(msg);
-        for (const resolve of waiters.get(msg) ?? []) resolve();
-        waiters.delete(msg);
+        const seen = (counts.get(msg) ?? 0) + 1;
+        counts.set(msg, seen);
+        for (const waiter of waiters) {
+          if (waiter.message === msg && seen >= waiter.count) {
+            waiters.delete(waiter);
+            waiter.resolve();
+          }
+        }
       },
     },
   );
   return {
     logger,
-    waitFor(message) {
-      if (seen.has(message)) return Promise.resolve();
+    waitFor(message, count = 1) {
+      if ((counts.get(message) ?? 0) >= count) return Promise.resolve();
       return new Promise((resolve) => {
-        waiters.set(message, [...(waiters.get(message) ?? []), resolve]);
+        waiters.add({ message, count, resolve });
       });
     },
   };

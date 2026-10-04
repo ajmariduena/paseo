@@ -6,17 +6,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
-import {
-  createControlledHost,
-  createTraceRecorder,
-  type ControlledHost,
-} from "../test-utils/controlled-agent-client.js";
 import { AgentManager } from "./agent-manager.js";
 import { AgentStorage } from "./agent-storage.js";
 import {
   formatSystemNotificationPrompt,
   isSystemInjectedEnvelope,
-  setupFinishNotification,
+  setupPermissionNotification,
   waitForAgentRunStartWithTimeout,
 } from "./agent-prompt.js";
 import type { AgentManagerEvent, ManagedAgent } from "./agent-manager.js";
@@ -51,33 +46,30 @@ function createCapturedLogger(): CapturedLogger {
   return { logger, records, nextRecord };
 }
 
-interface FinishNotificationScenarioOptions {
-  childLastAssistantMessage?: string | null;
+interface PermissionNotificationScenarioOptions {
   childParentAgentId?: string | null;
   requireParentOwnership?: boolean;
   parentPromptError?: Error;
+  callerArchived?: boolean;
   logger?: Logger;
 }
 
-interface FinishNotificationScenario {
+interface PermissionNotificationScenario {
   startWatchingChild(): void;
   requestChildPermission(requestId?: string): void;
   resolveChildPermission(requestId?: string): void;
   resolveChildPermissionFromState(requestId?: string): void;
   resolveChildPermissionWhileIdle(requestId?: string): void;
   finishChild(): void;
-  finishChildAndReadParentPrompt(): Promise<string>;
-  closeChildAndReadParentPrompt(): Promise<string>;
   parentPrompts(): string[];
-  wasParentPrompted(): boolean;
+  waitForParentPromptAttempt(): Promise<void>;
 }
 
-function createFinishNotificationScenario(
-  options?: FinishNotificationScenarioOptions,
-): FinishNotificationScenario {
+function createPermissionNotificationScenario(
+  options?: PermissionNotificationScenarioOptions,
+): PermissionNotificationScenario {
   let subscriber: ((event: AgentManagerEvent) => void) | null = null;
-  let resolveParentPrompt: ((prompt: string) => void) | null = null;
-  let parentPrompted = false;
+  let resolvePromptAttempt: (() => void) | null = null;
   const parentPrompts: string[] = [];
 
   const childAgent: ManagedAgent = Object.create(null);
@@ -107,16 +99,12 @@ function createFinishNotificationScenario(
       subscriber = null;
     };
   });
-  Reflect.set(agentManager, "getLastAssistantMessage", async () => {
-    return options?.childLastAssistantMessage ?? null;
-  });
   Reflect.set(agentManager, "tryRunOutOfBand", () => false);
   Reflect.set(agentManager, "streamAgent", (_agentId: string, prompt: string) => {
-    resolveParentPrompt?.(prompt);
+    resolvePromptAttempt?.();
     if (options?.parentPromptError) {
       throw options.parentPromptError;
     }
-    parentPrompted = true;
     parentPrompts.push(prompt);
     return (async function* noop() {})();
   });
@@ -131,12 +119,19 @@ function createFinishNotificationScenario(
         labels: parentAgentId ? { "paseo.parent-agent-id": parentAgentId } : {},
       };
     }
+    if (agentId === "caller-agent" && options?.callerArchived) {
+      return { archivedAt: "2024-01-01" };
+    }
     return null;
   });
 
+  function publishState(): void {
+    subscriber?.({ type: "agent_state", agent: childAgent });
+  }
+
   return {
     startWatchingChild() {
-      setupFinishNotification({
+      setupPermissionNotification({
         agentManager,
         agentStorage,
         childAgentId: "child-agent",
@@ -158,10 +153,7 @@ function createFinishNotificationScenario(
           content: "PASEO_PERMISSION_NOTIFY_QA_OK\n",
         },
       });
-      subscriber?.({
-        type: "agent_state",
-        agent: childAgent,
-      });
+      publishState();
       subscriber?.({
         type: "agent_stream",
         agentId: "child-agent",
@@ -187,12 +179,12 @@ function createFinishNotificationScenario(
     },
     resolveChildPermissionFromState(requestId = "permission-1") {
       childAgent.pendingPermissions.delete(requestId);
-      subscriber?.({ type: "agent_state", agent: childAgent });
+      publishState();
     },
     resolveChildPermissionWhileIdle(requestId = "permission-1") {
       childAgent.pendingPermissions.delete(requestId);
       childAgent.lifecycle = "idle";
-      subscriber?.({ type: "agent_state", agent: childAgent });
+      publishState();
       subscriber?.({
         type: "agent_stream",
         agentId: "child-agent",
@@ -206,51 +198,24 @@ function createFinishNotificationScenario(
     },
     finishChild() {
       childAgent.lifecycle = "running";
-      subscriber?.({
-        type: "agent_state",
-        agent: childAgent,
-      });
-
+      publishState();
       childAgent.lifecycle = "idle";
-      subscriber?.({
-        type: "agent_state",
-        agent: childAgent,
-      });
-    },
-    async finishChildAndReadParentPrompt() {
-      const parentPrompt = new Promise<string>((resolve) => {
-        resolveParentPrompt = resolve;
-      });
-      this.finishChild();
-
-      return parentPrompt;
-    },
-    async closeChildAndReadParentPrompt() {
-      const parentPrompt = new Promise<string>((resolve) => {
-        resolveParentPrompt = resolve;
-      });
-
-      childAgent.lifecycle = "running";
-      subscriber?.({
-        type: "agent_state",
-        agent: childAgent,
-      });
-
-      childAgent.lifecycle = "closed";
-      subscriber?.({
-        type: "agent_state",
-        agent: childAgent,
-      });
-
-      return parentPrompt;
+      publishState();
     },
     parentPrompts() {
       return parentPrompts;
     },
-    wasParentPrompted() {
-      return parentPrompted;
+    waitForParentPromptAttempt() {
+      return new Promise<void>((resolve) => {
+        resolvePromptAttempt = resolve;
+      });
     },
   };
+}
+
+function permissionRequestIdOf(prompt: string): string {
+  const payload = prompt.match(/<permission-request>\n([\s\S]+?)\n<\/permission-request>/)?.[1];
+  return JSON.parse(payload!).requestId;
 }
 
 test("isSystemInjectedEnvelope matches the envelope formatSystemNotificationPrompt produces", () => {
@@ -258,51 +223,8 @@ test("isSystemInjectedEnvelope matches the envelope formatSystemNotificationProm
   expect(isSystemInjectedEnvelope("hello world")).toBe(false);
 });
 
-test("finish notifications tell the parent the child's last assistant message", async () => {
-  const scenario = createFinishNotificationScenario({
-    childLastAssistantMessage: "Implemented the cleanup and all checks pass.",
-  });
-
-  scenario.startWatchingChild();
-  const parentPrompt = await scenario.finishChildAndReadParentPrompt();
-
-  expect(parentPrompt).toEqual(
-    formatSystemNotificationPrompt(
-      "Agent child-agent (Child Agent) finished.\n\n<agent-response>\nImplemented the cleanup and all checks pass.\n</agent-response>",
-    ),
-  );
-});
-
-test("finish notifications truncate oversized child responses", async () => {
-  const included = "x".repeat(4000);
-  const omitted = "TAIL-MARKER".repeat(50);
-  const scenario = createFinishNotificationScenario({
-    childLastAssistantMessage: included + omitted,
-  });
-
-  scenario.startWatchingChild();
-  const parentPrompt = await scenario.finishChildAndReadParentPrompt();
-
-  expect(parentPrompt).toContain(included);
-  expect(parentPrompt).toContain(
-    `[truncated ${omitted.length} chars; use get_agent_activity for the full response]`,
-  );
-  expect(parentPrompt).not.toContain("TAIL-MARKER");
-});
-
-test("closing a watched child notifies the caller", async () => {
-  const scenario = createFinishNotificationScenario();
-
-  scenario.startWatchingChild();
-  const parentPrompt = await scenario.closeChildAndReadParentPrompt();
-
-  expect(parentPrompt).toEqual(
-    formatSystemNotificationPrompt("Agent child-agent (Child Agent) was closed."),
-  );
-});
-
-test("finish notifications survive permission responses", async () => {
-  const scenario = createFinishNotificationScenario();
+test("permission notifications give the parent the request to answer", async () => {
+  const scenario = createPermissionNotificationScenario();
 
   scenario.startWatchingChild();
   scenario.requestChildPermission();
@@ -310,11 +232,12 @@ test("finish notifications survive permission responses", async () => {
   await vi.waitFor(() => {
     expect(scenario.parentPrompts()).toHaveLength(1);
   });
-  expect(scenario.parentPrompts()[0]).toContain("needs permission.");
+  expect(scenario.parentPrompts()[0]).toContain(
+    "Agent child-agent (Child Agent) needs permission.",
+  );
   const permissionPayload = scenario
     .parentPrompts()[0]
     .match(/<permission-request>\n([\s\S]+?)\n<\/permission-request>/)?.[1];
-  expect(permissionPayload).toBeDefined();
   expect(JSON.parse(permissionPayload!)).toEqual({
     agentId: "child-agent",
     requestId: "permission-1",
@@ -330,18 +253,10 @@ test("finish notifications survive permission responses", async () => {
       },
     },
   });
-
-  scenario.resolveChildPermission();
-  scenario.finishChild();
-
-  await vi.waitFor(() => {
-    expect(scenario.parentPrompts()).toHaveLength(2);
-  });
-  expect(scenario.parentPrompts()[1]).toContain("finished.");
 });
 
-test("an idle permission resolution waits for the resumed run to finish", async () => {
-  const scenario = createFinishNotificationScenario();
+test("an idle permission resolution keeps watching the resumed run", async () => {
+  const scenario = createPermissionNotificationScenario();
 
   scenario.startWatchingChild();
   scenario.requestChildPermission();
@@ -350,41 +265,28 @@ test("an idle permission resolution waits for the resumed run to finish", async 
   scenario.resolveChildPermissionWhileIdle();
   scenario.requestChildPermission("permission-2");
   await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(2));
-  expect(scenario.parentPrompts().every((prompt) => prompt.includes("needs permission."))).toBe(
-    true,
-  );
-
-  scenario.resolveChildPermission("permission-2");
-  scenario.finishChild();
-  await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(3));
-  expect(scenario.parentPrompts()[2]).toContain("finished.");
+  expect(scenario.parentPrompts().map(permissionRequestIdOf)).toEqual([
+    "permission-1",
+    "permission-2",
+  ]);
 });
 
-test("finish notifications report every concurrently pending permission", async () => {
-  const scenario = createFinishNotificationScenario();
+test("permission notifications report every concurrently pending permission", async () => {
+  const scenario = createPermissionNotificationScenario();
 
   scenario.startWatchingChild();
   scenario.requestChildPermission("permission-1");
   scenario.requestChildPermission("permission-2");
 
   await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(2));
-  expect(
-    scenario.parentPrompts().map((prompt) => {
-      const payload = prompt.match(/<permission-request>\n([\s\S]+?)\n<\/permission-request>/)?.[1];
-      return JSON.parse(payload!).requestId;
-    }),
-  ).toEqual(["permission-1", "permission-2"]);
-
-  scenario.resolveChildPermission("permission-1");
-  scenario.resolveChildPermission("permission-2");
-  scenario.finishChild();
-
-  await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(3));
-  expect(scenario.parentPrompts()[2]).toContain("finished.");
+  expect(scenario.parentPrompts().map(permissionRequestIdOf)).toEqual([
+    "permission-1",
+    "permission-2",
+  ]);
 });
 
-test("finish notifications survive repeated permission cycles", async () => {
-  const scenario = createFinishNotificationScenario();
+test("permission notifications survive repeated permission cycles", async () => {
+  const scenario = createPermissionNotificationScenario();
 
   scenario.startWatchingChild();
   scenario.requestChildPermission();
@@ -393,44 +295,64 @@ test("finish notifications survive repeated permission cycles", async () => {
 
   scenario.requestChildPermission();
   await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(2));
-  scenario.resolveChildPermission();
-  scenario.finishChild();
-
-  await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(3));
-  expect(
-    scenario.parentPrompts().map((prompt) => prompt.match(/(needs permission|finished)\./)?.[1]),
-  ).toEqual(["needs permission", "needs permission", "finished"]);
 });
 
-test("detaching a child ends its parent-owned finish notification", async () => {
-  const scenario = createFinishNotificationScenario({
+test("a permission resolved before the parent hears it is dropped", async () => {
+  const captured = createCapturedLogger();
+  const scenario = createPermissionNotificationScenario({ logger: captured.logger });
+
+  scenario.startWatchingChild();
+  scenario.requestChildPermission("permission-1");
+  scenario.resolveChildPermission("permission-1");
+  scenario.requestChildPermission("permission-2");
+
+  await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(1));
+  expect(permissionRequestIdOf(scenario.parentPrompts()[0])).toBe("permission-2");
+  expect(captured.records).toEqual([]);
+});
+
+test("the watcher ends with the child's run", async () => {
+  const scenario = createPermissionNotificationScenario();
+
+  scenario.startWatchingChild();
+  scenario.finishChild();
+  scenario.requestChildPermission();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  expect(scenario.parentPrompts()).toEqual([]);
+});
+
+test("detaching a child ends its parent-owned permission notifications", async () => {
+  const scenario = createPermissionNotificationScenario({
     childParentAgentId: null,
     requireParentOwnership: true,
   });
   scenario.startWatchingChild();
-  scenario.finishChild();
+  scenario.requestChildPermission();
   await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(scenario.wasParentPrompted()).toBe(false);
+  expect(scenario.parentPrompts()).toEqual([]);
 });
 
-test("follow-up finish notifications do not require a parent relationship", async () => {
-  const scenario = createFinishNotificationScenario({ childParentAgentId: "another-agent" });
+test("follow-up permission notifications do not require a parent relationship", async () => {
+  const scenario = createPermissionNotificationScenario({ childParentAgentId: "another-agent" });
 
   scenario.startWatchingChild();
-  const parentPrompt = await scenario.finishChildAndReadParentPrompt();
+  scenario.requestChildPermission();
 
-  expect(parentPrompt).toContain("Agent child-agent (Child Agent) finished.");
+  await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(1));
 });
 
-test("finish notifications log a rejected parent prompt without an unhandled rejection", async () => {
+test("permission notifications log a rejected parent prompt without an unhandled rejection", async () => {
   const captured = createCapturedLogger();
-  const scenario = createFinishNotificationScenario({
+  const scenario = createPermissionNotificationScenario({
     parentPromptError: new Error("parent provider rejected the prompt"),
     logger: captured.logger,
   });
 
   scenario.startWatchingChild();
-  await scenario.finishChildAndReadParentPrompt();
+  const attempted = scenario.waitForParentPromptAttempt();
+  scenario.requestChildPermission();
+  await attempted;
   await captured.nextRecord;
 
   expect(captured.records).toEqual([
@@ -438,91 +360,20 @@ test("finish notifications log a rejected parent prompt without an unhandled rej
       msg: "Failed to notify caller agent",
       childAgentId: "child-agent",
       callerAgentId: "caller-agent",
-      reason: "finished",
+      requestId: "permission-1",
       err: expect.objectContaining({ message: "parent provider rejected the prompt" }),
     }),
   ]);
 });
 
 it("does not notify archived callers", async () => {
-  let subscriber: ((event: AgentManagerEvent) => void) | null = null;
+  const scenario = createPermissionNotificationScenario({ callerArchived: true });
 
-  const childAgent: ManagedAgent = Object.create(null);
-  Reflect.set(childAgent, "id", "child-agent");
-  Reflect.set(childAgent, "lifecycle", "idle");
-  Reflect.set(childAgent, "config", { title: "Child Agent" });
-  Reflect.set(childAgent, "pendingPermissions", new Map());
+  scenario.startWatchingChild();
+  scenario.requestChildPermission();
+  await new Promise((resolve) => setTimeout(resolve, 10));
 
-  const callerAgent: ManagedAgent = Object.create(null);
-  Reflect.set(callerAgent, "id", "caller-agent");
-  Reflect.set(callerAgent, "lifecycle", "idle");
-  Reflect.set(callerAgent, "config", { title: "Caller Agent" });
-
-  const streamAgentSpy = vi.fn(() => (async function* noop() {})());
-  const replaceAgentRunSpy = vi.fn(() => (async function* noop() {})());
-
-  const agentManager = new AgentManager({ clients: {}, logger: createTestLogger() });
-  Reflect.set(
-    agentManager,
-    "getAgent",
-    vi.fn((agentId: string) => {
-      if (agentId === "child-agent") {
-        return childAgent;
-      }
-      if (agentId === "caller-agent") {
-        return callerAgent;
-      }
-      return null;
-    }),
-  );
-  Reflect.set(
-    agentManager,
-    "subscribe",
-    vi.fn((callback: (event: AgentManagerEvent) => void) => {
-      subscriber = callback;
-      return () => {
-        subscriber = null;
-      };
-    }),
-  );
-  Reflect.set(agentManager, "hasInFlightRun", vi.fn().mockReturnValue(false));
-  Reflect.set(agentManager, "streamAgent", streamAgentSpy);
-  Reflect.set(agentManager, "replaceAgentRun", replaceAgentRunSpy);
-
-  const agentStorageGetSpy = vi.fn(async (agentId: string) =>
-    agentId === "caller-agent" ? { archivedAt: "2024-01-01" } : null,
-  );
-  const agentStorage: AgentStorage = Object.create(AgentStorage.prototype);
-  Reflect.set(agentStorage, "get", agentStorageGetSpy);
-
-  setupFinishNotification({
-    agentManager,
-    agentStorage,
-    childAgentId: "child-agent",
-    callerAgentId: "caller-agent",
-    logger: createTestLogger(),
-  });
-
-  expect(subscriber).not.toBeNull();
-
-  childAgent.lifecycle = "running";
-  subscriber?.({
-    type: "agent_state",
-    agent: childAgent,
-  });
-
-  childAgent.lifecycle = "idle";
-  subscriber?.({
-    type: "agent_state",
-    agent: childAgent,
-  });
-
-  await vi.waitFor(() => {
-    expect(agentStorageGetSpy).toHaveBeenCalledWith("caller-agent");
-  });
-
-  expect(streamAgentSpy).not.toHaveBeenCalled();
-  expect(replaceAgentRunSpy).not.toHaveBeenCalled();
+  expect(scenario.parentPrompts()).toEqual([]);
 });
 
 // Deliberately independent literals rather than the production constants these tests
@@ -753,101 +604,5 @@ test("waiting for a run start still gives up at the run start budget", async () 
   } finally {
     vi.useRealTimers();
     await scenario.cleanup();
-  }
-});
-
-interface ParentChildScenario {
-  host: ControlledHost;
-  parentId: string;
-  childId: string;
-}
-
-async function startParentAndChild(options: {
-  parentSteerable: boolean;
-  logger?: Logger;
-}): Promise<ParentChildScenario> {
-  const host = createControlledHost();
-  const parentId = await host.createAgent({ steerable: options.parentSteerable });
-  const childId = await host.createAgent({
-    steerable: false,
-    labels: { "paseo.parent-agent-id": parentId },
-  });
-  await host.startTurn(childId, "child task");
-  setupFinishNotification({
-    agentManager: host.agentManager,
-    agentStorage: host.agentStorage,
-    childAgentId: childId,
-    callerAgentId: parentId,
-    logger: options.logger ?? host.logger,
-  });
-  return { host, parentId, childId };
-}
-
-test("a finish notification never interrupts a parent whose provider cannot steer — it waits for the turn to end", async () => {
-  const trace = createTraceRecorder();
-  const { host, parentId, childId } = await startParentAndChild({
-    parentSteerable: false,
-    logger: trace.logger,
-  });
-  try {
-    await host.startTurn(parentId, "parent work");
-    const parent = host.session(parentId);
-
-    host.session(childId).completeTurn("child result");
-    await trace.waitFor("agent.dispatch.wait_for_turn");
-    expect(parent.startPrompts).toEqual(["parent work"]);
-    expect(parent.interruptCount).toBe(0);
-
-    parent.completeTurn("parent done");
-    await vi.waitFor(() => expect(parent.startPrompts).toHaveLength(2));
-    expect(parent.startPrompts[1]).toContain("<agent-response>\nchild result\n</agent-response>");
-    expect(parent.interruptCount).toBe(0);
-  } finally {
-    await host.cleanup();
-  }
-});
-
-test("a finish notification steers into a steerable running parent", async () => {
-  const { host, parentId, childId } = await startParentAndChild({ parentSteerable: true });
-  try {
-    await host.startTurn(parentId, "parent work");
-    const parent = host.session(parentId);
-
-    host.session(childId).completeTurn("child result");
-    await vi.waitFor(() => expect(parent.steerPrompts).toHaveLength(1));
-    expect(parent.steerPrompts[0]).toContain("finished.");
-    expect(parent.startPrompts).toEqual(["parent work"]);
-    expect(parent.interruptCount).toBe(0);
-  } finally {
-    await host.cleanup();
-  }
-});
-
-test("an idle-path notification does not replace a run that started in between", async () => {
-  const { host, parentId, childId } = await startParentAndChild({ parentSteerable: false });
-  try {
-    const parent = host.session(parentId);
-    let userRun: Promise<void> | null = null;
-    parent.beforeDispatch = (prompt) => {
-      if (userRun || typeof prompt !== "string" || !prompt.includes("finished.")) return;
-      const events = host.agentManager.streamAgent(parentId, "user work");
-      userRun = (async () => {
-        for await (const _event of events) {
-          // Drain the user's turn.
-        }
-      })();
-    };
-
-    host.session(childId).completeTurn("child result");
-    await vi.waitFor(() => expect(parent.startPrompts).toEqual(["user work"]));
-    expect(parent.interruptCount).toBe(0);
-
-    parent.completeTurn("user done");
-    await vi.waitFor(() => expect(parent.startPrompts).toHaveLength(2));
-    expect(parent.startPrompts[1]).toContain("finished.");
-    expect(parent.interruptCount).toBe(0);
-    await userRun;
-  } finally {
-    await host.cleanup();
   }
 });

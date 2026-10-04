@@ -11,6 +11,8 @@ import { z } from "zod";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import { createAgentMcpServer } from "./mcp-server.js";
+import { DelegationService } from "../delegation/delegation-service.js";
+import { DelegationStore } from "../delegation/delegation-store.js";
 import { AgentManager, type ManagedAgent } from "./agent-manager.js";
 import { AgentStorage, type StoredAgentRecord } from "./agent-storage.js";
 import { createTestAgentClients } from "../test-utils/fake-agent-client.js";
@@ -192,11 +194,30 @@ async function removeTempDir(path: string): Promise<void> {
   await rm(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 
+const openDelegations = new Set<DelegationService>();
+
+function createDelegations(
+  agentManager: AgentManager,
+  storage: AgentStorage,
+  workdir: string,
+): DelegationService {
+  const delegations = new DelegationService({
+    store: new DelegationStore(join(workdir, "delegations")),
+    agentManager,
+    agentStorage: storage,
+    logger: createTestLogger(),
+  });
+  openDelegations.add(delegations);
+  return delegations;
+}
+
 async function removeAgentStateDir(
   agentManager: AgentManager,
   storage: AgentStorage,
   path: string,
 ): Promise<void> {
+  for (const delegations of openDelegations) delegations.close();
+  openDelegations.clear();
   await agentManager.flush();
   await storage.flush();
   await removeTempDir(path);
@@ -3523,6 +3544,7 @@ describe("create_agent MCP tool", () => {
         agentStorage: storage,
         callerAgentId: parent.id,
         providerSnapshotManager: createOpenCodeManager().manager,
+        delegations: createDelegations(agentManager, storage, workdir),
         logger,
       });
       const tool = registeredTool(server, "create_agent");
@@ -3838,8 +3860,10 @@ class HeldTurnAgentSession implements AgentSession {
     const turnId = randomUUID();
     this.activeTurnId = turnId;
     setTimeout(() => {
+      // A provider never reports a turn's start after the turn already completed.
+      if (this.activeTurnId !== turnId) return;
       this.pushEvent({ type: "turn_started", provider: this.provider, turnId });
-      if (!this.holdTurns && this.activeTurnId === turnId) {
+      if (!this.holdTurns) {
         this.finishTurn();
       }
     }, 0);
@@ -3966,11 +3990,13 @@ describe("send_agent_prompt MCP tool", () => {
       return null;
     });
 
+    const delegate = vi.fn(async () => null as never);
     const server = await createAgentMcpServer({
       agentManager,
       agentStorage,
       providerSnapshotManager: createOpenCodeManager().manager,
       callerAgentId: "parent-agent",
+      delegations: { delegate, acknowledgeChildResults: vi.fn(async () => null) },
       logger,
     });
 
@@ -3990,7 +4016,14 @@ describe("send_agent_prompt MCP tool", () => {
 
     const response = await tool.handler(parsed.data as Record<string, unknown>);
 
-    expect(spies.agentManager.subscribe).toHaveBeenCalledTimes(1);
+    expect(delegate).toHaveBeenCalledWith({
+      parentAgentId: "parent-agent",
+      childAgentId: "child-agent",
+      source: "send_agent_prompt",
+      title: "child-agent",
+      prompt: "Follow up",
+      requireParentOwnership: false,
+    });
     expect(spies.agentManager.waitForAgentEvent).not.toHaveBeenCalled();
     expect(response.structuredContent.guidance).toBe(
       "You will get notified when the prompted agent finishes, errors, or needs permission. Do not poll for status; continue with other work until the notification arrives.",
@@ -4156,6 +4189,7 @@ describe("send_agent_prompt MCP tool", () => {
         agentStorage: storage,
         callerAgentId: parent.id,
         providerSnapshotManager: createOpenCodeManager().manager,
+        delegations: createDelegations(agentManager, storage, workdir),
         logger,
       });
       const tool = registeredTool(server, "send_agent_prompt");
@@ -4212,6 +4246,7 @@ describe("send_agent_prompt MCP tool", () => {
         agentStorage: storage,
         callerAgentId: parent.id,
         providerSnapshotManager: createOpenCodeManager().manager,
+        delegations: createDelegations(agentManager, storage, workdir),
         logger,
       });
 
@@ -4240,7 +4275,7 @@ describe("send_agent_prompt MCP tool", () => {
 
       function finishNotifications() {
         return (parentClient.sessions[0]?.prompts ?? []).filter((prompt) =>
-          prompt.includes(`Agent ${childId} (Busy Child) finished.`),
+          prompt.includes(`(agent ${childId}, "Busy Child") finished.`),
         );
       }
       await vi.waitFor(() => expect(finishNotifications()).not.toHaveLength(0));
@@ -4278,6 +4313,7 @@ describe("send_agent_prompt MCP tool", () => {
         agentStorage: storage,
         callerAgentId: parent.id,
         providerSnapshotManager: createOpenCodeManager().manager,
+        delegations: createDelegations(agentManager, storage, workdir),
         logger,
       });
       const tool = registeredTool(server, "send_agent_prompt");
@@ -4334,6 +4370,7 @@ describe("send_agent_prompt MCP tool", () => {
         agentStorage: storage,
         callerAgentId: parent.id,
         providerSnapshotManager: createOpenCodeManager().manager,
+        delegations: createDelegations(agentManager, storage, workdir),
         logger,
       });
       let finished = false;

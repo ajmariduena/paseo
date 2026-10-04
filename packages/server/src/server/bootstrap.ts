@@ -153,6 +153,8 @@ import {
 } from "./workspace-registry.js";
 import { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import { ScheduleService } from "./schedule/service.js";
+import { DelegationService } from "./delegation/delegation-service.js";
+import { DelegationStore } from "./delegation/delegation-store.js";
 import { DaemonConfigStore, type MutableDaemonConfig } from "./daemon-config-store.js";
 import { createOrchestrationSkills } from "./orchestration-skills/index.js";
 import { resolveConfigFromPersisted, type CliConfigOverrides } from "./config.js";
@@ -964,6 +966,12 @@ export async function createPaseoDaemon(
       resolvePaseoToolPolicy(provider, daemonConfigStore.get().providers),
     logger,
   });
+  const delegations = new DelegationService({
+    store: new DelegationStore(path.join(config.paseoHome, "delegations")),
+    agentManager,
+    agentStorage,
+    logger,
+  });
   const syncPluginProviders = () => {
     agentManager.updateProviderRegistry(
       providerSnapshotManager.replacePluginProviders(pluginRuntime.getProviderRegistrations()),
@@ -1380,6 +1388,11 @@ export async function createPaseoDaemon(
     } catch (error) {
       logger.warn({ err: error, agentId }, "Failed to complete schedules for archived agent");
     }
+    try {
+      await delegations.disposeForArchivedAgent(agentId);
+    } catch (error) {
+      logger.warn({ err: error, agentId }, "Failed to dispose delegations of archived agent");
+    }
   });
   logger.info({ elapsed: elapsed() }, "Schedule service initialized");
   logger.info({ elapsed: elapsed() }, "Loading persisted agent registry");
@@ -1451,6 +1464,7 @@ export async function createPaseoDaemon(
       (runtime.callerAgentId ? agentManager.getPaseoToolPolicy(runtime.callerAgentId) : undefined),
     paseoHome: config.paseoHome,
     worktreesRoot: config.worktreesRoot,
+    delegations,
     callerAgentId: runtime.callerAgentId,
     enableVoiceTools: runtime.enableVoiceTools,
     voiceOnly: runtime.voiceOnly,
@@ -1776,6 +1790,7 @@ export async function createPaseoDaemon(
               workspaceLabelService,
               readAloudService,
               voiceOrchestrator,
+              delegations,
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();
@@ -1851,6 +1866,8 @@ export async function createPaseoDaemon(
     // Freeze both ingress and registration before taking the agent closure snapshot.
     wsServer?.prepareForShutdown();
     agentManager.prepareForShutdown();
+    // Closing agents for shutdown is not a child result; running tasks stay running on disk.
+    delegations.close();
     await closeAllAgents(logger, agentManager);
     await withTimeout({
       promise: pluginRuntime.drainEvents(),
