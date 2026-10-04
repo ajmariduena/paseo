@@ -291,6 +291,35 @@ describe("wire schema compatibility", () => {
     expect(parsed.capabilities.supportsRewindBoth).toBe(false);
   });
 
+  test("notification rows carry their prompt id and subagent source, and old clients still parse them", () => {
+    const item = {
+      type: "notification",
+      level: "info",
+      message: "2 delegated tasks reported back: Review, Tests",
+      messageId: "wake:parent:run-1:1",
+      source: {
+        kind: "subagent",
+        subagents: [
+          { agentId: "child-a", reason: "finished", title: "Review", durationMs: 42_000 },
+          { agentId: "child-b", reason: "errored" },
+        ],
+      },
+    };
+    expect(AgentTimelineItemPayloadSchema.parse(item)).toEqual(item);
+
+    // Copied from v0.11.0-beta.3, before notification rows had a source.
+    const LegacyNotificationSchema = z.object({
+      type: z.literal("notification"),
+      level: z.enum(["info", "warning", "error"]),
+      message: z.string(),
+    });
+    expect(LegacyNotificationSchema.parse(item)).toEqual({
+      type: "notification",
+      level: "info",
+      message: "2 delegated tasks reported back: Review, Tests",
+    });
+  });
+
   test("notification timeline items parse their level and message", () => {
     expect(
       AgentTimelineItemPayloadSchema.parse({

@@ -9,7 +9,7 @@ import type { AgentManager, ManagedAgent } from "./agent-manager.js";
 import type { AgentStorage } from "./agent-storage.js";
 import { ensureAgentLoaded } from "./agent-loading.js";
 import { isStaleProviderSessionError } from "./stale-provider-session-error.js";
-import { dispatchAgentMessage } from "./message-dispatch.js";
+import { dispatchAgentMessage, type SystemMessage } from "./message-dispatch.js";
 import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
 import type { ActiveTurnBehavior } from "@getpaseo/protocol/messages";
 
@@ -457,7 +457,7 @@ export function setupPermissionNotification(params: SetupPermissionNotificationP
 
   async function preparePermissionPrompt(
     permissionRequest: AgentPermissionRequest,
-  ): Promise<string | null> {
+  ): Promise<SystemMessage | null> {
     if (!agentManager.getAgent(childAgentId)?.pendingPermissions.has(permissionRequest.id)) {
       return null;
     }
@@ -465,12 +465,19 @@ export function setupPermissionNotification(params: SetupPermissionNotificationP
     if (requireParentOwnership && getParentAgentIdFromLabels(record?.labels) !== callerAgentId) {
       return null;
     }
-    const body = formatPermissionNotificationBody({
-      childAgentId,
-      title: record?.title ?? childAgentId,
-      permissionRequest,
-    });
-    return formatSystemNotificationPrompt(body);
+    const title = record?.title ?? childAgentId;
+    const body = formatPermissionNotificationBody({ childAgentId, title, permissionRequest });
+    return {
+      prompt: formatSystemNotificationPrompt(body),
+      notification: {
+        level: "info",
+        message: `${title} needs permission`,
+        source: {
+          kind: "subagent",
+          subagents: [{ agentId: childAgentId, reason: "needs_permission", title }],
+        },
+      },
+    };
   }
 
   function notify(permissionRequest: AgentPermissionRequest): void {

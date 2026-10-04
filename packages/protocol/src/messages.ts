@@ -703,6 +703,20 @@ const ToolCallTimelineItemPayloadSchema: z.ZodType<ToolCallTimelineItem, unknown
     ToolCallCanceledPayloadSchema,
   ]);
 
+export const NotificationSourceSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("subagent"),
+    subagents: z.array(
+      z.object({
+        agentId: z.string(),
+        reason: z.enum(["finished", "errored", "closed", "needs_permission"]),
+        title: z.string().optional(),
+        durationMs: z.number().optional(),
+      }),
+    ),
+  }),
+]);
+
 // zod-aot 0.20.4 miscompiles this as a nested discriminated union by omitting
 // the inner tool_call branch from the generated outer dispatch.
 export const AgentTimelineItemPayloadSchema: z.ZodType<AgentTimelineItem, unknown> = z.union([
@@ -742,6 +756,9 @@ export const AgentTimelineItemPayloadSchema: z.ZodType<AgentTimelineItem, unknow
     type: z.literal("notification"),
     level: z.enum(["info", "warning", "error"]),
     message: z.string(),
+    // COMPAT(notificationSource): added in v0.11.0, keep optional; older daemons send neither.
+    messageId: z.string().optional(),
+    source: NotificationSourceSchema.optional(),
   }),
   z.object({
     type: z.literal("compaction"),

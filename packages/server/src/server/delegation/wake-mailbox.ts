@@ -2,9 +2,13 @@ import type { Logger } from "pino";
 
 import type { AgentManager } from "../agent/agent-manager.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
-import { dispatchAgentMessage, type MessageDisposition } from "../agent/message-dispatch.js";
+import {
+  dispatchAgentMessage,
+  type MessageDisposition,
+  type SystemMessage,
+} from "../agent/message-dispatch.js";
 import type { DelegationStore, DeliveryRef, PlanContext, WakeOffer } from "./delegation-store.js";
-import { renderWakePrompt } from "./wake-text.js";
+import { renderWakeMessage } from "./wake-text.js";
 
 const MAX_DELIVERY_ATTEMPTS = 10;
 const MAX_RETRY_DELAY_MS = 5_000;
@@ -20,7 +24,7 @@ export interface WakeMailboxOptions {
 }
 
 interface PreparedWake {
-  prompt: string;
+  message: SystemMessage;
   taskIds: string[];
 }
 
@@ -99,7 +103,7 @@ export class WakeMailbox {
         prepare: async () => {
           const wake = await this.prepare(offer);
           rendered = wake?.taskIds ?? [];
-          return wake?.prompt ?? null;
+          return wake?.message ?? null;
         },
         onQueued: async () => {
           await store.markQueued(parentAgentId, offer);
@@ -170,7 +174,7 @@ export class WakeMailbox {
       (task) => task.spawningRunKey === ref.cohortKey,
     ).length;
     return {
-      prompt: renderWakePrompt(tasks, delegatedInCohort),
+      message: renderWakeMessage(tasks, delegatedInCohort),
       taskIds: tasks.map((task) => task.id),
       maySteer: tasks.every((task) => task.completionWake === "always"),
     };

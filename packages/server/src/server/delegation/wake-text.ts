@@ -1,15 +1,42 @@
+import type { SubagentNotificationEntry } from "@getpaseo/protocol/agent-types";
+
 import { formatSystemNotificationPrompt } from "../agent/agent-prompt.js";
+import type { SystemMessage } from "../agent/message-dispatch.js";
 import type { DelegationTask } from "./delegation-store.js";
 
 const PER_TASK_RESULT_LIMIT = 4000;
 const TOTAL_RESULT_LIMIT = 12000;
 
-export type WakeTask = Pick<DelegationTask, "id" | "childAgentId" | "title" | "status" | "result">;
+export type WakeTask = Pick<
+  DelegationTask,
+  "id" | "childAgentId" | "title" | "status" | "result" | "createdAt" | "completedAt"
+>;
 
 function outcomeVerb(status: DelegationTask["status"]): string {
   if (status === "failed") return "failed";
   if (status === "cancelled" || status === "interrupted") return "was stopped";
   return "finished";
+}
+
+function notificationReason(status: DelegationTask["status"]): SubagentNotificationEntry["reason"] {
+  if (status === "failed") return "errored";
+  if (status === "cancelled" || status === "interrupted") return "closed";
+  return "finished";
+}
+
+function settledDurationMs(task: WakeTask): number | null {
+  if (!task.completedAt) return null;
+  return Date.parse(task.completedAt) - Date.parse(task.createdAt);
+}
+
+function subagentEntry(task: WakeTask): SubagentNotificationEntry {
+  const durationMs = settledDurationMs(task);
+  return {
+    agentId: task.childAgentId,
+    reason: notificationReason(task.status),
+    title: task.title,
+    ...(durationMs !== null && durationMs >= 0 ? { durationMs } : {}),
+  };
 }
 
 function headline(task: WakeTask): string {
@@ -38,11 +65,34 @@ function batchHeader(tasks: readonly WakeTask[], delegatedInCohort: number): str
   return `${count} delegated tasks reported back: ${titles}`;
 }
 
+function summarizeWake(tasks: readonly WakeTask[], delegatedInCohort: number): string {
+  const [only] = tasks;
+  if (tasks.length === 1 && only) {
+    return `${only.title} ${outcomeVerb(only.status)}`;
+  }
+  return batchHeader(tasks, delegatedInCohort);
+}
+
+/** The wake for the parent's provider, and the row its timeline shows in place of the prompt. */
+export function renderWakeMessage(
+  tasks: readonly WakeTask[],
+  delegatedInCohort: number,
+): SystemMessage {
+  return {
+    prompt: renderWakePrompt(tasks, delegatedInCohort),
+    notification: {
+      level: "info",
+      message: summarizeWake(tasks, delegatedInCohort),
+      source: { kind: "subagent", subagents: tasks.map(subagentEntry) },
+    },
+  };
+}
+
 /**
  * The prompt that wakes a parent. Results are inlined (capped) so the parent rarely needs a
  * follow-up read; the full text stays readable through get_agent_activity.
  */
-export function renderWakePrompt(tasks: readonly WakeTask[], delegatedInCohort: number): string {
+function renderWakePrompt(tasks: readonly WakeTask[], delegatedInCohort: number): string {
   const [only] = tasks;
   if (tasks.length === 1 && only) {
     return formatSystemNotificationPrompt(

@@ -16,6 +16,7 @@ import {
 } from "./agent-manager.js";
 import { buildPaseoOrchestrationInstructions } from "./orchestration-instructions.js";
 import { PASEO_MCP_TOOL_TIMEOUT_MS } from "./runtime-mcp-config.js";
+import { PromptAnnotationStore } from "./prompt-annotations.js";
 import { AgentStorage } from "./agent-storage.js";
 import { InMemoryAgentTimelineStore } from "./agent-timeline-store.js";
 import { toAgentPayload } from "./agent-projections.js";
@@ -11891,6 +11892,61 @@ test("user_message events wrapping a paseo-system envelope are not restored duri
 
   expect(userMessages).toHaveLength(1);
   expect(userMessages[0].text).toBe("real user message");
+});
+
+test("a replayed wake envelope becomes its notification row again after a daemon restart", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-envelope-annotated-"));
+  const annotationsDir = join(workdir, "prompt-annotations");
+  const wake = formatSystemNotificationPrompt("Delegated task dlg_1 finished.");
+  const source = {
+    kind: "subagent" as const,
+    subagents: [
+      {
+        agentId: "00000000-0000-4000-8000-0000000005b9",
+        reason: "finished" as const,
+        title: "Review auth",
+        durationMs: 42_000,
+      },
+    ],
+  };
+  const manager = new AgentManager({
+    clients: {
+      codex: fakeCodexEmitting({
+        historyItems: [
+          { type: "user_message", text: "start the review", messageId: "msg_1" },
+          { type: "user_message", text: wake, messageId: "msg_2" },
+          { type: "assistant_message", text: "Read the review." },
+        ],
+      }),
+    },
+    registry: new AgentStorage(join(workdir, "agents"), logger),
+    promptAnnotations: new PromptAnnotationStore(annotationsDir),
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-0000000005a3",
+  });
+  const snapshot = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+    workspaceId: undefined,
+  });
+  // Written by the daemon process that sent the wake.
+  await new PromptAnnotationStore(annotationsDir).remember(snapshot.id, {
+    messageId: "wake:parent:run:1",
+    text: wake,
+    annotation: { kind: "notification", level: "info", message: "Review auth finished", source },
+  });
+
+  await manager.hydrateTimelineFromProvider(snapshot.id, { force: true });
+
+  expect(manager.getTimeline(snapshot.id)).toEqual([
+    { type: "user_message", text: "start the review", messageId: "msg_1" },
+    {
+      type: "notification",
+      level: "info",
+      message: "Review auth finished",
+      messageId: "wake:parent:run:1",
+      source,
+    },
+    { type: "assistant_message", text: "Read the review." },
+  ]);
 });
 
 test("commandMayHaveChangedExternalState matches remote-state commands", () => {

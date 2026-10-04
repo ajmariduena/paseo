@@ -73,7 +73,7 @@ function wakeMessageIds(current: DelegationScenario): string[] {
   return current.host.agentManager
     .getTimeline(current.parentId)
     .flatMap((item) =>
-      item.type === "user_message" && item.messageId?.startsWith("wake:") ? [item.messageId] : [],
+      item.type === "notification" && item.messageId?.startsWith("wake:") ? [item.messageId] : [],
     );
 }
 
@@ -96,6 +96,28 @@ test("two children finishing while the parent runs produce one wake with both re
   );
   expect(parent.startPrompts[1]).toContain("result A");
   expect(parent.startPrompts[1]).toContain("result B");
+  const timeline = host.agentManager.getTimeline(parentId);
+  expect(timeline.filter((item) => item.type === "user_message")).toEqual([]);
+  const wakeRows = timeline.filter((item) => item.type === "notification");
+  expect(wakeRows).toEqual([
+    {
+      type: "notification",
+      level: "info",
+      message: expect.stringMatching(/^2 delegated tasks reported back: Task [AB], Task [AB]$/),
+      messageId: expect.stringMatching(/^wake:.+:1$/),
+      source: {
+        kind: "subagent",
+        subagents: expect.arrayContaining(
+          ["A", "B"].map((label, index) => ({
+            agentId: childIds[index],
+            reason: "finished",
+            title: `Task ${label}`,
+            durationMs: expect.any(Number),
+          })),
+        ),
+      },
+    },
+  ]);
 
   parent.completeTurn("read both");
   await vi.waitFor(async () =>

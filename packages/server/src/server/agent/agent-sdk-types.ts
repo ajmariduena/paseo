@@ -6,6 +6,7 @@ import type {
   AgentProviderNotice,
   AgentTaskItem,
   JsonValue,
+  NotificationTimelineItem,
   ProviderOptions,
   ToolPolicy,
 } from "@getpaseo/protocol/agent-types";
@@ -400,11 +401,7 @@ export type AgentTimelineItem =
   | ToolCallTimelineItem
   | { type: "todo"; items: AgentTaskItem[] }
   | { type: "error"; message: string }
-  | {
-      type: "notification";
-      level: "info" | "warning" | "error";
-      message: string;
-    }
+  | NotificationTimelineItem
   | CompactionTimelineItem
   | PluginTimelineItem;
 

@@ -74,6 +74,47 @@ test("a late steer becomes a new turn with the same messageId", async () => {
   });
 });
 
+test("a steered system message reaches the provider as its prompt and the timeline as a notification", async () => {
+  host = createControlledHost();
+  const agentId = await host.createAgent({ steerable: true });
+  await host.startTurn(agentId, "first task");
+  const session = host.session(agentId);
+  if (!(session instanceof SteerableControlledAgentSession)) throw new Error("not steerable");
+  const notification = {
+    level: "info" as const,
+    message: "Review auth needs permission",
+    source: {
+      kind: "subagent" as const,
+      subagents: [
+        { agentId: "child-1", reason: "needs_permission" as const, title: "Review auth" },
+      ],
+    },
+  };
+
+  const disposition = await dispatchAgentMessage({
+    agentManager: host.agentManager,
+    agentStorage: host.agentStorage,
+    agentId,
+    messageId: "perm:child-1:request-1",
+    policy: {
+      kind: "system",
+      maySteer: true,
+      prepare: async () => ({ prompt: "<paseo-system>\nask\n</paseo-system>", notification }),
+    },
+    logger: host.logger,
+  });
+
+  expect(disposition).toBe("steered");
+  expect(session.steerPrompts).toEqual(["<paseo-system>\nask\n</paseo-system>"]);
+  const timeline = host.agentManager.getTimeline(agentId);
+  expect(timeline.filter((item) => item.type === "user_message")).toEqual([]);
+  expect(timeline).toContainEqual({
+    type: "notification",
+    messageId: "perm:child-1:request-1",
+    ...notification,
+  });
+});
+
 test("a queued message waits for the running turn instead of replacing it", async () => {
   host = createControlledHost();
   const agentId = await host.createAgent({ steerable: false });

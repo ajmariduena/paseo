@@ -377,6 +377,33 @@ export interface AgentTaskItem {
   activeForm?: string;
 }
 
+export type SubagentNotificationReason = "finished" | "errored" | "closed" | "needs_permission";
+
+export interface SubagentNotificationEntry {
+  agentId: string;
+  reason: SubagentNotificationReason;
+  title?: string;
+  /** How long the child's delegated task ran before it settled. */
+  durationMs?: number;
+}
+
+export interface SubagentNotificationSource {
+  kind: "subagent";
+  subagents: SubagentNotificationEntry[];
+}
+
+/** Why a daemon notification reached this agent. Extend with new `kind`s, never reshape one. */
+export type NotificationSource = SubagentNotificationSource;
+
+export interface NotificationTimelineItem {
+  type: "notification";
+  level: "info" | "warning" | "error";
+  message: string;
+  /** The id of the prompt the provider received for this notification, when there was one. */
+  messageId?: string;
+  source?: NotificationSource;
+}
+
 export type AgentTimelineItem =
   | { type: "user_message"; text: string; messageId?: string; clientMessageId?: string }
   | { type: "assistant_message"; text: string; messageId?: string }
@@ -384,11 +411,7 @@ export type AgentTimelineItem =
   | ToolCallTimelineItem
   | { type: "todo"; items: AgentTaskItem[] }
   | { type: "error"; message: string }
-  | {
-      type: "notification";
-      level: "info" | "warning" | "error";
-      message: string;
-    }
+  | NotificationTimelineItem
   | CompactionTimelineItem
   | PluginTimelineItem;
 

@@ -88,6 +88,12 @@ import { isPaseoToolPolicyEnabled } from "./paseo-tool-policy.js";
 import { buildPaseoOrchestrationInstructions } from "./orchestration-instructions.js";
 import { composeSystemPromptParts } from "./system-prompt.js";
 import {
+  PromptAnnotationStore,
+  type AnnotatedPrompt,
+  type HistoryAnnotationMatcher,
+  type NotificationAnnotation,
+} from "./prompt-annotations.js";
+import {
   ProviderSubagentStore,
   type ProviderSubagentDescriptor,
   type ProviderSubagentStoreEvent,
@@ -111,6 +117,41 @@ const STORED_AGENT_CAPABILITIES: AgentCapabilityFlags = {
 };
 
 type TimeoutResult = "completed" | "timed_out";
+
+function resolvePromptAnnotations(options: AgentManagerOptions): PromptAnnotationStore {
+  return options.promptAnnotations ?? new PromptAnnotationStore(null);
+}
+
+function toNotificationItem(
+  messageId: string,
+  annotation: NotificationAnnotation,
+): Extract<AgentTimelineItem, { type: "notification" }> {
+  return {
+    type: "notification",
+    level: annotation.level,
+    message: annotation.message,
+    messageId,
+    ...(annotation.source ? { source: annotation.source } : {}),
+  };
+}
+
+/**
+ * A replayed user message the daemon sent as a notification becomes that notification again.
+ * Other daemon envelopes have no timeline row.
+ */
+function presentReplayedItem(
+  item: AgentTimelineItem,
+  annotations: HistoryAnnotationMatcher,
+): AgentTimelineItem | null {
+  if (item.type !== "user_message") {
+    return item;
+  }
+  const matched = annotations.take(item.text);
+  if (matched?.annotation.kind === "notification") {
+    return toNotificationItem(matched.messageId, matched.annotation);
+  }
+  return isSystemInjectedEnvelope(item.text) ? null : item;
+}
 
 function submittedPromptText(prompt: AgentPromptInput): string {
   if (typeof prompt === "string") {
@@ -177,6 +218,12 @@ async function assertUsableWorkingDirectory(cwd: string): Promise<void> {
     }
     throw new Error(`Failed to access working directory: ${cwd}`, { cause: error });
   }
+}
+
+interface NotificationPrompt {
+  messageId: string;
+  annotation: NotificationAnnotation;
+  turnId: string | undefined;
 }
 
 interface AttachedPaseoTools {
@@ -342,6 +389,8 @@ export interface AgentManagerOptions {
   onAgentAttention?: AgentAttentionCallback;
   onWorkspaceStateMayHaveChanged?: (params: { cwd: string }) => void;
   durableTimelineStore?: AgentTimelineStore;
+  /** Defaults to an in-memory store, so annotations do not survive a restart. */
+  promptAnnotations?: PromptAnnotationStore;
   terminalManager?: TerminalManager | null;
   mcpBaseUrl?: string;
   mcpAuthToken?: string;
@@ -767,6 +816,7 @@ export class AgentManager {
   private readonly idFactory: () => string;
   private readonly registry?: AgentStorage;
   private readonly durableTimelineStore?: AgentTimelineStore;
+  private readonly promptAnnotations: PromptAnnotationStore;
   private readonly previousStatuses = new Map<string, AgentLifecycleStatus>();
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly agentRegistrationTasks = new Set<Promise<void>>();
@@ -802,6 +852,7 @@ export class AgentManager {
     this.idFactory = options?.idFactory ?? (() => randomUUID());
     this.registry = options?.registry;
     this.durableTimelineStore = options?.durableTimelineStore;
+    this.promptAnnotations = resolvePromptAnnotations(options);
     this.onAgentAttention = options?.onAgentAttention;
     this.onWorkspaceStateMayHaveChanged = options?.onWorkspaceStateMayHaveChanged;
     this.mcpBaseUrl = options?.mcpBaseUrl ?? null;
@@ -3427,6 +3478,15 @@ export class AgentManager {
   async deleteAgentState(agentId: string): Promise<void> {
     this.discardRetainedAgentState(agentId);
     await this.deleteCommittedTimeline(agentId);
+    await this.promptAnnotations.delete(agentId);
+  }
+
+  /**
+   * Records how a prompt the daemon is about to send should appear in the timeline. Call before
+   * dispatching the prompt under `messageId`.
+   */
+  async annotatePrompt(agentId: string, prompt: AnnotatedPrompt): Promise<void> {
+    await this.promptAnnotations.remember(agentId, prompt);
   }
 
   async deleteCommittedTimeline(agentId: string): Promise<void> {
@@ -4258,13 +4318,15 @@ export class AgentManager {
   ): Promise<void> {
     const historyEvents: Extract<AgentStreamEvent, { type: "timeline" }>[] = [];
     const providerSubagentEvents: Extract<AgentStreamEvent, { type: "provider_subagent" }>[] = [];
+    const annotations = await this.promptAnnotations.historyMatcher(agent.id);
     for await (const rawEvent of agent.session.streamHistory()) {
       const event = limitAgentStreamEventContent(rawEvent);
       if (event.type === "timeline") {
-        if (event.item.type === "user_message" && isSystemInjectedEnvelope(event.item.text)) {
+        const item = presentReplayedItem(event.item, annotations);
+        if (!item) {
           continue;
         }
-        historyEvents.push(event);
+        historyEvents.push({ ...event, item });
       } else if (event.type === "provider_subagent") {
         providerSubagentEvents.push(event);
       }
@@ -4317,6 +4379,7 @@ export class AgentManager {
     const historySubagentEvents: Extract<AgentStreamEvent, { type: "provider_subagent" }>[] = [];
     agent.historyPrimed = false;
     try {
+      const annotations = await this.promptAnnotations.historyMatcher(agent.id);
       // Collect the whole replay before touching either store. A stream that fails
       // halfway then leaves the committed timeline as it was, instead of a partial
       // copy the next attempt would append to.
@@ -4329,10 +4392,11 @@ export class AgentManager {
         if (event.type !== "timeline") {
           continue;
         }
-        if (event.item.type === "user_message" && isSystemInjectedEnvelope(event.item.text)) {
+        const item = presentReplayedItem(event.item, annotations);
+        if (!item) {
           continue;
         }
-        historyEvents.push(event);
+        historyEvents.push({ ...event, item });
       }
     } catch (error) {
       this.logger.warn({ err: error, agentId: agent.id }, "Failed to hydrate provider history");
@@ -4950,6 +5014,15 @@ export class AgentManager {
     if (this.timelineStore.getSubmittedUserMessage(agent.id, clientMessageId)) {
       return;
     }
+    const annotation = this.promptAnnotations.forMessage(agent.id, clientMessageId);
+    if (annotation?.kind === "notification") {
+      this.recordNotificationPrompt(agent, {
+        messageId: clientMessageId,
+        annotation,
+        turnId: options?.turnId,
+      });
+      return;
+    }
     this.touchUpdatedAt(agent);
     agent.lastUserMessageAt = new Date();
     const item: AgentTimelineItem = {
@@ -4959,6 +5032,23 @@ export class AgentManager {
       ...(options?.messageId ? { messageId: options.messageId } : {}),
     };
     this.recordAndDispatchTimelineItem(agent.id, item, agent.provider, options?.turnId, options);
+  }
+
+  /** The provider still receives the prompt; the timeline shows it as the notification it is. */
+  private recordNotificationPrompt(agent: ActiveManagedAgent, input: NotificationPrompt): void {
+    const alreadyRecorded = this.timelineStore
+      .getItems(agent.id)
+      .some((item) => item.type === "notification" && item.messageId === input.messageId);
+    if (alreadyRecorded) {
+      return;
+    }
+    this.touchUpdatedAt(agent);
+    this.recordAndDispatchTimelineItem(
+      agent.id,
+      toNotificationItem(input.messageId, input.annotation),
+      agent.provider,
+      input.turnId,
+    );
   }
 
   private reconcileSubmittedPromptEcho(

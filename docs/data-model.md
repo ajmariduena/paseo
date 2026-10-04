@@ -58,6 +58,8 @@ $PASEO_HOME/
 ├── delegations/
 │   ├── {parentAgentId}.json             # Delegated tasks and wake cohorts of one parent
 │   └── by-child.json                    # childAgentId → parentAgentIds
+├── prompt-annotations/
+│   └── {agentId}.json                   # How daemon-sent prompts appear in the agent's timeline
 ├── projects/
 │   ├── projects.json                    # Project registry
 │   ├── workspaces.json                  # Workspace registry
@@ -595,6 +597,14 @@ One file per parent agent, because every transition (finalize a child's result, 
 - **Cohort:** keyed by the parent's run key at delegation time (an in-memory token; `idle:{taskId}` when the parent was idle). It holds at most one outstanding wake. The wake's `messageId`, `wake:{parentId}:{runKey}:{generation}`, is stable so a re-delivered wake reuses its timeline row.
 
 `by-child.json` is written after the parent file. A missing entry is recoverable by scanning the parent files.
+
+---
+
+## Prompt Annotation Store
+
+**Path:** `$PASEO_HOME/prompt-annotations/{agentId}.json`
+
+The timeline is rebuilt from provider history on load, and provider history keeps only the prompt text. When the daemon sends a prompt that should not read as a user message, such as a wake or a permission notification, it records the prompt's `messageId`, a SHA-256 of its text, and how to show it (a `notification` row with its `source`). Replayed user messages match entries by text hash, each entry once, in send order. A replayed `<paseo-system>` envelope without an entry has no timeline row. The newest 500 entries per agent are kept, and the file is deleted with the agent's state. Schema: `packages/server/src/server/agent/prompt-annotations.ts`.
 
 ---
 

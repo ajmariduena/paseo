@@ -5,6 +5,7 @@ import type { AgentPromptInput } from "./agent-sdk-types.js";
 import type { AgentStorage } from "./agent-storage.js";
 import { ensureAgentLoaded } from "./agent-loading.js";
 import { startAgentRun, type StartAgentRunOptions } from "./agent-prompt.js";
+import type { NotificationAnnotation } from "./prompt-annotations.js";
 
 export type DispatchIntent = "auto" | "steer" | "restart" | "queue";
 
@@ -42,6 +43,12 @@ export function resolveDispatchIntent(
   }
 }
 
+/** The provider receives `prompt`; the timeline shows `notification` in its place. */
+export interface SystemMessage {
+  prompt: string;
+  notification: Omit<NotificationAnnotation, "kind">;
+}
+
 /**
  * `system` messages (notifications, wakes) never interrupt or replace a turn: they steer into
  * a running turn when `maySteer` and the provider can steer, otherwise they wait for the turn
@@ -58,7 +65,7 @@ export type DispatchPolicy =
   | {
       kind: "system";
       maySteer: boolean;
-      prepare: () => Promise<AgentPromptInput | null>;
+      prepare: () => Promise<SystemMessage | null>;
       onQueued?: () => Promise<void>;
     };
 
@@ -153,7 +160,19 @@ function resolveMode(params: DispatchAgentMessageParams): DispatchMode {
 }
 
 async function preparePrompt(params: DispatchAgentMessageParams): Promise<AgentPromptInput | null> {
-  return params.policy.kind === "intent" ? params.policy.prompt : await params.policy.prepare();
+  if (params.policy.kind === "intent") {
+    return params.policy.prompt;
+  }
+  const message = await params.policy.prepare();
+  if (!message) {
+    return null;
+  }
+  await params.agentManager.annotatePrompt(params.agentId, {
+    messageId: params.messageId,
+    text: message.prompt,
+    annotation: { kind: "notification", ...message.notification },
+  });
+  return message.prompt;
 }
 
 /** Never replaces the running turn; an explicit steer the provider cannot take fails instead. */
