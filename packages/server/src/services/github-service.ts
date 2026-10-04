@@ -2270,6 +2270,48 @@ export function createGitHubService(options: CreateGitHubServiceOptions = {}): G
       });
     },
 
+    getViewerLogin(input) {
+      return cached({
+        cwd: input.cwd,
+        method: "getViewerLogin",
+        args: {},
+        readOptions: input,
+        load: async () => {
+          const login = await run(["api", "user", "--jq", ".login"], { cwd: input.cwd });
+          return login.length > 0 ? login : null;
+        },
+      });
+    },
+
+    getRequiredCheckNames(input) {
+      return cached({
+        cwd: input.cwd,
+        method: "getRequiredCheckNames",
+        args: { number: input.number },
+        readOptions: input,
+        load: async () => {
+          try {
+            const checks = await runGhJson(
+              ["pr", "checks", String(input.number), "--required", "--json", "name"],
+              { cwd: input.cwd },
+              z.array(z.object({ name: z.string() })),
+              "[]",
+            );
+            return checks.map((check) => check.name);
+          } catch (error) {
+            // `gh pr checks --required` fails instead of printing [] when nothing is required.
+            if (
+              error instanceof GitHubCommandError &&
+              /no (required )?checks reported/.test(error.stderr)
+            ) {
+              return [];
+            }
+            throw error;
+          }
+        },
+      });
+    },
+
     getCheckDetails(input) {
       const { repoOwner, repoName, checkRunId } = input;
       if (!repoOwner || !repoName) {

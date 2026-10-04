@@ -91,6 +91,7 @@ import {
   type DispatchIntent,
 } from "../message-dispatch.js";
 import type { DelegationService } from "../../delegation/delegation-service.js";
+import type { PullRequestWatcher } from "../../pull-request-watch/watcher.js";
 import { respondToAgentPermission } from "../permission-response.js";
 import {
   archiveAgentCommand,
@@ -174,6 +175,7 @@ export interface PaseoToolHostDependencies {
     | "endWait"
     | "waitForChildResult"
   >;
+  pullRequestWatches?: Pick<PullRequestWatcher, "watch" | "unwatch">;
   transport?: PaseoToolRuntimeContext["transport"];
   /**
    * ID of the agent that is using this tool catalog.
@@ -2572,6 +2574,81 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     };
   }
 
+  const pullRequestWatches = options.pullRequestWatches;
+  if (pullRequestWatches) {
+    const pullRequestTargetSchema = {
+      number: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe("Pull request number in your workspace's repository."),
+      url: z.string().optional().describe("Pull request URL, instead of number."),
+    };
+    async function resolveCallerTarget(input: { number?: number; url?: string }) {
+      if (!callerAgentId) {
+        throw new Error("Only an agent can watch a pull request");
+      }
+      const cwd =
+        agentManager.getAgent(callerAgentId)?.cwd ?? (await agentStorage.get(callerAgentId))?.cwd;
+      if (!cwd) {
+        throw new Error(`Agent ${callerAgentId} not found`);
+      }
+      return { agentId: callerAgentId, cwd, number: input.number, url: input.url };
+    }
+
+    registerTool(
+      "watch_pull_request",
+      {
+        title: "Watch pull request",
+        description:
+          "Have Paseo watch an open pull request for you. Omit number and url to watch the pull request of your workspace's branch. Paseo checks it every minute and wakes you with a message when a check fails, the required checks pass, someone else comments or reviews, or the branch starts to conflict with its base. Use this to babysit a pull request instead of polling, sleeping, or running a watcher. The result reports the checks as they are now and only later changes wake you, so handle current failures and comments first, then end your turn. A wake is news, not a merge decision. Watching ends when the pull request merges or closes, when Paseo cannot read it for 15 minutes, when you are archived, or when you call unwatch_pull_request.",
+        inputSchema: pullRequestTargetSchema,
+        outputSchema: {
+          number: z.number(),
+          url: z.string(),
+          title: z.string(),
+          watching: z.literal(true),
+          wasWatching: z.boolean(),
+          checks: z.object({
+            failed: z.array(z.string()),
+            pending: z.number(),
+            passed: z.boolean(),
+          }),
+          conflicting: z.boolean(),
+        },
+      },
+      async (input: { number?: number; url?: string }) => ({
+        content: [],
+        structuredContent: ensureValidJson(
+          await pullRequestWatches.watch(await resolveCallerTarget(input)),
+        ),
+      }),
+    );
+
+    registerTool(
+      "unwatch_pull_request",
+      {
+        title: "Stop watching pull request",
+        description:
+          "Stop Paseo from watching a pull request for you. Omit number and url for the pull request of your workspace's branch. Unwatching one you don't watch succeeds with wasWatching false.",
+        inputSchema: pullRequestTargetSchema,
+        outputSchema: {
+          number: z.number(),
+          url: z.string().nullable(),
+          watching: z.literal(false),
+          wasWatching: z.boolean(),
+        },
+      },
+      async (input: { number?: number; url?: string }) => ({
+        content: [],
+        structuredContent: ensureValidJson(
+          await pullRequestWatches.unwatch(await resolveCallerTarget(input)),
+        ),
+      }),
+    );
+  }
+
   registerTool(
     "list_agents",
     {
@@ -3571,6 +3648,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
             schedules: tools.has("create_schedule"),
             heartbeats: tools.has("create_heartbeat"),
             browser: tools.has("browser_navigate"),
+            pullRequestWatch: tools.has("watch_pull_request"),
           },
         }),
       };

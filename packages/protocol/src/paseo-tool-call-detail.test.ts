@@ -301,6 +301,39 @@ describe("Paseo tool-call detail presentation", () => {
     });
   });
 
+  it("shows watch_pull_request with the checks it saw", () => {
+    expect(
+      buildPaseoToolDetailSections(
+        "mcp__paseo__watch_pull_request",
+        { number: 42 },
+        {
+          structuredContent: {
+            number: 42,
+            url: "https://github.com/acme/app/pull/42",
+            title: "Add the widget",
+            watching: true,
+            wasWatching: false,
+            checks: { failed: ["lint"], pending: 1, passed: false },
+            conflicting: false,
+          },
+        },
+      ),
+    ).toEqual([
+      { kind: "fields", title: "Details", fields: [{ label: "Pull request", value: "42" }] },
+      {
+        kind: "fields",
+        title: "Result",
+        fields: [
+          { label: "Pull request", value: "42" },
+          { label: "Title", value: "Add the widget" },
+          { label: "Already watching", value: "No" },
+          { label: "Checks", value: "Failed: • lint\nPending: 1\nPassed: No" },
+          { label: "Conflicting", value: "No" },
+        ],
+      },
+    ]);
+  });
+
   it("keeps get_orchestration_capabilities to its limits and features", () => {
     expect(
       buildPaseoToolDetailSections(

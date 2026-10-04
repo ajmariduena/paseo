@@ -430,6 +430,12 @@ function giteaMergeStatus(
 }
 
 describe("createGiteaService", () => {
+  it("reads the viewer login from the authenticated tea user", async () => {
+    const { service, calls } = makeService(() => ok(JSON.stringify({ id: 7, login: "octo" })));
+    await expect(service.getViewerLogin?.({ cwd: "/repo" })).resolves.toBe("octo");
+    expect(calls).toEqual([["api", "user"]]);
+  });
+
   it("maps a tea pr list item to the neutral current PR status by head branch", async () => {
     const { service, calls } = makeService((args) => {
       if (args[0] === "pr" && args[1] === "list")

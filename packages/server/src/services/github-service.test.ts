@@ -1854,6 +1854,58 @@ describe("ForgeService", () => {
     service.dispose?.();
   });
 
+  it("reads the viewer login through the gh api user endpoint", async () => {
+    const runner = createRunner(["octo\n"]);
+    const service = createGitHubService({
+      runner: runner.runner,
+      resolveGhPath: async () => "/usr/bin/gh",
+      resolveRepoHost: async () => null,
+    });
+
+    await expect(service.getViewerLogin?.({ cwd: "/repo" })).resolves.toBe("octo");
+    expect(runner.calls.map((call) => call.args)).toEqual([["api", "user", "--jq", ".login"]]);
+  });
+
+  it("lists the required check names of a pull request", async () => {
+    const runner = createRunner([JSON.stringify([{ name: "build" }, { name: "test" }])]);
+    const service = createGitHubService({
+      runner: runner.runner,
+      resolveGhPath: async () => "/usr/bin/gh",
+      resolveRepoHost: async () => null,
+    });
+
+    await expect(service.getRequiredCheckNames?.({ cwd: "/repo", number: 42 })).resolves.toEqual([
+      "build",
+      "test",
+    ]);
+    expect(runner.calls.map((call) => call.args)).toEqual([
+      ["pr", "checks", "42", "--required", "--json", "name"],
+    ]);
+  });
+
+  it("reports no required checks when gh says none are reported", async () => {
+    const args = ["pr", "checks", "42", "--required", "--json", "name"];
+    const runner = createScriptedRunner([
+      {
+        error: new GitHubCommandError({
+          args,
+          cwd: "/repo",
+          exitCode: 1,
+          stderr: "no required checks reported on the 'feature' branch",
+        }),
+      },
+    ]);
+    const service = createGitHubService({
+      runner: runner.runner,
+      resolveGhPath: async () => "/usr/bin/gh",
+      resolveRepoHost: async () => null,
+    });
+
+    await expect(service.getRequiredCheckNames?.({ cwd: "/repo", number: 42 })).resolves.toEqual(
+      [],
+    );
+  });
+
   it("fetches PR reviews and issue comments with one GraphQL call sorted chronologically", async () => {
     const runner = createRunner([pullRequestTimelineJson()]);
     const service = createGitHubService({

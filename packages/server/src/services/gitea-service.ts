@@ -1972,6 +1972,15 @@ export function createGiteaService(options: CreateGiteaServiceOptions = {}): For
       }
     },
 
+    async getViewerLogin(input: { cwd: string } & ForgeReadOptions): Promise<string | null> {
+      const user = await runJson(
+        ["api", "user"],
+        { cwd: input.cwd },
+        z.object({ login: z.string() }),
+      );
+      return user.login;
+    },
+
     getCurrentPullRequestStatus(input): Promise<CurrentPullRequestStatus | null> {
       return loadCurrentPullRequestStatus({
         cwd: input.cwd,

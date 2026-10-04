@@ -1115,6 +1115,15 @@ export function createGitLabService(options: CreateGitLabServiceOptions = {}): F
       }
     },
 
+    async getViewerLogin(input: { cwd: string } & ForgeReadOptions): Promise<string | null> {
+      const user = await runJson(
+        ["api", "user"],
+        { cwd: input.cwd },
+        z.object({ username: z.string() }),
+      );
+      return user.username;
+    },
+
     async getCurrentPullRequestStatus(input): Promise<CurrentPullRequestStatus | null> {
       try {
         const mr = await resolveCurrentMergeRequest(input.cwd, input.headRef, input.headSha);

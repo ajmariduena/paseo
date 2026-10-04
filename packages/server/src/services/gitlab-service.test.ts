@@ -437,6 +437,12 @@ describe("createGitLabService", () => {
     expect(calls).toEqual([currentMrListArgs("1234")]);
   });
 
+  it("reads the viewer login from the authenticated glab user", async () => {
+    const { service, calls } = makeService(() => ok(JSON.stringify({ id: 7, username: "octo" })));
+    await expect(service.getViewerLogin?.({ cwd: "/repo" })).resolves.toBe("octo");
+    expect(calls).toEqual([["api", "user"]]);
+  });
+
   it("lists merge requests as neutral PR summaries", async () => {
     const { service, calls } = makeService(() => ok(JSON.stringify([OPEN_MR])));
     const list = await service.listPullRequests({ cwd: "/repo", limit: 5 });

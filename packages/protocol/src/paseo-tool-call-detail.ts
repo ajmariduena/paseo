@@ -123,6 +123,11 @@ const TOOL_SPECS: Readonly<Record<string, ToolDetailSpec>> = {
     inputOrder: ["provider", "includeModels"],
     outputFields: ["limits", "features"],
   },
+  watch_pull_request: {
+    inputOrder: ["number", "url"],
+    outputFields: ["number", "title", "wasWatching", "checks", "conflicting"],
+  },
+  unwatch_pull_request: { inputOrder: ["number", "url"], outputFields: ["wasWatching"] },
   get_agent_status: { inputOrder: ["agentId"], outputFields: ["status", "delegatedTask"] },
   list_agents: {
     inputOrder: [
@@ -243,6 +248,7 @@ const FIELD_LABELS: Readonly<Record<string, string>> = {
   maxEntries: "Maximum entries",
   maxRuns: "Maximum runs",
   modeId: "Mode",
+  number: "Pull request",
   newMode: "New mode",
   nextPosition: "Next position",
   nextRunAt: "Next run",
@@ -265,6 +271,7 @@ const FIELD_LABELS: Readonly<Record<string, string>> = {
   timeoutMs: "Timeout (ms)",
   titleContains: "Title contains",
   updateCount: "Updates",
+  wasWatching: "Already watching",
   workspaceId: "Workspace",
   worktreeSlug: "Worktree",
 };

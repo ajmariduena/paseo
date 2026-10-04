@@ -63,6 +63,7 @@ $PASEO_HOME/
 ├── agent-queues/
 │   ├── {agentId}.json                   # Messages waiting for the agent's running turn
 │   └── {agentId}/{uuid}.json            # Full prompt of one queued message
+├── pull-request-watches.json            # Pull requests agents asked Paseo to watch
 ├── projects/
 │   ├── projects.json                    # Project registry
 │   ├── workspaces.json                  # Workspace registry
@@ -616,6 +617,14 @@ Messages that arrived while the agent's turn was running, delivered one per sett
 - **Hold:** `held` with `heldReason` `failure` (the turn that just ended failed), `user_stop`, or `restart`. A held queue delivers nothing until `agent.queue.resume`; a message sent to an idle agent still starts.
 
 The prompt file is written before the queue file references it and deleted after the queue file stops referencing it. `load` at boot removes prompt files nothing references.
+
+---
+
+## Pull Request Watch Store
+
+**Path:** `$PASEO_HOME/pull-request-watches.json`
+
+Every `watch_pull_request` watch in one file; each `PullRequestWatchStore` method is one atomic write. A watch names the agent, its `cwd`, the pull request (`number`, canonical `url`, `headRefName`), and `progress`: what the agent was last told (failed check names, whether the gate passed, the remark watermark, whether the branch conflicts, and comment-only wakes in a row). `progress` is written only after the wake was delivered, so a wake lost to a restart is found again on the next pass; the 15-minute unreadable timer is in memory. Schema: `packages/server/src/server/pull-request-watch/watch-store.ts`.
 
 ---
 

@@ -160,6 +160,8 @@ import { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import { ScheduleService } from "./schedule/service.js";
 import { DelegationService } from "./delegation/delegation-service.js";
 import { DelegationStore } from "./delegation/delegation-store.js";
+import { PullRequestWatchStore } from "./pull-request-watch/watch-store.js";
+import { PullRequestWatcher } from "./pull-request-watch/watcher.js";
 import { PromptAnnotationStore } from "./agent/prompt-annotations.js";
 import { AgentQueueStore } from "./agent-queue/store.js";
 import { createRestoredEntryDeliverer } from "./agent/message-dispatch.js";
@@ -1043,6 +1045,15 @@ export async function createPaseoDaemon(
     agentStorage,
     logger,
   });
+  const pullRequestWatches = new PullRequestWatcher({
+    store: new PullRequestWatchStore(path.join(config.paseoHome, "pull-request-watches.json")),
+    agentManager,
+    agentStorage,
+    resolveForge: (cwd) => workspaceGitService.resolveForge(cwd),
+    readWorkspacePullRequestNumber: async (cwd) =>
+      (await workspaceGitService.getSnapshot(cwd)).forge.pullRequest?.number ?? null,
+    logger,
+  });
   const restartRecovery = new RestartRecovery({
     intents: RestartIntentStore.at(config.paseoHome),
     receipts: new MessageReceipts(path.join(config.paseoHome, "agent-requests")),
@@ -1486,6 +1497,11 @@ export async function createPaseoDaemon(
     } catch (error) {
       logger.warn({ err: error, agentId }, "Failed to dispose delegations of archived agent");
     }
+    try {
+      await pullRequestWatches.disposeForAgent(agentId);
+    } catch (error) {
+      logger.warn({ err: error, agentId }, "Failed to stop pull request watches of archived agent");
+    }
   });
   logger.info({ elapsed: elapsed() }, "Schedule service initialized");
   logger.info({ elapsed: elapsed() }, "Loading persisted agent registry");
@@ -1558,6 +1574,7 @@ export async function createPaseoDaemon(
     paseoHome: config.paseoHome,
     worktreesRoot: config.worktreesRoot,
     delegations,
+    pullRequestWatches,
     callerAgentId: runtime.callerAgentId,
     transport: runtime.transport,
     enableVoiceTools: runtime.enableVoiceTools,
@@ -1893,6 +1910,7 @@ export async function createPaseoDaemon(
             } catch (error) {
               logger.error({ err: error }, "Failed to recover after restart");
             }
+            pullRequestWatches.start();
             wsServer.beginAcceptingConnections();
             relayRuntime = createRelayRuntime({
               config: {
@@ -1969,6 +1987,7 @@ export async function createPaseoDaemon(
       .catch((error: unknown) => logger.error({ err: error }, "Failed to record restart intents"));
     // Closing agents for shutdown is not a child result; running tasks stay running on disk.
     delegations.close();
+    pullRequestWatches.close();
     await closeAllAgents(logger, agentManager);
     await withTimeout({
       promise: pluginRuntime.drainEvents(),

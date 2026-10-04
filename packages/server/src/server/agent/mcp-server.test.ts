@@ -7185,3 +7185,71 @@ describe("agent snapshot MCP serialization", () => {
     expect(content).not.toContain("first answer");
   });
 });
+
+describe("pull request watch MCP tools", () => {
+  async function serverWithWatcher(callerAgentId: string | undefined) {
+    const { agentManager, agentStorage, spies } = createTestDeps();
+    spies.agentManager.getAgent.mockImplementation((agentId: string) =>
+      agentId === "caller" ? ({ id: "caller", cwd: "/repo" } as unknown as ManagedAgent) : null,
+    );
+    const targets: unknown[] = [];
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: createProviderSnapshotManagerStub().manager,
+      pullRequestWatches: {
+        async watch(target) {
+          targets.push(target);
+          return {
+            number: 42,
+            url: "https://github.com/acme/app/pull/42",
+            title: "Add the widget",
+            watching: true,
+            wasWatching: false,
+            checks: { failed: [], pending: 2, passed: false },
+            conflicting: false,
+          };
+        },
+        async unwatch(target) {
+          targets.push(target);
+          return { number: 42, url: null, watching: false, wasWatching: false };
+        },
+      },
+      ...(callerAgentId ? { callerAgentId } : {}),
+      logger: createTestLogger(),
+    });
+    return { server, targets };
+  }
+
+  it("watches and unwatches for the calling agent in its working directory", async () => {
+    const { server, targets } = await serverWithWatcher("caller");
+
+    const watched = await invokeToolWithParsedInput(
+      registeredTool(server, "watch_pull_request"),
+      {},
+    );
+    await invokeToolWithParsedInput(registeredTool(server, "unwatch_pull_request"), { number: 42 });
+
+    expect(watched.structuredContent).toEqual({
+      number: 42,
+      url: "https://github.com/acme/app/pull/42",
+      title: "Add the widget",
+      watching: true,
+      wasWatching: false,
+      checks: { failed: [], pending: 2, passed: false },
+      conflicting: false,
+    });
+    expect(targets).toEqual([
+      { agentId: "caller", cwd: "/repo", number: undefined, url: undefined },
+      { agentId: "caller", cwd: "/repo", number: 42, url: undefined },
+    ]);
+  });
+
+  it("refuses a caller that is not an agent", async () => {
+    const { server } = await serverWithWatcher(undefined);
+
+    await expect(
+      invokeToolWithParsedInput(registeredTool(server, "watch_pull_request"), { number: 42 }),
+    ).rejects.toThrow("Only an agent can watch a pull request");
+  });
+});

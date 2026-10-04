@@ -491,6 +491,10 @@ export interface ForgeService {
     } & ForgeReadOptions,
   ): Promise<CurrentPullRequestStatus | null>;
   getPullRequestTimeline(options: GetPullRequestTimelineOptions): Promise<PullRequestTimeline>;
+  /** Login of the account the forge CLI acts as; null when the forge did not say. */
+  getViewerLogin?(options: { cwd: string } & ForgeReadOptions): Promise<string | null>;
+  /** Names of the checks the base branch requires before merging; empty when none are required. */
+  getRequiredCheckNames?(options: GetPullRequestOptions): Promise<string[]>;
   getCheckDetails(options: GetCheckDetailsOptions): Promise<CheckDetails>;
   searchIssuesAndPrs(options: SearchIssuesAndPrsOptions): Promise<SearchResult>;
   createPullRequest(options: CreatePullRequestOptions): Promise<PullRequestCreateResult>;

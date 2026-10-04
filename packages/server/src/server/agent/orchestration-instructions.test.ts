@@ -26,6 +26,7 @@ describe("buildPaseoOrchestrationInstructions", () => {
 
       - \`create_agent\` and \`send_agent_prompt\` return immediately. When the agent finishes, fails, or needs a permission, a notification wakes you in this conversation. End your turn, or keep doing independent work, instead of polling: don't loop on \`get_agent_status\`, \`get_agent_activity\`, or \`list_agents\`, and don't write shell loops or sleeps that watch agents.
       - When this turn can't continue without the result, call \`wait_for_agent\`. \`timeoutMs\` (default 10 minutes, at most \`limits.maxWaitMs\`) only bounds your wait: \`timedOut: true\` doesn't stop the agent, and you are still notified when it finishes. A result you read through \`wait_for_agent\` is not delivered again.
+      - To follow a pull request's checks and reviews, call \`watch_pull_request\` and end your turn: Paseo wakes you when a check fails, the required checks pass, someone else comments, or the branch conflicts. Don't poll the forge or run \`gh pr checks --watch\`.
 
       ### Managing agents
 
