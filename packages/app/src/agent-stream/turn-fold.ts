@@ -1,5 +1,6 @@
 import type { StreamItem, ToolCallItem, UserMessageItem } from "@/types/stream";
 import { describeToolCall } from "@/tool-calls/detail-level/grouping";
+import { isSubagentSpawnCall } from "@/subagents/timeline/spawn-call";
 import {
   summarizeOverviewToolCalls,
   type OverviewSummary,
@@ -66,6 +67,7 @@ const EMPTY_SUMMARY: OverviewSummary = {
   readFileCount: 0,
   searchCount: 0,
   otherToolCount: 0,
+  paseoActivities: [],
   paseoCallCount: 0,
 };
 
@@ -152,15 +154,19 @@ export function collectTurnFileChanges(calls: readonly ToolCallItem[]): TurnFile
   return [...byPath.values()];
 }
 
+// Subagent rows stay visible in a collapsed turn: they are the way to the children it started.
 function isPinnedCall(call: ToolCallItem): boolean {
   const descriptor = describeToolCall(call);
   return (
     descriptor.detail.type === "plan" ||
-    QUESTION_TOOL_NAME.test(descriptor.name.trim().toLowerCase())
+    QUESTION_TOOL_NAME.test(descriptor.name.trim().toLowerCase()) ||
+    isSubagentSpawnCall(call)
   );
 }
 
 function isPinnedRow(row: StreamItem, getToolCalls: TurnFoldInput["getToolCalls"]): boolean {
+  // An agent can answer and then run a tool, so any message may hold the answer.
+  if (row.kind === "assistant_message") return true;
   if (row.kind === "notification") return row.level !== "info";
   if (row.kind !== "tool_call") return false;
   return getToolCalls(row).some(isPinnedCall);
@@ -190,6 +196,25 @@ function areFileChangesEqual(
   );
 }
 
+function arePaseoActivitiesEqual(
+  left: OverviewSummary["paseoActivities"],
+  right: OverviewSummary["paseoActivities"],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((entry, index) => {
+      const other = right[index];
+      return (
+        other !== undefined &&
+        entry.activity === other.activity &&
+        entry.count === other.count &&
+        entry.agentCount === other.agentCount &&
+        entry.failedOnly === other.failedOnly
+      );
+    })
+  );
+}
+
 function areSummariesEqual(left: OverviewSummary, right: OverviewSummary): boolean {
   return (
     left.editedFileCount === right.editedFileCount &&
@@ -197,6 +222,7 @@ function areSummariesEqual(left: OverviewSummary, right: OverviewSummary): boole
     left.readFileCount === right.readFileCount &&
     left.searchCount === right.searchCount &&
     left.otherToolCount === right.otherToolCount &&
+    arePaseoActivitiesEqual(left.paseoActivities, right.paseoActivities) &&
     left.paseoCallCount === right.paseoCallCount
   );
 }

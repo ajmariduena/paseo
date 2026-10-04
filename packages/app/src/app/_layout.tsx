@@ -18,6 +18,8 @@ import {
   useSyncExternalStore,
 } from "react";
 import { AppState, useWindowDimensions, View } from "react-native";
+import { AgentsLiveActivitySync } from "@/live-activity/agents-live-activity-sync";
+import { liveActivityNative } from "@/live-activity/native";
 import { GestureDetector, GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
@@ -680,6 +682,7 @@ function ProvidersWrapper({ children }: { children: ReactNode }) {
         <OfferLinkListener />
         <HostSessionManager />
         <FaviconStatusSync />
+        {liveActivityNative ? <AgentsLiveActivitySync /> : null}
         {children}
         <GlobalVoiceCallSurface />
       </VoiceProvider>

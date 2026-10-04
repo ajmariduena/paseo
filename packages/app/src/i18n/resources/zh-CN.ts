@@ -2,6 +2,20 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const zhCN: TranslationResources = {
+  liveActivity: {
+    working_one: "{{count}} 个运行中",
+    working_other: "{{count}} 个运行中",
+    waiting_one: "{{count}} 个等待授权",
+    waiting_other: "{{count}} 个等待授权",
+    finished_one: "{{count}} 个已完成",
+    finished_other: "{{count}} 个已完成",
+    workingShort: "运行中",
+    waitingShort_one: "等待授权",
+    waitingShort_other: "等待授权",
+    permission: "授权",
+    doneLabel: "已完成",
+    failed: "失败",
+  },
   paneFind: {
     connectionFailure: "无法搜索此聊天。请检查主机连接后重试。",
     historyChangedFailure: "搜索期间聊天已更改。请重新搜索。",
@@ -66,6 +80,7 @@ export const zhCN: TranslationResources = {
       daemonClientUnavailable: "Daemon client 不可用",
       daemonClientDisconnected: "Daemon client 已断开连接",
       noFileFound: "未找到 {{token}} 对应的文件",
+      linkIsFolder: "{{path}} 是文件夹，不是文件",
       unexpectedDictationError: "处理听写时发生意外错误。",
     },
     connectionStatus: {
@@ -329,6 +344,8 @@ export const zhCN: TranslationResources = {
       copyTurn: "复制回合",
       readAloud: "朗读",
       stopReadingAloud: "停止朗读",
+      pauseReadingAloud: "暂停朗读",
+      resumeReadingAloud: "继续朗读",
       copyMessage: "复制消息",
       forkMenu: "分叉消息",
       forkInNewTab: "分叉到新标签页",
@@ -1903,6 +1920,37 @@ export const zhCN: TranslationResources = {
     archiveTooltip: "归档 subagent",
     archiveFinishedAction: "归档已完成的 subagent",
     archiveFinishedRetry: "重试 ({{failed}}/{{total}})",
+    untitled: "Subagent",
+    openAction: "打开 {{label}}",
+    summaryDone: "{{count}} 个已完成",
+    summaryStopped: "{{count}} 个已停止",
+    status: {
+      starting: "启动中",
+      working: "运行中",
+      needsInput: "需要输入",
+      failed: "失败",
+      done: "已完成",
+      stopped: "已停止",
+      archived: "已归档",
+    },
+    providerBar: {
+      working: "运行中 {{duration}}",
+      completedIn: "用时 {{duration}} 完成",
+      openParent: "打开父级",
+    },
+    providerPaneUnsupported: "请更新此主机以查看提供方的 subagent",
+  },
+  lineage: {
+    title: "谱系",
+    titleRunning: "谱系 · {{count}} 个运行中",
+    parent: "父级",
+    previous: "之前的 subagent ({{count}})",
+    includeArchived: "包含已归档",
+    archivedLoadFailed: "无法加载。重试",
+    showMore: "再显示 {{count}} 个",
+    subagentOf: "{{title}} 的 subagent",
+    parentFallback: "另一个 agent",
+    empty: "没有相关的 agent",
   },
   panels: {
     draft: {
@@ -1997,6 +2045,68 @@ export const zhCN: TranslationResources = {
     paseoCalls: {
       one: "调用了 Paseo {{count}} 次",
       other: "调用了 Paseo {{count}} 次",
+    },
+    paseo: {
+      agentCount: { one: "{{count}} 个 agent", other: "{{count}} 个 agent" },
+      sentPrompts: {
+        one: "向 {{agents}}发送了 {{count}} 条 prompt",
+        other: "向 {{agents}}发送了 {{count}} 条 prompt",
+      },
+      sentPromptsFailed: {
+        one: "尝试向 {{agents}}发送 {{count}} 条 prompt",
+        other: "尝试向 {{agents}}发送 {{count}} 条 prompt",
+      },
+      waitedForAgents: {
+        one: "等待了 {{count}} 个 agent",
+        other: "等待了 {{count}} 个 agent",
+      },
+      waitedForAgentsFailed: {
+        one: "尝试等待 {{count}} 个 agent",
+        other: "尝试等待 {{count}} 个 agent",
+      },
+      checkedAgents: { one: "检查了 {{count}} 个 agent", other: "检查了 {{count}} 个 agent" },
+      checkedAgentsFailed: {
+        one: "尝试检查 {{count}} 个 agent",
+        other: "尝试检查 {{count}} 个 agent",
+      },
+      listedAgents: "列出了 agent",
+      listedAgentsFailed: "尝试列出 agent",
+      stoppedAgents: { one: "停止了 {{count}} 个 agent", other: "停止了 {{count}} 个 agent" },
+      stoppedAgentsFailed: {
+        one: "尝试停止 {{count}} 个 agent",
+        other: "尝试停止 {{count}} 个 agent",
+      },
+      archivedAgents: { one: "归档了 {{count}} 个 agent", other: "归档了 {{count}} 个 agent" },
+      archivedAgentsFailed: {
+        one: "尝试归档 {{count}} 个 agent",
+        other: "尝试归档 {{count}} 个 agent",
+      },
+      answeredPermissions: {
+        one: "回复了 {{count}} 个权限请求",
+        other: "回复了 {{count}} 个权限请求",
+      },
+      answeredPermissionsFailed: {
+        one: "尝试回复 {{count}} 个权限请求",
+        other: "尝试回复 {{count}} 个权限请求",
+      },
+      createdSchedules: {
+        one: "创建了 {{count}} 个计划任务",
+        other: "创建了 {{count}} 个计划任务",
+      },
+      createdSchedulesFailed: {
+        one: "尝试创建 {{count}} 个计划任务",
+        other: "尝试创建 {{count}} 个计划任务",
+      },
+      createdHeartbeats: {
+        one: "创建了 {{count}} 个 heartbeat",
+        other: "创建了 {{count}} 个 heartbeat",
+      },
+      createdHeartbeatsFailed: {
+        one: "尝试创建 {{count}} 个 heartbeat",
+        other: "尝试创建 {{count}} 个 heartbeat",
+      },
+      checkedCapabilities: "检查了编排能力",
+      checkedCapabilitiesFailed: "尝试检查编排能力",
     },
     and: "并",
   },
@@ -2129,6 +2239,21 @@ export const zhCN: TranslationResources = {
       host: "概览",
     },
     plugins: pluginSettings["zh-CN"],
+    dictation: {
+      title: "听写",
+      description: "聊天麦克风。保存在此主机上并立即生效。",
+      model: "模型",
+      modelHint: "转写你语音的模型",
+      language: "语言",
+      languageHint: "固定语言时云端模型更准确",
+      downloaded: "已下载",
+      downloadOnSelect: "选择后下载",
+      unavailable: "不可用",
+      locked: "此主机的启动设置指定了听写提供方。",
+      updateHost: "请更新主机以选择听写模型。",
+      active: "当前：{{model}} · {{language}}",
+      saveFailed: "无法保存听写设置。",
+    },
     readAloud: {
       title: "Read aloud",
       description: "Reads agent replies aloud with ElevenLabs.",

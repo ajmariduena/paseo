@@ -1,4 +1,4 @@
-import { getPaseoToolLeafName } from "./tool-name-normalization.js";
+import { getPaseoCallLeafName, getPaseoToolLeafName } from "./tool-name-normalization.js";
 
 export interface PaseoToolDetailField {
   label: string;
@@ -318,6 +318,15 @@ function unwrapMcpResult(output: unknown): unknown {
   }
 
   return output;
+}
+
+/** The agent a completed `create_agent` call created, read from its MCP result. */
+export function resolvePaseoSpawnedAgentId(toolName: string, output: unknown): string | null {
+  if (getPaseoCallLeafName(toolName) !== "create_agent") return null;
+  const result = unwrapMcpResult(output);
+  if (!isRecord(result)) return null;
+  const agentId = result.agentId;
+  return typeof agentId === "string" && agentId.length > 0 ? agentId : null;
 }
 
 export function buildPaseoToolDetailSections(

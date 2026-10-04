@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import type { OpenFileDisposition } from "@/workspace/file-open";
 import { openExternalUrl } from "@/utils/open-external-url";
+import { i18n } from "@/i18n/i18next";
 import { readWebLinkModifiers, type WebLinkModifiers } from "@/web-links/routing";
 import type { InlinePathTarget } from "./parse";
 import {
@@ -319,7 +320,33 @@ async function dispatchFileTarget(input: {
   ) {
     return;
   }
+  if (couldBeDirectory(input.target) && (await input.context.isDirectory(input.target.path))) {
+    const latest = input.context.configRef.current;
+    if (
+      latest.serverId !== input.capturedServerId ||
+      latest.workspaceRoot !== input.capturedWorkspaceRoot
+    ) {
+      return;
+    }
+    latest.toast?.show(i18n.t("common.errors.linkIsFolder", { path: input.target.path }), {
+      variant: "error",
+      testID: "assistant-file-link-folder-toast",
+    });
+    return;
+  }
   current.onOpenWorkspaceFile?.(input.target, input.disposition);
+}
+
+function couldBeDirectory(target: InlinePathTarget): boolean {
+  if (target.lineStart !== undefined) {
+    return false;
+  }
+  const name =
+    target.path
+      .replace(/[\\/]+$/, "")
+      .split(/[\\/]/)
+      .pop() ?? "";
+  return !name.slice(1).includes(".");
 }
 
 async function dispatchExternalUrl(input: {

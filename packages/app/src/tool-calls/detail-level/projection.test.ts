@@ -139,7 +139,7 @@ describe("tool call detail-level projection", () => {
     ];
     const result = project({ level: "overview", head: calls, isTurnActive: true });
 
-    expect(result.groupsByHostId.get("1")?.isLoading).toBe(true);
+    expect(result.groupsByHostId.get("1")).toMatchObject({ mode: "overview", isLoading: true });
   });
 
   it("builds a loading aggregate for a one-call run", () => {
@@ -260,6 +260,7 @@ describe("tool call detail-level projection", () => {
         readFileCount: 2,
         searchCount: 0,
         otherToolCount: 0,
+        paseoActivities: [],
         paseoCallCount: 0,
       },
     });
@@ -328,7 +329,11 @@ describe("tool call detail-level projection", () => {
     const result = project({ level: "overview", head: calls });
 
     expect(result.groupsByHostId.get("1")).toMatchObject({
-      summary: { otherToolCount: 2, paseoCallCount: 2 },
+      summary: {
+        otherToolCount: 2,
+        paseoActivities: [{ activity: "listedAgents", count: 1, agentCount: 1, failedOnly: false }],
+        paseoCallCount: 1,
+      },
     });
   });
 
@@ -478,5 +483,107 @@ describe("tool call detail-level projection", () => {
     expect(result.head).toEqual([singleCall, plan, speak]);
     expect(result.groupsByHostId.get(singleCall.id)?.run.calls).toEqual([singleCall]);
     expect(result.groupsByHostId.size).toBe(1);
+  });
+
+  describe("subagent spawn calls", () => {
+    function createAgent(id: string, agentId: string | null): ToolCallItem {
+      return toolCall(
+        id,
+        {
+          type: "unknown",
+          input: { title: `Child ${id}`, provider: "codex/gpt-5.4" },
+          output: agentId ? { structuredContent: { agentId } } : null,
+        },
+        { name: "mcp__paseo__create_agent", status: agentId ? "completed" : "running" },
+      );
+    }
+
+    it("takes spawns out of the overview run and groups adjacent ones", () => {
+      const read = toolCall("1", { type: "read", filePath: "/repo/a.ts" });
+      const first = createAgent("2", "agt_a");
+      const second = createAgent("3", "agt_b");
+      const shell = toolCall("4", { type: "shell", command: "rg x" });
+
+      const result = project({ level: "overview", tail: [read, first, second, shell] });
+
+      expect(result.tail).toEqual([
+        expect.objectContaining({ id: "1" }),
+        expect.objectContaining({ id: "2" }),
+        expect.objectContaining({ id: "4" }),
+      ]);
+      expect(result.groupsByHostId.get("1")).toMatchObject({
+        mode: "overview",
+        summary: { readFileCount: 1, paseoCallCount: 0 },
+      });
+      expect(result.groupsByHostId.get("2")).toMatchObject({
+        mode: "subagents",
+        run: { kind: "subagents", calls: [first, second] },
+      });
+      expect(result.groupsByHostId.get("4")).toMatchObject({ mode: "overview" });
+    });
+
+    it("keeps a still-running spawn in the subagent run before its agent exists", () => {
+      const running = createAgent("1", null);
+
+      const result = project({ level: "overview", head: [running], isTurnActive: true });
+
+      expect(result.groupsByHostId.get("1")).toMatchObject({
+        mode: "subagents",
+        run: { calls: [running], isSealed: false },
+      });
+    });
+
+    it("leaves a failed spawn in the overview run with its error", () => {
+      const failed = toolCall(
+        "1",
+        { type: "unknown", input: { title: "Child" }, output: null },
+        { name: "mcp__paseo__create_agent", status: "failed" },
+      );
+      const read = toolCall("2", { type: "read", filePath: "/repo/a.ts" });
+
+      const result = project({ level: "overview", tail: [failed, read] });
+
+      expect(result.groupsByHostId.get("1")).toMatchObject({
+        mode: "overview",
+        run: { calls: [failed, read] },
+      });
+    });
+
+    it("joins a provider subagent call with an adjacent Paseo spawn", () => {
+      const native = toolCall(
+        "1",
+        { type: "sub_agent", subAgentType: "Explore", description: "Map the pane", log: "" },
+        { name: "Task", status: "running" },
+      );
+      const paseo = createAgent("2", "agt_a");
+
+      const result = project({ level: "overview", head: [native, paseo], isTurnActive: true });
+
+      expect(result.groupsByHostId.get("1")).toMatchObject({
+        mode: "subagents",
+        run: { calls: [native, paseo] },
+      });
+    });
+
+    it("seals a history spawn run when the live head continues with tool work", () => {
+      const spawn = createAgent("1", "agt_a");
+      const shell = toolCall("2", { type: "shell", command: "rg x" }, { status: "running" });
+
+      const result = project({
+        level: "overview",
+        tail: [spawn],
+        head: [shell],
+        isTurnActive: true,
+      });
+
+      expect(result.groupsByHostId.get("1")).toMatchObject({
+        mode: "subagents",
+        run: { calls: [spawn], isSealed: true },
+      });
+      expect(result.groupsByHostId.get("2")).toMatchObject({
+        mode: "overview",
+        run: { calls: [shell] },
+      });
+    });
   });
 });

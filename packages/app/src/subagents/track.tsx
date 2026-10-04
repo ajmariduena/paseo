@@ -14,12 +14,18 @@ import {
 } from "@/screens/workspace/workspace-tab-presentation";
 import type { Theme } from "@/styles/theme";
 import { getPanelManifest } from "@/panels/panel-manifest";
+import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
+import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
+import { formatDuration } from "@/utils/time";
 import type { SubagentRow } from "./select";
 import type { ArchiveFinishedStatus } from "./use-archive-finished";
+import { useElapsedNow } from "./presentation/use-elapsed-now";
 import {
   buildSubagentPillPresentation,
   buildSubagentRowPresentationData,
   countFinishedSubagents,
+  resolveSubagentRowTiming,
+  type SubagentRowTiming,
 } from "./track-presentation";
 
 const ThemedArchive = withUnistyles(Archive);
@@ -46,9 +52,13 @@ const IDLE_ARCHIVE_FINISHED_STATUS: ArchiveFinishedStatus = { kind: "idle" };
 /** Leading and action glyphs share one size so rows keep a single icon column. */
 const ROW_ICON_SIZE = 14;
 
-function useRowPresentation(row: SubagentRow, serverId: string): WorkspaceTabPresentation {
+function useRowPresentation(
+  row: SubagentRow,
+  serverId: string,
+  providerEntries: readonly ProviderSnapshotEntry[] | undefined,
+): WorkspaceTabPresentation {
   const icon = useProviderIcon(row.provider, serverId);
-  const data = buildSubagentRowPresentationData(row);
+  const data = buildSubagentRowPresentationData(row, providerEntries);
   return {
     ...data,
     tooltip: data.label,
@@ -69,6 +79,7 @@ export function SubagentsTrack({
   onDetachSubagent,
 }: SubagentsTrackProps): ReactElement | null {
   const { t } = useTranslation();
+  const providerEntries = useProvidersSnapshot(serverId).entries;
 
   const isArchivingFinished = archiveFinishedStatus.kind === "archiving";
   const isArchiveFinishedFailed = archiveFinishedStatus.kind === "failed";
@@ -101,6 +112,7 @@ export function SubagentsTrack({
           key={row.id}
           row={row}
           serverId={serverId}
+          providerEntries={providerEntries}
           onOpenSubagent={onOpenSubagent}
           onOpenProviderSubagent={onOpenProviderSubagent}
           onArchiveSubagent={onArchiveSubagent}
@@ -172,6 +184,7 @@ function ArchiveFinishedRow({
 interface SubagentsTrackRowProps {
   serverId: string;
   row: SubagentRow;
+  providerEntries: readonly ProviderSnapshotEntry[] | undefined;
   onOpenSubagent: (id: string) => void;
   onOpenProviderSubagent: (parentAgentId: string, subagentId: string) => void;
   onArchiveSubagent: (id: string) => void;
@@ -181,6 +194,7 @@ interface SubagentsTrackRowProps {
 function SubagentsTrackRow({
   serverId,
   row,
+  providerEntries,
   onOpenSubagent,
   onOpenProviderSubagent,
   onArchiveSubagent,
@@ -188,7 +202,8 @@ function SubagentsTrackRow({
 }: SubagentsTrackRowProps): ReactElement {
   const { t } = useTranslation();
   const isCompact = useIsCompactFormFactor();
-  const presentation = useRowPresentation(row, serverId);
+  const presentation = useRowPresentation(row, serverId, providerEntries);
+  const timing = resolveSubagentRowTiming(row);
   const displayLabel =
     presentation.titleState === "loading" ? t("common.states.loading") : presentation.label;
   const handlePress = useCallback(() => {
@@ -213,11 +228,7 @@ function SubagentsTrackRow({
         <Text style={styles.rowLabel} numberOfLines={1}>
           {displayLabel}
         </Text>
-        {presentation.subtitle ? (
-          <Text style={styles.rowTrailing} numberOfLines={1}>
-            {presentation.subtitle}
-          </Text>
-        ) : null}
+        <SubagentTrackRowTrailing subtitle={presentation.subtitle} timing={timing} />
         {row.kind === "paseo" ? (
           <SubagentRowActions
             rowId={row.id}
@@ -238,6 +249,7 @@ function SubagentsTrackRow({
       presentation,
       row.kind,
       row.id,
+      timing,
     ],
   );
 
@@ -249,6 +261,27 @@ function SubagentsTrackRow({
     >
       {renderRow}
     </ComposerTrackRow>
+  );
+}
+
+/** "{model} · {account} · 2m 41s": the timer ticks for live rows only. */
+function SubagentTrackRowTrailing({
+  subtitle,
+  timing,
+}: {
+  subtitle: string;
+  timing: SubagentRowTiming;
+}): ReactElement | null {
+  const now = useElapsedNow(timing.liveSince !== null);
+  let durationMs = timing.settledDurationMs;
+  if (timing.liveSince) durationMs = Math.max(0, now - timing.liveSince.getTime());
+  const duration = durationMs === null ? null : formatDuration(durationMs);
+  const text = [subtitle, duration].filter(Boolean).join(" · ");
+  if (!text) return null;
+  return (
+    <Text style={styles.rowTrailing} numberOfLines={1}>
+      {text}
+    </Text>
   );
 }
 

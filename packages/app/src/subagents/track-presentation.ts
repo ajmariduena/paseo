@@ -1,10 +1,12 @@
 import type { TFunction } from "i18next";
+import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
 import type { ComposerTrackPillSegment } from "@/composer/tracks";
 import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { deriveSidebarStateBucket, STATUS_BUCKET_ORDER } from "@/utils/sidebar-agent-state";
 import type { SubagentRow } from "./select";
 import { isFinishedSubagent } from "./archive-finished";
 import { providerSubagentLifecycleStatus } from "./provider-store";
+import { formatAgentModelLabel, joinAgentModelLabel } from "./presentation/model-label";
 
 function presentationStatus(row: SubagentRow) {
   if (row.kind === "paseo") {
@@ -23,14 +25,29 @@ export interface SubagentRowPresentationData {
   statusBucket: SidebarStateBucket | null;
 }
 
-export function buildSubagentRowPresentationData(row: SubagentRow): SubagentRowPresentationData {
-  // The task distinguishes siblings in a fan-out, so it names the row when present. Providers
-  // own the compact secondary context because model, effort, and usage semantics differ.
+function resolveRowSubtitle(
+  row: SubagentRow,
+  providerEntries: readonly ProviderSnapshotEntry[] | undefined,
+): string | null {
+  // Providers own the compact secondary context because model, effort, and usage semantics
+  // differ; a Paseo child reads as the model and account it runs on.
+  if (row.kind === "provider") {
+    return resolveRowLabel(row.subtitle) ?? (row.description ? resolveRowLabel(row.title) : null);
+  }
+  return joinAgentModelLabel(
+    formatAgentModelLabel({ provider: row.provider, model: row.model }, providerEntries),
+  );
+}
+
+export function buildSubagentRowPresentationData(
+  row: SubagentRow,
+  providerEntries: readonly ProviderSnapshotEntry[] | undefined,
+): SubagentRowPresentationData {
+  // The task distinguishes siblings in a fan-out, so it names the row when present.
   const description = resolveRowLabel(row.description);
   const title = resolveRowLabel(row.title);
   const label = description ?? title;
-  const providerSubtitle = row.kind === "provider" ? resolveRowLabel(row.subtitle) : null;
-  const subtitle = providerSubtitle ?? (description ? title : null);
+  const subtitle = resolveRowSubtitle(row, providerEntries);
   const status = presentationStatus(row);
   return {
     key: `${row.kind}_subagent_${row.id}`,
@@ -118,11 +135,35 @@ function totalLabel(t: TFunction, total: number): string {
  * Empty when every child is done: a finished fan-out is not worth a colour above the composer.
  */
 function summarizeSubagentStatus(rows: readonly SubagentRow[]): SubagentStatusCount[] {
-  const buckets = rows.map((row) => buildSubagentRowPresentationData(row).statusBucket);
+  const buckets = rows.map((row) => buildSubagentRowPresentationData(row, undefined).statusBucket);
   return ACTIVE_STATUS_BUCKET_ORDER.flatMap((bucket) => {
     const count = buckets.filter((candidate) => candidate === bucket).length;
     return count > 0 ? [{ bucket, count }] : [];
   });
+}
+
+export interface SubagentRowTiming {
+  /** Start of the work a live row's timer counts. */
+  liveSince: Date | null;
+  /** How long settled work took, when the client knows it. */
+  settledDurationMs: number | null;
+}
+
+const NO_TIMING: SubagentRowTiming = { liveSince: null, settledDurationMs: null };
+
+export function resolveSubagentRowTiming(row: SubagentRow): SubagentRowTiming {
+  if (row.kind === "provider") {
+    if (row.status === "running") return { liveSince: row.createdAt, settledDurationMs: null };
+    return {
+      liveSince: null,
+      settledDurationMs: Math.max(0, row.updatedAt.getTime() - row.createdAt.getTime()),
+    };
+  }
+  if (row.turn.phase === "open") {
+    return { liveSince: row.turn.startedAt ?? row.createdAt, settledDurationMs: null };
+  }
+  if (row.status === "initializing") return { liveSince: row.createdAt, settledDurationMs: null };
+  return NO_TIMING;
 }
 
 export function countFinishedSubagents(rows: readonly SubagentRow[]): number {

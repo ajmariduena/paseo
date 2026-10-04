@@ -128,6 +128,55 @@ describe("createSpeechService readiness", () => {
     await runtime.stop();
   });
 
+  it("swaps the dictation service and publishes the new selection when reconfigured", async () => {
+    const localDictation = createStubStt("dictation-local");
+    const nextDictation = createStubStt("dictation-next");
+    const initialized = (dictationSttService: SpeechToTextProvider): InitializedLocalSpeech => ({
+      turnDetectionService: null,
+      sttService: null,
+      ttsService: null,
+      dictationSttService,
+      localVoiceTtsProvider: null,
+      localModelConfig: null,
+      availability: { configured: false, modelsDir: null },
+      cleanup: () => {},
+    });
+    initializeLocalSpeechServicesMock
+      .mockResolvedValueOnce(initialized(localDictation))
+      .mockResolvedValueOnce(initialized(nextDictation));
+    const providers: PaseoSpeechConfig["providers"] = {
+      dictationStt: { provider: "local", enabled: true, explicit: true },
+      voiceTurnDetection: { provider: "local", enabled: false, explicit: true },
+      voiceStt: { provider: "local", enabled: false, explicit: true },
+      voiceTts: { provider: "local", enabled: false, explicit: true },
+    };
+    const selection = (model: string) => () => ({
+      provider: "local",
+      model,
+      language: "es",
+      options: [],
+    });
+    const runtime = createSpeechService({
+      logger: pino({ level: "silent" }),
+      speechConfig: createSpeechConfig(providers),
+      describeDictationStt: selection("parakeet-tdt-0.6b-v2-int8"),
+    });
+    runtime.start();
+    await runtime.ready;
+    const published: Array<string | undefined> = [];
+    runtime.onReadinessChange((snapshot) => published.push(snapshot.dictationStt?.model));
+
+    await runtime.reconfigure({
+      speechConfig: createSpeechConfig(providers),
+      describeDictationStt: selection("parakeet-tdt-0.6b-v3-int8"),
+    });
+
+    expect(runtime.resolveDictationStt()).toBe(nextDictation);
+    expect(published.at(-1)).toBe("parakeet-tdt-0.6b-v3-int8");
+
+    await runtime.stop();
+  });
+
   it("keeps voice feature available when only realtime voice is enabled and ready", async () => {
     const voiceStt = createStubStt("voice-local");
     const voiceTts = createStubTts("tts-local");

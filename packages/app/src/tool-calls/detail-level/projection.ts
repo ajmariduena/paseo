@@ -5,11 +5,26 @@ import {
   prepareGroupedHistory,
   type GroupedHistory,
   type GroupedToolCalls,
+  type ToolCallRun,
 } from "./grouping";
 import { buildOverviewGroup, type OverviewToolCallGroup } from "./overview/model";
 
 export type { ToolCallDetailLevel } from "@/hooks/use-settings/storage";
-export type ToolCallDetailGroup = OverviewToolCallGroup;
+
+/** Adjacent subagent spawn calls, drawn as subagent rows rather than as a tool summary. */
+export interface SubagentSpawnToolCallGroup {
+  mode: "subagents";
+  run: ToolCallRun;
+}
+
+export type ToolCallDetailGroup = OverviewToolCallGroup | SubagentSpawnToolCallGroup;
+
+function buildToolCallGroup(run: ToolCallRun): ToolCallDetailGroup {
+  if (run.kind === "subagents") {
+    return { mode: "subagents", run };
+  }
+  return buildOverviewGroup(run);
+}
 
 export interface PreparedToolCallHistory {
   mode: "overview";
@@ -49,7 +64,7 @@ export function prepareToolCallHistory(
     mode: "overview",
     grouped: prepareGroupedHistory({
       tail: visibleToolCallItems(tail),
-      buildGroup: buildOverviewGroup,
+      buildGroup: buildToolCallGroup,
     }),
   };
 }
@@ -76,6 +91,6 @@ export function projectToolCallDetailLevel(input: {
     history: input.preparedHistory.grouped,
     head: visibleToolCallItems(input.head),
     isTurnActive: input.isTurnActive,
-    buildGroup: buildOverviewGroup,
+    buildGroup: buildToolCallGroup,
   });
 }

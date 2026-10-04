@@ -57,6 +57,7 @@ export function createAudioEngine(
     gain: GainNode | null;
     started: boolean;
     muted: boolean;
+    paused: boolean;
   } = {
     playbackContext: null,
     captureContext: null,
@@ -66,6 +67,7 @@ export function createAudioEngine(
     gain: null,
     started: false,
     muted: false,
+    paused: false,
   };
 
   async function ensurePlaybackContext(): Promise<AudioContext> {
@@ -75,7 +77,8 @@ export function createAudioEngine(
       refs.playbackContext = new AudioContextCtor();
     }
     const context = refs.playbackContext;
-    if (context.state === "suspended") {
+    // A paused engine keeps accepting queued audio; it starts once `resume` resumes the context.
+    if (context.state === "suspended" && !refs.paused) {
       let timeout: ReturnType<typeof setTimeout> | undefined;
       try {
         await Promise.race([
@@ -310,8 +313,24 @@ export function createAudioEngine(
     },
 
     play: playback.play,
-    stop: playback.stop,
+    stop() {
+      playback.stop();
+      if (refs.paused) {
+        refs.paused = false;
+        void refs.playbackContext?.resume().catch(() => undefined);
+      }
+    },
     clearQueue: playback.clearQueue,
     isPlaying: playback.isPlaying,
+    pause() {
+      if (refs.paused || !refs.playbackContext) return;
+      refs.paused = true;
+      void refs.playbackContext.suspend().catch(() => undefined);
+    },
+    resume() {
+      if (!refs.paused) return;
+      refs.paused = false;
+      void refs.playbackContext?.resume().catch(() => undefined);
+    },
   };
 }

@@ -82,6 +82,18 @@ export function getPaseoToolLeafName(name: string): string | null {
   return null;
 }
 
+const DIRECT_PASEO_TOOL_PREFIX = "paseo_";
+
+/** Like `getPaseoToolLeafName`, but also accepts the `paseo_<leaf>` names some providers emit. */
+export function getPaseoCallLeafName(name: string): string | null {
+  const leaf = getPaseoToolLeafName(name);
+  if (leaf) return leaf;
+  const normalized = normalizeToolName(name);
+  return normalized.startsWith(DIRECT_PASEO_TOOL_PREFIX)
+    ? normalized.slice(DIRECT_PASEO_TOOL_PREFIX.length)
+    : null;
+}
+
 export function isLikelyExternalToolName(name: string): boolean {
   const normalized = normalizeToolName(name);
   if (!normalized) {

@@ -189,6 +189,19 @@ const MutableRelayConfigSchema = z
   })
   .passthrough();
 
+const MutableDictationConfigSchema = z
+  .object({
+    stt: z
+      .object({
+        provider: z.string().min(1).optional(),
+        model: z.string().min(1).optional(),
+        language: z.string().min(1).optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+
 export const MutableDaemonConfigSchema = z
   .object({
     // COMPAT(relayConfig): added in v0.2.6, remove after 2027-01-31 when old daemons are unsupported.
@@ -226,6 +239,8 @@ export const MutableDaemonConfigSchema = z
     skills: z.object({ selection: AgentSkillSelectionSchema.optional() }).strict().optional(),
     pluginsEnabled: z.boolean().optional(),
     plugins: z.record(PluginIdSchema, PluginSourceSchema).optional(),
+    // COMPAT(dictationSelection): added in v0.11.0; absent on older daemons, remove optional after 2027-10-04.
+    dictation: MutableDictationConfigSchema.optional(),
   })
   .passthrough();
 
@@ -246,6 +261,7 @@ export const MutableDaemonConfigPatchSchema = z
     agentProfiles: z.array(AgentProfileSchema).optional(),
     pluginsEnabled: z.boolean().optional(),
     plugins: z.record(PluginIdSchema, PluginSourceSchema).optional(),
+    dictation: MutableDictationConfigSchema.optional(),
   })
   .partial()
   .passthrough();
@@ -3684,11 +3700,36 @@ export const ServerVoiceCapabilitiesSchema = z.object({
   voice: ServerCapabilityStateSchema,
 });
 
+export const DictationSttOptionSchema = z
+  .object({
+    provider: z.string(),
+    model: z.string(),
+    label: z.string(),
+    description: z.string().optional(),
+    available: z.boolean(),
+    unavailableReason: z.string().optional(),
+    downloaded: z.boolean().optional(),
+  })
+  .passthrough();
+
+export const ServerDictationSttSchema = z
+  .object({
+    provider: z.string(),
+    model: z.string(),
+    language: z.string(),
+    /** A daemon launch override picks the provider, so the selection cannot change it. */
+    locked: z.boolean().optional(),
+    options: z.array(DictationSttOptionSchema),
+  })
+  .passthrough();
+
 export const ServerCapabilitiesSchema = z
   .object({
     voice: ServerVoiceCapabilitiesSchema.optional(),
     // COMPAT(readAloud): added in v0.10.3; absent on older daemons, remove optional after 2027-09-29.
     readAloud: ServerCapabilityStateSchema.optional(),
+    // COMPAT(dictationSelection): added in v0.11.0; absent on older daemons, remove optional after 2027-10-04.
+    dictationStt: ServerDictationSttSchema.optional(),
   })
   .passthrough();
 
@@ -7420,6 +7461,8 @@ export type StatusMessage = z.infer<typeof StatusMessageSchema>;
 export type ServerCapabilityState = z.infer<typeof ServerCapabilityStateSchema>;
 export type ServerVoiceCapabilities = z.infer<typeof ServerVoiceCapabilitiesSchema>;
 export type ServerCapabilities = z.infer<typeof ServerCapabilitiesSchema>;
+export type ServerDictationStt = z.infer<typeof ServerDictationSttSchema>;
+export type DictationSttOption = z.infer<typeof DictationSttOptionSchema>;
 export type ServerInfoStatusPayload = z.infer<typeof ServerInfoStatusPayloadSchema>;
 export type RpcErrorMessage = z.infer<typeof RpcErrorMessageSchema>;
 export type ArtifactMessage = z.infer<typeof ArtifactMessageSchema>;

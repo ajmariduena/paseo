@@ -89,6 +89,11 @@ export interface StreamRenderInput {
   isLoadingOlderHistory: boolean;
   hasOlderHistory: boolean;
   olderHistoryProgressKey: string | null;
+  /**
+   * Shown in the history-start slot once there is no older history to load. It must fit the
+   * slot's fixed height: the web virtualizer's scroll margin assumes it.
+   */
+  historyStartContent?: ReactNode;
   scrollEnabled: boolean;
   listStyle: StyleProp<ViewStyle>;
   baseListContentContainerStyle: StyleProp<ViewStyle>;

@@ -84,6 +84,7 @@ import { formatCompactTimeAgoAsProse } from "@/utils/time";
 import { buildWorkspaceKeyboardHandlerId } from "@/keyboard/handler-id";
 import type { KeyboardActionDefinition } from "@/keyboard/keyboard-action-dispatcher";
 import { WorkspaceNewTabMenuContent } from "@/screens/workspace/workspace-new-tab-menu";
+import { AgentTabLineageTrigger, useAgentTabLineagePages } from "@/lineage/tab-menu";
 import {
   paneContentToolbarTrailingPadding,
   ToolbarButton,
@@ -734,6 +735,7 @@ function TabHandleContent({
 
 function TabChip({
   serverId,
+  workspaceId,
   tab,
   isActive,
   isDragging,
@@ -753,6 +755,7 @@ function TabChip({
   dragHandleProps,
 }: {
   serverId: string;
+  workspaceId: string;
   tab: WorkspaceTabDescriptor;
   isActive: boolean;
   isDragging: boolean;
@@ -957,17 +960,51 @@ function TabChip({
           </View>
         ) : null}
 
-        <ContextMenuContent align="start" width={DROPDOWN_WIDTH} testID={contextMenuTestId}>
-          {menuEntries.map((entry) =>
-            entry.kind === "separator" ? (
-              <ContextMenuSeparator key={entry.key} />
-            ) : (
-              <TabContextMenuItem key={entry.key} entry={entry} />
-            ),
-          )}
-        </ContextMenuContent>
+        <TabChipContextMenuContent
+          serverId={serverId}
+          workspaceId={workspaceId}
+          tab={tab}
+          menuEntries={menuEntries}
+          testID={contextMenuTestId}
+        />
       </ContextMenu>
     </View>
+  );
+}
+
+function TabChipContextMenuContent({
+  serverId,
+  workspaceId,
+  tab,
+  menuEntries,
+  testID,
+}: {
+  serverId: string;
+  workspaceId: string;
+  tab: WorkspaceTabDescriptor;
+  menuEntries: readonly WorkspaceTabMenuEntry[];
+  testID: string;
+}) {
+  const lineageAgentId = tab.target.kind === "agent" ? tab.target.agentId : null;
+  const lineagePages = useAgentTabLineagePages({
+    serverId,
+    workspaceId,
+    tabId: tab.tabId,
+    agentId: lineageAgentId,
+  });
+  return (
+    <ContextMenuContent align="start" width={DROPDOWN_WIDTH} pages={lineagePages} testID={testID}>
+      {lineageAgentId ? (
+        <AgentTabLineageTrigger serverId={serverId} agentId={lineageAgentId} />
+      ) : null}
+      {menuEntries.map((entry) =>
+        entry.kind === "separator" ? (
+          <ContextMenuSeparator key={entry.key} />
+        ) : (
+          <TabContextMenuItem key={entry.key} entry={entry} />
+        ),
+      )}
+    </ContextMenuContent>
   );
 }
 
@@ -1305,6 +1342,7 @@ function ResolvedWorkspaceDesktopTabsRow({
         <ResolvedDesktopTabChip
           key={`${item.tab.key}:${item.tab.kind}`}
           serverId={normalizedServerId}
+          workspaceId={normalizedWorkspaceId}
           item={item}
           isFocused={isFocused}
           isDragging={isActive}
@@ -1338,6 +1376,7 @@ function ResolvedWorkspaceDesktopTabsRow({
       layout.closeButtonPolicy,
       layout.items,
       normalizedServerId,
+      normalizedWorkspaceId,
       onCloseOtherTabs,
       onCloseTab,
       onCloseTabsToLeft,
@@ -1460,6 +1499,7 @@ function ResolvedWorkspaceDesktopTabsRow({
 }
 function ResolvedDesktopTabChip({
   serverId,
+  workspaceId,
   item,
   isFocused,
   isDragging,
@@ -1486,6 +1526,7 @@ function ResolvedDesktopTabChip({
   showDropIndicatorAfter,
 }: {
   serverId: string;
+  workspaceId: string;
   item: ResolvedWorkspaceDesktopTabRowItem;
   isFocused: boolean;
   isDragging: boolean;
@@ -1567,6 +1608,7 @@ function ResolvedDesktopTabChip({
       ) : null}
       <TabChip
         serverId={serverId}
+        workspaceId={workspaceId}
         tab={item.tab}
         isActive={item.isActive}
         isDragging={isDragging}

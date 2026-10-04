@@ -145,11 +145,7 @@ function buildLocalSpeechResolutionInput(params: {
   const { paseoHome, env, persisted, providers, includeProviderConfig } = params;
   return {
     includeProviderConfig,
-    modelsDir: firstDefinedValue<string>([
-      env.PASEO_LOCAL_MODELS_DIR,
-      persisted.providers?.local?.modelsDir,
-      path.join(paseoHome, DEFAULT_LOCAL_MODELS_SUBDIR),
-    ]),
+    modelsDir: resolveLocalModelsDir({ paseoHome, env, persisted }),
     dictationLocalSttModel: firstDefinedValue<string>([
       env.PASEO_DICTATION_LOCAL_STT_MODEL,
       persistedLocalFeatureModel(
@@ -187,6 +183,19 @@ function buildLocalSpeechResolutionInput(params: {
       persisted.features?.voiceMode?.tts?.speed,
     ]),
   };
+}
+
+export function resolveLocalModelsDir(params: {
+  paseoHome: string;
+  env: NodeJS.ProcessEnv;
+  persisted: PersistedConfig;
+}): string {
+  return (
+    firstDefinedValue<string>([
+      params.env.PASEO_LOCAL_MODELS_DIR,
+      params.persisted.providers?.local?.modelsDir,
+    ]) ?? path.join(params.paseoHome, DEFAULT_LOCAL_MODELS_SUBDIR)
+  );
 }
 
 export function resolveLocalSpeechConfig(params: {

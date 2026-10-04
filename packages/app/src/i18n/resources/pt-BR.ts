@@ -2,6 +2,20 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const ptBR: TranslationResources = {
+  liveActivity: {
+    working_one: "{{count}} trabalhando",
+    working_other: "{{count}} trabalhando",
+    waiting_one: "{{count}} pede permissão",
+    waiting_other: "{{count}} pedem permissão",
+    finished_one: "{{count}} terminou",
+    finished_other: "{{count}} terminaram",
+    workingShort: "trabalhando",
+    waitingShort_one: "pede permissão",
+    waitingShort_other: "pedem permissão",
+    permission: "permissão",
+    doneLabel: "terminou",
+    failed: "falhou",
+  },
   paneFind: {
     connectionFailure:
       "Não foi possível pesquisar nesta conversa. Verifique a conexão com o host e tente novamente.",
@@ -67,6 +81,7 @@ export const ptBR: TranslationResources = {
       daemonClientUnavailable: "Cliente do daemon indisponível",
       daemonClientDisconnected: "O cliente do daemon está desconectado",
       noFileFound: "Nenhum arquivo encontrado para {{token}}",
+      linkIsFolder: "{{path}} é uma pasta, não um arquivo",
       unexpectedDictationError: "Ocorreu um erro inesperado ao processar o ditado.",
     },
     connectionStatus: {
@@ -333,6 +348,8 @@ export const ptBR: TranslationResources = {
       copyTurn: "Copiar turno",
       readAloud: "Ler em voz alta",
       stopReadingAloud: "Parar de ler em voz alta",
+      pauseReadingAloud: "Pausar a leitura",
+      resumeReadingAloud: "Retomar a leitura",
       copyMessage: "Copiar mensagem",
       forkMenu: "Bifurcar mensagem",
       forkInNewTab: "Bifurcar em uma nova aba",
@@ -1959,6 +1976,37 @@ export const ptBR: TranslationResources = {
     archiveTooltip: "Arquivar subagente",
     archiveFinishedAction: "Arquivar subagentes concluídos",
     archiveFinishedRetry: "Tentar novamente ({{failed}}/{{total}})",
+    untitled: "Subagente",
+    openAction: "Abrir {{label}}",
+    summaryDone: "{{count}} concluídos",
+    summaryStopped: "{{count}} interrompidos",
+    status: {
+      starting: "Iniciando",
+      working: "Em execução",
+      needsInput: "Precisa de resposta",
+      failed: "Com falha",
+      done: "Concluído",
+      stopped: "Interrompido",
+      archived: "Arquivado",
+    },
+    providerBar: {
+      working: "Em execução {{duration}}",
+      completedIn: "Concluído em {{duration}}",
+      openParent: "Abrir agente pai",
+    },
+    providerPaneUnsupported: "Atualize este host para ver os subagentes do provedor",
+  },
+  lineage: {
+    title: "Linhagem",
+    titleRunning: "Linhagem · {{count}} em execução",
+    parent: "Pai",
+    previous: "Subagentes anteriores ({{count}})",
+    includeArchived: "Incluir arquivados",
+    archivedLoadFailed: "Não foi possível carregar. Tentar novamente",
+    showMore: "Mostrar mais {{count}}",
+    subagentOf: "Subagente de {{title}}",
+    parentFallback: "outro agente",
+    empty: "Nenhum agente relacionado",
   },
   panels: {
     draft: {
@@ -2053,6 +2101,71 @@ export const ptBR: TranslationResources = {
     paseoCalls: {
       one: "chamou o Paseo {{count}} vez",
       other: "chamou o Paseo {{count}} vezes",
+    },
+    paseo: {
+      agentCount: { one: "{{count}} agente", other: "{{count}} agentes" },
+      sentPrompts: {
+        one: "enviou {{count}} prompt para {{agents}}",
+        other: "enviou {{count}} prompts para {{agents}}",
+      },
+      sentPromptsFailed: {
+        one: "tentou enviar {{count}} prompt para {{agents}}",
+        other: "tentou enviar {{count}} prompts para {{agents}}",
+      },
+      waitedForAgents: {
+        one: "esperou {{count}} agente",
+        other: "esperou {{count}} agentes",
+      },
+      waitedForAgentsFailed: {
+        one: "tentou esperar {{count}} agente",
+        other: "tentou esperar {{count}} agentes",
+      },
+      checkedAgents: { one: "verificou {{count}} agente", other: "verificou {{count}} agentes" },
+      checkedAgentsFailed: {
+        one: "tentou verificar {{count}} agente",
+        other: "tentou verificar {{count}} agentes",
+      },
+      listedAgents: "listou os agentes",
+      listedAgentsFailed: "tentou listar os agentes",
+      stoppedAgents: {
+        one: "interrompeu {{count}} agente",
+        other: "interrompeu {{count}} agentes",
+      },
+      stoppedAgentsFailed: {
+        one: "tentou interromper {{count}} agente",
+        other: "tentou interromper {{count}} agentes",
+      },
+      archivedAgents: { one: "arquivou {{count}} agente", other: "arquivou {{count}} agentes" },
+      archivedAgentsFailed: {
+        one: "tentou arquivar {{count}} agente",
+        other: "tentou arquivar {{count}} agentes",
+      },
+      answeredPermissions: {
+        one: "respondeu {{count}} pedido de permissão",
+        other: "respondeu {{count}} pedidos de permissão",
+      },
+      answeredPermissionsFailed: {
+        one: "tentou responder {{count}} pedido de permissão",
+        other: "tentou responder {{count}} pedidos de permissão",
+      },
+      createdSchedules: {
+        one: "criou {{count}} agendamento",
+        other: "criou {{count}} agendamentos",
+      },
+      createdSchedulesFailed: {
+        one: "tentou criar {{count}} agendamento",
+        other: "tentou criar {{count}} agendamentos",
+      },
+      createdHeartbeats: {
+        one: "criou {{count}} heartbeat",
+        other: "criou {{count}} heartbeats",
+      },
+      createdHeartbeatsFailed: {
+        one: "tentou criar {{count}} heartbeat",
+        other: "tentou criar {{count}} heartbeats",
+      },
+      checkedCapabilities: "verificou as capacidades de orquestração",
+      checkedCapabilitiesFailed: "tentou verificar as capacidades de orquestração",
     },
     and: "e",
   },
@@ -2186,6 +2299,21 @@ export const ptBR: TranslationResources = {
       host: "Visão geral",
     },
     plugins: pluginSettings["pt-BR"],
+    dictation: {
+      title: "Ditado",
+      description: "O microfone do chat. Salvo neste host e aplicado na hora.",
+      model: "Modelo",
+      modelHint: "O que transcreve sua voz",
+      language: "Idioma",
+      languageHint: "Modelos na nuvem são mais precisos com um idioma fixo",
+      downloaded: "Baixado",
+      downloadOnSelect: "Baixa ao selecionar",
+      unavailable: "Indisponível",
+      locked: "Uma configuração de inicialização deste host define o provedor de ditado.",
+      updateHost: "Atualize o host para escolher o modelo de ditado.",
+      active: "Ativo: {{model}} · {{language}}",
+      saveFailed: "Não foi possível salvar as configurações de ditado.",
+    },
     readAloud: {
       title: "Read aloud",
       description: "Reads agent replies aloud with ElevenLabs.",

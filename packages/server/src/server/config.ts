@@ -673,6 +673,7 @@ export function resolveConfigFromPersisted(
     auth: resolveAuthConfig(env, persisted),
     openai,
     speech,
+    ...resolveDictationSttSelection(persisted),
     readAloud: resolveReadAloudConfig({ env, persisted }),
     voiceLlmProvider: voiceLlm.provider,
     voiceLlmProviderExplicit: voiceLlm.providerExplicit,
@@ -692,6 +693,20 @@ export function resolveConfigFromPersisted(
       overrideControlledPaths,
       relayEnabledFallback,
       startupPersisted: persisted,
+    },
+  };
+}
+
+function resolveDictationSttSelection(
+  persisted: PersistedConfig,
+): Pick<PaseoDaemonConfig, "dictationStt"> {
+  const stt = persisted.features?.dictation?.stt;
+  if (!stt) return {};
+  return {
+    dictationStt: {
+      ...(stt.provider !== undefined ? { provider: stt.provider } : {}),
+      ...(stt.model !== undefined ? { model: stt.model } : {}),
+      ...(stt.language !== undefined ? { language: stt.language } : {}),
     },
   };
 }

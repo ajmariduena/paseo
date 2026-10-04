@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { AudioEngine, AudioPlaybackSource } from "@/audio/audio-engine-types";
-import { startReadAloud, stopReadAloud, useReadAloudStore, type ReadAloudClient } from "./player";
+import {
+  pauseReadAloud,
+  resumeReadAloud,
+  startReadAloud,
+  stopReadAloud,
+  useReadAloudStore,
+  type ReadAloudClient,
+} from "./player";
 
 interface PendingPlay {
   type: string;
@@ -8,10 +15,16 @@ interface PendingPlay {
   finish(): void;
 }
 
-function createEngine(): { engine: AudioEngine; plays: PendingPlay[]; stops: number } {
+function createEngine(): {
+  engine: AudioEngine;
+  plays: PendingPlay[];
+  stops: number;
+  calls: string[];
+} {
   const plays: PendingPlay[] = [];
   const queue: Array<{ reject(error: Error): void }> = [];
   const state = { stops: 0 };
+  const calls: string[] = [];
   const engine: AudioEngine = {
     initialize: async () => {},
     destroy: async () => {},
@@ -32,10 +45,13 @@ function createEngine(): { engine: AudioEngine; plays: PendingPlay[]; stops: num
     },
     clearQueue: () => {},
     isPlaying: () => false,
+    pause: () => calls.push("pause"),
+    resume: () => calls.push("resume"),
   };
   return {
     engine,
     plays,
+    calls,
     get stops() {
       return state.stops;
     },
@@ -78,7 +94,11 @@ describe("startReadAloud", () => {
 
     const done = startReadAloud({ key: "turn-1", text: "texto", agentId: "a1", client, engine });
     await flush();
-    expect(useReadAloudStore.getState()).toEqual({ activeKey: "turn-1", status: "playing" });
+    expect(useReadAloudStore.getState()).toEqual({
+      activeKey: "turn-1",
+      status: "playing",
+      track: null,
+    });
     plays[0].finish();
     await flush();
     plays[1].finish();
@@ -96,7 +116,7 @@ describe("startReadAloud", () => {
       { type: "audio/pcm;rate=24000", bytes: [2] },
       { type: "audio/pcm;rate=24000", bytes: [3] },
     ]);
-    expect(useReadAloudStore.getState()).toEqual({ activeKey: null, status: null });
+    expect(useReadAloudStore.getState()).toEqual({ activeKey: null, status: null, track: null });
   });
 
   it("stops playback and synthesizes nothing more once stopped", async () => {
@@ -115,7 +135,7 @@ describe("startReadAloud", () => {
 
     expect(synthesized.map((entry) => entry.text)).toEqual(["uno", "dos"]);
     expect(recorder.stops).toBe(1);
-    expect(useReadAloudStore.getState()).toEqual({ activeKey: null, status: null });
+    expect(useReadAloudStore.getState()).toEqual({ activeKey: null, status: null, track: null });
   });
 
   it("surfaces a synthesis failure to the caller", async () => {
@@ -130,6 +150,50 @@ describe("startReadAloud", () => {
     await expect(startReadAloud({ key: "turn-1", text: "texto", client, engine })).rejects.toThrow(
       "ElevenLabs account has no credits left",
     );
-    expect(useReadAloudStore.getState()).toEqual({ activeKey: null, status: null });
+    expect(useReadAloudStore.getState()).toEqual({ activeKey: null, status: null, track: null });
+  });
+
+  it("names the agent being read and pauses and resumes it in place", async () => {
+    const { engine, plays, calls } = createEngine();
+    const { client } = createClient(["uno"]);
+
+    const done = startReadAloud({
+      key: "s1:a1:turn-1",
+      text: "## Listo\n\nEl **login** ya funciona.",
+      serverId: "s1",
+      agentId: "a1",
+      client,
+      engine,
+    });
+    await flush();
+    expect(useReadAloudStore.getState().track).toEqual({
+      serverId: "s1",
+      agentId: "a1",
+      preview: "Listo El login ya funciona.",
+    });
+
+    pauseReadAloud();
+    expect(useReadAloudStore.getState().status).toBe("paused");
+    resumeReadAloud();
+    expect(useReadAloudStore.getState().status).toBe("playing");
+    expect(calls).toEqual(["pause", "resume"]);
+
+    plays[0].finish();
+    await done;
+    expect(useReadAloudStore.getState().track).toBeNull();
+  });
+
+  it("does not pause before any audio is playing", async () => {
+    const { engine, calls } = createEngine();
+    const client: ReadAloudClient = {
+      prepareReadAloud: () => new Promise(() => {}),
+      synthesizeReadAloud: async () => ({ audio: "", format: "pcm", providerRequestId: null }),
+    };
+
+    void startReadAloud({ key: "turn-1", text: "texto", client, engine });
+    pauseReadAloud();
+
+    expect(useReadAloudStore.getState().status).toBe("preparing");
+    expect(calls).toEqual([]);
   });
 });

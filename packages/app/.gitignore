@@ -45,3 +45,6 @@ app-example
 # generated native folders
 /ios
 /android
+
+# Written by @bacons/apple-targets on every prebuild
+targets/*/generated.entitlements

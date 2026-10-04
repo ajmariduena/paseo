@@ -16,6 +16,7 @@ import type { AssistantFileLinkContext, GetDirectorySuggestions } from "./resolv
 
 export interface AssistantFileLinkDaemonClient {
   getDirectorySuggestions: GetDirectorySuggestions;
+  listDirectory?: (cwd: string, path: string) => Promise<unknown>;
 }
 
 export interface AssistantFileLinkResolverConfig {
@@ -34,6 +35,7 @@ export interface AssistantFileLinkResolverProviderProps extends AssistantFileLin
 export interface AssistantFileLinkResolverContextValue {
   configRef: MutableRefObject<AssistantFileLinkResolverConfig>;
   getDirectorySuggestions: GetDirectorySuggestions;
+  isDirectory: (path: string) => Promise<boolean>;
 }
 
 const AssistantFileLinkResolverContext =
@@ -68,9 +70,22 @@ export function AssistantFileLinkResolverProvider({
     return { entries: result.entries, error: result.error };
   }, []);
 
+  const isDirectory = useCallback(async (path: string) => {
+    const { client: activeClient, workspaceRoot: activeRoot } = configRef.current;
+    if (!activeClient?.listDirectory || !activeRoot) {
+      return false;
+    }
+    try {
+      await activeClient.listDirectory(activeRoot, path);
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
   const value = useMemo<AssistantFileLinkResolverContextValue>(
-    () => ({ configRef, getDirectorySuggestions }),
-    [getDirectorySuggestions],
+    () => ({ configRef, getDirectorySuggestions, isDirectory }),
+    [getDirectorySuggestions, isDirectory],
   );
 
   return (

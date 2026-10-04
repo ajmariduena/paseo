@@ -58,6 +58,7 @@ interface TestClient {
     matchMode: "suffix";
     limit: number;
   }) => Promise<DirectorySuggestionResult>;
+  listDirectory?: (cwd: string, path: string) => Promise<unknown>;
 }
 
 function createQueryClient(): QueryClient {
@@ -162,6 +163,75 @@ describe("useFileLink", () => {
     expect(result.current.onHoverIn).toBe(first.onHoverIn);
     expect(result.current.onPress).toBe(first.onPress);
     expect(result.current.open).toBe(first.open);
+  });
+
+  it("shows a folder toast instead of opening a file tab for a directory path", async () => {
+    const getDirectorySuggestions = vi.fn(async () => resolvedSuggestions([]));
+    const listDirectory = vi.fn(async () => ({ entries: [] }));
+    const openedFiles: OpenedFile[] = [];
+    const toast = createToast();
+    const { result } = renderHook(
+      () =>
+        useFileLink({
+          href: "/Users/test/project/packages",
+          text: "/Users/test/project/packages",
+          sourceType: "inline-code",
+        }),
+      {
+        wrapper: createWrapper({
+          client: { getDirectorySuggestions, listDirectory },
+          openedFiles,
+          toast,
+        }),
+      },
+    );
+
+    act(() => {
+      result.current.onPress();
+    });
+
+    await waitFor(() => {
+      expect(toast.show).toHaveBeenCalledWith(
+        "/Users/test/project/packages is a folder, not a file",
+        { variant: "error", testID: "assistant-file-link-folder-toast" },
+      );
+    });
+    expect(listDirectory).toHaveBeenCalledWith(
+      "/Users/test/project",
+      "/Users/test/project/packages",
+    );
+    expect(openedFiles).toEqual([]);
+  });
+
+  it("opens extensionless files that are not directories", async () => {
+    const getDirectorySuggestions = vi.fn(async () => resolvedSuggestions([]));
+    const listDirectory = vi.fn(async () => {
+      throw new Error("Requested path is not a directory");
+    });
+    const openedFiles: OpenedFile[] = [];
+    const { result } = renderHook(
+      () =>
+        useFileLink({
+          href: "/Users/test/project/Makefile",
+          text: "/Users/test/project/Makefile",
+          sourceType: "inline-code",
+        }),
+      {
+        wrapper: createWrapper({
+          client: { getDirectorySuggestions, listDirectory },
+          openedFiles,
+        }),
+      },
+    );
+
+    act(() => {
+      result.current.onPress();
+    });
+
+    await waitFor(() => {
+      expect(openedFiles).toHaveLength(1);
+    });
+    expect(openedFiles[0]?.target.path).toBe("/Users/test/project/Makefile");
   });
 
   it("does not cache unresolved lookups forever", async () => {

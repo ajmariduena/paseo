@@ -3,6 +3,7 @@ import { usePendingArchiveAgentIds } from "@/hooks/use-archive-agent";
 import equal from "fast-deep-equal";
 import { useStoreWithEqualityFn } from "zustand/traditional";
 import { useSessionStore, type Agent } from "@/stores/session-store";
+import { extractAgentModel } from "@/utils/extract-agent-model";
 import { refreshProviderSubagents, useProviderSubagentStore } from "./provider-store";
 import type { ProviderSubagentDescriptorPayload } from "@getpaseo/protocol/messages";
 
@@ -18,6 +19,7 @@ export interface PaseoSubagentRow {
   turn: Agent["turn"];
   requiresAttention: Agent["requiresAttention"];
   createdAt: Agent["createdAt"];
+  model: string | null;
 }
 
 export interface ProviderSubagentRow {
@@ -35,6 +37,7 @@ export interface ProviderSubagentRow {
   status: ProviderSubagentDescriptorPayload["status"];
   requiresAttention: boolean;
   createdAt: Date;
+  updatedAt: Date;
 }
 
 export type SubagentRow = PaseoSubagentRow | ProviderSubagentRow;
@@ -64,6 +67,7 @@ function toSubagentRow(agent: Agent): SubagentRow {
     turn: agent.turn,
     requiresAttention: agent.requiresAttention,
     createdAt: agent.createdAt,
+    model: extractAgentModel(agent),
   };
 }
 
@@ -126,6 +130,7 @@ export function selectProviderSubagentsForParent(
       status: subagent.status,
       requiresAttention: subagent.status === "failed",
       createdAt: new Date(subagent.createdAt),
+      updatedAt: new Date(subagent.updatedAt),
     });
   }
   rows.sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());

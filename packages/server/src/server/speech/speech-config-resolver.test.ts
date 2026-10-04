@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, test } from "vitest";
 
 import { PersistedConfigSchema } from "../persisted-config.js";
+import { describeDictationStt } from "./dictation-selection.js";
 import { resolveSpeechConfig } from "./speech-config-resolver.js";
 
 describe("resolveSpeechConfig", () => {
@@ -301,5 +302,48 @@ describe("resolveSpeechConfig", () => {
       voiceId: null,
       voiceSettings: {},
     });
+  });
+});
+
+describe("describeDictationStt", () => {
+  function describeFor(raw: unknown, env: NodeJS.ProcessEnv = {}) {
+    const paseoHome = "/tmp/paseo-home-missing";
+    const persisted = PersistedConfigSchema.parse(raw);
+    const { openai, speech } = resolveSpeechConfig({ paseoHome, env, persisted });
+    return describeDictationStt({ paseoHome, env, persisted, speech, openai });
+  }
+
+  test("reports the default local model and offers cloud models that lack keys as unavailable", () => {
+    const result = describeFor({});
+
+    expect(result).toMatchObject({
+      provider: "local",
+      model: "parakeet-tdt-0.6b-v2-int8",
+      language: "en",
+      locked: false,
+    });
+    expect(
+      result.options.map((option) => [option.provider, option.model, option.available]),
+    ).toEqual([
+      ["local", "parakeet-tdt-0.6b-v2-int8", true],
+      ["local", "parakeet-tdt-0.6b-v3-int8", true],
+      ["elevenlabs", "scribe_v2", false],
+      ["openai", "gpt-4o-transcribe", false],
+    ]);
+    expect(result.options[0]?.downloaded).toBe(false);
+  });
+
+  test("reports the persisted ElevenLabs choice and its language", () => {
+    const result = describeFor({
+      providers: { elevenlabs: { apiKey: "key" } },
+      features: { dictation: { stt: { provider: "elevenlabs", language: "es" } } },
+    });
+
+    expect(result).toMatchObject({ provider: "elevenlabs", model: "scribe_v2", language: "es" });
+    expect(result.options.find((option) => option.provider === "elevenlabs")?.available).toBe(true);
+  });
+
+  test("locks the selection when a launch override picks the provider", () => {
+    expect(describeFor({}, { PASEO_DICTATION_STT_PROVIDER: "local" }).locked).toBe(true);
   });
 });

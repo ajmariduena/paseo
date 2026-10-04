@@ -2,6 +2,20 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const fr: TranslationResources = {
+  liveActivity: {
+    working_one: "{{count}} en cours",
+    working_other: "{{count}} en cours",
+    waiting_one: "{{count}} demande une autorisation",
+    waiting_other: "{{count}} demandent une autorisation",
+    finished_one: "{{count}} terminé",
+    finished_other: "{{count}} terminés",
+    workingShort: "en cours",
+    waitingShort_one: "demande une autorisation",
+    waitingShort_other: "demandent une autorisation",
+    permission: "autorisation",
+    doneLabel: "terminé",
+    failed: "échec",
+  },
   paneFind: {
     connectionFailure:
       "Impossible de rechercher dans cette conversation. Vérifiez la connexion à l’hôte et réessayez.",
@@ -67,6 +81,7 @@ export const fr: TranslationResources = {
       daemonClientUnavailable: "ClientDaemonindisponible",
       daemonClientDisconnected: "Le clientDaemonest déconnecté",
       noFileFound: "Aucun fichier trouvé pour{{token}}",
+      linkIsFolder: "{{path}} est un dossier, pas un fichier",
       unexpectedDictationError:
         "Une erreur inattendue s'est produite lors du traitement de la dictée.",
     },
@@ -335,6 +350,8 @@ export const fr: TranslationResources = {
       copyTurn: "Copier le tour",
       readAloud: "Lire à voix haute",
       stopReadingAloud: "Arrêter la lecture à voix haute",
+      pauseReadingAloud: "Mettre la lecture en pause",
+      resumeReadingAloud: "Reprendre la lecture",
       copyMessage: "Copier le message",
       forkMenu: "Dupliquer le message",
       forkInNewTab: "Dupliquer dans un nouvel onglet",
@@ -1980,6 +1997,37 @@ export const fr: TranslationResources = {
     archiveTooltip: "Sous-agent d'archivage",
     archiveFinishedAction: "Archiver les sous-agents terminés",
     archiveFinishedRetry: "Réessayer ({{failed}}/{{total}})",
+    untitled: "Sous-agent",
+    openAction: "Ouvrir {{label}}",
+    summaryDone: "{{count}} terminés",
+    summaryStopped: "{{count}} arrêtés",
+    status: {
+      starting: "Démarrage",
+      working: "En cours",
+      needsInput: "Attend une réponse",
+      failed: "En échec",
+      done: "Terminé",
+      stopped: "Arrêté",
+      archived: "Archivé",
+    },
+    providerBar: {
+      working: "En cours depuis {{duration}}",
+      completedIn: "Terminé en {{duration}}",
+      openParent: "Ouvrir le parent",
+    },
+    providerPaneUnsupported: "Mettez à jour cet hôte pour voir les sous-agents du fournisseur",
+  },
+  lineage: {
+    title: "Lignée",
+    titleRunning: "Lignée · {{count}} en cours",
+    parent: "Parent",
+    previous: "Sous-agents précédents ({{count}})",
+    includeArchived: "Inclure les archivés",
+    archivedLoadFailed: "Chargement impossible. Réessayer",
+    showMore: "Afficher {{count}} de plus",
+    subagentOf: "Sous-agent de {{title}}",
+    parentFallback: "un autre agent",
+    empty: "Aucun agent lié",
   },
   panels: {
     draft: {
@@ -2075,6 +2123,68 @@ export const fr: TranslationResources = {
     paseoCalls: {
       one: "a appelé Paseo {{count}} fois",
       other: "a appelé Paseo {{count}} fois",
+    },
+    paseo: {
+      agentCount: { one: "{{count}} agent", other: "{{count}} agents" },
+      sentPrompts: {
+        one: "a envoyé {{count}} prompt à {{agents}}",
+        other: "a envoyé {{count}} prompts à {{agents}}",
+      },
+      sentPromptsFailed: {
+        one: "a tenté d'envoyer {{count}} prompt à {{agents}}",
+        other: "a tenté d'envoyer {{count}} prompts à {{agents}}",
+      },
+      waitedForAgents: {
+        one: "a attendu {{count}} agent",
+        other: "a attendu {{count}} agents",
+      },
+      waitedForAgentsFailed: {
+        one: "a tenté d'attendre {{count}} agent",
+        other: "a tenté d'attendre {{count}} agents",
+      },
+      checkedAgents: { one: "a vérifié {{count}} agent", other: "a vérifié {{count}} agents" },
+      checkedAgentsFailed: {
+        one: "a tenté de vérifier {{count}} agent",
+        other: "a tenté de vérifier {{count}} agents",
+      },
+      listedAgents: "a listé les agents",
+      listedAgentsFailed: "a tenté de lister les agents",
+      stoppedAgents: { one: "a arrêté {{count}} agent", other: "a arrêté {{count}} agents" },
+      stoppedAgentsFailed: {
+        one: "a tenté d'arrêter {{count}} agent",
+        other: "a tenté d'arrêter {{count}} agents",
+      },
+      archivedAgents: { one: "a archivé {{count}} agent", other: "a archivé {{count}} agents" },
+      archivedAgentsFailed: {
+        one: "a tenté d'archiver {{count}} agent",
+        other: "a tenté d'archiver {{count}} agents",
+      },
+      answeredPermissions: {
+        one: "a répondu à {{count}} demande d'autorisation",
+        other: "a répondu à {{count}} demandes d'autorisation",
+      },
+      answeredPermissionsFailed: {
+        one: "a tenté de répondre à {{count}} demande d'autorisation",
+        other: "a tenté de répondre à {{count}} demandes d'autorisation",
+      },
+      createdSchedules: {
+        one: "a créé {{count}} planification",
+        other: "a créé {{count}} planifications",
+      },
+      createdSchedulesFailed: {
+        one: "a tenté de créer {{count}} planification",
+        other: "a tenté de créer {{count}} planifications",
+      },
+      createdHeartbeats: {
+        one: "a créé {{count}} heartbeat",
+        other: "a créé {{count}} heartbeats",
+      },
+      createdHeartbeatsFailed: {
+        one: "a tenté de créer {{count}} heartbeat",
+        other: "a tenté de créer {{count}} heartbeats",
+      },
+      checkedCapabilities: "a vérifié les capacités d'orchestration",
+      checkedCapabilitiesFailed: "a tenté de vérifier les capacités d'orchestration",
     },
     and: "et",
   },
@@ -2208,6 +2318,21 @@ export const fr: TranslationResources = {
       host: "Aperçu",
     },
     plugins: pluginSettings.fr,
+    dictation: {
+      title: "Dictée",
+      description: "Le micro du chat. Enregistré sur cet hôte et appliqué immédiatement.",
+      model: "Modèle",
+      modelHint: "Ce qui transcrit votre voix",
+      language: "Langue",
+      languageHint: "Les modèles cloud sont plus précis avec une langue fixe",
+      downloaded: "Téléchargé",
+      downloadOnSelect: "Téléchargé à la sélection",
+      unavailable: "Indisponible",
+      locked: "Un réglage de lancement de cet hôte impose le fournisseur de dictée.",
+      updateHost: "Mettez à jour l'hôte pour choisir le modèle de dictée.",
+      active: "Actif : {{model}} · {{language}}",
+      saveFailed: "Impossible d'enregistrer les réglages de dictée.",
+    },
     readAloud: {
       title: "Read aloud",
       description: "Reads agent replies aloud with ElevenLabs.",

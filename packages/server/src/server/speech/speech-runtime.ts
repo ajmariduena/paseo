@@ -1,6 +1,7 @@
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Logger } from "pino";
+import type { ServerDictationStt } from "@getpaseo/protocol/messages";
 
 import type { PaseoOpenAIConfig, PaseoSpeechConfig } from "../bootstrap.js";
 import { initializeElevenLabsSpeechServices } from "./providers/elevenlabs/runtime.js";
@@ -53,6 +54,13 @@ export interface SpeechReadinessSnapshot {
   realtimeVoice: SpeechReadinessState;
   dictation: SpeechReadinessState;
   voiceFeature: SpeechReadinessState;
+  dictationStt?: ServerDictationStt;
+}
+
+export interface SpeechServiceConfig {
+  openaiConfig?: PaseoOpenAIConfig;
+  speechConfig?: PaseoSpeechConfig;
+  describeDictationStt?: () => ServerDictationStt;
 }
 
 function resolveRequestedSpeechProviders(
@@ -351,22 +359,24 @@ export interface SpeechService {
   resolveDictationStt: () => SpeechToTextProvider | null;
   resolveDictationSttLanguage: () => string;
   getReadiness: () => SpeechReadinessSnapshot;
+  reconfigure: (config: SpeechServiceConfig) => Promise<void>;
   onReadinessChange: (listener: (snapshot: SpeechReadinessSnapshot) => void) => () => void;
   start: () => void;
   stop: () => Promise<void>;
   ready: Promise<void>;
 }
 
-export function createSpeechService(params: {
-  logger: Logger;
-  openaiConfig?: PaseoOpenAIConfig;
-  speechConfig?: PaseoSpeechConfig;
-}): SpeechService {
+export function createSpeechService(
+  params: SpeechServiceConfig & {
+    logger: Logger;
+  },
+): SpeechService {
   const logger = params.logger.child({ module: "speech-runtime" });
-  const speechConfig = params.speechConfig ?? null;
-  const openaiConfig = params.openaiConfig;
-  const providers = resolveRequestedSpeechProviders(speechConfig);
-  const requestedProviders = describeRequestedProviders(providers);
+  let speechConfig = params.speechConfig ?? null;
+  let openaiConfig = params.openaiConfig;
+  let describeDictationStt = params.describeDictationStt;
+  let providers = resolveRequestedSpeechProviders(speechConfig);
+  let requestedProviders = describeRequestedProviders(providers);
 
   validateOpenAiCredentialRequirements({
     providers,
@@ -434,6 +444,7 @@ export function createSpeechService(params: {
       backgroundDownloadError,
     });
     return {
+      ...(describeDictationStt ? { dictationStt: describeDictationStt() } : {}),
       generatedAt: new Date().toISOString(),
       requiredLocalModelIds: localModelConfig?.defaultModelIds ?? [],
       missingLocalModelIds: [...missingLocalModelIds],
@@ -714,6 +725,30 @@ export function createSpeechService(params: {
     })();
   };
 
+  const reconfigure = async (next: SpeechServiceConfig): Promise<void> => {
+    speechConfig = next.speechConfig ?? null;
+    openaiConfig = next.openaiConfig;
+    describeDictationStt = next.describeDictationStt;
+    providers = resolveRequestedSpeechProviders(speechConfig);
+    requestedProviders = describeRequestedProviders(providers);
+    validateOpenAiCredentialRequirements({ providers, openaiConfig, logger });
+    logger.info({ requestedProviders }, "Speech providers reconfigured");
+    if (stopped || !started) {
+      publishReadinessIfChanged();
+      return;
+    }
+    // An in-flight reconcile still holds the previous config; wait so the new one runs after it.
+    await reconcileInFlight?.catch(() => undefined);
+    await runReconcile();
+    const snapshot = computeReadinessSnapshot();
+    if (snapshot.voiceFeature.enabled && !snapshot.voiceFeature.available) {
+      if (missingLocalModelIds.length > 0) {
+        startBackgroundDownload();
+      }
+      scheduleMonitor();
+    }
+  };
+
   const stop = async (): Promise<void> => {
     stopped = true;
     if (monitorTimeout) {
@@ -734,6 +769,7 @@ export function createSpeechService(params: {
     resolveDictationStt: () => dictationSttService,
     resolveDictationSttLanguage: () => speechConfig?.sttLanguages?.dictation ?? "en",
     getReadiness: () => lastPublishedReadinessSnapshot ?? computeReadinessSnapshot(),
+    reconfigure,
     onReadinessChange: subscribeSpeechReadiness,
     start,
     stop,

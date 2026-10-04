@@ -3,6 +3,7 @@ import {
   buildFleetBlock,
   buildLiveGreeting,
   buildLiveInstructions,
+  clipAgentMessage,
   describeLanguage,
 } from "./prompt.js";
 
@@ -26,5 +27,17 @@ describe("voice language prompts", () => {
     );
     expect(block).toContain("Other open sessions (older or not loaded):");
     expect(block.indexOf("Login fix")).toBeLessThan(block.indexOf("Reminders Atlas"));
+  });
+});
+
+describe("clipAgentMessage", () => {
+  it("leaves a message that fits untouched", () => {
+    expect(clipAgentMessage("Done.  All  green.", 400, "agent-1")).toBe("Done. All green.");
+  });
+
+  it("points at get_agent_activity when it had to clip", () => {
+    const clipped = clipAgentMessage("x".repeat(500), 400, "agent-1");
+    expect(clipped.startsWith(`${"x".repeat(399)}…`)).toBe(true);
+    expect(clipped).toContain("[truncated; get_agent_activity on agent agent-1 has the full text]");
   });
 });

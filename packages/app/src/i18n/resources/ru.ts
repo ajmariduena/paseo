@@ -2,6 +2,20 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const ru: TranslationResources = {
+  liveActivity: {
+    working_one: "{{count}} работает",
+    working_other: "Работают: {{count}}",
+    waiting_one: "{{count}} ждёт разрешения",
+    waiting_other: "Ждут разрешения: {{count}}",
+    finished_one: "{{count}} завершён",
+    finished_other: "Завершено: {{count}}",
+    workingShort: "работают",
+    waitingShort_one: "ждёт разрешения",
+    waitingShort_other: "ждут разрешения",
+    permission: "разрешение",
+    doneLabel: "завершён",
+    failed: "ошибка",
+  },
   paneFind: {
     connectionFailure:
       "Не удалось выполнить поиск в чате. Проверьте подключение к хосту и повторите попытку.",
@@ -67,6 +81,7 @@ export const ru: TranslationResources = {
       daemonClientUnavailable: "Daemon клиента недоступен",
       daemonClientDisconnected: "Daemon клиента отключен",
       noFileFound: "Файл для {{token}} не найден",
+      linkIsFolder: "{{path}} — это папка, а не файл",
       unexpectedDictationError: "При обработке диктовки произошла непредвиденная ошибка.",
     },
     connectionStatus: {
@@ -333,6 +348,8 @@ export const ru: TranslationResources = {
       copyTurn: "Скопировать ответ",
       readAloud: "Прочитать вслух",
       stopReadingAloud: "Остановить чтение вслух",
+      pauseReadingAloud: "Приостановить чтение",
+      resumeReadingAloud: "Продолжить чтение",
       copyMessage: "Копировать сообщение",
       forkMenu: "Форкнуть чат отсюда",
       forkInNewTab: "Создать форк в новой вкладке",
@@ -1959,6 +1976,37 @@ export const ru: TranslationResources = {
     archiveTooltip: "Архивировать субагента",
     archiveFinishedAction: "Архивировать завершенные субагенты",
     archiveFinishedRetry: "Повторить ({{failed}}/{{total}})",
+    untitled: "Субагент",
+    openAction: "Открыть {{label}}",
+    summaryDone: "{{count}} готово",
+    summaryStopped: "{{count}} остановлено",
+    status: {
+      starting: "Запуск",
+      working: "В работе",
+      needsInput: "Ожидает ввода",
+      failed: "Ошибка",
+      done: "Готово",
+      stopped: "Остановлен",
+      archived: "В архиве",
+    },
+    providerBar: {
+      working: "В работе {{duration}}",
+      completedIn: "Завершено за {{duration}}",
+      openParent: "Открыть родителя",
+    },
+    providerPaneUnsupported: "Обновите этот хост, чтобы видеть субагентов провайдера",
+  },
+  lineage: {
+    title: "Родословная",
+    titleRunning: "Родословная · {{count}} в работе",
+    parent: "Родитель",
+    previous: "Предыдущие субагенты ({{count}})",
+    includeArchived: "Показать архивные",
+    archivedLoadFailed: "Не удалось загрузить. Повторить",
+    showMore: "Показать ещё {{count}}",
+    subagentOf: "Субагент агента {{title}}",
+    parentFallback: "другой агент",
+    empty: "Нет связанных агентов",
   },
   panels: {
     draft: {
@@ -2054,6 +2102,77 @@ export const ru: TranslationResources = {
     paseoCalls: {
       one: "выполнен {{count}} вызов Paseo",
       other: "выполнены вызовы Paseo ({{count}})",
+    },
+    paseo: {
+      agentCount: { one: "{{count}} агенту", other: "агентам ({{count}})" },
+      sentPrompts: {
+        one: "отправлен {{count}} промпт: {{agents}}",
+        other: "отправлены промпты ({{count}}): {{agents}}",
+      },
+      sentPromptsFailed: {
+        one: "не удалось отправить {{count}} промпт: {{agents}}",
+        other: "не удалось отправить промпты ({{count}}): {{agents}}",
+      },
+      waitedForAgents: {
+        one: "ожидание {{count}} агента",
+        other: "ожидание агентов ({{count}})",
+      },
+      waitedForAgentsFailed: {
+        one: "не удалось дождаться {{count}} агента",
+        other: "не удалось дождаться агентов ({{count}})",
+      },
+      checkedAgents: {
+        one: "проверен {{count}} агент",
+        other: "проверены агенты ({{count}})",
+      },
+      checkedAgentsFailed: {
+        one: "не удалось проверить {{count}} агента",
+        other: "не удалось проверить агентов ({{count}})",
+      },
+      listedAgents: "получен список агентов",
+      listedAgentsFailed: "не удалось получить список агентов",
+      stoppedAgents: {
+        one: "остановлен {{count}} агент",
+        other: "остановлены агенты ({{count}})",
+      },
+      stoppedAgentsFailed: {
+        one: "не удалось остановить {{count}} агента",
+        other: "не удалось остановить агентов ({{count}})",
+      },
+      archivedAgents: {
+        one: "архивирован {{count}} агент",
+        other: "архивированы агенты ({{count}})",
+      },
+      archivedAgentsFailed: {
+        one: "не удалось архивировать {{count}} агента",
+        other: "не удалось архивировать агентов ({{count}})",
+      },
+      answeredPermissions: {
+        one: "отвечено на {{count}} запрос разрешения",
+        other: "отвечено на запросы разрешений ({{count}})",
+      },
+      answeredPermissionsFailed: {
+        one: "не удалось ответить на {{count}} запрос разрешения",
+        other: "не удалось ответить на запросы разрешений ({{count}})",
+      },
+      createdSchedules: {
+        one: "создано {{count}} расписание",
+        other: "созданы расписания ({{count}})",
+      },
+      createdSchedulesFailed: {
+        one: "не удалось создать {{count}} расписание",
+        other: "не удалось создать расписания ({{count}})",
+      },
+      createdHeartbeats: {
+        one: "создан {{count}} heartbeat",
+        other: "созданы heartbeat ({{count}})",
+      },
+      createdHeartbeatsFailed: {
+        one: "не удалось создать {{count}} heartbeat",
+        other: "не удалось создать heartbeat ({{count}})",
+      },
+      checkedCapabilities: "проверены возможности оркестрации",
+      checkedCapabilitiesFailed: "не удалось проверить возможности оркестрации",
     },
     and: "и",
   },
@@ -2187,6 +2306,21 @@ export const ru: TranslationResources = {
       host: "Обзор",
     },
     plugins: pluginSettings.ru,
+    dictation: {
+      title: "Диктовка",
+      description: "Микрофон чата. Сохраняется на этом хосте и применяется сразу.",
+      model: "Модель",
+      modelHint: "Что расшифровывает ваш голос",
+      language: "Язык",
+      languageHint: "Облачные модели точнее с заданным языком",
+      downloaded: "Загружена",
+      downloadOnSelect: "Загрузится при выборе",
+      unavailable: "Недоступно",
+      locked: "Параметр запуска этого хоста задаёт провайдера диктовки.",
+      updateHost: "Обновите хост, чтобы выбрать модель диктовки.",
+      active: "Активно: {{model}} · {{language}}",
+      saveFailed: "Не удалось сохранить настройки диктовки.",
+    },
     readAloud: {
       title: "Read aloud",
       description: "Reads agent replies aloud with ElevenLabs.",

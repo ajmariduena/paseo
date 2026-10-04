@@ -29,6 +29,8 @@ import { StatusRing } from "@/components/status-ring";
 import { resolveSidebarWorkspacePrimaryLabel } from "@/components/sidebar/sidebar-workspace-title";
 import { TrailingActionScrim } from "@/components/ui/trailing-action-scrim";
 import { useWorkspaceLabelDefinitions } from "@/workspace-labels";
+import { SpeakingBars } from "@/read-aloud/speaking-bars";
+import { useReadAloudWorkspaceStatus } from "@/read-aloud/use-read-aloud-workspace";
 
 const foregroundMutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 const needsInputColorMapping = (theme: Theme) => ({
@@ -126,6 +128,12 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
   // The workspace carries label names; their colors live in its host's catalog, so the row is
   // where the two meet — the meta line is handed finished definitions.
   const labels = useWorkspaceLabelDefinitions(workspace.serverId, workspace.labels);
+  const readAloudStatus = useReadAloudWorkspaceStatus(workspace.serverId, workspace.workspaceId);
+  const readingAloudIndicator = readAloudStatus ? (
+    <View style={styles.workspaceStatusDot} testID="workspace-status-indicator-reading-aloud">
+      <SpeakingBars height={12} active={readAloudStatus === "playing"} />
+    </View>
+  ) : null;
   const workspaceBranchTextStyle = useMemo(
     () => [
       styles.workspaceBranchText,
@@ -138,24 +146,25 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
   return (
     <View style={styles.workspaceRowContent}>
       <View style={styles.workspaceRowMain}>
-        {leadingProjectName ? (
-          <ProjectStatusIndicator
-            iconDataUri={leadingProjectIconDataUri}
-            displayName={leadingProjectName}
-            projectViewKey={workspace.projectViewKey}
-            statusBucket={workspace.statusBucket}
-            backdrop={backdrop}
-            loading={isLoading}
-            testID={`sidebar-row-project-icon-${workspace.workspaceKey}`}
-          />
-        ) : (
-          <WorkspaceStatusIndicator
-            bucket={workspace.statusBucket}
-            workspaceKind={workspace.workspaceKind}
-            loading={isLoading}
-            reserveIdleSpace={reserveIdleStatusIndicatorSpace}
-          />
-        )}
+        {readingAloudIndicator ??
+          (leadingProjectName ? (
+            <ProjectStatusIndicator
+              iconDataUri={leadingProjectIconDataUri}
+              displayName={leadingProjectName}
+              projectViewKey={workspace.projectViewKey}
+              statusBucket={workspace.statusBucket}
+              backdrop={backdrop}
+              loading={isLoading}
+              testID={`sidebar-row-project-icon-${workspace.workspaceKey}`}
+            />
+          ) : (
+            <WorkspaceStatusIndicator
+              bucket={workspace.statusBucket}
+              workspaceKind={workspace.workspaceKind}
+              loading={isLoading}
+              reserveIdleSpace={reserveIdleStatusIndicatorSpace}
+            />
+          ))}
         <View style={styles.workspaceContentColumn}>
           <View style={styles.workspaceTitleRow}>
             <Text style={workspaceBranchTextStyle} numberOfLines={1}>

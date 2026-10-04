@@ -119,7 +119,9 @@ export default {
           "Voice calls on a weak signal transcribe what you say on this device before sending it.",
         ITSAppUsesNonExemptEncryption: false,
         UIBackgroundModes: ["audio", "voip"],
+        NSSupportsLiveActivities: true,
       },
+      appleTeamId: "2XCUWS7UU9",
       bundleIdentifier: variant.packageId,
       ...(variant.googleServiceInfoPlist
         ? { googleServicesFile: variant.googleServiceInfoPlist }
@@ -185,6 +187,7 @@ export default {
         },
       ],
       "expo-audio",
+      "@bacons/apple-targets",
       "@config-plugins/react-native-webrtc",
       [
         "expo-gradle-jvmargs",

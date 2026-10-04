@@ -6,6 +6,7 @@ import { StyleSheet } from "react-native-unistyles";
 import { ExpandableBadge } from "@/components/message";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { type OverviewSummary, type OverviewToolCallGroup } from "./model";
+import { formatPaseoActivity } from "./paseo-activity";
 import { OverviewToolCallGroupSheet } from "./sheet";
 
 interface OverviewGroupProps {
@@ -42,12 +43,18 @@ export function useOverviewSummary(summary: OverviewSummary): string {
       [summary.readFileCount, "toolCallGroup.readFiles"],
       [summary.searchCount, "toolCallGroup.searches"],
       [summary.otherToolCount, "toolCallGroup.otherTools"],
-      [summary.paseoCallCount, "toolCallGroup.paseoCalls"],
     ] as const;
     for (const [count, key] of entries) {
       if (count > 0) {
         parts.push(t(`${key}.${count === 1 ? "one" : "other"}`, { count }));
       }
+    }
+    for (const activity of summary.paseoActivities) {
+      parts.push(formatPaseoActivity(t, activity));
+    }
+    if (summary.paseoCallCount > 0) {
+      const plural = summary.paseoCallCount === 1 ? "one" : "other";
+      parts.push(t(`toolCallGroup.paseoCalls.${plural}`, { count: summary.paseoCallCount }));
     }
     return joinSummaryParts(parts, t("toolCallGroup.and"));
   }, [summary, t]);

@@ -2,6 +2,20 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const ko: TranslationResources = {
+  liveActivity: {
+    working_one: "{{count}}개 작업 중",
+    working_other: "{{count}}개 작업 중",
+    waiting_one: "{{count}}개 권한 요청",
+    waiting_other: "{{count}}개 권한 요청",
+    finished_one: "{{count}}개 완료",
+    finished_other: "{{count}}개 완료",
+    workingShort: "작업 중",
+    waitingShort_one: "권한 요청",
+    waitingShort_other: "권한 요청",
+    permission: "권한",
+    doneLabel: "완료",
+    failed: "실패",
+  },
   paneFind: {
     connectionFailure: "이 채팅을 검색할 수 없습니다. 호스트 연결을 확인하고 다시 시도하세요.",
     historyChangedFailure: "검색 중에 채팅이 변경되었습니다. 다시 검색하세요.",
@@ -66,6 +80,7 @@ export const ko: TranslationResources = {
       daemonClientUnavailable: "데몬 클라이언트를 사용할 수 없습니다",
       daemonClientDisconnected: "데몬 클라이언트 연결이 끊어졌습니다",
       noFileFound: "{{token}}에 해당하는 파일을 찾을 수 없습니다",
+      linkIsFolder: "{{path}}은(는) 파일이 아니라 폴더입니다",
       unexpectedDictationError: "받아쓰기를 처리하는 중 예기치 않은 오류가 발생했습니다.",
     },
     connectionStatus: {
@@ -330,6 +345,8 @@ export const ko: TranslationResources = {
       copyTurn: "턴 복사",
       readAloud: "소리 내어 읽기",
       stopReadingAloud: "소리 내어 읽기 중지",
+      pauseReadingAloud: "읽기 일시정지",
+      resumeReadingAloud: "읽기 다시 시작",
       copyMessage: "메시지 복사",
       forkMenu: "여기에서 채팅 분기",
       forkInNewTab: "새 탭으로 분기",
@@ -1935,6 +1952,37 @@ export const ko: TranslationResources = {
     archiveTooltip: "서브에이전트 보관",
     archiveFinishedAction: "완료된 하위 에이전트 보관",
     archiveFinishedRetry: "다시 시도 ({{failed}}/{{total}})",
+    untitled: "하위 에이전트",
+    openAction: "{{label}} 열기",
+    summaryDone: "{{count}}개 완료",
+    summaryStopped: "{{count}}개 중지됨",
+    status: {
+      starting: "시작 중",
+      working: "실행 중",
+      needsInput: "입력 필요",
+      failed: "실패",
+      done: "완료",
+      stopped: "중지됨",
+      archived: "보관됨",
+    },
+    providerBar: {
+      working: "실행 중 {{duration}}",
+      completedIn: "{{duration}} 만에 완료",
+      openParent: "상위 에이전트 열기",
+    },
+    providerPaneUnsupported: "공급자 하위 에이전트를 보려면 이 호스트를 업데이트하세요",
+  },
+  lineage: {
+    title: "계보",
+    titleRunning: "계보 · {{count}}개 실행 중",
+    parent: "상위",
+    previous: "이전 하위 에이전트 ({{count}})",
+    includeArchived: "보관된 항목 포함",
+    archivedLoadFailed: "불러올 수 없습니다. 다시 시도",
+    showMore: "{{count}}개 더 보기",
+    subagentOf: "{{title}}의 하위 에이전트",
+    parentFallback: "다른 에이전트",
+    empty: "관련 에이전트 없음",
   },
   panels: {
     draft: {
@@ -2029,6 +2077,68 @@ export const ko: TranslationResources = {
     paseoCalls: {
       one: "Paseo를 {{count}}회 호출함",
       other: "Paseo를 {{count}}회 호출함",
+    },
+    paseo: {
+      agentCount: { one: "에이전트 {{count}}개", other: "에이전트 {{count}}개" },
+      sentPrompts: {
+        one: "{{agents}}에 프롬프트 {{count}}개 보냄",
+        other: "{{agents}}에 프롬프트 {{count}}개 보냄",
+      },
+      sentPromptsFailed: {
+        one: "{{agents}}에 프롬프트 {{count}}개 보내기 시도함",
+        other: "{{agents}}에 프롬프트 {{count}}개 보내기 시도함",
+      },
+      waitedForAgents: {
+        one: "에이전트 {{count}}개를 기다림",
+        other: "에이전트 {{count}}개를 기다림",
+      },
+      waitedForAgentsFailed: {
+        one: "에이전트 {{count}}개 기다리기 시도함",
+        other: "에이전트 {{count}}개 기다리기 시도함",
+      },
+      checkedAgents: { one: "에이전트 {{count}}개 확인함", other: "에이전트 {{count}}개 확인함" },
+      checkedAgentsFailed: {
+        one: "에이전트 {{count}}개 확인 시도함",
+        other: "에이전트 {{count}}개 확인 시도함",
+      },
+      listedAgents: "에이전트 목록 조회함",
+      listedAgentsFailed: "에이전트 목록 조회 시도함",
+      stoppedAgents: { one: "에이전트 {{count}}개 중지함", other: "에이전트 {{count}}개 중지함" },
+      stoppedAgentsFailed: {
+        one: "에이전트 {{count}}개 중지 시도함",
+        other: "에이전트 {{count}}개 중지 시도함",
+      },
+      archivedAgents: { one: "에이전트 {{count}}개 보관함", other: "에이전트 {{count}}개 보관함" },
+      archivedAgentsFailed: {
+        one: "에이전트 {{count}}개 보관 시도함",
+        other: "에이전트 {{count}}개 보관 시도함",
+      },
+      answeredPermissions: {
+        one: "권한 요청 {{count}}개에 응답함",
+        other: "권한 요청 {{count}}개에 응답함",
+      },
+      answeredPermissionsFailed: {
+        one: "권한 요청 {{count}}개에 응답 시도함",
+        other: "권한 요청 {{count}}개에 응답 시도함",
+      },
+      createdSchedules: {
+        one: "일정 {{count}}개 만듦",
+        other: "일정 {{count}}개 만듦",
+      },
+      createdSchedulesFailed: {
+        one: "일정 {{count}}개 만들기 시도함",
+        other: "일정 {{count}}개 만들기 시도함",
+      },
+      createdHeartbeats: {
+        one: "하트비트 {{count}}개 만듦",
+        other: "하트비트 {{count}}개 만듦",
+      },
+      createdHeartbeatsFailed: {
+        one: "하트비트 {{count}}개 만들기 시도함",
+        other: "하트비트 {{count}}개 만들기 시도함",
+      },
+      checkedCapabilities: "오케스트레이션 기능 확인함",
+      checkedCapabilitiesFailed: "오케스트레이션 기능 확인 시도함",
     },
     and: "그리고",
   },
@@ -2162,6 +2272,21 @@ export const ko: TranslationResources = {
       host: "개요",
     },
     plugins: pluginSettings.ko,
+    dictation: {
+      title: "받아쓰기",
+      description: "채팅 마이크입니다. 이 호스트에 저장되고 바로 적용됩니다.",
+      model: "모델",
+      modelHint: "음성을 받아쓰는 모델",
+      language: "언어",
+      languageHint: "클라우드 모델은 언어를 고정하면 더 정확합니다",
+      downloaded: "다운로드됨",
+      downloadOnSelect: "선택하면 다운로드",
+      unavailable: "사용할 수 없음",
+      locked: "이 호스트의 실행 설정이 받아쓰기 제공자를 지정합니다.",
+      updateHost: "받아쓰기 모델을 선택하려면 호스트를 업데이트하세요.",
+      active: "사용 중: {{model}} · {{language}}",
+      saveFailed: "받아쓰기 설정을 저장하지 못했습니다.",
+    },
     readAloud: {
       title: "Read aloud",
       description: "Reads agent replies aloud with ElevenLabs.",

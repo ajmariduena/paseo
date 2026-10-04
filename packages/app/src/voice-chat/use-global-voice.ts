@@ -24,6 +24,7 @@ import {
 import { ConnectionQuality } from "@/voice-chat/connection-quality";
 import { useGlobalVoiceStore, type GlobalVoiceMode } from "@/voice-chat/global-voice-store";
 import { createHostVoiceMessagesTransport } from "@/voice-chat/messages/host-transport";
+import { stopReadAloud } from "@/read-aloud/player";
 import type {
   VoiceMessagesController,
   VoiceMessagesSnapshot,
@@ -365,6 +366,8 @@ export function useGlobalVoice(): GlobalVoice {
       toast.error(t("globalVoice.unsupported"));
       return;
     }
+    // The call shares the audio engine; a paused read-aloud would hold its queue frozen.
+    stopReadAloud();
     store.setStarting(true);
     store.setMinimized(false);
     store.setCall({ isMuted: false });

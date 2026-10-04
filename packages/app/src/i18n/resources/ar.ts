@@ -2,6 +2,20 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const ar: TranslationResources = {
+  liveActivity: {
+    working_one: "{{count}} قيد العمل",
+    working_other: "{{count}} قيد العمل",
+    waiting_one: "{{count}} يطلب إذنًا",
+    waiting_other: "{{count}} يطلبون إذنًا",
+    finished_one: "{{count}} انتهى",
+    finished_other: "{{count}} انتهوا",
+    workingShort: "قيد العمل",
+    waitingShort_one: "يطلب إذنًا",
+    waitingShort_other: "يطلبون إذنًا",
+    permission: "إذن",
+    doneLabel: "انتهى",
+    failed: "فشل",
+  },
   paneFind: {
     connectionFailure: "تعذر البحث في هذه المحادثة. تحقق من الاتصال بالمضيف وأعد المحاولة.",
     historyChangedFailure: "تغيّرت المحادثة أثناء البحث. أعد البحث.",
@@ -66,6 +80,7 @@ export const ar: TranslationResources = {
       daemonClientUnavailable: "عميل Daemon غير متوفر",
       daemonClientDisconnected: "تم قطع اتصال عميل Daemon",
       noFileFound: "لم يتم العثور على ملف لـ{{token}}",
+      linkIsFolder: "{{path}} مجلد وليس ملفًا",
       unexpectedDictationError: "حدث خطأ غير متوقع أثناء معالجة الإملاء.",
     },
     connectionStatus: {
@@ -329,6 +344,8 @@ export const ar: TranslationResources = {
       copyTurn: "نسخ بدوره",
       readAloud: "القراءة بصوت عالٍ",
       stopReadingAloud: "إيقاف القراءة بصوت عالٍ",
+      pauseReadingAloud: "إيقاف القراءة مؤقتًا",
+      resumeReadingAloud: "استئناف القراءة",
       copyMessage: "انسخ الرسالة",
       forkMenu: "تفريع الرسالة",
       forkInNewTab: "تفريع في تبويب جديد",
@@ -1925,6 +1942,37 @@ export const ar: TranslationResources = {
     archiveTooltip: "أرشفة الوكيل الفرعي",
     archiveFinishedAction: "أرشفة الوكلاء الفرعيين المكتملين",
     archiveFinishedRetry: "إعادة المحاولة ({{failed}}/{{total}})",
+    untitled: "وكيل فرعي",
+    openAction: "فتح {{label}}",
+    summaryDone: "{{count}} مكتملة",
+    summaryStopped: "{{count}} متوقفة",
+    status: {
+      starting: "قيد البدء",
+      working: "قيد التشغيل",
+      needsInput: "يحتاج إدخالاً",
+      failed: "فشل",
+      done: "مكتمل",
+      stopped: "متوقف",
+      archived: "مؤرشف",
+    },
+    providerBar: {
+      working: "قيد التشغيل {{duration}}",
+      completedIn: "اكتمل في {{duration}}",
+      openParent: "فتح الوكيل الأصل",
+    },
+    providerPaneUnsupported: "حدّث هذا المضيف لعرض الوكلاء الفرعيين للمزوّد",
+  },
+  lineage: {
+    title: "السلالة",
+    titleRunning: "السلالة · {{count}} قيد التشغيل",
+    parent: "الأصل",
+    previous: "الوكلاء الفرعيون السابقون ({{count}})",
+    includeArchived: "تضمين المؤرشفين",
+    archivedLoadFailed: "تعذّر التحميل. إعادة المحاولة",
+    showMore: "عرض {{count}} أخرى",
+    subagentOf: "وكيل فرعي لـ {{title}}",
+    parentFallback: "وكيل آخر",
+    empty: "لا يوجد وكلاء مرتبطون",
   },
   panels: {
     draft: {
@@ -2019,6 +2067,68 @@ export const ar: TranslationResources = {
     paseoCalls: {
       one: "استدعى Paseo {{count}} مرة",
       other: "استدعى Paseo {{count}} مرات",
+    },
+    paseo: {
+      agentCount: { one: "{{count}} وكيل", other: "{{count}} وكلاء" },
+      sentPrompts: {
+        one: "أرسل {{count}} موجّه إلى {{agents}}",
+        other: "أرسل {{count}} موجّهات إلى {{agents}}",
+      },
+      sentPromptsFailed: {
+        one: "حاول إرسال {{count}} موجّه إلى {{agents}}",
+        other: "حاول إرسال {{count}} موجّهات إلى {{agents}}",
+      },
+      waitedForAgents: {
+        one: "انتظر {{count}} وكيل",
+        other: "انتظر {{count}} وكلاء",
+      },
+      waitedForAgentsFailed: {
+        one: "حاول انتظار {{count}} وكيل",
+        other: "حاول انتظار {{count}} وكلاء",
+      },
+      checkedAgents: { one: "فحص {{count}} وكيل", other: "فحص {{count}} وكلاء" },
+      checkedAgentsFailed: {
+        one: "حاول فحص {{count}} وكيل",
+        other: "حاول فحص {{count}} وكلاء",
+      },
+      listedAgents: "عرض قائمة الوكلاء",
+      listedAgentsFailed: "حاول عرض قائمة الوكلاء",
+      stoppedAgents: { one: "أوقف {{count}} وكيل", other: "أوقف {{count}} وكلاء" },
+      stoppedAgentsFailed: {
+        one: "حاول إيقاف {{count}} وكيل",
+        other: "حاول إيقاف {{count}} وكلاء",
+      },
+      archivedAgents: { one: "أرشف {{count}} وكيل", other: "أرشف {{count}} وكلاء" },
+      archivedAgentsFailed: {
+        one: "حاول أرشفة {{count}} وكيل",
+        other: "حاول أرشفة {{count}} وكلاء",
+      },
+      answeredPermissions: {
+        one: "ردّ على {{count}} طلب إذن",
+        other: "ردّ على {{count}} طلبات إذن",
+      },
+      answeredPermissionsFailed: {
+        one: "حاول الرد على {{count}} طلب إذن",
+        other: "حاول الرد على {{count}} طلبات إذن",
+      },
+      createdSchedules: {
+        one: "أنشأ {{count}} جدولة",
+        other: "أنشأ {{count}} جدولات",
+      },
+      createdSchedulesFailed: {
+        one: "حاول إنشاء {{count}} جدولة",
+        other: "حاول إنشاء {{count}} جدولات",
+      },
+      createdHeartbeats: {
+        one: "أنشأ {{count}} نبضة",
+        other: "أنشأ {{count}} نبضات",
+      },
+      createdHeartbeatsFailed: {
+        one: "حاول إنشاء {{count}} نبضة",
+        other: "حاول إنشاء {{count}} نبضات",
+      },
+      checkedCapabilities: "فحص قدرات التنسيق",
+      checkedCapabilitiesFailed: "حاول فحص قدرات التنسيق",
     },
     and: "و",
   },
@@ -2151,6 +2261,21 @@ export const ar: TranslationResources = {
       host: "نظرة عامة",
     },
     plugins: pluginSettings.ar,
+    dictation: {
+      title: "الإملاء",
+      description: "ميكروفون الدردشة. يُحفظ على هذا المضيف ويُطبَّق فورًا.",
+      model: "النموذج",
+      modelHint: "ما يحوّل صوتك إلى نص",
+      language: "اللغة",
+      languageHint: "نماذج السحابة أدق مع لغة محددة",
+      downloaded: "تم التنزيل",
+      downloadOnSelect: "يُنزَّل عند اختياره",
+      unavailable: "غير متاح",
+      locked: "إعداد تشغيل على هذا المضيف يحدد مزوّد الإملاء.",
+      updateHost: "حدّث المضيف لاختيار نموذج الإملاء.",
+      active: "النشط: {{model}} · {{language}}",
+      saveFailed: "تعذّر حفظ إعدادات الإملاء.",
+    },
     readAloud: {
       title: "Read aloud",
       description: "Reads agent replies aloud with ElevenLabs.",

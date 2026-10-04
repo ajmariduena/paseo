@@ -89,6 +89,7 @@ function resamplePcm16(pcm: Uint8Array, fromRate: number, toRate: number): Uint8
 
 interface PcmOutput {
   resumePlayback(): void;
+  pausePlayback?(): void;
   playPCMData(bytes: Uint8Array): void;
   stopPlayback(): void;
 }
@@ -100,6 +101,42 @@ const SCHEDULE_AHEAD_MS = 180;
 /** When everything already handed to each native output finishes, in Date.now() time. */
 const playheads = new WeakMap<PcmOutput, number>();
 
+interface Completion {
+  dueAt: number;
+  fire: () => void;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
+const pausedAt = new WeakMap<PcmOutput, number>();
+const completions = new WeakMap<PcmOutput, Set<Completion>>();
+
+function arm(completion: Completion): void {
+  completion.timer = setTimeout(completion.fire, Math.max(0, completion.dueAt - Date.now()));
+}
+
+/** Completion is timed on the wall clock, so a pause has to freeze those timers with the audio. */
+export function pausePcm16(output: PcmOutput): void {
+  if (pausedAt.has(output) || !output.pausePlayback) return;
+  output.pausePlayback();
+  pausedAt.set(output, Date.now());
+  for (const completion of completions.get(output) ?? []) clearTimeout(completion.timer);
+  clearPlaybackLevels();
+}
+
+export function resumePcm16(output: PcmOutput): void {
+  const since = pausedAt.get(output);
+  if (since === undefined) return;
+  pausedAt.delete(output);
+  const shift = Date.now() - since;
+  const playhead = playheads.get(output);
+  if (playhead !== undefined) playheads.set(output, playhead + shift);
+  for (const completion of completions.get(output) ?? []) {
+    completion.dueAt += shift;
+    arm(completion);
+  }
+  output.resumePlayback();
+}
+
 /** Keep voice output on the native communication engine and its echo reference. */
 export function playPcm16(
   bytes: Uint8Array,
@@ -110,30 +147,44 @@ export function playPcm16(
   if (signal.aborted) return Promise.reject(new Error("Playback stopped"));
   const pcm = resamplePcm16(bytes, parsePcmSampleRate(mimeType) ?? 24000, 16000);
   const duration = pcm.length / 2 / 16000;
+  let pending = completions.get(output);
+  if (!pending) {
+    pending = new Set();
+    completions.set(output, pending);
+  }
+  const outputCompletions = pending;
   return new Promise((resolve, reject) => {
-    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const completion: Completion = {
+      dueAt: 0,
+      fire: () => {
+        outputCompletions.delete(completion);
+        signal.removeEventListener("abort", abort);
+        resolve(duration);
+      },
+    };
     const abort = () => {
-      clearTimeout(timeout);
+      clearTimeout(completion.timer);
+      outputCompletions.delete(completion);
       output.stopPlayback();
       playheads.delete(output);
+      pausedAt.delete(output);
       clearPlaybackLevels();
       reject(new Error("Playback stopped"));
     };
     signal.addEventListener("abort", abort, { once: true });
     try {
-      output.resumePlayback();
+      const pausedSince = pausedAt.get(output);
+      if (pausedSince === undefined) output.resumePlayback();
       output.playPCMData(pcm);
-      const now = Date.now();
+      const now = pausedSince ?? Date.now();
       const endsAt = Math.max(now, playheads.get(output) ?? 0) + duration * 1000;
       playheads.set(output, endsAt);
-      schedulePlaybackPcm16(pcm, 16000, endsAt - duration * 1000);
-      timeout = setTimeout(
-        () => {
-          signal.removeEventListener("abort", abort);
-          resolve(duration);
-        },
-        Math.max(0, endsAt - now - SCHEDULE_AHEAD_MS),
-      );
+      completion.dueAt = endsAt - SCHEDULE_AHEAD_MS;
+      outputCompletions.add(completion);
+      if (pausedSince === undefined) {
+        schedulePlaybackPcm16(pcm, 16000, endsAt - duration * 1000);
+        arm(completion);
+      }
     } catch (error) {
       signal.removeEventListener("abort", abort);
       reject(error);

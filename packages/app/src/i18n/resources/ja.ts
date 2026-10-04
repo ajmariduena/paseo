@@ -2,6 +2,20 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const ja: TranslationResources = {
+  liveActivity: {
+    working_one: "{{count}} 件実行中",
+    working_other: "{{count}} 件実行中",
+    waiting_one: "{{count}} 件が許可待ち",
+    waiting_other: "{{count}} 件が許可待ち",
+    finished_one: "{{count}} 件完了",
+    finished_other: "{{count}} 件完了",
+    workingShort: "実行中",
+    waitingShort_one: "許可待ち",
+    waitingShort_other: "許可待ち",
+    permission: "許可",
+    doneLabel: "完了",
+    failed: "失敗",
+  },
   paneFind: {
     connectionFailure:
       "このチャットを検索できませんでした。ホストへの接続を確認して再試行してください。",
@@ -67,6 +81,7 @@ export const ja: TranslationResources = {
       daemonClientUnavailable: "デーモンクライアントが利用できません",
       daemonClientDisconnected: "デーモンクライアントが切断されています",
       noFileFound: "{{token}}のファイルが見つかりません",
+      linkIsFolder: "{{path}} はファイルではなくフォルダです",
       unexpectedDictationError: "音声入力処理中に予期しないエラーが発生しました。",
     },
     connectionStatus: {
@@ -334,6 +349,8 @@ export const ja: TranslationResources = {
       copyTurn: "ターンをコピー",
       readAloud: "読み上げ",
       stopReadingAloud: "読み上げを停止",
+      pauseReadingAloud: "読み上げを一時停止",
+      resumeReadingAloud: "読み上げを再開",
       copyMessage: "メッセージをコピー",
       forkMenu: "メッセージをフォーク",
       forkInNewTab: "新しいタブにフォーク",
@@ -1945,6 +1962,38 @@ export const ja: TranslationResources = {
     archiveTooltip: "サブエージェントをアーカイブ",
     archiveFinishedAction: "完了したサブエージェントをアーカイブ",
     archiveFinishedRetry: "再試行 ({{failed}}/{{total}})",
+    untitled: "サブエージェント",
+    openAction: "{{label}}を開く",
+    summaryDone: "{{count}} 件完了",
+    summaryStopped: "{{count}} 件停止",
+    status: {
+      starting: "起動中",
+      working: "実行中",
+      needsInput: "入力待ち",
+      failed: "失敗",
+      done: "完了",
+      stopped: "停止",
+      archived: "アーカイブ済み",
+    },
+    providerBar: {
+      working: "実行中 {{duration}}",
+      completedIn: "{{duration}}で完了",
+      openParent: "親を開く",
+    },
+    providerPaneUnsupported:
+      "プロバイダーのサブエージェントを表示するには、このホストを更新してください",
+  },
+  lineage: {
+    title: "系譜",
+    titleRunning: "系譜 · {{count}} 件実行中",
+    parent: "親",
+    previous: "以前のサブエージェント ({{count}})",
+    includeArchived: "アーカイブ済みを含める",
+    archivedLoadFailed: "読み込めませんでした。再試行",
+    showMore: "さらに {{count}} 件表示",
+    subagentOf: "{{title}} のサブエージェント",
+    parentFallback: "別のエージェント",
+    empty: "関連するエージェントはありません",
   },
   panels: {
     draft: {
@@ -2040,6 +2089,77 @@ export const ja: TranslationResources = {
     paseoCalls: {
       one: "Paseoを{{count}}回呼び出し",
       other: "Paseoを{{count}}回呼び出し",
+    },
+    paseo: {
+      agentCount: { one: "{{count}}件のエージェント", other: "{{count}}件のエージェント" },
+      sentPrompts: {
+        one: "{{agents}}にプロンプトを{{count}}件送信",
+        other: "{{agents}}にプロンプトを{{count}}件送信",
+      },
+      sentPromptsFailed: {
+        one: "{{agents}}へのプロンプト{{count}}件の送信を試行",
+        other: "{{agents}}へのプロンプト{{count}}件の送信を試行",
+      },
+      waitedForAgents: {
+        one: "エージェント{{count}}件を待機",
+        other: "エージェント{{count}}件を待機",
+      },
+      waitedForAgentsFailed: {
+        one: "エージェント{{count}}件の待機を試行",
+        other: "エージェント{{count}}件の待機を試行",
+      },
+      checkedAgents: {
+        one: "エージェント{{count}}件を確認",
+        other: "エージェント{{count}}件を確認",
+      },
+      checkedAgentsFailed: {
+        one: "エージェント{{count}}件の確認を試行",
+        other: "エージェント{{count}}件の確認を試行",
+      },
+      listedAgents: "エージェントを一覧表示",
+      listedAgentsFailed: "エージェントの一覧表示を試行",
+      stoppedAgents: {
+        one: "エージェント{{count}}件を停止",
+        other: "エージェント{{count}}件を停止",
+      },
+      stoppedAgentsFailed: {
+        one: "エージェント{{count}}件の停止を試行",
+        other: "エージェント{{count}}件の停止を試行",
+      },
+      archivedAgents: {
+        one: "エージェント{{count}}件をアーカイブ",
+        other: "エージェント{{count}}件をアーカイブ",
+      },
+      archivedAgentsFailed: {
+        one: "エージェント{{count}}件のアーカイブを試行",
+        other: "エージェント{{count}}件のアーカイブを試行",
+      },
+      answeredPermissions: {
+        one: "権限リクエスト{{count}}件に回答",
+        other: "権限リクエスト{{count}}件に回答",
+      },
+      answeredPermissionsFailed: {
+        one: "権限リクエスト{{count}}件への回答を試行",
+        other: "権限リクエスト{{count}}件への回答を試行",
+      },
+      createdSchedules: {
+        one: "スケジュールを{{count}}件作成",
+        other: "スケジュールを{{count}}件作成",
+      },
+      createdSchedulesFailed: {
+        one: "スケジュール{{count}}件の作成を試行",
+        other: "スケジュール{{count}}件の作成を試行",
+      },
+      createdHeartbeats: {
+        one: "ハートビートを{{count}}件作成",
+        other: "ハートビートを{{count}}件作成",
+      },
+      createdHeartbeatsFailed: {
+        one: "ハートビート{{count}}件の作成を試行",
+        other: "ハートビート{{count}}件の作成を試行",
+      },
+      checkedCapabilities: "オーケストレーション機能を確認",
+      checkedCapabilitiesFailed: "オーケストレーション機能の確認を試行",
     },
     and: "および",
   },
@@ -2173,6 +2293,21 @@ export const ja: TranslationResources = {
       host: "概要",
     },
     plugins: pluginSettings.ja,
+    dictation: {
+      title: "音声入力",
+      description: "チャットのマイク。このホストに保存され、すぐに反映されます。",
+      model: "モデル",
+      modelHint: "音声を文字起こしするモデル",
+      language: "言語",
+      languageHint: "クラウドモデルは言語を固定すると精度が上がります",
+      downloaded: "ダウンロード済み",
+      downloadOnSelect: "選択時にダウンロード",
+      unavailable: "利用不可",
+      locked: "このホストの起動設定が音声入力のプロバイダーを指定しています。",
+      updateHost: "音声入力のモデルを選ぶにはホストを更新してください。",
+      active: "使用中: {{model}} · {{language}}",
+      saveFailed: "音声入力の設定を保存できませんでした。",
+    },
     readAloud: {
       title: "Read aloud",
       description: "Reads agent replies aloud with ElevenLabs.",

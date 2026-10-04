@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { buildPaseoToolDetailSections } from "./paseo-tool-call-detail.js";
+import {
+  buildPaseoToolDetailSections,
+  resolvePaseoSpawnedAgentId,
+} from "./paseo-tool-call-detail.js";
 
 describe("Paseo tool-call detail presentation", () => {
   it.each(["mcp__paseo__create_agent", "paseo.create_agent", "paseo_remote.create_agent"])(
@@ -145,5 +148,32 @@ describe("Paseo tool-call detail presentation", () => {
 
   it("leaves non-Paseo tools alone", () => {
     expect(buildPaseoToolDetailSections("mcp__github__create_issue", {}, {})).toBeNull();
+  });
+});
+
+describe("resolvePaseoSpawnedAgentId", () => {
+  it.each(["mcp__paseo__create_agent", "paseo.create_agent", "paseo_create_agent"])(
+    "reads the created agent from a structured %s result",
+    (toolName) => {
+      expect(
+        resolvePaseoSpawnedAgentId(toolName, { structuredContent: { agentId: "agt_1" } }),
+      ).toBe("agt_1");
+    },
+  );
+
+  it("reads the created agent from a single text content block", () => {
+    expect(
+      resolvePaseoSpawnedAgentId("mcp__paseo__create_agent", {
+        content: [{ type: "text", text: JSON.stringify({ agentId: "agt_2", status: "idle" }) }],
+      }),
+    ).toBe("agt_2");
+  });
+
+  it("returns null for other tools and for results without an agent", () => {
+    expect(
+      resolvePaseoSpawnedAgentId("mcp__paseo__send_agent_prompt", { agentId: "agt_3" }),
+    ).toBeNull();
+    expect(resolvePaseoSpawnedAgentId("mcp__paseo__create_agent", { status: "idle" })).toBeNull();
+    expect(resolvePaseoSpawnedAgentId("mcp__paseo__create_agent", null)).toBeNull();
   });
 });
