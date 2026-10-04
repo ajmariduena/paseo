@@ -103,6 +103,32 @@ describe("readSubagentSpawnCall", () => {
     });
   });
 
+  it("reads the created agent from Claude's parsed output envelope", () => {
+    const call = toolCall("1", {
+      name: "mcp__paseo__create_agent",
+      detail: {
+        type: "unknown",
+        input: { title: "Haiku A", provider: "claude/claude-haiku-4-5", initialPrompt: "Go" },
+        output: {
+          output: {
+            agentId: "12f4881e-4be0-45ec-b149-260a3d9ec66f",
+            type: "claude",
+            status: "running",
+            currentModeId: "default",
+          },
+        },
+      },
+    });
+    expect(readSubagentSpawnCall(call)).toEqual({
+      kind: "paseo",
+      callId: "call_1",
+      status: "completed",
+      agentId: "12f4881e-4be0-45ec-b149-260a3d9ec66f",
+      title: "Haiku A",
+      provider: "claude",
+    });
+  });
+
   it("keeps a running create_agent as a spawn without an agent yet", () => {
     expect(readSubagentSpawnCall(createAgentCall("1", { status: "running" }))).toMatchObject({
       kind: "paseo",

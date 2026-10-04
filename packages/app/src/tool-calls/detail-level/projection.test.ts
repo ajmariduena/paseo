@@ -7,6 +7,7 @@ import {
   type PreparedToolCallHistory,
   type ToolCallDetailLevel,
 } from "./projection";
+import { partitionSpawnRun } from "@/subagents/timeline/spawn-call";
 
 type AssistantMessageItem = Extract<StreamItem, { kind: "assistant_message" }>;
 
@@ -584,6 +585,190 @@ describe("tool call detail-level projection", () => {
         mode: "overview",
         run: { calls: [shell] },
       });
+    });
+  });
+});
+
+function claudeCreateAgent(
+  id: string,
+  input: { title: string; provider: string },
+  result: { agentId: string; type: string; currentModeId: string } | { error: string },
+): ToolCallItem {
+  const failed = "error" in result;
+  const call = toolCall(
+    id,
+    {
+      type: "unknown",
+      input: { ...input, initialPrompt: "Solo la línea.", clientRequestId: `qa-${id}` },
+      output: failed
+        ? null
+        : {
+            output: {
+              ...result,
+              status: "running",
+              cwd: "/tmp/qa-orch",
+              lastMessage: null,
+              permission: null,
+            },
+          },
+    },
+    { name: "mcp__paseo__create_agent", status: failed ? "failed" : "completed" },
+  );
+  if (failed && call.payload.source === "agent") {
+    call.payload.data.error = {
+      type: "tool_result",
+      content: result.error,
+      is_error: true,
+      tool_use_id: call.payload.data.callId,
+    };
+  }
+  return call;
+}
+
+function claudeCall(id: string, name: string, output: unknown): ToolCallItem {
+  return toolCall(id, { type: "unknown", input: {}, output: { output } }, { name });
+}
+
+describe("subagent spawn runs from real Claude timelines", () => {
+  it("groups two Haiku children created after permission approval", () => {
+    const search = claudeCall("1", "ToolSearch", [
+      { tool_name: "mcp__paseo__create_agent", type: "tool_reference" },
+    ]);
+    const capabilities = claudeCall("2", "mcp__paseo__get_orchestration_capabilities", {
+      caller: { provider: "claude", modeId: "default" },
+    });
+    const haikuA = claudeCreateAgent(
+      "3",
+      { title: "Haiku A", provider: "claude/claude-haiku-4-5" },
+      {
+        agentId: "12f4881e-4be0-45ec-b149-260a3d9ec66f",
+        type: "claude",
+        currentModeId: "default",
+      },
+    );
+    const haikuB = claudeCreateAgent(
+      "4",
+      { title: "Haiku B", provider: "claude/claude-haiku-4-5" },
+      {
+        agentId: "6229f4ce-e8a8-4301-b68a-df2a419e57c6",
+        type: "claude",
+        currentModeId: "default",
+      },
+    );
+
+    const result = project({
+      level: "overview",
+      tail: [search, capabilities, haikuA, haikuB, assistant("done")],
+    });
+
+    expect(result.groupsByHostId.get("1")).toMatchObject({
+      mode: "overview",
+      run: { calls: [search, capabilities] },
+      summary: { paseoCallCount: 0 },
+    });
+    expect(result.groupsByHostId.get("3")).toMatchObject({
+      mode: "subagents",
+      run: { calls: [haikuA, haikuB] },
+    });
+  });
+
+  it("keeps a failed spawn in the group's run without splitting the successful ones", () => {
+    const claude = claudeCreateAgent(
+      "1",
+      { title: "Claude: nombre", provider: "claude/claude-haiku-4-5" },
+      {
+        agentId: "dfc3ef40-b151-4599-a21f-22b5cc787767",
+        type: "claude",
+        currentModeId: "bypassPermissions",
+      },
+    );
+    const codexFailed = claudeCreateAgent(
+      "2",
+      { title: "Codex: nombre", provider: "codex/gpt-6-sol" },
+      {
+        error:
+          "cannot inherit mode 'bypassPermissions' from caller (provider 'claude') for new agent (provider 'codex'). Pass an explicit mode.",
+      },
+    );
+    const codex = claudeCreateAgent(
+      "3",
+      { title: "Codex: nombre", provider: "codex/gpt-6-sol" },
+      { agentId: "bf7e54dd-ad56-40a7-b767-0409f33ca733", type: "codex", currentModeId: "auto" },
+    );
+    const wait = claudeCall("4", "mcp__paseo__wait_for_agent", {
+      agentId: "dfc3ef40-b151-4599-a21f-22b5cc787767",
+      status: "idle",
+    });
+
+    const result = project({ level: "overview", tail: [claude, codexFailed, codex, wait] });
+
+    expect(result.tail.map((item) => item.id)).toEqual(["1", "4"]);
+    const group = result.groupsByHostId.get("1");
+    expect(group).toMatchObject({
+      mode: "subagents",
+      run: { calls: [claude, codexFailed, codex] },
+    });
+    expect(partitionSpawnRun(group?.run.calls ?? [])).toEqual({
+      spawns: [claude, codex],
+      failed: [codexFailed],
+    });
+    expect(result.groupsByHostId.get("4")).toMatchObject({
+      mode: "overview",
+      summary: { paseoActivities: [{ activity: "waitedForAgents" }] },
+    });
+  });
+
+  it("leaves a failed spawn that no spawn precedes in the tool run", () => {
+    const failed = claudeCreateAgent(
+      "1",
+      { title: "Codex: nombre", provider: "codex/gpt-6-sol" },
+      { error: "boom" },
+    );
+    const retry = claudeCreateAgent(
+      "2",
+      { title: "Codex: nombre", provider: "codex/gpt-6-sol" },
+      { agentId: "agt_retry", type: "codex", currentModeId: "auto" },
+    );
+
+    const result = project({ level: "overview", tail: [failed, retry] });
+
+    expect(result.groupsByHostId.get("1")).toMatchObject({
+      mode: "overview",
+      run: { calls: [failed] },
+    });
+    expect(result.groupsByHostId.get("2")).toMatchObject({
+      mode: "subagents",
+      run: { calls: [retry] },
+    });
+  });
+
+  it("continues a live subagent run across a failed spawn arriving in the head", () => {
+    const first = claudeCreateAgent(
+      "1",
+      { title: "A", provider: "claude/claude-haiku-4-5" },
+      { agentId: "agt_a", type: "claude", currentModeId: "default" },
+    );
+    const failed = claudeCreateAgent(
+      "2",
+      { title: "B", provider: "codex/gpt-6-sol" },
+      { error: "boom" },
+    );
+    const second = claudeCreateAgent(
+      "3",
+      { title: "B", provider: "codex/gpt-6-sol" },
+      { agentId: "agt_b", type: "codex", currentModeId: "auto" },
+    );
+
+    const result = project({
+      level: "overview",
+      tail: [first],
+      head: [failed, second],
+      isTurnActive: true,
+    });
+
+    expect(result.groupsByHostId.get("1")).toMatchObject({
+      mode: "subagents",
+      run: { calls: [first, failed, second] },
     });
   });
 });

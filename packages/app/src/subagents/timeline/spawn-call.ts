@@ -69,3 +69,34 @@ export function readSubagentSpawnCall(item: StreamItem): SubagentSpawnCall | nul
 export function isSubagentSpawnCall(item: StreamItem): boolean {
   return readSubagentSpawnCall(item) !== null;
 }
+
+/** A Paseo `create_agent` that failed: drawn as a tool call, but it doesn't split a spawn group. */
+export function isFailedSubagentSpawnCall(item: StreamItem): boolean {
+  if (item.kind !== "tool_call" || item.payload.source !== "agent") return false;
+  const { data } = item.payload;
+  return (
+    (data.status === "failed" || data.status === "canceled") &&
+    getPaseoCallLeafName(data.name) === "create_agent"
+  );
+}
+
+export interface SpawnRunParts {
+  spawns: readonly ToolCallItem[];
+  failed: readonly ToolCallItem[];
+}
+
+const spawnRunPartsCache = new WeakMap<readonly ToolCallItem[], SpawnRunParts>();
+
+/** Splits a subagent run into its spawn rows and the failed spawns that rode along with them. */
+export function partitionSpawnRun(calls: readonly ToolCallItem[]): SpawnRunParts {
+  const cached = spawnRunPartsCache.get(calls);
+  if (cached) return cached;
+  const spawns: ToolCallItem[] = [];
+  const failed: ToolCallItem[] = [];
+  for (const call of calls) {
+    (isSubagentSpawnCall(call) ? spawns : failed).push(call);
+  }
+  const parts = { spawns, failed };
+  spawnRunPartsCache.set(calls, parts);
+  return parts;
+}

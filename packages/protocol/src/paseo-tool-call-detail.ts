@@ -414,6 +414,14 @@ function unwrapMcpResult(output: unknown): unknown {
     }
   }
 
+  // Claude reports an MCP result as `{ output: <parsed text> }` (plus `files` when it tracked edits).
+  if (
+    output.output !== undefined &&
+    Object.keys(output).every((key) => key === "output" || key === "files")
+  ) {
+    return parseJsonText(output.output) ?? output.output;
+  }
+
   return output;
 }
 

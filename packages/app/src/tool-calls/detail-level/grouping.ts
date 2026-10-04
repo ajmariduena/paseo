@@ -1,6 +1,6 @@
 import type { ToolCallDetail } from "@getpaseo/protocol/agent-types";
 import type { StreamItem, ToolCallItem } from "@/types/stream";
-import { isSubagentSpawnCall } from "@/subagents/timeline/spawn-call";
+import { isFailedSubagentSpawnCall, isSubagentSpawnCall } from "@/subagents/timeline/spawn-call";
 
 export interface ToolCallDescriptor {
   detail: ToolCallDetail;
@@ -80,6 +80,14 @@ export function resolveToolCallRunKind(item: StreamItem): ToolCallRunKind | null
   return isSubagentSpawnCall(item) ? "subagents" : "tools";
 }
 
+function resolveRunKindAfter(
+  item: StreamItem,
+  pendingKind: ToolCallRunKind | null,
+): ToolCallRunKind | null {
+  if (pendingKind === "subagents" && isFailedSubagentSpawnCall(item)) return "subagents";
+  return resolveToolCallRunKind(item);
+}
+
 function createRun(
   calls: readonly ToolCallItem[],
   kind: ToolCallRunKind,
@@ -144,7 +152,7 @@ export function prepareGroupedHistory<TGroup>(input: {
   };
 
   for (const item of input.tail) {
-    const kind = resolveToolCallRunKind(item);
+    const kind = resolveRunKindAfter(item, pendingKind);
     if (kind && item.kind === "tool_call") {
       if (pendingKind !== null && pendingKind !== kind) {
         flush();
@@ -200,7 +208,7 @@ export function groupLiveToolCalls<TGroup>(input: {
   };
 
   for (const item of input.head) {
-    const kind = resolveToolCallRunKind(item);
+    const kind = resolveRunKindAfter(item, pendingKind);
     if (kind && item.kind === "tool_call") {
       if (pendingKind !== null && pendingKind !== kind) {
         flush(true);

@@ -425,6 +425,24 @@ describe("resolvePaseoSpawnedAgentId", () => {
     ).toBe("agt_2");
   });
 
+  it("reads the created agent from Claude's parsed output envelope", () => {
+    expect(
+      resolvePaseoSpawnedAgentId("mcp__paseo__create_agent", {
+        output: {
+          agentId: "bf7e54dd-ad56-40a7-b767-0409f33ca733",
+          type: "codex",
+          status: "running",
+          currentModeId: "auto",
+        },
+      }),
+    ).toBe("bf7e54dd-ad56-40a7-b767-0409f33ca733");
+    expect(
+      resolvePaseoSpawnedAgentId("mcp__paseo__create_agent", {
+        output: JSON.stringify({ agentId: "agt_4" }),
+      }),
+    ).toBe("agt_4");
+  });
+
   it("returns null for other tools and for results without an agent", () => {
     expect(
       resolvePaseoSpawnedAgentId("mcp__paseo__send_agent_prompt", { agentId: "agt_3" }),

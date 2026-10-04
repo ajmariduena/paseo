@@ -121,7 +121,7 @@ import { SubagentNotificationRows } from "@/subagents/timeline/notification-row"
 import { readSubagentNotificationEntries } from "@/subagents/timeline/notification-source";
 import { SubagentSpawnGroup } from "@/subagents/timeline/spawn-group";
 import { SubagentSpawnRow } from "@/subagents/timeline/spawn-row";
-import { isSubagentSpawnCall } from "@/subagents/timeline/spawn-call";
+import { isSubagentSpawnCall, partitionSpawnRun } from "@/subagents/timeline/spawn-call";
 
 function renderLiveAuxiliaryNode(input: {
   pendingPermissions: ReactNode;
@@ -924,7 +924,31 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           return renderSingleToolCallItem(item, layoutItem.isLastInToolSequence);
         }
         if (group.mode === "subagents") {
-          return <SubagentSpawnGroup groupId={group.run.id} calls={group.run.calls} />;
+          const { spawns, failed } = partitionSpawnRun(group.run.calls);
+          return (
+            <>
+              {spawns.length > 1 ? (
+                <SubagentSpawnGroup groupId={group.run.id} calls={spawns} />
+              ) : (
+                spawns.map((call) => (
+                  <React.Fragment key={call.id}>
+                    {renderSingleToolCallItem(
+                      call,
+                      failed.length === 0 && layoutItem.isLastInToolSequence,
+                    )}
+                  </React.Fragment>
+                ))
+              )}
+              {failed.map((call, index) => (
+                <React.Fragment key={call.id}>
+                  {renderSingleToolCallItem(
+                    call,
+                    index === failed.length - 1 && layoutItem.isLastInToolSequence,
+                  )}
+                </React.Fragment>
+              ))}
+            </>
+          );
         }
         const expanded = expandedToolCallGroupIds.has(group.run.id);
         return (
