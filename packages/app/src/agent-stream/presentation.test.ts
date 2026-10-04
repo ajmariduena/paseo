@@ -665,6 +665,7 @@ describe("turn folding", () => {
     expect(ids(result.tail)).toEqual([
       "prompt",
       "prompt:turn-fold",
+      "note:block:0",
       "answer:block:0",
       "prompt:turn-files",
     ]);
@@ -740,6 +741,7 @@ describe("turn folding", () => {
     expect(ids(result.tail)).toEqual([
       "prompt",
       "prompt:turn-fold",
+      "note:block:0",
       "plan",
       "careful",
       "answer:block:0",
@@ -749,12 +751,35 @@ describe("turn folding", () => {
 
   it("lets chat find open the fold that hides a message", () => {
     const collapsed = present({ tail: turn });
-    expect(findCollapsedTurnFoldKey(collapsed.turnFolds, "note")).toBe("prompt");
+    expect(findCollapsedTurnFoldKey(collapsed.turnFolds, "thinking")).toBe("prompt");
     expect(findCollapsedTurnFoldKey(collapsed.turnFolds, "answer")).toBeNull();
 
     const expanded = present({ tail: turn, expanded: new Set(["prompt"]) });
-    expect(findCollapsedTurnFoldKey(expanded.turnFolds, "note")).toBeNull();
-    expect(ids(expanded.tail)).toContain("note:block:0");
+    expect(findCollapsedTurnFoldKey(expanded.turnFolds, "thinking")).toBeNull();
+    expect(ids(expanded.tail)).toContain("thinking");
+  });
+
+  it("keeps an answer visible when the agent runs a tool after it", () => {
+    const reply = assistantMessage("reply", 40);
+    const memoryWrite = workCall("memory", 41, { type: "write", filePath: "/m.md", content: "x" });
+    const ack = assistantMessage("ack", 42);
+    const tail = [
+      prompt,
+      workCall("search", 1, { type: "shell", command: "rg x" }),
+      reply,
+      memoryWrite,
+      ack,
+    ];
+
+    const result = present({ tail });
+
+    expect(ids(result.tail)).toEqual([
+      "prompt",
+      "prompt:turn-fold",
+      "reply:block:0",
+      "ack:block:0",
+      "prompt:turn-files",
+    ]);
   });
 
   it("remembers a fold under its timeline position", () => {
