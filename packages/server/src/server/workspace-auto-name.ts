@@ -2,6 +2,7 @@ import type pino from "pino";
 import type { FirstAgentContext } from "@getpaseo/protocol/messages";
 
 import { resolveFirstAgentPromptTitle } from "./agent/create-agent-title.js";
+import { buildAgentBranchNameSeed } from "./agent/prompt-attachments.js";
 import type { AgentManager } from "./agent/agent-manager.js";
 import type { ProviderSnapshotManager } from "./agent/provider-snapshot-manager.js";
 import type { StructuredGenerationDaemonConfig } from "./agent/structured-generation-providers.js";
@@ -35,6 +36,8 @@ interface WorkspaceAutoNameOptions {
   generateWorkspaceName?: WorkspaceNameGenerator;
 }
 
+const GENERATION_REUSE_WINDOW_MS = 60_000;
+
 interface ScheduleContext {
   currentSelection?: CurrentSelection;
 }
@@ -50,6 +53,7 @@ export class WorkspaceAutoName {
   private readonly emitWorkspaceUpdateForWorkspaceId: (workspaceId: string) => Promise<void>;
   private readonly logger: pino.Logger;
   private readonly generateWorkspaceName: WorkspaceNameGenerator;
+  private readonly recentGenerations = new Map<string, Promise<GeneratedWorkspaceName | null>>();
 
   constructor(options: WorkspaceAutoNameOptions) {
     this.agentManager = options.agentManager;
@@ -100,6 +104,36 @@ export class WorkspaceAutoName {
           currentSelection: context.currentSelection ?? null,
         }),
       { cwd: input.cwd, message: "Failed to auto-name directory workspace title" },
+    );
+  }
+
+  scheduleForAgent(
+    input: {
+      agentId: string;
+      cwd: string;
+      firstAgentContext: FirstAgentContext;
+      provisionalTitle: string;
+    },
+    context: ScheduleContext = {},
+  ): void {
+    this.schedule(
+      async () => {
+        const generated = await this.generateFromContext({
+          cwd: input.cwd,
+          firstAgentContext: input.firstAgentContext,
+          currentSelection: context.currentSelection ?? null,
+        });
+        const title = generated?.title ?? null;
+        if (!title) {
+          return;
+        }
+        await this.agentManager.replaceTitleIfUnchanged(
+          input.agentId,
+          input.provisionalTitle,
+          title,
+        );
+      },
+      { cwd: input.cwd, message: "Failed to auto-name agent title" },
     );
   }
 
@@ -199,7 +233,17 @@ export class WorkspaceAutoName {
     firstAgentContext: FirstAgentContext;
     currentSelection: CurrentSelection;
   }): Promise<GeneratedWorkspaceName | null> {
-    return this.generateWorkspaceName({
+    // The workspace and its first agent are named from the same prompt by separate
+    // schedulers; sharing the in-flight result keeps that to one model call.
+    const key = buildAgentBranchNameSeed(input.firstAgentContext);
+    if (!key) {
+      return Promise.resolve(null);
+    }
+    const existing = this.recentGenerations.get(key);
+    if (existing) {
+      return existing;
+    }
+    const generation = this.generateWorkspaceName({
       agentManager: this.agentManager,
       cwd: input.cwd,
       workspaceGitService: this.workspaceGitService,
@@ -209,6 +253,17 @@ export class WorkspaceAutoName {
       firstAgentContext: input.firstAgentContext,
       logger: this.logger,
     });
+    this.recentGenerations.set(key, generation);
+    void generation
+      .catch(() => null)
+      .finally(() => {
+        setTimeout(() => {
+          if (this.recentGenerations.get(key) === generation) {
+            this.recentGenerations.delete(key);
+          }
+        }, GENERATION_REUSE_WINDOW_MS).unref?.();
+      });
+    return generation;
   }
 
   private schedule(run: () => Promise<void>, context: { cwd: string; message: string }): void {

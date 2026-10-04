@@ -64,3 +64,67 @@ test("auto-name preserves workspace archival that lands during its metadata writ
     archivedAt,
   });
 });
+
+test("the first agent reuses the workspace generation for its title", async () => {
+  let workspace = createPersistedWorkspaceRecord({
+    workspaceId: "workspace-agent-title",
+    projectId: "project-agent-title",
+    cwd: "/workspace",
+    kind: "directory",
+    displayName: "workspace",
+    createdAt: "2026-08-08T00:00:00.000Z",
+    updatedAt: "2026-08-08T00:00:00.000Z",
+  });
+  const workspaceRegistry = {
+    update: async (_workspaceId, updater) => {
+      workspace = updater(workspace);
+      return workspace;
+    },
+  } satisfies Pick<WorkspaceRegistry, "update">;
+  let generationCalls = 0;
+  const titleReplaced = deferred();
+  const replacements: Array<{ agentId: string; expected: string; next: string }> = [];
+  const agentManager = {
+    replaceTitleIfUnchanged: async (agentId: string, expected: string, next: string) => {
+      replacements.push({ agentId, expected, next });
+      titleReplaced.resolve();
+      return true;
+    },
+  } as unknown as AgentManager;
+  const workspaceUpdated = deferred();
+  const autoName = new WorkspaceAutoName({
+    agentManager,
+    workspaceRegistry,
+    workspaceGitService: {} as WorkspaceGitService,
+    providerSnapshotManager: {} as ProviderSnapshotManager,
+    readDaemonConfig: () => ({}),
+    gitMutation: { notifyGitMutation: async () => {} },
+    emitWorkspaceUpdateForCwd: async () => {},
+    emitWorkspaceUpdateForWorkspaceId: async () => workspaceUpdated.resolve(),
+    logger: pino({ level: "silent" }),
+    generateWorkspaceName: async () => {
+      generationCalls += 1;
+      return { title: "Fix Safari login bug", branch: "fix-safari-login" };
+    },
+  });
+  const firstAgentContext = { prompt: "fix the login bug on safari" };
+
+  autoName.scheduleForDirectory({
+    workspaceId: workspace.workspaceId,
+    cwd: workspace.cwd,
+    firstAgentContext,
+  });
+  autoName.scheduleForAgent({
+    agentId: "agent-1",
+    cwd: workspace.cwd,
+    firstAgentContext,
+    provisionalTitle: "fix the login bug on safari",
+  });
+  await Promise.all([workspaceUpdated.promise, titleReplaced.promise]);
+
+  expect(generationCalls).toBe(1);
+  expect(workspace.title).toBe("Fix Safari login bug");
+  expect(replacements).toEqual([
+    { agentId: "agent-1", expected: "fix the login bug on safari", next: "Fix Safari login bug" },
+  ]);
+});
