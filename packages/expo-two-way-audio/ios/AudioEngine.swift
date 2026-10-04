@@ -275,6 +275,10 @@ class AudioEngine {
     
     func playPCMData(_ pcmData: Data) {
         activateAudioSessionIfNeeded()
+        guard ensureEngineRunning() else {
+            print("Dropping PCM data: audio engine is not running")
+            return
+        }
 
         // Looks like we don't get a proper AEC for the very first chunks of audio that we play.
         // To work around this, we will discard microphone input for the first few milliseconds.
@@ -374,11 +378,16 @@ class AudioEngine {
         playbackCountLock.unlock()
     }
 
-    func resumeRecordingAndPlayer(){
+    @discardableResult
+    func resumeRecordingAndPlayer() -> Bool {
         activateAudioSessionIfNeeded()
-        self.checkEngineIsRunning()
+        guard ensureEngineRunning() else {
+            print("Could not resume: audio engine is not running")
+            return false
+        }
         isRecording = toggleRecording(true)
         speechPlayer.play()
+        return true
     }
     
     func tearDown() {
@@ -405,6 +414,7 @@ class AudioEngine {
     }
 
     func resumePlayback() {
+        guard ensureEngineRunning() else { return }
         if !speechPlayer.isPlaying {
             speechPlayer.play()
             print("Playback resumed")
@@ -421,6 +431,14 @@ class AudioEngine {
             start()
         }
     }
+
+    /// `AVAudioPlayerNode.play()` raises an uncatchable Objective-C exception when the engine is
+    /// stopped, which happens after an interruption (e.g. a phone call) if the session or engine
+    /// fails to come back. Every `play()` must go through this check.
+    private func ensureEngineRunning() -> Bool {
+        checkEngineIsRunning()
+        return avAudioEngine.isRunning
+    }
     
     private func handleAudioSessionInterruption(_ notification: Notification) {
         guard let userInfo = notification.userInfo,
@@ -434,9 +452,7 @@ class AudioEngine {
         case .ended:
             if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
                 let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
-                if options.contains(.shouldResume) {
-                    // Interruption ended. Resume playback.
-                    self.resumeRecordingAndPlayer()
+                if options.contains(.shouldResume) && self.resumeRecordingAndPlayer() {
                     onAudioInterruptionCallback?("ended")
                 } else {
                     // Interruption ends. Don't resume playback.
@@ -444,7 +460,7 @@ class AudioEngine {
                 }
             }
         @unknown default:
-            fatalError("Unknown type: \(type)")
+            break
         }
     }
     
