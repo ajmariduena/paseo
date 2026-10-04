@@ -169,4 +169,27 @@ describe("VoiceMessagesCall", () => {
       },
     ]);
   });
+
+  it("confirms a notice once the phone syncs past it, and not after the call ends", async () => {
+    const orchestrator = createOrchestrator();
+    const { call } = createCall({ orchestrator });
+    const outcomes: boolean[] = [];
+
+    orchestrator.call?.announce?.(["auth · Fix login finished."], {
+      urgent: false,
+      onOutcome: (heard) => outcomes.push(heard),
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(outcomes).toEqual([]);
+    call.sync(1);
+    expect(outcomes).toEqual([true]);
+
+    orchestrator.call?.announce?.(["security · Audit finished."], {
+      urgent: false,
+      onOutcome: (heard) => outcomes.push(heard),
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    call.close();
+    expect(outcomes).toEqual([true, false]);
+  });
 });

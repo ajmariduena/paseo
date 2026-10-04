@@ -32,6 +32,8 @@ const REFLECTED_BYTES_PER_MS = (24_000 * 2) / 1000;
 const BARGE_IN_MIN_WORDS = 3;
 // Over WebRTC the session runs before the phone's media connects; greet once its audio arrives.
 const GREETING_FALLBACK_MS = 6_000;
+// An update GPT-Live never starts saying within this long counts as not heard.
+const ANNOUNCEMENT_SPEECH_TIMEOUT_MS = 20_000;
 
 export interface GptLiveCallOptions {
   engine: GptLiveEngineConfig;
@@ -75,6 +77,10 @@ export class GptLiveCall {
   private pendingDelegations = 0;
   private readonly floor = new SpeechFloor();
   private transcript: CallTranscript | null = null;
+  private unconfirmed: Array<{
+    report: (heard: boolean) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }> = [];
   private readonly outbox = new FloorQueue(this.floor, {
     isAwaitingResult: () => this.pendingDelegations > 0,
   });
@@ -120,9 +126,10 @@ export class GptLiveCall {
       isAssistantSpeaking: () => this.floor.isAssistantSpeaking(),
       announce: (lines, options) => {
         this.transcript?.record("notice", lines.join(" · "), { urgent: options?.urgent ?? false });
-        this.outbox.push(options?.urgent ? "urgent" : "routine", () =>
-          this.connection.append("commentary", lines.join("\n"), null),
-        );
+        this.outbox.push(options?.urgent ? "urgent" : "routine", () => {
+          this.connection.append("commentary", lines.join("\n"), null);
+          if (options?.onOutcome) this.awaitSpoken(options.onOutcome);
+        });
       },
       onFleetChanged: () => void this.pushFleetSnapshot(),
     });
@@ -181,6 +188,7 @@ export class GptLiveCall {
     if (this.greetingTimer) clearTimeout(this.greetingTimer);
     if (this.unconfirmedSpeechTimer) clearTimeout(this.unconfirmedSpeechTimer);
     this.outbox.close();
+    this.settleAnnouncements(false);
     void this.transcript?.close();
     this.connection.close();
   }
@@ -229,6 +237,7 @@ export class GptLiveCall {
       this.assistantIdleTimer = null;
       if (this.assistantTurn.trim()) this.pushHistory(`Assistant: ${this.assistantTurn.trim()}`);
       this.assistantTurn = "";
+      this.settleAnnouncements(true);
     }, USER_SPEECH_IDLE_MS);
   }
 
@@ -273,6 +282,7 @@ export class GptLiveCall {
       this.chunkIndex = 0;
       if (this.assistantTurn.trim()) this.pushHistory(`Assistant: ${this.assistantTurn.trim()}`);
       this.assistantTurn = "";
+      this.settleAnnouncements(true);
     }
   }
 
@@ -322,6 +332,7 @@ export class GptLiveCall {
   }
 
   private discardPendingAudio(): void {
+    this.settleAnnouncements(false);
     if (this.gapTimer) clearTimeout(this.gapTimer);
     this.gapTimer = null;
     this.pendingAudio = [];
@@ -330,6 +341,28 @@ export class GptLiveCall {
     this.chunkIndex = 0;
     if (this.assistantTurn.trim()) this.pushHistory(`Assistant: ${this.assistantTurn.trim()}…`);
     this.assistantTurn = "";
+  }
+
+  private awaitSpoken(report: (heard: boolean) => void): void {
+    const entry = {
+      report,
+      timer: setTimeout(() => {
+        this.unconfirmed = this.unconfirmed.filter((pending) => pending !== entry);
+        report(false);
+      }, ANNOUNCEMENT_SPEECH_TIMEOUT_MS),
+    };
+    this.unconfirmed.push(entry);
+  }
+
+  /** The utterance after an update was sent either ends on its own (heard) or is cut off. */
+  private settleAnnouncements(heard: boolean): void {
+    const pending = this.unconfirmed;
+    if (pending.length === 0) return;
+    this.unconfirmed = [];
+    for (const entry of pending) {
+      clearTimeout(entry.timer);
+      entry.report(heard);
+    }
   }
 
   private commitUserTurn(): void {

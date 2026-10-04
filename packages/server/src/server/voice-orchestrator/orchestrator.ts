@@ -17,6 +17,7 @@ import { VoiceMessagesHub } from "./messages/messages-hub.js";
 import { LiveWebrtcHub } from "./gpt-live/webrtc-hub.js";
 import { CallTranscript } from "./call-transcript.js";
 import { VoiceNoticeQueue, type VoiceNotice, type VoiceNoticeReason } from "./notice-queue.js";
+import { UnheardLedger, isUnheardReason } from "./unheard-ledger.js";
 import {
   VOICE_BACKEND_SYSTEM_PROMPT,
   VOICE_ORCHESTRATOR_SYSTEM_PROMPT,
@@ -32,6 +33,10 @@ import { isSpokenApproval } from "./spoken-approval.js";
 
 export const VOICE_ORCHESTRATOR_LABEL = "paseo.voice";
 const STATE_FILENAME = "orchestrator.json";
+const UNHEARD_FILENAME = "unheard.json";
+const UNHEARD_TTL_MS = 12 * 60 * 60 * 1000;
+// Announcing an unheard result again after an interruption; past this it waits for the next call.
+const UNHEARD_MAX_REPEATS = 2;
 const FLEET_LIMIT = 12;
 const FLEET_RECENT_MS = 12 * 60 * 60 * 1000;
 const SESSION_INDEX_LIMIT = 30;
@@ -59,8 +64,12 @@ export interface VoiceOrchestratorCall {
   /**
    * Speaks notice lines directly. Without it, notices go through the orchestrator agent.
    * `urgent` (permissions, failures) may take the next short pause; the rest wait for a lull.
+   * `onOutcome` reports whether the user heard it through or cut it off.
    */
-  announce?(lines: string[], options?: { urgent: boolean }): void;
+  announce?(
+    lines: string[],
+    options?: { urgent: boolean; onOutcome?: (heard: boolean) => void },
+  ): void;
   /** Called (debounced) whenever an agent's state changes during the call. */
   onFleetChanged?(): void;
 }
@@ -95,7 +104,7 @@ export class VoiceOrchestrator {
   private call: VoiceOrchestratorCall | null = null;
   private queue: VoiceNoticeQueue | null = null;
   private unsubscribeSelf: (() => void) | null = null;
-  private unsubscribeFleet: (() => void) | null = null;
+  private unsubscribeAgents: (() => void) | null = null;
   private progressTimer: ReturnType<typeof setInterval> | null = null;
   private readonly lifecycles = new Map<string, string>();
   private readonly progressAnnounced = new Map<string, { step: string; at: number }>();
@@ -106,6 +115,12 @@ export class VoiceOrchestrator {
   private narrating = false;
   private liveCall: { close(): void; setInputMuted(muted: boolean): void } | null = null;
   private handoffHistory: { lines: string[]; at: number; mode: "live" | "messages" } | null = null;
+  private readonly unheard: UnheardLedger;
+  private readonly unheardLoaded: Promise<void>;
+  /** Agents the user asked about by voice; their results are kept for the next call. */
+  private readonly followed = new Set<string>();
+  private agentModes: Record<string, string> = {};
+  private spokenRequests = 0;
 
   constructor(private readonly options: VoiceOrchestratorOptions) {
     this.logger = options.logger.child({ module: "voice-orchestrator" });
@@ -115,6 +130,15 @@ export class VoiceOrchestrator {
       logger: this.logger,
     });
     this.webrtc = new LiveWebrtcHub({ orchestrator: this, logger: this.logger });
+    this.unheard = new UnheardLedger({
+      path: join(this.orchestratorDir(), UNHEARD_FILENAME),
+      ttlMs: UNHEARD_TTL_MS,
+      logger: this.logger,
+    });
+    this.unheardLoaded = this.unheard.load().catch((error: unknown) => {
+      this.logger.warn({ err: error }, "Failed to load unheard voice results");
+    });
+    this.watchAgents();
     void this.resolveAgentId().catch((error) => {
       this.agentIdPromise = null;
       this.logger.warn({ err: error }, "Failed to load voice orchestrator id");
@@ -140,6 +164,10 @@ export class VoiceOrchestrator {
 
   setPreferredLanguage(language: string | null): void {
     this.preferredLanguage = language?.trim() || null;
+  }
+
+  setPreferredAgentModes(modes: Record<string, string> | undefined): void {
+    if (modes) this.agentModes = { ...modes };
   }
 
   async ensureAgent(): Promise<string> {
@@ -169,10 +197,12 @@ export class VoiceOrchestrator {
       urgentDelayMs: 750,
       busyRetryMs: 1_000,
       isBusy: () => this.isBusy(),
-      isStale: (notice) => this.isNoticeStale(notice),
+      isStale: (notice) => this.dropIfStale(notice),
       deliver: (notices) => this.deliverNotices(notices),
     });
-    this.watchFleet();
+    this.progressTimer = setInterval(() => this.checkProgress(), PROGRESS_CHECK_MS);
+    this.progressTimer.unref?.();
+    void this.replayUnheard(this.queue);
     if (!call.announce) void this.sendCallStart(call);
     return () => {
       if (this.call !== call) return;
@@ -181,8 +211,8 @@ export class VoiceOrchestrator {
   }
 
   handleAttention(params: { agentId: string; reason: VoiceNoticeReason }): void {
-    if (!this.queue || this.isOrchestrator(params.agentId)) return;
-    this.queue.push({ agentId: params.agentId, reason: params.reason });
+    if (this.isOrchestrator(params.agentId)) return;
+    this.noteNotice({ agentId: params.agentId, reason: params.reason });
   }
 
   noteUserUtterance(text: string): void {
@@ -207,6 +237,7 @@ export class VoiceOrchestrator {
 
   /** Sends the user's spoken words to the orchestrator with a fresh fleet snapshot. */
   async sendSpokenRequest(text: string): Promise<void> {
+    this.spokenRequests += 1;
     const agentId = await this.ensureAgent();
     const [fleet, others] = await Promise.all([
       this.describeFleetDetailed(),
@@ -272,6 +303,8 @@ export class VoiceOrchestrator {
       allowCustomCwd: true,
       actsForUser: true,
       authorizePermissionApproval: () => this.authorizePermissionApproval(),
+      defaultModeFor: (provider) => this.agentModes[provider],
+      onAgentPrompted: (agentId) => this.followed.add(agentId),
     };
   }
 
@@ -408,6 +441,8 @@ export class VoiceOrchestrator {
     this.messages.dispose();
     this.webrtc.endAll();
     this.detachCurrentCall();
+    this.unsubscribeAgents?.();
+    this.unsubscribeAgents = null;
   }
 
   private detachCurrentCall(): void {
@@ -415,32 +450,39 @@ export class VoiceOrchestrator {
     this.queue = null;
     this.call = null;
     this.lastUtterance = null;
-    this.unsubscribeFleet?.();
-    this.unsubscribeFleet = null;
     if (this.progressTimer) clearInterval(this.progressTimer);
     this.progressTimer = null;
     if (this.fleetChangedTimer) clearTimeout(this.fleetChangedTimer);
     this.fleetChangedTimer = null;
-    this.lifecycles.clear();
     this.progressAnnounced.clear();
   }
 
-  private watchFleet(): void {
+  /** Watches every agent for the whole daemon life, so results landing between calls are kept. */
+  private watchAgents(): void {
     const { agentManager } = this.options;
     for (const agent of agentManager.listAgents()) this.lifecycles.set(agent.id, agent.lifecycle);
-    this.unsubscribeFleet = agentManager.subscribe(
+    this.unsubscribeAgents = agentManager.subscribe(
       (event) => {
         if (event.type !== "agent_state") return;
         const agent = event.agent;
-        if (!this.isOrchestrator(agent.id)) this.scheduleFleetChanged();
         const previous = this.lifecycles.get(agent.id);
         this.lifecycles.set(agent.id, agent.lifecycle);
+        if (this.isOrchestrator(agent.id)) return;
+        this.scheduleFleetChanged();
+        if (isDelegatedAgent(agent)) return;
+        // The run ending is the signal, not attention: attention stays raised for an unreviewed
+        // earlier finish and never fires again for the next one.
+        if (previous === "running" && (agent.lifecycle === "idle" || agent.lifecycle === "error")) {
+          this.noteNotice({
+            agentId: agent.id,
+            reason: agent.lifecycle === "error" ? "error" : "finished",
+          });
+          return;
+        }
         if (
           agent.lifecycle === "running" &&
           previous !== "running" &&
           previous !== "initializing" &&
-          !this.isOrchestrator(agent.id) &&
-          !isDelegatedAgent(agent) &&
           !this.isOrchestratorRunning()
         ) {
           this.queue?.push({ agentId: agent.id, reason: "started" });
@@ -448,8 +490,35 @@ export class VoiceOrchestrator {
       },
       { replayState: false },
     );
-    this.progressTimer = setInterval(() => this.checkProgress(), PROGRESS_CHECK_MS);
-    this.progressTimer.unref?.();
+  }
+
+  private noteNotice(notice: VoiceNotice): void {
+    const { agentId, reason } = notice;
+    if (isUnheardReason(reason) && (this.queue || this.followed.has(agentId))) {
+      this.unheard.add(agentId, reason);
+    }
+    this.queue?.push(notice);
+  }
+
+  private async replayUnheard(queue: VoiceNoticeQueue): Promise<void> {
+    await this.unheardLoaded;
+    if (this.queue !== queue) return;
+    for (const entry of this.unheard.list()) {
+      queue.push({ agentId: entry.agentId, reason: entry.reason });
+    }
+  }
+
+  private settleNotices(notices: VoiceNotice[], heard: boolean): void {
+    for (const notice of notices) {
+      if (!isUnheardReason(notice.reason)) continue;
+      if (heard) {
+        this.unheard.remove(notice.agentId, notice.reason);
+        this.followed.delete(notice.agentId);
+        continue;
+      }
+      const attempts = (notice.attempts ?? 0) + 1;
+      if (attempts <= UNHEARD_MAX_REPEATS) this.queue?.push({ ...notice, attempts });
+    }
   }
 
   private scheduleFleetChanged(): void {
@@ -591,6 +660,14 @@ export class VoiceOrchestrator {
     return !this.call?.announce && this.isOrchestratorRunning();
   }
 
+  private dropIfStale(notice: VoiceNotice): boolean {
+    const stale = this.isNoticeStale(notice);
+    if (stale && isUnheardReason(notice.reason)) {
+      this.unheard.remove(notice.agentId, notice.reason);
+    }
+    return stale;
+  }
+
   private isNoticeStale(notice: VoiceNotice): boolean {
     const agent = this.options.agentManager.getAgent(notice.agentId);
     if (!agent || agent.lifecycle === "closed") return true;
@@ -619,24 +696,31 @@ export class VoiceOrchestrator {
   }
 
   private async deliverNotices(notices: VoiceNotice[]): Promise<void> {
-    const lines: string[] = [];
+    const described: Array<{ notice: VoiceNotice; text: string; urgent: boolean }> = [];
     for (const notice of notices) {
       const line = await this.describeNotice(notice);
-      if (line) lines.push(line);
+      if (line) described.push({ notice, ...line });
     }
-    if (lines.length === 0) return;
+    if (described.length === 0) return;
+    const lines = described.map((entry) => entry.text);
+    const delivered = described.map((entry) => entry.notice);
     if (this.call?.announce) {
-      const urgent = notices.some(
-        (notice) => notice.reason === "permission" || notice.reason === "error",
-      );
-      this.call.announce(lines, { urgent });
+      this.call.announce(lines, {
+        urgent: described.some((entry) => entry.urgent),
+        onOutcome: (heard) => this.settleNotices(delivered, heard),
+      });
       return;
     }
     if (!this.knownAgentId) return;
+    // A spoken request replaces the orchestrator's running turn, so a notice turn it overlapped
+    // was cut off before the user heard it.
+    const spokenBefore = this.spokenRequests;
     try {
-      await this.sendPrompt(this.knownAgentId, buildNoticePrompt(lines));
+      await this.runTurn(async () => buildNoticePrompt(lines), false);
+      this.settleNotices(delivered, this.spokenRequests === spokenBefore);
     } catch (error) {
       this.logger.warn({ err: error }, "Failed to deliver voice notices");
+      this.settleNotices(delivered, false);
     }
   }
 
@@ -652,13 +736,16 @@ export class VoiceOrchestrator {
     });
   }
 
-  private async describeNotice(notice: VoiceNotice): Promise<string | null> {
+  private async describeNotice(
+    notice: VoiceNotice,
+  ): Promise<{ text: string; urgent: boolean } | null> {
     const { agentManager } = this.options;
     const agent = agentManager.getAgent(notice.agentId);
     if (!agent) return null;
     const name = await this.describeAgentName(agent);
     const work = agentManager.getLiveWorkSummary(agent.id);
     const task = work.request ? ` Its task: ${clipForSpeech(work.request, 200)}` : "";
+    const again = notice.attempts ? " (Repeating: the user was cut off before hearing this.)" : "";
     switch (notice.reason) {
       case "permission": {
         const request = [...agent.pendingPermissions.values()].at(-1);
@@ -667,23 +754,43 @@ export class VoiceOrchestrator {
           [request.title ?? request.name, request.description].filter(Boolean).join(": "),
           240,
         );
-        return `${name} is waiting for permission: ${what}.${task}`;
+        return { text: `${name} is waiting for permission: ${what}.${task}${again}`, urgent: true };
       }
       case "error":
-        return `${name} failed: ${clipForSpeech(agent.lastError ?? "unknown error", 240)}.${task}`;
+        return {
+          text: `${name} failed: ${clipForSpeech(agent.lastError ?? "unknown error", 240)}.${task}${again}`,
+          urgent: true,
+        };
       case "finished": {
         const message = await agentManager.getLastAssistantMessage(agent.id).catch(() => null);
-        const result = message ? ` Its final message: ${clipForSpeech(message, 700)}` : "";
-        return `${name} finished.${task}${result}`;
+        if (!message?.trim()) {
+          // A provider process that dies mid-turn (often while waiting on a permission) ends
+          // the run without an error or any reply; saying "finished" would hide the failure.
+          return {
+            text: `${name} stopped without giving any result; it may have crashed or been stuck waiting.${task}${again}`,
+            urgent: true,
+          };
+        }
+        return {
+          text: `${name} finished.${task} Its final message: ${clipForSpeech(message, 700)}${again}`,
+          urgent: false,
+        };
       }
       case "started":
-        return `${name} started working.${task}`;
+        return { text: `${name} started working.${task}`, urgent: false };
       case "progress":
-        return work.currentStep ? `${name} is now: ${clipForSpeech(work.currentStep, 160)}.` : null;
+        return work.currentStep
+          ? { text: `${name} is now: ${clipForSpeech(work.currentStep, 160)}.`, urgent: false }
+          : null;
     }
   }
 
   private describeStatus(agent: ManagedAgent): string {
+    const status = this.describeBaseStatus(agent);
+    return this.unheard.has(agent.id) ? `${status}, not yet told to the user` : status;
+  }
+
+  private describeBaseStatus(agent: ManagedAgent): string {
     if (agent.pendingPermissions.size > 0) return "waiting for permission";
     if (agent.lifecycle === "error") return "failed";
     if (agent.lifecycle === "running") {

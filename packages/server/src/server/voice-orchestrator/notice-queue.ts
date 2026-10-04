@@ -3,6 +3,8 @@ export type VoiceNoticeReason = "permission" | "error" | "finished" | "started" 
 export interface VoiceNotice {
   agentId: string;
   reason: VoiceNoticeReason;
+  /** How many times this was already announced without the user hearing it through. */
+  attempts?: number;
 }
 
 const PRIORITY: Record<VoiceNoticeReason, number> = {

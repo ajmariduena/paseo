@@ -10,6 +10,7 @@ import {
   useVoiceRuntimeOptional,
 } from "@/contexts/voice-context";
 import { useToast } from "@/contexts/toast-api-context";
+import { createAgentPreferencesService } from "@/create-agent-preferences/service";
 import { i18n } from "@/i18n/i18next";
 import { getHostRuntimeStore, isHostRuntimeConnected } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
@@ -64,6 +65,15 @@ function resolveTargetServerId(): string | null {
     }
   }
   return null;
+}
+
+async function loadPreferredAgentModes(): Promise<Record<string, string>> {
+  const preferences = await createAgentPreferencesService.load().catch(() => null);
+  const modes: Record<string, string> = {};
+  for (const [provider, prefs] of Object.entries(preferences?.providerPreferences ?? {})) {
+    if (prefs.mode) modes[provider] = prefs.mode;
+  }
+  return modes;
 }
 
 // The host's voice language, learned when the call starts; the UI language is only a fallback.
@@ -365,6 +375,7 @@ export function useGlobalVoice(): GlobalVoice {
       try {
         const { agentId, language } = await client.startVoiceOrchestrator({
           language: appI18n.language,
+          agentModes: await loadPreferredAgentModes(),
         });
         if (language) voiceLanguages.set(serverId, language);
         useGlobalVoiceStore.getState().setOrchestratorAgentId(serverId, agentId);

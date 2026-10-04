@@ -80,6 +80,8 @@ export class VoiceMessagesCall {
   private lastContactAt = Date.now();
   private pendingUtterances = 0;
   private transcript: CallTranscript | null = null;
+  /** Notices whose delivery is confirmed once the phone syncs past their seq. */
+  private readonly ackWaiters = new Map<number, (heard: boolean) => void>();
 
   constructor(private readonly options: VoiceMessagesCallOptions) {
     this.callId = options.callId;
@@ -111,7 +113,7 @@ export class VoiceMessagesCall {
         this.transcript?.record("notice", lines.join(" · "), {
           urgent: options?.urgent ?? false,
         });
-        this.enqueue(() => this.narrateNotices(lines));
+        this.enqueue(() => this.narrateNotices(lines, options?.onOutcome));
       },
     });
     if (this.options.greet) this.enqueue(() => this.narrateCallStart());
@@ -151,6 +153,11 @@ export class VoiceMessagesCall {
   sync(afterSeq: number): VoiceMessagesItem[] {
     this.touch();
     this.ackedSeq = Math.max(this.ackedSeq, afterSeq);
+    for (const [seq, report] of this.ackWaiters) {
+      if (seq > this.ackedSeq) continue;
+      this.ackWaiters.delete(seq);
+      report(true);
+    }
     for (const stored of this.outbox) {
       if (stored.item.seq <= this.ackedSeq && stored.pushTimer) {
         clearTimeout(stored.pushTimer);
@@ -189,6 +196,9 @@ export class VoiceMessagesCall {
     for (const stored of this.outbox) {
       if (stored.pushTimer) clearTimeout(stored.pushTimer);
     }
+    const unconfirmed = [...this.ackWaiters.values()];
+    this.ackWaiters.clear();
+    for (const report of unconfirmed) report(false);
   }
 
   private touch(): void {
@@ -256,7 +266,10 @@ export class VoiceMessagesCall {
     return deviceText?.trim() || null;
   }
 
-  private async narrateNotices(lines: string[]): Promise<void> {
+  private async narrateNotices(
+    lines: string[],
+    onOutcome: ((heard: boolean) => void) | undefined,
+  ): Promise<void> {
     try {
       const text = await this.options.orchestrator.narrate({
         kind: "notices",
@@ -264,9 +277,14 @@ export class VoiceMessagesCall {
         history: [...this.history],
       });
       this.pushHistory(`Assistant: ${text}`);
-      await this.addSpokenItem("notice", text, null);
+      const seq = await this.addSpokenItem("notice", text, null);
+      if (!onOutcome) return;
+      if (this.closed) onOutcome(false);
+      else if (seq <= this.ackedSeq) onOutcome(true);
+      else this.ackWaiters.set(seq, onOutcome);
     } catch (error) {
       this.logger.warn({ err: error }, "Failed to narrate voice notices");
+      onOutcome?.(false);
     }
   }
 
@@ -289,14 +307,15 @@ export class VoiceMessagesCall {
     kind: "reply" | "notice",
     text: string,
     utteranceId: string | null,
-  ): Promise<void> {
+  ): Promise<number> {
     const stored = this.addItem({ kind, text, utteranceId });
     if (kind === "notice") this.armPush(stored);
     const clip = await this.synthesize(text);
-    if (!clip || this.closed) return;
+    if (!clip || this.closed) return stored.item.seq;
     stored.audio = clip.audio;
     stored.item = { ...stored.item, audio: { mimeType: clip.mimeType, size: clip.audio.length } };
     this.listener?.(stored.item);
+    return stored.item.seq;
   }
 
   private async synthesize(text: string): Promise<SpeechClip | null> {

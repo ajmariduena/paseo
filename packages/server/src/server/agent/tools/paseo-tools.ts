@@ -1432,6 +1432,28 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     },
   );
 
+  const VOICE_ANNOUNCES_RESULT_GUIDANCE =
+    "Paseo tells the user the agent's result when it finishes. Do not wait or poll; say you'll let them know.";
+
+  // A caller that hears results through its own channel (the voice call) must not also get a
+  // finish notification steered into its turn, where a newer request can cut it off.
+  function callerHearsResultsItself(): boolean {
+    return Boolean(callerContext?.onAgentPrompted);
+  }
+
+  function resolveCreateMode(requested: string | undefined, provider: string): string | undefined {
+    if (requested !== undefined || !callerContext?.actsForUser) return requested;
+    return callerContext.defaultModeFor?.(provider);
+  }
+
+  function createdAgentGuidance(notifyOnFinish: boolean): string | undefined {
+    if (callerHearsResultsItself()) return VOICE_ANNOUNCES_RESULT_GUIDANCE;
+    if (callerAgentId && notifyOnFinish) {
+      return "You will get notified when the created agent finishes, errors, or needs permission. Do not poll for status; continue with other work until the notification arrives.";
+    }
+    return undefined;
+  }
+
   registerTool(
     "create_agent",
     {
@@ -1464,8 +1486,10 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         requestedBackground = resolvedArgs.parsedArgs.background;
         notifyOnFinish = resolvedArgs.parsedArgs.notifyOnFinish ?? false;
       }
+      notifyOnFinish &&= !callerHearsResultsItself();
       const selectedProvider = resolveRequiredProviderModel(parsedArgs.provider).provider;
       const inheritedConfig = resolveInheritedProviderConfig(selectedProvider);
+      const mode = resolveCreateMode(parsedArgs.settings?.modeId, selectedProvider);
       const {
         snapshot,
         background: createdInBackground,
@@ -1495,7 +1519,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           thinking: parsedArgs.settings?.thinkingOptionId,
           features: parsedArgs.settings?.features,
           labels: parsedArgs.labels,
-          mode: parsedArgs.settings?.modeId,
+          mode,
           background: requestedBackground,
           notifyOnFinish,
           detached: resolvedArgs.detached,
@@ -1504,6 +1528,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           worktree,
         },
       );
+      if (initialPromptStarted) callerContext?.onAgentPrompted?.(snapshot.id);
 
       try {
         if (!createdInBackground && initialPromptStarted) {
@@ -1538,10 +1563,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
 
       // Return immediately for async creation.
       const currentSnapshot = agentManager.getAgent(snapshot.id) ?? snapshot;
-      const guidance =
-        callerAgentId && notifyOnFinish && initialPromptStarted
-          ? "You will get notified when the created agent finishes, errors, or needs permission. Do not poll for status; continue with other work until the notification arrives."
-          : undefined;
+      const guidance = initialPromptStarted ? createdAgentGuidance(notifyOnFinish) : undefined;
       const response = {
         content: [],
         structuredContent: ensureValidJson({
@@ -1926,7 +1948,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       notifyOnFinish = Boolean(callerAgentId),
     }) => {
       function armFinishNotification(): boolean {
-        if (!callerAgentId || !notifyOnFinish) {
+        if (!callerAgentId || !notifyOnFinish || callerHearsResultsItself()) {
           return false;
         }
         setupFinishNotification({
@@ -1947,25 +1969,31 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         sessionMode,
         logger: childLogger,
       });
+      callerContext?.onAgentPrompted?.(agentId);
+
+      function laterResultGuidance(): string | undefined {
+        if (callerHearsResultsItself()) return VOICE_ANNOUNCES_RESULT_GUIDANCE;
+        return armFinishNotification() ? PROMPTED_AGENT_NOTIFICATION_GUIDANCE : undefined;
+      }
 
       // If not running in background, wait for completion
       if (!background) {
         const result = await waitForAgentWithTimeout(agentManager, agentId, {
           waitForActive: true,
         });
-        // The wait ran out while the agent keeps working, so its result arrives as a
-        // finish notification instead of in this response.
-        const notifying =
-          result.timedOut &&
-          agentManager.getAgent(agentId)?.lifecycle === "running" &&
-          armFinishNotification();
+        // The wait ran out while the agent keeps working, so its result arrives later
+        // instead of in this response.
+        const guidance =
+          result.timedOut && agentManager.getAgent(agentId)?.lifecycle === "running"
+            ? laterResultGuidance()
+            : undefined;
 
         const responseData = {
           success: true,
           status: result.status,
           lastMessage: result.lastMessage,
           permission: sanitizePermissionRequest(result.permission),
-          ...(notifying ? { guidance: PROMPTED_AGENT_NOTIFICATION_GUIDANCE } : {}),
+          ...(guidance ? { guidance } : {}),
         };
         const validJson = ensureValidJson(responseData);
 
@@ -1976,7 +2004,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         return response;
       }
 
-      const notifying = armFinishNotification();
+      const guidance = laterResultGuidance();
 
       // Return once the provider has accepted the turn, so the status reports it running.
       if (disposition === "turn_started") {
@@ -1989,7 +2017,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         status: currentSnapshot?.lifecycle ?? "idle",
         lastMessage: null,
         permission: null,
-        ...(notifying ? { guidance: PROMPTED_AGENT_NOTIFICATION_GUIDANCE } : {}),
+        ...(guidance ? { guidance } : {}),
       };
       const validJson = ensureValidJson(responseData);
 

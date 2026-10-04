@@ -2840,6 +2840,7 @@ export class Session {
         throw new Error("The voice assistant is not available on this host.");
       }
       this.voiceOrchestrator.setPreferredLanguage(request.language ?? null);
+      this.voiceOrchestrator.setPreferredAgentModes(request.agentModes);
       const agentId = await this.voiceOrchestrator.ensureAgent();
       this.emit({
         type: "voice.orchestrator.start.response",

@@ -2126,6 +2126,7 @@ export class DaemonClient {
 
   async startVoiceOrchestrator(params: {
     language?: string;
+    agentModes?: Record<string, string>;
     requestId?: string;
   }): Promise<{ agentId: string; language: string | null }> {
     const response =
@@ -2134,6 +2135,7 @@ export class DaemonClient {
         message: {
           type: "voice.orchestrator.start.request",
           ...(params.language ? { language: params.language } : {}),
+          ...(params.agentModes ? { agentModes: params.agentModes } : {}),
         },
         timeout: VOICE_ORCHESTRATOR_START_TIMEOUT_MS,
       });

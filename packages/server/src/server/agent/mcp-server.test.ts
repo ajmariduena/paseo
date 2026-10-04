@@ -3186,6 +3186,61 @@ describe("create_agent MCP tool", () => {
     expect(options?.labels?.[PARENT_AGENT_ID_LABEL]).toBeUndefined();
   });
 
+  it("gives agents created for the user their chosen mode and reports them to the caller", async () => {
+    const { agentManager, agentStorage, spies } = createTestDeps();
+    spies.agentManager.getAgent.mockImplementation((agentId: string) =>
+      agentId === "voice-orchestrator"
+        ? ({
+            id: "voice-orchestrator",
+            cwd: "/tmp/paseo-home/voice",
+            workspaceId: undefined,
+            provider: "claude",
+            currentModeId: null,
+          } as unknown as ManagedAgent)
+        : null,
+    );
+    spies.agentManager.createAgent.mockResolvedValue({
+      id: "user-agent",
+      cwd: existingCwd,
+      workspaceId: "wks_project",
+      lifecycle: "running",
+      currentModeId: "bypassPermissions",
+      availableModes: [],
+      config: { title: "CarPlay research" },
+    } as ManagedAgent);
+    const prompted: string[] = [];
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      callerAgentId: "voice-orchestrator",
+      resolveCallerContext: () => ({
+        childAgentDefaultLabels: {},
+        allowCustomCwd: true,
+        actsForUser: true,
+        defaultModeFor: (provider) => (provider === "claude" ? "bypassPermissions" : undefined),
+        onAgentPrompted: (agentId) => prompted.push(agentId),
+      }),
+      listActiveWorkspaces: async () => [
+        { workspaceId: "wks_project", cwd: existingCwd, kind: "worktree" },
+      ],
+      logger,
+    });
+
+    const response = await registeredTool(server, "create_agent").handler({
+      title: "CarPlay research",
+      provider: "claude/claude-opus-5-5",
+      initialPrompt: "Investigate CarPlay",
+      workspaceId: "wks_project",
+    });
+
+    const [config] = spies.agentManager.createAgent.mock.calls[0] ?? [];
+    expect(config?.modeId).toBe("bypassPermissions");
+    expect(prompted).toEqual(["user-agent"]);
+    expect(spies.agentManager.subscribe).not.toHaveBeenCalled();
+    expect(response.structuredContent.guidance).toContain("Paseo tells the user");
+  });
+
   it("rejects background from caller agents and defaults notify-on-finish on", async () => {
     const { agentManager, agentStorage, spies } = createTestDeps();
     spies.agentManager.getAgent.mockReturnValue({
@@ -3940,6 +3995,52 @@ describe("send_agent_prompt MCP tool", () => {
     expect(response.structuredContent.guidance).toBe(
       "You will get notified when the prompted agent finishes, errors, or needs permission. Do not poll for status; continue with other work until the notification arrives.",
     );
+  });
+
+  it("leaves the result to the voice call when the caller acts for the user", async () => {
+    const { agentManager, agentStorage, spies } = createTestDeps();
+    spies.agentManager.getAgent.mockImplementation((agentId: string) => {
+      if (agentId === "voice-orchestrator") {
+        return {
+          id: "voice-orchestrator",
+          cwd: existingCwd,
+          provider: "claude",
+          currentModeId: null,
+        } as unknown as ManagedAgent;
+      }
+      if (agentId === "child-agent") {
+        return {
+          id: "child-agent",
+          cwd: existingCwd,
+          lifecycle: "running",
+          currentModeId: null,
+          availableModes: [],
+          config: { title: "Child" },
+        } as unknown as ManagedAgent;
+      }
+      return null;
+    });
+    const prompted: string[] = [];
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      callerAgentId: "voice-orchestrator",
+      resolveCallerContext: () => ({
+        actsForUser: true,
+        onAgentPrompted: (agentId) => prompted.push(agentId),
+      }),
+      logger,
+    });
+
+    const response = await invokeToolWithParsedInput(registeredTool(server, "send_agent_prompt"), {
+      agentId: "child-agent",
+      prompt: "What is in this session?",
+    });
+
+    expect(prompted).toEqual(["child-agent"]);
+    expect(spies.agentManager.subscribe).not.toHaveBeenCalled();
+    expect(response.structuredContent.guidance).toContain("Paseo tells the user");
   });
 
   it("keeps top-level prompts blocking by default", async () => {

@@ -2741,6 +2741,8 @@ export const SpeechReadAloudPrepareRequestSchema = z.object({
 export const VoiceOrchestratorStartRequestSchema = z.object({
   type: z.literal("voice.orchestrator.start.request"),
   language: z.string().optional(),
+  /** The user's chosen mode per provider id, for agents the voice assistant creates. */
+  agentModes: z.record(z.string(), z.string()).optional(),
   requestId: z.string(),
 });
 

@@ -77,14 +77,19 @@ function hasOutput(
   );
 }
 
+interface AnnounceOptions {
+  urgent: boolean;
+  onOutcome?: (heard: boolean) => void;
+}
+
 function createOrchestratorStub(history: string[] = []) {
   const calls: Array<{ request: string; history: string[] }> = [];
   const utterances: string[] = [];
-  let announce: ((lines: string[]) => void) | undefined;
+  let announce: ((lines: string[], options?: AnnounceOptions) => void) | undefined;
   const stub = {
     language: "es",
     describeFleet: async () => [{ workspace: "auth", title: "Login fix", status: "working" }],
-    attachCall: (call: { announce?: (lines: string[]) => void }) => {
+    attachCall: (call: { announce?: (lines: string[], options?: AnnounceOptions) => void }) => {
       announce = call.announce;
       return () => {
         announce = undefined;
@@ -103,7 +108,7 @@ function createOrchestratorStub(history: string[] = []) {
     orchestrator: stub as unknown as VoiceOrchestrator,
     calls,
     utterances,
-    announce: (lines: string[]) => announce?.(lines),
+    announce: (lines: string[], options?: AnnounceOptions) => announce?.(lines, options),
   };
 }
 
@@ -220,6 +225,48 @@ describe("GptLiveCall", () => {
     const { live, stub } = await startCall();
     stub.announce(["auth · Login fix finished."]);
     await waitFor(() => findMessage(live, "session.commentary.append", null) !== undefined);
+  });
+
+  it("reports a notice as heard once the assistant finishes saying it", async () => {
+    const { live, stub, emitted } = await startCall();
+    const outcomes: boolean[] = [];
+    stub.announce(["auth · Login fix finished."], {
+      urgent: true,
+      onOutcome: (heard) => outcomes.push(heard),
+    });
+    await waitFor(() => findMessage(live, "session.commentary.append", null) !== undefined);
+    live.socket().send(
+      JSON.stringify({
+        type: "session.output_audio.delta",
+        delta: Buffer.alloc(3200).toString("base64"),
+      }),
+    );
+    await waitFor(() => hasOutput(emitted, "audio_output", true));
+    expect(outcomes).toEqual([true]);
+  });
+
+  it("reports a notice as not heard when the user cuts the assistant off", async () => {
+    const { live, stub } = await startCall();
+    const outcomes: boolean[] = [];
+    stub.announce(["auth · Login fix finished."], {
+      urgent: true,
+      onOutcome: (heard) => outcomes.push(heard),
+    });
+    await waitFor(() => findMessage(live, "session.commentary.append", null) !== undefined);
+    live.socket().send(
+      JSON.stringify({
+        type: "session.output_audio.delta",
+        delta: Buffer.alloc(32000).toString("base64"),
+      }),
+    );
+    live.socket().send(
+      JSON.stringify({
+        type: "session.input_transcript.delta",
+        delta: "oye espera pregúntale otra cosa",
+      }),
+    );
+    await waitFor(() => outcomes.length > 0);
+    expect(outcomes).toEqual([false]);
   });
 
   it("attaches to a WebRTC session as a sideband and greets once the phone's audio arrives", async () => {
