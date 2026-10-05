@@ -36,7 +36,7 @@ import { ComposerToolbarGlyph } from "@/composer/agent-controls/glyph";
 import { useComposerControlLayout } from "@/composer/agent-controls/layout-context";
 import { resolveModelSheetOpening } from "@/composer/agent-controls/model-sheet-flow";
 import { getAgentControlHintKey, getFeatureTooltip } from "@/composer/agent-controls/utils";
-import { useIsCompactFormFactor } from "@/constants/layout";
+import { useIsCompactFormFactor, useControlDensity } from "@/constants/layout";
 import { isNative, isWeb } from "@/constants/platform";
 import type { ProviderSelectorProvider } from "@/provider-selection/provider-selection";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
@@ -67,6 +67,7 @@ export interface EffortOption {
 type EffortCardPage = "card" | "models";
 
 export interface ModelEffortControlProps {
+  canSelectModel: boolean;
   provider: string;
   serverId: string | null;
   providers: ProviderSelectorProvider[];
@@ -159,11 +160,25 @@ function modelRowStyle({ pressed, hovered }: PressableStateCallbackType & { hove
   ];
 }
 
+function resolveModelAccess(
+  canSelectModel: boolean,
+  page: EffortCardPage,
+  label: string,
+  openModels: () => void,
+) {
+  return {
+    isModelsPage: canSelectModel && page === "models",
+    modelLabel: canSelectModel ? label : "",
+    onOpenModels: canSelectModel ? openModels : undefined,
+  };
+}
+
 /**
  * The composer's model · effort pill and the card it opens. The card is the effort slider first;
  * the model list is a page behind it, reached from the model row and left by picking a model.
  */
 export function ModelEffortControl({
+  canSelectModel,
   provider,
   serverId,
   providers,
@@ -298,15 +313,18 @@ export function ModelEffortControl({
     () => (isCompact ? { title: t("agentControls.effort.title") } : undefined),
     [isCompact, t],
   );
-  const isModelsPage = page === "models";
+  const { isModelsPage, modelLabel, onOpenModels } = resolveModelAccess(
+    canSelectModel,
+    page,
+    browser.triggerLabel,
+    openModels,
+  );
 
   const openLabel = isModelsPage
     ? t("modelSelector.selectModel")
     : t("agentControls.effort.choose");
   const effortLabel = effort.selected?.label ?? "";
-  const pillValue = effort.hasEffort
-    ? `${browser.triggerLabel} · ${effortLabel}`
-    : browser.triggerLabel;
+  const pillValue = [modelLabel, effortLabel, fastFeature?.label].filter(Boolean).join(" · ");
 
   const triggerStyle = useCallback(
     ({ pressed, hovered }: PressableStateCallbackType & { hovered?: boolean }) => [
@@ -338,7 +356,7 @@ export function ModelEffortControl({
             <PillLabel
               provider={provider}
               serverId={serverId}
-              modelLabel={browser.triggerLabel}
+              modelLabel={modelLabel}
               effortLabel={effort.hasEffort ? effortLabel : null}
               isTop={effort.isTop}
               openLabel={open ? openLabel : null}
@@ -385,9 +403,9 @@ export function ModelEffortControl({
             onSelectEffort={onSelectEffort}
             fastFeature={fastFeature}
             onSetFeature={onSetFeature}
-            modelLabel={browser.triggerLabel}
+            modelLabel={modelLabel}
             selectedModelLabel={browser.selectedModelLabel}
-            onOpenModels={openModels}
+            onOpenModels={onOpenModels}
             disabled={disabled}
           />
         )}
@@ -473,18 +491,20 @@ function ModelsPage({
   isRetryingProvider: boolean;
 }): ReactElement {
   return (
-    <ModelBrowser
-      state={browser}
-      onSelect={onSelect}
-      onApplyProfile={onApplyProfile}
-      onEditProfiles={onEditProfiles}
-      onCreateProfile={onCreateProfile}
-      onEditProfile={onEditProfile}
-      onRetryProvider={onRetryProvider}
-      isRetryingProvider={isRetryingProvider}
-      scrolling={resolveModelBrowserScrolling({ isNative, isCompact })}
-      searchAllOnFocus={isCompact}
-    />
+    <View style={styles.modelsPage} testID="agent-model-browser">
+      <ModelBrowser
+        state={browser}
+        onSelect={onSelect}
+        onApplyProfile={onApplyProfile}
+        onEditProfiles={onEditProfiles}
+        onCreateProfile={onCreateProfile}
+        onEditProfile={onEditProfile}
+        onRetryProvider={onRetryProvider}
+        isRetryingProvider={isRetryingProvider}
+        scrolling={resolveModelBrowserScrolling({ isNative, isCompact })}
+        searchAllOnFocus={isCompact}
+      />
+    </View>
   );
 }
 
@@ -506,10 +526,18 @@ function EffortCard({
   onSetFeature: ((featureId: string, value: unknown) => void) | undefined;
   modelLabel: string;
   selectedModelLabel: string;
-  onOpenModels: () => void;
+  onOpenModels: (() => void) | undefined;
   disabled: boolean;
 }): ReactElement {
   const { t } = useTranslation();
+  const touch = useControlDensity() === "touch";
+  const modelTargetStyle = useCallback(
+    (state: PressableStateCallbackType & { hovered?: boolean }) => [
+      modelRowStyle(state),
+      touch && styles.modelRowTouch,
+    ],
+    [touch],
+  );
 
   const handleReset = useCallback(() => {
     const defaultOption = effortOptions[resolveEffortDefaultIndex(effortOptions)];
@@ -558,19 +586,21 @@ function EffortCard({
               {description}
             </Text>
           ) : null}
-          <ComboboxTrigger
-            disabled={disabled}
-            onPress={onOpenModels}
-            style={modelRowStyle}
-            accessibilityRole="button"
-            accessibilityLabel={t("modelSelector.selectedModel", { model: selectedModelLabel })}
-            testID="agent-effort-model"
-            chevron={modelChevron}
-          >
-            <Text style={styles.modelRowText} numberOfLines={1}>
-              {modelLabel}
-            </Text>
-          </ComboboxTrigger>
+          {onOpenModels ? (
+            <ComboboxTrigger
+              disabled={disabled}
+              onPress={onOpenModels}
+              style={modelTargetStyle}
+              accessibilityRole="button"
+              accessibilityLabel={t("modelSelector.selectedModel", { model: selectedModelLabel })}
+              testID="agent-effort-model"
+              chevron={modelChevron}
+            >
+              <Text style={styles.modelRowText} numberOfLines={1}>
+                {modelLabel}
+              </Text>
+            </ComboboxTrigger>
+          ) : null}
         </View>
         <View style={styles.cardCorner}>
           {effort.hasEffort ? (
@@ -739,6 +769,7 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
     textAlign: "center",
   },
+  modelsPage: { flexGrow: 1, flexShrink: 1, minHeight: 0 },
   modelRow: {
     height: 28,
     maxWidth: "100%",
@@ -749,6 +780,7 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius["2xl"],
     backgroundColor: "transparent",
   },
+  modelRowTouch: { height: "auto", minHeight: 44 },
   modelRowHovered: {
     backgroundColor: theme.colors.surface2,
   },

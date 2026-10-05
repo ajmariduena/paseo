@@ -72,3 +72,12 @@ export function resolveEffortAfterModelSwitch(input: {
   if (current) return current.id;
   return options[resolveEffortDefaultIndex(options)]?.id ?? null;
 }
+
+/** Effort and Fast stay reachable on providers that cannot switch models. */
+export function hasModelEffortControl(input: {
+  canSelectModel: boolean;
+  effortCount: number;
+  hasFast: boolean;
+}): boolean {
+  return input.canSelectModel || input.effortCount > 1 || input.hasFast;
+}

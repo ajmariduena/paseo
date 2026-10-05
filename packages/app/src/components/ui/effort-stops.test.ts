@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   effortStopFromRatio,
+  hasModelEffortControl,
   effortStopRatio,
   resolveEffortAfterModelSwitch,
   resolveEffortDefaultIndex,
@@ -91,5 +92,16 @@ describe("effort stops", () => {
     expect(
       resolveEffortAfterModelSwitch({ thinkingOptions: null, currentThinkingOptionId: "high" }),
     ).toBeNull();
+  });
+});
+
+describe("effort card availability", () => {
+  it.each([
+    [{ canSelectModel: false, effortCount: 0, hasFast: true }, true],
+    [{ canSelectModel: false, effortCount: 3, hasFast: false }, true],
+    [{ canSelectModel: true, effortCount: 0, hasFast: false }, true],
+    [{ canSelectModel: false, effortCount: 0, hasFast: false }, false],
+  ] as const)("keeps effort and Fast reachable with %j", (input, expected) => {
+    expect(hasModelEffortControl(input)).toBe(expected);
   });
 });

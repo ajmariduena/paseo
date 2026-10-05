@@ -1,3 +1,4 @@
+import { hasModelEffortControl } from "@/components/ui/effort-stops";
 import {
   usePublishQuickPromptControls,
   useQuickPromptControlDensity,
@@ -534,7 +535,7 @@ function useAgentControlsDensity({
 }
 
 function resolveControlPresence(input: {
-  canSelectModel: boolean;
+  hasPill: boolean;
   hasMode: boolean;
   effortOptions: readonly EffortOption[];
   selectedEffortId: string | undefined;
@@ -555,7 +556,7 @@ function resolveControlPresence(input: {
     return { type: "select" as const, label: selectedOption?.label ?? feature.label };
   });
   return {
-    hasModel: input.canSelectModel,
+    hasModel: input.hasPill,
     hasEffort: input.effortOptions.length > 1,
     hasMode: input.hasMode,
     features,
@@ -608,12 +609,17 @@ function ControlledAgentControls({
   const canSwitchProvider = Boolean(onSelectProviderAndModel);
   const hasMode = Boolean(modeControl);
   const { fastFeature, toolbarFeatures } = useMemo(() => splitFeatures(features), [features]);
-  const hasAnyControl = canSelectModel || toolbarFeatures.length > 0 || hasMode;
+  const hasPill = hasModelEffortControl({
+    canSelectModel,
+    effortCount: effortOptions.length,
+    hasFast: fastFeature !== null,
+  });
+  const hasAnyControl = hasPill || toolbarFeatures.length > 0 || hasMode;
 
   const controlPresence = useMemo(
     () =>
       resolveControlPresence({
-        canSelectModel,
+        hasPill,
         hasMode,
         effortOptions,
         selectedEffortId,
@@ -624,7 +630,7 @@ function ControlledAgentControls({
         fontScale,
       }),
     [
-      canSelectModel,
+      hasPill,
       effortOptions,
       fontScale,
       hasMode,
@@ -731,8 +737,9 @@ function ControlledAgentControls({
 
   const end = useMemo<ModelEffortControlProps | null>(
     () =>
-      canSelectModel
+      hasPill
         ? {
+            canSelectModel,
             provider,
             serverId: modelSelectorServerId,
             providers,
@@ -760,6 +767,7 @@ function ControlledAgentControls({
         : null,
     [
       agentProfiles,
+      hasPill,
       canSelectModel,
       canSwitchProvider,
       disabled,

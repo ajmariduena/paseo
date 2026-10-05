@@ -8,19 +8,24 @@ including `ec224499d`). Local implementation and commit only; no push, PR, CI or
 Host-owned catalog and undo window use the existing daemon config write and change subscription.
 The new fields and capability are optional on the wire. Older clients accept the extra fields;
 new clients accept older configs and hide quick prompts without `features.quickPrompts`.
-There is no device-local catalog fallback. Config writes reject duplicate IDs, multiple defaults
-and more than three pins before persistence or notification.
+There is no device-local catalog fallback. Config writes and live reload reject duplicate IDs, multiple defaults
+and more than three pins before persistence or notification. Boot normalizes these catalog
+invariants and logs a warning without rewriting the hand-edited config.
 
 The composer uses Bookmark, a named split trigger on wide layouts, and the shared menu engine.
 Compact layouts use the picker. The shared capacity model budgets the actual button-row interior,
 fixed action targets, model/effort/mode labels and quick prompts together. Secondary pins disappear
-first, then the agent-control labels, then the default prompt label; an icon-only trigger opens
+first, followed by the effort suffix, mode label, carets, model label and default prompt label; an icon-only trigger opens
 the picker. The one toolbar insertion is immediately after `AGENT_CONTROLS_END` inside
 `beforeVoiceContent` in `composer/index.tsx`: ring · model pill · quick prompt · mic · send/stop.
 Existing model, effort, permission and voice controls retain their structure.
 
 A captured send waits 2.5 seconds by default, supports undo and a second tap to dispatch once,
-and reports the daemon's disposition. Failure requires explicit retry. Destination, policy,
+and reports the daemon's disposition. Intent and confirmed-result strings are separate in all
+nine locales. Feedback, Undo, Retry and dismissal occupy the split button itself, with bounded
+width and wrapping; no action sits outside its parent. Cancellation and unavailable notices
+expire after 2.5 seconds. In-flight sends survive late picker callbacks, and a turn ending
+re-resolves the action without cancelling the captured destination. Failure requires explicit retry. Destination, policy,
 permission, visibility, foreground, connection and presentation changes cancel the wait.
 The iOS menu teardown callback is guarded against a changed destination. Sending uses the
 normal dispatch/enqueue transport and leaves the draft and selected attachments intact;
@@ -33,32 +38,36 @@ delete and the undo window. All new UI copy has entries in the nine existing loc
 
 Builds and workspace typechecking ran through `CRABBOX_STATIC_ID=paseo-quick-prompts crabbox run`.
 Only the touched test files ran; no full suite. Typecheck, lint, format and these tests were
-repeated after the rebase. The workspace builds below were completed before the rebase; the
-existing declarations remained current.
+repeated after the review fixes. `build:server` regenerated cross-package declarations after
+localizable validation messages were added; `build:app-deps` was run during initial implementation.
 
-| Check                                                                                                                 | Result                                          |
-| --------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| `npm run build:server`                                                                                                | Passed, including protocol validator generation |
-| `npm run build:app-deps`                                                                                              | Passed                                          |
-| `npm run typecheck`                                                                                                   | Passed across workspaces                        |
-| `npm run lint`                                                                                                        | Passed, 0 warnings / 0 errors                   |
-| `npm run format`                                                                                                      | Passed before commit                            |
-| App: `npx vitest run src/composer/input/state.test.ts src/composer/agent-controls/layout.test.ts --bail=1`            | 61 passed                                       |
-| Protocol: `npx vitest run src/messages.wire-compat.test.ts --bail=1`                                                  | 22 passed                                       |
-| Root, on mini: `npx vitest run packages/server/src/server/daemon-config-store.test.ts --bail=1`                       | 40 passed                                       |
-| App: `npx vitest run src/i18n/resources.test.ts --bail=1 -t 'quick prompt\|keys in sync\|non-English\|interpolation'` | 4 passed, 33 outside the filter                 |
+| Check                                                                                                                                             | Result                                          |
+| ------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `npm run build:server`                                                                                                                            | Passed, including protocol validator generation |
+| `npm run build:app-deps`                                                                                                                          | Passed                                          |
+| `npm run typecheck`                                                                                                                               | Passed across workspaces                        |
+| `npm run lint`                                                                                                                                    | Passed, 0 warnings / 0 errors                   |
+| `npm run format`                                                                                                                                  | Passed before commit                            |
+| App: `npx vitest run src/composer/input/state.test.ts src/composer/agent-controls/layout.test.ts src/components/ui/effort-stops.test.ts --bail=1` | 79 passed                                       |
+| Protocol: `npx vitest run src/messages.wire-compat.test.ts --bail=1`                                                                              | 23 passed                                       |
+| Root, on mini: `npx vitest run packages/server/src/server/daemon-config-store.test.ts --bail=1`                                                   | 41 passed                                       |
+| App: `npx vitest run src/i18n/resources.test.ts --bail=1 -t 'quick prompt\|keys in sync\|non-English\|interpolation'`                             | 4 passed, 33 outside the filter                 |
 
 The full touched `resources.test.ts` failed its existing untranslated-connection-error check:
 `screens/settings/worktree-storage-card.tsx: Host is not connected`. The same two literals exist
 in the starting HEAD at lines 78 and 92. That file was not changed. The new namespace, key
-parity, interpolation and translation coverage checks pass independently. The same unrelated failure was reproduced after rebasing.
+parity, interpolation and translation coverage checks pass independently. The same unrelated failure was reproduced after the review fixes.
 
 The deferred-send tests cover undo, second tap, each context cancellation, transient disconnect,
 manual-send cancellation, unmount, delayed menu selection, failure/retry, and all three daemon
 dispositions (including no invented feedback when a response omits disposition). Picker tests
 cover send versus insert, pin limit, exclusive default, order and form failure preservation.
-Capacity tests cover 368 px with pointer and touch density, the prompt label surviving the
-model label, and longer labels at 1×, 1.5× and 2× font scales.
+Capacity tests cover 368 px with pointer and touch density, inline feedback width, all five
+control-density stages, a 12 px hysteresis band for labels and pins, and longer labels at 1×,
+1.5× and 2× font scales. Effort/Fast availability is covered independently of model selection.
+The three existing browser/mobile model-selector specs now navigate through the effort card;
+they were updated without running e2e suites, as requested. The slider now selects only on
+recognized horizontal drag or successful tap; native scroll arbitration remains unverified.
 
 ## Browser evidence
 
@@ -88,7 +97,7 @@ Raw command logs: `/tmp/quick-prompts-*.log`.
 
 | Surface                                                               | Coverage                                                              |
 | --------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| Browser web, wide and compact                                         | Exercised before rebase; combined toolbar not visually rechecked      |
+| Browser web, wide and compact                                         | Exercised before rebase; review changes not visually rechecked        |
 | iOS / iPadOS hardware                                                 | Not exercised                                                         |
 | Android hardware                                                      | Not exercised                                                         |
 | Electron macOS / Windows / Linux                                      | Not exercised                                                         |
@@ -100,6 +109,14 @@ The isolated QA is not production acceptance. CI, deployment and physical-device
 remain outside this local handoff.
 
 ## Changed files
+
+- `packages/app/e2e/browser/bottom-sheet-reopen.spec.ts`
+- `packages/app/e2e/browser/provider-settings-refresh.spec.ts`
+- `packages/app/e2e/mobile/modal-sheet/model.android.ad`
+- `packages/app/src/components/ui/effort-slider.tsx`
+- `packages/app/src/components/ui/effort-stops.ts`
+- `packages/app/src/components/ui/effort-stops.test.ts`
+- `packages/app/src/composer/agent-controls/effort-card.tsx`
 
 - `docs/data-model.md`
 - `docs/design.md`

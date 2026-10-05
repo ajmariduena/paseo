@@ -134,19 +134,24 @@ export function EffortSlider({
 
   useEffortSliderKeyboard({ enabled: !disabled && count > 1, onStep: step });
 
-  const gesture = useMemo(
-    () =>
-      Gesture.Pan()
-        .enabled(!disabled)
-        .runOnJS(true)
-        // A finger that starts on the track and moves sideways is ours; one moving up or down is
-        // scrolling the sheet behind it.
-        .activeOffsetX([-4, 4])
-        .failOffsetY([-12, 12])
-        .onBegin((event) => selectFromPointer(event.x))
-        .onUpdate((event) => selectFromPointer(event.x)),
-    [disabled, selectFromPointer],
-  );
+  const gesture = useMemo(() => {
+    const pan = Gesture.Pan()
+      .enabled(!disabled)
+      .runOnJS(true)
+      // Select only after horizontal intent wins; a vertical scroll never activates the pan.
+      .activeOffsetX([-4, 4])
+      .failOffsetY([-12, 12])
+      .onStart((event) => selectFromPointer(event.x))
+      .onUpdate((event) => selectFromPointer(event.x));
+    const tap = Gesture.Tap()
+      .enabled(!disabled)
+      .runOnJS(true)
+      .maxDistance(8)
+      .onEnd((event, success) => {
+        if (success) selectFromPointer(event.x);
+      });
+    return Gesture.Exclusive(pan, tap);
+  }, [disabled, selectFromPointer]);
 
   const handleLayout = useCallback((event: LayoutChangeEvent) => {
     const width = readMeasuredWidth(event);
