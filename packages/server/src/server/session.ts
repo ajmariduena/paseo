@@ -5599,7 +5599,11 @@ export class Session {
     msg: Extract<SessionInboundMessage, { type: "workspace.storage.cleanup.request" }>,
   ): Promise<void> {
     try {
-      const results = await cleanupWorktreeStorage(this.worktreeStorageContext(), msg.entryIds);
+      const results = await cleanupWorktreeStorage(
+        this.worktreeStorageContext(),
+        msg.entryIds,
+        msg.legacyEntryIds,
+      );
       this.emit({
         type: "workspace.storage.cleanup.response",
         payload: { results, error: null, requestId: msg.requestId },

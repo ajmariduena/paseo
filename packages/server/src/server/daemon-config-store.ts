@@ -25,6 +25,7 @@ interface SupportedMutableConfigPatch {
   removeProviders?: string[];
   metadataGeneration?: MutableDaemonConfig["metadataGeneration"];
   autoArchiveAfterMerge?: boolean;
+  autoCleanupArchivedWorktrees?: boolean;
   continueAfterRestart?: boolean;
   enableTerminalAgentHooks?: boolean;
   appendSystemPrompt?: string;
@@ -190,6 +191,7 @@ const RELOADABLE_PATHS = [
   "daemon.git.maxProcessesPerSecond",
   "daemon.git.maxProcessConcurrency",
   "daemon.autoArchiveAfterMerge",
+  "daemon.autoCleanupArchivedWorktrees",
   "daemon.enableTerminalAgentHooks",
   "daemon.appendSystemPrompt",
   "daemon.terminalProfiles",
@@ -215,6 +217,7 @@ const PERSISTED_TO_MUTABLE_PATH = new Map<string, string>([
   ["daemon.git.maxProcessesPerSecond", "git.maxProcessesPerSecond"],
   ["daemon.git.maxProcessConcurrency", "git.maxProcessConcurrency"],
   ["daemon.autoArchiveAfterMerge", "autoArchiveAfterMerge"],
+  ["daemon.autoCleanupArchivedWorktrees", "autoCleanupArchivedWorktrees"],
   ["daemon.enableTerminalAgentHooks", "enableTerminalAgentHooks"],
   ["daemon.appendSystemPrompt", "appendSystemPrompt"],
   ["daemon.terminalProfiles", "terminalProfiles"],
@@ -290,11 +293,17 @@ function pickAgentBehaviorFields(
   patch: MutableDaemonConfigPatch,
 ): Pick<
   SupportedMutableConfigPatch,
-  "autoArchiveAfterMerge" | "continueAfterRestart" | "enableTerminalAgentHooks"
+  | "autoArchiveAfterMerge"
+  | "autoCleanupArchivedWorktrees"
+  | "continueAfterRestart"
+  | "enableTerminalAgentHooks"
 > {
   return {
     ...(patch.autoArchiveAfterMerge !== undefined
       ? { autoArchiveAfterMerge: patch.autoArchiveAfterMerge }
+      : {}),
+    ...(patch.autoCleanupArchivedWorktrees !== undefined
+      ? { autoCleanupArchivedWorktrees: patch.autoCleanupArchivedWorktrees }
       : {}),
     ...(patch.continueAfterRestart !== undefined
       ? { continueAfterRestart: patch.continueAfterRestart }
@@ -724,6 +733,9 @@ function mergeMutableDaemonPatch(
   }
   if (patch.autoArchiveAfterMerge !== undefined) {
     next.autoArchiveAfterMerge = patch.autoArchiveAfterMerge;
+  }
+  if (patch.autoCleanupArchivedWorktrees !== undefined) {
+    next.autoCleanupArchivedWorktrees = patch.autoCleanupArchivedWorktrees;
   }
   if (patch.enableTerminalAgentHooks !== undefined) {
     next.enableTerminalAgentHooks = patch.enableTerminalAgentHooks;

@@ -6,11 +6,13 @@ import { createRealpathAwarePathMatcher } from "../../../utils/path.js";
 import { runGitCommand } from "../../../utils/run-git-command.js";
 import {
   createWorktree,
+  getPaseoWorktreesRoot,
   isPaseoOwnedWorktreeCwd,
   mapWorkspaceCwdToWorktree,
   rollbackCreatedPaseoWorktree,
   type WorktreeSource,
 } from "../../../utils/worktree.js";
+import { withWorktreeProjectLock } from "../../worktree-use-lock.js";
 import { WorktreeRequestError, toWorktreeRequestError } from "../../worktree-errors.js";
 import {
   resolveWorkspaceDisplayName,
@@ -142,7 +144,16 @@ export function createWorkspaceRecoveryService(deps: {
     }
 
     if (resolved.kind === "restore") {
-      await recreateArchivedWorktree(resolved.workspace, resolved.sourceRepoRoot);
+      const projectRoot = await getPaseoWorktreesRoot(
+        resolved.sourceRepoRoot,
+        deps.paseoHome,
+        deps.worktreesRoot,
+      );
+      return withWorktreeProjectLock(projectRoot, async () => {
+        await recreateArchivedWorktree(resolved.workspace, resolved.sourceRepoRoot);
+        await deps.unarchiveWorkspace(resolved.workspace);
+        return { workspaceId, action: resolved.kind };
+      });
     }
     await deps.unarchiveWorkspace(resolved.workspace);
     return { workspaceId, action: resolved.kind };

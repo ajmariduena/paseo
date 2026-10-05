@@ -4,6 +4,7 @@ import { describeHookAgent, publishAgentStream } from "../plugins/lifecycle/inde
 import type { PluginSessionOpenRequest } from "@getpaseo/plugin/server";
 import { randomUUID } from "node:crypto";
 import { basename, resolve } from "node:path";
+import { withWorktreeProjectLock, worktreeProjectRootForCwd } from "../worktree-use-lock.js";
 import { stat } from "node:fs/promises";
 import {
   AGENT_LIFECYCLE_STATUSES,
@@ -1388,7 +1389,13 @@ export class AgentManager {
     agentId: string | undefined,
     options: CreateAgentOptions,
   ): Promise<ManagedAgent> {
-    return this.trackAgentRegistrationOperation(this.createAgentInternal(config, agentId, options));
+    const projectRoot = worktreeProjectRootForCwd(config.cwd);
+    const creation = projectRoot
+      ? withWorktreeProjectLock(projectRoot, () =>
+          this.createAgentInternal(config, agentId, options),
+        )
+      : this.createAgentInternal(config, agentId, options);
+    return this.trackAgentRegistrationOperation(creation);
   }
 
   private async createAgentInternal(

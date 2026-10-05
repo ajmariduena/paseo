@@ -1,4 +1,5 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +11,7 @@ import {
 import {
   cleanupWorktreeStorage,
   listWorktreeStorage,
+  sweepOwnedArchivedWorktrees,
   type WorktreeStorageContext,
 } from "./worktree-storage.js";
 import {
@@ -81,8 +83,18 @@ describe("worktree storage cleanup", () => {
   }
 
   it("lists plain git worktrees, archived leftovers, and each kept reason", async () => {
-    add("plain");
+    const plain = add("plain");
+    writePaseoWorktreeMetadata(plain, {
+      baseRefName: "main",
+      serverId: "srv-this",
+      paseoHome: root,
+    });
     const archived = add("archived");
+    writePaseoWorktreeMetadata(archived, {
+      baseRefName: "main",
+      serverId: "srv-this",
+      paseoHome: root,
+    });
     records.push(workspace(archived, "2026-01-02T00:00:00.000Z"));
     const active = add("active");
     records.push(workspace(active));
@@ -124,6 +136,11 @@ describe("worktree storage cleanup", () => {
 
   it("removes only a freshly freeable entry without force and keeps the branch", async () => {
     const removable = add("removable");
+    writePaseoWorktreeMetadata(removable, {
+      baseRefName: "main",
+      serverId: "srv-this",
+      paseoHome: root,
+    });
     const becameDirty = add("became-dirty");
     const entries = (await listWorktreeStorage(context)).entries;
     writeFileSync(join(becameDirty, "new.txt"), "important");
@@ -151,6 +168,72 @@ describe("worktree storage cleanup", () => {
     expect((await cleanupWorktreeStorage(context, [entries[0]!.entryId]))[0]?.removed).toBe(false);
   });
 
+  it("requires explicit entry consent for an ownerless worktree", async () => {
+    const path = add("legacy-manual");
+    const entry = (await listWorktreeStorage(context)).entries[0]!;
+    expect(entry).toMatchObject({
+      freeable: false,
+      requiresExplicitOptIn: true,
+      reason: "Created before ownership tracking",
+    });
+    expect((await cleanupWorktreeStorage(context, [entry.entryId]))[0]?.removed).toBe(false);
+    expect(existsSync(path)).toBe(true);
+    expect(
+      (await cleanupWorktreeStorage(context, [entry.entryId], [entry.entryId]))[0]?.removed,
+    ).toBe(true);
+  });
+
+  it("keeps a worktree with an external process cwd inside it", async () => {
+    const path = add("external-process");
+    writePaseoWorktreeMetadata(path, {
+      baseRefName: "main",
+      serverId: "srv-this",
+      paseoHome: root,
+    });
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd: path });
+    await once(child, "spawn");
+    try {
+      const entry = (await listWorktreeStorage(context)).entries[0]!;
+      expect(entry.reason).toBe("used by a running process");
+      expect((await cleanupWorktreeStorage(context, [entry.entryId]))[0]?.removed).toBe(false);
+      expect(existsSync(path)).toBe(true);
+    } finally {
+      child.kill();
+      await once(child, "exit");
+    }
+  });
+
+  it("keeps detached HEAD worktrees", async () => {
+    const path = add("detached");
+    writePaseoWorktreeMetadata(path, {
+      baseRefName: "main",
+      serverId: "srv-this",
+      paseoHome: root,
+    });
+    git(path, "checkout", "--detach");
+    const entry = (await listWorktreeStorage(context)).entries[0]!;
+    expect(entry).toMatchObject({ freeable: false, reason: "Detached HEAD" });
+    expect((await cleanupWorktreeStorage(context, [entry.entryId]))[0]?.removed).toBe(false);
+  });
+
+  it("rechecks live workspace use under the removal lock", async () => {
+    const path = add("became-active");
+    writePaseoWorktreeMetadata(path, {
+      baseRefName: "main",
+      serverId: "srv-this",
+      paseoHome: root,
+    });
+    const entry = (await listWorktreeStorage(context)).entries[0]!;
+    let reads = 0;
+    context.listWorkspaces = async () => {
+      reads += 1;
+      return reads >= 2 ? [workspace(path)] : [];
+    };
+    const result = await cleanupWorktreeStorage(context, [entry.entryId]);
+    expect(result[0]).toMatchObject({ removed: false, error: "used by an active workspace" });
+    expect(existsSync(path)).toBe(true);
+  });
+
   it("writes server ownership on newly created Paseo worktrees", async () => {
     const created = await createWorktree({
       cwd: repo,
@@ -158,11 +241,152 @@ describe("worktree storage cleanup", () => {
       source: { kind: "branch-off", baseBranch: "main", branchName: "owned" },
       runSetup: false,
       worktreesRoot,
+      paseoHome: root,
       serverId: "srv-this",
     });
     expect(readPaseoWorktreeMetadata(created.worktreePath)).toMatchObject({
       version: 2,
-      owner: { serverId: "srv-this" },
+      owner: { serverId: "srv-this", paseoHome: root },
     });
+  });
+
+  it("automatically removes only owned archived worktrees after a fresh safety check", async () => {
+    const eligible = add("eligible");
+    writePaseoWorktreeMetadata(eligible, {
+      baseRefName: "main",
+      serverId: "srv-this",
+      paseoHome: root,
+    });
+    records.push(workspace(eligible, "2026-01-02T00:00:00.000Z"));
+
+    const foreign = add("foreign-auto");
+    writePaseoWorktreeMetadata(foreign, { baseRefName: "main", serverId: "srv-other" });
+    records.push(workspace(foreign, "2026-01-02T00:00:00.000Z"));
+
+    const legacy = add("legacy-auto");
+    records.push(workspace(legacy, "2026-01-02T00:00:00.000Z"));
+
+    const olderOwner = add("older-owner-auto");
+    writePaseoWorktreeMetadata(olderOwner, { baseRefName: "main", serverId: "srv-this" });
+    records.push(workspace(olderOwner, "2026-01-02T00:00:00.000Z"));
+
+    const clonedHome = add("cloned-home-auto");
+    writePaseoWorktreeMetadata(clonedHome, {
+      baseRefName: "main",
+      serverId: "srv-this",
+      paseoHome: join(root, "another-home"),
+    });
+    records.push(workspace(clonedHome, "2026-01-02T00:00:00.000Z"));
+
+    const unknown = add("unknown-auto");
+    writePaseoWorktreeMetadata(unknown, {
+      baseRefName: "main",
+      serverId: "srv-this",
+      paseoHome: root,
+    });
+
+    const active = add("active-auto");
+    writePaseoWorktreeMetadata(active, {
+      baseRefName: "main",
+      serverId: "srv-this",
+      paseoHome: root,
+    });
+    records.push(workspace(active, "2026-01-02T00:00:00.000Z"));
+    records.push({ ...workspace(active), workspaceId: "active-second" });
+
+    const busy = add("busy-auto");
+    writePaseoWorktreeMetadata(busy, {
+      baseRefName: "main",
+      serverId: "srv-this",
+      paseoHome: root,
+    });
+    records.push(workspace(busy, "2026-01-02T00:00:00.000Z"));
+    agentCwds.push(busy);
+
+    const dirty = add("dirty-auto");
+    writePaseoWorktreeMetadata(dirty, {
+      baseRefName: "main",
+      serverId: "srv-this",
+      paseoHome: root,
+    });
+    records.push(workspace(dirty, "2026-01-02T00:00:00.000Z"));
+    writeFileSync(join(dirty, "untracked.txt"), "keep");
+
+    const result = await sweepOwnedArchivedWorktrees(context, () => true);
+    expect(result).toMatchObject({ scanned: 9, candidates: 1, removed: 1, failures: [] });
+    expect(existsSync(eligible)).toBe(false);
+    for (const kept of [foreign, legacy, olderOwner, clonedHome, unknown, active, busy, dirty]) {
+      expect(existsSync(kept)).toBe(true);
+    }
+  });
+
+  it("retains a worktree when teardown fails and retries after it succeeds", async () => {
+    writeFileSync(
+      join(repo, "paseo.json"),
+      JSON.stringify({
+        worktree: {
+          teardown:
+            "node -e \"process.exit(require('fs').existsSync(process.env.PASEO_SOURCE_CHECKOUT_PATH + '/ready') ? 0 : 1)\"",
+        },
+      }),
+    );
+    git(repo, "add", "paseo.json");
+    git(repo, "commit", "-m", "add teardown");
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD");
+    const path = add("retry-auto");
+    writePaseoWorktreeMetadata(path, {
+      baseRefName: "main",
+      serverId: "srv-this",
+      paseoHome: root,
+    });
+    records.push(workspace(path, "2026-01-02T00:00:00.000Z"));
+
+    const failed = await sweepOwnedArchivedWorktrees(context, () => true);
+    expect(failed.removed).toBe(0);
+    expect(failed.failures).toHaveLength(1);
+    expect(existsSync(path)).toBe(true);
+
+    writeFileSync(join(repo, "ready"), "yes");
+    const retried = await sweepOwnedArchivedWorktrees(context, () => true);
+    expect(retried).toMatchObject({ candidates: 1, removed: 1, failures: [] });
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it("rechecks Git after teardown and retains files the teardown creates", async () => {
+    writeFileSync(
+      join(repo, "paseo.json"),
+      JSON.stringify({
+        worktree: {
+          teardown: "node -e \"require('fs').writeFileSync('generated.txt', 'keep')\"",
+        },
+      }),
+    );
+    git(repo, "add", "paseo.json");
+    git(repo, "commit", "-m", "add teardown");
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD");
+    const path = add("generated-auto");
+    writePaseoWorktreeMetadata(path, {
+      baseRefName: "main",
+      serverId: "srv-this",
+      paseoHome: root,
+    });
+    records.push(workspace(path, "2026-01-02T00:00:00.000Z"));
+
+    const result = await sweepOwnedArchivedWorktrees(context, () => true);
+    expect(result).toMatchObject({ candidates: 1, removed: 0 });
+    expect(existsSync(join(path, "generated.txt"))).toBe(true);
+  });
+
+  it("does nothing while automatic cleanup is disabled", async () => {
+    const path = add("disabled-auto");
+    writePaseoWorktreeMetadata(path, {
+      baseRefName: "main",
+      serverId: "srv-this",
+      paseoHome: root,
+    });
+    records.push(workspace(path, "2026-01-02T00:00:00.000Z"));
+    const result = await sweepOwnedArchivedWorktrees(context, () => false);
+    expect(result.removed).toBe(0);
+    expect(existsSync(path)).toBe(true);
   });
 });

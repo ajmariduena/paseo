@@ -28,6 +28,8 @@ import { resolveFirstAgentPromptTitle } from "./agent/create-agent-title.js";
 import { buildAgentBranchNameSeed } from "./agent/prompt-attachments.js";
 import type { FirstAgentContext } from "@getpaseo/protocol/messages";
 import { runWithGitCommandPriority } from "../utils/run-git-command.js";
+import { getPaseoWorktreesRoot } from "../utils/worktree.js";
+import { withWorktreeProjectLock } from "./worktree-use-lock.js";
 
 export interface CreatePaseoWorktreeInput extends CreateWorktreeCoreInput {
   workspaceId?: string;
@@ -65,7 +67,10 @@ export async function createPaseoWorktree(
   input: CreatePaseoWorktreeInput,
   deps: CreatePaseoWorktreeDeps,
 ): Promise<CreatePaseoWorktreeResult> {
-  return runWithGitCommandPriority("high", () => createPaseoWorktreeWithPriority(input, deps));
+  const projectRoot = await getPaseoWorktreesRoot(input.cwd, input.paseoHome, input.worktreesRoot);
+  return withWorktreeProjectLock(projectRoot, () =>
+    runWithGitCommandPriority("high", () => createPaseoWorktreeWithPriority(input, deps)),
+  );
 }
 
 async function createPaseoWorktreeWithPriority(

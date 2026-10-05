@@ -1926,6 +1926,8 @@ export class VoiceAssistantWebSocketServer {
         // COMPAT(workspaceRecovery): added in v0.1.105, remove after 2027-01-11 once daemon floor >= v0.1.105.
         workspaceRecovery: true,
         worktreeStorage: true,
+        // COMPAT(autoWorktreeCleanup): added in v0.11.0, remove after daemon floor supports automatic cleanup.
+        autoWorktreeCleanup: true,
         // COMPAT(workspaceFileEditing): added in v0.2.0, remove after 2027-01-18 once daemon floor >= v0.2.0.
         workspaceFileEditing: true,
         // COMPAT(providerUsageList): added in v0.1.98, drop the gate when daemon floor >= v0.1.98.

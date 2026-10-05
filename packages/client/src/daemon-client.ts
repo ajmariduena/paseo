@@ -4830,9 +4830,10 @@ export class DaemonClient {
 
   async cleanupWorktreeStorage(
     entryIds: string[],
+    legacyEntryIds: string[] = [],
   ): Promise<WorkspaceStorageCleanupResponse["payload"]> {
     return this.sendNamespacedCorrelatedSessionRequest<"workspace.storage.cleanup.response">({
-      message: { type: "workspace.storage.cleanup.request", entryIds },
+      message: { type: "workspace.storage.cleanup.request", entryIds, legacyEntryIds },
       timeout: 120_000,
     });
   }

@@ -1263,6 +1263,7 @@ export const createWorktree = async ({
   writePaseoWorktreeMetadata(worktreePath, {
     baseRefName: sourcePlan.metadataBaseRefName,
     serverId,
+    paseoHome,
     ...(sourcePlan.metadataBaseRef ? { baseRef: sourcePlan.metadataBaseRef } : {}),
     ...(sourcePlan.changeRequestLookupTarget
       ? { changeRequestLookupTarget: sourcePlan.changeRequestLookupTarget }

@@ -232,6 +232,7 @@ export const MutableDaemonConfigSchema = z
     providers: z.record(z.string(), MutableDaemonProviderConfigSchema).default({}),
     metadataGeneration: MutableMetadataGenerationConfigSchema.default({ providers: [] }),
     autoArchiveAfterMerge: z.boolean().default(false),
+    autoCleanupArchivedWorktrees: z.boolean().optional(),
     // COMPAT(restartContinuation): added in v0.11.0; absent on older daemons, remove optional after 2027-10-04.
     continueAfterRestart: z.boolean().optional(),
     enableTerminalAgentHooks: z.boolean().default(false),
@@ -257,6 +258,7 @@ export const MutableDaemonConfigPatchSchema = z
     removeProviders: z.array(z.string().min(1)).optional(),
     metadataGeneration: MutableMetadataGenerationConfigSchema.partial().optional(),
     autoArchiveAfterMerge: z.boolean().optional(),
+    autoCleanupArchivedWorktrees: z.boolean().optional(),
     continueAfterRestart: z.boolean().optional(),
     enableTerminalAgentHooks: z.boolean().optional(),
     appendSystemPrompt: z.string().optional(),
@@ -2654,6 +2656,7 @@ export const WorkspaceStorageListRequestSchema = z.object({
 export const WorkspaceStorageCleanupRequestSchema = z.object({
   type: z.literal("workspace.storage.cleanup.request"),
   entryIds: z.array(z.string()).max(500),
+  legacyEntryIds: z.array(z.string()).max(500).optional(),
   requestId: z.string(),
 });
 
@@ -4000,6 +4003,8 @@ export const ServerInfoStatusPayloadSchema = z
         // COMPAT(workspaceRecovery): added in v0.1.105, remove after 2027-01-11 once daemon floor >= v0.1.105.
         workspaceRecovery: z.boolean().optional(),
         worktreeStorage: z.boolean().optional(),
+        // COMPAT(autoWorktreeCleanup): added in v0.11.0, remove after daemon floor supports automatic cleanup.
+        autoWorktreeCleanup: z.boolean().optional(),
         // COMPAT(workspaceFileEditing): added in v0.2.0, remove after 2027-01-18 once daemon floor >= v0.2.0.
         workspaceFileEditing: z.boolean().optional(),
         // COMPAT(providerUsageList): added in v0.1.98, drop the gate when daemon floor >= v0.1.98.
@@ -6503,6 +6508,7 @@ const WorkspaceStorageEntrySchema = z.object({
   project: z.string(),
   sizeBytes: z.number().nullable(),
   freeable: z.boolean(),
+  requiresExplicitOptIn: z.boolean().optional(),
   reason: z.string(),
 });
 

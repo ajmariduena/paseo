@@ -25,6 +25,7 @@ function reloadableConfig(
     providers: (agents.providers ?? {}) as MutableDaemonConfig["providers"],
     metadataGeneration: { providers: agents.metadataGeneration?.providers ?? [] },
     autoArchiveAfterMerge: daemon.autoArchiveAfterMerge ?? false,
+    autoCleanupArchivedWorktrees: Boolean(daemon.autoCleanupArchivedWorktrees),
     enableTerminalAgentHooks: daemon.enableTerminalAgentHooks ?? false,
     appendSystemPrompt: daemon.appendSystemPrompt ?? "",
     terminalProfiles: daemon.terminalProfiles,
@@ -96,6 +97,27 @@ describe("DaemonConfigStore", () => {
     for (const dir of tempDirs) {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test("automatic archived-worktree cleanup is off by default and persists opt-in", () => {
+    const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-daemon-config-store-"));
+    tempDirs.push(paseoHome);
+    const store = new DaemonConfigStore(paseoHome, {
+      mcp: { injectIntoAgents: false },
+      browserTools: { enabled: false },
+      providers: {},
+      metadataGeneration: { providers: [] },
+      autoArchiveAfterMerge: false,
+      appendSystemPrompt: "",
+    });
+    expect(store.get().autoCleanupArchivedWorktrees === true).toBe(false);
+    expect(store.patch({ autoCleanupArchivedWorktrees: true }).autoCleanupArchivedWorktrees).toBe(
+      true,
+    );
+    expect(loadPersistedConfig(paseoHome).daemon?.autoCleanupArchivedWorktrees).toBe(true);
+    expect(store.patch({ autoCleanupArchivedWorktrees: false }).autoCleanupArchivedWorktrees).toBe(
+      false,
+    );
   });
 
   test("patch persists relay state and emits its field change", () => {

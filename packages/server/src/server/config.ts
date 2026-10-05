@@ -581,6 +581,10 @@ function resolveStaticLoadConfigSettings(
   };
 }
 
+function resolveAutomaticWorktreeCleanupConfig(persisted: PersistedConfig) {
+  return { autoCleanupArchivedWorktrees: persisted.daemon?.autoCleanupArchivedWorktrees ?? false };
+}
+
 interface ResolveConfigFromPersistedOptions {
   env?: NodeJS.ProcessEnv;
   cli?: CliConfigOverrides;
@@ -649,6 +653,7 @@ export function resolveConfigFromPersisted(
     browserToolsEnabled,
     git: resolveGitProcessConfig(env, persisted),
     autoArchiveAfterMerge,
+    ...resolveAutomaticWorktreeCleanupConfig(persisted),
     enableTerminalAgentHooks: persisted.daemon?.enableTerminalAgentHooks ?? false,
     appendSystemPrompt,
     terminalProfiles,

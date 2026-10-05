@@ -40,6 +40,17 @@ describe("server config", () => {
     expect(config.providerCatalogRefreshTimeoutMs).toBe(180_000);
   });
 
+  test("automatic archived-worktree cleanup is opt-in", async () => {
+    const paseoHome = await mkdtemp(path.join(os.tmpdir(), "paseo-config-worktree-cleanup-"));
+    roots.push(paseoHome);
+    expect(loadConfig(paseoHome, { env: {} }).autoCleanupArchivedWorktrees).toBe(false);
+    await writeFile(
+      path.join(paseoHome, "config.json"),
+      JSON.stringify({ daemon: { autoCleanupArchivedWorktrees: true } }),
+    );
+    expect(loadConfig(paseoHome, { env: {} }).autoCleanupArchivedWorktrees).toBe(true);
+  });
+
   test("defaults to a two-hour idle agent runtime timeout", async () => {
     const paseoHome = await mkdtemp(path.join(os.tmpdir(), "paseo-config-codex-idle-default-"));
     roots.push(paseoHome);

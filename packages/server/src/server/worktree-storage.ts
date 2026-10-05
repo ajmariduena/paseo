@@ -2,12 +2,14 @@ import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { lstat, readdir, realpath, rmdir } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import type { PersistedWorkspaceRecord } from "./workspace-registry.js";
 import { isPathInsideRoot } from "../utils/path.js";
 import { readPaseoWorktreeMetadata } from "../utils/worktree-metadata.js";
-import { resolvePaseoWorktreesBaseRoot } from "../utils/worktree.js";
+import { resolvePaseoWorktreesBaseRoot, runWorktreeTeardownCommands } from "../utils/worktree.js";
 import { runGitCommand } from "../utils/run-git-command.js";
+import { withWorktreeProjectLock } from "./worktree-use-lock.js";
 
 const execFileAsync = promisify(execFile);
 const SIZE_TTL_MS = 10 * 60_000;
@@ -32,6 +34,7 @@ export interface WorktreeStorageEntry {
   path: string;
   sizeBytes: number | null;
   freeable: boolean;
+  requiresExplicitOptIn: boolean;
   reason: string;
 }
 
@@ -46,6 +49,14 @@ export interface WorktreeStorageCleanupResult {
   entryId: string;
   removed: boolean;
   error: string | null;
+}
+
+export interface AutomaticWorktreeCleanupResult {
+  scanned: number;
+  candidates: number;
+  removed: number;
+  removedPaths: string[];
+  failures: Array<{ path: string; error: string }>;
 }
 
 function entryIdForPath(path: string): string {
@@ -139,7 +150,7 @@ function referencesPath(workspace: PersistedWorkspaceRecord, path: string): bool
 
 async function inspectGitWorktree(
   path: string,
-): Promise<{ mainRepo: string; changes: number; unpushed: number } | null> {
+): Promise<{ mainRepo: string; changes: number; unpushed: number; detached: boolean } | null> {
   if (!(await lstat(join(path, ".git"))).isFile()) return null;
   const top = (await runGitCommand(["rev-parse", "--show-toplevel"], { cwd: path })).stdout.trim();
   const canonicalPath = await realpath(path);
@@ -162,12 +173,43 @@ async function inspectGitWorktree(
   if (!mainRepo || (await realpath(mainRepo)) === canonicalPath) return null;
   const status = (await runGitCommand(["status", "--porcelain", "-unormal"], { cwd: path })).stdout;
   const changes = countLines(status);
+  const branch = (await runGitCommand(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: path })).stdout;
   const commits = (
     await runGitCommand(["rev-list", "--count", "HEAD", "--not", "--remotes"], { cwd: path })
   ).stdout;
   const unpushed = Number(commits.trim());
   if (!Number.isSafeInteger(unpushed)) return null;
-  return { mainRepo, changes, unpushed };
+  return { mainRepo, changes, unpushed, detached: branch.trim() === "HEAD" };
+}
+
+async function listExternalProcessCwds(): Promise<string[] | null> {
+  if (process.platform !== "darwin" && process.platform !== "linux") return null;
+  try {
+    const { stdout } = await execFileAsync("lsof", ["-n", "-w", "-a", "-d", "cwd", "-F", "n"], {
+      timeout: 10_000,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    return stdout
+      .split("\n")
+      .filter((line) => line.startsWith("n"))
+      .map((line) => line.slice(1));
+  } catch {
+    return null;
+  }
+}
+
+async function externalProcessCwdStatus(
+  path: string,
+  knownCwds?: string[] | null,
+): Promise<"clear" | "busy" | "unknown"> {
+  const cwds = knownCwds === undefined ? await listExternalProcessCwds() : knownCwds;
+  if (cwds === null) return "unknown";
+  try {
+    const canonicalPath = await realpath(path);
+    return cwds.some((cwd) => isPathInsideRoot(canonicalPath, cwd)) ? "busy" : "clear";
+  } catch {
+    return "unknown";
+  }
 }
 
 async function classify(
@@ -176,12 +218,28 @@ async function classify(
   workspaces: PersistedWorkspaceRecord[],
   agentCwds: string[],
   terminalCwds: string[],
-): Promise<{ freeable: boolean; reason: string; mainRepo: string | null }> {
-  const keep = (reason: string) => ({ freeable: false, reason, mainRepo: null });
+  processCwds?: string[] | null,
+): Promise<{
+  freeable: boolean;
+  requiresExplicitOptIn: boolean;
+  reason: string;
+  mainRepo: string | null;
+}> {
+  const keep = (reason: string) => ({
+    freeable: false,
+    requiresExplicitOptIn: false,
+    reason,
+    mainRepo: null,
+  });
   try {
     const metadata = readPaseoWorktreeMetadata(path);
+    const ownerless = metadata?.version !== 2 || !metadata.owner?.serverId;
     if (metadata?.version === 2 && metadata.owner?.serverId !== undefined) {
-      if (metadata.owner.serverId !== context.serverId) return keep("used by another Paseo host");
+      const foreignServer = metadata.owner.serverId !== context.serverId;
+      const foreignHome =
+        metadata.owner.paseoHome !== undefined &&
+        resolve(metadata.owner.paseoHome) !== resolve(context.paseoHome);
+      if (foreignServer || foreignHome) return keep("used by another Paseo host");
     }
     if (workspaces.some((workspace) => !workspace.archivedAt && referencesPath(workspace, path))) {
       return keep("used by an active workspace");
@@ -189,28 +247,69 @@ async function classify(
     if ([...agentCwds, ...terminalCwds].some((cwd) => isPathInsideRoot(path, cwd))) {
       return keep("used by a live agent or terminal");
     }
+    const processStatus = await externalProcessCwdStatus(path, processCwds);
+    if (processStatus === "unknown") return keep("Could not check running processes");
+    if (processStatus === "busy") return keep("used by a running process");
     const git = await inspectGitWorktree(path);
     if (!git) return keep("not a git worktree");
-    const { changes, unpushed, mainRepo } = git;
-    if (changes) return keep(`${changes} uncommitted ${changes === 1 ? "change" : "changes"}`);
-    if (unpushed) return keep(`${unpushed} unpushed ${unpushed === 1 ? "commit" : "commits"}`);
-    const archived = workspaces.some(
-      (workspace) => workspace.archivedAt && referencesPath(workspace, path),
-    );
-    return { freeable: true, reason: archived ? "archived" : "not a workspace", mainRepo };
+    return classifyGitState(path, workspaces, git, ownerless);
   } catch {
     return keep("not a git worktree");
   }
 }
 
+function classifyGitState(
+  path: string,
+  workspaces: PersistedWorkspaceRecord[],
+  git: NonNullable<Awaited<ReturnType<typeof inspectGitWorktree>>>,
+  ownerless: boolean,
+) {
+  const { changes, unpushed, mainRepo, detached } = git;
+  const keep = (reason: string) => ({
+    freeable: false,
+    requiresExplicitOptIn: false,
+    reason,
+    mainRepo: null,
+  });
+  if (detached) return keep("Detached HEAD");
+  if (changes) return keep(`${changes} uncommitted ${changes === 1 ? "change" : "changes"}`);
+  if (unpushed) return keep(`${unpushed} unpushed ${unpushed === 1 ? "commit" : "commits"}`);
+  if (ownerless) {
+    return {
+      freeable: false,
+      requiresExplicitOptIn: true,
+      reason: "Created before ownership tracking",
+      mainRepo,
+    };
+  }
+  const archived = workspaces.some(
+    (workspace) => workspace.archivedAt && referencesPath(workspace, path),
+  );
+  return {
+    freeable: true,
+    requiresExplicitOptIn: false,
+    reason: archived ? "archived" : "not a workspace",
+    mainRepo,
+  };
+}
+
 async function snapshot(context: WorktreeStorageContext) {
   const root = resolvePaseoWorktreesBaseRoot(context);
-  const [paths, workspaces, terminalCwds] = await Promise.all([
+  const [paths, workspaces, terminalCwds, processCwds] = await Promise.all([
     candidatePaths(root),
     context.listWorkspaces(),
     context.listTerminalCwds(),
+    listExternalProcessCwds(),
   ]);
-  return { paths, workspaces, terminalCwds, agentCwds: context.listAgentCwds() };
+  return { paths, workspaces, terminalCwds, processCwds, agentCwds: context.listAgentCwds() };
+}
+
+async function liveUse(context: WorktreeStorageContext) {
+  const [workspaces, terminalCwds] = await Promise.all([
+    context.listWorkspaces(),
+    context.listTerminalCwds(),
+  ]);
+  return { workspaces, terminalCwds, agentCwds: context.listAgentCwds() };
 }
 
 export async function listWorktreeStorage(
@@ -225,6 +324,7 @@ export async function listWorktreeStorage(
       state.workspaces,
       state.agentCwds,
       state.terminalCwds,
+      state.processCwds,
     );
     entries.push({
       entryId: entryIdForPath(path),
@@ -233,6 +333,7 @@ export async function listWorktreeStorage(
       path,
       sizeBytes: null,
       freeable: classification.freeable,
+      requiresExplicitOptIn: classification.requiresExplicitOptIn,
       reason: classification.reason,
     });
   }
@@ -261,39 +362,38 @@ export async function listWorktreeStorage(
 export async function cleanupWorktreeStorage(
   context: WorktreeStorageContext,
   entryIds: string[],
+  legacyEntryIds: string[] = [],
 ): Promise<WorktreeStorageCleanupResult[]> {
   const results: WorktreeStorageCleanupResult[] = [];
   const pruned = new Set<string>();
+  const state = await snapshot(context);
+  const legacyConsent = new Set(legacyEntryIds);
   for (const entryId of new Set(entryIds)) {
-    const state = await snapshot(context);
     const path = state.paths.find((candidate) => entryIdForPath(candidate) === entryId);
     if (!path) {
       results.push({ entryId, removed: false, error: "Worktree is no longer available" });
       continue;
     }
-    const classification = await classify(
-      path,
-      context,
-      state.workspaces,
-      state.agentCwds,
-      state.terminalCwds,
-    );
-    if (!classification.freeable || !classification.mainRepo) {
-      results.push({ entryId, removed: false, error: classification.reason });
-      continue;
-    }
     try {
-      await runGitCommand(["worktree", "remove", path], {
-        cwd: classification.mainRepo,
-        timeout: 120_000,
+      await withWorktreeProjectLock(dirname(path), async () => {
+        const fresh = await liveUse(context);
+        const classification = await classify(
+          path,
+          context,
+          fresh.workspaces,
+          fresh.agentCwds,
+          fresh.terminalCwds,
+        );
+        if (
+          !classification.freeable &&
+          !(classification.requiresExplicitOptIn && legacyConsent.has(entryId))
+        ) {
+          throw new Error(classification.reason);
+        }
+        if (!classification.mainRepo) throw new Error(classification.reason);
+        await removeWorktree(path, classification.mainRepo);
+        pruned.add(classification.mainRepo);
       });
-      sizeCache.delete(path);
-      pruned.add(classification.mainRepo);
-      try {
-        await rmdir(dirname(path));
-      } catch {
-        /* A nonempty or inaccessible parent does not undo git's successful removal. */
-      }
       results.push({ entryId, removed: true, error: null });
     } catch (error) {
       results.push({
@@ -303,12 +403,123 @@ export async function cleanupWorktreeStorage(
       });
     }
   }
-  for (const mainRepo of pruned) {
+  await pruneRepos(pruned);
+  return results;
+}
+
+async function removeWorktree(path: string, mainRepo: string): Promise<void> {
+  await runGitCommand(["worktree", "remove", path], { cwd: mainRepo, timeout: 120_000 });
+  sizeCache.delete(path);
+  try {
+    await rmdir(dirname(path));
+  } catch {
+    // A nonempty or inaccessible parent does not undo Git's successful removal.
+  }
+}
+
+async function pruneRepos(repos: Set<string>): Promise<void> {
+  for (const mainRepo of repos) {
     try {
       await runGitCommand(["worktree", "prune"], { cwd: mainRepo, timeout: 30_000 });
     } catch {
       // Removal already succeeded; a future git operation can prune registrations.
     }
   }
-  return results;
+}
+
+function archivedOwnedRecords(
+  path: string,
+  context: WorktreeStorageContext,
+  workspaces: PersistedWorkspaceRecord[],
+): PersistedWorkspaceRecord[] {
+  try {
+    const metadata = readPaseoWorktreeMetadata(path);
+    if (
+      metadata?.version !== 2 ||
+      metadata.owner?.serverId !== context.serverId ||
+      metadata.owner.paseoHome === undefined ||
+      resolve(metadata.owner.paseoHome) !== resolve(context.paseoHome)
+    )
+      return [];
+  } catch {
+    return [];
+  }
+  const linked = workspaces.filter((workspace) => referencesPath(workspace, path));
+  if (linked.length === 0 || linked.some((workspace) => !workspace.archivedAt)) return [];
+  return linked;
+}
+
+export async function sweepOwnedArchivedWorktrees(
+  context: WorktreeStorageContext,
+  isEnabled: () => boolean,
+): Promise<AutomaticWorktreeCleanupResult> {
+  const initial = await snapshot(context);
+  const result: AutomaticWorktreeCleanupResult = {
+    scanned: 0,
+    candidates: 0,
+    removed: 0,
+    removedPaths: [],
+    failures: [],
+  };
+  const pruned = new Set<string>();
+  for (const path of initial.paths) {
+    if (!isEnabled()) break;
+    result.scanned += 1;
+    const linked = archivedOwnedRecords(path, context, initial.workspaces);
+    if (linked.length === 0) continue;
+    const initialClassification = await classify(
+      path,
+      context,
+      initial.workspaces,
+      initial.agentCwds,
+      initial.terminalCwds,
+      initial.processCwds,
+    );
+    if (!initialClassification.freeable || !initialClassification.mainRepo) continue;
+    result.candidates += 1;
+    try {
+      await withWorktreeProjectLock(dirname(path), async () => {
+        if (!isEnabled()) return;
+        const beforeTeardown = await liveUse(context);
+        const currentRecords = archivedOwnedRecords(path, context, beforeTeardown.workspaces);
+        if (currentRecords.length === 0) return;
+        const beforeClassification = await classify(
+          path,
+          context,
+          beforeTeardown.workspaces,
+          beforeTeardown.agentCwds,
+          beforeTeardown.terminalCwds,
+        );
+        if (!beforeClassification.freeable || !beforeClassification.mainRepo) return;
+        for (const cwd of new Set(currentRecords.map((workspace) => workspace.cwd))) {
+          await runWorktreeTeardownCommands({
+            worktreePath: path,
+            teardownCwd: cwd,
+            repoRootPath: beforeClassification.mainRepo,
+          });
+        }
+        if (!isEnabled()) return;
+        const fresh = await liveUse(context);
+        if (archivedOwnedRecords(path, context, fresh.workspaces).length === 0) return;
+        const classification = await classify(
+          path,
+          context,
+          fresh.workspaces,
+          fresh.agentCwds,
+          fresh.terminalCwds,
+        );
+        if (!classification.freeable || !classification.mainRepo) return;
+        if (!isEnabled()) return;
+        await removeWorktree(path, classification.mainRepo);
+        pruned.add(classification.mainRepo);
+        result.removed += 1;
+        result.removedPaths.push(path);
+      });
+    } catch (error) {
+      result.failures.push({ path, error: error instanceof Error ? error.message : String(error) });
+    }
+    await delay(250);
+  }
+  await pruneRepos(pruned);
+  return result;
 }

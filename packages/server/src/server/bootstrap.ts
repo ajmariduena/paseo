@@ -11,6 +11,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { Logger } from "pino";
 import { z } from "zod";
 import { createBranchChangeRouteHandler } from "./script-route-branch-handler.js";
+import { startWorktreeStorageSweeper } from "./worktree-storage-sweeper.js";
 
 export type ListenTarget =
   | { type: "tcp"; host: string; port: number }
@@ -425,6 +426,7 @@ export interface PaseoDaemonConfig {
     maxProcessConcurrency: number;
   };
   autoArchiveAfterMerge?: boolean;
+  autoCleanupArchivedWorktrees?: boolean;
   enableTerminalAgentHooks?: boolean;
   appendSystemPrompt?: string;
   terminalProfiles?: TerminalProfile[];
@@ -564,6 +566,10 @@ function resolveExpressTrustProxySetting(config: PaseoDaemonConfig): true | stri
   return config.trustedProxies ?? ["loopback"];
 }
 
+function initialAutomaticWorktreeCleanupConfig(config: PaseoDaemonConfig) {
+  return { autoCleanupArchivedWorktrees: config.autoCleanupArchivedWorktrees ?? false };
+}
+
 function createInitialMutableDaemonConfig(config: PaseoDaemonConfig): MutableDaemonConfig {
   const providers = config.providerOverrides ?? {};
 
@@ -587,6 +593,7 @@ function createInitialMutableDaemonConfig(config: PaseoDaemonConfig): MutableDae
       providers: config.metadataGeneration?.providers ?? [],
     },
     autoArchiveAfterMerge: config.autoArchiveAfterMerge ?? false,
+    ...initialAutomaticWorktreeCleanupConfig(config),
     continueAfterRestart: config.continueAfterRestart === true,
     enableTerminalAgentHooks: config.enableTerminalAgentHooks ?? false,
     appendSystemPrompt: config.appendSystemPrompt ?? "",
@@ -1105,6 +1112,34 @@ export async function createPaseoDaemon(
     logger.warn({ err: error }, "Failed to prepare the No project parent for scratch workspaces");
   });
   logger.info({ elapsed: elapsed() }, "Workspace registries bootstrapped");
+  const worktreeStorageSweeper = startWorktreeStorageSweeper({
+    context: {
+      paseoHome: config.paseoHome,
+      worktreesRoot: config.worktreesRoot,
+      serverId,
+      listWorkspaces: () => workspaceRegistry.list(),
+      listAgentCwds: () =>
+        agentManager
+          .listAgents()
+          .filter((agent) => agent.lifecycle !== "closed")
+          .map((agent) => agent.cwd),
+      listTerminalCwds: async () => {
+        const directories = terminalManager.listDirectories();
+        const terminals = await Promise.all(
+          directories.map((cwd) => terminalManager.getTerminals(cwd)),
+        );
+        return terminals.flat().map((terminal) => terminal.cwd);
+      },
+    },
+    isEnabled: () => daemonConfigStore.get().autoCleanupArchivedWorktrees === true,
+    logger,
+  });
+  let cleanupEnabled = daemonConfigStore.get().autoCleanupArchivedWorktrees === true;
+  const unsubscribeWorktreeStorageConfig = daemonConfigStore.onChange((next) => {
+    const enabled = next.autoCleanupArchivedWorktrees === true;
+    if (enabled && !cleanupEnabled) worktreeStorageSweeper.scheduleSoon();
+    cleanupEnabled = enabled;
+  });
   const teardownArchivedWorkspaceRuntime = (workspaceId: string): void => {
     scriptRuntimeStore.removeForWorkspace(workspaceId);
     releaseWorkspaceServicePortPlan(workspaceId);
@@ -1262,16 +1297,19 @@ export async function createPaseoDaemon(
         paseoHome: config.paseoHome,
         worktreesRoot: config.worktreesRoot,
         createPaseoWorktree: async (workflowInput, workflowOptions) => {
-          return createRegisteredPaseoWorktree(workflowInput, {
-            github,
-            ...(workflowOptions?.resolveDefaultBranch
-              ? {
-                  resolveDefaultBranch: workflowOptions.resolveDefaultBranch,
-                }
-              : {}),
-            workspaceGitService,
-            workspaceProvisioning,
-          });
+          return createRegisteredPaseoWorktree(
+            { ...workflowInput, serverId },
+            {
+              github,
+              ...(workflowOptions?.resolveDefaultBranch
+                ? {
+                    resolveDefaultBranch: workflowOptions.resolveDefaultBranch,
+                  }
+                : {}),
+              workspaceGitService,
+              workspaceProvisioning,
+            },
+          );
         },
         warmWorkspaceGitData: async (workspace) => {
           await Promise.all(
@@ -1955,6 +1993,8 @@ export async function createPaseoDaemon(
       scriptHealthMonitor.start();
     } catch (error) {
       localCredential = null;
+      unsubscribeWorktreeStorageConfig();
+      worktreeStorageSweeper.dispose();
       await deleteLocalCredential(config.paseoHome);
       unsubscribePluginProviders();
       await pluginRuntime.stopAllPlugins().catch(() => undefined);
@@ -1977,6 +2017,8 @@ export async function createPaseoDaemon(
     // they serve has been closed, further down.
     unsubscribePluginProviders();
     await hubRelationships.stop();
+    unsubscribeWorktreeStorageConfig();
+    worktreeStorageSweeper.dispose();
     workspaceReconciliation.dispose();
     scriptHealthMonitor.stop();
     // Freeze both ingress and registration before taking the agent closure snapshot.

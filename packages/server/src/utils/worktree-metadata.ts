@@ -21,7 +21,12 @@ const PaseoWorktreeMetadataV1Schema = z.object({
 
 const PaseoWorktreeMetadataV2Schema = z.object({
   version: z.literal(2),
-  owner: z.object({ serverId: z.string().min(1) }).optional(),
+  owner: z
+    .object({
+      serverId: z.string().min(1),
+      paseoHome: z.string().min(1).optional(),
+    })
+    .optional(),
   baseRefName: z.string().min(1),
   baseRef: z.string().min(1).optional(),
   changeRequestLookupTarget: ChangeRequestLookupTargetSchema.optional(),
@@ -221,6 +226,7 @@ export function writePaseoWorktreeMetadata(
     baseRef?: string;
     changeRequestLookupTarget?: PaseoWorktreeChangeRequestHint;
     serverId?: string;
+    paseoHome?: string;
   },
 ): void {
   const baseRefName = normalizeBaseRefName(options.baseRefName);
@@ -233,7 +239,14 @@ export function writePaseoWorktreeMetadata(
   const metadata: PaseoWorktreeMetadata = {
     version: options.serverId ? 2 : 1,
     baseRefName,
-    ...(options.serverId ? { owner: { serverId: options.serverId } } : {}),
+    ...(options.serverId
+      ? {
+          owner: {
+            serverId: options.serverId,
+            ...(options.paseoHome ? { paseoHome: resolve(options.paseoHome) } : {}),
+          },
+        }
+      : {}),
     ...(baseRef ? { baseRef } : {}),
     ...(options.changeRequestLookupTarget
       ? { changeRequestLookupTarget: options.changeRequestLookupTarget }

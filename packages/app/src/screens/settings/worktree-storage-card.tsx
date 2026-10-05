@@ -5,11 +5,14 @@ import type {
   WorkspaceStorageCleanupResponse,
 } from "@getpaseo/protocol/messages";
 import { useCallback, useMemo, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Alert, Pressable, Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { AdaptiveModalSheet } from "@/components/adaptive-modal-sheet";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import { useDaemonConfig } from "@/hooks/use-daemon-config";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
+import { useHostFeature } from "@/runtime/host-features";
 import { settingsStyles } from "@/styles/settings";
 
 interface Props {
@@ -77,9 +80,48 @@ function WorktreeRow({
   );
 }
 
+function AutomaticWorktreeCleanupSetting({ serverId }: Props) {
+  const { config, patchConfig } = useDaemonConfig(serverId);
+  const setAutomaticCleanup = useCallback(
+    (enabled: boolean) => {
+      void patchConfig({ autoCleanupArchivedWorktrees: enabled }).catch((error) => {
+        Alert.alert(
+          "Unable to update worktree cleanup",
+          error instanceof Error ? error.message : String(error),
+        );
+      });
+    },
+    [patchConfig],
+  );
+
+  return (
+    <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle}>Automatically clean archived worktrees</Text>
+        <Text style={settingsStyles.rowHint}>
+          Periodically remove clean worktrees owned by this host after teardown succeeds. Older and
+          unlinked worktrees stay for manual review.
+        </Text>
+      </View>
+      <Switch
+        value={config?.autoCleanupArchivedWorktrees === true}
+        onValueChange={setAutomaticCleanup}
+        accessibilityLabel="Automatically clean archived worktrees"
+        testID="worktree-storage-auto-cleanup-switch"
+      />
+    </View>
+  );
+}
+
 export function WorktreeStorageCard({ serverId }: Props) {
-  const client = useHostRuntimeClient(serverId);
   const connected = useHostRuntimeIsConnected(serverId);
+  if (!connected) return null;
+  return <ConnectedWorktreeStorageCard serverId={serverId} />;
+}
+
+function ConnectedWorktreeStorageCard({ serverId }: Props) {
+  const client = useHostRuntimeClient(serverId);
+  const supportsAutomaticCleanup = useHostFeature(serverId, "autoWorktreeCleanup");
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [selection, setSelection] = useState<Set<string> | null>(null);
@@ -97,15 +139,17 @@ export function WorktreeStorageCard({ serverId }: Props) {
       if (payload.error) throw new Error(payload.error);
       return payload;
     },
-    enabled: connected && client !== null,
+    enabled: client !== null,
     refetchInterval: (active) => (active.state.data?.sizesComplete === false ? 3_000 : false),
   });
 
   const entries = query.data?.entries ?? [];
   const freeable = entries.filter((entry) => entry.freeable);
-  const kept = entries.filter((entry) => !entry.freeable);
+  const legacy = entries.filter((entry) => entry.requiresExplicitOptIn);
+  const selectable = entries.filter((entry) => entry.freeable || entry.requiresExplicitOptIn);
+  const kept = entries.filter((entry) => !entry.freeable && !entry.requiresExplicitOptIn);
   const selectedIds = selection ?? new Set(freeable.map((entry) => entry.entryId));
-  const selected = freeable.filter((entry) => selectedIds.has(entry.entryId));
+  const selected = selectable.filter((entry) => selectedIds.has(entry.entryId));
   const selectedBytes = selected.reduce((sum, entry) => sum + (entry.sizeBytes ?? 0), 0);
   const freeableShare = query.data?.totalBytes
     ? Math.min(100, (query.data.freeableBytes / query.data.totalBytes) * 100)
@@ -121,7 +165,10 @@ export function WorktreeStorageCard({ serverId }: Props) {
     setRemoving(true);
     setActionError(null);
     try {
-      const response = await client.cleanupWorktreeStorage(selected.map((entry) => entry.entryId));
+      const response = await client.cleanupWorktreeStorage(
+        selected.map((entry) => entry.entryId),
+        selected.filter((entry) => entry.requiresExplicitOptIn).map((entry) => entry.entryId),
+      );
       if (response.error) throw new Error(response.error);
       setResults(response.results);
       setSelection(
@@ -187,8 +234,6 @@ export function WorktreeStorageCard({ serverId }: Props) {
     [close, removing, selected.length, removeSelected],
   );
 
-  if (!connected) return null;
-
   return (
     <>
       <View style={settingsStyles.card} testID="host-page-worktree-storage-card">
@@ -211,6 +256,7 @@ export function WorktreeStorageCard({ serverId }: Props) {
             Clean up…
           </Button>
         </View>
+        {supportsAutomaticCleanup ? <AutomaticWorktreeCleanupSetting serverId={serverId} /> : null}
       </View>
       {open ? (
         <AdaptiveModalSheet
@@ -239,10 +285,19 @@ export function WorktreeStorageCard({ serverId }: Props) {
               </Text>
             ))}
           <Text style={styles.group}>Will be removed</Text>
-          {freeable.length === 0 ? (
+          {selectable.length === 0 ? (
             <Text style={styles.empty}>No worktrees are ready to remove.</Text>
           ) : null}
           {freeable.map((entry) => (
+            <WorktreeRow
+              key={entry.entryId}
+              entry={entry}
+              selected={selectedIds.has(entry.entryId)}
+              onToggle={toggle}
+            />
+          ))}
+          {legacy.length > 0 ? <Text style={styles.group}>Requires your selection</Text> : null}
+          {legacy.map((entry) => (
             <WorktreeRow
               key={entry.entryId}
               entry={entry}
