@@ -4,18 +4,29 @@ export type ComposerControlDensity = "full" | "condensed" | "tight";
 
 export interface ComposerControlPresence {
   hasModel: boolean;
-  hasThinking: boolean;
+  /** The model has an effort scale, so the pill carries an effort suffix. */
+  hasEffort: boolean;
   hasMode: boolean;
   features: readonly ComposerFeatureControlPresence[];
   fontScale: number;
+  /** Labels the pill estimates its width from. */
+  modelLabel: string;
+  effortLabel: string;
+  modeLabel: string;
 }
 
 export type ComposerFeatureControlPresence = { type: "toggle" } | { type: "select"; label: string };
 
+/**
+ * What each density keeps. The order controls give things up in, as the toolbar narrows:
+ * effort suffix → mode label → carets → model label. The provider glyph and every control's
+ * hit target stay at every density.
+ */
 export interface ComposerControlPresentation {
   showCarets: boolean;
-  showThinkingLabel: boolean;
+  showEffortSuffix: boolean;
   showModeLabel: boolean;
+  showModelLabel: boolean;
   aggregateFeatures: boolean;
 }
 
@@ -39,6 +50,7 @@ export const COMPOSER_TOOLBAR_TOUCH_HIT_SLOP = {
 } as const;
 
 const DENSITY_HYSTERESIS = 12;
+const LABEL_CHAR_WIDTH = 7;
 
 function normalizedFontScale(fontScale: number): number {
   return Number.isFinite(fontScale) ? Math.max(1, fontScale) : 1;
@@ -50,14 +62,15 @@ function sumControlWidths(widths: number[], controlGap: number): number {
 }
 
 function estimateLabelWidth(label: string, fontScale: number): number {
-  return Array.from(label).length * 7 * fontScale;
+  return Array.from(label).length * LABEL_CHAR_WIDTH * fontScale;
 }
 
 function resolveFeatureControlWidth(
   feature: ComposerFeatureControlPresence,
   fontScale: number,
+  aggregate: boolean,
 ): number {
-  if (feature.type === "toggle") return COMPOSER_TOOLBAR_GEOMETRY.controlSize;
+  if (feature.type === "toggle" || aggregate) return COMPOSER_TOOLBAR_GEOMETRY.controlSize;
   return (
     COMPOSER_TOOLBAR_GEOMETRY.controlSize +
     COMPOSER_TOOLBAR_GEOMETRY.iconLabelGap +
@@ -66,25 +79,61 @@ function resolveFeatureControlWidth(
   );
 }
 
-function resolveCondensedFloor(controls: ComposerControlPresence, controlGap: number): number {
+/** The model · effort pill: glyph, then whatever labels the presentation keeps, then a caret. */
+export function estimateModelPillWidth(
+  controls: Pick<ComposerControlPresence, "hasEffort" | "fontScale" | "modelLabel" | "effortLabel">,
+  presentation: Pick<
+    ComposerControlPresentation,
+    "showCarets" | "showEffortSuffix" | "showModelLabel"
+  >,
+): number {
   const fontScale = normalizedFontScale(controls.fontScale);
-  const widths: number[] = [];
-  if (controls.hasModel) widths.push(36 + 60 * fontScale);
-  if (controls.hasThinking) widths.push(COMPOSER_TOOLBAR_GEOMETRY.controlSize);
-  if (controls.hasMode) widths.push(36 + 96 * fontScale);
-  if (controls.features.length > 0) widths.push(COMPOSER_TOOLBAR_GEOMETRY.controlSize);
-  return sumControlWidths(widths, controlGap);
+  const { controlSize, iconLabelGap, labelPadding, caretSize } = COMPOSER_TOOLBAR_GEOMETRY;
+  let width = controlSize;
+  if (presentation.showModelLabel) {
+    width += iconLabelGap + estimateLabelWidth(controls.modelLabel, fontScale) + labelPadding;
+  }
+  if (controls.hasEffort && presentation.showEffortSuffix) {
+    width += iconLabelGap + estimateLabelWidth(controls.effortLabel, fontScale);
+  }
+  if (presentation.showCarets) {
+    width += iconLabelGap + caretSize;
+  }
+  return width;
 }
 
-function resolveFullFloor(controls: ComposerControlPresence, controlGap: number): number {
+function estimateModeWidth(
+  controls: Pick<ComposerControlPresence, "fontScale" | "modeLabel">,
+  showLabel: boolean,
+): number {
+  if (!showLabel) return COMPOSER_TOOLBAR_GEOMETRY.controlSize;
+  const fontScale = normalizedFontScale(controls.fontScale);
+  return (
+    COMPOSER_TOOLBAR_GEOMETRY.controlSize +
+    COMPOSER_TOOLBAR_GEOMETRY.iconLabelGap +
+    estimateLabelWidth(controls.modeLabel, fontScale) +
+    COMPOSER_TOOLBAR_GEOMETRY.labelPadding
+  );
+}
+
+/** Total width the controls need at a density, across both toolbar clusters. */
+export function estimateComposerControlsWidth(
+  controls: ComposerControlPresence,
+  density: ComposerControlDensity,
+  controlGap: number,
+): number {
+  const presentation = resolveComposerControlPresentation(density);
   const fontScale = normalizedFontScale(controls.fontScale);
   const widths: number[] = [];
-  if (controls.hasModel) widths.push(50 + 70 * fontScale);
-  if (controls.hasThinking) widths.push(54 + 48 * fontScale);
-  if (controls.hasMode) widths.push(54 + 96 * fontScale);
-  for (const feature of controls.features) {
-    widths.push(resolveFeatureControlWidth(feature, fontScale));
+  if (controls.hasMode) widths.push(estimateModeWidth(controls, presentation.showModeLabel));
+  if (presentation.aggregateFeatures) {
+    if (controls.features.length > 0) widths.push(COMPOSER_TOOLBAR_GEOMETRY.controlSize);
+  } else {
+    for (const feature of controls.features) {
+      widths.push(resolveFeatureControlWidth(feature, fontScale, false));
+    }
   }
+  if (controls.hasModel) widths.push(estimateModelPillWidth(controls, presentation));
   return sumControlWidths(widths, controlGap);
 }
 
@@ -94,8 +143,12 @@ export function resolveComposerControlDensity(input: {
   controls: ComposerControlPresence;
   controlGap: number;
 }): ComposerControlDensity {
-  const fullFloor = resolveFullFloor(input.controls, input.controlGap);
-  const condensedFloor = resolveCondensedFloor(input.controls, input.controlGap);
+  const fullFloor = estimateComposerControlsWidth(input.controls, "full", input.controlGap);
+  const condensedFloor = estimateComposerControlsWidth(
+    input.controls,
+    "condensed",
+    input.controlGap,
+  );
 
   if (input.currentDensity === "full") {
     if (input.availableWidth >= fullFloor - DENSITY_HYSTERESIS) return "full";
@@ -119,23 +172,26 @@ export function resolveComposerControlPresentation(
   if (density === "full") {
     return {
       showCarets: true,
-      showThinkingLabel: true,
+      showEffortSuffix: true,
       showModeLabel: true,
+      showModelLabel: true,
       aggregateFeatures: false,
     };
   }
   if (density === "condensed") {
     return {
       showCarets: false,
-      showThinkingLabel: false,
-      showModeLabel: true,
+      showEffortSuffix: false,
+      showModeLabel: false,
+      showModelLabel: true,
       aggregateFeatures: true,
     };
   }
   return {
     showCarets: false,
-    showThinkingLabel: false,
+    showEffortSuffix: false,
     showModeLabel: false,
+    showModelLabel: false,
     aggregateFeatures: true,
   };
 }

@@ -263,6 +263,13 @@ export const ko: TranslationResources = {
       select: "사고 옵션 선택",
       selectWithValue: "사고 옵션 선택 ({{value}})",
     },
+    effort: {
+      title: "노력",
+      choose: "노력 선택",
+      reset: "기본 노력으로 되돌리기",
+      slider: "노력 수준",
+      openWithValue: "모델 및 노력 변경 ({{value}})",
+    },
     model: {
       unknown: "알 수 없는 모델",
     },
@@ -278,6 +285,7 @@ export const ko: TranslationResources = {
       selectWithValue: "에이전트 모드 선택 ({{value}})",
     },
     hints: {
+      effort: "모델 및 노력",
       thinking: "사고 모드",
       model: "모델 변경",
       mode: "모드 변경",

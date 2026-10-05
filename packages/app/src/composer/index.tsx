@@ -46,6 +46,8 @@ import * as Clipboard from "expo-clipboard";
 import { FOOTER_HEIGHT } from "@/constants/layout";
 import {
   AgentControls,
+  AgentControlsEnd,
+  AgentControlsStart,
   DraftAgentControls,
   type DraftAgentControlsProps,
 } from "@/composer/agent-controls";
@@ -333,20 +335,37 @@ function resolveContextWindowPlacement(
   return reserveSlot ? <View style={styles.contextWindowMeterSlot}>{meter}</View> : null;
 }
 
-interface RenderLeftContentArgs {
+interface AgentControlsHostProps {
   agentControls: DraftAgentControlsProps | undefined;
   agentId: string;
   serverId: string;
   focusInput: () => void;
   isCompactLayout: boolean;
   showAgentControls: boolean;
+  children: ReactNode;
 }
 
-function renderLeftContent(args: RenderLeftContentArgs): ReactElement | null {
-  const { agentControls, agentId, serverId, focusInput, isCompactLayout } = args;
-  if (!args.showAgentControls) return null;
+/**
+ * Owns the agent controls' state above the message input, so the permission mode can start the
+ * toolbar row while the model · effort pill ends it. The two clusters render through
+ * `AgentControlsStart` and `AgentControlsEnd` inside the input's toolbar.
+ */
+function AgentControlsHost({
+  agentControls,
+  agentId,
+  serverId,
+  focusInput,
+  isCompactLayout,
+  showAgentControls,
+  children,
+}: AgentControlsHostProps): ReactNode {
+  if (!showAgentControls) return children;
   if (resolveAgentControlsMode(agentControls) === "draft" && agentControls) {
-    return <DraftAgentControls {...agentControls} isCompactLayout={isCompactLayout} />;
+    return (
+      <DraftAgentControls {...agentControls} isCompactLayout={isCompactLayout}>
+        {children}
+      </DraftAgentControls>
+    );
   }
   return (
     <AgentControls
@@ -354,9 +373,14 @@ function renderLeftContent(args: RenderLeftContentArgs): ReactElement | null {
       serverId={serverId}
       onDropdownClose={focusInput}
       isCompactLayout={isCompactLayout}
-    />
+    >
+      {children}
+    </AgentControls>
   );
 }
+
+const AGENT_CONTROLS_START = <AgentControlsStart />;
+const AGENT_CONTROLS_END = <AgentControlsEnd />;
 
 interface PendingFileAttachment {
   id: number;
@@ -2270,8 +2294,15 @@ function ComposerContentImpl({
       contextWindowMeterGlyphSize,
     ],
   );
+  // Context ring, then model · effort. A quick-prompt control slots in after the pill, before
+  // the mic.
   const beforeVoiceContent = useMemo(
-    () => <>{resolveContextWindowPlacement(contextWindowMeter, hasAgent)}</>,
+    () => (
+      <>
+        {resolveContextWindowPlacement(contextWindowMeter, hasAgent)}
+        {AGENT_CONTROLS_END}
+      </>
+    ),
     [contextWindowMeter, hasAgent],
   );
 
@@ -2389,19 +2420,6 @@ function ComposerContentImpl({
       setGithubSearchQuery("");
     },
     [attachments, setSelectedAttachments, setGithubSearchQuery, setIsGithubPickerOpen],
-  );
-
-  const leftContent = useMemo(
-    () =>
-      renderLeftContent({
-        agentControls,
-        agentId,
-        serverId,
-        focusInput,
-        isCompactLayout,
-        showAgentControls: mode.showAgentControls,
-      }),
-    [agentControls, agentId, focusInput, isCompactLayout, mode.showAgentControls, serverId],
   );
 
   const handleAttachButtonRef = useCallback((node: View | null) => {
@@ -2583,7 +2601,14 @@ function ComposerContentImpl({
     : t("composer.github.noResults");
 
   return (
-    <>
+    <AgentControlsHost
+      agentControls={agentControls}
+      agentId={agentId}
+      serverId={serverId}
+      focusInput={focusInput}
+      isCompactLayout={isCompactLayout}
+      showAgentControls={mode.showAgentControls}
+    >
       <ComposerKeyboardRegistration
         handlerId={keyboardHandlerIdRef.current}
         messageInputRef={messageInputRef}
@@ -2647,7 +2672,7 @@ function ComposerContentImpl({
                   autoFocus={messageInputAutoFocus}
                   autoFocusKey={`${serverId}:${agentId}:${autoFocusKey ?? ""}`}
                   disabled={isSubmitLoading}
-                  leftContent={leftContent}
+                  leftContent={AGENT_CONTROLS_START}
                   beforeVoiceContent={beforeVoiceContent}
                   rightContent={rightContent}
                   activeActionContent={activeActionContent}
@@ -2694,7 +2719,7 @@ function ComposerContentImpl({
           </View>
         </View>
       </View>
-    </>
+    </AgentControlsHost>
   );
 }
 

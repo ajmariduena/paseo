@@ -268,6 +268,13 @@ export const fr: TranslationResources = {
       select: "Sélectionnez l'option de réflexion",
       selectWithValue: "Sélectionnez l'option de réflexion ({{value}})",
     },
+    effort: {
+      title: "Effort",
+      choose: "Choisir l'effort",
+      reset: "Revenir à l'effort par défaut",
+      slider: "Niveau d'effort",
+      openWithValue: "Changer de modèle et d'effort ({{value}})",
+    },
     model: {
       unknown: "Modèle inconnu",
     },
@@ -283,6 +290,7 @@ export const fr: TranslationResources = {
       selectWithValue: "Sélectionnez le mode agent ({{value}})",
     },
     hints: {
+      effort: "Modèle et effort",
       thinking: "Mode réflexion",
       model: "Changer de modèle",
       mode: "Changer de mode",

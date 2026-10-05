@@ -263,6 +263,13 @@ export const ar: TranslationResources = {
       select: "حدد خيار التفكير",
       selectWithValue: "حدد خيار التفكير ({{value}})",
     },
+    effort: {
+      title: "الجهد",
+      choose: "اختر الجهد",
+      reset: "العودة إلى الجهد الافتراضي",
+      slider: "مستوى الجهد",
+      openWithValue: "تغيير النموذج والجهد ({{value}})",
+    },
     model: {
       unknown: "نموذج غير معروف",
     },
@@ -278,6 +285,7 @@ export const ar: TranslationResources = {
       selectWithValue: "حدد وضع الوكيل ({{value}})",
     },
     hints: {
+      effort: "النموذج والجهد",
       thinking: "وضع التفكير",
       model: "تغيير النموذج",
       mode: "تغيير الوضع",

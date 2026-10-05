@@ -265,6 +265,13 @@ export const ru: TranslationResources = {
       select: "Выбрать уровень рассуждений",
       selectWithValue: "Выбрать уровень рассуждений ({{value}})",
     },
+    effort: {
+      title: "Усилие",
+      choose: "Выбрать усилие",
+      reset: "Вернуть усилие по умолчанию",
+      slider: "Уровень усилия",
+      openWithValue: "Изменить модель и усилие ({{value}})",
+    },
     model: {
       unknown: "Неизвестная модель",
     },
@@ -280,6 +287,7 @@ export const ru: TranslationResources = {
       selectWithValue: "Выбрать режим агента ({{value}})",
     },
     hints: {
+      effort: "Модель и усилие",
       thinking: "Режим рассуждений",
       model: "Изменить модель",
       mode: "Изменить режим",

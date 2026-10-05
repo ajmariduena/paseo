@@ -3,12 +3,13 @@ import { i18n } from "@/i18n/i18next";
 import { formatThinkingOptionLabel } from "@/agent-controls/labels";
 import { FAST_MODE_FEATURE_ID, PLAN_MODE_FEATURE_ID } from "@/agent-controls/policy";
 
-export type ExplainedAgentControl = "mode" | "model" | "thinking";
+export type ExplainedAgentControl = "mode" | "model" | "thinking" | "effort";
 export type FeatureHighlightColor = "blue" | "default" | "green" | "yellow";
 export type AgentControlHintKey =
   | "agentControls.hints.thinking"
   | "agentControls.hints.model"
-  | "agentControls.hints.mode";
+  | "agentControls.hints.mode"
+  | "agentControls.hints.effort";
 
 export function getAgentControlHintKey(selector: ExplainedAgentControl): AgentControlHintKey {
   switch (selector) {
@@ -18,6 +19,8 @@ export function getAgentControlHintKey(selector: ExplainedAgentControl): AgentCo
       return "agentControls.hints.model";
     case "mode":
       return "agentControls.hints.mode";
+    case "effort":
+      return "agentControls.hints.effort";
     default:
       throw new Error("unreachable");
   }

@@ -259,6 +259,13 @@ export const en = {
       select: "Select thinking option",
       selectWithValue: "Select thinking option ({{value}})",
     },
+    effort: {
+      title: "Effort",
+      choose: "Choose effort",
+      reset: "Reset to the default effort",
+      slider: "Effort level",
+      openWithValue: "Change model and effort ({{value}})",
+    },
     model: {
       unknown: "Unknown model",
     },
@@ -274,6 +281,7 @@ export const en = {
       selectWithValue: "Select agent mode ({{value}})",
     },
     hints: {
+      effort: "Model and effort",
       thinking: "Thinking mode",
       model: "Change model",
       mode: "Change mode",

@@ -266,6 +266,13 @@ export const es: TranslationResources = {
       select: "Seleccione la opción de pensamiento",
       selectWithValue: "Seleccione la opción de pensamiento ({{value}})",
     },
+    effort: {
+      title: "Esfuerzo",
+      choose: "Elegir esfuerzo",
+      reset: "Volver al esfuerzo predeterminado",
+      slider: "Nivel de esfuerzo",
+      openWithValue: "Cambiar modelo y esfuerzo ({{value}})",
+    },
     model: {
       unknown: "Modelo desconocido",
     },
@@ -281,6 +288,7 @@ export const es: TranslationResources = {
       selectWithValue: "Seleccione el modo de agente ({{value}})",
     },
     hints: {
+      effort: "Modelo y esfuerzo",
       thinking: "Modo de pensamiento",
       model: "Cambiar modelo",
       mode: "Cambiar modo",

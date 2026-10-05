@@ -71,6 +71,11 @@ import { buildDesktopFrameStyle } from "./combobox-frame-style";
 export { buildDesktopFrameStyle } from "./combobox-frame-style";
 
 const IS_WEB = isWeb;
+const DEFAULT_MOBILE_SNAP_POINTS: readonly string[] = ["60%", "90%"];
+
+function resolveMobileSnapPoints(mobileSnapPoints: readonly string[] | undefined): string[] {
+  return [...(mobileSnapPoints ?? DEFAULT_MOBILE_SNAP_POINTS)];
+}
 
 export type ComboboxOption = ComboboxOptionModel;
 export type ComboboxDesktopPlacement = "top-start" | "bottom-start";
@@ -109,6 +114,8 @@ export interface ComboboxProps {
   desktopChildrenScrollEnabled?: boolean;
   /** Overrides the mobile scroll container spacing for custom child content. */
   mobileChildrenContentContainerStyle?: StyleProp<ViewStyle>;
+  /** Sheet heights on compact; the default suits a searchable list. */
+  mobileSnapPoints?: readonly string[];
   presentation?: "push" | "replace";
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -1277,6 +1284,7 @@ export function Combobox({
   mobileChildrenScrollEnabled = true,
   desktopChildrenScrollEnabled = true,
   mobileChildrenContentContainerStyle,
+  mobileSnapPoints,
   presentation,
   open,
   onOpenChange,
@@ -1303,7 +1311,7 @@ export function Combobox({
   const effectiveOptionsPosition = resolveEffectiveOptionsPosition(isMobile, optionsPosition);
   const isDesktopAboveSearch = resolveIsDesktopAboveSearch(isMobile, effectiveOptionsPosition);
   const { height: windowHeight, width: windowWidth } = useWindowDimensions();
-  const snapPoints = useMemo(() => ["60%", "90%"], []);
+  const snapPoints = useMemo(() => resolveMobileSnapPoints(mobileSnapPoints), [mobileSnapPoints]);
   const [availableSize, setAvailableSize] = useState<{ width?: number; height?: number } | null>(
     null,
   );

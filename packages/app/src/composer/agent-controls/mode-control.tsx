@@ -27,6 +27,9 @@ import { showProviderNoticeToast } from "@/utils/provider-notice-toast";
 import type { AgentMode } from "@getpaseo/protocol/agent-types";
 import type { AgentProviderDefinition } from "@getpaseo/protocol/provider-manifest";
 import { getAgentModeIcon, getAgentModeOptionIcon } from "@/agent-controls/icons";
+import { isUnattendedAgentMode } from "@/agent-controls/policy";
+import { getModeVisuals } from "@getpaseo/protocol/provider-manifest";
+
 interface ModeComboboxOptionProps {
   option: ComboboxOption;
   selected: boolean;
@@ -102,7 +105,14 @@ export function AgentModeControl({
   }, [modeOptions, selectedModeId]);
 
   const Icon = getAgentModeIcon(provider, selectedMode?.id ?? "", providerDefinitions);
-  const iconColor = theme.colors.foregroundMuted;
+  const isUnattended = isUnattendedAgentMode({
+    colorTier:
+      selectedMode?.colorTier ??
+      getModeVisuals(provider, selectedMode?.id ?? "", providerDefinitions)?.colorTier,
+  });
+  // An unattended mode is the one state worth reading from across the room, as Codex's orange
+  // shield does; every other mode stays quiet.
+  const iconColor = isUnattended ? theme.colors.statusWarning : theme.colors.foregroundMuted;
   const selectedModeLabel = selectedMode ? formatAgentModeLabel(selectedMode) : "";
 
   const allOptions = useMemo<ComboboxOption[]>(
@@ -203,7 +213,7 @@ export function AgentModeControl({
             label={t("agentControls.mode.title")}
             value={selectedModeLabel}
             showToolbarLabel={presentation.showModeLabel}
-            showCaret={surface === "toolbar" && presentation.showCarets}
+            showCaret={false}
             open={open}
             disabled={disabled}
             onPress={handlePress}

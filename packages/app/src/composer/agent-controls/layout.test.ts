@@ -1,161 +1,150 @@
 import { describe, expect, it } from "vitest";
 import {
   COMPOSER_TOOLBAR_GEOMETRY,
+  estimateComposerControlsWidth,
+  estimateModelPillWidth,
   resolveComposerControlDensity,
   resolveComposerControlPresentation,
   resolveComposerToolbarGlyphSize,
+  type ComposerControlPresence,
 } from "./layout";
 
+const CLAUDE_CONTROLS: ComposerControlPresence = {
+  hasModel: true,
+  hasEffort: true,
+  hasMode: true,
+  features: [{ type: "toggle" }],
+  fontScale: 1,
+  modelLabel: "Opus 5.5",
+  effortLabel: "Medium",
+  modeLabel: "Bypass",
+};
+
 describe("composer control layout", () => {
-  it("removes labels in priority order as the toolbar narrows", () => {
+  it("gives things up in order: effort suffix, mode label, carets, then the model label", () => {
     expect(resolveComposerControlPresentation("full")).toEqual({
       showCarets: true,
-      showThinkingLabel: true,
+      showEffortSuffix: true,
       showModeLabel: true,
+      showModelLabel: true,
       aggregateFeatures: false,
     });
     expect(resolveComposerControlPresentation("condensed")).toEqual({
       showCarets: false,
-      showThinkingLabel: false,
-      showModeLabel: true,
+      showEffortSuffix: false,
+      showModeLabel: false,
+      showModelLabel: true,
       aggregateFeatures: true,
     });
     expect(resolveComposerControlPresentation("tight")).toEqual({
       showCarets: false,
-      showThinkingLabel: false,
+      showEffortSuffix: false,
       showModeLabel: false,
+      showModelLabel: false,
       aggregateFeatures: true,
     });
   });
 
-  it("uses local available width and hysteresis to avoid density churn", () => {
-    const controls = {
-      hasModel: true,
-      hasThinking: true,
-      hasMode: true,
-      features: [{ type: "toggle" as const }],
-      fontScale: 1,
-    };
+  it("shrinks the pill from model · effort ▾ down to the provider glyph alone", () => {
+    const full = estimateModelPillWidth(
+      CLAUDE_CONTROLS,
+      resolveComposerControlPresentation("full"),
+    );
+    const condensed = estimateModelPillWidth(
+      CLAUDE_CONTROLS,
+      resolveComposerControlPresentation("condensed"),
+    );
+    const tight = estimateModelPillWidth(
+      CLAUDE_CONTROLS,
+      resolveComposerControlPresentation("tight"),
+    );
+    expect(full).toBeGreaterThan(condensed);
+    expect(condensed).toBeGreaterThan(tight);
+    expect(tight).toBe(COMPOSER_TOOLBAR_GEOMETRY.controlSize);
+    expect(
+      estimateModelPillWidth(
+        { ...CLAUDE_CONTROLS, hasEffort: false },
+        resolveComposerControlPresentation("full"),
+      ),
+    ).toBeLessThan(full);
+  });
 
-    expect(
+  it("fits the iPad mini portrait composer with the sidebar open without overflowing", () => {
+    // 368pt interior minus +, context ring, mic, stop and their touch gaps.
+    const availableWidth = 368 - 28 - 12 - 28 - 28 - 32 - 12;
+    const gap = COMPOSER_TOOLBAR_GEOMETRY.touchControlGap;
+    const density = resolveComposerControlDensity({
+      availableWidth,
+      currentDensity: "full",
+      controls: CLAUDE_CONTROLS,
+      controlGap: gap,
+    });
+    expect(density).toBe("condensed");
+    expect(estimateComposerControlsWidth(CLAUDE_CONTROLS, density, gap)).toBeLessThanOrEqual(
+      availableWidth,
+    );
+  });
+
+  it("uses local available width and hysteresis to avoid density churn", () => {
+    const gap = COMPOSER_TOOLBAR_GEOMETRY.controlGap;
+    const fullFloor = estimateComposerControlsWidth(CLAUDE_CONTROLS, "full", gap);
+    const condensedFloor = estimateComposerControlsWidth(CLAUDE_CONTROLS, "condensed", gap);
+    const resolve = (availableWidth: number, currentDensity: "full" | "condensed" | "tight") =>
       resolveComposerControlDensity({
-        availableWidth: 420,
-        currentDensity: "full",
-        controlGap: COMPOSER_TOOLBAR_GEOMETRY.controlGap,
-        controls,
-      }),
-    ).toBe("full");
-    expect(
-      resolveComposerControlDensity({
-        availableWidth: 380,
-        currentDensity: "full",
-        controlGap: COMPOSER_TOOLBAR_GEOMETRY.controlGap,
-        controls,
-      }),
-    ).toBe("condensed");
-    expect(
-      resolveComposerControlDensity({
-        availableWidth: 290,
-        currentDensity: "condensed",
-        controlGap: COMPOSER_TOOLBAR_GEOMETRY.controlGap,
-        controls,
-      }),
-    ).toBe("condensed");
-    expect(
-      resolveComposerControlDensity({
-        availableWidth: 280,
-        currentDensity: "condensed",
-        controlGap: COMPOSER_TOOLBAR_GEOMETRY.controlGap,
-        controls,
-      }),
-    ).toBe("tight");
-    expect(
-      resolveComposerControlDensity({
-        availableWidth: 300,
-        currentDensity: "tight",
-        controlGap: COMPOSER_TOOLBAR_GEOMETRY.controlGap,
-        controls,
-      }),
-    ).toBe("tight");
-    expect(
-      resolveComposerControlDensity({
-        availableWidth: 312,
-        currentDensity: "tight",
-        controlGap: COMPOSER_TOOLBAR_GEOMETRY.controlGap,
-        controls,
-      }),
-    ).toBe("condensed");
+        availableWidth,
+        currentDensity,
+        controlGap: gap,
+        controls: CLAUDE_CONTROLS,
+      });
+
+    expect(resolve(fullFloor + 20, "full")).toBe("full");
+    expect(resolve(fullFloor - 8, "full")).toBe("full");
+    expect(resolve(fullFloor - 20, "full")).toBe("condensed");
+    expect(resolve(fullFloor + 8, "condensed")).toBe("condensed");
+    expect(resolve(fullFloor + 20, "condensed")).toBe("full");
+    expect(resolve(condensedFloor - 8, "condensed")).toBe("condensed");
+    expect(resolve(condensedFloor - 20, "condensed")).toBe("tight");
+    expect(resolve(condensedFloor + 8, "tight")).toBe("tight");
+    expect(resolve(condensedFloor + 20, "tight")).toBe("condensed");
   });
 
   it("budgets extra features and larger text before restoring full labels", () => {
-    const base = {
-      availableWidth: 430,
-      currentDensity: "condensed" as const,
-      controlGap: COMPOSER_TOOLBAR_GEOMETRY.controlGap,
-    };
+    const gap = COMPOSER_TOOLBAR_GEOMETRY.controlGap;
+    const availableWidth = estimateComposerControlsWidth(CLAUDE_CONTROLS, "full", gap) + 20;
+    const base = { availableWidth, currentDensity: "condensed" as const, controlGap: gap };
 
+    expect(resolveComposerControlDensity({ ...base, controls: CLAUDE_CONTROLS })).toBe("full");
     expect(
       resolveComposerControlDensity({
         ...base,
         controls: {
-          hasModel: true,
-          hasThinking: true,
-          hasMode: true,
-          features: [{ type: "toggle" }],
-          fontScale: 1,
-        },
-      }),
-    ).toBe("full");
-    expect(
-      resolveComposerControlDensity({
-        ...base,
-        controls: {
-          hasModel: true,
-          hasThinking: true,
-          hasMode: true,
+          ...CLAUDE_CONTROLS,
           features: [{ type: "toggle" }, { type: "select", label: "Tools" }],
-          fontScale: 1,
         },
       }),
     ).toBe("condensed");
     expect(
       resolveComposerControlDensity({
         ...base,
-        controls: {
-          hasModel: true,
-          hasThinking: true,
-          hasMode: true,
-          features: [{ type: "toggle" }],
-          fontScale: 1.25,
-        },
+        controls: { ...CLAUDE_CONTROLS, fontScale: 1.25 },
       }),
     ).toBe("condensed");
   });
 
   it("condenses before a labeled feature would overflow", () => {
+    const gap = COMPOSER_TOOLBAR_GEOMETRY.controlGap;
     const base = {
-      availableWidth: 430,
+      availableWidth: estimateComposerControlsWidth(CLAUDE_CONTROLS, "full", gap) + 20,
       currentDensity: "full" as const,
-      controlGap: COMPOSER_TOOLBAR_GEOMETRY.controlGap,
-      controls: {
-        hasModel: true,
-        hasThinking: true,
-        hasMode: true,
-        fontScale: 1,
-      },
+      controlGap: gap,
     };
 
-    expect(
-      resolveComposerControlDensity({
-        ...base,
-        controls: { ...base.controls, features: [{ type: "toggle" }] },
-      }),
-    ).toBe("full");
+    expect(resolveComposerControlDensity({ ...base, controls: CLAUDE_CONTROLS })).toBe("full");
     expect(
       resolveComposerControlDensity({
         ...base,
         controls: {
-          ...base.controls,
+          ...CLAUDE_CONTROLS,
           features: [{ type: "select", label: "A much longer localized feature label" }],
         },
       }),
@@ -163,17 +152,10 @@ describe("composer control layout", () => {
   });
 
   it("condenses earlier when touch spacing widens the gaps between controls", () => {
-    const input = {
-      availableWidth: 420,
-      currentDensity: "full" as const,
-      controls: {
-        hasModel: true,
-        hasThinking: true,
-        hasMode: true,
-        features: [{ type: "toggle" as const }],
-        fontScale: 1,
-      },
-    };
+    const availableWidth =
+      estimateComposerControlsWidth(CLAUDE_CONTROLS, "full", COMPOSER_TOOLBAR_GEOMETRY.controlGap) +
+      2;
+    const input = { availableWidth, currentDensity: "full" as const, controls: CLAUDE_CONTROLS };
 
     expect(
       resolveComposerControlDensity({ ...input, controlGap: COMPOSER_TOOLBAR_GEOMETRY.controlGap }),

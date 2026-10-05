@@ -263,6 +263,13 @@ export const zhCN: TranslationResources = {
       select: "选择 thinking 选项",
       selectWithValue: "选择 thinking 选项（{{value}}）",
     },
+    effort: {
+      title: "努力程度",
+      choose: "选择努力程度",
+      reset: "恢复默认努力程度",
+      slider: "努力程度级别",
+      openWithValue: "更改模型和努力程度（{{value}}）",
+    },
     model: {
       unknown: "未知 Model",
     },
@@ -278,6 +285,7 @@ export const zhCN: TranslationResources = {
       selectWithValue: "选择 Agent mode（{{value}}）",
     },
     hints: {
+      effort: "模型和努力程度",
       thinking: "Thinking mode",
       model: "切换 Model",
       mode: "更改模式",

@@ -264,6 +264,13 @@ export const ptBR: TranslationResources = {
       select: "Selecionar opção de raciocínio",
       selectWithValue: "Selecionar opção de raciocínio ({{value}})",
     },
+    effort: {
+      title: "Esforço",
+      choose: "Escolher esforço",
+      reset: "Voltar ao esforço padrão",
+      slider: "Nível de esforço",
+      openWithValue: "Alterar modelo e esforço ({{value}})",
+    },
     model: {
       unknown: "Modelo desconhecido",
     },
@@ -279,6 +286,7 @@ export const ptBR: TranslationResources = {
       selectWithValue: "Selecionar modo do agente ({{value}})",
     },
     hints: {
+      effort: "Modelo e esforço",
       thinking: "Modo de raciocínio",
       model: "Alterar modelo",
       mode: "Alterar modo de permissão",
