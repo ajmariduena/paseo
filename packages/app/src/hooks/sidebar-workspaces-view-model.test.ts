@@ -90,6 +90,18 @@ describe("createSidebarWorkspaceEntry workspace directory label", () => {
   });
 });
 
+describe("waiting workspace projection", () => {
+  it("uses the optional child count to display waiting while preserving the wire running status", () => {
+    const descriptor = workspaceWithForge(undefined, "https://github.com/acme/repo/pull/42");
+    descriptor.status = "running";
+    descriptor.waitingOnSubagents = { count: 2 };
+    const entry = createSidebarWorkspaceEntry({ serverId: "srv", workspace: descriptor });
+    expect(entry.statusBucket).toBe("waiting");
+    expect(entry.waitingOnSubagentsCount).toBe(2);
+    expect(descriptor.status).toBe("running");
+  });
+});
+
 interface OrderedItem {
   key: string;
 }

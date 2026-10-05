@@ -8,7 +8,7 @@ import type {
   WorkspaceStructureProject,
 } from "@/projects/workspace-structure";
 import { projectDisplayNameFromProjectId } from "@/utils/project-display-name";
-import { aggregateSidebarStateBuckets } from "@/utils/sidebar-agent-state";
+import { aggregateSidebarStateBuckets, type SidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { shortenPath } from "@/utils/shorten-path";
 import type { WorkspaceAgentActivity } from "@/utils/workspace-agent-activity";
 import {
@@ -18,7 +18,7 @@ import {
 
 const EMPTY_PROJECTS: SidebarProjectEntry[] = [];
 
-export type SidebarStateBucket = WorkspaceDescriptor["status"];
+export type { SidebarStateBucket };
 
 export interface SidebarWorkspacePlacement {
   workspaceKey: string;
@@ -39,6 +39,7 @@ export interface SidebarStatusWorkspacePlacement extends SidebarWorkspacePlaceme
 }
 
 export interface SidebarWorkspaceEntry extends SidebarStatusWorkspacePlacement {
+  waitingOnSubagentsCount?: number;
   workspaceDirectory: string;
   workspaceDirectoryLabel: string;
   // Raw user-set title (null when the name is derived from branch/directory).
@@ -126,7 +127,7 @@ export function areSidebarWorkspaceSessionsEqual(
 }
 
 interface EffectiveWorkspaceStatus {
-  status: WorkspaceDescriptor["status"];
+  status: SidebarStateBucket;
   enteredAt: Date | null;
 }
 
@@ -173,6 +174,8 @@ export function createSidebarWorkspaceEntry(input: {
     labels: input.workspace.labels ?? EMPTY_WORKSPACE_LABELS,
     currentBranch: normalizeCurrentBranch(input.workspace.gitRuntime?.currentBranch),
     statusBucket: effectiveStatus.status,
+    waitingOnSubagentsCount:
+      effectiveStatus.status === "waiting" ? (input.workspace.waitingOnSubagents?.count ?? 0) : 0,
     statusEnteredAt: effectiveStatus.enteredAt,
     archivingAt: input.workspace.archivingAt,
     diffStat: input.workspace.diffStat,
@@ -195,6 +198,9 @@ function deriveEffectiveWorkspaceStatus(input: {
   pendingCreateAttempts?: Record<string, PendingCreateAttempt>;
   workspaceAgentActivity?: ReadonlyMap<string, WorkspaceAgentActivity>;
 }): EffectiveWorkspaceStatus {
+  if (input.workspace.status === "running" && input.workspace.waitingOnSubagents?.count) {
+    return { status: "waiting", enteredAt: input.workspace.statusEnteredAt };
+  }
   if (input.workspace.status !== "done") {
     return { status: input.workspace.status, enteredAt: input.workspace.statusEnteredAt };
   }

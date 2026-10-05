@@ -62,11 +62,11 @@ export function buildSubagentRowPresentationData(
   };
 }
 
-type ActiveStatusBucket = Exclude<SidebarStateBucket, "done">;
+type ActiveStatusBucket = Exclude<ReturnType<typeof deriveSidebarStateBucket>, "done">;
 
 /** The sidebar's list order, minus the state that earns no mark. */
 const ACTIVE_STATUS_BUCKET_ORDER = STATUS_BUCKET_ORDER.filter(
-  (bucket): bucket is ActiveStatusBucket => bucket !== "done",
+  (bucket): bucket is ActiveStatusBucket => bucket !== "done" && bucket !== "waiting",
 );
 
 /** One state the pill reports, and how many children are in it. */

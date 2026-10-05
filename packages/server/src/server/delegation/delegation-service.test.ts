@@ -127,6 +127,37 @@ test("two children finishing while the parent runs produce one wake with both re
   expect(parent.interruptCount).toBe(0);
 });
 
+test("a delegated wake owns the parent's finished attention", async () => {
+  const current = await startDelegation({ parentSteerable: false, children: 1 });
+  const { host, parentId, childIds } = current;
+  const attention: string[] = [];
+  host.agentManager.setAgentAttentionCallback(({ agentId }) => attention.push(agentId));
+
+  host.session(parentId).completeTurn("delegated");
+  await vi.waitFor(() => expect(host.agentManager.getAgent(parentId)?.lifecycle).toBe("idle"));
+  expect(attention).toEqual([]);
+
+  host.session(childIds[0]).completeTurn("result");
+  await vi.waitFor(() => expect(host.session(parentId).startPrompts).toHaveLength(2));
+  expect(attention).toEqual([]);
+
+  host.session(parentId).completeTurn("reviewed result");
+  await vi.waitFor(() => expect(attention).toEqual([parentId]));
+});
+
+test("detaching a running child releases the parent's finished attention", async () => {
+  const current = await startDelegation({ parentSteerable: false, children: 1 });
+  const { host, parentId, childIds } = current;
+  const attention: string[] = [];
+  host.agentManager.setAgentAttentionCallback(({ agentId }) => attention.push(agentId));
+  host.session(parentId).completeTurn("delegated");
+  await vi.waitFor(() => expect(host.agentManager.getAgent(parentId)?.lifecycle).toBe("idle"));
+  expect(attention).toEqual([]);
+
+  await host.agentManager.detachAgent(childIds[0]);
+  await vi.waitFor(() => expect(attention).toEqual([parentId]));
+});
+
 test("a third child finishing during the wake turn goes out in exactly one successor", async () => {
   const current = await startDelegation({ parentSteerable: false, children: 3 });
   const { host, trace, parentId, childIds } = current;

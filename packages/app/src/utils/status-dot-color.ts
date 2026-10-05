@@ -24,6 +24,9 @@ export function getStatusDotColor(input: {
   if (bucket === "running") {
     return theme.colors.statusDotRunning;
   }
+  if (bucket === "waiting") {
+    return theme.colors.foregroundMuted;
+  }
   if (bucket === "attention") {
     return theme.colors.statusDotSuccess;
   }

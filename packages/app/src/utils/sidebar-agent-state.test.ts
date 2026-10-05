@@ -82,6 +82,11 @@ describe("aggregateSidebarStateBuckets", () => {
     expect(aggregateSidebarStateBuckets(["done", "attention", "done"])).toBe("attention");
   });
 
+  it("ranks waiting below running and above done for collapsed projects", () => {
+    expect(aggregateSidebarStateBuckets(["done", "waiting"])).toBe("waiting");
+    expect(aggregateSidebarStateBuckets(["waiting", "running"])).toBe("running");
+  });
+
   it("follows the full needs_input > failed > running > attention > done ordering", () => {
     // Each pair of adjacent buckets: the more urgent one wins when both are present.
     expect(aggregateSidebarStateBuckets(["failed", "needs_input"])).toBe("needs_input");

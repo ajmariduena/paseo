@@ -6100,6 +6100,96 @@ test("runAgent persists finished attention and idle status without an external s
   expect(persisted?.attentionTimestamp).toEqual(expect.any(String));
 });
 
+test("defers parent finished attention until its delegated child finishes", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-waiting-attention-"));
+  class HeldSession extends TestAgentSession {
+    private turn = 0;
+
+    override async startTurn(): Promise<{ turnId: string }> {
+      const turnId = `held-turn-${++this.turn}`;
+      return { turnId };
+    }
+
+    complete(): void {
+      this.pushEvent({
+        type: "turn_completed",
+        provider: this.provider,
+        turnId: `held-turn-${this.turn}`,
+      });
+    }
+  }
+  const sessions: HeldSession[] = [];
+  const client = new (class extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      const session = new HeldSession(config);
+      sessions.push(session);
+      return session;
+    }
+  })();
+  const notifications: string[] = [];
+  const manager = new AgentManager({
+    clients: { codex: client },
+    logger,
+    onAgentAttention: ({ agentId }) => notifications.push(agentId),
+  });
+
+  try {
+    const parent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: "parent-workspace",
+    });
+    const child = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: "child-workspace",
+      labels: { [PARENT_AGENT_ID_LABEL]: parent.id },
+    });
+    const childStream = manager.streamAgent(child.id, "work");
+    expect((await childStream.next()).value).toMatchObject({ type: "turn_started" });
+    const parentStream = manager.streamAgent(parent.id, "delegate");
+    expect((await parentStream.next()).value).toMatchObject({ type: "turn_started" });
+
+    sessions[0].complete();
+    await drainAsyncGenerator(parentStream);
+    expect(manager.getAgent(parent.id)?.attention.requiresAttention).toBe(false);
+    expect(notifications).toEqual([]);
+
+    sessions[1].complete();
+    await drainAsyncGenerator(childStream);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(manager.getAgent(parent.id)?.attention.attentionReason).toBe("finished");
+    expect(notifications).toEqual([parent.id]);
+
+    await manager.clearAgentAttention(parent.id);
+    const secondChildStream = manager.streamAgent(child.id, "more work");
+    expect((await secondChildStream.next()).value).toMatchObject({ type: "turn_started" });
+    const secondParentStream = manager.streamAgent(parent.id, "delegate again");
+    expect((await secondParentStream.next()).value).toMatchObject({ type: "turn_started" });
+    sessions[0].complete();
+    await drainAsyncGenerator(secondParentStream);
+    sessions[1].complete();
+    await drainAsyncGenerator(secondChildStream);
+    expect(manager.getAgent(child.id)?.lifecycle).toBe("idle");
+
+    const wakeStream = manager.streamAgent(parent.id, "child reported back");
+    expect((await wakeStream.next()).value).toMatchObject({ type: "turn_started" });
+    expect(manager.getAgent(parent.id)).toMatchObject({
+      lifecycle: "running",
+      activeForegroundTurnId: "held-turn-3",
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(manager.getAgent(parent.id)?.attention.requiresAttention).toBe(false);
+    expect(notifications).toEqual([parent.id]);
+    sessions[0].complete();
+    await drainAsyncGenerator(wakeStream);
+    expect(manager.getAgent(parent.id)).toMatchObject({
+      lifecycle: "idle",
+      attention: { attentionReason: "finished" },
+    });
+    expect(notifications).toEqual([parent.id, parent.id]);
+  } finally {
+    manager.prepareForShutdown();
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
 test("archiveSnapshot clears persisted attention and normalizes running status", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-archive-attention-"));
   const storagePath = join(workdir, "agents");

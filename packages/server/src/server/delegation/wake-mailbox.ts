@@ -23,6 +23,7 @@ export interface WakeMailboxOptions {
   planContext(parentAgentId: string): Promise<PlanContext>;
   /** Whether the agent's most recent turn ended cancelled. */
   wasLastTurnCancelled(agentId: string): boolean;
+  onOfferSettled?(offer: WakeOffer): void;
   logger: Logger;
 }
 
@@ -64,12 +65,14 @@ export class WakeMailbox {
     }
     this.inFlight.add(key);
     void this.deliver(offer)
+      .then(() => this.options.onOfferSettled?.(offer))
       .catch((error: unknown) => {
         this.options.logger.error(
           { err: error, ...offer, attempt },
           "delegation.wake.delivery_failed",
         );
         this.retry(offer, attempt + 1);
+        if (attempt + 1 >= MAX_DELIVERY_ATTEMPTS) this.options.onOfferSettled?.(offer);
       })
       .finally(() => {
         this.inFlight.delete(key);

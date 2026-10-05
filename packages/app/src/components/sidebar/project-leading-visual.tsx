@@ -266,6 +266,7 @@ function ProjectInlineChevron({ chevron }: { chevron: "expand" | "collapse" | nu
 function getStatusDotColorStyle(bucket: ProjectStatusBadgeDotBucket): ViewStyle {
   if (bucket === "failed") return styles.statusDotFailed;
   if (bucket === "running") return styles.statusDotRunning;
+  if (bucket === "waiting") return styles.statusDotWaiting;
   return styles.statusDotAttention;
 }
 
@@ -331,5 +332,12 @@ const styles = StyleSheet.create((theme) => {
     statusDotRunning: statusDot("running"),
     statusDotFailed: statusDot("failed"),
     statusDotAttention: statusDot("attention"),
+    statusDotWaiting: {
+      width: STATUS_INDICATOR_FILLED_DOT_SIZE + 2,
+      height: STATUS_INDICATOR_FILLED_DOT_SIZE + 2,
+      borderRadius: theme.borderRadius.full,
+      borderWidth: 2,
+      borderColor: getStatusDotColor({ theme, bucket: "waiting" }) ?? undefined,
+    },
   };
 });

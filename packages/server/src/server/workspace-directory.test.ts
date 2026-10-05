@@ -135,13 +135,13 @@ class WorkspaceStatus {
     this.workspaces.push(this.worktreeWorkspace);
   }
 
-  hasDelegatedAgentInWorktree(input: AgentState): void {
+  hasDelegatedAgentInWorktree(input: AgentState & { parentAgentId?: string }): void {
     this.agents.push(
       createAgent({
         ...input,
         cwd: this.worktreeWorkspace.cwd,
         workspaceId: this.worktreeWorkspace.workspaceId,
-        labels: { [PARENT_AGENT_ID_LABEL]: "parent-agent" },
+        labels: { [PARENT_AGENT_ID_LABEL]: input.parentAgentId ?? "parent-agent" },
       }),
     );
   }
@@ -389,6 +389,9 @@ describe("WorkspaceDirectory", () => {
     workspace.hasDelegatedAgent({ id: "child-agent", status: "running" });
 
     await expect(workspace.workspaceStatus()).resolves.toBe("running");
+    await expect(workspace.workspaceDescriptor()).resolves.toMatchObject({
+      waitingOnSubagents: { count: 1 },
+    });
   });
 
   test("provider subagent follows its cross-workspace parent", async () => {
@@ -433,9 +436,53 @@ describe("WorkspaceDirectory", () => {
     workspace.hasDelegatedAgentInWorktree({ id: "child-agent", status: "running" });
 
     await expect(workspace.workspaceStatuses()).resolves.toEqual({
-      "workspace-1": "done",
+      "workspace-1": "running",
       "workspace-worktree": "running",
     });
+    await expect(workspace.workspaceDescriptor()).resolves.toMatchObject({
+      status: "running",
+      waitingOnSubagents: { count: 1 },
+    });
+  });
+
+  test("waiting counts multiple running delegated children", async () => {
+    const workspace = new WorkspaceStatus();
+    workspace.hasWorktreeWorkspace();
+    workspace.hasRootAgent({ id: "parent-agent", status: "idle" });
+    workspace.hasDelegatedAgentInWorktree({ id: "first-child", status: "idle" });
+    workspace.hasDelegatedAgentInWorktree({ id: "second-child", status: "running" });
+    workspace.hasDelegatedAgentInWorktree({
+      id: "grandchild",
+      status: "running",
+      parentAgentId: "first-child",
+    });
+
+    await expect(workspace.workspaceDescriptor()).resolves.toMatchObject({
+      status: "running",
+      waitingOnSubagents: { count: 2 },
+    });
+  });
+
+  test("pending parent permission wins over delegated waiting", async () => {
+    const workspace = new WorkspaceStatus();
+    workspace.hasWorktreeWorkspace();
+    workspace.hasRootAgent({ id: "parent-agent", status: "idle", pendingPermissionCount: 1 });
+    workspace.hasDelegatedAgentInWorktree({ id: "child-agent", status: "running" });
+    const descriptor = await workspace.workspaceDescriptor();
+    expect(descriptor.status).toBe("needs_input");
+    expect(descriptor.waitingOnSubagents).toBeUndefined();
+  });
+
+  test("detached agents and terminals do not create waiting", async () => {
+    const workspace = new WorkspaceStatus();
+    workspace.hasWorktreeWorkspace();
+    workspace.hasRootAgent({ id: "parent-agent", status: "idle" });
+    workspace.hasDetachedAgentInWorktree({ id: "detached", status: "running" });
+    workspace.hasWorkingTerminal(new Date(NOW).getTime());
+
+    const descriptor = await workspace.workspaceDescriptor();
+    expect(descriptor.status).toBe("running");
+    expect(descriptor.waitingOnSubagents).toBeUndefined();
   });
 
   test("cross-workspace subagent contributes its full status bucket to its own workspace", async () => {

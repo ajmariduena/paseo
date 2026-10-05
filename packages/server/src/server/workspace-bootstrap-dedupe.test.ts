@@ -11,6 +11,18 @@ const SNAPSHOT_DONE_10_30: BootstrapUpdateSnapshot = {
 };
 
 describe("shouldEmitPendingBootstrapUpdate", () => {
+  test("emits when the waiting subagent count changes while wire status stays running", () => {
+    expect(
+      shouldEmitPendingBootstrapUpdate({
+        snapshot: { ...SNAPSHOT_DONE_10_30, status: "running" },
+        update: {
+          ...SNAPSHOT_DONE_10_30,
+          status: "running",
+          waitingOnSubagentsCount: 1,
+        },
+      }),
+    ).toBe(true);
+  });
   test("emits when there is no snapshot (first-time subscription)", () => {
     expect(
       shouldEmitPendingBootstrapUpdate({

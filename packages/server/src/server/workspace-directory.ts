@@ -281,6 +281,7 @@ export class WorkspaceDirectory {
       descriptorsByWorkspaceId,
       activityEntriesByWorkspaceId,
     });
+    this.applyDelegatedWaitingContributions(activeAgents, descriptorsByWorkspaceId);
 
     const contributingAgentsByWorkspaceId = groupAgentsByWorkspaceId(
       activeAgents,
@@ -399,6 +400,34 @@ export class WorkspaceDirectory {
       ) {
         existing.status = bucket;
       }
+    }
+  }
+
+  private applyDelegatedWaitingContributions(
+    activeAgents: AgentSnapshotPayload[],
+    descriptorsByWorkspaceId: Map<string, WorkspaceDescriptorPayload>,
+  ): void {
+    const agentsById = new Map(activeAgents.map((agent) => [agent.id, agent] as const));
+    const runningDescendantsByRoot = countRunningDelegatedDescendants(activeAgents, agentsById);
+    for (const root of activeAgents) {
+      const count = runningDescendantsByRoot.get(root.id) ?? 0;
+      if (count === 0 || root.status !== "idle" || !root.workspaceId) continue;
+      const bucket = deriveAgentStateBucket({
+        status: root.status,
+        pendingPermissionCount: root.pendingPermissions?.length ?? 0,
+        requiresAttention: root.requiresAttention,
+        attentionReason: root.attentionReason ?? null,
+      });
+      if (bucket === "needs_input" || bucket === "failed") continue;
+      const workspaceRoot = resolveWorkspaceRootAgent(root, agentsById);
+      if (workspaceRoot?.id !== root.id) continue;
+      const descriptor = descriptorsByWorkspaceId.get(root.workspaceId);
+      if (!descriptor || descriptor.status === "needs_input" || descriptor.status === "failed") {
+        continue;
+      }
+      // COMPAT(waitingOnSubagents): added in v0.11.0, remove the running wire shim after 2027-04-05.
+      descriptor.status = "running";
+      descriptor.waitingOnSubagents = { count };
     }
   }
 
@@ -740,4 +769,34 @@ export function resolveWorkspaceRootAgent(
     seen.add(parentAgentId);
     current = parent;
   }
+}
+
+function resolveDelegationRootAgent(
+  agent: AgentSnapshotPayload,
+  activeAgentsById: ReadonlyMap<string, AgentSnapshotPayload>,
+): AgentSnapshotPayload | null {
+  const seen = new Set<string>([agent.id]);
+  let current = agent;
+  while (true) {
+    const parentId = getParentAgentIdFromLabels(current.labels);
+    if (!parentId) return current;
+    if (seen.has(parentId)) return null;
+    const parent = activeAgentsById.get(parentId);
+    if (!parent) return null;
+    seen.add(parentId);
+    current = parent;
+  }
+}
+
+function countRunningDelegatedDescendants(
+  activeAgents: AgentSnapshotPayload[],
+  agentsById: ReadonlyMap<string, AgentSnapshotPayload>,
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const agent of activeAgents) {
+    if (agent.status !== "running" || !getParentAgentIdFromLabels(agent.labels)) continue;
+    const root = resolveDelegationRootAgent(agent, agentsById);
+    if (root) counts.set(root.id, (counts.get(root.id) ?? 0) + 1);
+  }
+  return counts;
 }

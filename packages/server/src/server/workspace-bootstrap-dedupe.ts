@@ -10,11 +10,12 @@
  *   - the status changed from the snapshot
  *   - the statusEnteredAt changed from the snapshot (including the
  *     null↔value transition that the unmask case produces)
+ *   - the waiting subagent count changed while the compatible wire status stayed `running`
  *   - the update's activityAtMs is strictly newer than the snapshot's
  *   - the snapshot has no activityAtMs and the update has one (new activity
  *     where there was none)
  *
- * Returns `false` (drop) when the status pair is unchanged AND the update
+ * Returns `false` (drop) when the status, waiting count, and entry time are unchanged AND the update
  * is not strictly newer than the snapshot in activity. The both-null
  * activity case falls through to drop — there is genuinely no new info.
  */
@@ -22,6 +23,7 @@ export interface BootstrapUpdateSnapshot {
   status: string;
   statusEnteredAt: string | null;
   activityAtMs: number | null;
+  waitingOnSubagentsCount?: number;
 }
 
 export interface BootstrapUpdateCheckInput {
@@ -39,6 +41,9 @@ export function shouldEmitPendingBootstrapUpdate(input: BootstrapUpdateCheckInpu
   }
 
   if (snapshot.status !== update.status) {
+    return true;
+  }
+  if ((snapshot.waitingOnSubagentsCount ?? 0) !== (update.waitingOnSubagentsCount ?? 0)) {
     return true;
   }
 

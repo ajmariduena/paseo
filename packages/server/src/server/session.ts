@@ -248,7 +248,10 @@ import {
   WorkspaceDirectory,
   type WorkspaceUpdatesFilter,
 } from "./workspace-directory.js";
-import { shouldEmitPendingBootstrapUpdate } from "./workspace-bootstrap-dedupe.js";
+import {
+  shouldEmitPendingBootstrapUpdate,
+  type BootstrapUpdateSnapshot,
+} from "./workspace-bootstrap-dedupe.js";
 import {
   createPaseoWorktree,
   type CreatePaseoWorktreeInput,
@@ -1187,6 +1190,7 @@ export class Session {
         this.buildProjectPlacementForWorkspaceId(workspaceId),
       emitWorkspaceUpdateForWorkspaceId: (workspaceId) =>
         this.emitWorkspaceUpdateForWorkspaceId(workspaceId),
+      resolveDelegationRootWorkspaceId: (agentId) => this.resolveDelegationRootWorkspaceId(agentId),
       sequenceAgentUpdate: (payload, agent, project, agentId, includeSequence) =>
         this.directorySync.sequenceAgentUpdate(
           payload,
@@ -6177,10 +6181,7 @@ export class Session {
   private flushBootstrappedWorkspaceUpdates(
     subscription: WorkspaceUpdatesSubscriptionState,
     options?: {
-      snapshotByWorkspaceId?: Map<
-        string,
-        { status: string; statusEnteredAt: string | null; activityAtMs: number | null }
-      >;
+      snapshotByWorkspaceId?: Map<string, BootstrapUpdateSnapshot>;
     },
   ): void {
     if (
@@ -6206,12 +6207,14 @@ export class Session {
                 status: snapshot.status,
                 statusEnteredAt: snapshot.statusEnteredAt,
                 activityAtMs: snapshot.activityAtMs,
+                waitingOnSubagentsCount: snapshot.waitingOnSubagentsCount,
               }
             : null,
           update: {
             status: payload.workspace.status,
             statusEnteredAt: payload.workspace.statusEnteredAt ?? null,
             activityAtMs: Number.isNaN(updateActivityAtMs) ? null : updateActivityAtMs,
+            waitingOnSubagentsCount: payload.workspace.waitingOnSubagents?.count,
           },
         });
         if (!shouldEmit) {
@@ -6974,26 +6977,21 @@ export class Session {
 
   // Build the bootstrap snapshot used by `flushBootstrappedWorkspaceUpdates`
   // to decide which pending updates to drop. Captures the status,
-  // statusEnteredAt, and activityAt (parsed to ms) for each workspace entry
+  // statusEnteredAt, waiting count, and activityAt (parsed to ms) for each workspace entry
   // so a status-only change (e.g. the unmask case), a statusEnteredAt-only
   // change (e.g. a fresh unmask time), AND a fresher activity all still
   // ship to the client.
   private buildBootstrapSnapshot(entries: FetchWorkspacesResponseEntry[]): {
-    snapshotByWorkspaceId: Map<
-      string,
-      { status: string; statusEnteredAt: string | null; activityAtMs: number | null }
-    >;
+    snapshotByWorkspaceId: Map<string, BootstrapUpdateSnapshot>;
   } {
-    const snapshotByWorkspaceId = new Map<
-      string,
-      { status: string; statusEnteredAt: string | null; activityAtMs: number | null }
-    >();
+    const snapshotByWorkspaceId = new Map<string, BootstrapUpdateSnapshot>();
     for (const entry of entries) {
       const parsedActivity = entry.activityAt ? Date.parse(entry.activityAt) : null;
       snapshotByWorkspaceId.set(entry.id, {
         status: entry.status,
         statusEnteredAt: entry.statusEnteredAt ?? null,
         activityAtMs: Number.isNaN(parsedActivity) ? null : parsedActivity,
+        waitingOnSubagentsCount: entry.waitingOnSubagents?.count,
       });
     }
     return { snapshotByWorkspaceId };

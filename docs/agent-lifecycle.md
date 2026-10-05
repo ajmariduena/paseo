@@ -183,7 +183,7 @@ The asymmetry is intentional: a subagent's persistent relationship lives in the 
 
 Agent lifecycle status stays literal: a parent agent is `idle` when its own turn is idle, even if a child is running.
 
-Workspace status is an aggregate activity signal computed **per `workspaceId`**. Ownership is never derived from `cwd` — many workspaces may share one directory, and same-`cwd` siblings do not clump under one status. Root agents and cross-workspace subagents contribute their normal state bucket to their own workspace. Same-workspace descendants contribute `running` to the nearest ancestor in that workspace; their non-running attention, permission, and error states stay in the parent's subagents track. This makes a cross-workspace subagent behave like a detached agent for workspace visibility and status without removing its parent relationship.
+Workspace status is an aggregate activity signal computed **per `workspaceId`**. Ownership is never derived from `cwd` — many workspaces may share one directory, and same-`cwd` siblings do not clump under one status. Root agents and cross-workspace subagents contribute their normal state bucket to their own workspace. Same-workspace descendants contribute `running` to the nearest ancestor in that workspace; their non-running attention, permission, and error states stay in the parent's subagents track. An idle workspace root with running delegated Paseo descendants in any workspace presents as Waiting. Its wire bucket remains `running` for older clients; the optional `waitingOnSubagents` count lets new clients distinguish it. Detached agents and terminal activity do not create this state. Pending permission and failure take priority.
 
 Running provider-native subagents contribute `running` to the workspace owned by their parent agent. Their completed, failed, and canceled states stay in the parent's subagents track.
 
@@ -191,7 +191,7 @@ A finished workspace can be marked unread after it has been reviewed. The daemon
 `finished` attention on its newest eligible workspace-root agent without sending a new completion
 notification. Opening the workspace clears that attention through the normal focus flow.
 
-Attention is set by the agent finishing or failing and cleared by the client's
+Finished attention and its notification wait while a parent has running delegated descendants. If the parent starts another turn, that turn owns its next finished attention. Attention is set by the agent finishing or failing and cleared by the client's
 `workspace.clear_attention`, which fires when the user reads the chat. Loading an agent's runtime is
 neither, so resuming carries the stored attention and the stored last-activity time through
 untouched. Forging either makes a background resume look like the user read a workspace and like the

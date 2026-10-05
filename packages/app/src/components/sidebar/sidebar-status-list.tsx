@@ -35,6 +35,7 @@ import {
   ChevronDown,
   ChevronRight,
   CircleAlert,
+  Circle,
   CircleCheck,
   CircleDot,
   CircleX,
@@ -105,6 +106,7 @@ const ThemedChevronRight = withUnistyles(ChevronRight);
 const ThemedCircleAlert = withUnistyles(CircleAlert);
 const ThemedCircleCheck = withUnistyles(CircleCheck);
 const ThemedCircleDot = withUnistyles(CircleDot);
+const ThemedCircle = withUnistyles(Circle);
 const ThemedCircleX = withUnistyles(CircleX);
 const EMPTY_SHORTCUT_INDEX = new Map<string, number>();
 
@@ -484,6 +486,8 @@ function StatusGroupIcon({ bucket }: { bucket: StatusBucket }) {
       return <ThemedCircleCheck size={14} uniProps={attentionColorMapping} />;
     case "running":
       return <ThemedCircleDot size={14} uniProps={runningColorMapping} />;
+    case "waiting":
+      return <ThemedCircle size={14} uniProps={foregroundMutedColorMapping} />;
     case "done":
       return <ThemedCircleCheck size={14} uniProps={foregroundMutedColorMapping} />;
   }

@@ -837,6 +837,9 @@ export class AgentManager {
   /** Messages waiting for an agent's running turn to end. */
   readonly messageQueue: AgentQueueRunner;
   private readonly previousStatuses = new Map<string, AgentLifecycleStatus>();
+  private readonly deferredFinishedAttention = new Set<string>();
+  private readonly pendingFinishedAttentionChecks = new Set<string>();
+  private finishedAttentionBarrier: ((parentId: string) => boolean) | null = null;
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly agentRegistrationTasks = new Set<Promise<void>>();
   private readonly inFlightAgentCloses = new Map<string, Promise<void>>();
@@ -977,6 +980,14 @@ export class AgentManager {
 
   setAgentAttentionCallback(callback: AgentAttentionCallback): void {
     this.onAgentAttention = callback;
+  }
+
+  setFinishedAttentionBarrier(barrier: ((parentId: string) => boolean) | null): void {
+    this.finishedAttentionBarrier = barrier;
+  }
+
+  recheckDeferredFinishedAttention(): void {
+    this.scheduleDeferredFinishedAttentionChecks();
   }
 
   setAgentArchivedCallback(callback: AgentArchivedCallback): void {
@@ -4134,6 +4145,8 @@ export class AgentManager {
     this.agentStreamCoalescer.flushAndDiscard(agent.id);
     this.agents.delete(agent.id);
     this.previousStatuses.delete(agent.id);
+    this.deferredFinishedAttention.delete(agent.id);
+    this.scheduleDeferredFinishedAttentionChecks();
     if (agent.unsubscribeSession) {
       agent.unsubscribeSession();
       agent.unsubscribeSession = null;
@@ -5301,6 +5314,7 @@ export class AgentManager {
       type: "agent_state",
       agent: { ...agent },
     });
+    this.scheduleDeferredFinishedAttentionChecks();
   }
 
   private syncFeaturesFromSession(agent: ManagedAgent): void {
@@ -5315,6 +5329,9 @@ export class AgentManager {
 
     // Track the new status
     this.previousStatuses.set(agent.id, currentStatus);
+    if (currentStatus === "running") {
+      this.deferredFinishedAttention.delete(agent.id);
+    }
 
     // Skip attention tracking for internal agents
     if (agent.internal) {
@@ -5328,6 +5345,10 @@ export class AgentManager {
 
     // Check if agent transitioned from running to idle (finished)
     if (previousStatus === "running" && currentStatus === "idle") {
+      if (this.hasRunningDelegatedDescendant(agent.id)) {
+        this.deferredFinishedAttention.add(agent.id);
+        return;
+      }
       agent.attention = {
         requiresAttention: true,
         attentionReason: "finished",
@@ -5346,6 +5367,48 @@ export class AgentManager {
       };
       this.broadcastAgentAttention(agent, "error");
       return;
+    }
+  }
+
+  private hasRunningDelegatedDescendant(parentId: string): boolean {
+    for (const candidate of this.agents.values()) {
+      if (candidate.lifecycle !== "running") continue;
+      const seen = new Set<string>([candidate.id]);
+      let ancestorId = getParentAgentIdFromLabels(candidate.labels);
+      while (ancestorId && !seen.has(ancestorId)) {
+        if (ancestorId === parentId) return true;
+        seen.add(ancestorId);
+        const ancestor = this.agents.get(ancestorId);
+        ancestorId = ancestor ? getParentAgentIdFromLabels(ancestor.labels) : null;
+      }
+    }
+    return false;
+  }
+
+  private scheduleDeferredFinishedAttentionChecks(): void {
+    for (const parentId of this.deferredFinishedAttention) {
+      if (this.pendingFinishedAttentionChecks.has(parentId)) continue;
+      this.pendingFinishedAttentionChecks.add(parentId);
+      setImmediate(() => {
+        this.pendingFinishedAttentionChecks.delete(parentId);
+        if (!this.deferredFinishedAttention.has(parentId)) return;
+        const parent = this.agents.get(parentId);
+        if (!parent || parent.lifecycle !== "idle") {
+          this.deferredFinishedAttention.delete(parentId);
+          return;
+        }
+        if (this.hasRunningDelegatedDescendant(parentId)) return;
+        if (this.finishedAttentionBarrier?.(parentId)) return;
+        this.deferredFinishedAttention.delete(parentId);
+        if (parent.attention.requiresAttention) return;
+        parent.attention = {
+          requiresAttention: true,
+          attentionReason: "finished",
+          attentionTimestamp: new Date(),
+        };
+        this.broadcastAgentAttention(parent, "finished");
+        this.emitState(parent);
+      });
     }
   }
 

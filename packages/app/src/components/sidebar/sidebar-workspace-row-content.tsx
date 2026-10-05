@@ -172,6 +172,12 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
             </Text>
             <View style={sidebarWorkspaceRowStyles.rowRight}>{children}</View>
           </View>
+          {workspace.statusBucket === "waiting" ? (
+            <Text style={styles.waitingSubtitle} numberOfLines={1}>
+              Waiting on {workspace.waitingOnSubagentsCount ?? 0} subagent
+              {workspace.waitingOnSubagentsCount === 1 ? "" : "s"}
+            </Text>
+          ) : null}
           <WorkspaceMetaRow
             currentBranch={workspace.currentBranch}
             projectName={leadingProjectName}
@@ -218,6 +224,14 @@ function WorkspaceStatusIndicator({
     return (
       <View style={styles.workspaceStatusDot} testID="workspace-status-indicator-running">
         <StatusRing />
+      </View>
+    );
+  }
+
+  if (bucket === "waiting") {
+    return (
+      <View style={styles.workspaceStatusDot} testID="workspace-status-indicator-waiting">
+        <View style={styles.waitingStatusRing} />
       </View>
     );
   }
@@ -278,6 +292,8 @@ function getStatusDotColorStyle(bucket: SidebarStateBucket) {
       return styles.statusDotRunning;
     case "attention":
       return styles.statusDotAttention;
+    case "waiting":
+      return null;
     case "done":
       return null;
   }
@@ -519,6 +535,18 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius.full,
     backgroundColor: theme.colors.foregroundExtraMuted,
     opacity: 0.3,
+  },
+  waitingStatusRing: {
+    width: STATUS_INDICATOR_FILLED_DOT_SIZE + 2,
+    height: STATUS_INDICATOR_FILLED_DOT_SIZE + 2,
+    borderRadius: theme.borderRadius.full,
+    borderWidth: 2,
+    borderColor: getStatusDotColor({ theme, bucket: "waiting" }) ?? undefined,
+  },
+  waitingSubtitle: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
+    lineHeight: 18,
   },
   // The title owns the first line outright now that the host, change request and CI moved
   // to the meta row, so it takes the full width the trailing slot leaves behind.

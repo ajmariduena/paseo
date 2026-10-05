@@ -50,6 +50,7 @@ export class DelegationService {
   private readonly lastTurnOutcomes = new Map<string, TurnOutcome>();
   /** child → parents with a running task for it. */
   private readonly runningChildren = new Map<string, Set<string>>();
+  private readonly pendingWakeOffers = new Set<string>();
   private readonly childChecks = new Map<string, Promise<void>>();
   private readonly queuedChildChecks = new Set<string>();
   private readonly finalizeWaiters = new Set<() => void>();
@@ -69,7 +70,23 @@ export class DelegationService {
       agentStorage: this.agentStorage,
       planContext: (parentAgentId) => this.planContext(parentAgentId),
       wasLastTurnCancelled: (agentId) => this.lastTurnOutcomes.get(agentId) === "cancelled",
+      onOfferSettled: (offer) => {
+        this.pendingWakeOffers.delete(offer.messageId);
+        this.agentManager.recheckDeferredFinishedAttention();
+      },
       logger: this.logger,
+    });
+    this.agentManager.setFinishedAttentionBarrier((parentId) => {
+      for (const [childId, parents] of this.runningChildren) {
+        const child = this.agentManager.getAgent(childId);
+        if (parents.has(parentId) && getParentAgentIdFromLabels(child?.labels) === parentId) {
+          return true;
+        }
+      }
+      for (const messageId of this.pendingWakeOffers) {
+        if (messageId.startsWith(`wake:${parentId}:`)) return true;
+      }
+      return false;
     });
     this.unsubscribe = this.agentManager.subscribe((event) => this.observe(event), {
       replayState: false,
@@ -78,6 +95,7 @@ export class DelegationService {
 
   close(): void {
     this.closed = true;
+    this.agentManager.setFinishedAttentionBarrier(null);
     this.unsubscribe();
     this.mailbox.close();
   }
@@ -527,11 +545,15 @@ export class DelegationService {
         { parentAgentId: input.parentAgentId, taskId, offer },
         "delegation.finalized",
       );
-      if (offer) this.mailbox.offer(offer);
+      if (offer) {
+        this.pendingWakeOffers.add(offer.messageId);
+        this.mailbox.offer(offer);
+      }
     }
     if ((await this.runningTaskIds(input.parentAgentId, input.childAgentId)).length === 0) {
       this.untrackRunningChild(input.childAgentId, input.parentAgentId);
     }
+    this.agentManager.recheckDeferredFinishedAttention();
     for (const notify of this.finalizeWaiters) notify();
     if (this.runningChildren.has(input.parentAgentId)) {
       this.scheduleChildCheck(input.parentAgentId);

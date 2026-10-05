@@ -3888,6 +3888,8 @@ export const ServerInfoStatusPayloadSchema = z
         providersSnapshotCwd: z.boolean().optional(),
         // COMPAT(directorySync): added in v0.3.x, remove gate after 2027-02-12.
         directorySync: z.boolean().optional(),
+        // COMPAT(waitingOnSubagents): added in v0.11.0, remove capability gate after 2027-04-05.
+        waitingOnSubagents: z.boolean().optional(),
         // COMPAT(workspaceLabels): added in v0.5.0, remove after 2027-08-14.
         workspaceLabels: z.boolean().optional(),
         // COMPAT(workspaceSetupRun): added in v0.8.0, remove gate after 2027-09-02.
@@ -4370,6 +4372,8 @@ export const WorkspaceDescriptorPayloadSchema = z
     labels: z.array(z.string()).optional(),
     archivingAt: z.string().nullable().optional().default(null),
     status: WorkspaceStateBucketSchema,
+    // COMPAT(waitingOnSubagents): added in v0.11.0, remove optional parse after 2027-04-05.
+    waitingOnSubagents: z.object({ count: z.number().int().positive() }).optional(),
     // Best-effort workspace status entry timestamp. Old daemons omit the
     // field; old clients treat missing and null equivalently. The transform
     // coerces a missing field to `null` so downstream code never has to

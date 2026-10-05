@@ -32,7 +32,8 @@ export function hasSidebarWorkspaceTrailing({
   trailing: SidebarWorkspaceTrailing;
 }): boolean {
   if (trailing === "diff") return workspace.diffStat !== null;
-  if (trailing === "timestamp") return workspace.statusEnteredAt !== null;
+  if (trailing === "timestamp")
+    return workspace.statusBucket !== "waiting" && workspace.statusEnteredAt !== null;
   return false;
 }
 
@@ -48,7 +49,11 @@ export function SidebarWorkspaceTrailingContent({
       <DiffStat additions={workspace.diffStat.additions} deletions={workspace.diffStat.deletions} />
     );
   }
-  if (trailing === "timestamp" && workspace.statusEnteredAt) {
+  if (
+    trailing === "timestamp" &&
+    workspace.statusEnteredAt &&
+    workspace.statusBucket !== "waiting"
+  ) {
     return <WorkspaceTimestamp enteredAt={workspace.statusEnteredAt} />;
   }
   return null;

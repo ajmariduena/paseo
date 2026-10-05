@@ -124,6 +124,7 @@ export interface WorkspaceDescriptor {
   pinnedAt?: string | null;
   labels?: string[];
   status: WorkspaceDescriptorPayload["status"];
+  waitingOnSubagents?: WorkspaceDescriptorPayload["waitingOnSubagents"];
   statusEnteredAt: Date | null;
   archivingAt: string | null;
   diffStat: { additions: number; deletions: number } | null;
@@ -163,6 +164,7 @@ export function normalizeWorkspaceDescriptor(
     // COMPAT(workspaceLabels): old daemons omit assignments.
     labels: payload.labels ?? [],
     status: payload.status,
+    waitingOnSubagents: payload.waitingOnSubagents,
     statusEnteredAt,
     archivingAt: payload.archivingAt ?? null,
     diffStat: payload.diffStat ?? null,

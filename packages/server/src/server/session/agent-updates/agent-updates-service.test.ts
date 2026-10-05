@@ -98,6 +98,7 @@ function buildHarness() {
   const payloadById = new Map<string, AgentSnapshotPayload>();
   const queuedPayloadBuilds: Promise<AgentSnapshotPayload>[] = [];
   const projectByWorkspaceId = new Map<string, ProjectPlacementPayload | null>();
+  const rootWorkspaceByAgentId = new Map<string, string>();
   let providerVisible: (provider: string) => boolean = () => true;
   let buildAgentPayloadError: Error | null = null;
   let enrichProjectedPayload = false;
@@ -135,6 +136,8 @@ function buildHarness() {
     emitWorkspaceUpdateForWorkspaceId: async (workspaceId) => {
       workspaceUpdates.push(workspaceId);
     },
+    resolveDelegationRootWorkspaceId: async (agentId) =>
+      rootWorkspaceByAgentId.get(agentId) ?? null,
     sequenceAgentUpdate: (payload, agent, project, agentId, includeSequence) =>
       directorySync.sequenceAgentUpdate(
         payload,
@@ -164,6 +167,9 @@ function buildHarness() {
     },
     setProviderVisible(fn: (provider: string) => boolean) {
       providerVisible = fn;
+    },
+    setDelegationRootWorkspace(agentId: string, workspaceId: string) {
+      rootWorkspaceByAgentId.set(agentId, workspaceId);
     },
     useProjectedPayload() {
       enrichProjectedPayload = true;
@@ -195,6 +201,7 @@ function buildHarness() {
         updatedAt: new Date(payload.updatedAt),
         lastUserMessageAt: null,
         pendingPermissions: new Map(),
+        backgroundTasks: [],
         attention: {
           requiresAttention: payload.requiresAttention ?? false,
           attentionReason: null,
@@ -690,4 +697,16 @@ test("an idle session skips agent hydration while preserving workspace updates",
   expect(h.loggedErrors).toEqual([]);
   expect(h.agentUpdates()).toEqual([]);
   expect(h.workspaceUpdates).toEqual([agent.workspaceId]);
+});
+
+test("a cross-workspace child refreshes its own and its parent's workspace", async () => {
+  const h = buildHarness();
+  const child = {
+    ...h.managed("child"),
+    workspaceId: "child-workspace",
+    labels: { "paseo.parent-agent-id": "parent" },
+  };
+  h.setDelegationRootWorkspace(child.id, "parent-workspace");
+  await h.service.forwardLiveAgent(child);
+  expect(h.workspaceUpdates).toEqual(["child-workspace", "parent-workspace"]);
 });

@@ -111,6 +111,22 @@ function twoProjectInput(groupMode: "project" | "status") {
 }
 
 describe("buildSidebarProjection", () => {
+  it("places waiting workspaces between working and done groups", () => {
+    const input = projectionInput({ groupMode: "status" });
+    const waiting = makeWorkspace("waiting", "waiting");
+    const working = makeWorkspace("working", "running");
+    const done = makeWorkspace("done", "done");
+    input.pinnedKeys.pinnedWorkspaceKeys = [];
+    input.workspaceEntriesByKey = new Map(
+      [waiting, working, done].map(({ entry }) => [entry.workspaceKey, entry]),
+    );
+    const projection = buildSidebarProjection(input);
+    expect(projection.workspaceGroups.map((group) => group.label)).toEqual([
+      "Working",
+      "Waiting",
+      "Done",
+    ]);
+  });
   // The rule that outlived the bug it was written for: a project icon is fetched per project, so
   // whatever a mode groups by, the rows it produces can only reference projects already covered.
   for (const groupMode of ["project", "status"] as const) {

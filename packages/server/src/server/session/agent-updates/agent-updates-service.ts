@@ -7,6 +7,7 @@ import type {
 } from "../../messages.js";
 import type { ManagedAgent } from "../../agent/agent-manager.js";
 import type { StoredAgentRecord } from "../../agent/agent-storage.js";
+import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
 import { resolveEffectiveThinkingOptionId, toAgentPayload } from "../../agent/agent-projections.js";
 
 type AgentUpdatePayload = Extract<SessionOutboundMessage, { type: "agent_update" }>["payload"];
@@ -53,6 +54,7 @@ export interface AgentUpdatesServiceDeps {
   isProviderVisibleToClient(provider: string): boolean;
   buildProjectPlacementForWorkspaceId(workspaceId: string): Promise<ProjectPlacementPayload | null>;
   emitWorkspaceUpdateForWorkspaceId(workspaceId: string): Promise<void>;
+  resolveDelegationRootWorkspaceId(agentId: string): Promise<string | null>;
   sequenceAgentUpdate<T extends AgentUpdatePayload>(
     payload: T,
     agent: AgentSnapshotPayload | null,
@@ -277,9 +279,23 @@ export function createAgentUpdatesService(deps: AgentUpdatesServiceDeps): AgentU
   async function emitLiveAgentUpdate(payload: AgentSnapshotPayload): Promise<void> {
     try {
       if (hasSubscription()) await publishPayload(await deps.enrichAgentPayload(payload));
-      if (payload.workspaceId) await deps.emitWorkspaceUpdateForWorkspaceId(payload.workspaceId);
+      await emitWorkspacesForAgent(payload);
     } catch (error) {
       deps.logger.error({ err: error }, "Failed to emit agent update");
+    }
+  }
+
+  async function emitWorkspacesForAgent(
+    agent: Pick<AgentSnapshotPayload, "id" | "workspaceId" | "labels">,
+  ): Promise<void> {
+    const workspaceIds = new Set<string>();
+    if (agent.workspaceId) workspaceIds.add(agent.workspaceId);
+    if (getParentAgentIdFromLabels(agent.labels)) {
+      const rootWorkspaceId = await deps.resolveDelegationRootWorkspaceId(agent.id);
+      if (rootWorkspaceId) workspaceIds.add(rootWorkspaceId);
+    }
+    for (const workspaceId of workspaceIds) {
+      await deps.emitWorkspaceUpdateForWorkspaceId(workspaceId);
     }
   }
 
@@ -300,16 +316,13 @@ export function createAgentUpdatesService(deps: AgentUpdatesServiceDeps): AgentU
 
   function forwardLiveAgent(agent: ManagedAgent): Promise<void> {
     if (!hasSubscription()) {
-      const workspaceId = agent.workspaceId;
-      return workspaceId
-        ? enqueueAgentUpdate(agent.id, async () => {
-            try {
-              await deps.emitWorkspaceUpdateForWorkspaceId(workspaceId);
-            } catch (error) {
-              deps.logger.error({ err: error }, "Failed to emit workspace update");
-            }
-          })
-        : Promise.resolve();
+      return enqueueAgentUpdate(agent.id, async () => {
+        try {
+          await emitWorkspacesForAgent(agent);
+        } catch (error) {
+          deps.logger.error({ err: error }, "Failed to emit workspace update");
+        }
+      });
     }
     const payload = toAgentPayload(agent);
     return enqueueAgentUpdate(payload.id, () => emitLiveAgentUpdate(payload));
