@@ -11,6 +11,7 @@ import {
   AgentTimelineEntryPayloadSchema,
   MutableDaemonConfigPatchSchema,
   MutableDaemonConfigSchema,
+  validateQuickPrompts,
 } from "./messages.js";
 
 test("terminal listings accept older rows and retain new per-terminal directories", () => {
@@ -622,4 +623,40 @@ test("quick prompt capability is optional and discarded by older feature schemas
   expect(ServerInfoStatusPayloadSchema.parse(current).features?.quickPrompts).toBe(true);
   const oldFeatures = z.object({ agentProfiles: z.boolean().optional() });
   expect(oldFeatures.parse(current.features)).toEqual({});
+});
+
+test("quick prompt validation permits localized client messages without changing wire parsing", () => {
+  const prompt = {
+    id: "a",
+    title: "A",
+    text: "text",
+    mode: "send" as const,
+    pinned: false,
+    isDefault: false,
+  };
+  const messages = {
+    duplicateIds: "identificadores únicos",
+    multipleDefaults: "un predeterminado",
+    pinLimit: "tres fijados",
+    required: "título y texto",
+  };
+  expect(() => validateQuickPrompts([prompt, prompt], messages)).toThrow(messages.duplicateIds);
+  expect(() =>
+    validateQuickPrompts(
+      [
+        { ...prompt, isDefault: true },
+        { ...prompt, id: "b", isDefault: true },
+      ],
+      messages,
+    ),
+  ).toThrow(messages.multipleDefaults);
+  expect(() =>
+    validateQuickPrompts(
+      ["a", "b", "c", "d"].map((id) => Object.assign({}, prompt, { id, pinned: true })),
+      messages,
+    ),
+  ).toThrow(messages.pinLimit);
+  expect(() => validateQuickPrompts([{ ...prompt, text: " " }], messages)).toThrow(
+    messages.required,
+  );
 });

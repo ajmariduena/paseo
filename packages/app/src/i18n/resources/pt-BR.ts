@@ -3,6 +3,15 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ptBR: TranslationResources = {
   quickPrompts: {
+    queue: "Enfileirar",
+    steered: "Redirecionado",
+    dismiss: "Fechar",
+    insertNamed: "Inserir prompt rápido: {{title}}",
+    chooseDefault: "Escolha um prompt padrão",
+    duplicateIds: "Os identificadores dos prompts rápidos devem ser únicos",
+    multipleDefaults: "Apenas um prompt rápido pode ser o padrão",
+    required: "Os prompts rápidos precisam de título e texto",
+
     section: "Prompts rápidos",
     add: "Novo prompt rápido",
     edit: "Editar prompt rápido",

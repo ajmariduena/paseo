@@ -137,6 +137,13 @@ describe("translation resources", () => {
       expect(resource.quickPrompts.interrupt).not.toBe(en.quickPrompts.interrupt);
       expect(resource.quickPrompts.cancelled).not.toBe(en.quickPrompts.cancelled);
       expect(resource.quickPrompts.failed).not.toBe(en.quickPrompts.failed);
+      expect(resource.quickPrompts.queue).not.toBe(resource.quickPrompts.queued);
+      expect(resource.quickPrompts.steer).not.toBe(resource.quickPrompts.steered);
+      expect(resource.quickPrompts.insertNamed).toContain("{{title}}");
+      expect(resource.quickPrompts.duplicateIds).not.toBe(en.quickPrompts.duplicateIds);
+      expect(resource.quickPrompts.multipleDefaults).not.toBe(en.quickPrompts.multipleDefaults);
+      expect(resource.quickPrompts.required).not.toBe(en.quickPrompts.required);
+      expect(resource.quickPrompts.chooseDefault).not.toBe(en.quickPrompts.chooseDefault);
     }
   });
 

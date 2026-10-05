@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   resolveQuickPromptPresentation,
+  resolveQuickPromptFeedbackWidth,
+  COMPOSER_CONTROL_DENSITIES,
   estimateComposerFixedWidth,
   COMPOSER_TOOLBAR_GEOMETRY,
   estimateComposerControlsWidth,
@@ -81,33 +83,38 @@ describe("composer control layout", () => {
       controls: CLAUDE_CONTROLS,
       controlGap: gap,
     });
-    expect(density).toBe("condensed");
+    expect(density).toBe("no-mode");
     expect(estimateComposerControlsWidth(CLAUDE_CONTROLS, density, gap)).toBeLessThanOrEqual(
       availableWidth,
     );
   });
 
-  it("uses local available width and hysteresis to avoid density churn", () => {
+  it("collapses one stage at a time with a 12px dead band in both directions", () => {
     const gap = COMPOSER_TOOLBAR_GEOMETRY.controlGap;
-    const fullFloor = estimateComposerControlsWidth(CLAUDE_CONTROLS, "full", gap);
-    const condensedFloor = estimateComposerControlsWidth(CLAUDE_CONTROLS, "condensed", gap);
-    const resolve = (availableWidth: number, currentDensity: "full" | "condensed" | "tight") =>
-      resolveComposerControlDensity({
-        availableWidth,
-        currentDensity,
-        controlGap: gap,
-        controls: CLAUDE_CONTROLS,
-      });
-
-    expect(resolve(fullFloor + 20, "full")).toBe("full");
-    expect(resolve(fullFloor - 8, "full")).toBe("full");
-    expect(resolve(fullFloor - 20, "full")).toBe("condensed");
-    expect(resolve(fullFloor + 8, "condensed")).toBe("condensed");
-    expect(resolve(fullFloor + 20, "condensed")).toBe("full");
-    expect(resolve(condensedFloor - 8, "condensed")).toBe("condensed");
-    expect(resolve(condensedFloor - 20, "condensed")).toBe("tight");
-    expect(resolve(condensedFloor + 8, "tight")).toBe("tight");
-    expect(resolve(condensedFloor + 20, "tight")).toBe("condensed");
+    const stages = COMPOSER_CONTROL_DENSITIES;
+    for (let i = 0; i < stages.length - 1; i++) {
+      const richer = stages[i];
+      const narrower = stages[i + 1];
+      const floor = estimateComposerControlsWidth(CLAUDE_CONTROLS, richer, gap);
+      const resolve = (availableWidth: number, currentDensity: typeof richer) =>
+        resolveComposerControlDensity({
+          availableWidth,
+          currentDensity,
+          controlGap: gap,
+          controls: CLAUDE_CONTROLS,
+        });
+      expect(resolve(floor - 11, richer)).toBe(richer);
+      expect(resolve(floor - 13, richer)).toBe(narrower);
+      expect(resolve(floor + 11, narrower)).toBe(narrower);
+      expect(resolve(floor + 13, narrower)).toBe(richer);
+    }
+    expect(stages.map((stage) => resolveComposerControlPresentation(stage))).toMatchObject([
+      { showEffortSuffix: true, showModeLabel: true, showCarets: true, showModelLabel: true },
+      { showEffortSuffix: false, showModeLabel: true, showCarets: true, showModelLabel: true },
+      { showEffortSuffix: false, showModeLabel: false, showCarets: true, showModelLabel: true },
+      { showEffortSuffix: false, showModeLabel: false, showCarets: false, showModelLabel: true },
+      { showEffortSuffix: false, showModeLabel: false, showCarets: false, showModelLabel: false },
+    ]);
   });
 
   it("budgets extra features and larger text before restoring full labels", () => {
@@ -124,13 +131,13 @@ describe("composer control layout", () => {
           features: [{ type: "toggle" }, { type: "select", label: "Tools" }],
         },
       }),
-    ).toBe("condensed");
+    ).toBe("no-effort");
     expect(
       resolveComposerControlDensity({
         ...base,
         controls: { ...CLAUDE_CONTROLS, fontScale: 1.25 },
       }),
-    ).toBe("condensed");
+    ).toBe("no-effort");
   });
 
   it("condenses before a labeled feature would overflow", () => {
@@ -150,7 +157,7 @@ describe("composer control layout", () => {
           features: [{ type: "select", label: "A much longer localized feature label" }],
         },
       }),
-    ).toBe("condensed");
+    ).toBe("no-effort");
   });
 
   it("condenses earlier when touch spacing widens the gaps between controls", () => {
@@ -167,7 +174,7 @@ describe("composer control layout", () => {
         ...input,
         controlGap: COMPOSER_TOOLBAR_GEOMETRY.touchControlGap,
       }),
-    ).toBe("condensed");
+    ).toBe("no-effort");
   });
 
   it("gives every toolbar control one shell and one platform glyph envelope", () => {
@@ -257,6 +264,60 @@ describe("quick prompt capacity", () => {
         fixed + result.width + 12 + estimateComposerControlsWidth(controls, result.density, 12),
       ).toBeLessThanOrEqual(interior);
     }
+  });
+
+  it("keeps quick prompt labels stable across resize noise and restores after 12px", () => {
+    const wide = resolveQuickPromptPresentation({ ...base, availableWidth: 260 });
+    expect(wide.showDefaultLabel).toBe(true);
+    const jitter = resolveQuickPromptPresentation({ ...base, availableWidth: 253, current: wide });
+    expect(jitter.showDefaultLabel).toBe(true);
+    expect(jitter.density).toBe(wide.density);
+    const narrow = resolveQuickPromptPresentation({
+      ...base,
+      availableWidth: 244,
+      current: jitter,
+    });
+    expect(narrow.showDefaultLabel).toBe(false);
+    expect(
+      resolveQuickPromptPresentation({ ...base, availableWidth: 265, current: narrow })
+        .showDefaultLabel,
+    ).toBe(false);
+    expect(
+      resolveQuickPromptPresentation({ ...base, availableWidth: 275, current: narrow })
+        .showDefaultLabel,
+    ).toBe(true);
+  });
+
+  it("keeps pins through the same dead band", () => {
+    const wide = resolveQuickPromptPresentation({ ...base, availableWidth: 540 });
+    expect(wide.visiblePinCount).toBe(1);
+    const jitter = resolveQuickPromptPresentation({ ...base, availableWidth: 530, current: wide });
+    expect(jitter.visiblePinCount).toBe(1);
+    const narrow = resolveQuickPromptPresentation({
+      ...base,
+      availableWidth: 520,
+      current: jitter,
+    });
+    expect(narrow.visiblePinCount).toBe(0);
+    expect(
+      resolveQuickPromptPresentation({ ...base, availableWidth: 540, current: narrow })
+        .visiblePinCount,
+    ).toBe(0);
+    expect(
+      resolveQuickPromptPresentation({ ...base, availableWidth: 550, current: narrow })
+        .visiblePinCount,
+    ).toBe(1);
+  });
+
+  it("budgets inline feedback inside the 368px touch toolbar", () => {
+    const width = resolveQuickPromptFeedbackWidth(368, true, base.controls);
+    expect(width).toBeGreaterThanOrEqual(44);
+    expect(
+      width +
+        estimateComposerFixedWidth(true) +
+        estimateComposerControlsWidth(base.controls, "tight", 12) +
+        12,
+    ).toBeLessThanOrEqual(368);
   });
 
   it("compact and absent default always open picker; larger text consumes capacity", () => {

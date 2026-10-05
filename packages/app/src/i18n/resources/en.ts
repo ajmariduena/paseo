@@ -1,5 +1,14 @@
 export const en = {
   quickPrompts: {
+    queue: "Queue",
+    steered: "Steered",
+    dismiss: "Dismiss",
+    insertNamed: "Insert quick prompt: {{title}}",
+    chooseDefault: "Choose a default prompt",
+    duplicateIds: "Quick prompt IDs must be unique",
+    multipleDefaults: "Only one quick prompt can be the default",
+    required: "Quick prompts require a title and text",
+
     section: "Quick prompts",
     add: "New quick prompt",
     edit: "Edit quick prompt",

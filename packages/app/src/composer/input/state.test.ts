@@ -4,7 +4,12 @@ import {
   type QuickPromptContext,
   type QuickPromptCapture,
 } from "@/quick-prompts/deferred-send";
-import { selectQuickPrompt, moveQuickPrompt, updateQuickPrompt } from "@/quick-prompts/catalog";
+import {
+  isQuickPromptActionDisabled,
+  selectQuickPrompt,
+  moveQuickPrompt,
+  updateQuickPrompt,
+} from "@/quick-prompts/catalog";
 import { openQuickPromptForm } from "@/quick-prompts/form";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -392,12 +397,14 @@ describe("deferred quick prompt sends", () => {
       action: "queue",
     };
     const callbacks = new Set<() => void>();
+    const delays: number[] = [];
     const sent: QuickPromptCapture[] = [];
     let disposition: "started" | "steered" | "queued" | undefined = "queued";
     let fail = false;
     const controller = createDeferredQuickPromptSend({
       readContext: () => context,
-      schedule: (callback) => {
+      schedule: (callback, delayMs) => {
+        delays.push(delayMs);
         callbacks.add(callback);
         return () => {
           callbacks.delete(callback);
@@ -411,12 +418,17 @@ describe("deferred quick prompt sends", () => {
     });
     return {
       controller,
+      delays,
       sent,
       change(patch: Partial<QuickPromptContext>) {
         context = { ...context, ...patch };
       },
       tick() {
-        for (const callback of callbacks) callback();
+        const pending = [...callbacks];
+        callbacks.clear();
+        for (const callback of pending) {
+          callback();
+        }
       },
       reply(next: typeof disposition) {
         disposition = next;
@@ -432,9 +444,11 @@ describe("deferred quick prompt sends", () => {
     expect(test.sent).toEqual([]);
     expect(test.controller.getState().status).toBe("pending");
     test.controller.cancel();
+    expect(test.controller.getState()).toEqual({ status: "cancelled" });
+    expect(test.delays.at(-1)).toBe(2500);
     test.tick();
     expect(test.sent).toEqual([]);
-    expect(test.controller.getState()).toEqual({ status: "cancelled" });
+    expect(test.controller.getState()).toEqual({ status: "idle" });
   });
   it("a second tap dispatches the captured text exactly once", async () => {
     const test = setup();
@@ -447,6 +461,62 @@ describe("deferred quick prompt sends", () => {
     expect(test.sent[0].text).toBe("Summarize.");
     expect(test.controller.getState()).toMatchObject({ status: "accepted", disposition: "queued" });
   });
+  it("finishes the wait when a running turn ends and resolves send at dispatch", async () => {
+    const test = setup();
+    test.controller.start(prompt, 2500);
+    test.change({ action: "send" });
+    test.controller.validate();
+    expect(test.controller.getState()).toMatchObject({
+      status: "pending",
+      capture: { action: "send" },
+    });
+    test.tick();
+    await Promise.resolve();
+    expect(test.sent).toHaveLength(1);
+    expect(test.sent[0]).toMatchObject({ action: "send", context: { agent: "agent" } });
+  });
+  it("a stale picker callback and context change cannot remove the in-flight guard", async () => {
+    const test = setup();
+    const lateSelection = test.controller.guardSelection(() =>
+      test.controller.start({ ...prompt, id: "second" }, 0),
+    );
+    test.controller.start(prompt, 0);
+    const inflightSelection = test.controller.guardSelection(() =>
+      test.controller.start({ ...prompt, id: "third" }, 0),
+    );
+    test.change({ policy: "changed" });
+    test.controller.validate();
+    lateSelection();
+    inflightSelection();
+    test.controller.cancel();
+    test.controller.dismiss();
+    test.controller.start({ ...prompt, id: "second" }, 0);
+    expect(test.controller.getState().status).toBe("sending");
+    expect(test.sent).toHaveLength(1);
+    await Promise.resolve();
+    expect(test.controller.getState().status).toBe("accepted");
+    test.controller.start({ ...prompt, id: "second" }, 0);
+    expect(test.sent).toHaveLength(2);
+  });
+  it("only cancels a pending or failed send and permits dismissing the notice", () => {
+    const test = setup();
+    test.controller.cancel();
+    expect(test.controller.getState().status).toBe("idle");
+    test.controller.start(prompt, 2500);
+    test.controller.cancel();
+    expect(test.controller.getState().status).toBe("cancelled");
+    test.controller.dismiss();
+    expect(test.controller.getState().status).toBe("idle");
+  });
+  it("shows an expiring unavailable notice when a pane cannot send", () => {
+    const test = setup();
+    test.change({ visible: false });
+    test.controller.start(prompt, 2500);
+    expect(test.controller.getState().status).toBe("unavailable");
+    test.tick();
+    expect(test.controller.getState().status).toBe("idle");
+    expect(test.sent).toEqual([]);
+  });
   const changes: Array<[string, Partial<QuickPromptContext>]> = [
     ["host", { host: "other" }],
     ["agent", { agent: "other" }],
@@ -456,7 +526,6 @@ describe("deferred quick prompt sends", () => {
     ["disconnect", { connected: false }],
     ["permission or policy", { policy: "permission-123" }],
     ["presentation", { presentation: "compact" }],
-    ["action", { action: "interrupt" }],
     ["voice or unavailable agent", { available: false }],
   ];
   it.each(changes)("cancels on %s immediately before dispatch", (_label, patch) => {
@@ -519,7 +588,7 @@ describe("deferred quick prompt sends", () => {
     test.change({ agent: "different-agent" });
     select();
     expect(test.sent).toEqual([]);
-    expect(test.controller.getState()).toEqual({ status: "cancelled" });
+    expect(test.controller.getState()).toEqual({ status: "unavailable" });
   });
   it("a transient policy change during menu teardown invalidates the captured selection", () => {
     const test = setup();
@@ -529,17 +598,18 @@ describe("deferred quick prompt sends", () => {
     test.change({ policy: "queue" });
     select();
     expect(test.sent).toEqual([]);
-    expect(test.controller.getState()).toEqual({ status: "cancelled" });
+    expect(test.controller.getState()).toEqual({ status: "unavailable" });
   });
   it("a transient disconnect cancels even if the connection recovers before the timer", () => {
     const test = setup();
     test.controller.start(prompt, 2500);
     test.change({ connected: false });
     test.controller.validate();
+    expect(test.controller.getState()).toEqual({ status: "cancelled" });
     test.change({ connected: true });
     test.tick();
     expect(test.sent).toEqual([]);
-    expect(test.controller.getState()).toEqual({ status: "cancelled" });
+    expect(test.controller.getState()).toEqual({ status: "idle" });
   });
   it("manual send and unmount cancel pending dispatch", () => {
     const test = setup();
@@ -555,6 +625,12 @@ describe("deferred quick prompt sends", () => {
 });
 
 describe("quick prompt picker actions", () => {
+  it("permits insert while sends are blocked, and only blocks inserts during a catalog write", () => {
+    expect(isQuickPromptActionDisabled("insert", false, true)).toBe(false);
+    expect(isQuickPromptActionDisabled("insert", true, false)).toBe(true);
+    expect(isQuickPromptActionDisabled("send", false, true)).toBe(true);
+  });
+
   const prompt: QuickPrompt = {
     id: "summary",
     title: "Summary",

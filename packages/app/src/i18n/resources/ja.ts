@@ -3,6 +3,15 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ja: TranslationResources = {
   quickPrompts: {
+    queue: "キューに追加",
+    steered: "方向修正済み",
+    dismiss: "閉じる",
+    insertNamed: "クイックプロンプトを挿入: {{title}}",
+    chooseDefault: "既定のプロンプトを選択",
+    duplicateIds: "クイックプロンプトのIDは一意である必要があります",
+    multipleDefaults: "既定に設定できるクイックプロンプトは1つだけです",
+    required: "クイックプロンプトにはタイトルと本文が必要です",
+
     section: "クイックプロンプト",
     add: "クイックプロンプトを追加",
     edit: "クイックプロンプトを編集",

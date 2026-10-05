@@ -24,7 +24,7 @@ export interface QuickPromptCapture {
 }
 
 export type QuickPromptSendState =
-  | { status: "idle" | "cancelled" }
+  | { status: "idle" | "cancelled" | "unavailable" }
   | { status: "pending" | "sending" | "failed"; capture: QuickPromptCapture }
   | {
       status: "accepted";
@@ -44,7 +44,7 @@ function canSend(context: QuickPromptContext): boolean {
 
 function sameContext(left: QuickPromptContext, right: QuickPromptContext): boolean {
   return (Object.keys(left) as Array<keyof QuickPromptContext>).every(
-    (key) => left[key] === right[key],
+    (key) => key === "action" || left[key] === right[key],
   );
 }
 
@@ -64,27 +64,49 @@ export function createDeferredQuickPromptSend(ports: DeferredSendPorts) {
     cancelTimer?.();
     cancelTimer = null;
   }
-  function cancel() {
+  function dismiss() {
+    if (state.status === "sending" || state.status === "pending") return;
+    clearTimer();
+    publish({ status: "idle" });
+  }
+  function notice(status: "cancelled" | "unavailable") {
+    clearTimer();
+    const next = { status };
+    publish(next);
+    cancelTimer = ports.schedule(() => {
+      if (state === next) publish({ status: "idle" });
+    }, 2500);
+  }
+  function invalidateSelection() {
     selectionVersion++;
     selectionContext = null;
+  }
+  function unavailable() {
+    if (state.status === "sending" || state.status === "pending" || state.status === "failed")
+      return;
+    notice("unavailable");
+  }
+  function cancel() {
+    invalidateSelection();
     if (state.status !== "pending" && state.status !== "failed") return;
-    clearTimer();
-    publish({ status: "cancelled" });
+    notice("cancelled");
   }
   function validate() {
-    if (selectionContext && !sameContext(selectionContext, ports.readContext())) {
-      cancel();
-      publish({ status: "cancelled" });
-    }
-    if (state.status !== "pending" && state.status !== "failed") return;
     const current = ports.readContext();
-    if (!canSend(current) || !sameContext(state.capture.context, current)) cancel();
+    if (selectionContext && !sameContext(selectionContext, current)) invalidateSelection();
+    if (state.status !== "pending" && state.status !== "failed") return;
+    if (!canSend(current) || !sameContext(state.capture.context, current)) {
+      cancel();
+    } else if (state.capture.action !== current.action) {
+      publish({ ...state, capture: { ...state.capture, action: current.action } });
+    }
   }
   async function dispatch() {
     validate();
     if (disposed || state.status !== "pending") return;
     clearTimer();
-    const capture = state.capture;
+    const capture = { ...state.capture, action: ports.readContext().action };
+    invalidateSelection();
     publish({ status: "sending", capture });
     try {
       const disposition = await ports.dispatch(capture);
@@ -109,7 +131,10 @@ export function createDeferredQuickPromptSend(ports: DeferredSendPorts) {
     cancel();
     clearTimer();
     const context = { ...ports.readContext() };
-    if (!canSend(context)) return;
+    if (!canSend(context)) {
+      unavailable();
+      return;
+    }
     const capture = {
       context,
       promptId: prompt.id,
@@ -137,8 +162,7 @@ export function createDeferredQuickPromptSend(ports: DeferredSendPorts) {
       if (disposed) return;
       validate();
       if (version !== selectionVersion || !sameContext(expected, ports.readContext())) {
-        cancel();
-        publish({ status: "cancelled" });
+        unavailable();
         return;
       }
       selectionContext = null;
@@ -156,8 +180,13 @@ export function createDeferredQuickPromptSend(ports: DeferredSendPorts) {
     },
     start,
     cancel,
+    dismiss,
+    unavailable,
     validate,
     retry,
+    sendNow: () => {
+      void dispatch();
+    },
     dispose() {
       cancel();
       disposed = true;

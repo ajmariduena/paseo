@@ -3,6 +3,15 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ar: TranslationResources = {
   quickPrompts: {
+    queue: "أضف إلى قائمة الانتظار",
+    steered: "تمت إعادة التوجيه",
+    dismiss: "إغلاق",
+    insertNamed: "إدراج طلب سريع: {{title}}",
+    chooseDefault: "اختر طلبًا افتراضيًا",
+    duplicateIds: "يجب أن تكون معرّفات الطلبات السريعة فريدة",
+    multipleDefaults: "يمكن تعيين طلب سريع افتراضي واحد فقط",
+    required: "تتطلب الطلبات السريعة عنوانًا ونصًا",
+
     section: "التوجيهات السريعة",
     add: "توجيه سريع جديد",
     edit: "تعديل التوجيه السريع",

@@ -58,3 +58,11 @@ export async function selectQuickPrompt(input: {
   if (action === "default") next.isDefault = !prompt.isDefault;
   await ports.save(updateQuickPrompt(prompts, next));
 }
+
+export function isQuickPromptActionDisabled(
+  mode: QuickPrompt["mode"],
+  writing: boolean,
+  sending: boolean,
+): boolean {
+  return writing || (mode === "send" && sending);
+}

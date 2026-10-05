@@ -6,6 +6,7 @@ import {
 import { ProviderOverrideSchema } from "./agent/provider-launch-config.js";
 import {
   validateQuickPrompts,
+  type QuickPrompt,
   MutableDaemonConfigSchema,
   MutableDaemonConfigPatchSchema,
 } from "@getpaseo/protocol/messages";
@@ -51,6 +52,7 @@ const DICTATION_STT_PROVIDERS = new Set(["local", "openai", "elevenlabs"]);
 interface LoggerLike {
   child(bindings: Record<string, unknown>): LoggerLike;
   info(...args: unknown[]): void;
+  warn(...args: unknown[]): void;
 }
 
 export interface DaemonConfigChangeDetails {
@@ -381,6 +383,34 @@ export function applyMutableProviderConfigToOverrides(
   return nextOverrides;
 }
 
+/** Hand-edited catalogs must not stop the daemon; writes and live reload remain strict. */
+function normalizeLoadedQuickPrompts(
+  prompts: QuickPrompt[] | undefined,
+  logger: LoggerLike | undefined,
+): QuickPrompt[] | undefined {
+  if (!prompts) return prompts;
+  const ids = new Set<string>();
+  let hasDefault = false;
+  let pins = 0;
+  const normalized: QuickPrompt[] = [];
+  for (const prompt of prompts) {
+    if (ids.has(prompt.id) || !prompt.title.trim() || !prompt.text.trim()) continue;
+    ids.add(prompt.id);
+    const isDefault = prompt.isDefault && !hasDefault;
+    const pinned = prompt.pinned && pins < 3;
+    if (isDefault) hasDefault = true;
+    if (pinned) pins++;
+    normalized.push({ ...prompt, isDefault, pinned });
+  }
+  if (JSON.stringify(prompts) !== JSON.stringify(normalized)) {
+    logger?.warn(
+      { count: prompts.length, retained: normalized.length },
+      "Normalized invalid quick prompts while loading daemon config",
+    );
+  }
+  return normalized;
+}
+
 export class DaemonConfigStore {
   private current: MutableDaemonConfig;
   private readonly paseoHome: string;
@@ -408,8 +438,8 @@ export class DaemonConfigStore {
     this.current = MutableDaemonConfigSchema.parse({
       ...initial,
       relay: initial.relay ?? { enabled: true },
+      quickPrompts: normalizeLoadedQuickPrompts(initial.quickPrompts, this.logger),
     });
-    validateQuickPrompts(this.current.quickPrompts ?? []);
     this.relayEnabledMutable = options.relayEnabledMutable ?? true;
     this.reloadSource = options.reloadSource;
     this.startupPersisted = options.startupPersisted ?? loadPersistedConfig(paseoHome, this.logger);

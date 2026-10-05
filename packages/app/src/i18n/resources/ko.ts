@@ -3,6 +3,15 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ko: TranslationResources = {
   quickPrompts: {
+    queue: "대기열에 추가",
+    steered: "방향 조정됨",
+    dismiss: "닫기",
+    insertNamed: "빠른 프롬프트 삽입: {{title}}",
+    chooseDefault: "기본 프롬프트를 선택하세요",
+    duplicateIds: "빠른 프롬프트 ID는 고유해야 합니다",
+    multipleDefaults: "기본 빠른 프롬프트는 하나만 설정할 수 있습니다",
+    required: "빠른 프롬프트에는 제목과 내용이 필요합니다",
+
     section: "빠른 프롬프트",
     add: "빠른 프롬프트 추가",
     edit: "빠른 프롬프트 편집",

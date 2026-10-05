@@ -11,17 +11,26 @@ export const QuickPromptSchema = z.object({
 export type QuickPrompt = z.infer<typeof QuickPromptSchema>;
 
 // Cross-record invariants belong at the write boundary, not in generated wire validators.
-export function validateQuickPrompts(prompts: readonly QuickPrompt[]): void {
+const validationMessages = {
+  duplicateIds: "Quick prompt IDs must be unique",
+  multipleDefaults: "Only one quick prompt can be the default",
+  pinLimit: "At most three quick prompts can be pinned",
+  required: "Quick prompts require a title and text",
+};
+export function validateQuickPrompts(
+  prompts: readonly QuickPrompt[],
+  messages: typeof validationMessages = validationMessages,
+): void {
   if (new Set(prompts.map((prompt) => prompt.id)).size !== prompts.length) {
-    throw new Error("Quick prompt IDs must be unique");
+    throw new Error(messages.duplicateIds);
   }
   if (prompts.filter((prompt) => prompt.isDefault).length > 1) {
-    throw new Error("Only one quick prompt can be the default");
+    throw new Error(messages.multipleDefaults);
   }
   if (prompts.filter((prompt) => prompt.pinned).length > 3) {
-    throw new Error("At most three quick prompts can be pinned");
+    throw new Error(messages.pinLimit);
   }
   if (prompts.some((prompt) => !prompt.title.trim() || !prompt.text.trim())) {
-    throw new Error("Quick prompts require a title and text");
+    throw new Error(messages.required);
   }
 }

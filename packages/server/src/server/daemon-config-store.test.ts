@@ -165,6 +165,53 @@ describe("DaemonConfigStore", () => {
     expect(loadPersistedConfig(paseoHome).agents?.continueAfterRestart).toBe(true);
   });
 
+  test("normalizes a hand-edited quick prompt catalog at boot, warns, and keeps reload strict", () => {
+    const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-quick-prompts-"));
+    tempDirs.push(paseoHome);
+    const prompts = ["a", "a", "b", "c", "d"].map((id) => ({
+      id,
+      title: id,
+      text: id,
+      mode: "send" as const,
+      isDefault: true,
+      pinned: true,
+    }));
+    const persisted = { daemon: { quickPrompts: prompts } };
+    writeFileSync(path.join(paseoHome, "config.json"), JSON.stringify(persisted));
+    const warnings: unknown[][] = [];
+    const logger = {
+      child() {
+        return this;
+      },
+      info() {},
+      warn(...args: unknown[]) {
+        warnings.push(args);
+      },
+    };
+    const store = new DaemonConfigStore(
+      paseoHome,
+      reloadableConfig(loadPersistedConfig(paseoHome)),
+      logger,
+      {
+        reloadSource: {
+          resolve: (config) => ({ mutable: reloadableConfig(config), overrideControlledPaths: [] }),
+        },
+      },
+    );
+    expect(store.get().quickPrompts).toEqual([
+      { ...prompts[0] },
+      { ...prompts[2], isDefault: false },
+      { ...prompts[3], isDefault: false },
+      { ...prompts[4], isDefault: false, pinned: false },
+    ]);
+    expect(warnings).toHaveLength(1);
+    expect(loadPersistedConfig(paseoHome).daemon?.quickPrompts).toEqual(prompts);
+    const normalized = store.get();
+    expect(() => store.reload()).toThrow("unique");
+    expect(() => store.patch({ quickPrompts: prompts })).toThrow("unique");
+    expect(store.get()).toBe(normalized);
+  });
+
   test("quick prompts persist, notify clients, reload, and reject invalid catalogs atomically", () => {
     const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-quick-prompts-"));
     tempDirs.push(paseoHome);

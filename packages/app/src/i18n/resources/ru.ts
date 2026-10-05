@@ -3,6 +3,15 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ru: TranslationResources = {
   quickPrompts: {
+    queue: "Поставить в очередь",
+    steered: "Перенаправлено",
+    dismiss: "Закрыть",
+    insertNamed: "Вставить быстрый запрос: {{title}}",
+    chooseDefault: "Выберите запрос по умолчанию",
+    duplicateIds: "Идентификаторы быстрых запросов должны быть уникальными",
+    multipleDefaults: "Только один быстрый запрос может быть выбран по умолчанию",
+    required: "Быстрым запросам нужны заголовок и текст",
+
     section: "Быстрые промпты",
     add: "Новый быстрый промпт",
     edit: "Изменить быстрый промпт",

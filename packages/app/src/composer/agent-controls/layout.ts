@@ -1,6 +1,13 @@
 import { touchTargetOutset } from "@/components/ui/control-geometry";
 
-export type ComposerControlDensity = "full" | "condensed" | "tight";
+export const COMPOSER_CONTROL_DENSITIES = [
+  "full",
+  "no-effort",
+  "no-mode",
+  "condensed",
+  "tight",
+] as const;
+export type ComposerControlDensity = (typeof COMPOSER_CONTROL_DENSITIES)[number];
 
 export interface ComposerControlPresence {
   hasModel: boolean;
@@ -143,56 +150,35 @@ export function resolveComposerControlDensity(input: {
   controls: ComposerControlPresence;
   controlGap: number;
 }): ComposerControlDensity {
-  const fullFloor = estimateComposerControlsWidth(input.controls, "full", input.controlGap);
-  const condensedFloor = estimateComposerControlsWidth(
-    input.controls,
-    "condensed",
-    input.controlGap,
+  return resolveDensityWithHysteresis(input.availableWidth, input.currentDensity, (density) =>
+    estimateComposerControlsWidth(input.controls, density, input.controlGap),
   );
+}
 
-  if (input.currentDensity === "full") {
-    if (input.availableWidth >= fullFloor - DENSITY_HYSTERESIS) return "full";
-    return input.availableWidth >= condensedFloor ? "condensed" : "tight";
+function resolveDensityWithHysteresis(
+  availableWidth: number,
+  current: ComposerControlDensity | undefined,
+  floor: (density: ComposerControlDensity) => number,
+): ComposerControlDensity {
+  const currentIndex = current === undefined ? -1 : COMPOSER_CONTROL_DENSITIES.indexOf(current);
+  for (const [index, density] of COMPOSER_CONTROL_DENSITIES.entries()) {
+    let threshold = floor(density);
+    if (currentIndex >= 0 && index < currentIndex) threshold += DENSITY_HYSTERESIS;
+    if (index === currentIndex) threshold -= DENSITY_HYSTERESIS;
+    if (availableWidth >= threshold) return density;
   }
-
-  if (input.currentDensity === "condensed") {
-    if (input.availableWidth >= fullFloor + DENSITY_HYSTERESIS) return "full";
-    if (input.availableWidth < condensedFloor - DENSITY_HYSTERESIS) return "tight";
-    return "condensed";
-  }
-
-  if (input.availableWidth >= fullFloor + DENSITY_HYSTERESIS) return "full";
-  if (input.availableWidth >= condensedFloor + DENSITY_HYSTERESIS) return "condensed";
   return "tight";
 }
 
 export function resolveComposerControlPresentation(
   density: ComposerControlDensity,
 ): ComposerControlPresentation {
-  if (density === "full") {
-    return {
-      showCarets: true,
-      showEffortSuffix: true,
-      showModeLabel: true,
-      showModelLabel: true,
-      aggregateFeatures: false,
-    };
-  }
-  if (density === "condensed") {
-    return {
-      showCarets: false,
-      showEffortSuffix: false,
-      showModeLabel: false,
-      showModelLabel: true,
-      aggregateFeatures: true,
-    };
-  }
   return {
-    showCarets: false,
-    showEffortSuffix: false,
-    showModeLabel: false,
-    showModelLabel: false,
-    aggregateFeatures: true,
+    showEffortSuffix: density === "full",
+    showModeLabel: density === "full" || density === "no-effort",
+    showCarets: density === "full" || density === "no-effort" || density === "no-mode",
+    showModelLabel: density !== "tight",
+    aggregateFeatures: density !== "full",
   };
 }
 
@@ -234,6 +220,7 @@ export function resolveQuickPromptPresentation(input: {
   defaultLabel: string | null;
   pinnedLabels: readonly string[];
   controls: ComposerControlPresence;
+  current?: QuickPromptPresentation;
 }): QuickPromptPresentation {
   const gap = input.touch
     ? COMPOSER_TOOLBAR_GEOMETRY.touchControlGap
@@ -244,22 +231,56 @@ export function resolveQuickPromptPresentation(input: {
   const splitWidth = input.defaultLabel === null ? 0 : pillWidth(input.defaultLabel) + target + 2;
   const controlsWidth = (density: ComposerControlDensity) =>
     estimateComposerControlsWidth(input.controls, density, gap);
+  const fits = (floor: number, wasVisible: boolean) => {
+    if (!input.current) return input.availableWidth >= floor;
+    const margin = wasVisible ? -DENSITY_HYSTERESIS : DENSITY_HYSTERESIS;
+    return input.availableWidth >= floor + margin;
+  };
   const showDefaultLabel =
     !input.compact &&
     input.defaultLabel !== null &&
-    input.availableWidth >= controlsWidth("tight") + gap + splitWidth;
+    fits(controlsWidth("tight") + gap + splitWidth, input.current?.showDefaultLabel ?? false);
   let width = showDefaultLabel ? splitWidth : target + 2;
   let visiblePinCount = 0;
   // Restore pins only after the other controls can show all their labels.
   for (const label of input.pinnedLabels.slice(0, 3)) {
     const nextWidth = width + gap + pillWidth(label);
-    if (input.availableWidth < controlsWidth("full") + gap + nextWidth) break;
+    if (
+      !fits(
+        controlsWidth("full") + gap + nextWidth,
+        visiblePinCount < (input.current?.visiblePinCount ?? 0),
+      )
+    )
+      break;
     width = nextWidth;
     visiblePinCount++;
   }
   const availableControlsWidth = input.availableWidth - width - gap;
-  let density: ComposerControlDensity = "tight";
-  if (availableControlsWidth >= controlsWidth("full")) density = "full";
-  else if (availableControlsWidth >= controlsWidth("condensed")) density = "condensed";
+  const density = resolveDensityWithHysteresis(
+    availableControlsWidth,
+    input.current?.density,
+    controlsWidth,
+  );
   return { showDefaultLabel, visiblePinCount, width, density };
+}
+
+/** Inline feedback can wrap vertically but never grows beyond the toolbar's remaining width. */
+export function resolveQuickPromptFeedbackWidth(
+  interior: number,
+  touch: boolean,
+  controls: ComposerControlPresence,
+): number {
+  const gap = touch
+    ? COMPOSER_TOOLBAR_GEOMETRY.touchControlGap
+    : COMPOSER_TOOLBAR_GEOMETRY.controlGap;
+  return Math.max(
+    touch ? 44 : 28,
+    Math.min(
+      300,
+      interior -
+        estimateComposerFixedWidth(touch) -
+        estimateComposerControlsWidth(controls, "tight", gap) -
+        gap,
+    ),
+  );
 }

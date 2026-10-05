@@ -3,6 +3,15 @@ import { pluginSettings } from "./plugin-settings";
 
 export const zhCN: TranslationResources = {
   quickPrompts: {
+    queue: "加入队列",
+    steered: "已调整方向",
+    dismiss: "关闭",
+    insertNamed: "插入快捷提示词：{{title}}",
+    chooseDefault: "选择默认提示词",
+    duplicateIds: "快捷提示词的 ID 必须唯一",
+    multipleDefaults: "只能设置一个默认快捷提示词",
+    required: "快捷提示词需要标题和正文",
+
     section: "快捷提示词",
     add: "新建快捷提示词",
     edit: "编辑快捷提示词",

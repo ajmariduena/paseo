@@ -16,9 +16,12 @@ export function useQuickPrompts(serverId: string) {
   const save = useCallback(
     async (prompts: QuickPrompt[]) => {
       if (!connected || !supported) throw new Error(t("quickPrompts.unavailable"));
-      if (prompts.filter((prompt) => prompt.pinned).length > 3)
-        throw new Error(t("quickPrompts.pinLimit"));
-      validateQuickPrompts(prompts);
+      validateQuickPrompts(prompts, {
+        duplicateIds: t("quickPrompts.duplicateIds"),
+        multipleDefaults: t("quickPrompts.multipleDefaults"),
+        pinLimit: t("quickPrompts.pinLimit"),
+        required: t("quickPrompts.required"),
+      });
       const result = await patchConfig({ quickPrompts: prompts });
       if (!result) throw new Error(t("quickPrompts.unavailable"));
     },

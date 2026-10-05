@@ -7,7 +7,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
-import { Bookmark, ChevronDown, CornerDownLeft, Star } from "lucide-react-native";
+import { Bookmark, ChevronDown, CornerDownLeft, Star, X } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { QuickPrompt } from "@getpaseo/protocol/messages";
@@ -25,12 +25,19 @@ import {
   resolveQuickPromptPresentation,
   estimateComposerFixedWidth,
   estimateQuickPromptPillWidth,
+  resolveQuickPromptFeedbackWidth,
+  type QuickPromptPresentation,
 } from "@/composer/agent-controls/layout";
 import type { Theme } from "@/styles/theme";
 import type { DeferredQuickPromptSend, QuickPromptSendState } from "./deferred-send";
 import { useQuickPrompts } from "./use-quick-prompts";
 import { useQuickPromptCapacity, usePublishQuickPromptDensity } from "./capacity";
-import { selectQuickPrompt, updateQuickPrompt, type QuickPromptPickerAction } from "./catalog";
+import {
+  selectQuickPrompt,
+  isQuickPromptActionDisabled,
+  updateQuickPrompt,
+  type QuickPromptPickerAction,
+} from "./catalog";
 import { newQuickPrompt } from "./form";
 import { QuickPromptEditModal } from "./edit-modal";
 
@@ -48,13 +55,13 @@ const ThemedChevron = withUnistyles(ChevronDown);
 const iconMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 const feedbackKey = {
   started: "quickPrompts.sent",
-  steered: "quickPrompts.steer",
+  steered: "quickPrompts.steered",
   queued: "quickPrompts.queued",
 } as const;
 const actionKey = {
   send: "quickPrompts.send",
   steer: "quickPrompts.steer",
-  queue: "quickPrompts.queued",
+  queue: "quickPrompts.queue",
   interrupt: "quickPrompts.interrupt",
 } as const;
 
@@ -123,7 +130,9 @@ export function QuickPromptToolbar({ binding }: { binding: QuickPromptToolbarBin
   const pinned = catalog.prompts.filter(
     (prompt) => prompt.pinned && prompt.id !== defaultPrompt?.id,
   );
+  const previousPresentation = useRef<QuickPromptPresentation | undefined>(undefined);
   const presentation = resolveQuickPromptPresentation({
+    current: previousPresentation.current,
     // Attachment, context meter, mic and primary action keep their own space.
     availableWidth: width - estimateComposerFixedWidth(touch),
     compact,
@@ -132,8 +141,14 @@ export function QuickPromptToolbar({ binding }: { binding: QuickPromptToolbarBin
     pinnedLabels: pinned.map((prompt) => prompt.title),
     controls,
   });
-  usePublishQuickPromptDensity(catalog.supported ? presentation.density : null);
-  const presentationKey = `${compact}:${touch}:${Math.round(width)}:${controls.fontScale}:${presentation.density}:${presentation.showDefaultLabel}:${pinned
+  useLayoutEffect(() => {
+    previousPresentation.current = presentation;
+  });
+  const hasFeedback = state.status !== "idle";
+  const controlDensity = hasFeedback ? "tight" : presentation.density;
+  usePublishQuickPromptDensity(catalog.supported ? controlDensity : null);
+  const feedbackWidth = resolveQuickPromptFeedbackWidth(width, touch, controls);
+  const presentationKey = `${compact}:${touch}:${controls.fontScale}:${presentation.density}:${presentation.showDefaultLabel}:${pinned
     .slice(0, presentation.visiblePinCount)
     .map((prompt) => prompt.id)
     .join(",")}`;
@@ -154,6 +169,7 @@ export function QuickPromptToolbar({ binding }: { binding: QuickPromptToolbarBin
         ports: {
           send: (entry) => {
             if (ready) binding.controller.start(entry, catalog.undoMs);
+            else binding.controller.unavailable();
           },
           insert: (text) => {
             binding.controller.cancel();
@@ -179,14 +195,19 @@ export function QuickPromptToolbar({ binding }: { binding: QuickPromptToolbarBin
   const activate = useCallback((prompt: QuickPrompt) => select(prompt, prompt.mode), [select]);
   const prepareSelection = useCallback(
     (prompt: QuickPrompt, action: QuickPromptPickerAction) =>
-      binding.controller.guardSelection(() => select(prompt, action)),
+      action === "send"
+        ? binding.controller.guardSelection(() => select(prompt, action))
+        : () => select(prompt, action),
     [binding.controller, select],
   );
-  const sendDisabled = !ready || state.status === "sending";
+  const sendDisabled = state.status === "sending" || write.pending;
   const hiddenPins = pinned.length > presentation.visiblePinCount;
   const setMenuOpen = useCallback(
     (next: boolean) => {
-      if (next) binding.controller.cancel();
+      if (next) {
+        binding.controller.cancel();
+        binding.controller.dismiss();
+      }
       setOpen(next);
     },
     [binding.controller],
@@ -218,33 +239,50 @@ export function QuickPromptToolbar({ binding }: { binding: QuickPromptToolbarBin
   return (
     <View style={styles.owner} testID="quick-prompts-toolbar">
       <View style={[styles.cluster, touch && styles.clusterTouch]}>
-        {pinned.slice(0, presentation.visiblePinCount).map((prompt) => (
+        {pinned.slice(0, hasFeedback ? 0 : presentation.visiblePinCount).map((prompt) => (
           <PromptPill
             key={prompt.id}
             prompt={prompt}
             fontScale={controls.fontScale}
             touch={touch}
-            disabled={sendDisabled}
+            disabled={isQuickPromptActionDisabled(prompt.mode, write.pending, sendDisabled)}
             onActivate={activate}
           />
         ))}
         <MenuRoot open={open} onOpenChange={setMenuOpen} compactMode="sheet">
           <View style={styles.split}>
-            {showDefault ? (
-              <PromptPill
-                prompt={defaultPrompt}
-                fontScale={controls.fontScale}
-                touch={touch}
-                disabled={sendDisabled}
-                onActivate={activate}
-                onOpen={openPicker}
+            {hasFeedback ? (
+              <QuickPromptFeedback
+                state={state}
+                width={feedbackWidth}
+                undo={binding.controller.cancel}
+                retry={retry}
+                dismiss={binding.controller.dismiss}
+                sendNow={binding.controller.sendNow}
               />
-            ) : null}
-            <QuickPromptMenuTrigger
-              touch={touch}
-              labeled={presentation.showDefaultLabel}
-              hiddenPins={hiddenPins}
-            />
+            ) : (
+              <>
+                {showDefault ? (
+                  <PromptPill
+                    prompt={defaultPrompt}
+                    fontScale={controls.fontScale}
+                    touch={touch}
+                    disabled={isQuickPromptActionDisabled(
+                      defaultPrompt.mode,
+                      write.pending,
+                      sendDisabled,
+                    )}
+                    onActivate={activate}
+                    onOpen={openPicker}
+                  />
+                ) : null}
+                <QuickPromptMenuTrigger
+                  touch={touch}
+                  labeled={presentation.showDefaultLabel}
+                  hiddenPins={hiddenPins}
+                />
+              </>
+            )}
           </View>
           <MenuSurface side="top" align="end" width={380} sheetTitle={t("quickPrompts.section")}>
             {!catalog.loaded ? <MenuItem disabled>{t("quickPrompts.loading")}</MenuItem> : null}
@@ -262,6 +300,7 @@ export function QuickPromptToolbar({ binding }: { binding: QuickPromptToolbarBin
               />
             ))}
             <MenuSeparator />
+            <QuickPromptDefaultHint prompt={defaultPrompt} />
             <MenuItem disabled={editDisabled} onSelect={add}>
               {t("quickPrompts.add")}
             </MenuItem>
@@ -276,7 +315,6 @@ export function QuickPromptToolbar({ binding }: { binding: QuickPromptToolbarBin
           </MenuSurface>
         </MenuRoot>
       </View>
-      <QuickPromptFeedback state={state} undo={binding.controller.cancel} retry={retry} />
       {editing ? (
         <QuickPromptEditModal
           key={editing.id}
@@ -289,6 +327,11 @@ export function QuickPromptToolbar({ binding }: { binding: QuickPromptToolbarBin
       ) : null}
     </View>
   );
+}
+
+function QuickPromptDefaultHint({ prompt }: { prompt: QuickPrompt | undefined }) {
+  const { t } = useTranslation();
+  return prompt ? null : <MenuItem disabled>{t("quickPrompts.chooseDefault")}</MenuItem>;
 }
 
 function PromptPill({
@@ -310,7 +353,7 @@ function PromptPill({
   const press = useCallback(() => onActivate(prompt), [onActivate, prompt]);
   const label =
     prompt.mode === "insert"
-      ? t("quickPrompts.insert")
+      ? t("quickPrompts.insertNamed", { title: prompt.title })
       : t("quickPrompts.sendNamed", { title: prompt.title });
   return (
     <Button
@@ -330,7 +373,7 @@ function PromptPill({
       accessibilityLabel={label}
       testID={prompt.isDefault ? "quick-prompt-default" : `quick-prompt-pill-${prompt.id}`}
     >
-      {Array.from(prompt.title).slice(0, 14).join("")}
+      {prompt.title}
     </Button>
   );
 }
@@ -397,8 +440,8 @@ function QuickPromptPickerRow({
         variant="ghost"
         size="sm"
         leftIcon={CornerDownLeft}
-        disabled={disabled}
-        accessibilityLabel={t("quickPrompts.insert")}
+        disabled={writing}
+        accessibilityLabel={t("quickPrompts.insertNamed", { title: prompt.title })}
         onPress={insert}
         testID={`quick-prompt-insert-${prompt.id}`}
       />
@@ -418,7 +461,7 @@ function QuickPromptPickerRow({
         variant="ghost"
         size="sm"
         leftIcon={Bookmark}
-        disabled={disabled}
+        disabled={writing}
         accessibilityLabel={t("quickPrompts.default")}
         accessibilityState={defaultState}
         style={prompt.isDefault ? styles.selected : undefined}
@@ -433,31 +476,75 @@ function QuickPromptFeedback({
   state,
   undo,
   retry,
+  dismiss,
+  sendNow,
+  width,
 }: {
   state: QuickPromptSendState;
+  dismiss: () => void;
+  sendNow: () => void;
+  width: number;
   undo: () => void;
   retry: () => void;
 }) {
   const { t } = useTranslation();
   if (state.status === "idle") return null;
   let label = t("quickPrompts.cancelled");
+  if (state.status === "unavailable") label = t("quickPrompts.unavailable");
   if (state.status === "pending")
     label = `${t(actionKey[state.capture.action])} · ${state.capture.title}`;
   if (state.status === "sending") label = t("quickPrompts.sending");
   if (state.status === "failed") label = t("quickPrompts.failed");
   if (state.status === "accepted") label = t(feedbackKey[state.disposition]);
   return (
-    <View style={styles.feedback} accessibilityLiveRegion="polite" testID="quick-prompt-feedback">
-      <Text style={styles.feedbackText}>{label}</Text>
+    <View
+      style={[styles.feedback, { width: width - 2 }]}
+      accessibilityLiveRegion="polite"
+      testID="quick-prompt-feedback"
+    >
+      <Pressable
+        onPress={sendNow}
+        disabled={state.status !== "pending"}
+        style={styles.feedbackMain}
+        accessibilityRole={state.status === "pending" ? "button" : "text"}
+        accessibilityLabel={label}
+      >
+        <Text style={styles.feedbackText}>{label}</Text>
+      </Pressable>
       {state.status === "pending" ? (
-        <Button variant="ghost" size="sm" onPress={undo} testID="quick-prompt-undo">
+        <Button
+          variant="ghost"
+          size="sm"
+          style={styles.feedbackAction}
+          textStyle={styles.pillText}
+          onPress={undo}
+          testID="quick-prompt-undo"
+        >
           {t("quickPrompts.undo")}
         </Button>
       ) : null}
       {state.status === "failed" ? (
-        <Button variant="ghost" size="sm" onPress={retry} testID="quick-prompt-retry">
+        <Button
+          variant="ghost"
+          size="sm"
+          style={styles.feedbackAction}
+          textStyle={styles.pillText}
+          onPress={retry}
+          testID="quick-prompt-retry"
+        >
           {t("quickPrompts.retry")}
         </Button>
+      ) : null}
+      {state.status !== "pending" && state.status !== "sending" ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          style={styles.feedbackAction}
+          leftIcon={X}
+          onPress={dismiss}
+          accessibilityLabel={t("quickPrompts.dismiss")}
+          testID="quick-prompt-dismiss"
+        />
       ) : null}
     </View>
   );
@@ -517,18 +604,23 @@ const styles = StyleSheet.create((theme) => ({
     padding: theme.spacing[3],
   },
   feedback: {
-    position: "absolute",
-    bottom: "100%",
-    right: 0,
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
     backgroundColor: theme.colors.surface2,
     borderRadius: theme.borderRadius.md,
     borderWidth: 1,
     borderColor: theme.colors.borderAccent,
-    paddingHorizontal: theme.spacing[2],
+    paddingHorizontal: theme.spacing[1],
     minHeight: 44,
-    maxWidth: 300,
   },
+  feedbackAction: {
+    maxWidth: "100%",
+    minWidth: 44,
+    minHeight: 44,
+    paddingHorizontal: 4,
+    flexShrink: 1,
+  },
+  feedbackMain: { flexGrow: 1, flexShrink: 1, minHeight: 44, justifyContent: "center" },
   feedbackText: { color: theme.colors.foreground, fontSize: theme.fontSize.sm, flexShrink: 1 },
 }));
