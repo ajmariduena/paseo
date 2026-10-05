@@ -3,6 +3,7 @@ import type { ComboboxOption as ComboboxOptionType } from "@/components/ui/combo
 import { isWorkspaceArchivePending } from "@/contexts/session-workspace-upserts";
 import {
   filterWorkspaceProjectsForHost,
+  getHostProjectId,
   getHostProjectSourceDirectory,
   resolveInitialWorkspaceProject,
   type HostProjectListItem,
@@ -27,6 +28,7 @@ interface NewWorkspaceProjectPickerInput {
   routeProject: HostProjectListItem | null;
   routeProjectContextViewKey: string | null;
   lastActiveProject: HostProjectListItem | null;
+  rememberedProject?: HostProjectListItem | null;
   allowAllProjects: boolean;
   scratchProjectLabel?: string;
 }
@@ -103,6 +105,7 @@ export function useNewWorkspaceProjectPicker({
   routeProject,
   routeProjectContextViewKey,
   lastActiveProject: lastActiveProjectInput,
+  rememberedProject = null,
   allowAllProjects,
   scratchProjectLabel = "No project",
 }: NewWorkspaceProjectPickerInput): NewWorkspaceProjectPickerState {
@@ -115,9 +118,13 @@ export function useNewWorkspaceProjectPicker({
     () => selectableProjects.find(isScratchStructureProject) ?? null,
     [selectableProjects],
   );
-  // Opening New workspace without a project in the route starts in "No project"; the
-  // last-used project is not remembered when the host can offer that instead.
-  const lastActiveProject = scratchProject ?? lastActiveProjectInput;
+  // Without a route project, the project last used in New workspace wins over
+  // "No project", which wins over the last opened workspace's project.
+  const usableRememberedProject =
+    rememberedProject && getHostProjectId(rememberedProject, selectedServerId)
+      ? rememberedProject
+      : null;
+  const lastActiveProject = usableRememberedProject ?? scratchProject ?? lastActiveProjectInput;
   const initialProject = useMemo(
     () =>
       resolveInitialWorkspaceProject({

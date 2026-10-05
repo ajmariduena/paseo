@@ -73,6 +73,10 @@ import {
 import { useKeyboardActionHandler } from "@/hooks/use-keyboard-action-handler";
 import type { KeyboardActionId } from "@/keyboard/keyboard-action-dispatcher";
 import { useFormPreferences } from "@/hooks/use-form-preferences";
+import type {
+  FormPreferences,
+  RememberedWorkspaceProject,
+} from "@/create-agent-preferences/preferences";
 import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
 import type { CreateAgentInitialValues } from "@/hooks/use-agent-form-state";
 import { toErrorMessage } from "@/utils/error-messages";
@@ -103,6 +107,7 @@ import {
   remapDraftCwdToWorkspace,
 } from "./new-workspace-fork-context";
 import {
+  branchNameFromRef,
   buildPickerOptionData,
   defaultBasePickerItem,
   pickerItemLabel,
@@ -123,6 +128,13 @@ import {
   resolveNewWorkspaceInitialServerId,
 } from "./new-workspace-initial-context";
 import { buildNewWorkspaceProjectIconTargets } from "./new-workspace/project-icon-targets";
+import {
+  rememberNewWorkspaceSelection,
+  rememberedBaseBranchItem,
+  rememberedProjectKey,
+  resolveRememberedProject,
+  toRememberedProject,
+} from "./new-workspace/remembered-selection";
 import { useNewWorkspaceProjectPicker } from "./new-workspace/project-picker";
 import { ImportSessionButton } from "./new-workspace/import-session-button";
 import { useImportSession } from "@/hooks/use-import-session";
@@ -875,6 +887,57 @@ function normalizeBranchDetails(
   return names.map((name) => ({ name, committerDate: 0 }));
 }
 
+// A remembered base is only offered once the daemon confirms the ref still
+// exists; a deleted branch would otherwise fail worktree creation.
+function useRememberedBaseBranch(input: {
+  baseBranchByProject: FormPreferences["baseBranchByProject"];
+  selectedProject: HostProjectListItem | null;
+  selectedServerId: string;
+  selectedSourceDirectory: string | null;
+  clientReady: boolean;
+  showRefPicker: boolean;
+  hasPickedBase: boolean;
+  withConnectedClient: () => DaemonClient;
+}): {
+  rememberedSelectionProject: RememberedWorkspaceProject | null;
+  rememberedBaseItem: PickerItem | null;
+} {
+  const { selectedProject, selectedServerId, selectedSourceDirectory, withConnectedClient } = input;
+  const rememberedSelectionProject = useMemo(
+    () => toRememberedProject(selectedProject, selectedServerId),
+    [selectedProject, selectedServerId],
+  );
+  const remembered = rememberedSelectionProject
+    ? input.baseBranchByProject?.[rememberedProjectKey(rememberedSelectionProject)]
+    : undefined;
+  const branchQuery = remembered ? branchNameFromRef(remembered.refName) : "";
+  const { data } = useQuery({
+    queryKey: ["branch-suggestions", selectedServerId, selectedSourceDirectory, branchQuery],
+    queryFn: async () => {
+      if (!selectedSourceDirectory) {
+        throw new Error("Choose a project");
+      }
+      return withConnectedClient().getBranchSuggestions({
+        cwd: selectedSourceDirectory,
+        query: branchQuery,
+        limit: 20,
+      });
+    },
+    enabled:
+      input.clientReady &&
+      input.showRefPicker &&
+      !input.hasPickedBase &&
+      selectedSourceDirectory !== null &&
+      branchQuery !== "",
+    staleTime: 15_000,
+  });
+  const rememberedBaseItem = useMemo(
+    () => rememberedBaseBranchItem({ remembered, branchDetails: normalizeBranchDetails(data) }),
+    [data, remembered],
+  );
+  return { rememberedSelectionProject, rememberedBaseItem };
+}
+
 /**
  * "background" means the user left the New workspace screen mid-creation, so nothing navigated
  * and the screen — if still mounted under another route — has to drop its pending state itself.
@@ -1421,6 +1484,7 @@ interface NewWorkspaceInitialContextState {
   routeProject: HostProjectListItem | null;
   routeProjectContextViewKey: string | null;
   lastActiveProject: HostProjectListItem | null;
+  rememberedProject: HostProjectListItem | null;
 }
 
 function useNewWorkspaceInitialContext({
@@ -1470,6 +1534,16 @@ function useNewWorkspaceInitialContext({
         : null,
     [lastWorkspace, lastWorkspaceServerId],
   );
+  const { preferences } = useFormPreferences();
+  const rememberedProject = useMemo(
+    () =>
+      resolveRememberedProject({
+        remembered: preferences.lastWorkspaceProject,
+        projects,
+        allServerIds,
+      }),
+    [allServerIds, preferences.lastWorkspaceProject, projects],
+  );
   const hostConnectionStatusByServerId = useHostRuntimeConnectionStatuses(allServerIds);
   const workspaceMultiplicityByServerId = useHostFeatureMap(allServerIds, "workspaceMultiplicity");
   const {
@@ -1482,7 +1556,7 @@ function useNewWorkspaceInitialContext({
     initialServerId: serverId,
     allServerIds,
     projects,
-    lastActiveProject,
+    lastActiveProject: rememberedProject ?? lastActiveProject,
     hostConnectionStatusByServerId,
     workspaceMultiplicityByServerId,
   });
@@ -1498,6 +1572,7 @@ function useNewWorkspaceInitialContext({
     routeProject,
     routeProjectContextViewKey: routePlacement?.viewKey ?? null,
     lastActiveProject,
+    rememberedProject,
   };
 }
 
@@ -1793,6 +1868,7 @@ export function NewWorkspaceScreen({
     routeProject,
     routeProjectContextViewKey,
     lastActiveProject,
+    rememberedProject,
   } = useNewWorkspaceInitialContext({
     serverId,
     sourceDirectory: sourceDirectoryProp,
@@ -1892,6 +1968,7 @@ export function NewWorkspaceScreen({
     routeProject,
     routeProjectContextViewKey,
     lastActiveProject,
+    rememberedProject,
     allowAllProjects: supportsWorkspaceMultiplicity,
     scratchProjectLabel: t("newWorkspace.fields.noProject"),
   });
@@ -1986,6 +2063,17 @@ export function NewWorkspaceScreen({
     staleTime: 15_000,
   });
 
+  const { rememberedSelectionProject, rememberedBaseItem } = useRememberedBaseBranch({
+    baseBranchByProject: formPreferences.baseBranchByProject,
+    selectedProject,
+    selectedServerId,
+    selectedSourceDirectory,
+    clientReady,
+    showRefPicker,
+    hasPickedBase: selectedItem !== null,
+    withConnectedClient,
+  });
+
   const githubPrSearchQuery = useForgeSearchQuery({
     client,
     serverId: selectedServerId,
@@ -2008,8 +2096,11 @@ export function NewWorkspaceScreen({
   }, [forgeSearchAuthenticated, githubPrSearchQuery.data?.items]);
 
   const baseItem = useMemo(
-    () => selectedItem ?? (checkoutStatus ? defaultBasePickerItem(checkoutStatus) : null),
-    [checkoutStatus, selectedItem],
+    () =>
+      selectedItem ??
+      rememberedBaseItem ??
+      (checkoutStatus ? defaultBasePickerItem(checkoutStatus) : null),
+    [checkoutStatus, rememberedBaseItem, selectedItem],
   );
   const { options, itemById, selectedOptionId }: PickerOptionData = useMemo(
     () =>
@@ -2211,7 +2302,7 @@ export function NewWorkspaceScreen({
         : null;
       const checkoutRequest = checkoutStatusForCreate
         ? pickerItemToCheckoutRequest(
-            selectedItem ?? defaultBasePickerItem(checkoutStatusForCreate),
+            selectedItem ?? rememberedBaseItem ?? defaultBasePickerItem(checkoutStatusForCreate),
           )
         : undefined;
       const normalizedWorkspace = await createMultiplicityWorkspace({
@@ -2232,6 +2323,15 @@ export function NewWorkspaceScreen({
         createFailedMessage: t("newWorkspace.errors.createWorktreeFailed"),
       });
       setCreationResult(normalizedWorkspace);
+      void updateFormPreferences((current) =>
+        rememberNewWorkspaceSelection({
+          preferences: current,
+          project: rememberedSelectionProject,
+          baseItem: checkoutStatusForCreate
+            ? (selectedItem ?? rememberedBaseItem ?? defaultBasePickerItem(checkoutStatusForCreate))
+            : null,
+        }),
+      );
       return normalizedWorkspace;
     },
     [
@@ -2240,12 +2340,15 @@ export function NewWorkspaceScreen({
       effectiveIsolation,
       mergeWorkspaces,
       queryClient,
+      rememberedBaseItem,
+      rememberedSelectionProject,
       selectedItem,
       selectedProject,
       selectedServerId,
       selectedSourceDirectory,
       supportsWorkspaceMultiplicity,
       t,
+      updateFormPreferences,
       withConnectedClient,
     ],
   );

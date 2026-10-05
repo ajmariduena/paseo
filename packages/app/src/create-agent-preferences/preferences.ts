@@ -12,12 +12,23 @@ export interface ProviderPreferences {
 
 export type LaunchTarget = { kind: "chat" } | { kind: "terminal"; profileId: string };
 
+export interface RememberedWorkspaceProject {
+  serverId: string;
+  projectId: string;
+}
+
+export interface RememberedBaseBranch {
+  refName: string;
+}
+
 export interface FormPreferences {
   provider?: string;
   providerPreferences?: Record<string, ProviderPreferences>;
   favoriteModels?: Array<{ provider: string; modelId: string }>;
   isolation?: "local" | "worktree";
   launchTarget?: LaunchTarget;
+  lastWorkspaceProject?: RememberedWorkspaceProject;
+  baseBranchByProject?: Record<string, RememberedBaseBranch>;
 }
 
 const providerPreferencesSchema: z.ZodType<ProviderPreferences> = z.strictObject({
@@ -50,6 +61,9 @@ export const FormPreferencesSchema = z.strictObject({
   // What the New workspace composer submits to: the chat agent (default) or a
   // terminal profile. See `@/new-workspace-launch` for resolution/fallback.
   launchTarget: launchTargetSchema.optional(),
+  lastWorkspaceProject: z.strictObject({ serverId: z.string(), projectId: z.string() }).optional(),
+  // Keyed by `serverId:projectId`.
+  baseBranchByProject: z.record(z.string(), z.strictObject({ refName: z.string() })).optional(),
 }) satisfies z.ZodType<FormPreferences>;
 
 const LegacyProviderPreferencesSchema = z.strictObject({
