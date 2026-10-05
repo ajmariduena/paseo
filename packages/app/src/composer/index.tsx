@@ -1,3 +1,6 @@
+import { QuickPromptCapacityProvider } from "@/quick-prompts/capacity";
+import { useDeferredQuickPromptSend } from "@/quick-prompts/use-deferred-send";
+import { QuickPromptToolbarSlot, type QuickPromptToolbarBinding } from "@/quick-prompts/toolbar";
 import type { ComposerTextSource } from "./text-source";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import { useStore } from "zustand";
@@ -46,6 +49,8 @@ import * as Clipboard from "expo-clipboard";
 import { FOOTER_HEIGHT } from "@/constants/layout";
 import {
   AgentControls,
+  AgentControlsEnd,
+  AgentControlsStart,
   DraftAgentControls,
   type DraftAgentControlsProps,
 } from "@/composer/agent-controls";
@@ -333,20 +338,37 @@ function resolveContextWindowPlacement(
   return reserveSlot ? <View style={styles.contextWindowMeterSlot}>{meter}</View> : null;
 }
 
-interface RenderLeftContentArgs {
+interface AgentControlsHostProps {
   agentControls: DraftAgentControlsProps | undefined;
   agentId: string;
   serverId: string;
   focusInput: () => void;
   isCompactLayout: boolean;
   showAgentControls: boolean;
+  children: ReactNode;
 }
 
-function renderLeftContent(args: RenderLeftContentArgs): ReactElement | null {
-  const { agentControls, agentId, serverId, focusInput, isCompactLayout } = args;
-  if (!args.showAgentControls) return null;
+/**
+ * Owns the agent controls' state above the message input, so the permission mode can start the
+ * toolbar row while the model · effort pill ends it. The two clusters render through
+ * `AgentControlsStart` and `AgentControlsEnd` inside the input's toolbar.
+ */
+function AgentControlsHost({
+  agentControls,
+  agentId,
+  serverId,
+  focusInput,
+  isCompactLayout,
+  showAgentControls,
+  children,
+}: AgentControlsHostProps): ReactNode {
+  if (!showAgentControls) return children;
   if (resolveAgentControlsMode(agentControls) === "draft" && agentControls) {
-    return <DraftAgentControls {...agentControls} isCompactLayout={isCompactLayout} />;
+    return (
+      <DraftAgentControls {...agentControls} isCompactLayout={isCompactLayout}>
+        {children}
+      </DraftAgentControls>
+    );
   }
   return (
     <AgentControls
@@ -354,9 +376,14 @@ function renderLeftContent(args: RenderLeftContentArgs): ReactElement | null {
       serverId={serverId}
       onDropdownClose={focusInput}
       isCompactLayout={isCompactLayout}
-    />
+    >
+      {children}
+    </AgentControls>
   );
 }
+
+const AGENT_CONTROLS_START = <AgentControlsStart />;
+const AGENT_CONTROLS_END = <AgentControlsEnd />;
 
 interface PendingFileAttachment {
   id: number;
@@ -1295,11 +1322,13 @@ function ComposerVoiceModeButton({
 
 export function Composer({ isPaneFocused, ...props }: ComposerProps) {
   return (
-    <ComposerKeyboardScopeProvider isActiveComposer={isPaneFocused}>
-      <RenderProfile id="ComposerContent">
-        <ComposerContent {...props} />
-      </RenderProfile>
-    </ComposerKeyboardScopeProvider>
+    <QuickPromptCapacityProvider>
+      <ComposerKeyboardScopeProvider isActiveComposer={isPaneFocused}>
+        <RenderProfile id="ComposerContent">
+          <ComposerContent {...props} />
+        </RenderProfile>
+      </ComposerKeyboardScopeProvider>
+    </QuickPromptCapacityProvider>
   );
 }
 
@@ -1694,6 +1723,109 @@ function ComposerContentImpl({
   );
   const hasAgent = agentState.status !== null;
 
+  const quickPromptSend = useDeferredQuickPromptSend({
+    readContext: () => {
+      const session = useSessionStore.getState().sessions[serverId];
+      const target = session?.agents?.get(agentId);
+      const permissions = [...(session?.pendingPermissions?.entries() ?? [])]
+        .filter(([, permission]) => permission.agentId === agentId)
+        .map(([id]) => id)
+        .sort();
+      const running = selectAgentTurnPresentation(session, agentId).isActive;
+      const action = resolveActiveSendBehavior(appSettings.sendBehavior, permissions.length > 0);
+      return {
+        host: serverId,
+        agent: agentId,
+        conversation: `${workspaceId}:${agentId}:${autoFocusKey ?? ""}`,
+        connected:
+          getHostRuntimeStore().getSnapshot(serverId)?.connectionStatus === "online" &&
+          Boolean(client?.isConnected),
+        available:
+          Boolean(target) &&
+          !readOnly &&
+          !isSubmitLoading &&
+          !isProcessing &&
+          !onSubmitMessage &&
+          inputMode === "chat",
+        policy: JSON.stringify([
+          appSettings.sendBehavior,
+          target?.currentModeId,
+          permissions,
+          target?.provider,
+          target?.model,
+        ]),
+        action: running ? action : "send",
+      };
+    },
+    dispatch: async (capture) => {
+      if (!client || capture.context.host !== serverId || capture.context.agent !== agentId) {
+        throw new Error(t("quickPrompts.unavailable"));
+      }
+      const input = {
+        client,
+        agentId: capture.context.agent,
+        text: capture.text,
+        attachments: buildOutgoingAttachments([]),
+        attachmentSubmitFormat: resolveComposerAttachmentSubmitFormat({
+          supportsForgeAttachments: supportsForgeSearch,
+        }),
+        encodeImages,
+      };
+      onMessageSent?.();
+      const disposition =
+        capture.action === "queue"
+          ? await enqueueComposerAgentMessage(input)
+          : await dispatchComposerAgentMessage({
+              ...input,
+              submission: createMessageSubmissionWriter(capture.context.host),
+              activeTurnBehavior: capture.action === "send" ? "steer" : capture.action,
+              activeTurnId:
+                selectAgentTurnPresentation(
+                  useSessionStore.getState().sessions[serverId],
+                  capture.context.agent,
+                ).turnId ?? undefined,
+            });
+      onAttentionPromptSend?.();
+      return disposition;
+    },
+  });
+  const quickPromptBinding = useMemo<QuickPromptToolbarBinding>(
+    () => ({
+      ...quickPromptSend,
+      serverId,
+      available:
+        hasAgent &&
+        !readOnly &&
+        !isSubmitLoading &&
+        !isProcessing &&
+        !onSubmitMessage &&
+        inputMode === "chat",
+      getDraft: () => messageInputRef.current?.getText() ?? textSource.getSnapshot(),
+      insert: (text) => {
+        const snapshot = messageInputRef.current?.getInputSnapshot();
+        const current = snapshot?.text ?? textSource.getSnapshot();
+        const start = snapshot?.selection.start ?? current.length;
+        const end = snapshot?.selection.end ?? current.length;
+        const next = current.slice(0, start) + text + current.slice(end);
+        const insertedEnd = start + text.length;
+        replaceUserInput(next, { start: insertedEnd, end: insertedEnd });
+        messageInputRef.current?.focus();
+      },
+    }),
+    [
+      quickPromptSend,
+      serverId,
+      hasAgent,
+      readOnly,
+      isSubmitLoading,
+      isProcessing,
+      onSubmitMessage,
+      inputMode,
+      textSource,
+      replaceUserInput,
+    ],
+  );
+
   const queueWriter = useMemo<QueueWriter>(
     () => ({
       read: (id) => useSessionStore.getState().sessions[serverId]?.queuedMessages?.get(id) ?? [],
@@ -1723,6 +1855,7 @@ function ComposerContentImpl({
 
   const queueMessage = useCallback(
     (queuedMessage: string, queuedAttachments: ComposerAttachment[]) => {
+      quickPromptSend.controller.cancel();
       const text = queuedMessage.trim();
       if (!text && queuedAttachments.length === 0) return;
       // COMPAT(serverMessageQueue): the client-side queue serves daemons without the server
@@ -1755,6 +1888,7 @@ function ComposerContentImpl({
     },
     [
       agentId,
+      quickPromptSend,
       clearSentAttachments,
       enqueueOnServer,
       queueWriter,
@@ -1825,6 +1959,7 @@ function ComposerContentImpl({
 
   const handleSubmit = useCallback(
     (payload: MessagePayload) => {
+      quickPromptSend.controller.cancel();
       const outgoingAttachments = buildOutgoingAttachments(attachments);
       const clientSlashCommand = resolveClientSlashCommand({
         text: payload.text,
@@ -1852,6 +1987,7 @@ function ComposerContentImpl({
     },
     [
       attachments,
+      quickPromptSend,
       blurOnSubmit,
       buildOutgoingAttachments,
       runClientSlashCommand,
@@ -2110,6 +2246,7 @@ function ComposerContentImpl({
 
   const handleQueue = useCallback(
     (payload: MessagePayload) => {
+      quickPromptSend.controller.cancel();
       const outgoingAttachments = buildOutgoingAttachments(attachments);
       const clientSlashCommand = resolveClientSlashCommand({
         text: payload.text,
@@ -2130,6 +2267,7 @@ function ComposerContentImpl({
       attachments,
       buildOutgoingAttachments,
       pluginClientSlashCommands,
+      quickPromptSend,
       queueMessage,
       runClientSlashCommand,
       runPluginClientSlashCommand,
@@ -2270,9 +2408,20 @@ function ComposerContentImpl({
       contextWindowMeterGlyphSize,
     ],
   );
+  // Keep the one quick-prompt insertion after the model pill and before the mic.
   const beforeVoiceContent = useMemo(
-    () => <>{resolveContextWindowPlacement(contextWindowMeter, hasAgent)}</>,
-    [contextWindowMeter, hasAgent],
+    () => (
+      <>
+        {resolveContextWindowPlacement(contextWindowMeter, hasAgent)}
+        {AGENT_CONTROLS_END}
+        <QuickPromptToolbarSlot
+          binding={
+            hasAgent && inputMode === "chat" && !onSubmitMessage ? quickPromptBinding : undefined
+          }
+        />
+      </>
+    ),
+    [contextWindowMeter, hasAgent, inputMode, onSubmitMessage, quickPromptBinding],
   );
 
   const hasGithubAttachment = useMemo(
@@ -2389,19 +2538,6 @@ function ComposerContentImpl({
       setGithubSearchQuery("");
     },
     [attachments, setSelectedAttachments, setGithubSearchQuery, setIsGithubPickerOpen],
-  );
-
-  const leftContent = useMemo(
-    () =>
-      renderLeftContent({
-        agentControls,
-        agentId,
-        serverId,
-        focusInput,
-        isCompactLayout,
-        showAgentControls: mode.showAgentControls,
-      }),
-    [agentControls, agentId, focusInput, isCompactLayout, mode.showAgentControls, serverId],
   );
 
   const handleAttachButtonRef = useCallback((node: View | null) => {
@@ -2583,7 +2719,14 @@ function ComposerContentImpl({
     : t("composer.github.noResults");
 
   return (
-    <>
+    <AgentControlsHost
+      agentControls={agentControls}
+      agentId={agentId}
+      serverId={serverId}
+      focusInput={focusInput}
+      isCompactLayout={isCompactLayout}
+      showAgentControls={mode.showAgentControls}
+    >
       <ComposerKeyboardRegistration
         handlerId={keyboardHandlerIdRef.current}
         messageInputRef={messageInputRef}
@@ -2647,7 +2790,7 @@ function ComposerContentImpl({
                   autoFocus={messageInputAutoFocus}
                   autoFocusKey={`${serverId}:${agentId}:${autoFocusKey ?? ""}`}
                   disabled={isSubmitLoading}
-                  leftContent={leftContent}
+                  leftContent={AGENT_CONTROLS_START}
                   beforeVoiceContent={beforeVoiceContent}
                   rightContent={rightContent}
                   activeActionContent={activeActionContent}
@@ -2694,7 +2837,7 @@ function ComposerContentImpl({
           </View>
         </View>
       </View>
-    </>
+    </AgentControlsHost>
   );
 }
 

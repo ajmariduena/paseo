@@ -1,3 +1,4 @@
+import { QuickPromptsSection } from "@/quick-prompts/settings-section";
 import {
   ArrowDown,
   ArrowUp,
@@ -302,6 +303,7 @@ export function HostAgentsPage({ serverId }: { serverId: string }) {
       {isConnected ? <RestartContinuationSection serverId={serverId} /> : null}
       <AgentSkillsSection serverId={serverId} />
       <AgentProfilesSection serverId={serverId} />
+      <QuickPromptsSection key={serverId} serverId={serverId} />
     </View>
   );
 }

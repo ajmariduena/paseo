@@ -13,19 +13,19 @@ async function openMockAgentAtMobileBreakpoint(page: Page) {
   });
   await openAgentRoute(page, session);
   await expectComposerVisible(page);
-  await expect(page.getByRole("button", { name: /Select model/ })).toBeVisible({
+  await expect(page.getByTestId("combined-model-selector")).toBeVisible({
     timeout: 30_000,
   });
   return session;
 }
 
 async function openProviderSettingsFromModelSelector(page: Page) {
-  await page.getByRole("button", { name: /Select model/ }).click();
-  const configuration = page.getByTestId("agent-controls-model-sheet");
+  await page.getByTestId("combined-model-selector").click();
+  const configuration = page.getByTestId("agent-effort-card");
   await expect(configuration).toBeVisible({ timeout: 10_000 });
-  await page.getByTestId("agent-controls-model").click();
+  await page.getByTestId("agent-effort-model").click();
 
-  const modelBrowser = page.getByTestId("agent-controls-model-browser-sheet");
+  const modelBrowser = page.getByTestId("agent-model-browser");
   await expect(modelBrowser).toBeVisible({ timeout: 10_000 });
 
   await page.getByRole("button", { name: /Open .* settings/ }).click();
@@ -33,7 +33,7 @@ async function openProviderSettingsFromModelSelector(page: Page) {
 }
 
 async function expectModelBrowserVisible(page: Page) {
-  await expect(page.getByTestId("agent-controls-model-browser-sheet")).toBeVisible({
+  await expect(page.getByTestId("agent-model-browser")).toBeVisible({
     timeout: 10_000,
   });
   await expect(page.getByRole("button", { name: /Open .* settings/ })).toBeVisible();
@@ -150,7 +150,8 @@ test.describe("provider settings overlay stack", () => {
       await openAgentRoute(page, session);
       await expectComposerVisible(page);
 
-      await page.getByRole("button", { name: /Select model/ }).click();
+      await page.getByTestId("combined-model-selector").click();
+      await page.getByTestId("agent-effort-model").click();
       const selector = page.getByTestId("combobox-desktop-container");
       await expect(selector).toBeVisible({ timeout: 10_000 });
       const searchInput = page.getByRole("textbox", { name: /search models/i });
@@ -220,11 +221,10 @@ test.describe("provider settings overlay stack", () => {
 
       await expectModelBrowserVisible(page);
       await closeTopSheet(page);
-      await expect(page.getByTestId("agent-controls-model-browser-sheet")).not.toBeVisible({
+      await expect(page.getByTestId("agent-model-browser")).not.toBeVisible({
         timeout: 10_000,
       });
-      await expect(page.getByTestId("agent-controls-settings-list")).toBeVisible();
-      await closeTopSheet(page);
+      await expect(page.getByTestId("agent-effort-card")).not.toBeVisible();
     } finally {
       await session.cleanup();
     }

@@ -554,6 +554,8 @@ function resolveProfileLists(persisted: ReturnType<typeof loadPersistedConfig>) 
   return {
     terminalProfiles: persisted.daemon?.terminalProfiles,
     agentProfiles: persisted.daemon?.agentProfiles,
+    quickPrompts: persisted.daemon?.quickPrompts,
+    quickPromptUndoMs: persisted.daemon?.quickPromptUndoMs,
   };
 }
 
@@ -612,6 +614,8 @@ export function resolveConfigFromPersisted(
     appendSystemPrompt,
     terminalProfiles,
     agentProfiles,
+    quickPrompts,
+    quickPromptUndoMs,
     hostnames,
     trustedProxies,
     appBaseUrl,
@@ -658,6 +662,8 @@ export function resolveConfigFromPersisted(
     appendSystemPrompt,
     terminalProfiles,
     agentProfiles,
+    quickPrompts,
+    quickPromptUndoMs,
     skillSelection: persisted.agents?.skills?.selection,
     pluginsEnabled: persisted.pluginsEnabled ?? false,
     plugins: persisted.plugins,

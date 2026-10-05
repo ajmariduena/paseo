@@ -1,21 +1,39 @@
 import { touchTargetOutset } from "@/components/ui/control-geometry";
 
-export type ComposerControlDensity = "full" | "condensed" | "tight";
+export const COMPOSER_CONTROL_DENSITIES = [
+  "full",
+  "no-effort",
+  "no-mode",
+  "condensed",
+  "tight",
+] as const;
+export type ComposerControlDensity = (typeof COMPOSER_CONTROL_DENSITIES)[number];
 
 export interface ComposerControlPresence {
   hasModel: boolean;
-  hasThinking: boolean;
+  /** The model has an effort scale, so the pill carries an effort suffix. */
+  hasEffort: boolean;
   hasMode: boolean;
   features: readonly ComposerFeatureControlPresence[];
   fontScale: number;
+  /** Labels the pill estimates its width from. */
+  modelLabel: string;
+  effortLabel: string;
+  modeLabel: string;
 }
 
 export type ComposerFeatureControlPresence = { type: "toggle" } | { type: "select"; label: string };
 
+/**
+ * What each density keeps. The order controls give things up in, as the toolbar narrows:
+ * effort suffix → mode label → carets → model label. The provider glyph and every control's
+ * hit target stay at every density.
+ */
 export interface ComposerControlPresentation {
   showCarets: boolean;
-  showThinkingLabel: boolean;
+  showEffortSuffix: boolean;
   showModeLabel: boolean;
+  showModelLabel: boolean;
   aggregateFeatures: boolean;
 }
 
@@ -39,6 +57,7 @@ export const COMPOSER_TOOLBAR_TOUCH_HIT_SLOP = {
 } as const;
 
 const DENSITY_HYSTERESIS = 12;
+const LABEL_CHAR_WIDTH = 7;
 
 function normalizedFontScale(fontScale: number): number {
   return Number.isFinite(fontScale) ? Math.max(1, fontScale) : 1;
@@ -50,14 +69,15 @@ function sumControlWidths(widths: number[], controlGap: number): number {
 }
 
 function estimateLabelWidth(label: string, fontScale: number): number {
-  return Array.from(label).length * 7 * fontScale;
+  return Array.from(label).length * LABEL_CHAR_WIDTH * fontScale;
 }
 
 function resolveFeatureControlWidth(
   feature: ComposerFeatureControlPresence,
   fontScale: number,
+  aggregate: boolean,
 ): number {
-  if (feature.type === "toggle") return COMPOSER_TOOLBAR_GEOMETRY.controlSize;
+  if (feature.type === "toggle" || aggregate) return COMPOSER_TOOLBAR_GEOMETRY.controlSize;
   return (
     COMPOSER_TOOLBAR_GEOMETRY.controlSize +
     COMPOSER_TOOLBAR_GEOMETRY.iconLabelGap +
@@ -66,25 +86,61 @@ function resolveFeatureControlWidth(
   );
 }
 
-function resolveCondensedFloor(controls: ComposerControlPresence, controlGap: number): number {
+/** The model · effort pill: glyph, then whatever labels the presentation keeps, then a caret. */
+export function estimateModelPillWidth(
+  controls: Pick<ComposerControlPresence, "hasEffort" | "fontScale" | "modelLabel" | "effortLabel">,
+  presentation: Pick<
+    ComposerControlPresentation,
+    "showCarets" | "showEffortSuffix" | "showModelLabel"
+  >,
+): number {
   const fontScale = normalizedFontScale(controls.fontScale);
-  const widths: number[] = [];
-  if (controls.hasModel) widths.push(36 + 60 * fontScale);
-  if (controls.hasThinking) widths.push(COMPOSER_TOOLBAR_GEOMETRY.controlSize);
-  if (controls.hasMode) widths.push(36 + 96 * fontScale);
-  if (controls.features.length > 0) widths.push(COMPOSER_TOOLBAR_GEOMETRY.controlSize);
-  return sumControlWidths(widths, controlGap);
+  const { controlSize, iconLabelGap, labelPadding, caretSize } = COMPOSER_TOOLBAR_GEOMETRY;
+  let width = controlSize;
+  if (presentation.showModelLabel) {
+    width += iconLabelGap + estimateLabelWidth(controls.modelLabel, fontScale) + labelPadding;
+  }
+  if (controls.hasEffort && presentation.showEffortSuffix) {
+    width += iconLabelGap + estimateLabelWidth(controls.effortLabel, fontScale);
+  }
+  if (presentation.showCarets) {
+    width += iconLabelGap + caretSize;
+  }
+  return width;
 }
 
-function resolveFullFloor(controls: ComposerControlPresence, controlGap: number): number {
+function estimateModeWidth(
+  controls: Pick<ComposerControlPresence, "fontScale" | "modeLabel">,
+  showLabel: boolean,
+): number {
+  if (!showLabel) return COMPOSER_TOOLBAR_GEOMETRY.controlSize;
+  const fontScale = normalizedFontScale(controls.fontScale);
+  return (
+    COMPOSER_TOOLBAR_GEOMETRY.controlSize +
+    COMPOSER_TOOLBAR_GEOMETRY.iconLabelGap +
+    estimateLabelWidth(controls.modeLabel, fontScale) +
+    COMPOSER_TOOLBAR_GEOMETRY.labelPadding
+  );
+}
+
+/** Total width the controls need at a density, across both toolbar clusters. */
+export function estimateComposerControlsWidth(
+  controls: ComposerControlPresence,
+  density: ComposerControlDensity,
+  controlGap: number,
+): number {
+  const presentation = resolveComposerControlPresentation(density);
   const fontScale = normalizedFontScale(controls.fontScale);
   const widths: number[] = [];
-  if (controls.hasModel) widths.push(50 + 70 * fontScale);
-  if (controls.hasThinking) widths.push(54 + 48 * fontScale);
-  if (controls.hasMode) widths.push(54 + 96 * fontScale);
-  for (const feature of controls.features) {
-    widths.push(resolveFeatureControlWidth(feature, fontScale));
+  if (controls.hasMode) widths.push(estimateModeWidth(controls, presentation.showModeLabel));
+  if (presentation.aggregateFeatures) {
+    if (controls.features.length > 0) widths.push(COMPOSER_TOOLBAR_GEOMETRY.controlSize);
+  } else {
+    for (const feature of controls.features) {
+      widths.push(resolveFeatureControlWidth(feature, fontScale, false));
+    }
   }
+  if (controls.hasModel) widths.push(estimateModelPillWidth(controls, presentation));
   return sumControlWidths(widths, controlGap);
 }
 
@@ -94,52 +150,137 @@ export function resolveComposerControlDensity(input: {
   controls: ComposerControlPresence;
   controlGap: number;
 }): ComposerControlDensity {
-  const fullFloor = resolveFullFloor(input.controls, input.controlGap);
-  const condensedFloor = resolveCondensedFloor(input.controls, input.controlGap);
+  return resolveDensityWithHysteresis(input.availableWidth, input.currentDensity, (density) =>
+    estimateComposerControlsWidth(input.controls, density, input.controlGap),
+  );
+}
 
-  if (input.currentDensity === "full") {
-    if (input.availableWidth >= fullFloor - DENSITY_HYSTERESIS) return "full";
-    return input.availableWidth >= condensedFloor ? "condensed" : "tight";
+function resolveDensityWithHysteresis(
+  availableWidth: number,
+  current: ComposerControlDensity | undefined,
+  floor: (density: ComposerControlDensity) => number,
+): ComposerControlDensity {
+  const currentIndex = current === undefined ? -1 : COMPOSER_CONTROL_DENSITIES.indexOf(current);
+  for (const [index, density] of COMPOSER_CONTROL_DENSITIES.entries()) {
+    let threshold = floor(density);
+    if (currentIndex >= 0 && index < currentIndex) threshold += DENSITY_HYSTERESIS;
+    if (index === currentIndex) threshold -= DENSITY_HYSTERESIS;
+    if (availableWidth >= threshold) return density;
   }
-
-  if (input.currentDensity === "condensed") {
-    if (input.availableWidth >= fullFloor + DENSITY_HYSTERESIS) return "full";
-    if (input.availableWidth < condensedFloor - DENSITY_HYSTERESIS) return "tight";
-    return "condensed";
-  }
-
-  if (input.availableWidth >= fullFloor + DENSITY_HYSTERESIS) return "full";
-  if (input.availableWidth >= condensedFloor + DENSITY_HYSTERESIS) return "condensed";
   return "tight";
 }
 
 export function resolveComposerControlPresentation(
   density: ComposerControlDensity,
 ): ComposerControlPresentation {
-  if (density === "full") {
-    return {
-      showCarets: true,
-      showThinkingLabel: true,
-      showModeLabel: true,
-      aggregateFeatures: false,
-    };
-  }
-  if (density === "condensed") {
-    return {
-      showCarets: false,
-      showThinkingLabel: false,
-      showModeLabel: true,
-      aggregateFeatures: true,
-    };
-  }
   return {
-    showCarets: false,
-    showThinkingLabel: false,
-    showModeLabel: false,
-    aggregateFeatures: true,
+    showEffortSuffix: density === "full",
+    showModeLabel: density === "full" || density === "no-effort",
+    showCarets: density === "full" || density === "no-effort" || density === "no-mode",
+    showModelLabel: density !== "tight",
+    aggregateFeatures: density !== "full",
   };
 }
 
 export function resolveComposerToolbarGlyphSize(platform: "web" | "native"): number {
   return platform === "native" ? 20 : 16;
+}
+
+export interface QuickPromptPresentation {
+  showDefaultLabel: boolean;
+  visiblePinCount: number;
+  width: number;
+  density: ComposerControlDensity;
+}
+
+/** Attachment, context ring, mic and send/stop retain their complete target frames. */
+export function estimateComposerFixedWidth(touch: boolean): number {
+  return touch
+    ? 4 * 44
+    : 4 * COMPOSER_TOOLBAR_GEOMETRY.controlSize + 5 * COMPOSER_TOOLBAR_GEOMETRY.controlGap;
+}
+
+/** A bounded pill includes its bookmark, padding and one line of text. */
+export function estimateQuickPromptPillWidth(label: string, fontScale: number): number {
+  return (
+    44 + estimateLabelWidth(Array.from(label).slice(0, 14).join(""), normalizedFontScale(fontScale))
+  );
+}
+
+/**
+ * Resolve the joint budget: secondary pins disappear first, then model/effort/mode labels,
+ * then the default prompt label. Both clusters consume this same decision, so a prompt
+ * cannot keep the model at a density whose labels would overflow the remaining space.
+ */
+export function resolveQuickPromptPresentation(input: {
+  /** Button-row interior after the fixed attachment/ring/mic/send slots. */
+  availableWidth: number;
+  compact: boolean;
+  touch: boolean;
+  defaultLabel: string | null;
+  pinnedLabels: readonly string[];
+  controls: ComposerControlPresence;
+  current?: QuickPromptPresentation;
+}): QuickPromptPresentation {
+  const gap = input.touch
+    ? COMPOSER_TOOLBAR_GEOMETRY.touchControlGap
+    : COMPOSER_TOOLBAR_GEOMETRY.controlGap;
+  const target = input.touch ? 44 : 28;
+  const pillWidth = (label: string) =>
+    estimateQuickPromptPillWidth(label, input.controls.fontScale);
+  const splitWidth = input.defaultLabel === null ? 0 : pillWidth(input.defaultLabel) + target + 2;
+  const controlsWidth = (density: ComposerControlDensity) =>
+    estimateComposerControlsWidth(input.controls, density, gap);
+  const fits = (floor: number, wasVisible: boolean) => {
+    if (!input.current) return input.availableWidth >= floor;
+    const margin = wasVisible ? -DENSITY_HYSTERESIS : DENSITY_HYSTERESIS;
+    return input.availableWidth >= floor + margin;
+  };
+  const showDefaultLabel =
+    !input.compact &&
+    input.defaultLabel !== null &&
+    fits(controlsWidth("tight") + gap + splitWidth, input.current?.showDefaultLabel ?? false);
+  let width = showDefaultLabel ? splitWidth : target + 2;
+  let visiblePinCount = 0;
+  // Restore pins only after the other controls can show all their labels.
+  for (const label of input.pinnedLabels.slice(0, 3)) {
+    const nextWidth = width + gap + pillWidth(label);
+    if (
+      !fits(
+        controlsWidth("full") + gap + nextWidth,
+        visiblePinCount < (input.current?.visiblePinCount ?? 0),
+      )
+    )
+      break;
+    width = nextWidth;
+    visiblePinCount++;
+  }
+  const availableControlsWidth = input.availableWidth - width - gap;
+  const density = resolveDensityWithHysteresis(
+    availableControlsWidth,
+    input.current?.density,
+    controlsWidth,
+  );
+  return { showDefaultLabel, visiblePinCount, width, density };
+}
+
+/** Inline feedback can wrap vertically but never grows beyond the toolbar's remaining width. */
+export function resolveQuickPromptFeedbackWidth(
+  interior: number,
+  touch: boolean,
+  controls: ComposerControlPresence,
+): number {
+  const gap = touch
+    ? COMPOSER_TOOLBAR_GEOMETRY.touchControlGap
+    : COMPOSER_TOOLBAR_GEOMETRY.controlGap;
+  return Math.max(
+    touch ? 44 : 28,
+    Math.min(
+      300,
+      interior -
+        estimateComposerFixedWidth(touch) -
+        estimateComposerControlsWidth(controls, "tight", gap) -
+        gap,
+    ),
+  );
 }

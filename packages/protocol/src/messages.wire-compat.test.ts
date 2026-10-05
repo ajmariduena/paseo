@@ -11,6 +11,7 @@ import {
   AgentTimelineEntryPayloadSchema,
   MutableDaemonConfigPatchSchema,
   MutableDaemonConfigSchema,
+  validateQuickPrompts,
 } from "./messages.js";
 
 test("terminal listings accept older rows and retain new per-terminal directories", () => {
@@ -584,5 +585,78 @@ test("blocked setup preserves the legacy failed shape and optional provenance", 
   expect(WorkspaceSetupProgressMessageSchema.parse(progress)).toEqual(progress);
   expect(WorkspaceSetupSnapshotSchema.parse(legacySnapshot.parse(failed))).toEqual(
     legacySnapshot.parse(failed),
+  );
+});
+
+test("quick prompts remain optional and survive config responses and patches", () => {
+  const legacy = { mcp: { injectIntoAgents: false } };
+  expect(MutableDaemonConfigSchema.parse(legacy).quickPrompts).toBeUndefined();
+  expect(MutableDaemonConfigPatchSchema.parse({})).toEqual({});
+  const quickPrompts = [
+    {
+      id: "summary",
+      title: "Summary",
+      text: "Summarize.",
+      mode: "send",
+      pinned: true,
+      isDefault: true,
+    },
+  ];
+  const current = { ...legacy, quickPrompts, quickPromptUndoMs: 2500 };
+  expect(MutableDaemonConfigSchema.parse(current).quickPrompts).toEqual(quickPrompts);
+  expect(MutableDaemonConfigPatchSchema.parse({ quickPrompts, quickPromptUndoMs: 0 })).toEqual({
+    quickPrompts,
+    quickPromptUndoMs: 0,
+  });
+  const oldConfigSchema = MutableDaemonConfigSchema.omit({
+    quickPrompts: true,
+    quickPromptUndoMs: true,
+  });
+  expect(oldConfigSchema.safeParse(current).success).toBe(true);
+  expect(MutableDaemonConfigPatchSchema.safeParse({ quickPromptUndoMs: -1 }).success).toBe(false);
+});
+
+test("quick prompt capability is optional and discarded by older feature schemas", () => {
+  const legacy = { status: "server_info", serverId: "host" };
+  expect(ServerInfoStatusPayloadSchema.safeParse(legacy).success).toBe(true);
+  const current = { ...legacy, features: { quickPrompts: true } };
+  expect(ServerInfoStatusPayloadSchema.parse(current).features?.quickPrompts).toBe(true);
+  const oldFeatures = z.object({ agentProfiles: z.boolean().optional() });
+  expect(oldFeatures.parse(current.features)).toEqual({});
+});
+
+test("quick prompt validation permits localized client messages without changing wire parsing", () => {
+  const prompt = {
+    id: "a",
+    title: "A",
+    text: "text",
+    mode: "send" as const,
+    pinned: false,
+    isDefault: false,
+  };
+  const messages = {
+    duplicateIds: "identificadores únicos",
+    multipleDefaults: "un predeterminado",
+    pinLimit: "tres fijados",
+    required: "título y texto",
+  };
+  expect(() => validateQuickPrompts([prompt, prompt], messages)).toThrow(messages.duplicateIds);
+  expect(() =>
+    validateQuickPrompts(
+      [
+        { ...prompt, isDefault: true },
+        { ...prompt, id: "b", isDefault: true },
+      ],
+      messages,
+    ),
+  ).toThrow(messages.multipleDefaults);
+  expect(() =>
+    validateQuickPrompts(
+      ["a", "b", "c", "d"].map((id) => Object.assign({}, prompt, { id, pinned: true })),
+      messages,
+    ),
+  ).toThrow(messages.pinLimit);
+  expect(() => validateQuickPrompts([{ ...prompt, text: " " }], messages)).toThrow(
+    messages.required,
   );
 });

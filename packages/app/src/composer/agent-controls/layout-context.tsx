@@ -2,7 +2,7 @@ import { createContext, useContext, type ReactNode } from "react";
 import type { Insets } from "react-native";
 import type { ComposerControlPresentation } from "@/composer/agent-controls/layout";
 
-interface ComposerControlLayoutValue {
+export interface ComposerControlLayoutValue {
   glyphSize: number;
   presentation: ComposerControlPresentation;
   /** Set under touch density; every toolbar trigger passes it to its pressable. */
@@ -13,8 +13,9 @@ const DEFAULT_LAYOUT: ComposerControlLayoutValue = {
   glyphSize: 16,
   presentation: {
     showCarets: true,
-    showThinkingLabel: true,
+    showEffortSuffix: true,
     showModeLabel: true,
+    showModelLabel: true,
     aggregateFeatures: false,
   },
   hitSlop: undefined,

@@ -1,3 +1,5 @@
+import { QuickPromptSchema } from "./quick-prompt.js";
+export { QuickPromptSchema, validateQuickPrompts, type QuickPrompt } from "./quick-prompt.js";
 import { PluginRegistryIdentitySchema } from "./plugin-registry.js";
 import { AgentProfileSchema, AgentSkillSelectionSchema } from "./agent-profile.js";
 export {
@@ -239,6 +241,8 @@ export const MutableDaemonConfigSchema = z
     appendSystemPrompt: z.string().default(""),
     terminalProfiles: z.array(TerminalProfileSchema).optional(),
     agentProfiles: z.array(AgentProfileSchema).optional(),
+    quickPrompts: z.array(QuickPromptSchema).optional(),
+    quickPromptUndoMs: z.number().int().min(0).max(10000).optional(),
     skills: z.object({ selection: AgentSkillSelectionSchema.optional() }).strict().optional(),
     pluginsEnabled: z.boolean().optional(),
     plugins: z.record(PluginIdSchema, PluginSourceSchema).optional(),
@@ -264,6 +268,8 @@ export const MutableDaemonConfigPatchSchema = z
     appendSystemPrompt: z.string().optional(),
     terminalProfiles: z.array(TerminalProfileSchema).optional(),
     agentProfiles: z.array(AgentProfileSchema).optional(),
+    quickPrompts: z.array(QuickPromptSchema).optional(),
+    quickPromptUndoMs: z.number().int().min(0).max(10000).optional(),
     pluginsEnabled: z.boolean().optional(),
     plugins: z.record(PluginIdSchema, PluginSourceSchema).optional(),
     dictation: MutableDictationConfigSchema.optional(),
@@ -4081,6 +4087,8 @@ export const ServerInfoStatusPayloadSchema = z
         // agentProfiles to one is silently dropped. The client hides the feature
         // rather than letting a save appear to succeed.
         agentProfiles: z.boolean().optional(),
+        // COMPAT(quickPrompts): added in v0.11.0, remove gate after 2027-04-05.
+        quickPrompts: z.boolean().optional(),
         // COMPAT(agentConfigApply): added in v0.3.2, remove gate after 2027-02-11.
         agentConfigApply: z.boolean().optional(),
       })

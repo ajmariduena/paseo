@@ -1,3 +1,4 @@
+import { usePublishQuickPromptSurface } from "@/quick-prompts/capacity";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import {
   View,
@@ -1277,7 +1278,10 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const resetComposerHeight = measuredComposerHeight?.reset;
 
     const handleComposerLayout = useCallback(
-      (event: LayoutChangeEvent) => onHeightChange?.(event.nativeEvent.layout.height),
+      (event: LayoutChangeEvent) => {
+        const { height } = event.nativeEvent.layout;
+        onHeightChange?.(height);
+      },
       [onHeightChange],
     );
 
@@ -1844,6 +1848,12 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       ],
       [isSendButtonDisabled, isTouchDensity, submitLabel],
     );
+    const handleToolbarLayout = usePublishQuickPromptSurface({
+      overlay: showOverlay,
+      disabled,
+      readOnly,
+    });
+
     const rightButtonGroupStyle = useMemo(
       () => [styles.rightButtonGroup, isTouchDensity && styles.rightButtonGroupTouch],
       [isTouchDensity],
@@ -1924,7 +1934,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           </RenderProfile>
 
           {/* Button row */}
-          <View style={styles.buttonRow}>
+          <View style={styles.buttonRow} onLayout={handleToolbarLayout}>
             {/* Toolbar left: attachment button + agent controls */}
             <View style={styles.leftButtonGroup}>
               <AttachmentDropdown

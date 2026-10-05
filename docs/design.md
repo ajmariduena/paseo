@@ -94,7 +94,7 @@ Pane chrome — the workspace pane header, the file-explorer header, the diff pa
 
 ## 6. Pickers
 
-Five primitives. The pick is determined by option count, the need to search, and how the picker is anchored.
+Six primitives. The pick is determined by option count, the need to search, and how the picker is anchored.
 
 `<DropdownMenu>` is for a small fixed set anchored to a trigger. Theme picker, kebab menus on workspace and project rows (`packages/app/src/components/sidebar-workspace-list.tsx:684-770`), row "more" menus. Items can be async (`status: "pending"`) and can include destructive entries. Under ~10 options where the user knows what they're looking for.
 
@@ -108,7 +108,9 @@ Five primitives. The pick is determined by option count, the need to search, and
 
 `confirmDialog` is for destructive yes/no and imperative confirmation. Promise-based: `await confirmDialog({ destructive: true, ... })`. Anything where a wrong click loses work.
 
-Three themes is `DropdownMenu`. Thirty hosts is `Combobox`. A label and a value is `AdaptiveModalSheet`. "Are you sure?" is `confirmDialog`.
+`<EffortSlider>` (`packages/app/src/components/ui/effort-slider.tsx`) is for an ordinal scale of a few steps whose order is the point — a model's effort levels. On touch a scale of four to six stops is one gesture, not a list. Its stops are the provider's options by index; it knows nothing about what a level means. The last stop is the only one drawn as its own family (gradient, shimmer, arrival pulse), and that stays true only while it is the one exception. Reduced motion keeps the gradient and drops the motion.
+
+Three themes is `DropdownMenu`. Thirty hosts is `Combobox`. A label and a value is `AdaptiveModalSheet`. "Are you sure?" is `confirmDialog`. Low to Max is `EffortSlider`.
 
 ---
 
@@ -295,6 +297,7 @@ New status pills use `<StatusBadge>`. Identity, shortcut, and interactive link b
 | Historical list (sessions)                          | `packages/app/src/screens/sessions-screen.tsx`                                                                                                                                                                                                                                                           |
 | Workspace pane (multi-tab, split)                   | `packages/app/src/screens/workspace/workspace-screen.tsx`                                                                                                                                                                                                                                                |
 | Composer / message input                            | `packages/app/src/components/composer.tsx`, `packages/app/src/components/message-input.tsx`                                                                                                                                                                                                              |
+| Composer quick prompts                              | `packages/app/src/quick-prompts/toolbar.tsx` — named split trigger on wide layouts; Bookmark opens the picker when the label cannot fit. Keep the mic between this control and send/stop.                                                                                                                |
 | Pane chrome with single bottom border               | `packages/app/src/components/git-diff-pane.tsx`, `packages/app/src/components/file-explorer-pane.tsx`, `packages/app/src/components/terminal-pane.tsx`                                                                                                                                                   |
 | Page-level alert (info / success / warning / error) | `packages/app/src/components/ui/alert.tsx`, `packages/app/src/screens/project-settings-screen.tsx`                                                                                                                                                                                                       |
 | Sidebar callout (cross-cutting alert)               | `packages/app/src/components/sidebar-callout.tsx`, `packages/app/src/contexts/sidebar-callout-context.tsx`, `packages/app/src/components/worktree-setup-callout-source.tsx`, `packages/app/src/desktop/updates/rosetta-callout-source.tsx`, `packages/app/src/desktop/updates/update-callout-source.tsx` |
