@@ -327,6 +327,37 @@ export function deriveSidebarToggleAttentionBucket(input: {
   return result;
 }
 
+/** Workspaces that belong to an active parent's subagents live in that parent's track. */
+export function selectDelegatedSidebarWorkspaceKeys(
+  sessions: Record<string, { workspaces: Map<string, WorkspaceDescriptor> } | undefined>,
+  serverIds: readonly string[],
+): string[] {
+  const keys: string[] = [];
+  for (const serverId of serverIds) {
+    for (const workspace of sessions[serverId]?.workspaces.values() ?? []) {
+      if (workspace.delegatedByAgentId && !workspace.pinnedAt) {
+        keys.push(`${serverId}:${workspace.id}`);
+      }
+    }
+  }
+  return keys;
+}
+
+export function omitSidebarWorkspaces(
+  projects: HostProjectListItem[],
+  hiddenKeys: readonly string[],
+): HostProjectListItem[] {
+  if (hiddenKeys.length === 0) return projects;
+  const hidden = new Set(hiddenKeys);
+  return projects.map((project) =>
+    project.workspaceKeys.some((key) => hidden.has(key))
+      ? Object.assign({}, project, {
+          workspaceKeys: project.workspaceKeys.filter((key) => !hidden.has(key)),
+        })
+      : project,
+  );
+}
+
 export function buildSidebarWorkspacePlacementModel(input: {
   projects: readonly HostProjectListItem[];
 }): SidebarWorkspacePlacementModel {

@@ -179,6 +179,8 @@ Closing a tab on a **subagent** (any agent with `parentAgentId`) is **layout-onl
 
 The asymmetry is intentional: a subagent's persistent relationship lives in the parent's track. Same-workspace subagents are not auto-opened as tabs; the user opens one from that track when needed. A cross-workspace subagent is also auto-opened as a tab in its own workspace so opening that workspace does not appear empty. It remains in the parent's track until it is actually detached.
 
+The sidebar hides a workspace while every active agent in it belongs to one active parent's subagent tree; you reach it from that parent's track. The daemon marks it with `delegatedByAgentId` on the workspace descriptor. It comes back when you pin it, detach a subagent in it, archive the parent (which detaches cross-workspace children), or start a root agent there.
+
 ## Workspace activity
 
 Agent lifecycle status stays literal: a parent agent is `idle` when its own turn is idle, even if a child is running.

@@ -225,6 +225,14 @@ class WorkspaceStatus {
     });
   }
 
+  async workspaceDescriptorsById(): Promise<Record<string, WorkspaceDescriptorPayload>> {
+    const entries = await this.directory.listFetchEntries({
+      type: "fetch_workspaces_request",
+      requestId: "workspace-descriptors",
+    });
+    return Object.fromEntries(entries.entries.map((entry) => [entry.id, entry]));
+  }
+
   async workspaceDescriptor(): Promise<WorkspaceDescriptorPayload> {
     const entries = await this.directory.listFetchEntries({
       type: "fetch_workspaces_request",
@@ -483,6 +491,42 @@ describe("WorkspaceDirectory", () => {
     const descriptor = await workspace.workspaceDescriptor();
     expect(descriptor.status).toBe("running");
     expect(descriptor.waitingOnSubagents).toBeUndefined();
+  });
+
+  test("a workspace holding only an active parent's subagents names that parent", async () => {
+    const workspace = new WorkspaceStatus();
+    workspace.hasWorktreeWorkspace();
+    workspace.hasRootAgent({ id: "parent-agent", status: "idle" });
+    workspace.hasDelegatedAgentInWorktree({ id: "child-agent", status: "running" });
+    workspace.hasDelegatedAgentInWorktree({
+      id: "grandchild",
+      status: "idle",
+      parentAgentId: "child-agent",
+    });
+
+    const descriptors = await workspace.workspaceDescriptorsById();
+    expect(descriptors["workspace-worktree"]?.delegatedByAgentId).toBe("parent-agent");
+    expect(descriptors["workspace-1"]?.delegatedByAgentId).toBeUndefined();
+  });
+
+  test("a detached agent makes a subagent workspace the user's again", async () => {
+    const workspace = new WorkspaceStatus();
+    workspace.hasWorktreeWorkspace();
+    workspace.hasRootAgent({ id: "parent-agent", status: "idle" });
+    workspace.hasDelegatedAgentInWorktree({ id: "child-agent", status: "running" });
+    workspace.hasDetachedAgentInWorktree({ id: "detached", status: "idle" });
+
+    const descriptors = await workspace.workspaceDescriptorsById();
+    expect(descriptors["workspace-worktree"]?.delegatedByAgentId).toBeUndefined();
+  });
+
+  test("a subagent whose parent is no longer active does not delegate its workspace", async () => {
+    const workspace = new WorkspaceStatus();
+    workspace.hasWorktreeWorkspace();
+    workspace.hasDelegatedAgentInWorktree({ id: "child-agent", status: "idle" });
+
+    const descriptors = await workspace.workspaceDescriptorsById();
+    expect(descriptors["workspace-worktree"]?.delegatedByAgentId).toBeUndefined();
   });
 
   test("cross-workspace subagent contributes its full status bucket to its own workspace", async () => {

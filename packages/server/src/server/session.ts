@@ -6302,6 +6302,7 @@ export class Session {
                 statusEnteredAt: snapshot.statusEnteredAt,
                 activityAtMs: snapshot.activityAtMs,
                 waitingOnSubagentsCount: snapshot.waitingOnSubagentsCount,
+                delegatedByAgentId: snapshot.delegatedByAgentId,
               }
             : null,
           update: {
@@ -6309,6 +6310,7 @@ export class Session {
             statusEnteredAt: payload.workspace.statusEnteredAt ?? null,
             activityAtMs: Number.isNaN(updateActivityAtMs) ? null : updateActivityAtMs,
             waitingOnSubagentsCount: payload.workspace.waitingOnSubagents?.count,
+            delegatedByAgentId: payload.workspace.delegatedByAgentId,
           },
         });
         if (!shouldEmit) {
@@ -7089,6 +7091,7 @@ export class Session {
         statusEnteredAt: entry.statusEnteredAt ?? null,
         activityAtMs: Number.isNaN(parsedActivity) ? null : parsedActivity,
         waitingOnSubagentsCount: entry.waitingOnSubagents?.count,
+        delegatedByAgentId: entry.delegatedByAgentId,
       });
     }
     return { snapshotByWorkspaceId };

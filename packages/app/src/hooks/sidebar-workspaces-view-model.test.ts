@@ -13,6 +13,8 @@ import {
   deriveProjectStatusBucket,
   deriveSidebarToggleAttentionBucket,
   deriveSidebarLoadingState,
+  omitSidebarWorkspaces,
+  selectDelegatedSidebarWorkspaceKeys,
   shouldShowSidebarHostLabels,
   type ProjectStatusSession,
   type SidebarProjectEntry,
@@ -231,6 +233,37 @@ describe("appendMissingOrderKeys", () => {
     });
 
     expect(result).toBe(currentOrder);
+  });
+});
+
+describe("delegated subagent workspaces", () => {
+  it("hides workspaces an active parent's subagents own, unless pinned", () => {
+    const delegated = { ...workspaceWithForge(undefined, ""), id: "ws-child" };
+    const pinned = {
+      ...workspaceWithForge(undefined, ""),
+      id: "ws-pinned",
+      pinnedAt: "2026-10-05T00:00:00.000Z",
+      delegatedByAgentId: "parent",
+    };
+    const keys = selectDelegatedSidebarWorkspaceKeys(
+      {
+        srv: {
+          workspaces: new Map([
+            ["ws-main", workspaceWithForge(undefined, "")],
+            ["ws-child", { ...delegated, delegatedByAgentId: "parent" }],
+            ["ws-pinned", pinned],
+          ]),
+        },
+      },
+      ["srv"],
+    );
+    expect(keys).toEqual(["srv:ws-child"]);
+
+    const projects = omitSidebarWorkspaces(
+      [project({ projectKey: "p", workspaceKeys: ["srv:ws-1", "srv:ws-child", "srv:ws-pinned"] })],
+      keys,
+    );
+    expect(projects[0]?.workspaceKeys).toEqual(["srv:ws-1", "srv:ws-pinned"]);
   });
 });
 

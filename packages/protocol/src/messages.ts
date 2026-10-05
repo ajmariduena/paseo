@@ -4393,6 +4393,9 @@ export const WorkspaceDescriptorPayloadSchema = z
     status: WorkspaceStateBucketSchema,
     // COMPAT(waitingOnSubagents): added in v0.11.0, remove optional parse after 2027-04-05.
     waitingOnSubagents: z.object({ count: z.number().int().positive() }).optional(),
+    // COMPAT(delegatedWorkspaces): added in v0.11.0, remove optional parse after 2027-04-05.
+    // Set while every active agent in the workspace belongs to this active parent's subagent tree.
+    delegatedByAgentId: z.string().optional(),
     // Best-effort workspace status entry timestamp. Old daemons omit the
     // field; old clients treat missing and null equivalently. The transform
     // coerces a missing field to `null` so downstream code never has to
