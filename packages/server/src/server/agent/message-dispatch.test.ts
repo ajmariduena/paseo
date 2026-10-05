@@ -168,6 +168,32 @@ test("a queued message waits for the running turn instead of replacing it", asyn
   expect(session.interruptCount).toBe(0);
 });
 
+test("a sent message waits for a busy turn instead of replacing it", async () => {
+  host = createControlledHost();
+  const agentId = await host.createAgent({ steerable: true });
+  await host.startTurn(agentId, "/compact");
+  const session = host.session(agentId);
+  if (!(session instanceof SteerableControlledAgentSession)) throw new Error("not steerable");
+  session.steerOutcome = "busy";
+  const trace = createTraceRecorder();
+
+  const delivered = dispatchAgentMessage({
+    agentManager: host.agentManager,
+    agentStorage: host.agentStorage,
+    agentId,
+    messageId: "msg-during-compact",
+    policy: { kind: "intent", intent: "auto", prompt: "next task", steerUnavailable: "replace" },
+    logger: trace.logger,
+  });
+  await trace.waitFor("agent.dispatch.wait_for_turn");
+  expect(session.interruptCount).toBe(0);
+  session.completeTurn("compacted");
+
+  await expect(delivered).resolves.toBe("started");
+  expect(session.startPrompts).toEqual(["/compact", "next task"]);
+  expect(session.interruptCount).toBe(0);
+});
+
 test("an explicit steer the provider cannot take fails without touching the turn", async () => {
   host = createControlledHost();
   const agentId = await host.createAgent({ steerable: false });

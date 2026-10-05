@@ -178,8 +178,11 @@ export class ControlledAgentSession implements AgentSession {
 }
 
 export class SteerableControlledAgentSession extends ControlledAgentSession {
-  /** `late` ends the turn before the steer lands, as a provider racing its own completion. */
-  steerOutcome: "accepted" | "late" = "accepted";
+  /**
+   * `late` ends the turn before the steer lands, as a provider racing its own completion.
+   * `busy` refuses input without letting the turn be replaced, as Claude does while compacting.
+   */
+  steerOutcome: "accepted" | "late" | "busy" = "accepted";
 
   async steerActiveTurn(
     prompt: AgentPromptInput,
@@ -191,6 +194,9 @@ export class SteerableControlledAgentSession extends ControlledAgentSession {
     if (this.steerOutcome === "late") {
       this.completeTurn("finished before the steer landed");
       return { status: "unavailable" };
+    }
+    if (this.steerOutcome === "busy") {
+      return { status: "busy" };
     }
     this.steerPrompts.push(prompt);
     return { status: "accepted" };

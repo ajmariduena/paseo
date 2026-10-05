@@ -222,7 +222,8 @@ export interface AgentSteerOptions extends AgentRunOptions {
   clearPendingPermissions?: boolean;
 }
 
-export type SteerResult = { status: "accepted" } | { status: "unavailable" };
+/** `busy`: the turn cannot take input right now and must not be replaced, so the caller queues. */
+export type SteerResult = { status: "accepted" } | { status: "unavailable" } | { status: "busy" };
 
 export interface SteerActiveTurnOptions extends AgentSteerOptions {
   expectedTurnId: string;

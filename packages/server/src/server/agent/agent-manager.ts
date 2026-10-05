@@ -3160,6 +3160,9 @@ export class AgentManager {
     if (result.status === "accepted") {
       return { status: "steered" };
     }
+    if (result.status === "busy") {
+      throw new AgentRunActiveError(agentId);
+    }
 
     // Providers without autonomous steering keep their existing dispatch behavior. The shared
     // admission may recognize the turn, but only an accepted steer can own it without replacement.

@@ -246,7 +246,7 @@ async function steer(
   if (result.status === "accepted") {
     return "steered";
   }
-  if (options.explicit && result.status === "unavailable") {
+  if (options.explicit && (result.status === "unavailable" || result.status === "busy")) {
     throw new SteerUnavailableError(params.agentId);
   }
   return await startOrQueue(params);
