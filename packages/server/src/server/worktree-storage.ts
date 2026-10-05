@@ -25,6 +25,8 @@ export interface WorktreeStorageContext {
   listWorkspaces(): Promise<PersistedWorkspaceRecord[]>;
   listAgentCwds(): string[];
   listTerminalCwds(): Promise<string[]>;
+  readProcessCwds?: () => Promise<ProcessCwdReading>;
+  processProbeNow?: () => number;
 }
 
 export interface WorktreeStorageEntry {
@@ -43,6 +45,7 @@ export interface WorktreeStorageList {
   totalBytes: number;
   freeableBytes: number;
   sizesComplete: boolean;
+  processCheckUnavailableReason: "lsof_missing" | "check_failed" | null;
 }
 
 export interface WorktreeStorageCleanupResult {
@@ -182,31 +185,72 @@ async function inspectGitWorktree(
   return { mainRepo, changes, unpushed, detached: branch.trim() === "HEAD" };
 }
 
-async function listExternalProcessCwds(): Promise<string[] | null> {
-  if (process.platform !== "darwin" && process.platform !== "linux") return null;
+interface ProcessCwdReading {
+  cwds: string[] | null;
+  unavailableReason: "lsof_missing" | "check_failed" | null;
+}
+
+async function listExternalProcessCwds(): Promise<ProcessCwdReading> {
+  if (process.platform !== "darwin" && process.platform !== "linux") {
+    return { cwds: null, unavailableReason: "check_failed" };
+  }
   try {
     const { stdout } = await execFileAsync("lsof", ["-n", "-w", "-a", "-d", "cwd", "-F", "n"], {
       timeout: 10_000,
       maxBuffer: 16 * 1024 * 1024,
     });
-    return stdout
-      .split("\n")
-      .filter((line) => line.startsWith("n"))
-      .map((line) => line.slice(1));
-  } catch {
-    return null;
+    return {
+      cwds: stdout
+        .split("\n")
+        .filter((line) => line.startsWith("n"))
+        .map((line) => line.slice(1)),
+      unavailableReason: null,
+    };
+  } catch (error) {
+    return {
+      cwds: null,
+      unavailableReason:
+        error instanceof Error && "code" in error && error.code === "ENOENT"
+          ? "lsof_missing"
+          : "check_failed",
+    };
   }
+}
+
+function createProcessCwdProbe(
+  readCwds: () => Promise<ProcessCwdReading> = listExternalProcessCwds,
+  now: () => number = Date.now,
+) {
+  let last: ProcessCwdReading | null = null;
+  let measuredAt = 0;
+  let pending: Promise<ProcessCwdReading> | null = null;
+  const read = async (): Promise<ProcessCwdReading> => {
+    if (last && now() - measuredAt < 1_000) return last;
+    if (pending) return pending;
+    pending = readCwds();
+    try {
+      last = await pending;
+      measuredAt = now();
+      return last;
+    } finally {
+      pending = null;
+    }
+  };
+  read.invalidate = () => {
+    last = null;
+    measuredAt = 0;
+  };
+  return read;
 }
 
 async function externalProcessCwdStatus(
   path: string,
-  knownCwds?: string[] | null,
+  knownCwds: string[] | null,
 ): Promise<"clear" | "busy" | "unknown"> {
-  const cwds = knownCwds === undefined ? await listExternalProcessCwds() : knownCwds;
-  if (cwds === null) return "unknown";
+  if (knownCwds === null) return "unknown";
   try {
     const canonicalPath = await realpath(path);
-    return cwds.some((cwd) => isPathInsideRoot(canonicalPath, cwd)) ? "busy" : "clear";
+    return knownCwds.some((cwd) => isPathInsideRoot(canonicalPath, cwd)) ? "busy" : "clear";
   } catch {
     return "unknown";
   }
@@ -218,7 +262,7 @@ async function classify(
   workspaces: PersistedWorkspaceRecord[],
   agentCwds: string[],
   terminalCwds: string[],
-  processCwds?: string[] | null,
+  processCwds: string[] | null,
 ): Promise<{
   freeable: boolean;
   requiresExplicitOptIn: boolean;
@@ -293,29 +337,39 @@ function classifyGitState(
   };
 }
 
-async function snapshot(context: WorktreeStorageContext) {
+async function snapshot(
+  context: WorktreeStorageContext,
+  processProbe: () => Promise<ProcessCwdReading>,
+) {
   const root = resolvePaseoWorktreesBaseRoot(context);
-  const [paths, workspaces, terminalCwds, processCwds] = await Promise.all([
+  const [paths, workspaces, terminalCwds, processReading] = await Promise.all([
     candidatePaths(root),
     context.listWorkspaces(),
     context.listTerminalCwds(),
-    listExternalProcessCwds(),
+    processProbe(),
   ]);
-  return { paths, workspaces, terminalCwds, processCwds, agentCwds: context.listAgentCwds() };
+  return { paths, workspaces, terminalCwds, processReading, agentCwds: context.listAgentCwds() };
 }
 
-async function liveUse(context: WorktreeStorageContext) {
-  const [workspaces, terminalCwds] = await Promise.all([
+async function liveUse(
+  context: WorktreeStorageContext,
+  processProbe: () => Promise<ProcessCwdReading>,
+) {
+  const [workspaces, terminalCwds, processReading] = await Promise.all([
     context.listWorkspaces(),
     context.listTerminalCwds(),
+    processProbe(),
   ]);
-  return { workspaces, terminalCwds, agentCwds: context.listAgentCwds() };
+  return { workspaces, terminalCwds, processReading, agentCwds: context.listAgentCwds() };
 }
 
 export async function listWorktreeStorage(
   context: WorktreeStorageContext,
 ): Promise<WorktreeStorageList> {
-  const state = await snapshot(context);
+  const state = await snapshot(
+    context,
+    createProcessCwdProbe(context.readProcessCwds, context.processProbeNow),
+  );
   const entries: WorktreeStorageEntry[] = [];
   for (const path of state.paths) {
     const classification = await classify(
@@ -324,7 +378,7 @@ export async function listWorktreeStorage(
       state.workspaces,
       state.agentCwds,
       state.terminalCwds,
-      state.processCwds,
+      state.processReading.cwds,
     );
     entries.push({
       entryId: entryIdForPath(path),
@@ -356,6 +410,7 @@ export async function listWorktreeStorage(
       0,
     ),
     sizesComplete: entries.every((entry) => entry.sizeBytes !== null),
+    processCheckUnavailableReason: state.processReading.unavailableReason,
   };
 }
 
@@ -366,7 +421,8 @@ export async function cleanupWorktreeStorage(
 ): Promise<WorktreeStorageCleanupResult[]> {
   const results: WorktreeStorageCleanupResult[] = [];
   const pruned = new Set<string>();
-  const state = await snapshot(context);
+  const processProbe = createProcessCwdProbe(context.readProcessCwds, context.processProbeNow);
+  const state = await snapshot(context, processProbe);
   const legacyConsent = new Set(legacyEntryIds);
   for (const entryId of new Set(entryIds)) {
     const path = state.paths.find((candidate) => entryIdForPath(candidate) === entryId);
@@ -375,14 +431,44 @@ export async function cleanupWorktreeStorage(
       continue;
     }
     try {
+      const beforeClassification = await classify(
+        path,
+        context,
+        state.workspaces,
+        state.agentCwds,
+        state.terminalCwds,
+        state.processReading.cwds,
+      );
+      if (
+        !beforeClassification.freeable &&
+        !(beforeClassification.requiresExplicitOptIn && legacyConsent.has(entryId))
+      )
+        throw new Error(beforeClassification.reason);
+      if (!beforeClassification.mainRepo) throw new Error(beforeClassification.reason);
+      const archived = state.workspaces.filter(
+        (workspace) => workspace.archivedAt && referencesPath(workspace, path),
+      );
+      const teardownCwds =
+        archived.length > 0 ? new Set(archived.map((workspace) => workspace.cwd)) : new Set([path]);
+      let ranTeardown = false;
+      for (const cwd of teardownCwds) {
+        const commands = await runWorktreeTeardownCommands({
+          worktreePath: path,
+          teardownCwd: cwd,
+          repoRootPath: beforeClassification.mainRepo,
+        });
+        if (commands.length > 0) ranTeardown = true;
+      }
+      if (ranTeardown) processProbe.invalidate();
       await withWorktreeProjectLock(dirname(path), async () => {
-        const fresh = await liveUse(context);
+        const fresh = await liveUse(context, processProbe);
         const classification = await classify(
           path,
           context,
           fresh.workspaces,
           fresh.agentCwds,
           fresh.terminalCwds,
+          fresh.processReading.cwds,
         );
         if (
           !classification.freeable &&
@@ -453,7 +539,8 @@ export async function sweepOwnedArchivedWorktrees(
   context: WorktreeStorageContext,
   isEnabled: () => boolean,
 ): Promise<AutomaticWorktreeCleanupResult> {
-  const initial = await snapshot(context);
+  const processProbe = createProcessCwdProbe(context.readProcessCwds, context.processProbeNow);
+  const initial = await snapshot(context, processProbe);
   const result: AutomaticWorktreeCleanupResult = {
     scanned: 0,
     candidates: 0,
@@ -473,33 +560,36 @@ export async function sweepOwnedArchivedWorktrees(
       initial.workspaces,
       initial.agentCwds,
       initial.terminalCwds,
-      initial.processCwds,
+      initial.processReading.cwds,
     );
     if (!initialClassification.freeable || !initialClassification.mainRepo) continue;
     result.candidates += 1;
     try {
+      const beforeTeardown = await liveUse(context, processProbe);
+      const currentRecords = archivedOwnedRecords(path, context, beforeTeardown.workspaces);
+      if (currentRecords.length === 0) continue;
+      const beforeClassification = await classify(
+        path,
+        context,
+        beforeTeardown.workspaces,
+        beforeTeardown.agentCwds,
+        beforeTeardown.terminalCwds,
+        beforeTeardown.processReading.cwds,
+      );
+      if (!beforeClassification.freeable || !beforeClassification.mainRepo) continue;
+      let ranTeardown = false;
+      for (const cwd of new Set(currentRecords.map((workspace) => workspace.cwd))) {
+        const commands = await runWorktreeTeardownCommands({
+          worktreePath: path,
+          teardownCwd: cwd,
+          repoRootPath: beforeClassification.mainRepo,
+        });
+        if (commands.length > 0) ranTeardown = true;
+      }
+      if (ranTeardown) processProbe.invalidate();
       await withWorktreeProjectLock(dirname(path), async () => {
         if (!isEnabled()) return;
-        const beforeTeardown = await liveUse(context);
-        const currentRecords = archivedOwnedRecords(path, context, beforeTeardown.workspaces);
-        if (currentRecords.length === 0) return;
-        const beforeClassification = await classify(
-          path,
-          context,
-          beforeTeardown.workspaces,
-          beforeTeardown.agentCwds,
-          beforeTeardown.terminalCwds,
-        );
-        if (!beforeClassification.freeable || !beforeClassification.mainRepo) return;
-        for (const cwd of new Set(currentRecords.map((workspace) => workspace.cwd))) {
-          await runWorktreeTeardownCommands({
-            worktreePath: path,
-            teardownCwd: cwd,
-            repoRootPath: beforeClassification.mainRepo,
-          });
-        }
-        if (!isEnabled()) return;
-        const fresh = await liveUse(context);
+        const fresh = await liveUse(context, processProbe);
         if (archivedOwnedRecords(path, context, fresh.workspaces).length === 0) return;
         const classification = await classify(
           path,
@@ -507,6 +597,7 @@ export async function sweepOwnedArchivedWorktrees(
           fresh.workspaces,
           fresh.agentCwds,
           fresh.terminalCwds,
+          fresh.processReading.cwds,
         );
         if (!classification.freeable || !classification.mainRepo) return;
         if (!isEnabled()) return;

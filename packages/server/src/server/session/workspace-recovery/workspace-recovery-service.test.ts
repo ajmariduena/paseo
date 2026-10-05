@@ -78,6 +78,7 @@ function createHarness(input?: {
   directories?: string[];
   paseoHome?: string;
   worktreesRoot?: string;
+  isDirectory?: (path: string) => Promise<boolean>;
 }) {
   const workspace = input?.workspace === undefined ? createWorkspace() : input.workspace;
   const project = input?.project === undefined ? createProject() : input.project;
@@ -89,7 +90,7 @@ function createHarness(input?: {
     getWorkspace: async (workspaceId) =>
       workspace?.workspaceId === workspaceId ? workspace : null,
     getProject: async (projectId) => (project?.projectId === projectId ? project : null),
-    isDirectory: async (path) => directories.has(path),
+    isDirectory: input?.isDirectory ?? (async (path) => directories.has(path)),
     unarchiveWorkspace: async (record) => {
       unarchived.push(record.workspaceId);
     },
@@ -123,6 +124,45 @@ describe("workspace recovery", () => {
       action: "unarchive",
     });
     expect(unarchived).toEqual([workspace.workspaceId]);
+  });
+
+  test("rechecks the worktree directory inside the recovery lock before unarchiving", async () => {
+    const workspace = createWorkspace({ kind: "directory", branch: null });
+    let checks = 0;
+    const { service, unarchived } = createHarness({
+      workspace,
+      isDirectory: async (path) => {
+        if (path !== workspace.cwd) return true;
+        checks += 1;
+        return checks === 1;
+      },
+    });
+
+    await expect(service.restore(workspace.workspaceId)).rejects.toThrow(
+      "The archived workspace directory no longer exists",
+    );
+    expect(unarchived).toEqual([]);
+  });
+
+  test("does not unarchive a worktree that disappears before the locked recovery check", async () => {
+    const workspace = createWorkspace();
+    let checks = 0;
+    const { service, unarchived } = createHarness({
+      workspace,
+      isDirectory: async (path) => {
+        if (path === workspace.cwd) {
+          checks += 1;
+          return checks === 1;
+        }
+        return false;
+      },
+    });
+
+    await expect(service.restore(workspace.workspaceId)).rejects.toThrow(
+      "The source repository needed to restore this worktree no longer exists",
+    );
+    expect(checks).toBe(2);
+    expect(unarchived).toEqual([]);
   });
 
   test("does not offer recovery for a missing non-worktree directory", async () => {

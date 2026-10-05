@@ -1,7 +1,7 @@
 import type { PluginLifecycle } from "../../plugins/lifecycle/index.js";
 import { describeHookWorkspace } from "../../plugins/lifecycle/index.js";
 import { mkdir } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { ProjectCheckoutLitePayload } from "@getpaseo/protocol/messages";
 import type { Logger } from "pino";
 import {
@@ -21,6 +21,7 @@ import type { CreatePaseoWorktreeWorkflowResult } from "../../worktree-session.j
 import { deriveProjectKey } from "../../project-key.js";
 import { areEquivalentPaths, createRealpathAwarePathMatcher } from "../../../utils/path.js";
 import type { UntrustedWorkspaceSource } from "../../workspace-automation-gate.js";
+import { withWorktreeProjectLock, worktreeProjectRootForCwd } from "../../worktree-use-lock.js";
 
 export interface ResolveOrCreateWorkspaceIdInput {
   createdWorktree: CreatePaseoWorktreeWorkflowResult | null;
@@ -110,6 +111,29 @@ export function createWorkspaceProvisioningService(deps: {
   scratchRoot?: string;
 }): WorkspaceProvisioningService {
   const { serverId, workspaceRegistry, projectRegistry, workspaceGitService, logger } = deps;
+
+  async function withAdoptionLock<T>(
+    cwd: string,
+    action: (workspaces: PersistedWorkspaceRecord[]) => Promise<T>,
+  ): Promise<T> {
+    const initialWorkspaces = await workspaceRegistry.list();
+    const knownWorktree = initialWorkspaces.find(
+      (workspace) =>
+        workspace.kind === "worktree" &&
+        workspace.worktreeRoot &&
+        areEquivalentPaths(workspace.cwd, cwd),
+    );
+    const observedRoot = worktreeProjectRootForCwd(cwd);
+    const projectRoot = knownWorktree?.worktreeRoot
+      ? dirname(knownWorktree.worktreeRoot)
+      : observedRoot;
+    const checkedAction = async () => {
+      if ((knownWorktree?.archivedAt || observedRoot) && !(await deps.isDirectory(cwd)))
+        throw new Error(`Workspace directory is unavailable: ${cwd}`);
+      return action(projectRoot ? await workspaceRegistry.list() : initialWorkspaces);
+    };
+    return projectRoot ? withWorktreeProjectLock(projectRoot, checkedAction) : checkedAction();
+  }
 
   /**
    * Placement facts at a workspace directory, or null when there is nothing
@@ -289,6 +313,18 @@ export function createWorkspaceProvisioningService(deps: {
     context?: { expectsInitialAgent?: boolean; workspaceId?: string },
   ): Promise<PersistedWorkspaceRecord> {
     const normalizedCwd = resolve(cwd);
+    return withAdoptionLock(normalizedCwd, () =>
+      createWorkspaceForDirectoryUnlocked(normalizedCwd, title, projectId, context),
+    );
+  }
+
+  async function createWorkspaceForDirectoryUnlocked(
+    cwd: string,
+    title?: string | null,
+    projectId?: string,
+    context?: { expectsInitialAgent?: boolean; workspaceId?: string },
+  ): Promise<PersistedWorkspaceRecord> {
+    const normalizedCwd = resolve(cwd);
     const checkout = await workspaceGitService.getCheckout(normalizedCwd);
     const project = projectId
       ? await refreshProjectKind(await requireActiveProject(projectId), normalizedCwd, checkout)
@@ -387,7 +423,16 @@ export function createWorkspaceProvisioningService(deps: {
 
   async function findOrCreateWorkspaceForDirectory(cwd: string): Promise<PersistedWorkspaceRecord> {
     const normalizedCwd = resolve(cwd);
-    const workspaces = await workspaceRegistry.list();
+    return withAdoptionLock(normalizedCwd, (workspaces) =>
+      findOrCreateWorkspaceForDirectoryUnlocked(normalizedCwd, workspaces),
+    );
+  }
+
+  async function findOrCreateWorkspaceForDirectoryUnlocked(
+    cwd: string,
+    workspaces: PersistedWorkspaceRecord[],
+  ): Promise<PersistedWorkspaceRecord> {
+    const normalizedCwd = resolve(cwd);
     const active = workspaces
       .filter(
         (workspace) => !workspace.archivedAt && areEquivalentPaths(workspace.cwd, normalizedCwd),
@@ -411,7 +456,7 @@ export function createWorkspaceProvisioningService(deps: {
       const project = await projectRegistry.get(archived.projectId);
       if (project && !project.archivedAt) return ensureWorkspaceRecordUnarchived(archived);
     }
-    return createWorkspaceForDirectory(normalizedCwd);
+    return createWorkspaceForDirectoryUnlocked(normalizedCwd);
   }
 
   async function resolveOrCreateWorkspaceIdForCreateAgent(

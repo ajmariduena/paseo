@@ -1,9 +1,9 @@
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { dirname, join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createPersistedWorkspaceRecord,
   type PersistedWorkspaceRecord,
@@ -19,6 +19,7 @@ import {
   readPaseoWorktreeMetadata,
 } from "../utils/worktree-metadata.js";
 import { createWorktree } from "../utils/worktree.js";
+import { withWorktreeProjectLock } from "./worktree-use-lock.js";
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -166,6 +167,113 @@ describe("worktree storage cleanup", () => {
     expect(existsSync(becameDirty)).toBe(true);
     expect(git(repo, "branch", "--list", "removable")).toContain("removable");
     expect((await cleanupWorktreeStorage(context, [entries[0]!.entryId]))[0]?.removed).toBe(false);
+  });
+
+  it("keeps a clean archived worktree when manual teardown fails, then retries", async () => {
+    writeFileSync(
+      join(repo, "paseo.json"),
+      JSON.stringify({
+        worktree: {
+          teardown:
+            "node -e \"process.exit(require('fs').existsSync(process.env.PASEO_SOURCE_CHECKOUT_PATH + '/ready') ? 0 : 1)\"",
+        },
+      }),
+    );
+    git(repo, "add", "paseo.json");
+    git(repo, "commit", "-m", "add teardown");
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD");
+    const path = add("manual-teardown");
+    writePaseoWorktreeMetadata(path, {
+      baseRefName: "main",
+      serverId: "srv-this",
+      paseoHome: root,
+    });
+    records.push(workspace(path, "2026-01-02T00:00:00.000Z"));
+    const entry = (await listWorktreeStorage(context)).entries[0]!;
+    expect(entry).toMatchObject({ freeable: true, reason: "archived" });
+
+    const failed = await cleanupWorktreeStorage(context, [entry.entryId]);
+    expect(failed[0]).toMatchObject({ removed: false });
+    expect(failed[0]?.error).toContain("Worktree teardown command failed");
+    expect(existsSync(path)).toBe(true);
+
+    writeFileSync(join(repo, "ready"), "yes");
+    expect((await cleanupWorktreeStorage(context, [entry.entryId]))[0]).toEqual({
+      entryId: entry.entryId,
+      removed: true,
+      error: null,
+    });
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it("reports when the host cannot inspect running process directories", async () => {
+    const path = add("no-lsof");
+    writePaseoWorktreeMetadata(path, {
+      baseRefName: "main",
+      serverId: "srv-this",
+      paseoHome: root,
+    });
+    context.readProcessCwds = async () => ({ cwds: null, unavailableReason: "lsof_missing" });
+    const storage = await listWorktreeStorage(context);
+    expect(storage.processCheckUnavailableReason).toBe("lsof_missing");
+    expect(storage.entries[0]).toMatchObject({
+      freeable: false,
+      reason: "Could not check running processes",
+    });
+  });
+
+  it("shares a recent process reading across one manual cleanup request", async () => {
+    for (const name of ["shared-one", "shared-two", "shared-three"]) {
+      const path = add(name);
+      writePaseoWorktreeMetadata(path, {
+        baseRefName: "main",
+        serverId: "srv-this",
+        paseoHome: root,
+      });
+    }
+    let reads = 0;
+    context.readProcessCwds = async () => {
+      reads += 1;
+      return { cwds: [], unavailableReason: null };
+    };
+    context.processProbeNow = () => 1_000;
+    const entryIds = (await listWorktreeStorage(context)).entries.map((entry) => entry.entryId);
+    reads = 0;
+
+    const results = await cleanupWorktreeStorage(context, entryIds);
+    expect(results).toHaveLength(3);
+    expect(results.every((result) => result.removed)).toBe(true);
+    expect(reads).toBe(1);
+  });
+
+  it("refreshes the process reading after manual teardown before removing", async () => {
+    writeFileSync(
+      join(repo, "paseo.json"),
+      JSON.stringify({ worktree: { teardown: 'node -e "process.exit(0)"' } }),
+    );
+    git(repo, "add", "paseo.json");
+    git(repo, "commit", "-m", "add teardown");
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD");
+    const path = add("process-after-teardown");
+    writePaseoWorktreeMetadata(path, {
+      baseRefName: "main",
+      serverId: "srv-this",
+      paseoHome: root,
+    });
+    records.push(workspace(path, "2026-01-02T00:00:00.000Z"));
+    let reads = 0;
+    context.readProcessCwds = async () => ({
+      cwds: ++reads === 1 ? [] : [realpathSync(path)],
+      unavailableReason: null,
+    });
+    context.processProbeNow = () => 1_000;
+    const entryId = (await listWorktreeStorage(context)).entries[0]!.entryId;
+    reads = 0;
+
+    const result = await cleanupWorktreeStorage(context, [entryId]);
+    expect(result).toEqual([{ entryId, removed: false, error: "used by a running process" }]);
+    expect(reads).toBe(2);
+    expect(existsSync(path)).toBe(true);
   });
 
   it("requires explicit entry consent for an ownerless worktree", async () => {
@@ -375,6 +483,38 @@ describe("worktree storage cleanup", () => {
     const result = await sweepOwnedArchivedWorktrees(context, () => true);
     expect(result).toMatchObject({ candidates: 1, removed: 0 });
     expect(existsSync(join(path, "generated.txt"))).toBe(true);
+  });
+
+  it("lets another project operation finish while automatic teardown waits", async () => {
+    writeFileSync(
+      join(repo, "paseo.json"),
+      JSON.stringify({
+        worktree: {
+          teardown:
+            "node -e \"const fs=require('fs'); const root=process.env.PASEO_SOURCE_CHECKOUT_PATH; fs.writeFileSync(root+'/teardown-started','yes'); const until=Date.now()+4000; while(!fs.existsSync(root+'/project-operation-done') && Date.now()<until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,25); process.exit(fs.existsSync(root+'/project-operation-done')?0:1)\"",
+        },
+      }),
+    );
+    git(repo, "add", "paseo.json");
+    git(repo, "commit", "-m", "add waiting teardown");
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD");
+    const path = add("teardown-waits");
+    writePaseoWorktreeMetadata(path, {
+      baseRefName: "main",
+      serverId: "srv-this",
+      paseoHome: root,
+    });
+    records.push(workspace(path, "2026-01-02T00:00:00.000Z"));
+
+    const sweep = sweepOwnedArchivedWorktrees(context, () => true);
+    await vi.waitFor(() => expect(existsSync(join(repo, "teardown-started"))).toBe(true), {
+      timeout: 3_000,
+    });
+    await withWorktreeProjectLock(dirname(path), async () => {
+      writeFileSync(join(repo, "project-operation-done"), "yes");
+    });
+    expect(await sweep).toMatchObject({ candidates: 1, removed: 1, failures: [] });
+    expect(existsSync(path)).toBe(false);
   });
 
   it("does nothing while automatic cleanup is disabled", async () => {

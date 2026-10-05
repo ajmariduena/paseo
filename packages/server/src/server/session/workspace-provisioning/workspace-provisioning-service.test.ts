@@ -827,7 +827,7 @@ test.each(["missing", "archived"] as const)(
   },
 );
 
-test("a failed import keeps an archived worktree's placement when its directory is gone", async () => {
+test("an import refuses a missing archived worktree without changing its placement", async () => {
   // The git port here is the production read: getCheckoutStatus against the real
   // filesystem, so "the worktree directory is gone" is observed, not modelled.
   const mainRepoRoot = path.join(tmpDir, "main-repo");
@@ -892,7 +892,7 @@ test("a failed import keeps an archived worktree's placement when its directory 
     realCheckoutProvisioning.runInImportWorkspace({ cwd: worktreeCwd }, async () => {
       throw new Error("provider resume failed");
     }),
-  ).rejects.toThrow("provider resume failed");
+  ).rejects.toThrow("Workspace directory is unavailable");
 
   expect(await workspaceRegistry.get(archived.workspaceId)).toMatchObject({
     kind: "worktree",

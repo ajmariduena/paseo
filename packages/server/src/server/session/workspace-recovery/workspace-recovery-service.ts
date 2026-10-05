@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { basename } from "node:path";
+import { basename, dirname } from "node:path";
 
 import { resolveRepositoryDefaultBranch } from "../../../utils/checkout-git.js";
 import { createRealpathAwarePathMatcher } from "../../../utils/path.js";
@@ -12,7 +12,7 @@ import {
   rollbackCreatedPaseoWorktree,
   type WorktreeSource,
 } from "../../../utils/worktree.js";
-import { withWorktreeProjectLock } from "../../worktree-use-lock.js";
+import { withWorktreeProjectLock, worktreeProjectRootForCwd } from "../../worktree-use-lock.js";
 import { WorktreeRequestError, toWorktreeRequestError } from "../../worktree-errors.js";
 import {
   resolveWorkspaceDisplayName,
@@ -138,25 +138,34 @@ export function createWorkspaceRecoveryService(deps: {
   async function restore(
     workspaceId: string,
   ): Promise<{ workspaceId: string; action: WorkspaceRecoveryAction }> {
-    const resolved = await resolveRecovery(workspaceId);
-    if (resolved.kind === "unavailable") {
-      throw new Error(resolved.message);
+    const initial = await resolveRecovery(workspaceId);
+    if (initial.kind === "unavailable") {
+      throw new Error(initial.message);
     }
-
-    if (resolved.kind === "restore") {
-      const projectRoot = await getPaseoWorktreesRoot(
-        resolved.sourceRepoRoot,
+    let projectRoot: string | null;
+    if (initial.workspace.worktreeRoot) {
+      projectRoot = dirname(initial.workspace.worktreeRoot);
+    } else if (initial.kind === "restore") {
+      projectRoot = await getPaseoWorktreesRoot(
+        initial.sourceRepoRoot,
         deps.paseoHome,
         deps.worktreesRoot,
       );
-      return withWorktreeProjectLock(projectRoot, async () => {
-        await recreateArchivedWorktree(resolved.workspace, resolved.sourceRepoRoot);
-        await deps.unarchiveWorkspace(resolved.workspace);
-        return { workspaceId, action: resolved.kind };
-      });
+    } else {
+      projectRoot = worktreeProjectRootForCwd(initial.workspace.cwd);
     }
-    await deps.unarchiveWorkspace(resolved.workspace);
-    return { workspaceId, action: resolved.kind };
+    const recover = async (): Promise<{ workspaceId: string; action: WorkspaceRecoveryAction }> => {
+      const resolved = await resolveRecovery(workspaceId);
+      if (resolved.kind === "unavailable") throw new Error(resolved.message);
+      if (resolved.kind === "restore") {
+        await recreateArchivedWorktree(resolved.workspace, resolved.sourceRepoRoot);
+      } else if (!(await deps.isDirectory(resolved.workspace.cwd))) {
+        throw new Error("The archived workspace directory is no longer available.");
+      }
+      await deps.unarchiveWorkspace(resolved.workspace);
+      return { workspaceId, action: resolved.kind };
+    };
+    return projectRoot ? withWorktreeProjectLock(projectRoot, recover) : recover();
   }
 
   async function recreateArchivedWorktree(

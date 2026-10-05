@@ -6519,6 +6519,7 @@ export const WorkspaceStorageListResponseSchema = z.object({
     totalBytes: z.number(),
     freeableBytes: z.number(),
     sizesComplete: z.boolean(),
+    processCheckUnavailableReason: z.enum(["lsof_missing", "check_failed"]).nullable().optional(),
     error: z.string().nullable(),
     requestId: z.string(),
   }),

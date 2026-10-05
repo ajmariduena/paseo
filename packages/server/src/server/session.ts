@@ -5588,6 +5588,7 @@ export class Session {
           totalBytes: 0,
           freeableBytes: 0,
           sizesComplete: false,
+          processCheckUnavailableReason: "check_failed",
           error: error instanceof Error ? error.message : String(error),
           requestId: msg.requestId,
         },
