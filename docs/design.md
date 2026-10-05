@@ -94,7 +94,7 @@ Pane chrome — the workspace pane header, the file-explorer header, the diff pa
 
 ## 6. Pickers
 
-Five primitives. The pick is determined by option count, the need to search, and how the picker is anchored.
+Six primitives. The pick is determined by option count, the need to search, and how the picker is anchored.
 
 `<DropdownMenu>` is for a small fixed set anchored to a trigger. Theme picker, kebab menus on workspace and project rows (`packages/app/src/components/sidebar-workspace-list.tsx:684-770`), row "more" menus. Items can be async (`status: "pending"`) and can include destructive entries. Under ~10 options where the user knows what they're looking for.
 
@@ -108,7 +108,9 @@ Five primitives. The pick is determined by option count, the need to search, and
 
 `confirmDialog` is for destructive yes/no and imperative confirmation. Promise-based: `await confirmDialog({ destructive: true, ... })`. Anything where a wrong click loses work.
 
-Three themes is `DropdownMenu`. Thirty hosts is `Combobox`. A label and a value is `AdaptiveModalSheet`. "Are you sure?" is `confirmDialog`.
+`<EffortSlider>` (`packages/app/src/components/ui/effort-slider.tsx`) is for an ordinal scale of a few steps whose order is the point — a model's effort levels. On touch a scale of four to six stops is one gesture, not a list. Its stops are the provider's options by index; it knows nothing about what a level means. The last stop is the only one drawn as its own family (gradient, shimmer, arrival pulse), and that stays true only while it is the one exception. Reduced motion keeps the gradient and drops the motion.
+
+Three themes is `DropdownMenu`. Thirty hosts is `Combobox`. A label and a value is `AdaptiveModalSheet`. "Are you sure?" is `confirmDialog`. Low to Max is `EffortSlider`.
 
 ---
 
