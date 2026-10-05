@@ -16,6 +16,8 @@ interface ApplyFileMentionReplacementInput {
 }
 
 const INVALID_MENTION_QUERY_CHARS = /[\s\n\r\t"']/;
+// An @ glued to a word ("me@example.com") is not a mention.
+const MENTION_BOUNDARY_CHARS = /[\s"'([{]/;
 
 export function findActiveFileMention(input: FindActiveFileMentionInput): FileMentionRange | null {
   const clampedCursor = Math.max(0, Math.min(input.cursorIndex, input.text.length));
@@ -26,6 +28,11 @@ export function findActiveFileMention(input: FindActiveFileMentionInput): FileMe
     atIndex >= 0;
     atIndex = atIndex === 0 ? -1 : beforeCursor.lastIndexOf("@", atIndex - 1)
   ) {
+    const previousCharacter = atIndex > 0 ? input.text[atIndex - 1] : "";
+    if (previousCharacter && !MENTION_BOUNDARY_CHARS.test(previousCharacter)) {
+      continue;
+    }
+
     const query = beforeCursor.slice(atIndex + 1);
     if (INVALID_MENTION_QUERY_CHARS.test(query)) {
       continue;

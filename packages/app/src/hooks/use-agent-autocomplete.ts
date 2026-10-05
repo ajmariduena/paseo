@@ -333,6 +333,23 @@ function resolveAutocompleteErrorMessage(args: {
   return undefined;
 }
 
+function resolveAutocompleteEscape(args: {
+  mode: AutocompleteMode;
+  activeSlashCommand: SlashCommandRange | null;
+  activeFileMention: FileMentionRange | null;
+  clearInput: () => void;
+  dismissFileMention: (start: number) => void;
+}): (() => void) | undefined {
+  if (args.mode === "command" && args.activeSlashCommand?.position === "start") {
+    return args.clearInput;
+  }
+  const fileMention = args.activeFileMention;
+  if (args.mode === "file" && fileMention) {
+    return () => args.dismissFileMention(fileMention.start);
+  }
+  return undefined;
+}
+
 // A draft's agentId is a draft key the daemon does not know, so a draft lists
 // commands by its config only, and not at all until that config is complete.
 function resolveDraftCommandContext(draft: DraftCommandTarget | undefined) {
@@ -396,7 +413,17 @@ export function useAgentAutocomplete(input: UseAgentAutocompleteInput): AgentAut
       }),
     [cursorIndex, userInput],
   );
-  const showFileAutocomplete = activeFileMention !== null;
+  const [dismissedFileMentionStart, setDismissedFileMentionStart] = useState<number | null>(null);
+  useEffect(() => {
+    if (
+      dismissedFileMentionStart !== null &&
+      activeFileMention?.start !== dismissedFileMentionStart
+    ) {
+      setDismissedFileMentionStart(null);
+    }
+  }, [activeFileMention?.start, dismissedFileMentionStart]);
+  const showFileAutocomplete =
+    activeFileMention !== null && activeFileMention.start !== dismissedFileMentionStart;
   const fileFilterQuery = activeFileMention?.query ?? "";
   const [debouncedFileFilterQuery, setDebouncedFileFilterQuery] = useState(fileFilterQuery);
 
@@ -581,10 +608,13 @@ export function useAgentAutocomplete(input: UseAgentAutocompleteInput): AgentAut
     options,
     query: mode === "command" ? commandFilterQuery : fileFilterQuery,
     onSelectOption: selectOptionFromKeyPress,
-    onEscape:
-      mode === "command" && activeSlashCommand?.position === "start"
-        ? () => setUserInput("")
-        : undefined,
+    onEscape: resolveAutocompleteEscape({
+      mode,
+      activeSlashCommand,
+      activeFileMention,
+      clearInput: () => setUserInput(""),
+      dismissFileMention: setDismissedFileMentionStart,
+    }),
   });
 
   const isLoading = resolveAutocompleteIsLoading({

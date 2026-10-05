@@ -41,6 +41,20 @@ describe("findActiveFileMention", () => {
     expect(mention).toBeNull();
   });
 
+  it("ignores an @ inside an email address", () => {
+    const text = "write to alex@example.com";
+    expect(findActiveFileMention({ text, cursorIndex: text.length })).toBeNull();
+  });
+
+  it("detects a mention after a parenthesis", () => {
+    const text = "see (@src";
+    expect(findActiveFileMention({ text, cursorIndex: text.length })).toEqual({
+      start: 5,
+      end: text.length,
+      query: "src",
+    });
+  });
+
   it("returns null when @ at start is followed by a delimiter", () => {
     const mention = findActiveFileMention({
       text: "@ ",
