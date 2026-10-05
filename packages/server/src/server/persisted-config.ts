@@ -1,3 +1,4 @@
+import { QuickPromptSchema } from "@getpaseo/protocol/messages";
 import { PluginRegistriesSchema } from "@getpaseo/protocol/plugin-registry";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -308,6 +309,8 @@ export const PersistedConfigSchema = z
         appendSystemPrompt: z.string().optional(),
         terminalProfiles: z.array(TerminalProfileSchema).optional(),
         agentProfiles: z.array(AgentProfileSchema).optional(),
+        quickPrompts: z.array(QuickPromptSchema).optional(),
+        quickPromptUndoMs: z.number().int().min(0).max(10000).optional(),
         cors: z
           .object({
             allowedOrigins: z.array(z.string()).optional(),

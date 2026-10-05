@@ -1,3 +1,11 @@
+import type { QuickPrompt } from "@getpaseo/protocol/messages";
+import {
+  createDeferredQuickPromptSend,
+  type QuickPromptContext,
+  type QuickPromptCapture,
+} from "@/quick-prompts/deferred-send";
+import { selectQuickPrompt, moveQuickPrompt, updateQuickPrompt } from "@/quick-prompts/catalog";
+import { openQuickPromptForm } from "@/quick-prompts/form";
 import { describe, expect, it, vi } from "vitest";
 import {
   applyDictationTranscript,
@@ -358,5 +366,277 @@ describe("stopRealtimeVoice", () => {
     });
 
     expect(calls).toEqual(["cancel agent", "stop voice"]);
+  });
+});
+
+describe("deferred quick prompt sends", () => {
+  const prompt: QuickPrompt = {
+    id: "summary",
+    title: "Summary",
+    text: "Summarize.",
+    mode: "send",
+    pinned: true,
+    isDefault: true,
+  };
+  function setup() {
+    let context: QuickPromptContext = {
+      host: "host",
+      agent: "agent",
+      conversation: "chat",
+      connected: true,
+      visible: true,
+      foreground: true,
+      available: true,
+      policy: "queue",
+      presentation: "wide",
+      action: "queue",
+    };
+    const callbacks = new Set<() => void>();
+    const sent: QuickPromptCapture[] = [];
+    let disposition: "started" | "steered" | "queued" | undefined = "queued";
+    let fail = false;
+    const controller = createDeferredQuickPromptSend({
+      readContext: () => context,
+      schedule: (callback) => {
+        callbacks.add(callback);
+        return () => {
+          callbacks.delete(callback);
+        };
+      },
+      dispatch: async (capture) => {
+        sent.push(capture);
+        if (fail) throw new Error("offline");
+        return disposition;
+      },
+    });
+    return {
+      controller,
+      sent,
+      change(patch: Partial<QuickPromptContext>) {
+        context = { ...context, ...patch };
+      },
+      tick() {
+        for (const callback of callbacks) callback();
+      },
+      reply(next: typeof disposition) {
+        disposition = next;
+      },
+      fail(next: boolean) {
+        fail = next;
+      },
+    };
+  }
+  it("waits, supports undo and never submits a cancelled timer", () => {
+    const test = setup();
+    test.controller.start(prompt, 2500);
+    expect(test.sent).toEqual([]);
+    expect(test.controller.getState().status).toBe("pending");
+    test.controller.cancel();
+    test.tick();
+    expect(test.sent).toEqual([]);
+    expect(test.controller.getState()).toEqual({ status: "cancelled" });
+  });
+  it("a second tap dispatches the captured text exactly once", async () => {
+    const test = setup();
+    test.controller.start(prompt, 2500);
+    test.controller.start({ ...prompt, text: "Changed" }, 2500);
+    test.controller.start(prompt, 2500);
+    test.tick();
+    await Promise.resolve();
+    expect(test.sent).toHaveLength(1);
+    expect(test.sent[0].text).toBe("Summarize.");
+    expect(test.controller.getState()).toMatchObject({ status: "accepted", disposition: "queued" });
+  });
+  const changes: Array<[string, Partial<QuickPromptContext>]> = [
+    ["host", { host: "other" }],
+    ["agent", { agent: "other" }],
+    ["conversation", { conversation: "other" }],
+    ["panel hidden", { visible: false }],
+    ["background", { foreground: false }],
+    ["disconnect", { connected: false }],
+    ["permission or policy", { policy: "permission-123" }],
+    ["presentation", { presentation: "compact" }],
+    ["action", { action: "interrupt" }],
+    ["voice or unavailable agent", { available: false }],
+  ];
+  it.each(changes)("cancels on %s immediately before dispatch", (_label, patch) => {
+    const test = setup();
+    test.controller.start(prompt, 2500);
+    test.change(patch);
+    test.tick();
+    expect(test.sent).toEqual([]);
+    expect(test.controller.getState()).toEqual({ status: "cancelled" });
+  });
+  it.each(["started", "steered", "queued"] as const)(
+    "reports daemon disposition %s",
+    async (disposition) => {
+      const test = setup();
+      test.reply(disposition);
+      test.controller.start(prompt, 0);
+      await Promise.resolve();
+      expect(test.controller.getState()).toMatchObject({ status: "accepted", disposition });
+    },
+  );
+  it("never invents disposition feedback", async () => {
+    const test = setup();
+    test.reply(undefined);
+    test.controller.start(prompt, 0);
+    await Promise.resolve();
+    expect(test.controller.getState()).toEqual({ status: "idle" });
+  });
+  it("failure retains its capture and requires explicit retry", async () => {
+    const test = setup();
+    test.fail(true);
+    test.controller.start(prompt, 0);
+    await Promise.resolve();
+    test.tick();
+    expect(test.sent).toHaveLength(1);
+    expect(test.controller.getState()).toMatchObject({
+      status: "failed",
+      capture: { text: prompt.text },
+    });
+    test.fail(false);
+    test.controller.retry(2500);
+    expect(test.sent).toHaveLength(1);
+    test.tick();
+    await Promise.resolve();
+    expect(test.sent).toHaveLength(2);
+    expect(test.controller.getState()).toMatchObject({ status: "accepted", disposition: "queued" });
+  });
+  it("cannot retry a failure against another conversation", async () => {
+    const test = setup();
+    test.fail(true);
+    test.controller.start(prompt, 0);
+    await Promise.resolve();
+    test.change({ conversation: "other" });
+    test.controller.retry(0);
+    expect(test.sent).toHaveLength(1);
+    expect(test.controller.getState().status).toBe("cancelled");
+  });
+  it("iOS menu teardown cannot retarget a delayed selection", () => {
+    const test = setup();
+    const select = test.controller.guardSelection(() => test.controller.start(prompt, 0));
+    test.change({ agent: "different-agent" });
+    select();
+    expect(test.sent).toEqual([]);
+    expect(test.controller.getState()).toEqual({ status: "cancelled" });
+  });
+  it("a transient policy change during menu teardown invalidates the captured selection", () => {
+    const test = setup();
+    const select = test.controller.guardSelection(() => test.controller.start(prompt, 0));
+    test.change({ policy: "new-permission" });
+    test.controller.validate();
+    test.change({ policy: "queue" });
+    select();
+    expect(test.sent).toEqual([]);
+    expect(test.controller.getState()).toEqual({ status: "cancelled" });
+  });
+  it("a transient disconnect cancels even if the connection recovers before the timer", () => {
+    const test = setup();
+    test.controller.start(prompt, 2500);
+    test.change({ connected: false });
+    test.controller.validate();
+    test.change({ connected: true });
+    test.tick();
+    expect(test.sent).toEqual([]);
+    expect(test.controller.getState()).toEqual({ status: "cancelled" });
+  });
+  it("manual send and unmount cancel pending dispatch", () => {
+    const test = setup();
+    test.controller.start(prompt, 2500);
+    test.controller.cancel();
+    test.tick();
+    expect(test.sent).toEqual([]);
+    test.controller.start(prompt, 2500);
+    test.controller.dispose();
+    test.tick();
+    expect(test.sent).toEqual([]);
+  });
+});
+
+describe("quick prompt picker actions", () => {
+  const prompt: QuickPrompt = {
+    id: "summary",
+    title: "Summary",
+    text: "Summarize.",
+    mode: "insert",
+    pinned: false,
+    isDefault: false,
+  };
+  it("row sends, insert edits the draft, pin and default only persist", async () => {
+    const sent: QuickPrompt[] = [];
+    const inserted: string[] = [];
+    const saved: QuickPrompt[][] = [];
+    const ports = {
+      send: (entry: QuickPrompt) => {
+        sent.push(entry);
+      },
+      insert: (text: string) => {
+        inserted.push(text);
+      },
+      save: async (next: QuickPrompt[]) => {
+        saved.push(next);
+      },
+    };
+    await selectQuickPrompt({ prompt, prompts: [prompt], action: "send", ports });
+    expect(sent).toEqual([prompt]);
+    expect(inserted).toEqual([]);
+    expect(saved).toEqual([]);
+    await selectQuickPrompt({ prompt, prompts: [prompt], action: "insert", ports });
+    expect(inserted).toEqual([prompt.text]);
+    expect(sent).toHaveLength(1);
+    await selectQuickPrompt({ prompt, prompts: [prompt], action: "pin", ports });
+    expect(saved[0]).toEqual([{ ...prompt, pinned: true }]);
+    await selectQuickPrompt({
+      prompt,
+      prompts: [prompt, { ...prompt, id: "old", isDefault: true }],
+      action: "default",
+      ports,
+    });
+    expect(saved[1]).toEqual([
+      { ...prompt, isDefault: true },
+      { ...prompt, id: "old", isDefault: false },
+    ]);
+  });
+  it("cannot pin a fourth prompt; moving preserves the list order", async () => {
+    const pins = [0, 1, 2].map((id) => Object.assign({}, prompt, { id: String(id), pinned: true }));
+    const saved: QuickPrompt[][] = [];
+    await selectQuickPrompt({
+      prompt,
+      prompts: [...pins, prompt],
+      action: "pin",
+      ports: {
+        send: () => {},
+        insert: () => {},
+        save: async (next) => {
+          saved.push(next);
+        },
+      },
+    });
+    expect(saved).toEqual([]);
+    expect(moveQuickPrompt([...pins, prompt], prompt.id, -1).map((entry) => entry.id)).toEqual([
+      "0",
+      "1",
+      "summary",
+      "2",
+    ]);
+  });
+  it("fresh forms isolate edits; failed saves keep the entered values", async () => {
+    const form = openQuickPromptForm(prompt, 0);
+    form.set({ title: "My summary", text: "My edited prompt" });
+    expect(
+      await form.submit(async () => {
+        throw new Error("Disconnected");
+      }),
+    ).toBe(false);
+    expect(form.getState()).toMatchObject({
+      error: "Disconnected",
+      canSubmit: true,
+      prompt: { title: "My summary", text: "My edited prompt" },
+    });
+    expect(openQuickPromptForm(prompt, 0).getState().prompt).toEqual(prompt);
+    expect(updateQuickPrompt([prompt], { ...prompt, text: "Replacement" })).toEqual([
+      { ...prompt, text: "Replacement" },
+    ]);
   });
 });

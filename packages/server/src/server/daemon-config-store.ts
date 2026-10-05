@@ -5,6 +5,7 @@ import {
 } from "./persisted-config.js";
 import { ProviderOverrideSchema } from "./agent/provider-launch-config.js";
 import {
+  validateQuickPrompts,
   MutableDaemonConfigSchema,
   MutableDaemonConfigPatchSchema,
 } from "@getpaseo/protocol/messages";
@@ -31,6 +32,8 @@ interface SupportedMutableConfigPatch {
   appendSystemPrompt?: string;
   terminalProfiles?: MutableDaemonConfig["terminalProfiles"];
   agentProfiles?: MutableDaemonConfig["agentProfiles"];
+  quickPrompts?: MutableDaemonConfig["quickPrompts"];
+  quickPromptUndoMs?: number;
   skills?: MutableDaemonConfig["skills"];
   pluginsEnabled?: boolean;
   plugins?: MutableDaemonConfig["plugins"];
@@ -196,6 +199,8 @@ const RELOADABLE_PATHS = [
   "daemon.appendSystemPrompt",
   "daemon.terminalProfiles",
   "daemon.agentProfiles",
+  "daemon.quickPrompts",
+  "daemon.quickPromptUndoMs",
   "app.baseUrl",
   "agents.providers",
   "agents.catalogRefreshTimeoutMs",
@@ -222,6 +227,8 @@ const PERSISTED_TO_MUTABLE_PATH = new Map<string, string>([
   ["daemon.appendSystemPrompt", "appendSystemPrompt"],
   ["daemon.terminalProfiles", "terminalProfiles"],
   ["daemon.agentProfiles", "agentProfiles"],
+  ["daemon.quickPrompts", "quickPrompts"],
+  ["daemon.quickPromptUndoMs", "quickPromptUndoMs"],
   ["app.baseUrl", "app.baseUrl"],
   ["agents.providers", "providers"],
   ["agents.catalogRefreshTimeoutMs", "catalogRefreshTimeoutMs"],
@@ -336,6 +343,10 @@ function pickSupportedPatchFields(patch: MutableDaemonConfigPatch): SupportedMut
       : {}),
     ...(patch.terminalProfiles !== undefined ? { terminalProfiles: patch.terminalProfiles } : {}),
     ...(patch.agentProfiles !== undefined ? { agentProfiles: patch.agentProfiles } : {}),
+    ...(patch.quickPrompts !== undefined ? { quickPrompts: patch.quickPrompts } : {}),
+    ...(patch.quickPromptUndoMs !== undefined
+      ? { quickPromptUndoMs: patch.quickPromptUndoMs }
+      : {}),
     ...(patch.pluginsEnabled !== undefined ? { pluginsEnabled: patch.pluginsEnabled } : {}),
     ...(patch.plugins !== undefined ? { plugins: patch.plugins } : {}),
   };
@@ -398,6 +409,7 @@ export class DaemonConfigStore {
       ...initial,
       relay: initial.relay ?? { enabled: true },
     });
+    validateQuickPrompts(this.current.quickPrompts ?? []);
     this.relayEnabledMutable = options.relayEnabledMutable ?? true;
     this.reloadSource = options.reloadSource;
     this.startupPersisted = options.startupPersisted ?? loadPersistedConfig(paseoHome, this.logger);
@@ -437,6 +449,7 @@ export class DaemonConfigStore {
       ),
     );
 
+    validateQuickPrompts(next.quickPrompts ?? []);
     const configChanged = !isEqualValue(this.current, next);
 
     if (!configChanged && removedProviders.length === 0) {
@@ -476,6 +489,7 @@ export class DaemonConfigStore {
       ...resolved.mutable,
       plugins: this.current.plugins,
     });
+    validateQuickPrompts(desired.quickPrompts ?? []);
     const changedSinceLastApply = diffPaths(this.lastKnownPersisted, persisted);
     const overrideControlledPaths = compactOwnedPaths(
       changedSinceLastApply.filter((path) =>
@@ -743,5 +757,7 @@ function mergeMutableDaemonPatch(
   if (patch.appendSystemPrompt !== undefined) next.appendSystemPrompt = patch.appendSystemPrompt;
   if (patch.terminalProfiles !== undefined) next.terminalProfiles = patch.terminalProfiles;
   if (patch.agentProfiles !== undefined) next.agentProfiles = patch.agentProfiles;
+  if (patch.quickPrompts !== undefined) next.quickPrompts = patch.quickPrompts;
+  if (patch.quickPromptUndoMs !== undefined) next.quickPromptUndoMs = patch.quickPromptUndoMs;
   return Object.keys(next).length > 0 ? next : undefined;
 }

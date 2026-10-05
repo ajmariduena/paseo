@@ -1,3 +1,4 @@
+import type { QuickPrompt } from "@getpaseo/protocol/messages";
 import type { PluginRegistries } from "@getpaseo/protocol/plugin-registry";
 import { describeHookWorkspace } from "./plugins/lifecycle/index.js";
 import express from "express";
@@ -432,6 +433,8 @@ export interface PaseoDaemonConfig {
   appendSystemPrompt?: string;
   terminalProfiles?: TerminalProfile[];
   agentProfiles?: AgentProfile[];
+  quickPrompts?: QuickPrompt[];
+  quickPromptUndoMs?: number;
   skillSelection?: AgentSkillSelection;
   pluginsEnabled?: boolean;
   plugins?: Record<string, PluginSource>;
@@ -608,6 +611,8 @@ function createInitialMutableDaemonConfig(config: PaseoDaemonConfig): MutableDae
     initialConfig.terminalProfiles = config.terminalProfiles;
   }
 
+  initialConfig.quickPrompts = config.quickPrompts;
+  initialConfig.quickPromptUndoMs = config.quickPromptUndoMs;
   if (config.agentProfiles !== undefined) {
     initialConfig.agentProfiles = config.agentProfiles;
   }

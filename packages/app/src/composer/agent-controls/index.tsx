@@ -1,4 +1,8 @@
 import {
+  usePublishQuickPromptControls,
+  useQuickPromptControlDensity,
+} from "@/quick-prompts/capacity";
+import {
   createContext,
   memo,
   useCallback,
@@ -631,11 +635,18 @@ function ControlledAgentControls({
       toolbarFeatures,
     ],
   );
-  const { density, handleStartLayout, handleEndLayout } = useAgentControlsDensity({
+  const {
+    density: measuredDensity,
+    handleStartLayout,
+    handleEndLayout,
+  } = useAgentControlsDensity({
     initialDensity: isCompact ? "tight" : "full",
     controlPresence,
     controlGap,
   });
+  usePublishQuickPromptControls(controlPresence);
+  const quickPromptDensity = useQuickPromptControlDensity();
+  const density = quickPromptDensity ?? measuredDensity;
   const presentation = useMemo(() => resolveComposerControlPresentation(density), [density]);
   const layout = useMemo(
     () => ({

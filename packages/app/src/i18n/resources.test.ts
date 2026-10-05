@@ -129,6 +129,17 @@ describe("translation resources", () => {
     expect(countMatchingEnglishStrings(zhCN)).toBeLessThan(maxFallbackStrings);
   });
 
+  it("localizes quick prompt intent, cancellation, retry and settings in every language", () => {
+    for (const resource of [ar, es, fr, ja, ko, ptBR, ru, zhCN]) {
+      expect(Object.keys(resource.quickPrompts).sort()).toEqual(
+        Object.keys(en.quickPrompts).sort(),
+      );
+      expect(resource.quickPrompts.interrupt).not.toBe(en.quickPrompts.interrupt);
+      expect(resource.quickPrompts.cancelled).not.toBe(en.quickPrompts.cancelled);
+      expect(resource.quickPrompts.failed).not.toBe(en.quickPrompts.failed);
+    }
+  });
+
   it("localizes the pull request empty state in every supported language", () => {
     for (const resource of [ar, es, fr, ja, ko, ptBR, ru, zhCN]) {
       expect(resource.panels.pullRequest.emptyTitle).not.toBe(en.panels.pullRequest.emptyTitle);

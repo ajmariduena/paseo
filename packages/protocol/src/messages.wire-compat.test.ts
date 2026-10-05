@@ -586,3 +586,40 @@ test("blocked setup preserves the legacy failed shape and optional provenance", 
     legacySnapshot.parse(failed),
   );
 });
+
+test("quick prompts remain optional and survive config responses and patches", () => {
+  const legacy = { mcp: { injectIntoAgents: false } };
+  expect(MutableDaemonConfigSchema.parse(legacy).quickPrompts).toBeUndefined();
+  expect(MutableDaemonConfigPatchSchema.parse({})).toEqual({});
+  const quickPrompts = [
+    {
+      id: "summary",
+      title: "Summary",
+      text: "Summarize.",
+      mode: "send",
+      pinned: true,
+      isDefault: true,
+    },
+  ];
+  const current = { ...legacy, quickPrompts, quickPromptUndoMs: 2500 };
+  expect(MutableDaemonConfigSchema.parse(current).quickPrompts).toEqual(quickPrompts);
+  expect(MutableDaemonConfigPatchSchema.parse({ quickPrompts, quickPromptUndoMs: 0 })).toEqual({
+    quickPrompts,
+    quickPromptUndoMs: 0,
+  });
+  const oldConfigSchema = MutableDaemonConfigSchema.omit({
+    quickPrompts: true,
+    quickPromptUndoMs: true,
+  });
+  expect(oldConfigSchema.safeParse(current).success).toBe(true);
+  expect(MutableDaemonConfigPatchSchema.safeParse({ quickPromptUndoMs: -1 }).success).toBe(false);
+});
+
+test("quick prompt capability is optional and discarded by older feature schemas", () => {
+  const legacy = { status: "server_info", serverId: "host" };
+  expect(ServerInfoStatusPayloadSchema.safeParse(legacy).success).toBe(true);
+  const current = { ...legacy, features: { quickPrompts: true } };
+  expect(ServerInfoStatusPayloadSchema.parse(current).features?.quickPrompts).toBe(true);
+  const oldFeatures = z.object({ agentProfiles: z.boolean().optional() });
+  expect(oldFeatures.parse(current.features)).toEqual({});
+});

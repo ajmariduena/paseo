@@ -219,6 +219,8 @@ snapshot so a mixed edit can apply its live subset and still name the paths that
     appendSystemPrompt: string,    // appended to supported provider system/developer prompts
     terminalProfiles: TerminalProfile[],  // named shell commands; omitted means DEFAULT_TERMINAL_PROFILES
     agentProfiles: AgentProfile[],        // named agent launch bundles; omitted means none
+    quickPrompts?: QuickPrompt[],         // host-owned reusable text; omitted means none
+    quickPromptUndoMs?: number,           // 2500 by default; 0 disables the wait
     cors: { allowedOrigins: string[] },
     relay: { enabled: boolean, endpoint: string, publicEndpoint: string, useTls: boolean, publicUseTls: boolean }, // new homes materialize enabled: false
     auth: { password: string }    // bcrypt hash, optional
@@ -287,18 +289,20 @@ there is no startup migration or persistent update policy.
 
 ### Profile lists
 
-`terminalProfiles` and `agentProfiles` are both whole-list fields: a config patch replaces the
+`terminalProfiles`, `agentProfiles`, and `quickPrompts` are whole-list fields: a config patch replaces the
 array, never merges entries, so a client sends the complete next list on every add, edit, reorder
 and remove. List order is the display order.
 
 Absent and empty mean different things for terminal profiles — omitting the key falls back to
-`DEFAULT_TERMINAL_PROFILES`, while `[]` means the user removed them all. Agent profiles have no
-defaults, so both mean none.
+`DEFAULT_TERMINAL_PROFILES`, while `[]` means the user removed them all. Agent profiles and quick prompts have no
+default catalog, so both mean none. Quick prompts and their undo window belong to the host,
+including the chosen default. Devices do not keep a fallback catalog. An absent
+`quickPromptUndoMs` means 2500 ms; zero turns the wait off.
 
 `PersistedConfigSchema` parses strictly, so a daemon that predates a field drops it on write
-rather than storing something it cannot describe. That is why the client gates the agent profiles
-UI on `server_info.features.agentProfiles` instead of letting a save appear to succeed against an
-older daemon.
+rather than storing something it cannot describe. Gate agent profiles and quick prompts on
+their respective `server_info.features` capabilities so a save cannot appear to succeed against
+an older daemon.
 
 ### Agent provider Paseo tools
 

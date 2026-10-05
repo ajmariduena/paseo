@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  resolveQuickPromptPresentation,
+  estimateComposerFixedWidth,
   COMPOSER_TOOLBAR_GEOMETRY,
   estimateComposerControlsWidth,
   estimateModelPillWidth,
@@ -180,5 +182,98 @@ describe("composer control layout", () => {
     });
     expect(resolveComposerToolbarGlyphSize("web")).toBe(16);
     expect(resolveComposerToolbarGlyphSize("native")).toBe(20);
+  });
+});
+
+describe("quick prompt capacity", () => {
+  const base = {
+    compact: false,
+    touch: true,
+    defaultLabel: "Summary",
+    pinnedLabels: ["Tests", "Commit", "Review"],
+    controls: CLAUDE_CONTROLS,
+  };
+  it("keeps at most three pins and removes them before the default label", () => {
+    expect(resolveQuickPromptPresentation({ ...base, availableWidth: 1000 })).toMatchObject({
+      showDefaultLabel: true,
+      visiblePinCount: 3,
+    });
+    expect(resolveQuickPromptPresentation({ ...base, availableWidth: 400 })).toMatchObject({
+      showDefaultLabel: true,
+      visiblePinCount: 0,
+    });
+    expect(resolveQuickPromptPresentation({ ...base, availableWidth: 240 })).toMatchObject({
+      showDefaultLabel: false,
+      visiblePinCount: 0,
+    });
+  });
+  it("reserves the default label until the model pill has collapsed to its glyph", () => {
+    const result = resolveQuickPromptPresentation({ ...base, availableWidth: 260 });
+    expect(result).toMatchObject({ showDefaultLabel: true, visiblePinCount: 0, density: "tight" });
+    expect(resolveComposerControlPresentation(result.density).showModelLabel).toBe(false);
+    const narrower = resolveQuickPromptPresentation({ ...base, availableWidth: 240 });
+    expect(narrower.showDefaultLabel).toBe(false);
+  });
+
+  it.each([true, false])(
+    "fits all controls into the 368px iPad mini interior (touch=%s)",
+    (touch) => {
+      const gap = touch
+        ? COMPOSER_TOOLBAR_GEOMETRY.touchControlGap
+        : COMPOSER_TOOLBAR_GEOMETRY.controlGap;
+      const fixed = estimateComposerFixedWidth(touch);
+      const result = resolveQuickPromptPresentation({
+        ...base,
+        touch,
+        availableWidth: 368 - fixed,
+      });
+      const occupied =
+        fixed +
+        result.width +
+        gap +
+        estimateComposerControlsWidth(base.controls, result.density, gap);
+      expect(occupied).toBeLessThanOrEqual(368);
+      expect(result.visiblePinCount).toBe(0);
+    },
+  );
+
+  it.each([1, 1.5, 2])("fits longer localized labels at font scale %s", (fontScale) => {
+    const controls = {
+      ...CLAUDE_CONTROLS,
+      fontScale,
+      modelLabel: "GPT-6 Astra",
+      effortLabel: "Extra high",
+      modeLabel: "Ask before edits",
+    };
+    for (const interior of [368, 420, 600, 1000]) {
+      const fixed = estimateComposerFixedWidth(true);
+      const result = resolveQuickPromptPresentation({
+        ...base,
+        controls,
+        defaultLabel: "Resumen corto",
+        availableWidth: interior - fixed,
+      });
+      expect(
+        fixed + result.width + 12 + estimateComposerControlsWidth(controls, result.density, 12),
+      ).toBeLessThanOrEqual(interior);
+    }
+  });
+
+  it("compact and absent default always open picker; larger text consumes capacity", () => {
+    expect(
+      resolveQuickPromptPresentation({ ...base, compact: true, availableWidth: 400 })
+        .showDefaultLabel,
+    ).toBe(false);
+    expect(
+      resolveQuickPromptPresentation({ ...base, defaultLabel: null, availableWidth: 400 })
+        .showDefaultLabel,
+    ).toBe(false);
+    expect(
+      resolveQuickPromptPresentation({
+        ...base,
+        availableWidth: 300,
+        controls: { ...base.controls, fontScale: 2 },
+      }),
+    ).toMatchObject({ showDefaultLabel: false, visiblePinCount: 0 });
   });
 });

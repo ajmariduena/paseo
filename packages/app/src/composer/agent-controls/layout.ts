@@ -199,3 +199,67 @@ export function resolveComposerControlPresentation(
 export function resolveComposerToolbarGlyphSize(platform: "web" | "native"): number {
   return platform === "native" ? 20 : 16;
 }
+
+export interface QuickPromptPresentation {
+  showDefaultLabel: boolean;
+  visiblePinCount: number;
+  width: number;
+  density: ComposerControlDensity;
+}
+
+/** Attachment, context ring, mic and send/stop retain their complete target frames. */
+export function estimateComposerFixedWidth(touch: boolean): number {
+  return touch
+    ? 4 * 44
+    : 4 * COMPOSER_TOOLBAR_GEOMETRY.controlSize + 5 * COMPOSER_TOOLBAR_GEOMETRY.controlGap;
+}
+
+/** A bounded pill includes its bookmark, padding and one line of text. */
+export function estimateQuickPromptPillWidth(label: string, fontScale: number): number {
+  return (
+    44 + estimateLabelWidth(Array.from(label).slice(0, 14).join(""), normalizedFontScale(fontScale))
+  );
+}
+
+/**
+ * Resolve the joint budget: secondary pins disappear first, then model/effort/mode labels,
+ * then the default prompt label. Both clusters consume this same decision, so a prompt
+ * cannot keep the model at a density whose labels would overflow the remaining space.
+ */
+export function resolveQuickPromptPresentation(input: {
+  /** Button-row interior after the fixed attachment/ring/mic/send slots. */
+  availableWidth: number;
+  compact: boolean;
+  touch: boolean;
+  defaultLabel: string | null;
+  pinnedLabels: readonly string[];
+  controls: ComposerControlPresence;
+}): QuickPromptPresentation {
+  const gap = input.touch
+    ? COMPOSER_TOOLBAR_GEOMETRY.touchControlGap
+    : COMPOSER_TOOLBAR_GEOMETRY.controlGap;
+  const target = input.touch ? 44 : 28;
+  const pillWidth = (label: string) =>
+    estimateQuickPromptPillWidth(label, input.controls.fontScale);
+  const splitWidth = input.defaultLabel === null ? 0 : pillWidth(input.defaultLabel) + target + 2;
+  const controlsWidth = (density: ComposerControlDensity) =>
+    estimateComposerControlsWidth(input.controls, density, gap);
+  const showDefaultLabel =
+    !input.compact &&
+    input.defaultLabel !== null &&
+    input.availableWidth >= controlsWidth("tight") + gap + splitWidth;
+  let width = showDefaultLabel ? splitWidth : target + 2;
+  let visiblePinCount = 0;
+  // Restore pins only after the other controls can show all their labels.
+  for (const label of input.pinnedLabels.slice(0, 3)) {
+    const nextWidth = width + gap + pillWidth(label);
+    if (input.availableWidth < controlsWidth("full") + gap + nextWidth) break;
+    width = nextWidth;
+    visiblePinCount++;
+  }
+  const availableControlsWidth = input.availableWidth - width - gap;
+  let density: ComposerControlDensity = "tight";
+  if (availableControlsWidth >= controlsWidth("full")) density = "full";
+  else if (availableControlsWidth >= controlsWidth("condensed")) density = "condensed";
+  return { showDefaultLabel, visiblePinCount, width, density };
+}
