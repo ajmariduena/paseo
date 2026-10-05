@@ -2489,6 +2489,29 @@ describe("Codex app-server provider", () => {
     appServer.assertNoErrors();
   });
 
+  test("fails resume when thread/resume never answers instead of hanging", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const appServer = createFakeCodexAppServer({
+      "thread/loaded/list": () => ({ data: [] }),
+      "thread/resume": () => new Promise(() => {}),
+    });
+    const provider = createProviderWithFakeAppServer(appServer);
+    try {
+      const resumed = provider.resumeSession({
+        sessionId: "lost-response-thread-id",
+        metadata: { cwd: "/tmp/codex-lost-response-test", modeId: "auto", model: "gpt-5.4" },
+      });
+      const failure = expect(resumed).rejects.toThrow(
+        "Codex app-server request timed out for thread/resume",
+      );
+      await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
+      await failure;
+    } finally {
+      vi.useRealTimers();
+      appServer.child.kill("SIGTERM");
+    }
+  });
+
   test("lists repo skills using WorkspaceGitService repo-root resolution", async () => {
     const tempDir = await mkdtemp(path.join(tmpdir(), "codex-skills-"));
     const cwd = path.join(tempDir, "repo", "packages", "app");

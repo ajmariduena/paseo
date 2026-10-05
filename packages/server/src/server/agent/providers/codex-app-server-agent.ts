@@ -145,6 +145,8 @@ function isCodexAlreadyUnarchivedError(error: unknown, threadId: string): boolea
 
 const TURN_START_TIMEOUT_MS = 90 * 1000;
 const INTERRUPT_TIMEOUT_MS = 2_000;
+// A lost response must fail the agent load, not leave it pending for the transport's 14-day default.
+const THREAD_LOAD_TIMEOUT_MS = 2 * 60 * 1000;
 const CODEX_PROVIDER = "codex" as const;
 // Codex treats most app-server client names as the model-request originator.
 // This reserved Codex name is non-originating, so requests keep Codex's default
@@ -264,7 +266,7 @@ const CODEX_MODES: AgentMode[] = [
 const DEFAULT_CODEX_MODE_ID = "auto";
 
 interface CodexAppServerClientLike {
-  request(method: string, params?: unknown): Promise<unknown>;
+  request(method: string, params?: unknown, timeoutMs?: number): Promise<unknown>;
   forkThread?(params: CodexThreadForkParams): Promise<CodexThreadForkResponse>;
   rollbackThread?(params: CodexThreadRollbackParams): Promise<CodexThreadRollbackResponse>;
   notify(method: string, params?: unknown): void;
@@ -2158,10 +2160,14 @@ async function loadCodexThreadHistoryTimeline(params: {
 }
 
 function readCodexThread(client: CodexAppServerClientLike, threadId: string): Promise<unknown> {
-  return client.request("thread/read", {
-    threadId,
-    includeTurns: true,
-  });
+  return client.request(
+    "thread/read",
+    {
+      threadId,
+      includeTurns: true,
+    },
+    THREAD_LOAD_TIMEOUT_MS,
+  );
 }
 
 export async function forkCodexThread(
@@ -4074,7 +4080,7 @@ export class CodexAppServerAgentSession implements AgentSession {
       if (ids.includes(this.currentThreadId)) {
         return;
       }
-      const response = await this.client.request("thread/resume", params);
+      const response = await this.client.request("thread/resume", params, THREAD_LOAD_TIMEOUT_MS);
       this.rememberResolvedSandboxPolicy(response);
     } catch (error) {
       const threadId = this.currentThreadId;
@@ -4087,7 +4093,7 @@ export class CodexAppServerAgentSession implements AgentSession {
             throw unarchiveError;
           }
         }
-        const response = await this.client.request("thread/resume", params);
+        const response = await this.client.request("thread/resume", params, THREAD_LOAD_TIMEOUT_MS);
         this.rememberResolvedSandboxPolicy(response);
         this.logger.info({ threadId }, "Unarchived Codex thread to restore active Paseo agent");
         return;
