@@ -2646,6 +2646,17 @@ export const PaseoWorktreeListRequestSchema = z.object({
   requestId: z.string(),
 });
 
+export const WorkspaceStorageListRequestSchema = z.object({
+  type: z.literal("workspace.storage.list.request"),
+  requestId: z.string(),
+});
+
+export const WorkspaceStorageCleanupRequestSchema = z.object({
+  type: z.literal("workspace.storage.cleanup.request"),
+  entryIds: z.array(z.string()).max(500),
+  requestId: z.string(),
+});
+
 export const PaseoWorktreeArchiveRequestSchema = z.object({
   type: z.literal("paseo_worktree_archive_request"),
   worktreePath: z.string().optional(),
@@ -3596,6 +3607,8 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   GitHubSearchRequestSchema,
   DirectorySuggestionsRequestSchema,
   PaseoWorktreeListRequestSchema,
+  WorkspaceStorageListRequestSchema,
+  WorkspaceStorageCleanupRequestSchema,
   PaseoWorktreeArchiveRequestSchema,
   CreatePaseoWorktreeRequestSchema,
   WorkspaceSetupStatusRequestSchema,
@@ -3986,6 +3999,7 @@ export const ServerInfoStatusPayloadSchema = z
         worktreeRestore: z.boolean().optional(),
         // COMPAT(workspaceRecovery): added in v0.1.105, remove after 2027-01-11 once daemon floor >= v0.1.105.
         workspaceRecovery: z.boolean().optional(),
+        worktreeStorage: z.boolean().optional(),
         // COMPAT(workspaceFileEditing): added in v0.2.0, remove after 2027-01-18 once daemon floor >= v0.2.0.
         workspaceFileEditing: z.boolean().optional(),
         // COMPAT(providerUsageList): added in v0.1.98, drop the gate when daemon floor >= v0.1.98.
@@ -6483,6 +6497,42 @@ export const PaseoWorktreeListResponseSchema = z.object({
   }),
 });
 
+const WorkspaceStorageEntrySchema = z.object({
+  entryId: z.string(),
+  name: z.string(),
+  project: z.string(),
+  sizeBytes: z.number().nullable(),
+  freeable: z.boolean(),
+  reason: z.string(),
+});
+
+export const WorkspaceStorageListResponseSchema = z.object({
+  type: z.literal("workspace.storage.list.response"),
+  payload: z.object({
+    entries: z.array(WorkspaceStorageEntrySchema),
+    totalBytes: z.number(),
+    freeableBytes: z.number(),
+    sizesComplete: z.boolean(),
+    error: z.string().nullable(),
+    requestId: z.string(),
+  }),
+});
+
+export const WorkspaceStorageCleanupResponseSchema = z.object({
+  type: z.literal("workspace.storage.cleanup.response"),
+  payload: z.object({
+    results: z.array(
+      z.object({
+        entryId: z.string(),
+        removed: z.boolean(),
+        error: z.string().nullable(),
+      }),
+    ),
+    error: z.string().nullable(),
+    requestId: z.string(),
+  }),
+});
+
 export const PaseoWorktreeArchiveResponseSchema = z.object({
   type: z.literal("paseo_worktree_archive_response"),
   payload: z.object({
@@ -7545,6 +7595,8 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   GitHubSearchResponseSchema,
   DirectorySuggestionsResponseSchema,
   PaseoWorktreeListResponseSchema,
+  WorkspaceStorageListResponseSchema,
+  WorkspaceStorageCleanupResponseSchema,
   PaseoWorktreeArchiveResponseSchema,
   CreatePaseoWorktreeResponseSchema,
   FileExplorerResponseSchema,
@@ -7976,6 +8028,10 @@ export type DirectorySuggestionsRequest = z.infer<typeof DirectorySuggestionsReq
 export type DirectorySuggestionsResponse = z.infer<typeof DirectorySuggestionsResponseSchema>;
 export type PaseoWorktreeListRequest = z.infer<typeof PaseoWorktreeListRequestSchema>;
 export type PaseoWorktreeListResponse = z.infer<typeof PaseoWorktreeListResponseSchema>;
+export type WorkspaceStorageListRequest = z.infer<typeof WorkspaceStorageListRequestSchema>;
+export type WorkspaceStorageListResponse = z.infer<typeof WorkspaceStorageListResponseSchema>;
+export type WorkspaceStorageCleanupRequest = z.infer<typeof WorkspaceStorageCleanupRequestSchema>;
+export type WorkspaceStorageCleanupResponse = z.infer<typeof WorkspaceStorageCleanupResponseSchema>;
 export type PaseoWorktreeArchiveRequest = z.infer<typeof PaseoWorktreeArchiveRequestSchema>;
 export type PaseoWorktreeArchiveResponse = z.infer<typeof PaseoWorktreeArchiveResponseSchema>;
 export type WorkspaceSetupStatusRequest = z.infer<typeof WorkspaceSetupStatusRequestSchema>;

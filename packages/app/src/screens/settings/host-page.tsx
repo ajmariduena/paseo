@@ -65,6 +65,8 @@ import { ICON_SIZE } from "@/styles/theme";
 import type { Theme } from "@/styles/theme";
 import { useProviderIcon } from "@/components/provider-icons";
 import { BrowserToolsOptInCard } from "./browser-tools-card";
+import { WorktreeStorageCard } from "./worktree-storage-card";
+import { useHostFeature } from "@/runtime/host-features";
 import { RestartContinuationSection } from "./restart-continuation-section";
 import { restartDaemonFromSettings, updateDaemonFromSettings } from "./daemon-lifecycle";
 
@@ -308,6 +310,7 @@ export function HostWorkspacesPage({ serverId }: { serverId: string }) {
   const { t } = useTranslation();
   const host = useHostProfile(serverId);
   const isConnected = useHostRuntimeIsConnected(serverId);
+  const supportsWorktreeStorage = useHostFeature(serverId, "worktreeStorage");
 
   if (!host) {
     return <HostNotFound />;
@@ -317,6 +320,7 @@ export function HostWorkspacesPage({ serverId }: { serverId: string }) {
     <View>
       {isConnected ? (
         <SettingsSection title={t("settings.hostSections.workspaces")}>
+          {supportsWorktreeStorage ? <WorktreeStorageCard serverId={serverId} /> : null}
           <AutoArchiveMergedWorkspacesCard serverId={serverId} />
         </SettingsSection>
       ) : (

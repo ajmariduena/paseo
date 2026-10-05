@@ -64,6 +64,7 @@ type UnavailableRecoveryState = Extract<WorkspaceRecoveryState, { kind: "unavail
 export function createWorkspaceRecoveryService(deps: {
   paseoHome: string;
   worktreesRoot?: string;
+  serverId?: string;
   getWorkspace: (workspaceId: string) => Promise<PersistedWorkspaceRecord | null>;
   getProject: (projectId: string) => Promise<PersistedProjectRecord | null>;
   isDirectory: (path: string) => Promise<boolean>;
@@ -187,6 +188,7 @@ export function createWorkspaceRecoveryService(deps: {
         runSetup: false,
         paseoHome: deps.paseoHome,
         worktreesRoot: deps.worktreesRoot,
+        serverId: deps.serverId,
       });
       recreatedWorktreePath = result.worktreePath;
     } catch (error) {

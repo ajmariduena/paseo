@@ -19,6 +19,11 @@ import { SessionDelivery, type OwnedSubscription } from "./session/owned-subscri
 import { v4 as uuidv4 } from "uuid";
 import { lstat, mkdir, mkdtemp, rename, rm, stat } from "node:fs/promises";
 import { basename, join, resolve, sep } from "path";
+import {
+  cleanupWorktreeStorage,
+  listWorktreeStorage,
+  type WorktreeStorageContext,
+} from "./worktree-storage.js";
 import { homedir } from "node:os";
 import { CLIENT_CAPS, type ClientCapability } from "@getpaseo/protocol/client-capabilities";
 import { formatPluginSourceReference } from "@getpaseo/protocol/plugin-source-reference";
@@ -790,6 +795,7 @@ export class Session {
     | null;
   private readonly sessionLogger: pino.Logger;
   private readonly paseoHome: string;
+  private readonly serverId: string | undefined;
   private readonly projectIcons: ProjectIconReader;
   private readonly worktreesRoot: string | undefined;
   private readonly rewindInitiators = new Map<string, object | undefined>();
@@ -955,6 +961,7 @@ export class Session {
     this.onWorkspaceRecovered = onWorkspaceRecovered ?? null;
     this.pushNotifications = pushNotifications;
     this.paseoHome = paseoHome;
+    this.serverId = serverId;
     this.messageReceipts = options.messageReceipts;
     this.creationService = options.creationService;
     this.projectIcons = new ProjectIconReader(paseoHome);
@@ -1013,6 +1020,7 @@ export class Session {
     this.workspaceRecovery = createWorkspaceRecoveryService({
       paseoHome: this.paseoHome,
       worktreesRoot: this.worktreesRoot,
+      serverId,
       getWorkspace: (workspaceId) => this.workspaceRegistry.get(workspaceId),
       getProject: (projectId) => this.projectRegistry.get(projectId),
       isDirectory: (path) => this.filesystem.isDirectory(path),
@@ -3272,6 +3280,10 @@ export class Session {
         return this.handleProjectListRequest(msg);
       case "paseo_worktree_list_request":
         return this.handlePaseoWorktreeListRequest(msg);
+      case "workspace.storage.list.request":
+        return this.handleWorktreeStorageListRequest(msg);
+      case "workspace.storage.cleanup.request":
+        return this.handleWorktreeStorageCleanupRequest(msg);
       case "paseo_worktree_archive_request":
         return this.handlePaseoWorktreeArchiveRequest(msg);
       case "create_paseo_worktree_request":
@@ -5532,6 +5544,78 @@ export class Session {
     }
   }
 
+  private worktreeStorageContext(): WorktreeStorageContext {
+    if (!this.serverId) throw new Error("Host identity is unavailable");
+    return {
+      paseoHome: this.paseoHome,
+      worktreesRoot: this.worktreesRoot,
+      serverId: this.serverId,
+      listWorkspaces: () => this.workspaceRegistry.list(),
+      listAgentCwds: () =>
+        this.agentManager
+          .listAgents()
+          .filter((agent) => agent.lifecycle !== "closed")
+          .map((agent) => agent.cwd),
+      listTerminalCwds: async () => {
+        const manager = this.terminalManager;
+        if (!manager) return [];
+        const directories = manager.listDirectories();
+        const sessions = await Promise.all(directories.map((cwd) => manager.getTerminals(cwd)));
+        return sessions.flat().map((terminal) => terminal.cwd);
+      },
+    };
+  }
+
+  private async handleWorktreeStorageListRequest(
+    msg: Extract<SessionInboundMessage, { type: "workspace.storage.list.request" }>,
+  ): Promise<void> {
+    try {
+      const storage = await listWorktreeStorage(this.worktreeStorageContext());
+      this.emit({
+        type: "workspace.storage.list.response",
+        payload: {
+          ...storage,
+          entries: storage.entries.map(({ path: _path, ...entry }) => entry),
+          error: null,
+          requestId: msg.requestId,
+        },
+      });
+    } catch (error) {
+      this.emit({
+        type: "workspace.storage.list.response",
+        payload: {
+          entries: [],
+          totalBytes: 0,
+          freeableBytes: 0,
+          sizesComplete: false,
+          error: error instanceof Error ? error.message : String(error),
+          requestId: msg.requestId,
+        },
+      });
+    }
+  }
+
+  private async handleWorktreeStorageCleanupRequest(
+    msg: Extract<SessionInboundMessage, { type: "workspace.storage.cleanup.request" }>,
+  ): Promise<void> {
+    try {
+      const results = await cleanupWorktreeStorage(this.worktreeStorageContext(), msg.entryIds);
+      this.emit({
+        type: "workspace.storage.cleanup.response",
+        payload: { results, error: null, requestId: msg.requestId },
+      });
+    } catch (error) {
+      this.emit({
+        type: "workspace.storage.cleanup.response",
+        payload: {
+          results: [],
+          error: error instanceof Error ? error.message : String(error),
+          requestId: msg.requestId,
+        },
+      });
+    }
+  }
+
   private async handlePaseoWorktreeListRequest(
     msg: Extract<SessionInboundMessage, { type: "paseo_worktree_list_request" }>,
   ): Promise<void> {
@@ -6287,14 +6371,17 @@ export class Session {
       resolveDefaultBranch?: (repoRoot: string) => Promise<string>;
     },
   ): Promise<CreatePaseoWorktreeResult> {
-    const result = await createPaseoWorktree(input, {
-      github: this.github,
-      ...(options?.resolveDefaultBranch
-        ? { resolveDefaultBranch: options.resolveDefaultBranch }
-        : {}),
-      workspaceGitService: this.workspaceGitService,
-      workspaceProvisioning: this.workspaceProvisioning,
-    });
+    const result = await createPaseoWorktree(
+      { ...input, serverId: this.serverId },
+      {
+        github: this.github,
+        ...(options?.resolveDefaultBranch
+          ? { resolveDefaultBranch: options.resolveDefaultBranch }
+          : {}),
+        workspaceGitService: this.workspaceGitService,
+        workspaceProvisioning: this.workspaceProvisioning,
+      },
+    );
     void Promise.all([
       this.gitMutation.notifyGitMutation(input.cwd, "create-worktree"),
       this.gitMutation.notifyGitMutation(result.worktree.worktreePath, "create-worktree"),

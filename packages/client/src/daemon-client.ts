@@ -79,6 +79,8 @@ import type {
   GitHubSearchRequest,
   DirectorySuggestionsResponse,
   PaseoWorktreeListResponse,
+  WorkspaceStorageListResponse,
+  WorkspaceStorageCleanupResponse,
   PaseoWorktreeArchiveResponse,
   ProjectIconSource,
   ProjectIconResponse,
@@ -4817,6 +4819,21 @@ export class DaemonClient {
         repoRoot: input.repoRoot,
       },
       responseType: "paseo_worktree_list_response",
+    });
+  }
+
+  async listWorktreeStorage(): Promise<WorkspaceStorageListResponse["payload"]> {
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.storage.list.response">({
+      message: { type: "workspace.storage.list.request" },
+    });
+  }
+
+  async cleanupWorktreeStorage(
+    entryIds: string[],
+  ): Promise<WorkspaceStorageCleanupResponse["payload"]> {
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.storage.cleanup.response">({
+      message: { type: "workspace.storage.cleanup.request", entryIds },
+      timeout: 120_000,
     });
   }
 

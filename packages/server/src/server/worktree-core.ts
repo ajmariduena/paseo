@@ -29,6 +29,7 @@ export interface CreateWorktreeCoreInput {
   paseoHome?: string;
   worktreesRoot?: string;
   runSetup?: boolean;
+  serverId?: string;
 }
 
 export interface CreateWorktreeCoreDeps {
@@ -123,6 +124,7 @@ async function createWorktreeCoreWithPriority(
       runSetup: input.runSetup ?? true,
       paseoHome: input.paseoHome,
       worktreesRoot: input.worktreesRoot,
+      serverId: input.serverId,
     }),
     intent,
     repoRoot,

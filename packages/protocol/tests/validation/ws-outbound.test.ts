@@ -138,6 +138,51 @@ const SourceSchema = z.object({
     );
   });
 
+  it("accepts worktree storage replies and an older server without the feature flag", () => {
+    const list = {
+      type: "session",
+      message: {
+        type: "workspace.storage.list.response",
+        payload: {
+          requestId: "storage-list",
+          entries: [
+            {
+              entryId: "entry-1",
+              name: "branch",
+              project: "repo",
+              sizeBytes: 1024,
+              freeable: true,
+              reason: "archived",
+            },
+          ],
+          totalBytes: 1024,
+          freeableBytes: 1024,
+          sizesComplete: true,
+          error: null,
+        },
+      },
+    };
+    const cleanup = {
+      type: "session",
+      message: {
+        type: "workspace.storage.cleanup.response",
+        payload: {
+          requestId: "storage-cleanup",
+          results: [{ entryId: "entry-1", removed: true, error: null }],
+          error: null,
+        },
+      },
+    };
+    expect(GeneratedWSOutboundMessageSchema.safeParse(list).success).toBe(true);
+    expect(GeneratedWSOutboundMessageSchema.safeParse(cleanup).success).toBe(true);
+    expect(
+      GeneratedWSOutboundMessageSchema.safeParse({
+        type: "session",
+        message: { type: "status", payload: { status: "server_info", serverId: "old-host" } },
+      }).success,
+    ).toBe(true);
+  });
+
   it("accepts project config responses with and without setup commit status", () => {
     const payload = {
       requestId: "project-config-read",
