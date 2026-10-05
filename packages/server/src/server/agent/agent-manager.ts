@@ -4,7 +4,11 @@ import { describeHookAgent, publishAgentStream } from "../plugins/lifecycle/inde
 import type { PluginSessionOpenRequest } from "@getpaseo/plugin/server";
 import { randomUUID } from "node:crypto";
 import { basename, resolve } from "node:path";
-import { withWorktreeProjectLock, worktreeProjectRootForCwd } from "../worktree-use-lock.js";
+import {
+  assertWorktreeNotCleaningUp,
+  withWorktreeProjectLock,
+  worktreeProjectRootForCwd,
+} from "../worktree-use-lock.js";
 import { stat } from "node:fs/promises";
 import {
   AGENT_LIFECYCLE_STATUSES,
@@ -1389,13 +1393,7 @@ export class AgentManager {
     agentId: string | undefined,
     options: CreateAgentOptions,
   ): Promise<ManagedAgent> {
-    const projectRoot = worktreeProjectRootForCwd(config.cwd);
-    const creation = projectRoot
-      ? withWorktreeProjectLock(projectRoot, () =>
-          this.createAgentInternal(config, agentId, options),
-        )
-      : this.createAgentInternal(config, agentId, options);
-    return this.trackAgentRegistrationOperation(creation);
+    return this.trackAgentRegistrationOperation(this.createAgentInternal(config, agentId, options));
   }
 
   private async createAgentInternal(
@@ -1413,6 +1411,17 @@ export class AgentManager {
       config = { ...request.config, internal: config.internal };
       options = { ...options, env: request.env };
     }
+    const projectRoot = worktreeProjectRootForCwd(config.cwd);
+    const create = () => this.createAgentAfterPlugin(config, resolvedAgentId, options);
+    return projectRoot ? withWorktreeProjectLock(projectRoot, create) : create();
+  }
+
+  private async createAgentAfterPlugin(
+    config: AgentSessionConfig,
+    resolvedAgentId: string,
+    options: CreateAgentOptions,
+  ): Promise<ManagedAgent> {
+    assertWorktreeNotCleaningUp(config.cwd);
     await this.deleteAgentState(resolvedAgentId);
     const { storedConfig, launchConfig, paseoToolPolicy } = await this.prepareSessionConfig(
       config,

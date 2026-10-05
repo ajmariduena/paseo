@@ -24,6 +24,7 @@ import {
   WorkspaceProvisioningError,
   type WorkspaceProvisioningService,
 } from "./workspace-provisioning-service.js";
+import { withWorktreeCleanupReservation } from "../../worktree-use-lock.js";
 
 // Real file-backed registries + a fake git-service port (the only dependency that
 // shells out to git in production). No module mocks — the service is exercised
@@ -273,6 +274,30 @@ test("re-opening an archived workspace by its exact path unarchives it and keeps
 
   expect(reopened.workspaceId).toBe(created.workspaceId);
   expect(reopened.archivedAt).toBeNull();
+});
+
+test("an unregistered managed path is checked under its project lock before adoption", async () => {
+  const worktreesBaseRoot = path.join(tmpDir, "managed-worktrees");
+  const cwd = path.join(worktreesBaseRoot, "project-hash", "unregistered");
+  const managedProvisioning = createWorkspaceProvisioningService({
+    workspaceRegistry,
+    projectRegistry,
+    workspaceGitService: gitService(),
+    isDirectory,
+    logger,
+    worktreesBaseRoot,
+  });
+
+  await expect(managedProvisioning.findOrCreateWorkspaceForDirectory(cwd)).rejects.toThrow(
+    "Workspace directory is unavailable",
+  );
+  mkdirSync(cwd, { recursive: true });
+  await withWorktreeCleanupReservation(cwd, async () => {
+    await expect(managedProvisioning.findOrCreateWorkspaceForDirectory(cwd)).rejects.toThrow(
+      "Worktree is cleaning up",
+    );
+  });
+  expect(await workspaceRegistry.list()).toEqual([]);
 });
 
 test("reopening archived exact-root records restores the fresh Git project", async () => {

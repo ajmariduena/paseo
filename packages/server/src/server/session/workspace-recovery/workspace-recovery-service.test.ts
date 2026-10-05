@@ -29,6 +29,7 @@ import {
   type PersistedWorkspaceRecord,
 } from "../../workspace-registry.js";
 import { createWorkspaceRecoveryService } from "./workspace-recovery-service.js";
+import { withWorktreeCleanupReservation } from "../../worktree-use-lock.js";
 
 const NOW = "2026-07-11T10:12:30.752Z";
 const tempDirectories: string[] = [];
@@ -124,6 +125,21 @@ describe("workspace recovery", () => {
       action: "unarchive",
     });
     expect(unarchived).toEqual([workspace.workspaceId]);
+  });
+
+  test("refuses to unarchive a worktree reserved for cleanup", async () => {
+    const workspace = createWorkspace();
+    const { service, unarchived } = createHarness({
+      workspace,
+      directories: [workspace.cwd],
+    });
+
+    await withWorktreeCleanupReservation(workspace.worktreeRoot!, async () => {
+      await expect(service.restore(workspace.workspaceId)).rejects.toThrow(
+        "Worktree is cleaning up",
+      );
+    });
+    expect(unarchived).toEqual([]);
   });
 
   test("rechecks the worktree directory inside the recovery lock before unarchiving", async () => {

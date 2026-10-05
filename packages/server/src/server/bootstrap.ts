@@ -12,6 +12,7 @@ import type { Logger } from "pino";
 import { z } from "zod";
 import { createBranchChangeRouteHandler } from "./script-route-branch-handler.js";
 import { startWorktreeStorageSweeper } from "./worktree-storage-sweeper.js";
+import { resolvePaseoWorktreesBaseRoot } from "../utils/worktree.js";
 
 export type ListenTarget =
   | { type: "tcp"; host: string; port: number }
@@ -1002,6 +1003,10 @@ export async function createPaseoDaemon(
     isDirectory: async (target) => (await stat(target).catch(() => null))?.isDirectory() ?? false,
     logger,
     scratchRoot: path.join(config.paseoHome, "scratch"),
+    worktreesBaseRoot: resolvePaseoWorktreesBaseRoot({
+      paseoHome: config.paseoHome,
+      worktreesRoot: config.worktreesRoot,
+    }),
   });
   const agentProviderRuntime = await createAgentProviderRuntime({
     paseoHome: config.paseoHome,

@@ -25,6 +25,7 @@ import {
   type WorktreeStorageContext,
 } from "./worktree-storage.js";
 import { homedir } from "node:os";
+import { resolvePaseoWorktreesBaseRoot } from "../utils/worktree.js";
 import { CLIENT_CAPS, type ClientCapability } from "@getpaseo/protocol/client-capabilities";
 import { formatPluginSourceReference } from "@getpaseo/protocol/plugin-source-reference";
 import {
@@ -1016,6 +1017,10 @@ export class Session {
       isDirectory: (path) => this.filesystem.isDirectory(path),
       logger: this.sessionLogger,
       scratchRoot: join(this.paseoHome, "scratch"),
+      worktreesBaseRoot: resolvePaseoWorktreesBaseRoot({
+        paseoHome: this.paseoHome,
+        worktreesRoot: this.worktreesRoot,
+      }),
     });
     this.workspaceRecovery = createWorkspaceRecoveryService({
       paseoHome: this.paseoHome,

@@ -1,7 +1,9 @@
 import { realpathSync, statSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isPathInsideRoot } from "../utils/path.js";
 
 const pending = new Map<string, Promise<void>>();
+const cleanupReservations = new Set<string>();
 
 export async function withWorktreeProjectLock<T>(
   projectRoot: string,
@@ -30,6 +32,41 @@ export async function withWorktreeProjectLock<T>(
     release();
     if (pending.get(key) === current) pending.delete(key);
   }
+}
+
+export async function withWorktreeCleanupReservation<T>(
+  path: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  const key = resolve(path);
+  // Teardown may start another Paseo agent, so hold the reservation without holding the mutex.
+  await withWorktreeProjectLock(dirname(key), async () => {
+    if (cleanupReservations.has(key)) throw new Error("Worktree is cleaning up");
+    cleanupReservations.add(key);
+  });
+  try {
+    return await action();
+  } finally {
+    cleanupReservations.delete(key);
+  }
+}
+
+export function assertWorktreeNotCleaningUp(cwd: string): void {
+  for (const path of cleanupReservations) {
+    if (isPathInsideRoot(path, cwd)) throw new Error("Worktree is cleaning up");
+  }
+}
+
+export function worktreeProjectRootForManagedPath(
+  cwd: string,
+  worktreesBaseRoot: string,
+): string | null {
+  const root = resolve(worktreesBaseRoot);
+  const relativePath = relative(root, resolve(cwd));
+  if (!relativePath || isAbsolute(relativePath)) return null;
+  const segments = relativePath.split(sep);
+  if (segments.length < 2 || segments[0] === "..") return null;
+  return join(root, segments[0]!);
 }
 
 export function worktreeProjectRootForCwd(cwd: string): string | null {

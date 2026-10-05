@@ -12,7 +12,11 @@ import {
   rollbackCreatedPaseoWorktree,
   type WorktreeSource,
 } from "../../../utils/worktree.js";
-import { withWorktreeProjectLock, worktreeProjectRootForCwd } from "../../worktree-use-lock.js";
+import {
+  assertWorktreeNotCleaningUp,
+  withWorktreeProjectLock,
+  worktreeProjectRootForCwd,
+} from "../../worktree-use-lock.js";
 import { WorktreeRequestError, toWorktreeRequestError } from "../../worktree-errors.js";
 import {
   resolveWorkspaceDisplayName,
@@ -155,6 +159,7 @@ export function createWorkspaceRecoveryService(deps: {
       projectRoot = worktreeProjectRootForCwd(initial.workspace.cwd);
     }
     const recover = async (): Promise<{ workspaceId: string; action: WorkspaceRecoveryAction }> => {
+      assertWorktreeNotCleaningUp(initial.workspace.worktreeRoot ?? initial.workspace.cwd);
       const resolved = await resolveRecovery(workspaceId);
       if (resolved.kind === "unavailable") throw new Error(resolved.message);
       if (resolved.kind === "restore") {

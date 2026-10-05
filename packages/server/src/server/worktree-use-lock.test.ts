@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { withWorktreeProjectLock } from "./worktree-use-lock.js";
+import {
+  assertWorktreeNotCleaningUp,
+  withWorktreeCleanupReservation,
+  withWorktreeProjectLock,
+} from "./worktree-use-lock.js";
+
+async function checkAgentStartGuard(path: string): Promise<void> {
+  await withWorktreeProjectLock("/tmp/worktree-project", async () => {
+    expect(() => assertWorktreeNotCleaningUp(`${path}/subproject`)).toThrow(
+      "Worktree is cleaning up",
+    );
+  });
+}
 
 describe("worktree project lock", () => {
   it("waits for a creation before allowing cleanup in the same project", async () => {
@@ -27,5 +39,13 @@ describe("worktree project lock", () => {
     releaseCreation();
     await Promise.all([creation, cleanup]);
     expect(order).toEqual(["creation started", "creation finished", "cleanup started"]);
+  });
+
+  it("blocks an agent start inside a reserved worktree while the project lock is free", async () => {
+    const path = "/tmp/worktree-project/reserved";
+    await withWorktreeCleanupReservation(path, async () => {
+      await checkAgentStartGuard(path);
+    });
+    expect(() => assertWorktreeNotCleaningUp(`${path}/subproject`)).not.toThrow();
   });
 });

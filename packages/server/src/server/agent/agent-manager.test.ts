@@ -1,9 +1,10 @@
 import { describe, expect, test, vi } from "vitest";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
+import { withWorktreeCleanupReservation } from "../worktree-use-lock.js";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import {
@@ -16,6 +17,7 @@ import {
 } from "./agent-manager.js";
 import { buildPaseoOrchestrationInstructions } from "./orchestration-instructions.js";
 import { PASEO_MCP_TOOL_TIMEOUT_MS } from "./runtime-mcp-config.js";
+import { PASEO_READ_ONLY_TOOL_NAMES } from "./tools/read-only-tools.js";
 import { PromptAnnotationStore } from "./prompt-annotations.js";
 import { AgentStorage } from "./agent-storage.js";
 import { InMemoryAgentTimelineStore } from "./agent-timeline-store.js";
@@ -1658,6 +1660,24 @@ function fakeCodexEmitting(args: FakeCodexEmitterArgs): AgentClient {
 }
 
 const logger = createTestLogger();
+
+test("does not start an agent in a worktree reserved for cleanup", async () => {
+  const root = mkdtempSync(join(tmpdir(), "agent-manager-cleanup-reservation-"));
+  const cwd = join(root, "project", "worktree");
+  mkdirSync(cwd, { recursive: true });
+  writeFileSync(join(cwd, ".git"), "gitdir: /tmp/unused\n");
+  const manager = new AgentManager({ clients: { codex: new TestAgentClient() }, logger });
+  try {
+    await withWorktreeCleanupReservation(cwd, async () => {
+      await expect(
+        manager.createAgent({ provider: "codex", cwd }, undefined, { workspaceId: undefined }),
+      ).rejects.toThrow("Worktree is cleaning up");
+    });
+    expect(manager.listAgents()).toEqual([]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("does not register a session that finishes starting after shutdown begins", async () => {
   const client = new HeldAgentCreationClient();
@@ -3714,6 +3734,7 @@ test("createAgent injects paseo MCP server only into provider launch config", as
       type: "http",
       url: `http://127.0.0.1:6767/mcp/agents?callerAgentId=${snapshot.id}`,
       toolTimeoutMs: PASEO_MCP_TOOL_TIMEOUT_MS,
+      preapprovedTools: PASEO_READ_ONLY_TOOL_NAMES,
     },
     custom: {
       type: "stdio",
@@ -4016,6 +4037,7 @@ test("createAgent allows best-effort internal MCP when the provider session repo
     type: "http",
     url: `http://127.0.0.1:6767/mcp/agents?callerAgentId=${snapshot.id}`,
     toolTimeoutMs: PASEO_MCP_TOOL_TIMEOUT_MS,
+    preapprovedTools: PASEO_READ_ONLY_TOOL_NAMES,
     headers: { Authorization: "Bearer cap-token" },
   });
 
@@ -4165,6 +4187,7 @@ test("keeps the global Paseo-tools gate outside provider policy and MCP injectio
     type: "http",
     url: `http://127.0.0.1:6767/mcp/agents?callerAgentId=${enabledAgent.id}`,
     toolTimeoutMs: PASEO_MCP_TOOL_TIMEOUT_MS,
+    preapprovedTools: PASEO_READ_ONLY_TOOL_NAMES,
   });
 
   const disabledClient = new McpClient();
@@ -4235,6 +4258,7 @@ test("resumeAgentFromPersistence replaces stored internal paseo MCP with current
       type: "http",
       url: `http://127.0.0.1:6768/mcp/agents?callerAgentId=${snapshot.id}`,
       toolTimeoutMs: PASEO_MCP_TOOL_TIMEOUT_MS,
+      preapprovedTools: PASEO_READ_ONLY_TOOL_NAMES,
     },
     custom: {
       type: "stdio",

@@ -21,7 +21,12 @@ import type { CreatePaseoWorktreeWorkflowResult } from "../../worktree-session.j
 import { deriveProjectKey } from "../../project-key.js";
 import { areEquivalentPaths, createRealpathAwarePathMatcher } from "../../../utils/path.js";
 import type { UntrustedWorkspaceSource } from "../../workspace-automation-gate.js";
-import { withWorktreeProjectLock, worktreeProjectRootForCwd } from "../../worktree-use-lock.js";
+import {
+  assertWorktreeNotCleaningUp,
+  withWorktreeProjectLock,
+  worktreeProjectRootForCwd,
+  worktreeProjectRootForManagedPath,
+} from "../../worktree-use-lock.js";
 
 export interface ResolveOrCreateWorkspaceIdInput {
   createdWorktree: CreatePaseoWorktreeWorkflowResult | null;
@@ -109,6 +114,7 @@ export function createWorkspaceProvisioningService(deps: {
   logger: Logger;
   lifecycle?: PluginLifecycle;
   scratchRoot?: string;
+  worktreesBaseRoot?: string;
 }): WorkspaceProvisioningService {
   const { serverId, workspaceRegistry, projectRegistry, workspaceGitService, logger } = deps;
 
@@ -124,11 +130,18 @@ export function createWorkspaceProvisioningService(deps: {
         areEquivalentPaths(workspace.cwd, cwd),
     );
     const observedRoot = worktreeProjectRootForCwd(cwd);
+    const managedRoot = deps.worktreesBaseRoot
+      ? worktreeProjectRootForManagedPath(cwd, deps.worktreesBaseRoot)
+      : null;
     const projectRoot = knownWorktree?.worktreeRoot
       ? dirname(knownWorktree.worktreeRoot)
-      : observedRoot;
+      : (observedRoot ?? managedRoot);
     const checkedAction = async () => {
-      if ((knownWorktree?.archivedAt || observedRoot) && !(await deps.isDirectory(cwd)))
+      assertWorktreeNotCleaningUp(cwd);
+      if (
+        (knownWorktree?.archivedAt || observedRoot || managedRoot) &&
+        !(await deps.isDirectory(cwd))
+      )
         throw new Error(`Workspace directory is unavailable: ${cwd}`);
       return action(projectRoot ? await workspaceRegistry.list() : initialWorkspaces);
     };
