@@ -108,20 +108,19 @@ const PANE_SPLIT_ACTIONS_RESERVED_WIDTH =
   PANE_SPLIT_ACTIONS_HORIZONTAL_PADDING * 2 +
   PANE_SPLIT_ACTIONS_OUTER_MARGIN;
 const PANE_MAXIMIZE_ACTION_RESERVED_WIDTH = smallIconButtonChromeFrameSize(false) + 1;
-// Chip geometry. `layoutMetrics` measures tabs from these same numbers, so a chip that changes
+// Tab geometry. `layoutMetrics` measures tabs from these same numbers, so a tab that changes
 // shape without changing them mis-measures and drops the row into the overflow-scroll fallback at
 // the wrong width. Keep them together.
-// Tabs and the adjacent New Tab trigger are one control family. Keep their outer box and corner
-// token identical; only their horizontal sizing differs (content-width chip versus square icon).
-const TAB_CHIP_HORIZONTAL_PADDING = 8;
-const TAB_CHIP_GAP = 4;
-const TAB_ROW_PADDING_HORIZONTAL = 4;
+const TAB_CHIP_HORIZONTAL_PADDING = 12;
+const TAB_CHIP_GAP = 0;
+const TAB_ROW_PADDING_HORIZONTAL = 0;
+const TAB_ACTIVE_INDICATOR_HEIGHT = 2;
 const TAB_ICON_WIDTH = 14;
 const TAB_CONTENT_GAP = 4;
 const TAB_DROP_INDICATOR_WIDTH = 4;
 const TAB_MODIFIED_DOT_SIZE = 8;
 const TAB_MIN_WIDTH = 64;
-const TAB_MAX_WIDTH = 160;
+const TAB_MAX_WIDTH = 200;
 const TAB_CLOSE_BUTTON_RESERVED_WIDTH = 0;
 const TAB_LABEL_LAYOUT_ALLOWANCE = 4;
 const AGENT_TOOLTIP_TITLE_MAX_LENGTH = 80;
@@ -672,16 +671,16 @@ function useMiddleClickClose(onClose: () => void) {
   return ref;
 }
 
-/** The chip fill the running-status ring has to knock out of. Mirrors `styles.tab*` exactly. */
+/** The tab fill the running-status ring has to knock out of. Mirrors `styles.tab*` exactly. */
 function resolveChipBackdrop({
-  isActiveFocused,
-  isFilled,
+  isActive,
+  isHovered,
 }: {
-  isActiveFocused: boolean;
-  isFilled: boolean;
+  isActive: boolean;
+  isHovered: boolean;
 }): SurfaceBackdrop {
-  if (isActiveFocused) return "surface2";
-  return isFilled ? "surface1" : "surface0";
+  if (isActive) return "surface0";
+  return isHovered ? "surface2" : "surface1";
 }
 
 function TabHandleContent({
@@ -730,6 +729,15 @@ function TabHandleContent({
         />
       ) : null}
     </View>
+  );
+}
+
+function TabActiveIndicator({ isFocused }: { isFocused: boolean }) {
+  return (
+    <View
+      pointerEvents="none"
+      style={[styles.tabActiveIndicator, !isFocused && styles.tabActiveIndicatorUnfocused]}
+    />
   );
 }
 
@@ -782,15 +790,12 @@ function TabChip({
   const isCompact = useIsCompactFormFactor();
   const isTouchDensity = useControlDensity() === "touch";
   const [hovered, setHovered] = useState(false);
-  // An active tab in a pane that does not have focus stays legible but quiet: it keeps the fill of
-  // a hovered chip and the muted label, so only one chip in the window reads as the live one.
+  // An active tab in a pane that does not have focus keeps its fill but loses the accent line and
+  // the bright label, so only one tab in the window reads as the live one.
   const isActiveFocused = isActive && isFocused;
   const isHovered = hovered || isCloseHovered;
   const isHighlighted = isActiveFocused || isHovered;
-  const chipBackdrop: SurfaceBackdrop = resolveChipBackdrop({
-    isActiveFocused,
-    isFilled: isActive || isHovered,
-  });
+  const chipBackdrop: SurfaceBackdrop = resolveChipBackdrop({ isActive, isHovered });
   const showCloseControl = showCloseButton && (isHovered || isNative || isCompact || isClosingTab);
   const closeButtonDragBlockers = isWeb
     ? ({
@@ -807,8 +812,7 @@ function TabChip({
     () => [
       styles.tab,
       isTouchDensity && styles.tabTouch,
-      isActiveFocused && styles.tabActive,
-      isActive && !isFocused && styles.tabActiveUnfocused,
+      isActive && styles.tabActive,
       !isActive && isHovered && styles.tabHovered,
       isWeb && isDragging && ({ cursor: "grabbing" } as object),
       {
@@ -817,7 +821,7 @@ function TabChip({
         maxWidth: resolvedTabWidth,
       },
     ],
-    [isActive, isActiveFocused, isDragging, isFocused, isHovered, isTouchDensity, resolvedTabWidth],
+    [isActive, isDragging, isHovered, isTouchDensity, resolvedTabWidth],
   );
 
   const handleTabPointerEnter = useCallback(() => {
@@ -868,6 +872,7 @@ function TabChip({
       onPointerEnter={handleTabPointerEnter}
       onPointerLeave={handleTabPointerLeave}
     >
+      {isActive ? <TabActiveIndicator isFocused={isFocused} /> : null}
       <ContextMenu key={tab.key}>
         <Tooltip delayDuration={400} enabledOnDesktop enabledOnMobile={false}>
           <TooltipTrigger asChild triggerRefProp="triggerRef">
@@ -1428,6 +1433,9 @@ function ResolvedWorkspaceDesktopTabsRow({
           />
         ))}
       </View>
+      {/* Drawn as a sibling under the tabs instead of a container border so the active tab can
+          cover it: a negative margin would be clipped by the horizontal ScrollView. */}
+      <View pointerEvents="none" style={styles.tabsBottomBorder} />
       <WorkspaceExitFocusModeButton
         visible={focusModeEnabled}
         onPress={onExitFocusMode}
@@ -1471,7 +1479,7 @@ function ResolvedWorkspaceDesktopTabsRow({
         </Animated.ScrollView>
         <HorizontalScrollBoundaryShades
           visible={layout.requiresHorizontalScrollFallback}
-          backdrop="surface"
+          backdrop="surface1"
           testIDPrefix="workspace-tabs-scroll-shade"
           leftStyle={tabScrollBoundary.leftShadeStyle}
           rightStyle={tabScrollBoundary.rightShadeStyle}
@@ -1638,15 +1646,21 @@ const styles = StyleSheet.create((theme) => ({
   tabsContainer: {
     minWidth: 0,
     height: WORKSPACE_SECONDARY_HEADER_HEIGHT,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
-    backgroundColor: theme.colors.surface0,
+    backgroundColor: theme.colors.surface1,
     flexDirection: "row",
     alignItems: "center",
     overflow: "visible",
   },
   tabsContainerTouch: {
     height: WORKSPACE_SECONDARY_HEADER_HEIGHT_TOUCH,
+  },
+  tabsBottomBorder: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 1,
+    backgroundColor: theme.colors.border,
   },
   tabsScroll: {
     minWidth: 0,
@@ -1693,25 +1707,35 @@ const styles = StyleSheet.create((theme) => ({
     marginRight: PANE_SPLIT_ACTIONS_OUTER_MARGIN,
   },
   tab: {
-    height: buttonControlHeight.xs,
+    height: WORKSPACE_SECONDARY_HEADER_HEIGHT,
     paddingHorizontal: TAB_CHIP_HORIZONTAL_PADDING,
-    borderRadius: theme.borderRadius.md,
+    borderRightWidth: 1,
+    borderRightColor: theme.colors.border,
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[1],
     userSelect: "none",
   },
   tabTouch: {
-    height: TOUCH_ROW_HEIGHT,
+    height: WORKSPACE_SECONDARY_HEADER_HEIGHT_TOUCH,
   },
   tabHovered: {
-    backgroundColor: theme.colors.surface1,
-  },
-  tabActive: {
     backgroundColor: theme.colors.surface2,
   },
-  tabActiveUnfocused: {
-    backgroundColor: theme.colors.surface1,
+  tabActive: {
+    backgroundColor: theme.colors.surface0,
+  },
+  tabActiveIndicator: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 1,
+    height: TAB_ACTIVE_INDICATOR_HEIGHT,
+    backgroundColor: theme.colors.accent,
+    zIndex: 3,
+  },
+  tabActiveIndicatorUnfocused: {
+    backgroundColor: theme.colors.borderAccent,
   },
   tabHoverFrame: {
     position: "relative",
@@ -1736,8 +1760,7 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "center",
   },
-  // The chip box stops at the slot's padding box, so the gap between two chips runs from
-  // -TAB_CHIP_GAP to 0. Centre a TAB_DROP_INDICATOR_WIDTH pill in it.
+  // Centre a TAB_DROP_INDICATOR_WIDTH pill on the seam between two tabs.
   tabDropIndicator: {
     position: "absolute",
     top: theme.spacing[0.5],
@@ -1789,11 +1812,9 @@ const styles = StyleSheet.create((theme) => ({
   tabTrailingOverlay: {
     position: "absolute",
     top: 0,
-    right: 0,
+    right: 1,
     bottom: 0,
     width: 48,
-    borderTopRightRadius: theme.borderRadius.md,
-    borderBottomRightRadius: theme.borderRadius.md,
     alignItems: "center",
     justifyContent: "center",
     zIndex: 2,
