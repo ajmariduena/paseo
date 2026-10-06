@@ -42,6 +42,7 @@ import type { ImageAttachment, MessagePayload, TextReplacement } from "@/compose
 import { focusWithRetries } from "@/utils/web-focus";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Shortcut } from "@/components/ui/shortcut";
+import type { MenuPageDefinition } from "@/components/ui/menu";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -137,6 +138,10 @@ export interface MessageInputProps {
   attachments: ComposerAttachment[];
   cwd: string;
   attachmentMenuItems: AttachmentMenuItem[];
+  /** Pages the attachment menu can push into, such as quick prompts on the phone row. */
+  attachmentMenuPages?: readonly MenuPageDefinition[];
+  /** Rows after the attachment items, such as the quick-prompts sub trigger. */
+  attachmentMenuFooter?: React.ReactNode;
   onAttachButtonRef?: (node: View | null) => void;
   onAddImages?: (images: ImageAttachment[]) => void;
   onPasteImages?: (files: readonly NativePastedFile[]) => void;
@@ -272,6 +277,8 @@ function AttachmentDropdown({
   attachButtonStyle,
   renderAttachButtonIcon,
   attachmentMenuItems,
+  attachmentMenuPages,
+  attachmentMenuFooter,
   addAttachmentLabel,
 }: {
   visible: boolean;
@@ -280,6 +287,8 @@ function AttachmentDropdown({
   attachButtonStyle: React.ComponentProps<typeof DropdownMenuTrigger>["style"];
   renderAttachButtonIcon: (input: { hovered?: boolean }) => React.ReactElement;
   attachmentMenuItems: AttachmentMenuItem[];
+  attachmentMenuPages: readonly MenuPageDefinition[] | undefined;
+  attachmentMenuFooter: React.ReactNode;
   addAttachmentLabel: string;
 }) {
   const isButtonDisabled = !isConnected || disabled;
@@ -312,8 +321,10 @@ function AttachmentDropdown({
           minWidth={220}
           testID="message-input-attachment-menu"
           sheetTitle={addAttachmentLabel}
+          pages={attachmentMenuPages}
         >
           <AttachmentMenuList items={attachmentMenuItems} />
+          {attachmentMenuFooter}
         </DropdownMenuContent>
       </DropdownMenu>
     </TouchTarget>
@@ -1107,6 +1118,8 @@ interface ResolvedMessageInputProps {
   attachments: ComposerAttachment[];
   cwd: string;
   attachmentMenuItems: AttachmentMenuItem[];
+  attachmentMenuPages: readonly MenuPageDefinition[] | undefined;
+  attachmentMenuFooter: React.ReactNode;
   onAttachButtonRef: ((node: View | null) => void) | undefined;
   onAddImages: ((images: ImageAttachment[]) => void) | undefined;
   onPasteImages: ((files: readonly NativePastedFile[]) => void) | undefined;
@@ -1154,6 +1167,8 @@ function resolveMessageInputProps(props: MessageInputProps): ResolvedMessageInpu
     attachments: props.attachments,
     cwd: props.cwd,
     attachmentMenuItems: props.attachmentMenuItems,
+    attachmentMenuPages: props.attachmentMenuPages,
+    attachmentMenuFooter: props.attachmentMenuFooter ?? null,
     onAttachButtonRef: props.onAttachButtonRef,
     onAddImages: props.onAddImages,
     onPasteImages: props.onPasteImages,
@@ -1209,6 +1224,8 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       attachments,
       cwd,
       attachmentMenuItems,
+      attachmentMenuPages,
+      attachmentMenuFooter,
       onAttachButtonRef,
       onAddImages,
       onPasteImages,
@@ -1944,6 +1961,8 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
                 attachButtonStyle={attachButtonStyle}
                 renderAttachButtonIcon={renderAttachButtonIcon}
                 attachmentMenuItems={attachmentMenuItems}
+                attachmentMenuPages={attachmentMenuPages}
+                attachmentMenuFooter={attachmentMenuFooter}
                 addAttachmentLabel={t("composer.input.addAttachment")}
               />
               {leftContent}

@@ -1,6 +1,12 @@
-import { QuickPromptCapacityProvider } from "@/quick-prompts/capacity";
+import {
+  QuickPromptCapacityProvider,
+  useQuickPromptControlDensity,
+} from "@/quick-prompts/capacity";
 import { useDeferredQuickPromptSend } from "@/quick-prompts/use-deferred-send";
 import { QuickPromptToolbarSlot, type QuickPromptToolbarBinding } from "@/quick-prompts/toolbar";
+import { useQuickPromptPicker } from "@/quick-prompts/picker";
+import { QuickPromptFeedbackBar } from "@/quick-prompts/feedback";
+import { QuickPromptMenuTrigger, buildQuickPromptMenuPage } from "@/quick-prompts/menu-page";
 import type { ComposerTextSource } from "./text-source";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import { useStore } from "zustand";
@@ -1825,6 +1831,23 @@ function ComposerContentImpl({
       replaceUserInput,
     ],
   );
+  const quickPromptPicker = useQuickPromptPicker(quickPromptBinding);
+  const quickPromptDensity = useQuickPromptControlDensity();
+  const quickPromptsEnabled =
+    hasAgent && inputMode === "chat" && !onSubmitMessage && quickPromptPicker.supported;
+  // The toolbar publishes `icons` once it has no slot left; the attachment menu takes over.
+  const quickPromptsInMenu = quickPromptsEnabled && quickPromptDensity === "icons";
+  const attachmentMenuPages = useMemo(
+    () =>
+      quickPromptsInMenu
+        ? [buildQuickPromptMenuPage(quickPromptPicker, t("quickPrompts.section"))]
+        : undefined,
+    [quickPromptPicker, quickPromptsInMenu, t],
+  );
+  const attachmentMenuFooter = useMemo(
+    () => (quickPromptsInMenu ? <QuickPromptMenuTrigger picker={quickPromptPicker} /> : null),
+    [quickPromptPicker, quickPromptsInMenu],
+  );
 
   const queueWriter = useMemo<QueueWriter>(
     () => ({
@@ -2414,14 +2437,10 @@ function ComposerContentImpl({
       <>
         {resolveContextWindowPlacement(contextWindowMeter, hasAgent)}
         {AGENT_CONTROLS_END}
-        <QuickPromptToolbarSlot
-          binding={
-            hasAgent && inputMode === "chat" && !onSubmitMessage ? quickPromptBinding : undefined
-          }
-        />
+        <QuickPromptToolbarSlot picker={quickPromptsEnabled ? quickPromptPicker : undefined} />
       </>
     ),
-    [contextWindowMeter, hasAgent, inputMode, onSubmitMessage, quickPromptBinding],
+    [contextWindowMeter, hasAgent, quickPromptPicker, quickPromptsEnabled],
   );
 
   const hasGithubAttachment = useMemo(
@@ -2745,6 +2764,8 @@ function ComposerContentImpl({
           <View style={styles.inputAreaContent}>
             {queueList}
             {sendErrorNode}
+            {quickPromptsInMenu ? <QuickPromptFeedbackBar picker={quickPromptPicker} /> : null}
+            {quickPromptsEnabled ? quickPromptPicker.editor : null}
 
             <View ref={messageInputContainerRef} style={styles.messageInputContainer}>
               <ComposerAutocompleteBinding
@@ -2781,6 +2802,8 @@ function ComposerContentImpl({
                   attachments={selectedAttachments}
                   cwd={cwd}
                   attachmentMenuItems={attachmentMenuItems}
+                  attachmentMenuPages={attachmentMenuPages}
+                  attachmentMenuFooter={attachmentMenuFooter}
                   onAttachButtonRef={handleAttachButtonRef}
                   onAddImages={addImages}
                   onPasteImages={handleNativePasteImages}
