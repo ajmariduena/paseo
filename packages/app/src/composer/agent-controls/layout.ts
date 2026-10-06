@@ -67,6 +67,20 @@ export function resolveComposerToolbarGlyphStroke(ring: ContextWindowMeterRing):
   return { strokeWidth: ring.strokeWidth, absoluteStrokeWidth: true };
 }
 
+const LUCIDE_GRID = 24;
+
+/**
+ * The Lucide box, in pt, that draws a glyph's ink exactly as tall as the ring: `inkExtent` is the
+ * glyph's vertical span on the 24 grid before its stroke (a bookmark spans 18, a mic 20), and the
+ * stroke renders at the ring's width whatever the box, so only the extent has to be scaled.
+ */
+export function resolveComposerToolbarGlyphBox(
+  ring: ContextWindowMeterRing,
+  inkExtent: number,
+): number {
+  return ((ring.size - ring.strokeWidth) * LUCIDE_GRID) / inkExtent;
+}
+
 export const COMPOSER_TOOLBAR_TOUCH_HIT_SLOP = {
   top: touchTargetOutset(COMPOSER_TOOLBAR_GEOMETRY.controlSize),
   bottom: touchTargetOutset(COMPOSER_TOOLBAR_GEOMETRY.controlSize),

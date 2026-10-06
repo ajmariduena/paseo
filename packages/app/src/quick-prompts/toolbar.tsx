@@ -15,6 +15,7 @@ import {
 import { useControlDensity, useIsCompactFormFactor } from "@/constants/layout";
 import {
   COMPOSER_TOOLBAR_GEOMETRY,
+  resolveComposerToolbarGlyphBox,
   resolveComposerToolbarGlyphStroke,
   resolveQuickPromptPresentation,
   estimateComposerFixedWidth,
@@ -73,11 +74,15 @@ function QuickPromptMenuTrigger({
   );
 }
 
+// The bookmark spans 18 of the 24 grid, so it is drawn larger than the mic to reach the ring's
+// height.
+const BOOKMARK_INK_EXTENT = 18;
+
 function BookmarkGlyph({ ready = false }: { ready?: boolean }): ReactElement {
-  const { glyphSize, ring } = useComposerControlLayout();
+  const { ring } = useComposerControlLayout();
   return (
     <ThemedBookmark
-      size={glyphSize}
+      size={resolveComposerToolbarGlyphBox(ring, BOOKMARK_INK_EXTENT)}
       {...resolveComposerToolbarGlyphStroke(ring)}
       uniProps={ready ? readyIconMapping : iconMapping}
     />

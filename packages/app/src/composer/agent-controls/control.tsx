@@ -17,7 +17,13 @@ import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { useComposerControlLayout } from "@/composer/agent-controls/layout-context";
 import { ComposerToolbarGlyph } from "@/composer/agent-controls/glyph";
 import type { AgentControlIcon } from "@/agent-controls/icons";
-import { resolveComposerToolbarGlyphStroke } from "@/composer/agent-controls/layout";
+import {
+  resolveComposerToolbarGlyphBox,
+  resolveComposerToolbarGlyphStroke,
+} from "@/composer/agent-controls/layout";
+
+const SHIELD_INK_EXTENT = 19.45;
+const SHIELD_INK_OFFSET_Y = 0.35;
 
 export type AgentControlIconTint = "muted" | "accent" | "blue" | "green" | "yellow";
 
@@ -62,10 +68,15 @@ export const AgentControlTrigger = forwardRef<View, AgentControlTriggerProps>(
     },
     ref,
   ) {
-    const { glyphSize, ring, hitSlop } = useComposerControlLayout();
+    const { ring, hitSlop } = useComposerControlLayout();
     const isTouch = useControlDensity() === "touch";
     const isSheet = surface === "sheet";
-    const resolvedGlyphSize = isSheet ? ICON_SIZE.md : glyphSize;
+    // The shield family spans 19.7 of the 24 grid on paper; rasterised, its pointed bottom lands
+    // short and its apex full, so it measures 19.45 tall and a third of a point high. The toolbar
+    // draws it to that span and nudges it down to sit on the ring's edges.
+    const resolvedGlyphSize = isSheet
+      ? ICON_SIZE.md
+      : resolveComposerToolbarGlyphBox(ring, SHIELD_INK_EXTENT);
     const resolvedIconColor = iconColor ?? resolveTintColor(iconTint);
     const showValue = isSheet || showToolbarLabel;
     const triggerStyle = useCallback(
@@ -109,7 +120,7 @@ export const AgentControlTrigger = forwardRef<View, AgentControlTriggerProps>(
             <Icon size={resolvedGlyphSize} color={resolvedIconColor} />
           </View>
         ) : (
-          <ComposerToolbarGlyph size={resolvedGlyphSize}>
+          <ComposerToolbarGlyph size={resolvedGlyphSize} inkOffsetY={SHIELD_INK_OFFSET_Y}>
             <Icon
               size={resolvedGlyphSize}
               color={resolvedIconColor}

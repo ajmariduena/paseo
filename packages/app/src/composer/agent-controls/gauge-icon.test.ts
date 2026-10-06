@@ -26,6 +26,12 @@ describe("resolveCircleGaugeRender", () => {
     expect(arc.path).toContain("A 9 9 0 1 1");
   });
 
+  it("draws the base on the circle's bottom edge so the ink reaches the ring's bottom", () => {
+    const render = resolveCircleGaugeRender(RING, "top", "geometric");
+    expect(render.base.y + render.strokeWidth / 2).toBe(RING.size);
+    expect(render.base.halfLength * 2).toBeLessThan(render.radius * 2);
+  });
+
   it("keeps the arc's centre on the ring's centre when centred geometrically", () => {
     expect(resolveCircleGaugeRender(RING, "top", "geometric").offsetY).toBe(0);
   });

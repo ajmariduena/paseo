@@ -15,6 +15,7 @@ import {
   resolveComposerLayoutMode,
   LEAN_COMPOSER_MAX_WIDTH,
   type ComposerControlPresence,
+  resolveComposerToolbarGlyphBox,
   resolveComposerToolbarGlyphStroke,
 } from "./layout";
 
@@ -634,5 +635,17 @@ describe("resolveComposerToolbarGlyphStroke", () => {
       absoluteStrokeWidth: true,
     });
     expect(resolveComposerToolbarGlyphStroke({ size: 16, strokeWidth: 2 }).strokeWidth).toBe(2);
+  });
+});
+
+describe("resolveComposerToolbarGlyphBox", () => {
+  it("sizes a glyph so its stroked ink is exactly the ring's height", () => {
+    const ring = { size: 20, strokeWidth: 2 };
+    expect(resolveComposerToolbarGlyphBox(ring, 18)).toBe(24);
+    expect(resolveComposerToolbarGlyphBox(ring, 20)).toBeCloseTo(21.6, 6);
+    const inkHeight = (extent: number) =>
+      (extent * resolveComposerToolbarGlyphBox(ring, extent)) / 24 + ring.strokeWidth;
+    expect(inkHeight(18)).toBeCloseTo(20, 6);
+    expect(inkHeight(14)).toBeCloseTo(20, 6);
   });
 });

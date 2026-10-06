@@ -17,6 +17,10 @@ import type { EffortTier } from "@/components/ui/effort-stops";
 export type GaugeCentering = "geometric" | "optical";
 export const GAUGE_CENTERING: GaugeCentering = "geometric";
 const ARC_SWEEP_DEGREES = 270;
+// A short base at the circle's bottom edge: the row is read by its top and bottom edges, and
+// without it the open arc's ink stopped short of the ring's bottom. Lucide's gauge base is 8 of
+// its 20-unit width.
+const BASE_HALF_LENGTH_RATIO = 0.4;
 const NEEDLE_LENGTH_RATIO = 0.57;
 const NEEDLE_ANGLE_DEGREES: Record<EffortTier, number> = { low: -60, mid: -20, high: 20, top: 60 };
 
@@ -32,6 +36,8 @@ export interface CircleGaugeRender {
   /** Downward shift of the whole glyph. */
   offsetY: number;
   needle: { x: number; y: number };
+  /** The base line's y, on the circle's bottom edge, and its half length. */
+  base: { y: number; halfLength: number };
 }
 
 function pointFromTop(center: number, radius: number, degrees: number): { x: number; y: number } {
@@ -63,6 +69,7 @@ export function resolveCircleGaugeRender(
     ink,
     offsetY,
     needle,
+    base: { y: center + radius, halfLength: radius * BASE_HALF_LENGTH_RATIO },
   };
 }
 
@@ -93,6 +100,15 @@ export function GaugeIcon({ size, color, ring, tier = "high" }: GaugeIconProps):
           y1={render.center}
           x2={render.needle.x}
           y2={render.needle.y}
+          stroke={color}
+          strokeWidth={render.strokeWidth}
+          strokeLinecap="round"
+        />
+        <Line
+          x1={render.center - render.base.halfLength}
+          y1={render.base.y}
+          x2={render.center + render.base.halfLength}
+          y2={render.base.y}
           stroke={color}
           strokeWidth={render.strokeWidth}
           strokeLinecap="round"

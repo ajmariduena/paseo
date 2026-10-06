@@ -58,6 +58,7 @@ import { useControlDensity, useIsCompactFormFactor } from "@/constants/layout";
 import { TouchTarget, useTouchHitSlop } from "@/components/ui/touch-target";
 import {
   COMPOSER_TOOLBAR_GEOMETRY,
+  resolveComposerToolbarGlyphBox,
   resolveComposerToolbarGlyphStroke,
 } from "@/composer/agent-controls/layout";
 import { resolveContextWindowMeterRing } from "@/components/context-window-meter.utils";
@@ -248,7 +249,7 @@ function AttachButtonIcon({
   return (
     <View ref={onAttachButtonRef} collapsable={false} style={styles.attachButtonAnchor}>
       <ThemedPlus
-        size={buttonIconSize}
+        size={toolbarGlyphBox(buttonIconSize, PLUS_INK_EXTENT)}
         {...toolbarGlyphStroke(buttonIconSize)}
         uniProps={colorMapping}
       />
@@ -357,7 +358,7 @@ function VoiceButtonIcon({
   const colorMapping = hovered ? iconForegroundMapping : iconForegroundMutedMapping;
   return (
     <ThemedMic
-      size={buttonIconSize}
+      size={toolbarGlyphBox(buttonIconSize, MIC_INK_EXTENT)}
       {...toolbarGlyphStroke(buttonIconSize)}
       uniProps={colorMapping}
     />
@@ -2073,6 +2074,14 @@ const styles = StyleSheet.create((theme: Theme) => ({
 const ThemedPlus = withUnistyles(Plus);
 function toolbarGlyphStroke(size: number) {
   return resolveComposerToolbarGlyphStroke(resolveContextWindowMeterRing(size));
+}
+// Vertical spans on the 24 grid as they rasterise, measured on 2x and 3x screens: the path
+// says 14 and 20, but round caps and curve apexes land about a third of a point short at each
+// end, so the spans are a little under and each glyph comes out exactly as tall as the ring.
+const PLUS_INK_EXTENT = 13.75;
+const MIC_INK_EXTENT = 19.2;
+function toolbarGlyphBox(size: number, inkExtent: number) {
+  return resolveComposerToolbarGlyphBox(resolveContextWindowMeterRing(size), inkExtent);
 }
 const ThemedMic = withUnistyles(Mic);
 const ThemedArrowUp = withUnistyles(ArrowUp);
