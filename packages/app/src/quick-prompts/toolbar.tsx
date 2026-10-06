@@ -35,10 +35,7 @@ export type { QuickPromptToolbarBinding } from "./picker";
 
 const ThemedChevron = withUnistyles(ChevronDown);
 const iconMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
-const readyIconMapping = (theme: Theme) => ({
-  color: theme.colors.accentBright,
-  fill: theme.colors.accentBright,
-});
+const readyIconMapping = (theme: Theme) => ({ color: theme.colors.accentBright });
 const LONG_PRESS_MS = 500;
 
 /** Keeps the slot on the same glyph size and hit slop as the clusters beside it. */
@@ -75,16 +72,25 @@ function QuickPromptMenuTrigger({
   );
 }
 
+// Stroked at the ring's absolute width so it sits in the ring and gauge's weight, not the
+// toolbar's thinner default.
 function BookmarkGlyph({ ready = false }: { ready?: boolean }): ReactElement {
-  const { glyphSize } = useComposerControlLayout();
-  return <ThemedBookmark size={glyphSize} uniProps={ready ? readyIconMapping : iconMapping} />;
+  const { glyphSize, ring } = useComposerControlLayout();
+  return (
+    <ThemedBookmark
+      size={glyphSize}
+      strokeWidth={ring.strokeWidth}
+      absoluteStrokeWidth
+      uniProps={ready ? readyIconMapping : iconMapping}
+    />
+  );
 }
 const ThemedBookmark = withUnistyles(Bookmark);
 
 /**
  * The lean tablet row's one bookmark: with a default prompt a tap sends it and a long press opens
- * the picker; without one a tap opens the picker. A bare glyph like the mic beside it; the filled
- * green says a tap will send.
+ * the picker; without one a tap opens the picker. A bare glyph like the mic beside it; green
+ * says a tap will send.
  */
 function LeanBookmarkTrigger({
   defaultPrompt,

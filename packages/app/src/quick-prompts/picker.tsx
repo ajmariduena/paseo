@@ -261,14 +261,11 @@ const ThemedCornerDownLeft = withUnistyles(CornerDownLeft);
 const ThemedStar = withUnistyles(Star);
 const ThemedBookmark = withUnistyles(Bookmark);
 const mutedMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
-const selectedMapping = (theme: Theme) => ({
-  color: theme.colors.accentBright,
-  fill: theme.colors.accentBright,
-});
+const selectedMapping = (theme: Theme) => ({ color: theme.colors.accentBright });
 
 /**
  * A prompt on the menu's rail: its tap mode as the leading glyph, title and preview, then one
- * trailing group of equal targets — insert, pin, default. A chosen pin or default is a filled
+ * trailing group of equal targets — insert, pin, default. A chosen pin or default is an accent
  * glyph, nothing more.
  */
 function QuickPromptPickerRow({
