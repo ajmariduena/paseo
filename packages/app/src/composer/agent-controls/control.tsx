@@ -17,6 +17,7 @@ import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { useComposerControlLayout } from "@/composer/agent-controls/layout-context";
 import { ComposerToolbarGlyph } from "@/composer/agent-controls/glyph";
 import type { AgentControlIcon } from "@/agent-controls/icons";
+import { resolveComposerToolbarGlyphStroke } from "@/composer/agent-controls/layout";
 
 export type AgentControlIconTint = "muted" | "accent" | "blue" | "green" | "yellow";
 
@@ -61,7 +62,7 @@ export const AgentControlTrigger = forwardRef<View, AgentControlTriggerProps>(
     },
     ref,
   ) {
-    const { glyphSize, hitSlop } = useComposerControlLayout();
+    const { glyphSize, ring, hitSlop } = useComposerControlLayout();
     const isTouch = useControlDensity() === "touch";
     const isSheet = surface === "sheet";
     const resolvedGlyphSize = isSheet ? ICON_SIZE.md : glyphSize;
@@ -109,7 +110,11 @@ export const AgentControlTrigger = forwardRef<View, AgentControlTriggerProps>(
           </View>
         ) : (
           <ComposerToolbarGlyph size={resolvedGlyphSize}>
-            <Icon size={resolvedGlyphSize} color={resolvedIconColor} />
+            <Icon
+              size={resolvedGlyphSize}
+              color={resolvedIconColor}
+              {...resolveComposerToolbarGlyphStroke(ring)}
+            />
           </ComposerToolbarGlyph>
         )}
         {isSheet ? (

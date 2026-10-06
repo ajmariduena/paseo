@@ -15,6 +15,7 @@ import {
   resolveComposerLayoutMode,
   LEAN_COMPOSER_MAX_WIDTH,
   type ComposerControlPresence,
+  resolveComposerToolbarGlyphStroke,
 } from "./layout";
 
 const CLAUDE_CONTROLS: ComposerControlPresence = {
@@ -623,5 +624,15 @@ describe("composer layout mode", () => {
         windowWidth: 1133,
       }),
     ).toBe("roomy");
+  });
+});
+
+describe("resolveComposerToolbarGlyphStroke", () => {
+  it("strokes toolbar glyphs at the ring's rendered width regardless of glyph size", () => {
+    expect(resolveComposerToolbarGlyphStroke({ size: 20, strokeWidth: 2 })).toEqual({
+      strokeWidth: 2,
+      absoluteStrokeWidth: true,
+    });
+    expect(resolveComposerToolbarGlyphStroke({ size: 16, strokeWidth: 2 }).strokeWidth).toBe(2);
   });
 });

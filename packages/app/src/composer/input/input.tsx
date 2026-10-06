@@ -56,7 +56,11 @@ import { isImeComposingKeyboardEvent } from "@/utils/keyboard-ime";
 import { isWeb } from "@/constants/platform";
 import { useControlDensity, useIsCompactFormFactor } from "@/constants/layout";
 import { TouchTarget, useTouchHitSlop } from "@/components/ui/touch-target";
-import { COMPOSER_TOOLBAR_GEOMETRY } from "@/composer/agent-controls/layout";
+import {
+  COMPOSER_TOOLBAR_GEOMETRY,
+  resolveComposerToolbarGlyphStroke,
+} from "@/composer/agent-controls/layout";
+import { resolveContextWindowMeterRing } from "@/components/context-window-meter.utils";
 import { useComposerKeyboardScope } from "@/composer/keyboard-scope";
 import { RenderProfile } from "@/utils/render-profiler";
 import { useComposerHeight } from "./height";
@@ -243,7 +247,11 @@ function AttachButtonIcon({
   const colorMapping = hovered ? iconForegroundMapping : iconForegroundMutedMapping;
   return (
     <View ref={onAttachButtonRef} collapsable={false} style={styles.attachButtonAnchor}>
-      <ThemedPlus size={buttonIconSize} uniProps={colorMapping} />
+      <ThemedPlus
+        size={buttonIconSize}
+        {...toolbarGlyphStroke(buttonIconSize)}
+        uniProps={colorMapping}
+      />
     </View>
   );
 }
@@ -337,10 +345,23 @@ function VoiceButtonIcon({
   buttonIconSize: number;
 }) {
   if (isDictating) {
-    return <Square size={buttonIconSize} color="white" fill="white" />;
+    return (
+      <Square
+        size={buttonIconSize}
+        {...toolbarGlyphStroke(buttonIconSize)}
+        color="white"
+        fill="white"
+      />
+    );
   }
   const colorMapping = hovered ? iconForegroundMapping : iconForegroundMutedMapping;
-  return <ThemedMic size={buttonIconSize} uniProps={colorMapping} />;
+  return (
+    <ThemedMic
+      size={buttonIconSize}
+      {...toolbarGlyphStroke(buttonIconSize)}
+      uniProps={colorMapping}
+    />
+  );
 }
 
 type ShortcutChord = NonNullable<React.ComponentProps<typeof Shortcut>["chord"]>;
@@ -403,9 +424,21 @@ function SendButtonContent({
     return <Text style={styles.sendButtonLabel}>{submitLabel}</Text>;
   }
   if (submitIcon === "return") {
-    return <ThemedCornerDownLeft size={buttonIconSize} uniProps={iconSendForegroundMapping} />;
+    return (
+      <ThemedCornerDownLeft
+        size={buttonIconSize}
+        {...toolbarGlyphStroke(buttonIconSize)}
+        uniProps={iconSendForegroundMapping}
+      />
+    );
   }
-  return <ThemedArrowUp size={buttonIconSize} uniProps={iconSendForegroundMapping} />;
+  return (
+    <ThemedArrowUp
+      size={buttonIconSize}
+      {...toolbarGlyphStroke(buttonIconSize)}
+      uniProps={iconSendForegroundMapping}
+    />
+  );
 }
 
 interface DesktopKeyPressContext {
@@ -2038,6 +2071,9 @@ const styles = StyleSheet.create((theme: Theme) => ({
 })) as unknown as Record<string, object>;
 
 const ThemedPlus = withUnistyles(Plus);
+function toolbarGlyphStroke(size: number) {
+  return resolveComposerToolbarGlyphStroke(resolveContextWindowMeterRing(size));
+}
 const ThemedMic = withUnistyles(Mic);
 const ThemedArrowUp = withUnistyles(ArrowUp);
 const ThemedCornerDownLeft = withUnistyles(CornerDownLeft);

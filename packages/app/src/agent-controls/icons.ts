@@ -18,6 +18,9 @@ import { getModeVisuals, type AgentProviderDefinition } from "@getpaseo/protocol
 export interface AgentControlIconProps {
   size: number;
   color: string;
+  /** Lucide stroke in grid units, or in pt with `absoluteStrokeWidth`; a drawn icon may ignore it. */
+  strokeWidth?: number;
+  absoluteStrokeWidth?: boolean;
 }
 
 export type AgentControlIcon = ComponentType<AgentControlIconProps>;

@@ -15,6 +15,7 @@ import {
 import { useControlDensity, useIsCompactFormFactor } from "@/constants/layout";
 import {
   COMPOSER_TOOLBAR_GEOMETRY,
+  resolveComposerToolbarGlyphStroke,
   resolveQuickPromptPresentation,
   estimateComposerFixedWidth,
   estimateQuickPromptPillWidth,
@@ -73,8 +74,14 @@ function QuickPromptMenuTrigger({
 }
 
 function BookmarkGlyph({ ready = false }: { ready?: boolean }): ReactElement {
-  const { glyphSize } = useComposerControlLayout();
-  return <ThemedBookmark size={glyphSize} uniProps={ready ? readyIconMapping : iconMapping} />;
+  const { glyphSize, ring } = useComposerControlLayout();
+  return (
+    <ThemedBookmark
+      size={glyphSize}
+      {...resolveComposerToolbarGlyphStroke(ring)}
+      uniProps={ready ? readyIconMapping : iconMapping}
+    />
+  );
 }
 const ThemedBookmark = withUnistyles(Bookmark);
 

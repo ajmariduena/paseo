@@ -1,3 +1,4 @@
+import type { ContextWindowMeterRing } from "@/components/context-window-meter.utils";
 import { touchTargetOutset } from "@/components/ui/control-geometry";
 
 export const COMPOSER_CONTROL_DENSITIES = [
@@ -54,6 +55,17 @@ export const COMPOSER_TOOLBAR_GEOMETRY = {
   /** The intelligence pill draws a 1pt frame on both sides. */
   pillBorder: 2,
 } as const;
+
+/**
+ * Every glyph on the toolbar row is stroked at the context ring's rendered width, whatever its
+ * own size, so the row has one weight; the app's grid-unit stroke stays for everything else.
+ */
+export function resolveComposerToolbarGlyphStroke(ring: ContextWindowMeterRing): {
+  strokeWidth: number;
+  absoluteStrokeWidth: true;
+} {
+  return { strokeWidth: ring.strokeWidth, absoluteStrokeWidth: true };
+}
 
 export const COMPOSER_TOOLBAR_TOUCH_HIT_SLOP = {
   top: touchTargetOutset(COMPOSER_TOOLBAR_GEOMETRY.controlSize),
