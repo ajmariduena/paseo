@@ -2,7 +2,8 @@ import { useCallback, useMemo, useRef, useState, type ReactElement } from "react
 import { useTranslation } from "react-i18next";
 import { View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
-import { Cpu, Gauge, RotateCcw, Zap } from "lucide-react-native";
+import { Cpu, RotateCcw, Zap } from "lucide-react-native";
+import { GaugeIcon } from "@/composer/agent-controls/gauge-icon";
 import type { AgentFeature, AgentFeatureToggle } from "@getpaseo/protocol/agent-types";
 import { getAgentFeatureIcon } from "@/agent-controls/icons";
 import type { SheetHeader } from "@/components/adaptive-modal-sheet";
@@ -162,7 +163,7 @@ function EffortRow({
     <>
       <AgentControlTrigger
         ref={anchorRef}
-        icon={Gauge}
+        icon={GaugeIcon}
         surface="sheet"
         label={t("agentControls.intelligence.title")}
         value={value}

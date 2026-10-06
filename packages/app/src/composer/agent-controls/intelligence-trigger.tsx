@@ -1,17 +1,17 @@
-import { forwardRef, useCallback, useMemo, type ReactElement } from "react";
+import { forwardRef, useCallback, type ReactElement } from "react";
 import { Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { Gauge } from "lucide-react-native";
 import { ModelProviderGlyph } from "@/components/model-browser";
 import { ComboboxTrigger } from "@/components/ui/combobox-trigger";
 import type { EffortTier } from "@/components/ui/effort-stops";
+import { GaugeIcon, resolveGaugeRenderSize } from "@/composer/agent-controls/gauge-icon";
 import { ComposerToolbarGlyph } from "@/composer/agent-controls/glyph";
 import { useComposerControlLayout } from "@/composer/agent-controls/layout-context";
 import { GAUGE_TIER_COLOR } from "@/composer/agent-controls/effort-selection";
 import { resolveIntelligenceTriggerKind } from "@/composer/agent-controls/layout";
 import type { Theme } from "@/styles/theme";
 
-const ThemedGauge = withUnistyles(Gauge);
+const ThemedGaugeIcon = withUnistyles(GaugeIcon);
 const gaugeTierMapping: Record<EffortTier, (theme: Theme) => { color: string }> = {
   low: (theme) => ({ color: theme.colors[GAUGE_TIER_COLOR.low] }),
   mid: (theme) => ({ color: theme.colors[GAUGE_TIER_COLOR.mid] }),
@@ -105,19 +105,12 @@ export const IntelligenceTrigger = forwardRef<View, IntelligenceTriggerProps>(
   },
 );
 
-// Lucide's gauge is an arc about (12,14) with its ends at y=19, so its ink spans rows 3..20 of
-// the 24-unit box and centres half a unit above the box centre. Centre the ink, not the box.
-const GAUGE_INK_OFFSET = 0.5 / 24;
-
 function GaugeGlyph({ tier, isFast }: { tier: EffortTier; isFast: boolean }): ReactElement {
   const { glyphSize } = useComposerControlLayout();
-  const inkStyle = useMemo(
-    () => ({ transform: [{ translateY: glyphSize * GAUGE_INK_OFFSET }] }),
-    [glyphSize],
-  );
+  // The box takes the enlarged gauge's size so the Fast dot keeps clear of the arc's corner.
   return (
-    <ComposerToolbarGlyph size={glyphSize}>
-      <ThemedGauge size={glyphSize} style={inkStyle} uniProps={gaugeTierMapping[tier]} />
+    <ComposerToolbarGlyph size={resolveGaugeRenderSize(glyphSize)}>
+      <ThemedGaugeIcon size={glyphSize} uniProps={gaugeTierMapping[tier]} />
       {isFast ? <View style={styles.fastDot} testID="agent-intelligence-fast-dot" /> : null}
     </ComposerToolbarGlyph>
   );
