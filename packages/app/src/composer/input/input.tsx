@@ -406,15 +406,15 @@ function SendButtonContent({
   buttonIconSize: number;
 }) {
   if (isSubmitLoading) {
-    return <ThemedLoadingSpinner size="small" uniProps={iconAccentForegroundMapping} />;
+    return <ThemedLoadingSpinner size="small" uniProps={iconSendForegroundMapping} />;
   }
   if (submitLabel) {
     return <Text style={styles.sendButtonLabel}>{submitLabel}</Text>;
   }
   if (submitIcon === "return") {
-    return <ThemedCornerDownLeft size={buttonIconSize} uniProps={iconAccentForegroundMapping} />;
+    return <ThemedCornerDownLeft size={buttonIconSize} uniProps={iconSendForegroundMapping} />;
   }
-  return <ThemedArrowUp size={buttonIconSize} uniProps={iconAccentForegroundMapping} />;
+  return <ThemedArrowUp size={buttonIconSize} uniProps={iconSendForegroundMapping} />;
 }
 
 interface DesktopKeyPressContext {
@@ -846,7 +846,7 @@ function SendButtonTooltip({
   );
 }
 
-type PrimaryActionKind = "send" | "active" | "none";
+type PrimaryActionKind = "send" | "active";
 
 function hasSendableComposerContent(input: {
   hasText: boolean;
@@ -856,6 +856,7 @@ function hasSendableComposerContent(input: {
   return input.hasText || input.attachments.length > 0 || input.hasExternalContent;
 }
 
+/** The round send button is always there; it yields its slot only to the stop button. */
 function resolvePrimaryActionKind(input: {
   hasSendableContent: boolean;
   allowEmptySubmit: boolean;
@@ -864,8 +865,7 @@ function resolvePrimaryActionKind(input: {
 }): PrimaryActionKind {
   if (input.hasSendableContent || input.allowEmptySubmit) return "send";
   if (input.isAgentRunning) return "active";
-  if (input.isSubmitLoading) return "send";
-  return "none";
+  return "send";
 }
 
 function PrimaryAction({
@@ -881,7 +881,6 @@ function PrimaryAction({
   onSendAction: (action: ComposerSendAction) => void;
 } & Omit<React.ComponentProps<typeof SendButtonTooltip>, "onLongPress">) {
   if (kind === "active") return activeActionContent;
-  if (kind !== "send") return null;
   return (
     <SendAlternates actions={alternateSendActions} onSelect={onSendAction}>
       {(onLongPress) => <SendButtonTooltip {...sendButtonProps} onLongPress={onLongPress} />}
@@ -1083,6 +1082,8 @@ interface SendButtonStateInput {
   disabled: boolean;
   isSubmitDisabled: boolean;
   isSubmitLoading: boolean;
+  hasSendableContent: boolean;
+  allowEmptySubmit: boolean;
   onSubmitLoadingPress: (() => void) | undefined;
   defaultSendBehavior: "interrupt" | "steer" | "queue";
   isAgentRunning: boolean;
@@ -1097,8 +1098,10 @@ interface SendButtonStateOutput {
 function computeSendButtonState(input: SendButtonStateInput): SendButtonStateOutput {
   const canPressLoadingButton =
     input.isSubmitLoading && typeof input.onSubmitLoadingPress === "function";
+  const nothingToSend = !input.hasSendableContent && !input.allowEmptySubmit;
   const isSendButtonDisabled =
-    input.disabled || (!canPressLoadingButton && (input.isSubmitDisabled || input.isSubmitLoading));
+    input.disabled ||
+    (!canPressLoadingButton && (input.isSubmitDisabled || input.isSubmitLoading || nothingToSend));
   const defaultActionQueues = input.defaultSendBehavior === "queue" && input.isAgentRunning;
   return { canPressLoadingButton, isSendButtonDisabled, defaultActionQueues };
 }
@@ -1706,12 +1709,13 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       });
     }
 
+    const hasSendableContent = hasSendableComposerContent({
+      hasText: hasLiveText,
+      attachments,
+      hasExternalContent,
+    });
     const primaryActionKind = resolvePrimaryActionKind({
-      hasSendableContent: hasSendableComposerContent({
-        hasText: hasLiveText,
-        attachments,
-        hasExternalContent,
-      }),
+      hasSendableContent,
       allowEmptySubmit,
       isAgentRunning,
       isSubmitLoading,
@@ -1721,6 +1725,8 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         disabled,
         isSubmitDisabled,
         isSubmitLoading,
+        hasSendableContent,
+        allowEmptySubmit,
         onSubmitLoadingPress,
         defaultSendBehavior,
         isAgentRunning,
@@ -2162,11 +2168,12 @@ const styles = StyleSheet.create((theme: Theme) => ({
   voiceButtonRecording: {
     backgroundColor: theme.colors.destructive,
   },
+  // Codex's round arrow: the foreground as fill, the surface as ink.
   sendButton: {
     width: 28,
     height: 28,
     borderRadius: theme.borderRadius.full,
-    backgroundColor: theme.colors.accent,
+    backgroundColor: theme.colors.foreground,
     alignItems: "center",
     justifyContent: "center",
     marginLeft: theme.spacing[1],
@@ -2185,7 +2192,7 @@ const styles = StyleSheet.create((theme: Theme) => ({
   sendButtonLabel: {
     fontSize: theme.fontSize.base,
     fontWeight: theme.fontWeight.medium,
-    color: theme.colors.accentForeground,
+    color: theme.colors.surface0,
   },
   iconButtonHovered: {
     backgroundColor: theme.colors.surface2,
@@ -2232,4 +2239,4 @@ const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
 
 const iconForegroundMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const iconForegroundMutedMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
-const iconAccentForegroundMapping = (theme: Theme) => ({ color: theme.colors.accentForeground });
+const iconSendForegroundMapping = (theme: Theme) => ({ color: theme.colors.surface0 });
