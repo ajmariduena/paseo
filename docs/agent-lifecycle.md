@@ -44,8 +44,9 @@ nothing detects state they held.
 Live background work is visible while the runtime holds it. Claude's `background_tasks_changed`
 replaces the agent's `backgroundTasks` on the snapshot, minus task and workflow children, which
 already show as provider subagents. The app shows them as a pill above the composer with a per-task
-stop (`agent.background_task.stop.request`), and the sidebar shows an idle agent holding them as
-running. The lifecycle stays `idle`: the turn is over, and prompts and finish notifications follow
+stop (`agent.background_task.stop.request`). The sidebar files an idle agent holding them under
+its own "In background" status group, apart from Working, and every row names its workspace's live
+tasks on the meta line. The lifecycle stays `idle`: the turn is over, and prompts and finish notifications follow
 the turn. A runtime restart clears the set, because the CLI never re-announces it.
 
 A provider runtime can still die on its own — crash, OOM kill, host suspend. Work the agent parked

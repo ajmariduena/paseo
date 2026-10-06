@@ -486,6 +486,8 @@ function StatusGroupIcon({ bucket }: { bucket: StatusBucket }) {
       return <ThemedCircleCheck size={14} uniProps={attentionColorMapping} />;
     case "running":
       return <ThemedCircleDot size={14} uniProps={runningColorMapping} />;
+    case "background":
+      return <ThemedCircleDot size={14} uniProps={foregroundMutedColorMapping} />;
     case "waiting":
       return <ThemedCircle size={14} uniProps={foregroundMutedColorMapping} />;
     case "done":

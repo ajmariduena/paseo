@@ -23,6 +23,7 @@ import {
   Globe,
   Server,
   Settings2,
+  SquareTerminal,
   Tag,
   Type,
 } from "lucide-react-native";
@@ -104,6 +105,7 @@ const ROW_ITEM_ICONS: Record<SidebarRowItem, OptionIcon> = {
   host: withUnistyles(Server),
   changeRequest: withUnistyles(GitPullRequest),
   services: withUnistyles(Globe),
+  backgroundTasks: withUnistyles(SquareTerminal),
   labels: withUnistyles(Tag),
 };
 
@@ -140,6 +142,7 @@ const ROW_ITEM_LABEL_KEYS: Record<SidebarRowItem, string> = {
   host: "sidebar.display.show.host",
   changeRequest: "sidebar.display.show.changeRequest",
   services: "sidebar.display.show.services",
+  backgroundTasks: "backgroundTasks.title",
   labels: "sidebar.display.show.labels",
 };
 

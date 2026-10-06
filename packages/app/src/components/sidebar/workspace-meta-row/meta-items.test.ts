@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { AgentBackgroundTask } from "@getpaseo/protocol/agent-types";
 import type { WorkspaceLabelDefinition } from "@getpaseo/protocol/workspace-labels";
 import type { PrHint } from "@/git/pr-hint";
 import { DEFAULT_SIDEBAR_CHECKS_DISPLAY } from "@/components/sidebar/display-preferences/checks-display";
@@ -18,6 +19,13 @@ const SERVICE: WorkspaceServiceSummary = { name: "web", health: null };
 
 const LABELS: WorkspaceLabelDefinition[] = [{ name: "Urgent", color: "red" }];
 
+const BACKGROUND_TASK: AgentBackgroundTask = {
+  id: "task-1",
+  taskType: "local_bash",
+  description: "npm run dev",
+  startedAt: "2026-01-01T00:00:00.000Z",
+};
+
 function select(overrides: Partial<Parameters<typeof selectMetaRowItems>[0]> = {}) {
   return selectMetaRowItems({
     currentBranch: "feature/sidebar-badges",
@@ -25,6 +33,7 @@ function select(overrides: Partial<Parameters<typeof selectMetaRowItems>[0]> = {
     hasHostBadge: true,
     prHint: PR_HINT,
     serviceSummary: SERVICE,
+    backgroundTasks: [],
     labels: LABELS,
     visible: DEFAULT_SIDEBAR_ROW_ITEMS,
     checksDisplay: DEFAULT_SIDEBAR_CHECKS_DISPLAY,
@@ -50,6 +59,24 @@ describe("selectMetaRowItems", () => {
 
   it("reads identity, then the change, then its state, then what is running, then labels", () => {
     expect(kinds(select())).toEqual(["host", "changeRequest", "checks", "services", "labels"]);
+  });
+
+  it("puts background tasks after services and before labels", () => {
+    expect(kinds(select({ backgroundTasks: [BACKGROUND_TASK] }))).toEqual([
+      "host",
+      "changeRequest",
+      "checks",
+      "services",
+      "backgroundTasks",
+      "labels",
+    ]);
+  });
+
+  it("hides background tasks when switched off", () => {
+    const visible = { ...DEFAULT_SIDEBAR_ROW_ITEMS, backgroundTasks: false };
+    expect(kinds(select({ backgroundTasks: [BACKGROUND_TASK], visible }))).not.toContain(
+      "backgroundTasks",
+    );
   });
 
   it("omits what the workspace does not have", () => {

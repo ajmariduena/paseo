@@ -184,6 +184,7 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
             hostBadge={hostBadge ?? null}
             prHint={workspace.prHint}
             serviceSummary={serviceSummary}
+            backgroundTasks={workspace.backgroundTasks}
             labels={labels}
           />
         </View>
@@ -252,7 +253,7 @@ function WorkspaceStatusIndicator({
     );
   }
 
-  if (bucket === "done") {
+  if (bucket === "done" || bucket === "background") {
     // An idle row still gets a dot rather than an empty slot. Nested rows are marked as
     // workspaces by indentation alone, and with nothing in the leading slot the rail has no
     // edge to read against — a workspace carrying its own glyph starts looking like a project
@@ -293,6 +294,8 @@ function getStatusDotColorStyle(bucket: SidebarStateBucket) {
     case "attention":
       return styles.statusDotAttention;
     case "waiting":
+      return null;
+    case "background":
       return null;
     case "done":
       return null;
