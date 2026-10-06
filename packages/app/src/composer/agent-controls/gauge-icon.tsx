@@ -11,11 +11,11 @@ import type { EffortTier } from "@/components/ui/effort-stops";
 // at the bottom into a 270 degree arc like Lucide's gauge. The needle sweeps from upper left to
 // upper right across the tiers and stays clear of the arc's inner edge.
 //
-// Centering experiment: `geometric` keeps the arc's centre on the ring's centre, so the two
-// share an axis and the arc's ink sits high because its bottom is open; `optical` shifts the
-// whole glyph down so its ink box is centred on the row like the other icons.
+// `geometric` keeps the arc's circle on the ring's centre, so the two tops coincide; the row is
+// read by its top edge, and `optical`, which centres the shorter open arc's ink box on the row,
+// dropped the dial's top a device pixel or two below the ring's and the mic's.
 export type GaugeCentering = "geometric" | "optical";
-export const GAUGE_CENTERING: GaugeCentering = "optical";
+export const GAUGE_CENTERING: GaugeCentering = "geometric";
 const ARC_SWEEP_DEGREES = 270;
 const NEEDLE_LENGTH_RATIO = 0.57;
 const NEEDLE_ANGLE_DEGREES: Record<EffortTier, number> = { low: -60, mid: -20, high: 20, top: 60 };
