@@ -9,6 +9,7 @@ import {
 import type { TextToSpeechProvider } from "../../speech-provider.js";
 import type { RequestedSpeechProvider, RequestedSpeechProviders } from "../../speech-types.js";
 import type { SpeechServices } from "../openai/runtime.js";
+import { ELEVENLABS_REALTIME_STT_MODEL } from "./realtime-stt-session.js";
 import { ElevenLabsSTT } from "./stt.js";
 import { ElevenLabsTTS } from "./tts.js";
 
@@ -131,7 +132,7 @@ export function initializeElevenLabsSpeechServices(params: {
   return {
     ...existing,
     dictationSttService: needsDictation
-      ? create(elevenlabsConfig.dictationSttModel)
+      ? create(elevenlabsConfig.dictationSttModel ?? ELEVENLABS_REALTIME_STT_MODEL)
       : existing.dictationSttService,
     sttService: needsVoice ? create(elevenlabsConfig.voiceSttModel) : existing.sttService,
     ttsService: needsTts
