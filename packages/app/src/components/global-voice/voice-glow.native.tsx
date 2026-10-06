@@ -1,4 +1,5 @@
-import { useEffect } from "react";
+import { useCallback, useEffect } from "react";
+import { View, type LayoutChangeEvent } from "react-native";
 import {
   Blur,
   Canvas,
@@ -163,6 +164,19 @@ export function VoiceGlow({ activity }: VoiceGlowProps) {
   const heights = useSharedValue<number[]>(Array.from({ length: LOBES }, () => 0));
   const state = useSharedValue<GlowState>(INITIAL_STATE);
 
+  // Skia 2.2.12 (what Expo SDK 54 pins) reads the native view without a null check when a
+  // Canvas is given `onSize`, and the per-frame redraw mapper can fire once more after the view
+  // is gone on unmount: a SIGSEGV in RNSkView::getScaledWidth when the call ends
+  // (Shopify/react-native-skia#3430, fixed upstream in 2.3.0). Measuring the wrapper view
+  // instead never reaches that path; the Canvas itself rejects onLayout on Fabric.
+  const handleLayout = useCallback(
+    (event: LayoutChangeEvent) => {
+      const { width, height } = event.nativeEvent.layout;
+      size.set({ width, height });
+    },
+    [size],
+  );
+
   useEffect(() => {
     activityCode.set(ACTIVITY_CODE[activity]);
   }, [activity, activityCode]);
@@ -230,15 +244,24 @@ export function VoiceGlow({ activity }: VoiceGlowProps) {
   });
 
   return (
-    <Canvas pointerEvents="none" style={StyleSheet.absoluteFill} onSize={size}>
-      <Group layer={LOBE_LAYER}>
-        {LOBE_INDEXES.map((index) => (
-          <Lobe key={index} index={index} size={size} heights={heights} time={time} state={state} />
-        ))}
-      </Group>
-      <Group layer={CORE_LAYER}>
-        <Core size={size} time={time} state={state} />
-      </Group>
-    </Canvas>
+    <View pointerEvents="none" style={StyleSheet.absoluteFill} onLayout={handleLayout}>
+      <Canvas style={StyleSheet.absoluteFill}>
+        <Group layer={LOBE_LAYER}>
+          {LOBE_INDEXES.map((index) => (
+            <Lobe
+              key={index}
+              index={index}
+              size={size}
+              heights={heights}
+              time={time}
+              state={state}
+            />
+          ))}
+        </Group>
+        <Group layer={CORE_LAYER}>
+          <Core size={size} time={time} state={state} />
+        </Group>
+      </Canvas>
+    </View>
   );
 }
