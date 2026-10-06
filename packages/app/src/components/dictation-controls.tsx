@@ -49,7 +49,6 @@ export function DictationControls({
   const isFailed = status === "failed";
   const isStarting = status === "starting";
   const showActiveState = isStarting || isRecording || isProcessing || isFailed;
-  const actionsDisabled = isStarting || isProcessing;
   const handleCancel = isFailed && onDiscard ? onDiscard : onCancel;
 
   const micButtonStyle = useMemo(
@@ -64,9 +63,9 @@ export function DictationControls({
     () => [
       styles.actionButton,
       styles.actionButtonCancel,
-      actionsDisabled && !isFailed ? styles.buttonDisabled : undefined,
+      isProcessing && !isFailed ? styles.buttonDisabled : undefined,
     ],
-    [actionsDisabled, isFailed],
+    [isProcessing, isFailed],
   );
 
   if (!showActiveState) {
@@ -86,33 +85,31 @@ export function DictationControls({
   return (
     <View style={styles.activeContainer}>
       <View style={styles.meterWrapper}>
-        {isStarting ? (
-          <Mic size={theme.iconSize.sm} color={theme.colors.foreground} />
-        ) : (
-          <VolumeMeter
-            volume={volume}
-            isMuted={false}
-            isSpeaking={false}
-            orientation="horizontal"
-          />
-        )}
+        <VolumeMeter
+          volume={volume}
+          isMuted={isStarting}
+          isSpeaking={false}
+          orientation="horizontal"
+        />
       </View>
-      {!isStarting ? <Text style={timerTextStyle}>{formatDuration(duration)}</Text> : null}
+      <Text style={[timerTextStyle, isStarting && styles.buttonDisabled]}>
+        {formatDuration(duration)}
+      </Text>
       <View style={styles.actionGroup}>
         <Pressable
           onPress={handleCancel}
-          disabled={actionsDisabled && !isFailed}
+          disabled={isProcessing && !isFailed}
           accessibilityLabel={t("message.dictation.cancel")}
           style={cancelButtonStyle}
         >
           <X size={theme.iconSize.sm} color={theme.colors.foreground} />
         </Pressable>
-        {actionsDisabled ? (
+        {isProcessing ? (
           <View style={styles.loadingContainer}>
             <LoadingSpinner size="small" color={theme.colors.foreground} />
           </View>
         ) : null}
-        {!actionsDisabled && isFailed ? (
+        {!isProcessing && isFailed ? (
           <Pressable
             onPress={onRetry}
             accessibilityLabel={t("message.dictation.retry")}
@@ -121,19 +118,29 @@ export function DictationControls({
             <RefreshCcw size={theme.iconSize.sm} color={theme.colors.surface0} />
           </Pressable>
         ) : null}
-        {!actionsDisabled && !isFailed ? (
+        {!isProcessing && !isFailed ? (
           <>
             <Pressable
               onPress={onAccept}
+              disabled={isStarting}
               accessibilityLabel={t("message.dictation.insert")}
-              style={[styles.actionButton, styles.actionButtonSecondary]}
+              style={[
+                styles.actionButton,
+                styles.actionButtonSecondary,
+                isStarting && styles.buttonDisabled,
+              ]}
             >
               <Check size={theme.iconSize.sm} color={theme.colors.foreground} />
             </Pressable>
             <Pressable
               onPress={onAcceptAndSend}
+              disabled={isStarting}
               accessibilityLabel={t("message.dictation.insertAndSend")}
-              style={[styles.actionButton, styles.actionButtonConfirm]}
+              style={[
+                styles.actionButton,
+                styles.actionButtonConfirm,
+                isStarting && styles.buttonDisabled,
+              ]}
             >
               <ArrowUp size={theme.iconSize.sm} color={theme.colors.surface0} />
             </Pressable>
@@ -166,7 +173,6 @@ export function DictationOverlay({
   const isFailed = status === "failed";
   const isStarting = status === "starting";
   const showActiveState = isStarting || isRecording || isProcessing || isFailed;
-  const actionsDisabled = isStarting || isProcessing;
   const handleCancel = isFailed && onDiscard ? onDiscard : onCancel;
 
   const containerStyle = useMemo(
@@ -174,11 +180,8 @@ export function DictationOverlay({
     [theme.colors.accent],
   );
   const overlayCancelButtonStyle = useMemo(
-    () => [
-      overlayStyles.cancelButton,
-      actionsDisabled && !isFailed && overlayStyles.buttonDisabled,
-    ],
-    [actionsDisabled, isFailed],
+    () => [overlayStyles.cancelButton, isProcessing && !isFailed && overlayStyles.buttonDisabled],
+    [isProcessing, isFailed],
   );
   const overlayTimerTextStyle = useMemo(
     () => [overlayStyles.timerText, { color: theme.colors.accentForeground }],
@@ -202,7 +205,7 @@ export function DictationOverlay({
     <View style={containerStyle}>
       <Pressable
         onPress={handleCancel}
-        disabled={actionsDisabled && !isFailed}
+        disabled={isProcessing && !isFailed}
         accessibilityRole="button"
         accessibilityLabel={t("message.dictation.cancel")}
         style={overlayCancelButtonStyle}
@@ -212,20 +215,16 @@ export function DictationOverlay({
 
       <View style={overlayStyles.centerContainer}>
         <View style={overlayStyles.meterRow}>
-          {isStarting ? (
-            <Mic size={theme.iconSize.lg} color={theme.colors.accentForeground} />
-          ) : (
-            <>
-              <VolumeMeter
-                volume={volume}
-                isMuted={false}
-                isSpeaking={false}
-                orientation="horizontal"
-                color={theme.colors.accentForeground}
-              />
-              <Text style={overlayTimerTextStyle}>{formatDuration(duration)}</Text>
-            </>
-          )}
+          <VolumeMeter
+            volume={volume}
+            isMuted={isStarting}
+            isSpeaking={false}
+            orientation="horizontal"
+            color={theme.colors.accentForeground}
+          />
+          <Text style={[overlayTimerTextStyle, isStarting && overlayStyles.buttonDisabled]}>
+            {formatDuration(duration)}
+          </Text>
         </View>
         {isFailed ? (
           <Text numberOfLines={2} style={overlayTranscriptTextStyle}>
@@ -237,12 +236,12 @@ export function DictationOverlay({
       </View>
 
       <View style={overlayStyles.actionButtonsContainer}>
-        {actionsDisabled ? (
+        {isProcessing ? (
           <View style={overlayStyles.loadingContainer}>
             <LoadingSpinner size="small" color={theme.colors.accentForeground} />
           </View>
         ) : null}
-        {!actionsDisabled && isFailed ? (
+        {!isProcessing && isFailed ? (
           <Pressable
             onPress={onRetry}
             accessibilityRole="button"
@@ -252,13 +251,18 @@ export function DictationOverlay({
             <RefreshCcw size={theme.iconSize.lg} color={theme.colors.accent} strokeWidth={2.5} />
           </Pressable>
         ) : null}
-        {!actionsDisabled && !isFailed ? (
+        {!isProcessing && !isFailed ? (
           <>
             <Pressable
               onPress={onAccept}
+              disabled={isStarting}
               accessibilityRole="button"
               accessibilityLabel={t("message.dictation.insert")}
-              style={[overlayStyles.actionButton, OVERLAY_ACCEPT_BUTTON_BG]}
+              style={[
+                overlayStyles.actionButton,
+                OVERLAY_ACCEPT_BUTTON_BG,
+                isStarting && overlayStyles.buttonDisabled,
+              ]}
             >
               <Pencil
                 size={theme.iconSize.lg}
@@ -268,9 +272,10 @@ export function DictationOverlay({
             </Pressable>
             <Pressable
               onPress={onAcceptAndSend}
+              disabled={isStarting}
               accessibilityRole="button"
               accessibilityLabel={t("message.dictation.insertAndSend")}
-              style={overlayConfirmButtonStyle}
+              style={[overlayConfirmButtonStyle, isStarting && overlayStyles.buttonDisabled]}
             >
               <ArrowUp size={theme.iconSize.lg} color={theme.colors.accent} strokeWidth={2.5} />
             </Pressable>
@@ -312,6 +317,8 @@ const styles = StyleSheet.create((theme) => ({
   actionGroup: {
     flexDirection: "row",
     gap: theme.spacing[2],
+    width: BUTTON_SIZE * 3 + theme.spacing[2] * 2,
+    justifyContent: "flex-end",
   },
   actionButton: {
     width: BUTTON_SIZE,
@@ -337,7 +344,7 @@ const styles = StyleSheet.create((theme) => ({
     opacity: 0.4,
   },
   loadingContainer: {
-    width: BUTTON_SIZE,
+    width: BUTTON_SIZE * 2 + theme.spacing[2],
     height: BUTTON_SIZE,
     alignItems: "center",
     justifyContent: "center",
@@ -399,6 +406,8 @@ const overlayStyles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[2],
+    width: OVERLAY_BUTTON_SIZE * 2 + theme.spacing[2],
+    justifyContent: "flex-end",
   },
   actionButton: {
     width: OVERLAY_BUTTON_SIZE,
@@ -411,7 +420,7 @@ const overlayStyles = StyleSheet.create((theme) => ({
     opacity: 0.5,
   },
   loadingContainer: {
-    width: OVERLAY_BUTTON_SIZE,
+    width: OVERLAY_BUTTON_SIZE * 2 + theme.spacing[2],
     height: OVERLAY_BUTTON_SIZE,
     alignItems: "center",
     justifyContent: "center",

@@ -112,4 +112,43 @@ describe("useDictation feedback", () => {
     expect(onError).toHaveBeenCalledWith(new Error("Microphone denied"));
     consoleError.mockRestore();
   });
+
+  it("cancels startup before the microphone opens", async () => {
+    const started = deferred();
+    audio.start.mockReturnValue(started.promise);
+    audio.stop.mockResolvedValue();
+    let paint: FrameRequestCallback | null = null;
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      paint = callback;
+      return 1;
+    });
+    const onError = vi.fn();
+    const { result } = renderHook(() =>
+      useDictation({ client: null, onTranscript: vi.fn(), onError, canStart: () => true }),
+    );
+
+    let start!: Promise<void>;
+    act(() => {
+      start = result.current.startDictation();
+    });
+    await act(async () => {
+      paint?.(0);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(audio.start).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await result.current.cancelDictation();
+    });
+    expect(result.current.status).toBe("idle");
+
+    await act(async () => {
+      started.resolve();
+      await start;
+    });
+    expect(audio.stop).toHaveBeenCalledTimes(1);
+    expect(result.current.isRecording).toBe(false);
+    expect(result.current.status).toBe("idle");
+    expect(onError).not.toHaveBeenCalled();
+  });
 });
