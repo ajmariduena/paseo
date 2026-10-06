@@ -1,3 +1,5 @@
+import { ICON_STROKE_WIDTH } from "@/styles/theme";
+
 export function formatTokenCount(value: number): string {
   if (value >= 1_000_000) {
     return `${Math.round(value / 1_000_000)}m`;
@@ -26,8 +28,9 @@ export interface ContextWindowMeterRing {
 }
 
 const METER_RING_DEFAULT_SIZE = 14;
-const METER_RING_STROKE_WIDTH = 2;
+const METER_RING_DEFAULT_STROKE_WIDTH = 2;
 const METER_RING_GLYPH_SIZE = { web: 16, native: 20 } as const;
+const LUCIDE_GRID = 24;
 
 /**
  * The toolbar ring's glyph envelope. It is the same on every row width: the ring sits in the
@@ -37,7 +40,14 @@ export function resolveContextWindowMeterGlyphSize(platform: "web" | "native"): 
   return METER_RING_GLYPH_SIZE[platform];
 }
 
-/** The ring the meter draws for a glyph envelope, so sibling glyphs can be drawn to match it. */
+/**
+ * The ring the meter draws for a glyph envelope. Its stroke is what a Lucide glyph of that size
+ * renders under the app's stroke width, so the ring weighs the same as the icons beside it and
+ * the gauge drawn to it inherits that weight.
+ */
 export function resolveContextWindowMeterRing(glyphSize?: number): ContextWindowMeterRing {
-  return { size: glyphSize ?? METER_RING_DEFAULT_SIZE, strokeWidth: METER_RING_STROKE_WIDTH };
+  if (glyphSize === undefined) {
+    return { size: METER_RING_DEFAULT_SIZE, strokeWidth: METER_RING_DEFAULT_STROKE_WIDTH };
+  }
+  return { size: glyphSize, strokeWidth: (ICON_STROKE_WIDTH * glyphSize) / LUCIDE_GRID };
 }

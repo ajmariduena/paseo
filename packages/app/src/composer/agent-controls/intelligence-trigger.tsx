@@ -107,9 +107,9 @@ export const IntelligenceTrigger = forwardRef<View, IntelligenceTriggerProps>(
 
 function GaugeGlyph({ tier, isFast }: { tier: EffortTier; isFast: boolean }): ReactElement {
   const { ring } = useComposerControlLayout();
-  // The box takes the gauge's own size so the Fast dot keeps clear of the arc's corner.
+  // The box takes the gauge's own box so the Fast dot keeps clear of the arc's corner.
   return (
-    <ComposerToolbarGlyph size={resolveGaugeRender(ring).size}>
+    <ComposerToolbarGlyph size={resolveGaugeRender(ring).box}>
       <ThemedGaugeIcon size={ring.size} ring={ring} uniProps={gaugeTierMapping[tier]} />
       {isFast ? <View style={styles.fastDot} testID="agent-intelligence-fast-dot" /> : null}
     </ComposerToolbarGlyph>

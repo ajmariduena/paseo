@@ -72,18 +72,9 @@ function QuickPromptMenuTrigger({
   );
 }
 
-// Stroked at the ring's absolute width so it sits in the ring and gauge's weight, not the
-// toolbar's thinner default.
 function BookmarkGlyph({ ready = false }: { ready?: boolean }): ReactElement {
-  const { glyphSize, ring } = useComposerControlLayout();
-  return (
-    <ThemedBookmark
-      size={glyphSize}
-      strokeWidth={ring.strokeWidth}
-      absoluteStrokeWidth
-      uniProps={ready ? readyIconMapping : iconMapping}
-    />
-  );
+  const { glyphSize } = useComposerControlLayout();
+  return <ThemedBookmark size={glyphSize} uniProps={ready ? readyIconMapping : iconMapping} />;
 }
 const ThemedBookmark = withUnistyles(Bookmark);
 
