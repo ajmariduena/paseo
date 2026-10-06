@@ -4,7 +4,7 @@ import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { ModelProviderGlyph } from "@/components/model-browser";
 import { ComboboxTrigger } from "@/components/ui/combobox-trigger";
 import type { EffortTier } from "@/components/ui/effort-stops";
-import { GaugeIcon, resolveGaugeRenderSize } from "@/composer/agent-controls/gauge-icon";
+import { GaugeIcon, resolveGaugeRender } from "@/composer/agent-controls/gauge-icon";
 import { ComposerToolbarGlyph } from "@/composer/agent-controls/glyph";
 import { useComposerControlLayout } from "@/composer/agent-controls/layout-context";
 import { GAUGE_TIER_COLOR } from "@/composer/agent-controls/effort-selection";
@@ -106,11 +106,11 @@ export const IntelligenceTrigger = forwardRef<View, IntelligenceTriggerProps>(
 );
 
 function GaugeGlyph({ tier, isFast }: { tier: EffortTier; isFast: boolean }): ReactElement {
-  const { glyphSize } = useComposerControlLayout();
-  // The box takes the enlarged gauge's size so the Fast dot keeps clear of the arc's corner.
+  const { ring } = useComposerControlLayout();
+  // The box takes the gauge's own size so the Fast dot keeps clear of the arc's corner.
   return (
-    <ComposerToolbarGlyph size={resolveGaugeRenderSize(glyphSize)}>
-      <ThemedGaugeIcon size={glyphSize} uniProps={gaugeTierMapping[tier]} />
+    <ComposerToolbarGlyph size={resolveGaugeRender(ring).size}>
+      <ThemedGaugeIcon size={ring.size} ring={ring} uniProps={gaugeTierMapping[tier]} />
       {isFast ? <View style={styles.fastDot} testID="agent-intelligence-fast-dot" /> : null}
     </ComposerToolbarGlyph>
   );

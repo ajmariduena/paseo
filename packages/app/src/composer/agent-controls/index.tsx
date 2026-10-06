@@ -73,6 +73,10 @@ import {
   type AgentControlCommandCenterSource,
 } from "@/command-center/agent-control-registration";
 import { useComposerKeyboardScope } from "@/composer/keyboard-scope";
+import {
+  resolveContextWindowMeterGlyphSize,
+  resolveContextWindowMeterRing,
+} from "@/components/context-window-meter";
 import { isNative } from "@/constants/platform";
 import {
   COMPOSER_TOOLBAR_GEOMETRY,
@@ -656,10 +660,11 @@ function ControlledAgentControls({
   const layout = useMemo(
     () => ({
       glyphSize: resolveComposerToolbarGlyphSize(isNative ? "native" : "web"),
+      ring: resolveContextWindowMeterRing(resolveContextWindowMeterGlyphSize(isCompact)),
       presentation,
       hitSlop: isTouchDensity ? COMPOSER_TOOLBAR_TOUCH_HIT_SLOP : undefined,
     }),
-    [isTouchDensity, presentation],
+    [isCompact, isTouchDensity, presentation],
   );
 
   const fallbackModelSelectorProviders = useMemo(

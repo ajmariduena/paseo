@@ -13,11 +13,19 @@ import { useMenuContext } from "@/components/ui/menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { TouchTarget, useTouchHitSlop } from "@/components/ui/touch-target";
 import type { CompactTiming } from "@/composer/compaction/model";
+import { isWeb } from "@/constants/platform";
+import { ICON_SIZE } from "@/styles/theme";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
 import {
   formatTokenCount,
+  resolveContextWindowMeterRing,
   resolveContextWindowTone,
   type ContextWindowTone,
+} from "./context-window-meter.utils";
+
+export {
+  resolveContextWindowMeterRing,
+  type ContextWindowMeterRing,
 } from "./context-window-meter.utils";
 
 export interface ContextWindowCompaction {
@@ -39,11 +47,9 @@ interface ContextWindowMeterProps {
   compaction?: ContextWindowCompaction | null;
 }
 
-const SVG_SIZE = 14;
 const COMPACT_SVG_SIZE = 12;
 const COMPACT_CENTER = COMPACT_SVG_SIZE / 2;
 const COMPACT_RADIUS = 5;
-const STROKE_WIDTH = 2;
 const COMPACT_STROKE_WIDTH = 1.75;
 const COMPACT_CIRCUMFERENCE = 2 * Math.PI * COMPACT_RADIUS;
 const METER_SLOT_SIZE = 28;
@@ -103,19 +109,24 @@ function getMeterGeometry(showPercentage: boolean, glyphSize?: number) {
       containerStyle: styles.containerWithLabel,
     };
   }
-  const resolvedSize = glyphSize ?? SVG_SIZE;
-  const resolvedStrokeWidth = glyphSize ? 2 : STROKE_WIDTH;
+  const ring = resolveContextWindowMeterRing(glyphSize);
   return {
-    svgSize: resolvedSize,
-    center: resolvedSize / 2,
-    radius: (resolvedSize - resolvedStrokeWidth) / 2,
-    strokeWidth: resolvedStrokeWidth,
-    circumference: Math.PI * (resolvedSize - resolvedStrokeWidth),
+    svgSize: ring.size,
+    center: ring.size / 2,
+    radius: (ring.size - ring.strokeWidth) / 2,
+    strokeWidth: ring.strokeWidth,
+    circumference: Math.PI * (ring.size - ring.strokeWidth),
     containerStyle: styles.container,
   };
 }
 
 type MeterGeometry = ReturnType<typeof getMeterGeometry>;
+
+/** The toolbar ring's glyph envelope: the compact row fixes it, wider rows take the button icon size. */
+export function resolveContextWindowMeterGlyphSize(isCompactLayout: boolean): number {
+  if (isCompactLayout) return ICON_SIZE.md;
+  return isWeb ? ICON_SIZE.md : ICON_SIZE.lg;
+}
 
 interface MeterUsage {
   usedTokens: number;

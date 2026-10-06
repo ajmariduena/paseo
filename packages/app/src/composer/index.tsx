@@ -55,6 +55,7 @@ import {
 } from "@/composer/agent-controls";
 import {
   ContextWindowMeter,
+  resolveContextWindowMeterGlyphSize,
   type ContextWindowCompaction,
 } from "@/components/context-window-meter";
 import { useCompactConversation } from "@/composer/compaction/use-compact-conversation";
@@ -2174,7 +2175,7 @@ function ComposerContentImpl({
   );
 
   const contextWindowPending = agentState.status === "initializing" || isAgentRunning;
-  const contextWindowMeterGlyphSize = isCompactLayout ? ICON_SIZE.md : buttonIconSize;
+  const contextWindowMeterGlyphSize = resolveContextWindowMeterGlyphSize(isCompactLayout);
 
   const queueCompaction = useCallback(
     async (text: string) => {
