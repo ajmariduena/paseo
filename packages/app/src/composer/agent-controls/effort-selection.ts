@@ -57,3 +57,14 @@ export const GAUGE_TIER_COLOR = {
 export function resolveIntelligenceOpeningPage(hasEffort: boolean): "quick" | "advanced" {
   return hasEffort ? "quick" : "advanced";
 }
+
+/** The trigger's spoken value: model, level, and the speed only while it is on. */
+export function describeIntelligence(input: {
+  modelLabel: string;
+  effortLabel: string | null;
+  fastLabel: string | null | undefined;
+  isFast: boolean;
+}): string {
+  const parts = [input.modelLabel, input.effortLabel, input.isFast ? input.fastLabel : null];
+  return parts.filter((part): part is string => Boolean(part)).join(" · ");
+}

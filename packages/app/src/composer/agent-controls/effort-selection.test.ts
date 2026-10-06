@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   GAUGE_TIER_COLOR,
+  describeIntelligence,
   resolveEffortSelection,
   resolveIntelligenceOpeningPage,
 } from "./effort-selection";
@@ -62,5 +63,24 @@ describe("effort selection", () => {
     });
     expect(resolveIntelligenceOpeningPage(single.hasEffort)).toBe("advanced");
     expect(resolveIntelligenceOpeningPage(true)).toBe("quick");
+  });
+});
+
+describe("describeIntelligence", () => {
+  it("names the speed only while fast mode is on", () => {
+    const base = { modelLabel: "Opus 5.5", effortLabel: "Medium", fastLabel: "Fast" };
+    expect(describeIntelligence({ ...base, isFast: false })).toBe("Opus 5.5 · Medium");
+    expect(describeIntelligence({ ...base, isFast: true })).toBe("Opus 5.5 · Medium · Fast");
+  });
+
+  it("skips a missing level and an absent speed feature", () => {
+    expect(
+      describeIntelligence({
+        modelLabel: "Haiku 4.5",
+        effortLabel: null,
+        fastLabel: undefined,
+        isFast: true,
+      }),
+    ).toBe("Haiku 4.5");
   });
 });

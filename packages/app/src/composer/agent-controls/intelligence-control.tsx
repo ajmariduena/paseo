@@ -21,6 +21,7 @@ import {
   resolveIntelligenceOpeningPage,
   type EffortOption,
   type EffortSelection,
+  describeIntelligence,
 } from "@/composer/agent-controls/effort-selection";
 import { IntelligenceLabel } from "@/composer/agent-controls/intelligence-label";
 import { IntelligenceOverlay } from "@/composer/agent-controls/intelligence-overlay";
@@ -126,10 +127,6 @@ function resolveSurfaceLayout(input: { isModelsPage: boolean; browser: ModelBrow
     mobileSnapPoints: ADVANCED_SNAP_POINTS,
     mobileChildrenScrollEnabled: true,
   };
-}
-
-function formatTriggerValue(parts: readonly (string | null | undefined)[]): string {
-  return parts.filter((part): part is string => Boolean(part)).join(" · ");
 }
 
 function resolveOpenLabel(page: IntelligencePage, t: (key: string) => string): string {
@@ -393,7 +390,12 @@ export function IntelligenceControl(props: IntelligenceControlProps) {
             disabled={props.disabled}
             onPress={navigation.toggle}
             accessibilityLabel={t("agentControls.effort.openWithValue", {
-              value: formatTriggerValue([modelLabel, effortLabel, fastFeature?.label]),
+              value: describeIntelligence({
+                modelLabel,
+                effortLabel,
+                fastLabel: fastFeature?.label,
+                isFast,
+              }),
             })}
             testID="combined-model-selector"
           />
