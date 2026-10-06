@@ -21,6 +21,8 @@ import { SPACING } from "@/styles/theme";
 const KEYBOARD_GAP = SPACING[4];
 const DISMISS_DISTANCE = 48;
 const CONTENT_FADE_MS = 160;
+// A phone's width: wider rows (an iPad in portrait) center the label and slider at this width.
+const SHEET_MAX_WIDTH = 420;
 
 export interface IntelligenceOverlayProps {
   visible: boolean;
@@ -170,6 +172,9 @@ const positionStyles = RNStyleSheet.create({
 
 const styles = StyleSheet.create((theme) => ({
   sheet: {
+    width: "100%",
+    maxWidth: SHEET_MAX_WIDTH,
+    alignSelf: "center",
     paddingHorizontal: theme.spacing[6],
     gap: theme.spacing[3],
   },
