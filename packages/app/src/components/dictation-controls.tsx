@@ -5,6 +5,7 @@ import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { X, ArrowUp, RefreshCcw, Check, Mic, Pencil } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import { VolumeMeter } from "./volume-meter";
+import { DictationWaveform } from "./dictation-waveform";
 import { FOOTER_HEIGHT } from "@/constants/layout";
 import type { DictationStatus } from "@/hooks/use-dictation";
 
@@ -157,7 +158,6 @@ export function DictationControls({
  */
 export function DictationOverlay({
   volume,
-  duration,
   isRecording,
   isProcessing,
   status,
@@ -167,10 +167,8 @@ export function DictationOverlay({
   onAcceptAndSend,
   onRetry,
   onDiscard,
-  partialTranscript,
-}: Omit<DictationControlsProps, "onStart" | "disabled" | "transcript"> & {
+}: Omit<DictationControlsProps, "onStart" | "disabled" | "transcript" | "duration"> & {
   errorText?: string;
-  partialTranscript?: string;
 }) {
   const { theme } = useUnistyles();
   const { t } = useTranslation();
@@ -186,10 +184,6 @@ export function DictationOverlay({
   const overlayCancelButtonStyle = useMemo(
     () => [overlayStyles.cancelButton, isProcessing && !isFailed && overlayStyles.buttonDisabled],
     [isProcessing, isFailed],
-  );
-  const overlayTimerTextStyle = useMemo(
-    () => [overlayStyles.timerText, { color: theme.colors.accentForeground }],
-    [theme.colors.accentForeground],
   );
   const overlayTranscriptTextStyle = useMemo(
     () => [overlayStyles.transcriptText, { color: theme.colors.accentForeground, opacity: 0.95 }],
@@ -218,17 +212,11 @@ export function DictationOverlay({
       </Pressable>
 
       <View style={overlayStyles.centerContainer}>
-        <View style={overlayStyles.meterRow}>
-          <OverlayMeterOrLiveText
-            volume={volume}
-            isStarting={isStarting}
-            isFailed={isFailed}
-            partialTranscript={partialTranscript}
-          />
-          <Text style={[overlayTimerTextStyle, isStarting && overlayStyles.buttonDisabled]}>
-            {formatDuration(duration)}
-          </Text>
-        </View>
+        <DictationWaveform
+          volume={volume}
+          isMuted={isStarting || isFailed}
+          color={theme.colors.accentForeground}
+        />
         {isFailed ? (
           <Text numberOfLines={2} style={overlayTranscriptTextStyle}>
             {errorText
@@ -286,43 +274,6 @@ export function DictationOverlay({
         ) : null}
       </View>
     </View>
-  );
-}
-
-// Shares the meter's row so live words don't change the bar's height.
-function OverlayMeterOrLiveText({
-  volume,
-  isStarting,
-  isFailed,
-  partialTranscript,
-}: {
-  volume: number;
-  isStarting: boolean;
-  isFailed: boolean;
-  partialTranscript: string | undefined;
-}) {
-  const { theme } = useUnistyles();
-  const liveText = isFailed ? "" : (partialTranscript?.trim() ?? "");
-  if (liveText) {
-    return (
-      <Text
-        numberOfLines={1}
-        ellipsizeMode="head"
-        style={[overlayStyles.liveText, { color: theme.colors.accentForeground }]}
-        testID="dictation-live-transcript"
-      >
-        {liveText}
-      </Text>
-    );
-  }
-  return (
-    <VolumeMeter
-      volume={volume}
-      isMuted={isStarting}
-      isSpeaking={false}
-      orientation="horizontal"
-      color={theme.colors.accentForeground}
-    />
   );
 }
 
@@ -423,24 +374,6 @@ const overlayStyles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "center",
     gap: theme.spacing[2],
-  },
-  meterRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: theme.spacing[4],
-    maxWidth: "100%",
-    paddingHorizontal: theme.spacing[2],
-  },
-  liveText: {
-    flexShrink: 1,
-    fontSize: theme.fontSize.base,
-    fontWeight: theme.fontWeight.normal,
-  },
-  timerText: {
-    fontSize: theme.fontSize.lg,
-    fontWeight: theme.fontWeight.semibold,
-    fontVariant: ["tabular-nums"],
   },
   transcriptText: {
     fontSize: theme.fontSize.base,

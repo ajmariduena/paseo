@@ -40,11 +40,12 @@ function pcm16Rms(pcm: Uint8Array, from: number, to: number): number {
   return Math.sqrt(sum / count);
 }
 
+export function levelFromPcm16(pcm: Uint8Array): number {
+  return levelFromAmplitude(pcm16Rms(pcm, 0, Math.floor(pcm.byteLength / 2)));
+}
+
 export function reportCapturedPcm16(pcm: Uint8Array, now = Date.now()): void {
-  capture = {
-    level: levelFromAmplitude(pcm16Rms(pcm, 0, Math.floor(pcm.byteLength / 2))),
-    at: now,
-  };
+  capture = { level: levelFromPcm16(pcm), at: now };
 }
 
 /** Levels measured by a transport that plays and captures audio itself (WebRTC). */

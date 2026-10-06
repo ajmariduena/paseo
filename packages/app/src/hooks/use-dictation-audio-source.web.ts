@@ -1,3 +1,4 @@
+import { levelFromAmplitude } from "@/audio/audio-levels";
 import { resampleToPcm16 } from "@/audio/pcm";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parsePcm16Wav } from "@/utils/pcm16-wav";
@@ -248,7 +249,7 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
 
     try {
       const source = context.createMediaStreamSource(stream);
-      const processor = context.createScriptProcessor(4096, 1, 1);
+      const processor = context.createScriptProcessor(2048, 1, 1);
       const gain = context.createGain();
       gain.gain.value = 0;
 
@@ -270,8 +271,7 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
           sumSquares += sample * sample;
         }
         const rms = Math.sqrt(sumSquares / Math.max(1, input.length));
-        const normalized = Math.min(1, Math.max(0, rms * 2));
-        setVolume(normalized);
+        setVolume(levelFromAmplitude(rms));
 
         const next = resampleToPcm16(input, context.sampleRate, outputRate);
         refs.current.pending = concatInt16(refs.current.pending, next);

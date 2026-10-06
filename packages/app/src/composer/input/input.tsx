@@ -587,12 +587,10 @@ function MessageInputAutoFocus({
 function MessageInputOverlay({
   showDictationOverlay,
   dictationVolume,
-  dictationDuration,
   isDictating,
   isDictationProcessing,
   dictationStatus,
   dictationError,
-  dictationPartialTranscript,
   onCancelRecording,
   onAcceptRecording,
   onAcceptAndSendRecording,
@@ -601,12 +599,10 @@ function MessageInputOverlay({
 }: {
   showDictationOverlay: boolean;
   dictationVolume: number;
-  dictationDuration: number;
   isDictating: boolean;
   isDictationProcessing: boolean;
   dictationStatus: React.ComponentProps<typeof DictationOverlay>["status"];
   dictationError: string | null;
-  dictationPartialTranscript: string;
   onCancelRecording: () => Promise<void>;
   onAcceptRecording: () => Promise<void>;
   onAcceptAndSendRecording: () => Promise<void>;
@@ -617,12 +613,10 @@ function MessageInputOverlay({
     return (
       <DictationOverlay
         volume={dictationVolume}
-        duration={dictationDuration}
         isRecording={isDictating}
         isProcessing={isDictationProcessing}
         status={dictationStatus}
         errorText={dictationStatus === "failed" ? (dictationError ?? undefined) : undefined}
-        partialTranscript={dictationPartialTranscript}
         onCancel={onCancelRecording}
         onAccept={onAcceptRecording}
         onAcceptAndSend={onAcceptAndSendRecording}
@@ -1363,9 +1357,8 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       isRecording: isDictating,
       isRecordingActive: isDictationActive,
       isProcessing: isDictationProcessing,
-      partialTranscript: dictationPartialTranscript,
+      partialTranscript: _dictationPartialTranscript,
       volume: dictationVolume,
-      duration: dictationDuration,
       error: dictationError,
       status: dictationStatus,
       startDictation,
@@ -1872,12 +1865,10 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           <MessageInputOverlay
             showDictationOverlay={showDictationOverlay}
             dictationVolume={dictationVolume}
-            dictationDuration={dictationDuration}
             isDictating={isDictating}
             isDictationProcessing={isDictationProcessing}
             dictationStatus={dictationStatus}
             dictationError={dictationError}
-            dictationPartialTranscript={dictationPartialTranscript}
             onCancelRecording={handleCancelRecording}
             onAcceptRecording={handleAcceptRecording}
             onAcceptAndSendRecording={handleAcceptAndSendRecording}
