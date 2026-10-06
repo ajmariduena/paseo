@@ -7,6 +7,7 @@ import {
   COMPOSER_TOOLBAR_GEOMETRY,
   estimateComposerControlsWidth,
   estimateModelPillWidth,
+  estimateQuickPromptPillWidth,
   resolveComposerControlDensity,
   resolveComposerControlPresentation,
   resolveComposerToolbarGlyphSize,
@@ -354,9 +355,51 @@ describe("quick prompt capacity", () => {
     }
   });
 
+  it("budgets a title at base-size glyph widths so a fitting title never ellipsizes", () => {
+    // Glyph slot, its gap, label padding, then 8px a character.
+    expect(estimateQuickPromptPillWidth("Resumen corto", 1)).toBe(28 + 4 + 8 + 13 * 8);
+    expect(estimateQuickPromptPillWidth("A title longer than fourteen", 1)).toBe(
+      estimateQuickPromptPillWidth("Fourteen chars", 1),
+    );
+    expect(estimateQuickPromptPillWidth("Tests", 2)).toBe(28 + 4 + 8 + 5 * 8 * 2);
+  });
+
+  it("shows a pin from the slack at the current density, never at a label's expense", () => {
+    // Three inline features keep full out of reach, but no-effort leaves room for one pin.
+    const controls = {
+      ...CLAUDE_CONTROLS,
+      features: [
+        { type: "toggle" as const },
+        { type: "toggle" as const },
+        { type: "toggle" as const },
+      ],
+    };
+    const gap = COMPOSER_TOOLBAR_GEOMETRY.touchControlGap;
+    const split = estimateQuickPromptPillWidth("Summary", 1) + 44 + 2;
+    const pin = estimateQuickPromptPillWidth("Tests", 1);
+    const availableWidth =
+      estimateComposerControlsWidth(controls, "no-effort", gap) + gap + split + gap + pin;
+    expect(availableWidth).toBeLessThan(
+      estimateComposerControlsWidth(controls, "full", gap) + gap + split,
+    );
+    expect(resolveQuickPromptPresentation({ ...base, controls, availableWidth })).toMatchObject({
+      showDefaultLabel: true,
+      visiblePinCount: 1,
+      density: "no-effort",
+    });
+    expect(
+      resolveQuickPromptPresentation({ ...base, controls, availableWidth: availableWidth - 1 }),
+    ).toMatchObject({ showDefaultLabel: true, visiblePinCount: 0, density: "no-effort" });
+  });
+
   it("keeps quick prompt labels stable across resize noise and restores after 12px", () => {
     // Mode icon + gauge + the "Summary" split with touch gaps.
-    const floor = 28 + 12 + 28 + 12 + (44 + 7 * 7 + 44 + 2);
+    const floor =
+      estimateComposerControlsWidth(CLAUDE_CONTROLS, "tight", 12) +
+      12 +
+      estimateQuickPromptPillWidth("Summary", 1) +
+      44 +
+      2;
     const wide = resolveQuickPromptPresentation({ ...base, availableWidth: floor + 6 });
     expect(wide.showDefaultLabel).toBe(true);
     const jitter = resolveQuickPromptPresentation({
@@ -383,22 +426,35 @@ describe("quick prompt capacity", () => {
   });
 
   it("keeps pins through the same dead band", () => {
-    const wide = resolveQuickPromptPresentation({ ...base, availableWidth: 540 });
-    expect(wide.visiblePinCount).toBe(1);
-    const jitter = resolveQuickPromptPresentation({ ...base, availableWidth: 530, current: wide });
+    const gap = COMPOSER_TOOLBAR_GEOMETRY.touchControlGap;
+    const floor =
+      estimateComposerControlsWidth(CLAUDE_CONTROLS, "full", gap) +
+      gap +
+      estimateQuickPromptPillWidth("Summary", 1) +
+      44 +
+      2 +
+      gap +
+      estimateQuickPromptPillWidth("Tests", 1);
+    const wide = resolveQuickPromptPresentation({ ...base, availableWidth: floor });
+    expect(wide).toMatchObject({ visiblePinCount: 1, density: "full" });
+    const jitter = resolveQuickPromptPresentation({
+      ...base,
+      availableWidth: floor - 10,
+      current: wide,
+    });
     expect(jitter.visiblePinCount).toBe(1);
     const narrow = resolveQuickPromptPresentation({
       ...base,
-      availableWidth: 520,
+      availableWidth: floor - 20,
       current: jitter,
     });
     expect(narrow.visiblePinCount).toBe(0);
     expect(
-      resolveQuickPromptPresentation({ ...base, availableWidth: 540, current: narrow })
+      resolveQuickPromptPresentation({ ...base, availableWidth: floor, current: narrow })
         .visiblePinCount,
     ).toBe(0);
     expect(
-      resolveQuickPromptPresentation({ ...base, availableWidth: 550, current: narrow })
+      resolveQuickPromptPresentation({ ...base, availableWidth: floor + 13, current: narrow })
         .visiblePinCount,
     ).toBe(1);
   });

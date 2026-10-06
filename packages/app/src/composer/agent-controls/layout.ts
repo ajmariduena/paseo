@@ -225,10 +225,20 @@ export function estimateComposerFixedWidth(touch: boolean): number {
     : 4 * COMPOSER_TOOLBAR_GEOMETRY.controlSize + 5 * COMPOSER_TOOLBAR_GEOMETRY.controlGap;
 }
 
-/** A bounded pill includes its bookmark, padding and one line of text. */
+const QUICK_PROMPT_LABEL_CHARS = 14;
+// Base-size text runs wider than the toolbar's 7px estimate; the pill budgets 8px a glyph so a
+// title that fits the budget never ellipsizes in the real control.
+const QUICK_PROMPT_CHAR_WIDTH = 8;
+
+/** A bounded pill: padding, bookmark glyph, its gap, and up to one line of text. */
 export function estimateQuickPromptPillWidth(label: string, fontScale: number): number {
+  const { controlSize, iconLabelGap, labelPadding } = COMPOSER_TOOLBAR_GEOMETRY;
+  const chars = Math.min(Array.from(label).length, QUICK_PROMPT_LABEL_CHARS);
   return (
-    44 + estimateLabelWidth(Array.from(label).slice(0, 14).join(""), normalizedFontScale(fontScale))
+    controlSize +
+    iconLabelGap +
+    labelPadding +
+    chars * QUICK_PROMPT_CHAR_WIDTH * normalizedFontScale(fontScale)
   );
 }
 
@@ -236,7 +246,8 @@ export function estimateQuickPromptPillWidth(label: string, fontScale: number): 
  * Resolve the joint budget: secondary pins disappear first, then model/effort/mode labels,
  * then the default prompt label, and last the icon-only trigger itself. Both clusters consume
  * this same decision, so a prompt cannot keep the model at a density whose labels would
- * overflow the remaining space. Compact layouts are the phone row outright.
+ * overflow the remaining space; pins only take the slack left at that density, so they never
+ * cost a label. Compact layouts are the phone row outright.
  */
 export function resolveQuickPromptPresentation(input: {
   /** Button-row interior after the fixed attachment/ring/mic/send slots. */
@@ -272,13 +283,17 @@ export function resolveQuickPromptPresentation(input: {
     input.defaultLabel !== null &&
     fits(controlsWidth("tight") + gap + splitWidth, input.current?.showDefaultLabel ?? false);
   let width = showDefaultLabel ? splitWidth : target + 2;
+  const density = resolveDensityWithHysteresis(
+    input.availableWidth - width - gap,
+    input.current?.density,
+    controlsWidth,
+  );
   let visiblePinCount = 0;
-  // Restore pins only after the other controls can show all their labels.
   for (const label of input.pinnedLabels.slice(0, 3)) {
     const nextWidth = width + gap + pillWidth(label);
     if (
       !fits(
-        controlsWidth("full") + gap + nextWidth,
+        controlsWidth(density) + gap + nextWidth,
         visiblePinCount < (input.current?.visiblePinCount ?? 0),
       )
     )
@@ -286,12 +301,6 @@ export function resolveQuickPromptPresentation(input: {
     width = nextWidth;
     visiblePinCount++;
   }
-  const availableControlsWidth = input.availableWidth - width - gap;
-  const density = resolveDensityWithHysteresis(
-    availableControlsWidth,
-    input.current?.density,
-    controlsWidth,
-  );
   return { showTrigger, showDefaultLabel, visiblePinCount, width, density };
 }
 
