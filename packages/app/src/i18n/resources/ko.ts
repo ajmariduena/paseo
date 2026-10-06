@@ -209,16 +209,9 @@ export const ko: TranslationResources = {
       interrupt: "중단",
     },
     voice: {
-      enableVoiceMode: "음성 모드 켜기",
-      voiceMode: "음성 모드",
-      unmuteVoiceMode: "음성 모드 음소거 해제",
-      muteVoiceMode: "음성 모드 음소거",
       stopDictation: "받아쓰기 중지",
       startDictation: "받아쓰기 시작",
-      unmuteVoice: "음성 음소거 해제",
-      muteVoice: "음성 음소거",
       dictation: "받아쓰기",
-      interruptBeforeVoice: "음성 모드를 시작하기 전에 에이전트를 중단하세요",
     },
     attachments: {
       addImage: "이미지 추가",
@@ -1966,13 +1959,6 @@ export const ko: TranslationResources = {
       copied: "복사됨",
     },
   },
-  realtimeVoice: {
-    actions: {
-      mute: "실시간 음성 음소거",
-      unmute: "실시간 음성 음소거 해제",
-      stop: "실시간 음성 중지 및 턴 중단",
-    },
-  },
   globalVoice: {
     label: "음성",
     title: "Paseo와 대화",
@@ -2801,13 +2787,11 @@ export const ko: TranslationResources = {
         cycleTheme: "테마 순환",
         focusMessageInput: "메시지 입력란에 포커스",
         cycleAgentMode: "에이전트 모드 전환",
-        toggleVoiceMode: "음성 모드 토글",
         startStopDictation: "받아쓰기 시작/중지",
         interruptAgent: "에이전트 중단",
         sendMessage: "메시지 보내기",
         queueMessage: "메시지 대기열에 추가",
         steerQueuedMessage: "첫 번째 대기 메시지로 지시 추가",
-        muteUnmuteVoiceMode: "음성 모드 음소거/해제",
         switchProject: "프로젝트 전환",
       },
       helpNotes: {

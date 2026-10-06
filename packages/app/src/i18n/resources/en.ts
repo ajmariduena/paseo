@@ -205,16 +205,9 @@ export const en = {
       interrupt: "Interrupt",
     },
     voice: {
-      enableVoiceMode: "Enable Voice mode",
-      voiceMode: "Voice mode",
-      unmuteVoiceMode: "Unmute Voice mode",
-      muteVoiceMode: "Mute Voice mode",
       stopDictation: "Stop dictation",
       startDictation: "Start dictation",
-      unmuteVoice: "Unmute voice",
-      muteVoice: "Mute voice",
       dictation: "Dictation",
-      interruptBeforeVoice: "Interrupt the agent before starting voice mode",
     },
     attachments: {
       addImage: "Add image",
@@ -1981,13 +1974,6 @@ export const en = {
       copied: "Copied",
     },
   },
-  realtimeVoice: {
-    actions: {
-      mute: "Mute realtime voice",
-      unmute: "Unmute realtime voice",
-      stop: "Stop realtime voice and interrupt turn",
-    },
-  },
   globalVoice: {
     label: "Voice",
     title: "Talk to Paseo",
@@ -2913,13 +2899,11 @@ export const en = {
         cycleTheme: "Cycle theme",
         focusMessageInput: "Focus message input",
         cycleAgentMode: "Cycle agent mode",
-        toggleVoiceMode: "Toggle voice mode",
         startStopDictation: "Start/stop dictation",
         interruptAgent: "Interrupt agent",
         sendMessage: "Send message",
         queueMessage: "Queue message",
         steerQueuedMessage: "Steer first queued message",
-        muteUnmuteVoiceMode: "Mute/unmute voice mode",
         switchProject: "Switch project",
       },
       helpNotes: {

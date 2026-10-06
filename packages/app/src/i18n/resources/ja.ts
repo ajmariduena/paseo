@@ -210,16 +210,9 @@ export const ja: TranslationResources = {
       interrupt: "中断",
     },
     voice: {
-      enableVoiceMode: "音声モードを有効にする",
-      voiceMode: "音声モード",
-      unmuteVoiceMode: "音声モードのミュートを解除",
-      muteVoiceMode: "音声モードをミュート",
       stopDictation: "音声入力を停止",
       startDictation: "音声入力を開始",
-      unmuteVoice: "音声のミュートを解除",
-      muteVoice: "音声をミュート",
       dictation: "音声入力",
-      interruptBeforeVoice: "音声モードを開始する前にエージェントを中断してください",
     },
     attachments: {
       addImage: "画像を追加",
@@ -1976,13 +1969,6 @@ export const ja: TranslationResources = {
       copied: "コピーしました",
     },
   },
-  realtimeVoice: {
-    actions: {
-      mute: "リアルタイム音声をミュート",
-      unmute: "リアルタイム音声のミュートを解除",
-      stop: "リアルタイム音声を停止してターンを中断",
-    },
-  },
   globalVoice: {
     label: "音声",
     title: "Paseoと話す",
@@ -2822,13 +2808,11 @@ export const ja: TranslationResources = {
         cycleTheme: "テーマを順に切り替え",
         focusMessageInput: "メッセージ入力にフォーカス",
         cycleAgentMode: "エージェントモードを順に切り替え",
-        toggleVoiceMode: "音声モードを切り替え",
         startStopDictation: "音声入力を開始/停止",
         interruptAgent: "エージェントを中断",
         sendMessage: "メッセージを送信",
         queueMessage: "メッセージをキューに追加",
         steerQueuedMessage: "最初のキューメッセージで指示を追加",
-        muteUnmuteVoiceMode: "音声モードのミュートを切り替え",
         switchProject: "プロジェクトを切り替え",
       },
       helpNotes: {

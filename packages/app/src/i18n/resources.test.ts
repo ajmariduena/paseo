@@ -380,7 +380,6 @@ describe("translation resources", () => {
   });
 
   it("includes shared utility chrome keys for the Batch 4F migration", () => {
-    expect(en.realtimeVoice.actions.mute).toBe("Mute realtime voice");
     expect(en.rewind.actions.conversation).toBe("Rewind conversation");
     expect(en.rewind.warning).toBe("This action cannot be undone");
     expect(en.diffViewer.empty).toBe("No changes to display");

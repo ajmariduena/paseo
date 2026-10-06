@@ -212,16 +212,9 @@ export const fr: TranslationResources = {
       interrupt: "Interrompre",
     },
     voice: {
-      enableVoiceMode: "Activer le mode vocal",
-      voiceMode: "Mode vocal",
-      unmuteVoiceMode: "Activer le mode vocal",
-      muteVoiceMode: "Mode voix muette",
       stopDictation: "Arrêter la dictée",
       startDictation: "Démarrer la dictée",
-      unmuteVoice: "Réactiver la voix",
-      muteVoice: "Voix muette",
       dictation: "Dictée",
-      interruptBeforeVoice: "Interrompre l'agent avant de démarrer le mode vocal",
     },
     attachments: {
       addImage: "Ajouter une image",
@@ -2010,13 +2003,6 @@ export const fr: TranslationResources = {
       copied: "Copié",
     },
   },
-  realtimeVoice: {
-    actions: {
-      mute: "Couper la voix en temps réel",
-      unmute: "Réactiver la voix en temps réel",
-      stop: "Arrêtez la voix en temps réel et interrompez le tour",
-    },
-  },
   globalVoice: {
     label: "Voix",
     title: "Parler à Paseo",
@@ -2851,13 +2837,11 @@ export const fr: TranslationResources = {
         cycleTheme: "Thème du cycle",
         focusMessageInput: "Saisie du message de focus",
         cycleAgentMode: "Parcourir les modes de l'agent",
-        toggleVoiceMode: "Changer le mode vocal",
         startStopDictation: "Démarrer la dictée/stop",
         interruptAgent: "Agent d'interruption",
         sendMessage: "Envoyer un message",
         queueMessage: "Message de file d'attente",
         steerQueuedMessage: "Guider avec le premier message en file d'attente",
-        muteUnmuteVoiceMode: "Mode vocal/unmutemuet",
         switchProject: "Changer de projet",
       },
       helpNotes: {

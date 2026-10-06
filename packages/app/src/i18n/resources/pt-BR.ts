@@ -210,16 +210,9 @@ export const ptBR: TranslationResources = {
       interrupt: "Interromper",
     },
     voice: {
-      enableVoiceMode: "Ativar modo de voz",
-      voiceMode: "Modo de voz",
-      unmuteVoiceMode: "Ativar som do modo de voz",
-      muteVoiceMode: "Silenciar modo de voz",
       stopDictation: "Parar ditado",
       startDictation: "Iniciar ditado",
-      unmuteVoice: "Ativar som da voz",
-      muteVoice: "Silenciar voz",
       dictation: "Ditado",
-      interruptBeforeVoice: "Interrompa o agente antes de iniciar o modo de voz",
     },
     attachments: {
       addImage: "Adicionar imagem",
@@ -1989,13 +1982,6 @@ export const ptBR: TranslationResources = {
       copied: "Copiado",
     },
   },
-  realtimeVoice: {
-    actions: {
-      mute: "Silenciar voz em tempo real",
-      unmute: "Ativar voz em tempo real",
-      stop: "Parar voz em tempo real e interromper a resposta",
-    },
-  },
   globalVoice: {
     label: "Voz",
     title: "Fale com o Paseo",
@@ -2829,13 +2815,11 @@ export const ptBR: TranslationResources = {
         cycleTheme: "Alternar tema",
         focusMessageInput: "Focar entrada de mensagem",
         cycleAgentMode: "Alternar modo do agente",
-        toggleVoiceMode: "Alternar modo de voz",
         startStopDictation: "Iniciar/parar ditado",
         interruptAgent: "Interromper agente",
         sendMessage: "Enviar mensagem",
         queueMessage: "Enfileirar mensagem",
         steerQueuedMessage: "Orientar com a primeira mensagem da fila",
-        muteUnmuteVoiceMode: "Silenciar/ativar modo de voz",
         switchProject: "Trocar projeto",
       },
       helpNotes: {

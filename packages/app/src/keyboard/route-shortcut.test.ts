@@ -302,8 +302,6 @@ describe("routeKeyboardShortcut — message-input.action", () => {
     ["dictation-toggle", "message-input.dictation-toggle"],
     ["dictation-cancel", "message-input.dictation-cancel"],
     ["dictation-confirm", "message-input.dictation-confirm"],
-    ["voice-toggle", "message-input.voice-toggle"],
-    ["voice-mute-toggle", "message-input.voice-mute-toggle"],
     ["mode-cycle", "message-input.mode-cycle"],
     ["steer-queued", "message-input.steer-queued"],
   ] as const)("kind=%s → dispatch %s", (kind, id) => {

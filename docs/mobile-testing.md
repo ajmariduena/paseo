@@ -284,7 +284,7 @@ Voice mode uses the custom `expo-two-way-audio` Android module, so incoming call
 
 ```bash
 adb shell am start -n sh.paseo/.MainActivity
-# Start voice mode in an existing composer, then background Paseo with Home.
+# Start a voice call from the header ("Start a voice call with Paseo"), then background Paseo with Home.
 adb emu gsm call 5551234
 # Foreground Paseo while the call is still ringing.
 ```

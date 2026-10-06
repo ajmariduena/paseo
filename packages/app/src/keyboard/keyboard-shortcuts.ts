@@ -202,11 +202,9 @@ export const SHORTCUT_HELP_ROW_ORDER: Record<ShortcutSectionId, readonly string[
   "agent-input": [
     "focus-message-input",
     "cycle-agent-mode",
-    "voice-toggle",
     "dictation-toggle",
     "agent-interrupt",
     "steer-queued-message",
-    "voice-mute-toggle",
   ],
 };
 
@@ -255,11 +253,9 @@ const SHORTCUT_HELP_LABEL_KEYS: Record<string, string> = {
   "cycle-theme": "settings.shortcuts.help.cycleTheme",
   "focus-message-input": "settings.shortcuts.help.focusMessageInput",
   "cycle-agent-mode": "settings.shortcuts.help.cycleAgentMode",
-  "voice-toggle": "settings.shortcuts.help.toggleVoiceMode",
   "dictation-toggle": "settings.shortcuts.help.startStopDictation",
   "agent-interrupt": "settings.shortcuts.help.interruptAgent",
   "steer-queued-message": "settings.shortcuts.help.steerQueuedMessage",
-  "voice-mute-toggle": "settings.shortcuts.help.muteUnmuteVoiceMode",
 };
 
 const SHORTCUT_HELP_NOTE_KEYS: Record<string, string> = {
@@ -1198,32 +1194,6 @@ const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
     },
   },
   {
-    id: "message-input-voice-toggle-cmd-shift-d-mac",
-    action: "message-input.action",
-    combo: "Cmd+Shift+D",
-    repeat: false,
-    when: { mac: true, commandCenter: false, terminal: false },
-    payload: { type: "message-input", kind: "voice-toggle" },
-    help: {
-      id: "voice-toggle",
-      section: "agent-input",
-      label: "Toggle voice mode",
-    },
-  },
-  {
-    id: "message-input-voice-toggle-ctrl-shift-d-non-mac",
-    action: "message-input.action",
-    combo: "Ctrl+Shift+D",
-    repeat: false,
-    when: { mac: false, commandCenter: false, terminal: false },
-    payload: { type: "message-input", kind: "voice-toggle" },
-    help: {
-      id: "voice-toggle",
-      section: "agent-input",
-      label: "Toggle voice mode",
-    },
-  },
-  {
     id: "message-input-dictation-toggle-cmd-d-mac",
     action: "message-input.action",
     combo: "Cmd+D",
@@ -1292,20 +1262,6 @@ const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
     combo: "Enter",
     when: { commandCenter: false, terminal: false },
     payload: { type: "message-input", kind: "dictation-confirm" },
-  },
-
-  {
-    id: "message-input-voice-mute-toggle",
-    action: "message-input.action",
-    combo: "Space",
-    repeat: false,
-    when: { commandCenter: false, focusScope: "other" },
-    payload: { type: "message-input", kind: "voice-mute-toggle" },
-    help: {
-      id: "voice-mute-toggle",
-      section: "agent-input",
-      label: "Mute/unmute voice mode",
-    },
   },
 ];
 

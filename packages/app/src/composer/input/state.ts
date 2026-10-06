@@ -38,14 +38,6 @@ export function resolveComposerSurfacePresentation(
   return showOverlay ? OVERLAY_PRESENTATION : INPUT_PRESENTATION;
 }
 
-interface StopRealtimeVoiceContext {
-  voice: { stopVoice: () => Promise<unknown> } | null | undefined;
-  isRealtimeVoiceForCurrentAgent: boolean;
-  isAgentRunning: boolean;
-  client: { cancelAgent: (agentId: string) => Promise<unknown> } | null;
-  voiceAgentId: string | undefined;
-}
-
 interface SendActionContext {
   defaultSendBehavior: SendBehavior;
   isAgentRunning: boolean;
@@ -99,9 +91,6 @@ interface MessageInputKeyboardActions {
   confirmDictation: () => void | Promise<void>;
   cancelDictation: () => void | Promise<void>;
   startDictation: () => void | Promise<void>;
-  toggleRealtimeVoice: () => void;
-  isRealtimeVoiceActive: boolean;
-  toggleRealtimeVoiceMute: () => void;
 }
 
 export function computeCanStartDictation(input: {
@@ -167,16 +156,6 @@ export function runMessageInputKeyboardAction(
     }
     return false;
   }
-  if (action === "voice-toggle") {
-    actions.toggleRealtimeVoice();
-    return true;
-  }
-  if (action === "voice-mute-toggle") {
-    if (actions.isRealtimeVoiceActive) {
-      actions.toggleRealtimeVoiceMute();
-    }
-    return true;
-  }
   if (action === "dictation-cancel") {
     if (actions.isDictationRecording()) {
       void actions.cancelDictation();
@@ -194,17 +173,4 @@ export function runMessageInputKeyboardAction(
     return true;
   }
   return false;
-}
-
-export async function stopRealtimeVoice(ctx: StopRealtimeVoiceContext): Promise<void> {
-  if (!ctx.voice || !ctx.isRealtimeVoiceForCurrentAgent) return;
-
-  if (ctx.isAgentRunning) {
-    if (!ctx.client || !ctx.voiceAgentId) {
-      throw new Error("Cannot stop the running voice agent while the host is unavailable");
-    }
-    await ctx.client.cancelAgent(ctx.voiceAgentId);
-  }
-
-  await ctx.voice.stopVoice();
 }

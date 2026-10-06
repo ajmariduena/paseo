@@ -209,16 +209,9 @@ export const ar: TranslationResources = {
       interrupt: "مقاطعة",
     },
     voice: {
-      enableVoiceMode: "تمكين الوضع الصوتي",
-      voiceMode: "وضع الصوت",
-      unmuteVoiceMode: "إلغاء كتم وضع الصوت",
-      muteVoiceMode: "وضع كتم الصوت",
       stopDictation: "توقف عن الإملاء",
       startDictation: "بدء الإملاء",
-      unmuteVoice: "إلغاء كتم الصوت",
-      muteVoice: "كتم الصوت",
       dictation: "الإملاء",
-      interruptBeforeVoice: "قم بمقاطعة الوكيل قبل بدء الوضع الصوتي",
     },
     attachments: {
       addImage: "أضف صورة",
@@ -1956,13 +1949,6 @@ export const ar: TranslationResources = {
       copied: "منقول",
     },
   },
-  realtimeVoice: {
-    actions: {
-      mute: "كتم صوت الوقت الحقيقي",
-      unmute: "إلغاء كتم صوت الوقت الحقيقي",
-      stop: "إيقاف الصوت في الوقت الحقيقي ومقاطعة الدوران",
-    },
-  },
   globalVoice: {
     label: "الصوت",
     title: "تحدث إلى Paseo",
@@ -2789,13 +2775,11 @@ export const ar: TranslationResources = {
         cycleTheme: "موضوع الدورة",
         focusMessageInput: "التركيز على إدخال الرسالة",
         cycleAgentMode: "تبديل وضع الوكيل",
-        toggleVoiceMode: "تبديل الوضع الصوتي",
         startStopDictation: "بدء إملاء /stop",
         interruptAgent: "عامل المقاطعة",
         sendMessage: "أرسل رسالة",
         queueMessage: "رسالة قائمة الانتظار",
         steerQueuedMessage: "التوجيه بأول رسالة في قائمة الانتظار",
-        muteUnmuteVoiceMode: "كتم وضع الصوت /unmute",
         switchProject: "تبديل المشروع",
       },
       helpNotes: {

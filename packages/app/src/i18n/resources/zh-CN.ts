@@ -209,16 +209,9 @@ export const zhCN: TranslationResources = {
       interrupt: "中断",
     },
     voice: {
-      enableVoiceMode: "启用语音模式",
-      voiceMode: "语音模式",
-      unmuteVoiceMode: "取消静音语音模式",
-      muteVoiceMode: "静音语音模式",
       stopDictation: "停止听写",
       startDictation: "开始听写",
-      unmuteVoice: "取消静音",
-      muteVoice: "静音",
       dictation: "听写",
-      interruptBeforeVoice: "启动语音模式前请先中断 Agent",
     },
     attachments: {
       addImage: "添加图片",
@@ -1934,13 +1927,6 @@ export const zhCN: TranslationResources = {
       copied: "已复制",
     },
   },
-  realtimeVoice: {
-    actions: {
-      mute: "静音 realtime voice",
-      unmute: "取消静音 realtime voice",
-      stop: "停止 realtime voice 并中断 turn",
-    },
-  },
   globalVoice: {
     label: "语音",
     title: "与 Paseo 对话",
@@ -2757,13 +2743,11 @@ export const zhCN: TranslationResources = {
         cycleTheme: "循环切换主题",
         focusMessageInput: "聚焦消息输入框",
         cycleAgentMode: "循环切换代理模式",
-        toggleVoiceMode: "切换语音模式",
         startStopDictation: "开始/停止听写",
         interruptAgent: "中断 Agent",
         sendMessage: "发送消息",
         queueMessage: "消息排队",
         steerQueuedMessage: "用第一条排队消息引导",
-        muteUnmuteVoiceMode: "静音/取消静音语音模式",
         switchProject: "切换项目",
       },
       helpNotes: {

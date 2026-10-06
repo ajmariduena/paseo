@@ -391,13 +391,6 @@ describe("keyboard-shortcuts", () => {
       payload: { kind: "mode-cycle" },
     },
     {
-      name: "routes space to voice mute toggle outside editable scopes",
-      event: { key: " ", code: "Space" },
-      context: { focusScope: "other" },
-      action: "message-input.action",
-      payload: { kind: "voice-mute-toggle" },
-    },
-    {
       name: "routes Escape to agent interrupt outside terminal focus",
       event: { key: "Escape", code: "Escape" },
       context: { focusScope: "message-input" },

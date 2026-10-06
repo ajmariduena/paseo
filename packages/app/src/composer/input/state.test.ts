@@ -11,7 +11,7 @@ import {
   updateQuickPrompt,
 } from "@/quick-prompts/catalog";
 import { openQuickPromptForm } from "@/quick-prompts/form";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   applyDictationTranscript,
   computeCanStartDictation,
@@ -21,7 +21,6 @@ import {
   runAlternateSendAction,
   runDefaultSendAction,
   runMessageInputKeyboardAction,
-  stopRealtimeVoice,
 } from "./state";
 
 const connected = { isConnected: true } as never;
@@ -47,9 +46,6 @@ function createDictationKeyboard({ startsRecording }: { startsRecording: boolean
           isRecording = false;
         },
         cancelDictation: () => undefined,
-        toggleRealtimeVoice: () => undefined,
-        isRealtimeVoiceActive: false,
-        toggleRealtimeVoiceMute: () => undefined,
       }),
   };
 }
@@ -329,48 +325,6 @@ describe("resolveAlternateSendActions", () => {
         canQueue: false,
       }),
     ).toEqual(["interrupt"]);
-  });
-});
-
-describe("stopRealtimeVoice", () => {
-  it("keeps voice mode active when the running agent refuses cancellation", async () => {
-    const cancellationError = new Error("active run cancellation was not acknowledged");
-    const cancelAgent = vi.fn().mockRejectedValue(cancellationError);
-    const stopVoice = vi.fn().mockResolvedValue(undefined);
-
-    await expect(
-      stopRealtimeVoice({
-        voice: { stopVoice },
-        isRealtimeVoiceForCurrentAgent: true,
-        isAgentRunning: true,
-        client: { cancelAgent },
-        voiceAgentId: "agent-1",
-      }),
-    ).rejects.toBe(cancellationError);
-
-    expect(stopVoice).not.toHaveBeenCalled();
-  });
-
-  it("stops voice mode after the running agent acknowledges cancellation", async () => {
-    const calls: string[] = [];
-
-    await stopRealtimeVoice({
-      voice: {
-        stopVoice: async () => {
-          calls.push("stop voice");
-        },
-      },
-      isRealtimeVoiceForCurrentAgent: true,
-      isAgentRunning: true,
-      client: {
-        cancelAgent: async () => {
-          calls.push("cancel agent");
-        },
-      },
-      voiceAgentId: "agent-1",
-    });
-
-    expect(calls).toEqual(["cancel agent", "stop voice"]);
   });
 });
 

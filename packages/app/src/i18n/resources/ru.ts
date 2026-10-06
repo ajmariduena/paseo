@@ -210,16 +210,9 @@ export const ru: TranslationResources = {
       interrupt: "Прервать",
     },
     voice: {
-      enableVoiceMode: "Включить голосовой режим",
-      voiceMode: "Голосовой режим",
-      unmuteVoiceMode: "Включить голосовой режим",
-      muteVoiceMode: "Отключить голосовой режим",
       stopDictation: "Остановить диктовку",
       startDictation: "Начать диктовку",
-      unmuteVoice: "Включить звук",
-      muteVoice: "Отключить голос",
       dictation: "Диктовка",
-      interruptBeforeVoice: "Остановите агента перед запуском голосового режима",
     },
     attachments: {
       addImage: "Добавить изображение",
@@ -1989,13 +1982,6 @@ export const ru: TranslationResources = {
       copied: "Скопировано",
     },
   },
-  realtimeVoice: {
-    actions: {
-      mute: "Отключить микрофон в голосовом режиме реального времени",
-      unmute: "Включить микрофон в голосовом режиме реального времени",
-      stop: "Остановить голосовой режим реального времени и прервать текущий ответ",
-    },
-  },
   globalVoice: {
     label: "Голос",
     title: "Поговорить с Paseo",
@@ -2839,13 +2825,11 @@ export const ru: TranslationResources = {
         cycleTheme: "Переключить тему",
         focusMessageInput: "Перейти к полю ввода сообщения",
         cycleAgentMode: "Переключить режим агента",
-        toggleVoiceMode: "Переключить голосовой режим",
         startStopDictation: "Начать/остановить диктовку",
         interruptAgent: "Прервать агента",
         sendMessage: "Отправить сообщение",
         queueMessage: "Поставить сообщение в очередь",
         steerQueuedMessage: "Направить первым сообщением из очереди",
-        muteUnmuteVoiceMode: "Выключить/включить звук в голосовом режиме",
         switchProject: "Сменить проект",
       },
       helpNotes: {

@@ -15,12 +15,8 @@ const translations: Record<string, string> = {
   "composer.input.sendMessage": "Send message",
   "composer.input.queue": "Queue",
   "composer.input.send": "Send",
-  "composer.voice.unmuteVoiceMode": "Unmute Voice mode",
-  "composer.voice.muteVoiceMode": "Mute Voice mode",
   "composer.voice.stopDictation": "Stop dictation",
   "composer.voice.startDictation": "Start dictation",
-  "composer.voice.unmuteVoice": "Unmute voice",
-  "composer.voice.muteVoice": "Mute voice",
   "composer.voice.dictation": "Dictation",
 };
 
@@ -94,56 +90,15 @@ describe("composer input labels", () => {
   });
 
   it("resolves voice labels from translations", () => {
-    expect(
-      resolveVoiceAccessibilityLabel({
-        isRealtimeVoiceForCurrentAgent: true,
-        isMuted: true,
-        isDictating: false,
-        t,
-      }),
-    ).toBe("Unmute Voice mode");
-    expect(
-      resolveVoiceAccessibilityLabel({
-        isRealtimeVoiceForCurrentAgent: true,
-        isMuted: false,
-        isDictating: false,
-        t,
-      }),
-    ).toBe("Mute Voice mode");
-    expect(
-      resolveVoiceAccessibilityLabel({
-        isRealtimeVoiceForCurrentAgent: false,
-        isMuted: false,
-        isDictating: true,
-        t,
-      }),
-    ).toBe("Stop dictation");
-    expect(
-      resolveVoiceAccessibilityLabel({
-        isRealtimeVoiceForCurrentAgent: false,
-        isMuted: false,
-        isDictating: false,
-        t,
-      }),
-    ).toBe("Start dictation");
+    expect(resolveVoiceAccessibilityLabel({ isDictating: true, t })).toBe("Stop dictation");
+    expect(resolveVoiceAccessibilityLabel({ isDictating: false, t })).toBe("Start dictation");
   });
 
   it("resolves tooltip labels from translations", () => {
-    expect(
-      resolveVoiceTooltipText({
-        isRealtimeVoiceForCurrentAgent: false,
-        isMuted: false,
-        t,
-      }),
-    ).toBe("Dictation");
-    expect(
-      resolveVoiceTooltipText({
-        isRealtimeVoiceForCurrentAgent: false,
-        isMuted: false,
-        dictationModelLabel: "ElevenLabs Scribe v2",
-        t,
-      }),
-    ).toBe("Dictation · ElevenLabs Scribe v2");
+    expect(resolveVoiceTooltipText({ t })).toBe("Dictation");
+    expect(resolveVoiceTooltipText({ dictationModelLabel: "ElevenLabs Scribe v2", t })).toBe(
+      "Dictation · ElevenLabs Scribe v2",
+    );
     expect(
       resolveSendTooltipLabel({
         submitButtonAccessibilityLabel: undefined,
