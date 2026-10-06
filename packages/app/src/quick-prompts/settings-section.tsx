@@ -1,11 +1,19 @@
-import { useCallback, useMemo, useRef, useState } from "react";
-import { Text, View } from "react-native";
-import { ArrowUp, ArrowDown, Pencil, Plus, Trash2 } from "lucide-react-native";
+import { useCallback, useMemo, useRef, useState, type ReactElement } from "react";
+import { Text, View, type PressableStateCallbackType } from "react-native";
+import { ArrowUp, ArrowDown, MoreVertical, Pencil, Plus, Trash2 } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
-import { StyleSheet } from "react-native-unistyles";
+import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { QuickPrompt } from "@getpaseo/protocol/messages";
 import { SettingsSection, SettingsCard, SettingsRow, SettingsSelect } from "@/components/settings";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { StatusBadge } from "@/components/ui/status-badge";
+import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { useQuickPrompts } from "./use-quick-prompts";
 import { newQuickPrompt } from "./form";
@@ -180,6 +188,42 @@ function QuickPromptSettingsList({
   );
 }
 
+const ThemedMoreVertical = withUnistyles(MoreVertical);
+const ThemedArrowUp = withUnistyles(ArrowUp);
+const ThemedArrowDown = withUnistyles(ArrowDown);
+const ThemedPencil = withUnistyles(Pencil);
+const ThemedTrash2 = withUnistyles(Trash2);
+const foregroundMapping = (theme: Theme) => ({ color: theme.colors.foreground });
+const mutedMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
+
+function kebabTriggerStyle({
+  pressed,
+  hovered,
+}: PressableStateCallbackType & { hovered?: boolean }) {
+  return [styles.kebab, (pressed || Boolean(hovered)) && styles.kebabActive];
+}
+
+function renderKebabIcon({ hovered }: { hovered?: boolean }): ReactElement {
+  return (
+    <ThemedMoreVertical size={ICON_SIZE.sm} uniProps={hovered ? foregroundMapping : mutedMapping} />
+  );
+}
+
+/** What the composer will do with the prompt, read off the row: default, pinned, insert. */
+function QuickPromptBadges({ prompt }: { prompt: QuickPrompt }): ReactElement | null {
+  const { t } = useTranslation();
+  if (!prompt.isDefault && !prompt.pinned && prompt.mode !== "insert") return null;
+  return (
+    <View style={styles.badges}>
+      {prompt.isDefault ? (
+        <StatusBadge size="xs" variant="success" label={t("quickPrompts.defaultBadge")} />
+      ) : null}
+      {prompt.pinned ? <StatusBadge size="xs" label={t("quickPrompts.pinnedBadge")} /> : null}
+      {prompt.mode === "insert" ? <StatusBadge size="xs" label={t("quickPrompts.insert")} /> : null}
+    </View>
+  );
+}
+
 function QuickPromptSettingsRow({
   prompt,
   disabled,
@@ -209,47 +253,53 @@ function QuickPromptSettingsRow({
     ),
     [prompt.text],
   );
+  const badges = useMemo(() => <QuickPromptBadges prompt={prompt} />, [prompt]);
+  const icons = useMemo(
+    () => ({
+      up: <ThemedArrowUp size={ICON_SIZE.sm} uniProps={mutedMapping} />,
+      down: <ThemedArrowDown size={ICON_SIZE.sm} uniProps={mutedMapping} />,
+      edit: <ThemedPencil size={ICON_SIZE.sm} uniProps={mutedMapping} />,
+      remove: <ThemedTrash2 size={ICON_SIZE.sm} uniProps={mutedMapping} />,
+    }),
+    [],
+  );
   return (
-    <SettingsRow label={prompt.title} hint={preview}>
-      <View style={styles.actions}>
-        <Button
-          variant="ghost"
-          size="sm"
-          leftIcon={ArrowUp}
-          disabled={disabled || first}
-          accessibilityLabel={t("quickPrompts.moveUp")}
-          onPress={up}
-        />
-        <Button
-          variant="ghost"
-          size="sm"
-          leftIcon={ArrowDown}
-          disabled={disabled || last}
-          accessibilityLabel={t("quickPrompts.moveDown")}
-          onPress={down}
-        />
-        <Button
-          variant="ghost"
-          size="sm"
-          leftIcon={Pencil}
+    <SettingsRow label={prompt.title} labelAccessory={badges} hint={preview}>
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          style={kebabTriggerStyle}
           disabled={disabled}
-          accessibilityLabel={t("quickPrompts.edit")}
-          onPress={edit}
-        />
-        <Button
-          variant="ghost"
-          size="sm"
-          leftIcon={Trash2}
-          disabled={disabled}
-          accessibilityLabel={t("quickPrompts.delete")}
-          onPress={remove}
-        />
-      </View>
+          accessibilityRole="button"
+          accessibilityLabel={t("quickPrompts.actions")}
+          testID={`quick-prompt-settings-menu-${prompt.id}`}
+        >
+          {renderKebabIcon}
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" minWidth={200}>
+          <DropdownMenuItem leading={icons.up} disabled={first} onSelect={up}>
+            {t("quickPrompts.moveUp")}
+          </DropdownMenuItem>
+          <DropdownMenuItem leading={icons.down} disabled={last} onSelect={down}>
+            {t("quickPrompts.moveDown")}
+          </DropdownMenuItem>
+          <DropdownMenuItem leading={icons.edit} onSelect={edit}>
+            {t("quickPrompts.edit")}
+          </DropdownMenuItem>
+          <DropdownMenuItem leading={icons.remove} destructive onSelect={remove}>
+            {t("quickPrompts.delete")}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </SettingsRow>
   );
 }
 const styles = StyleSheet.create((theme) => ({
-  actions: { flexDirection: "row", gap: theme.spacing[1] },
+  badges: { flexDirection: "row", alignItems: "center", gap: theme.spacing[1] },
+  kebab: {
+    padding: theme.spacing[0.5],
+    borderRadius: theme.borderRadius.base,
+  },
+  kebabActive: { backgroundColor: theme.colors.surface2 },
   preview: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
   error: { color: theme.colors.statusDanger, fontSize: theme.fontSize.base },
 }));

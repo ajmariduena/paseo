@@ -3,6 +3,9 @@ import { pluginSettings } from "./plugin-settings";
 
 export const zhCN: TranslationResources = {
   quickPrompts: {
+    defaultBadge: "默认",
+    pinnedBadge: "已固定",
+    actions: "快捷提示操作",
     queue: "加入队列",
     steered: "已调整方向",
     dismiss: "关闭",

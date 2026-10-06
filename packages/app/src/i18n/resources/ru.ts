@@ -3,6 +3,9 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ru: TranslationResources = {
   quickPrompts: {
+    defaultBadge: "По умолчанию",
+    pinnedBadge: "Закреплено",
+    actions: "Действия с быстрым промптом",
     queue: "Поставить в очередь",
     steered: "Перенаправлено",
     dismiss: "Закрыть",

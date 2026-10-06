@@ -3,6 +3,9 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ptBR: TranslationResources = {
   quickPrompts: {
+    defaultBadge: "Padrão",
+    pinnedBadge: "Fixado",
+    actions: "Ações do prompt rápido",
     queue: "Enfileirar",
     steered: "Redirecionado",
     dismiss: "Fechar",

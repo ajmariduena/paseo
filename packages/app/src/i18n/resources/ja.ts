@@ -3,6 +3,9 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ja: TranslationResources = {
   quickPrompts: {
+    defaultBadge: "デフォルト",
+    pinnedBadge: "固定",
+    actions: "クイックプロンプトの操作",
     queue: "キューに追加",
     steered: "方向修正済み",
     dismiss: "閉じる",

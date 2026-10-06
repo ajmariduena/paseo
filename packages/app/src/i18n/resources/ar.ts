@@ -3,6 +3,9 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ar: TranslationResources = {
   quickPrompts: {
+    defaultBadge: "افتراضي",
+    pinnedBadge: "مثبّت",
+    actions: "إجراءات الموجّه السريع",
     queue: "أضف إلى قائمة الانتظار",
     steered: "تمت إعادة التوجيه",
     dismiss: "إغلاق",

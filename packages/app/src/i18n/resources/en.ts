@@ -1,5 +1,8 @@
 export const en = {
   quickPrompts: {
+    defaultBadge: "Default",
+    pinnedBadge: "Pinned",
+    actions: "Quick prompt actions",
     queue: "Queue",
     steered: "Steered",
     dismiss: "Dismiss",

@@ -3,6 +3,9 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ko: TranslationResources = {
   quickPrompts: {
+    defaultBadge: "기본",
+    pinnedBadge: "고정됨",
+    actions: "빠른 프롬프트 작업",
     queue: "대기열에 추가",
     steered: "방향 조정됨",
     dismiss: "닫기",
