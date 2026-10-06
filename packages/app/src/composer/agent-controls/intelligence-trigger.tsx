@@ -108,7 +108,7 @@ function GaugeGlyph({ tier, isFast }: { tier: EffortTier; isFast: boolean }): Re
   const { glyphSize } = useComposerControlLayout();
   return (
     <ComposerToolbarGlyph size={glyphSize}>
-      <ThemedGauge size={glyphSize} uniProps={gaugeTierMapping[tier]} />
+      <ThemedGauge size={glyphSize} style={styles.gauge} uniProps={gaugeTierMapping[tier]} />
       {isFast ? <View style={styles.fastDot} testID="agent-intelligence-fast-dot" /> : null}
     </ComposerToolbarGlyph>
   );
@@ -223,6 +223,11 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.base,
     fontWeight: theme.fontWeight.normal,
+  },
+  // Lucide's gauge is an arc whose ends stop at 19/24, so its mass sits 1.5 units above the
+  // box centre; one point down puts the arc and needle on the row's centerline.
+  gauge: {
+    transform: [{ translateY: 1 }],
   },
   fastDot: {
     position: "absolute",
