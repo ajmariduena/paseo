@@ -327,20 +327,38 @@ describe("describeDictationStt", () => {
     ).toEqual([
       ["local", "parakeet-tdt-0.6b-v2-int8", true],
       ["local", "parakeet-tdt-0.6b-v3-int8", true],
+      ["elevenlabs", "scribe_v2_realtime", false],
       ["elevenlabs", "scribe_v2", false],
       ["openai", "gpt-4o-transcribe", false],
     ]);
     expect(result.options[0]?.downloaded).toBe(false);
   });
 
-  test("reports the persisted ElevenLabs choice and its language", () => {
+  test("defaults ElevenLabs dictation to the realtime model and reports its language", () => {
     const result = describeFor({
       providers: { elevenlabs: { apiKey: "key" } },
       features: { dictation: { stt: { provider: "elevenlabs", language: "es" } } },
     });
 
-    expect(result).toMatchObject({ provider: "elevenlabs", model: "scribe_v2", language: "es" });
-    expect(result.options.find((option) => option.provider === "elevenlabs")?.available).toBe(true);
+    expect(result).toMatchObject({
+      provider: "elevenlabs",
+      model: "scribe_v2_realtime",
+      language: "es",
+    });
+    expect(
+      result.options
+        .filter((option) => option.provider === "elevenlabs")
+        .map((option) => option.available),
+    ).toEqual([true, true]);
+  });
+
+  test("keeps a persisted batch ElevenLabs model", () => {
+    const result = describeFor({
+      providers: { elevenlabs: { apiKey: "key" } },
+      features: { dictation: { stt: { provider: "elevenlabs", model: "scribe_v2" } } },
+    });
+
+    expect(result).toMatchObject({ provider: "elevenlabs", model: "scribe_v2" });
   });
 
   test("locks the selection when a launch override picks the provider", () => {

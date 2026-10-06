@@ -293,7 +293,7 @@ describe("DictationStreamSender", () => {
     }
   });
 
-  it("waits for server delivery acknowledgement before finishing", async () => {
+  it("sends finish right after the last chunk without waiting for its acknowledgement", async () => {
     const client = new FakeDaemonClient();
     client.autoAck = false;
     const sender = new DictationStreamSender({
@@ -306,12 +306,9 @@ describe("DictationStreamSender", () => {
     sender.enqueueSegment("seg1");
     await tick();
 
-    const finish = sender.finish(1);
-    await tick();
-    expect(client.finishes).toEqual([]);
-
-    client.emitAck("d1", 1);
-    await expect(finish).resolves.toEqual({ dictationId: "d1", text: "ok" });
+    await expect(sender.finish(1)).resolves.toEqual({ dictationId: "d1", text: "ok" });
+    expect(client.chunks.map((chunk) => chunk.seq)).toEqual([0, 1]);
+    expect(client.finishes).toEqual([{ dictationId: "d1", finalSeq: 1 }]);
   });
 
   it("does not replay long buffered native dictation in one synchronous burst", async () => {

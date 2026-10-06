@@ -5,6 +5,7 @@ import type { DictationSttOption, ServerDictationStt } from "@getpaseo/protocol/
 
 import type { PersistedConfig } from "../persisted-config.js";
 import type { PaseoOpenAIConfig, PaseoSpeechConfig } from "../bootstrap.js";
+import { ELEVENLABS_REALTIME_STT_MODEL } from "./providers/elevenlabs/realtime-stt-session.js";
 import { DEFAULT_ELEVENLABS_STT_MODEL } from "./providers/elevenlabs/stt.js";
 import { resolveLocalModelsDir } from "./providers/local/config.js";
 import { getLocalSpeechModelDir, listLocalSpeechModels } from "./providers/local/models.js";
@@ -22,6 +23,7 @@ const MODEL_LABELS: Record<string, string> = {
   ...LOCAL_STT_LABELS,
   scribe_v1: "Scribe v1",
   scribe_v2: "Scribe v2",
+  scribe_v2_realtime: "Scribe v2 Realtime",
   "whisper-1": "Whisper",
   "gpt-4o-transcribe": "GPT-4o Transcribe",
   "gpt-4o-mini-transcribe": "GPT-4o mini Transcribe",
@@ -46,7 +48,7 @@ function resolveActiveModel(params: {
   if (provider === "elevenlabs") {
     return {
       provider,
-      model: params.speech?.elevenlabs?.dictationSttModel ?? DEFAULT_ELEVENLABS_STT_MODEL,
+      model: params.speech?.elevenlabs?.dictationSttModel ?? ELEVENLABS_REALTIME_STT_MODEL,
     };
   }
   if (provider === "openai") {
@@ -77,15 +79,23 @@ export function describeDictationStt(params: {
 
   const elevenLabsKey =
     persisted.providers?.elevenlabs?.apiKey ?? env.ELEVENLABS_API_KEY?.trim() ?? "";
+  const elevenLabsAvailability =
+    elevenLabsKey.length > 0
+      ? { available: true }
+      : { available: false, unavailableReason: "Add an ElevenLabs API key to this host." };
+  const elevenLabsRealtimeOption: DictationSttOption = {
+    provider: "elevenlabs",
+    model: ELEVENLABS_REALTIME_STT_MODEL,
+    label: `ElevenLabs ${getDictationModelLabel(ELEVENLABS_REALTIME_STT_MODEL)}`,
+    description: "Transcribes while you speak, so text lands almost as soon as you stop.",
+    ...elevenLabsAvailability,
+  };
   const elevenLabsOption: DictationSttOption = {
     provider: "elevenlabs",
     model: DEFAULT_ELEVENLABS_STT_MODEL,
     label: `ElevenLabs ${getDictationModelLabel(DEFAULT_ELEVENLABS_STT_MODEL)}`,
     description: "Cloud transcription with strong accuracy in many languages.",
-    available: elevenLabsKey.length > 0,
-    ...(elevenLabsKey.length > 0
-      ? {}
-      : { unavailableReason: "Add an ElevenLabs API key to this host." }),
+    ...elevenLabsAvailability,
   };
 
   const openAiAvailable = getOpenAiSpeechAvailability(params.openai).dictationStt;
@@ -103,6 +113,6 @@ export function describeDictationStt(params: {
     ...active,
     language: params.speech?.sttLanguages?.dictation ?? "en",
     locked: env.PASEO_DICTATION_STT_PROVIDER !== undefined,
-    options: [...localOptions, elevenLabsOption, openAiOption],
+    options: [...localOptions, elevenLabsRealtimeOption, elevenLabsOption, openAiOption],
   };
 }

@@ -253,7 +253,7 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
       gain.gain.value = 0;
 
       const outputRate = 16000;
-      const chunkSamples = outputRate; // ~1s
+      const chunkSamples = outputRate / 10;
 
       refs.current.started = true;
       refs.current.mode = "pcm";

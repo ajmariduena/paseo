@@ -592,6 +592,7 @@ function MessageInputOverlay({
   isDictationProcessing,
   dictationStatus,
   dictationError,
+  dictationPartialTranscript,
   onCancelRecording,
   onAcceptRecording,
   onAcceptAndSendRecording,
@@ -605,6 +606,7 @@ function MessageInputOverlay({
   isDictationProcessing: boolean;
   dictationStatus: React.ComponentProps<typeof DictationOverlay>["status"];
   dictationError: string | null;
+  dictationPartialTranscript: string;
   onCancelRecording: () => Promise<void>;
   onAcceptRecording: () => Promise<void>;
   onAcceptAndSendRecording: () => Promise<void>;
@@ -620,6 +622,7 @@ function MessageInputOverlay({
         isProcessing={isDictationProcessing}
         status={dictationStatus}
         errorText={dictationStatus === "failed" ? (dictationError ?? undefined) : undefined}
+        partialTranscript={dictationPartialTranscript}
         onCancel={onCancelRecording}
         onAccept={onAcceptRecording}
         onAcceptAndSend={onAcceptAndSendRecording}
@@ -1360,7 +1363,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       isRecording: isDictating,
       isRecordingActive: isDictationActive,
       isProcessing: isDictationProcessing,
-      partialTranscript: _dictationPartialTranscript,
+      partialTranscript: dictationPartialTranscript,
       volume: dictationVolume,
       duration: dictationDuration,
       error: dictationError,
@@ -1874,6 +1877,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
             isDictationProcessing={isDictationProcessing}
             dictationStatus={dictationStatus}
             dictationError={dictationError}
+            dictationPartialTranscript={dictationPartialTranscript}
             onCancelRecording={handleCancelRecording}
             onAcceptRecording={handleAcceptRecording}
             onAcceptAndSendRecording={handleAcceptAndSendRecording}

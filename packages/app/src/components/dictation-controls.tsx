@@ -167,7 +167,11 @@ export function DictationOverlay({
   onAcceptAndSend,
   onRetry,
   onDiscard,
-}: Omit<DictationControlsProps, "onStart" | "disabled" | "transcript"> & { errorText?: string }) {
+  partialTranscript,
+}: Omit<DictationControlsProps, "onStart" | "disabled" | "transcript"> & {
+  errorText?: string;
+  partialTranscript?: string;
+}) {
   const { theme } = useUnistyles();
   const { t } = useTranslation();
   const isFailed = status === "failed";
@@ -215,12 +219,11 @@ export function DictationOverlay({
 
       <View style={overlayStyles.centerContainer}>
         <View style={overlayStyles.meterRow}>
-          <VolumeMeter
+          <OverlayMeterOrLiveText
             volume={volume}
-            isMuted={isStarting}
-            isSpeaking={false}
-            orientation="horizontal"
-            color={theme.colors.accentForeground}
+            isStarting={isStarting}
+            isFailed={isFailed}
+            partialTranscript={partialTranscript}
           />
           <Text style={[overlayTimerTextStyle, isStarting && overlayStyles.buttonDisabled]}>
             {formatDuration(duration)}
@@ -283,6 +286,43 @@ export function DictationOverlay({
         ) : null}
       </View>
     </View>
+  );
+}
+
+// Shares the meter's row so live words don't change the bar's height.
+function OverlayMeterOrLiveText({
+  volume,
+  isStarting,
+  isFailed,
+  partialTranscript,
+}: {
+  volume: number;
+  isStarting: boolean;
+  isFailed: boolean;
+  partialTranscript: string | undefined;
+}) {
+  const { theme } = useUnistyles();
+  const liveText = isFailed ? "" : (partialTranscript?.trim() ?? "");
+  if (liveText) {
+    return (
+      <Text
+        numberOfLines={1}
+        ellipsizeMode="head"
+        style={[overlayStyles.liveText, { color: theme.colors.accentForeground }]}
+        testID="dictation-live-transcript"
+      >
+        {liveText}
+      </Text>
+    );
+  }
+  return (
+    <VolumeMeter
+      volume={volume}
+      isMuted={isStarting}
+      isSpeaking={false}
+      orientation="horizontal"
+      color={theme.colors.accentForeground}
+    />
   );
 }
 
@@ -389,6 +429,13 @@ const overlayStyles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "center",
     gap: theme.spacing[4],
+    maxWidth: "100%",
+    paddingHorizontal: theme.spacing[2],
+  },
+  liveText: {
+    flexShrink: 1,
+    fontSize: theme.fontSize.base,
+    fontWeight: theme.fontWeight.normal,
   },
   timerText: {
     fontSize: theme.fontSize.lg,

@@ -9,6 +9,10 @@ import type {
   StreamingTranscriptionSession,
   TranscriptionResult,
 } from "../../speech-provider.js";
+import {
+  createElevenLabsRealtimeSession,
+  ELEVENLABS_REALTIME_STT_MODEL,
+} from "./realtime-stt-session.js";
 
 export const DEFAULT_ELEVENLABS_STT_MODEL = "scribe_v2";
 
@@ -42,11 +46,24 @@ export class ElevenLabsSTT implements SpeechToTextProvider {
     return this.config.model ?? DEFAULT_ELEVENLABS_STT_MODEL;
   }
 
+  private get batchModel(): string {
+    return this.model === ELEVENLABS_REALTIME_STT_MODEL ? DEFAULT_ELEVENLABS_STT_MODEL : this.model;
+  }
+
   public createSession(params: {
     logger: pino.Logger;
     language?: string;
     prompt?: string;
   }): StreamingTranscriptionSession {
+    if (this.model === ELEVENLABS_REALTIME_STT_MODEL) {
+      return createElevenLabsRealtimeSession({
+        apiKey: this.config.apiKey,
+        baseUrl: this.config.baseUrl,
+        model: this.model,
+        language: params.language,
+        logger: params.logger,
+      });
+    }
     const emitter = new EventEmitter();
     const logger = params.logger.child({ provider: "elevenlabs", component: "stt-session" });
     const transcribe = (pcm16: Buffer) => this.transcribe(pcm16, params.language);
@@ -153,7 +170,7 @@ export class ElevenLabsSTT implements SpeechToTextProvider {
   ): Promise<TranscriptionResult> {
     const startedAt = Date.now();
     const form = new FormData();
-    form.set("model_id", this.model);
+    form.set("model_id", this.batchModel);
     form.set("tag_audio_events", "false");
     if (language) {
       form.set("language_code", language);
