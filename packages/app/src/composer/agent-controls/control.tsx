@@ -1,12 +1,27 @@
-import { forwardRef, useCallback, type ComponentProps } from "react";
+import {
+  Children,
+  forwardRef,
+  isValidElement,
+  useCallback,
+  useMemo,
+  type ComponentProps,
+  type ReactNode,
+} from "react";
 import { Text, View, type PressableStateCallbackType } from "react-native";
-import { StyleSheet } from "react-native-unistyles";
+import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { ChevronRight } from "lucide-react-native";
 import { ComboboxTrigger } from "@/components/ui/combobox-trigger";
+import { TOUCH_ROW_HEIGHT, CONTROL_HEIGHTS } from "@/components/ui/control-geometry";
+import { useControlDensity } from "@/constants/layout";
+import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { useComposerControlLayout } from "@/composer/agent-controls/layout-context";
 import { ComposerToolbarGlyph } from "@/composer/agent-controls/glyph";
 import type { AgentControlIcon } from "@/agent-controls/icons";
 
 export type AgentControlIconTint = "muted" | "accent" | "blue" | "green" | "yellow";
+
+const ThemedChevronRight = withUnistyles(ChevronRight);
+const chevronMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
 type AgentControlTriggerProps = Omit<
   ComponentProps<typeof ComboboxTrigger>,
@@ -47,20 +62,32 @@ export const AgentControlTrigger = forwardRef<View, AgentControlTriggerProps>(
     ref,
   ) {
     const { glyphSize, hitSlop } = useComposerControlLayout();
+    const isTouch = useControlDensity() === "touch";
     const isSheet = surface === "sheet";
-    const resolvedGlyphSize = isSheet ? 16 : glyphSize;
+    const resolvedGlyphSize = isSheet ? ICON_SIZE.md : glyphSize;
     const resolvedIconColor = iconColor ?? resolveTintColor(iconTint);
     const showValue = isSheet || showToolbarLabel;
     const triggerStyle = useCallback(
       ({ pressed, hovered }: PressableStateCallbackType) => [
         isSheet ? styles.sheetRow : styles.toolbarControl,
+        isSheet && isTouch && styles.sheetRowTouch,
         !isSheet && !showToolbarLabel && styles.toolbarIconOnly,
         hovered && (isSheet ? styles.sheetRowInteractive : styles.hovered),
         (pressed || open) && (isSheet ? styles.sheetRowInteractive : styles.pressed),
         disabled && styles.disabled,
       ],
-      [disabled, isSheet, open, showToolbarLabel],
+      [disabled, isSheet, isTouch, open, showToolbarLabel],
     );
+    // Sheet rows drill into a page, so their caret points the way (docs/design.md §12).
+    const sheetChevron = useMemo(
+      () => (
+        <View style={styles.sheetChevron}>
+          <ThemedChevronRight size={ICON_SIZE.sm} uniProps={chevronMapping} />
+        </View>
+      ),
+      [],
+    );
+    const chevron = resolveChevron({ isSheet, showCaret, sheetChevron });
 
     return (
       <ComboboxTrigger
@@ -74,7 +101,7 @@ export const AgentControlTrigger = forwardRef<View, AgentControlTriggerProps>(
         accessibilityRole="button"
         accessibilityLabel={accessibilityLabel}
         testID={testID}
-        chevron={showCaret ? undefined : null}
+        chevron={chevron}
       >
         {isSheet ? (
           <View style={styles.sheetGlyph}>
@@ -99,6 +126,15 @@ export const AgentControlTrigger = forwardRef<View, AgentControlTriggerProps>(
     );
   },
 );
+
+function resolveChevron(input: {
+  isSheet: boolean;
+  showCaret: boolean;
+  sheetChevron: ReactNode;
+}): ReactNode | null {
+  if (!input.showCaret) return null;
+  return input.isSheet ? input.sheetChevron : undefined;
+}
 
 function resolveTintColor(tint: AgentControlIconTint): string {
   switch (tint) {
@@ -142,26 +178,31 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.base,
     fontWeight: theme.fontWeight.normal,
   },
+  // A flat row for a card (`AgentControlRowGroup`): the card draws the frame and the dividers.
   sheetRow: {
-    minHeight: 44,
+    minHeight: CONTROL_HEIGHTS.compact,
     minWidth: 0,
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[2],
-    marginHorizontal: -theme.spacing[1],
-    paddingHorizontal: theme.spacing[4],
-    borderRadius: theme.borderRadius["2xl"],
-    backgroundColor: theme.colors.surface1,
+    paddingHorizontal: theme.spacing[3],
+    backgroundColor: "transparent",
+  },
+  sheetRowTouch: {
+    minHeight: TOUCH_ROW_HEIGHT,
   },
   sheetRowInteractive: {
-    backgroundColor: theme.colors.surface2,
+    backgroundColor: theme.colors.interactionHighlight,
   },
   sheetGlyph: {
-    width: 20,
-    height: 20,
+    width: ICON_SIZE.md,
+    height: ICON_SIZE.md,
     flexShrink: 0,
     alignItems: "center",
     justifyContent: "center",
+  },
+  sheetChevron: {
+    flexShrink: 0,
   },
   sheetLabel: {
     flex: 1,
@@ -171,12 +212,23 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: theme.fontWeight.normal,
   },
   sheetValue: {
-    maxWidth: "45%",
+    maxWidth: "55%",
     minWidth: 0,
     flexShrink: 1,
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.base,
     fontWeight: theme.fontWeight.normal,
+  },
+  group: {
+    backgroundColor: theme.colors.surface1,
+    borderRadius: theme.borderRadius.lg,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.border,
+    overflow: "hidden",
+  },
+  groupDivider: {
+    borderTopWidth: theme.borderWidth[1],
+    borderTopColor: theme.colors.border,
   },
   hovered: {
     backgroundColor: theme.colors.surface2,
@@ -203,3 +255,21 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.palette.yellow[400],
   },
 }));
+
+/** A card of sheet rows: one frame, a divider between rows, the same rails as a settings card. */
+export function AgentControlRowGroup({ children }: { children: ReactNode }) {
+  const rows = Children.toArray(children).filter(Boolean);
+  if (rows.length === 0) return null;
+  return (
+    <View style={styles.group}>
+      {rows.map((row, index) => (
+        <View
+          key={isValidElement(row) && row.key !== null ? row.key : index}
+          style={index > 0 ? styles.groupDivider : null}
+        >
+          {row}
+        </View>
+      ))}
+    </View>
+  );
+}

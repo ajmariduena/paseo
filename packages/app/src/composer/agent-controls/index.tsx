@@ -88,7 +88,7 @@ import {
   type ComposerControlLayoutValue,
 } from "@/composer/agent-controls/layout-context";
 import { ComposerToolbarGlyph } from "@/composer/agent-controls/glyph";
-import { AgentControlTrigger } from "@/composer/agent-controls/control";
+import { AgentControlRowGroup, AgentControlTrigger } from "@/composer/agent-controls/control";
 import {
   IntelligenceControl,
   type IntelligenceControlProps,
@@ -198,6 +198,11 @@ interface AgentControlsSlots {
 }
 
 const AgentControlsSlotContext = createContext<AgentControlsSlots | null>(null);
+
+/** The toolbar's shared glyph size and hit slop, for controls that sit beside the clusters. */
+export function useAgentControlsLayout(): ComposerControlLayoutValue | null {
+  return useContext(AgentControlsSlotContext)?.layout ?? null;
+}
 
 export function AgentControlsStart() {
   const slots = useContext(AgentControlsSlotContext);
@@ -885,16 +890,18 @@ function StartCluster({
             onClose={onCloseFeatures}
             testID="agent-features-sheet"
           >
-            {toolbarFeatures.map((feature) => (
-              <SheetFeatureItem
-                key={`feature-${feature.id}`}
-                feature={feature}
-                disabled={disabled}
-                openSelector={openSelector}
-                handleOpenChange={onSheetOpenChange}
-                onSetFeature={onSetFeature}
-              />
-            ))}
+            <AgentControlRowGroup>
+              {toolbarFeatures.map((feature) => (
+                <SheetFeatureItem
+                  key={`feature-${feature.id}`}
+                  feature={feature}
+                  disabled={disabled}
+                  openSelector={openSelector}
+                  handleOpenChange={onSheetOpenChange}
+                  onSetFeature={onSetFeature}
+                />
+              ))}
+            </AgentControlRowGroup>
           </AdaptiveModalSheet>
         </>
       ) : null}

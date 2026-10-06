@@ -1,11 +1,14 @@
 import { useCallback, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
-import { Bookmark, CornerDownLeft, Star } from "lucide-react-native";
+import { Bookmark, CornerDownLeft, FilePlus, Plus, Send, Star } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
-import { StyleSheet } from "react-native-unistyles";
+import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { QuickPrompt } from "@getpaseo/protocol/messages";
-import { Button } from "@/components/ui/button";
-import { MenuItem, MenuSeparator, useMenuContext } from "@/components/ui/menu";
+import { CONTROL_HEIGHTS } from "@/components/ui/control-geometry";
+import { MENU_ITEM_HEIGHT, MenuItem, MenuSeparator, useMenuContext } from "@/components/ui/menu";
+import { useTouchHitSlop } from "@/components/ui/touch-target";
+import { useControlDensity } from "@/constants/layout";
+import { ICON_SIZE, type Theme } from "@/styles/theme";
 import type { DeferredQuickPromptSend, QuickPromptSendState } from "./deferred-send";
 import { useQuickPrompts } from "./use-quick-prompts";
 import { useQuickPromptCapacity } from "./capacity";
@@ -37,6 +40,7 @@ export interface QuickPromptPicker {
   prompts: readonly QuickPrompt[];
   supported: boolean;
   loaded: boolean;
+  undoMs: number;
   state: QuickPromptSendState;
   defaultPrompt: QuickPrompt | undefined;
   pinned: readonly QuickPrompt[];
@@ -139,7 +143,7 @@ export function useQuickPromptPicker(binding: QuickPromptToolbarBinding): QuickP
   const sendDisabled = state.status === "sending" || write.pending;
   const editDisabled = !catalog.loaded || !catalog.connected;
   const draftEmpty = !binding.getDraft().trim();
-  const { prompts, supported, loaded } = catalog;
+  const { prompts, supported, loaded, undoMs } = catalog;
   const editor = useMemo(
     () =>
       editing ? (
@@ -161,6 +165,7 @@ export function useQuickPromptPicker(binding: QuickPromptToolbarBinding): QuickP
       prompts,
       supported,
       loaded,
+      undoMs,
       state,
       defaultPrompt,
       pinned,
@@ -195,6 +200,7 @@ export function useQuickPromptPicker(binding: QuickPromptToolbarBinding): QuickP
       sendDisabled,
       state,
       supported,
+      undoMs,
       write.error,
       write.pending,
     ],
@@ -208,6 +214,11 @@ export function isQuickPromptSendDisabled(picker: QuickPromptPicker, prompt: Qui
 /** The picker's rows; renders inside any menu surface or page. */
 export function QuickPromptPickerList({ picker }: { picker: QuickPromptPicker }) {
   const { t } = useTranslation();
+  const addIcon = useMemo(() => <ThemedPlus size={ICON_SIZE.md} uniProps={mutedMapping} />, []);
+  const saveIcon = useMemo(
+    () => <ThemedFilePlus size={ICON_SIZE.md} uniProps={mutedMapping} />,
+    [],
+  );
   return (
     <>
       {!picker.loaded ? <MenuItem disabled>{t("quickPrompts.loading")}</MenuItem> : null}
@@ -228,10 +239,10 @@ export function QuickPromptPickerList({ picker }: { picker: QuickPromptPicker })
       {picker.defaultPrompt ? null : (
         <MenuItem disabled>{t("quickPrompts.chooseDefault")}</MenuItem>
       )}
-      <MenuItem disabled={picker.editDisabled} onSelect={picker.add}>
+      <MenuItem leading={addIcon} disabled={picker.editDisabled} onSelect={picker.add}>
         {t("quickPrompts.add")}
       </MenuItem>
-      <MenuItem disabled={picker.draftDisabled} onSelect={picker.saveDraft}>
+      <MenuItem leading={saveIcon} disabled={picker.draftDisabled} onSelect={picker.saveDraft}>
         {t("quickPrompts.saveDraft")}
       </MenuItem>
       {picker.writeError ? (
@@ -243,6 +254,23 @@ export function QuickPromptPickerList({ picker }: { picker: QuickPromptPicker })
   );
 }
 
+const ThemedPlus = withUnistyles(Plus);
+const ThemedFilePlus = withUnistyles(FilePlus);
+const ThemedSend = withUnistyles(Send);
+const ThemedCornerDownLeft = withUnistyles(CornerDownLeft);
+const ThemedStar = withUnistyles(Star);
+const ThemedBookmark = withUnistyles(Bookmark);
+const mutedMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
+const selectedMapping = (theme: Theme) => ({
+  color: theme.colors.accentBright,
+  fill: theme.colors.accentBright,
+});
+
+/**
+ * A prompt on the menu's rail: its tap mode as the leading glyph, title and preview, then one
+ * trailing group of equal targets — insert, pin, default. A chosen pin or default is a filled
+ * glyph, nothing more.
+ */
 function QuickPromptPickerRow({
   prompt,
   disabled,
@@ -257,10 +285,11 @@ function QuickPromptPickerRow({
   onSelect: (prompt: QuickPrompt, action: QuickPromptPickerAction) => () => void;
 }) {
   const { t } = useTranslation();
+  const isTouch = useControlDensity() === "touch";
   const pressStyle = useCallback(
     ({ pressed, hovered = false }: PressableStateCallbackType & { hovered?: boolean }) => [
-      styles.rowSend,
-      (pressed || hovered) && styles.selected,
+      styles.rowMain,
+      (pressed || hovered) && styles.rowMainActive,
       disabled && styles.disabled,
     ],
     [disabled],
@@ -275,90 +304,167 @@ function QuickPromptPickerRow({
   const insert = useCallback(() => choose("insert", true), [choose]);
   const pin = useCallback(() => choose("pin", false), [choose]);
   const makeDefault = useCallback(() => choose("default", false), [choose]);
-  const pinState = useMemo(() => ({ selected: prompt.pinned }), [prompt.pinned]);
-  const defaultState = useMemo(() => ({ selected: prompt.isDefault }), [prompt.isDefault]);
   const pinDisabled = writing || (!prompt.pinned && pinLimit);
   const itemDataSet = useMemo(
     () => ({ menuItem: "true", menuDisabled: disabled ? "true" : "false" }),
     [disabled],
   );
+  const ModeGlyph = prompt.mode === "insert" ? ThemedCornerDownLeft : ThemedSend;
   return (
-    <View style={styles.pickerRow} testID={`quick-prompt-row-${prompt.id}`}>
-      <View style={styles.rowMain}>
-        <Pressable
-          style={pressStyle}
-          disabled={disabled}
-          onPress={send}
-          accessibilityRole="menuitem"
-          dataSet={itemDataSet}
-          accessibilityLabel={t("quickPrompts.sendNamed", { title: prompt.title })}
-        >
+    <View style={[styles.row, isTouch && styles.rowTouch]} testID={`quick-prompt-row-${prompt.id}`}>
+      <Pressable
+        style={pressStyle}
+        disabled={disabled}
+        onPress={send}
+        accessibilityRole="menuitem"
+        dataSet={itemDataSet}
+        accessibilityLabel={t("quickPrompts.sendNamed", { title: prompt.title })}
+      >
+        <View style={styles.leading}>
+          <ModeGlyph size={ICON_SIZE.md} uniProps={mutedMapping} />
+        </View>
+        <View style={styles.rowText}>
           <Text style={styles.rowTitle} numberOfLines={1}>
             {prompt.title}
           </Text>
           <Text style={styles.preview} numberOfLines={1}>
             {prompt.text}
           </Text>
-        </Pressable>
+        </View>
+      </Pressable>
+      <View style={styles.actions}>
+        <PickerAction
+          icon={ThemedCornerDownLeft}
+          selected={false}
+          disabled={writing}
+          accessibilityLabel={t("quickPrompts.insertNamed", { title: prompt.title })}
+          onPress={insert}
+          testID={`quick-prompt-insert-${prompt.id}`}
+        />
+        <PickerAction
+          icon={ThemedStar}
+          selected={prompt.pinned}
+          disabled={pinDisabled}
+          accessibilityLabel={t(prompt.pinned ? "quickPrompts.unpin" : "quickPrompts.pin")}
+          accessibilityHint={pinDisabled ? t("quickPrompts.pinLimit") : undefined}
+          onPress={pin}
+          testID={`quick-prompt-pin-${prompt.id}`}
+        />
+        <PickerAction
+          icon={ThemedBookmark}
+          selected={prompt.isDefault}
+          disabled={writing}
+          accessibilityLabel={t("quickPrompts.default")}
+          onPress={makeDefault}
+          testID={`quick-prompt-set-default-${prompt.id}`}
+        />
       </View>
-      <Button
-        variant="ghost"
-        size="sm"
-        leftIcon={CornerDownLeft}
-        disabled={writing}
-        accessibilityLabel={t("quickPrompts.insertNamed", { title: prompt.title })}
-        onPress={insert}
-        testID={`quick-prompt-insert-${prompt.id}`}
-      />
-      <Button
-        variant="ghost"
-        size="sm"
-        leftIcon={Star}
-        disabled={pinDisabled}
-        accessibilityHint={pinDisabled ? t("quickPrompts.pinLimit") : undefined}
-        accessibilityLabel={t(prompt.pinned ? "quickPrompts.unpin" : "quickPrompts.pin")}
-        accessibilityState={pinState}
-        style={prompt.pinned ? styles.selected : undefined}
-        onPress={pin}
-        testID={`quick-prompt-pin-${prompt.id}`}
-      />
-      <Button
-        variant="ghost"
-        size="sm"
-        leftIcon={Bookmark}
-        disabled={writing}
-        accessibilityLabel={t("quickPrompts.default")}
-        accessibilityState={defaultState}
-        style={prompt.isDefault ? styles.selected : undefined}
-        onPress={makeDefault}
-        testID={`quick-prompt-set-default-${prompt.id}`}
-      />
     </View>
   );
 }
 
+type ThemedIcon = typeof ThemedStar;
+
+function PickerAction({
+  icon: Icon,
+  selected,
+  disabled,
+  accessibilityLabel,
+  accessibilityHint,
+  onPress,
+  testID,
+}: {
+  icon: ThemedIcon;
+  selected: boolean;
+  disabled: boolean;
+  accessibilityLabel: string;
+  accessibilityHint?: string;
+  onPress: () => void;
+  testID: string;
+}) {
+  const hitSlop = useTouchHitSlop(ACTION_SIZE);
+  const state = useMemo(() => ({ selected }), [selected]);
+  const actionStyle = useCallback(
+    ({ pressed, hovered = false }: PressableStateCallbackType & { hovered?: boolean }) => [
+      styles.action,
+      (pressed || hovered) && styles.actionActive,
+      disabled && styles.disabled,
+    ],
+    [disabled],
+  );
+  return (
+    <Pressable
+      style={actionStyle}
+      disabled={disabled}
+      hitSlop={hitSlop}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      accessibilityHint={accessibilityHint}
+      accessibilityState={state}
+      testID={testID}
+    >
+      <Icon size={ICON_SIZE.md} uniProps={selected ? selectedMapping : mutedMapping} />
+    </Pressable>
+  );
+}
+
+const ACTION_SIZE = CONTROL_HEIGHTS.tight;
+
 const styles = StyleSheet.create((theme) => ({
-  pickerRow: {
+  // The same box as a menu row: inset 4, border 1, padding 8, so the glyph lands on the rail.
+  row: {
     flexDirection: "row",
     alignItems: "center",
-    minHeight: 48,
+    gap: theme.spacing[2],
+    minHeight: MENU_ITEM_HEIGHT.md,
+    marginHorizontal: theme.spacing[1],
     paddingRight: theme.spacing[2],
-  },
-  rowMain: { flex: 1, minWidth: 0 },
-  rowSend: {
-    minHeight: 44,
-    justifyContent: "center",
-    paddingHorizontal: theme.spacing[3],
-    paddingVertical: theme.spacing[2],
+    borderWidth: theme.borderWidth[1],
+    borderColor: "transparent",
     borderRadius: theme.borderRadius.md,
   },
-  disabled: { opacity: theme.opacity[50] },
-  rowTitle: { color: theme.colors.foreground, fontSize: theme.fontSize.base },
+  rowTouch: {
+    minHeight: MENU_ITEM_HEIGHT.xs,
+  },
+  rowMain: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+    paddingLeft: theme.spacing[2],
+    paddingVertical: theme.spacing[1],
+    borderRadius: theme.borderRadius.md,
+  },
+  rowMainActive: { backgroundColor: theme.colors.interactionHighlight },
+  leading: {
+    width: ICON_SIZE.md,
+    height: ICON_SIZE.md,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  rowText: { flex: 1, minWidth: 0 },
+  rowTitle: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.base,
+    lineHeight: Math.round(theme.fontSize.base * 1.3),
+  },
   preview: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
+    lineHeight: Math.round(theme.fontSize.sm * 1.3),
   },
-  selected: { backgroundColor: theme.colors.interactionHighlight },
+  actions: { flexDirection: "row", alignItems: "center", gap: theme.spacing[1] },
+  action: {
+    width: ACTION_SIZE,
+    height: ACTION_SIZE,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: theme.borderRadius.full,
+  },
+  actionActive: { backgroundColor: theme.colors.interactionHighlight },
+  disabled: { opacity: theme.opacity[50] },
   error: {
     color: theme.colors.statusDanger,
     fontSize: theme.fontSize.base,

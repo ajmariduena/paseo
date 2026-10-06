@@ -7,7 +7,7 @@ import type { AgentFeature, AgentFeatureToggle } from "@getpaseo/protocol/agent-
 import { getAgentFeatureIcon } from "@/agent-controls/icons";
 import type { SheetHeader } from "@/components/adaptive-modal-sheet";
 import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
-import { AgentControlTrigger } from "@/composer/agent-controls/control";
+import { AgentControlRowGroup, AgentControlTrigger } from "@/composer/agent-controls/control";
 import { getFeatureTooltip, resolveFeatureIconTint } from "@/composer/agent-controls/utils";
 import type { EffortOption, EffortSelection } from "@/composer/agent-controls/effort-selection";
 
@@ -57,7 +57,7 @@ export function AdvancedPage({
 
   return (
     <View style={styles.page} testID="agent-advanced-page">
-      <View style={styles.group}>
+      <AgentControlRowGroup>
         {onOpenModels ? (
           <AgentControlTrigger
             icon={Cpu}
@@ -80,9 +80,9 @@ export function AdvancedPage({
           onOpenChange={handleOpenChange("effort")}
           disabled={disabled}
         />
-      </View>
+      </AgentControlRowGroup>
       {fastFeature || features.length > 0 ? (
-        <View style={styles.group}>
+        <AgentControlRowGroup>
           {fastFeature ? (
             <SpeedRow
               feature={fastFeature}
@@ -102,9 +102,9 @@ export function AdvancedPage({
               onSetFeature={onSetFeature}
             />
           ))}
-        </View>
+        </AgentControlRowGroup>
       ) : null}
-      <View style={styles.group}>
+      <AgentControlRowGroup>
         <AgentControlTrigger
           icon={RotateCcw}
           surface="sheet"
@@ -115,7 +115,7 @@ export function AdvancedPage({
           accessibilityLabel={t("agentControls.advanced.reset")}
           testID="agent-effort-reset"
         />
-      </View>
+      </AgentControlRowGroup>
     </View>
   );
 }
@@ -361,11 +361,8 @@ export function SheetFeatureItem({
 
 const styles = StyleSheet.create((theme) => ({
   page: {
-    paddingHorizontal: theme.spacing[3],
+    paddingHorizontal: theme.spacing[4],
     paddingVertical: theme.spacing[2],
-    gap: theme.spacing[4],
-  },
-  group: {
-    gap: theme.spacing[1],
+    gap: theme.spacing[3],
   },
 }));
