@@ -320,6 +320,22 @@ export const ru: TranslationResources = {
       slider: "Уровень усилия",
       openWithValue: "Изменить модель и усилие ({{value}})",
     },
+    intelligence: {
+      title: "Интеллект",
+      managed: "Управляется моделью",
+      selectWithValue: "Выбрать интеллект ({{value}})",
+      dismiss: "Закрыть интеллект",
+    },
+    advanced: {
+      title: "Дополнительно",
+      open: "Открыть дополнительные настройки",
+      model: "Модель",
+      reset: "Сбросить к значениям по умолчанию",
+    },
+    speed: {
+      title: "Скорость",
+      standard: "Стандартная",
+    },
     model: {
       unknown: "Неизвестная модель",
     },

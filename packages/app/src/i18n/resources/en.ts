@@ -314,6 +314,22 @@ export const en = {
       slider: "Effort level",
       openWithValue: "Change model and effort ({{value}})",
     },
+    intelligence: {
+      title: "Intelligence",
+      managed: "Managed by model",
+      selectWithValue: "Select intelligence ({{value}})",
+      dismiss: "Close intelligence",
+    },
+    advanced: {
+      title: "Advanced",
+      open: "Open advanced settings",
+      model: "Model",
+      reset: "Reset to defaults",
+    },
+    speed: {
+      title: "Speed",
+      standard: "Standard",
+    },
     model: {
       unknown: "Unknown model",
     },

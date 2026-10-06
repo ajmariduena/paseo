@@ -318,6 +318,22 @@ export const ar: TranslationResources = {
       slider: "مستوى الجهد",
       openWithValue: "تغيير النموذج والجهد ({{value}})",
     },
+    intelligence: {
+      title: "الذكاء",
+      managed: "يديره النموذج",
+      selectWithValue: "اختر الذكاء ({{value}})",
+      dismiss: "إغلاق الذكاء",
+    },
+    advanced: {
+      title: "متقدم",
+      open: "فتح الإعدادات المتقدمة",
+      model: "النموذج",
+      reset: "إعادة التعيين إلى الافتراضي",
+    },
+    speed: {
+      title: "السرعة",
+      standard: "قياسي",
+    },
     model: {
       unknown: "نموذج غير معروف",
     },

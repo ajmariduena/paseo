@@ -10,6 +10,7 @@ import {
   resolveComposerControlDensity,
   resolveComposerControlPresentation,
   resolveComposerToolbarGlyphSize,
+  resolveIntelligenceTriggerKind,
   type ComposerControlPresence,
 } from "./layout";
 
@@ -25,13 +26,14 @@ const CLAUDE_CONTROLS: ComposerControlPresence = {
 };
 
 describe("composer control layout", () => {
-  it("gives things up in order: effort suffix, mode label, carets, then the model label", () => {
+  it("gives things up in order: effort suffix, mode label, carets, model label, quick prompts", () => {
     expect(resolveComposerControlPresentation("full")).toEqual({
       showCarets: true,
       showEffortSuffix: true,
       showModeLabel: true,
       showModelLabel: true,
       aggregateFeatures: false,
+      showQuickPromptTrigger: true,
     });
     expect(resolveComposerControlPresentation("condensed")).toEqual({
       showCarets: false,
@@ -39,6 +41,7 @@ describe("composer control layout", () => {
       showModeLabel: false,
       showModelLabel: true,
       aggregateFeatures: true,
+      showQuickPromptTrigger: true,
     });
     expect(resolveComposerControlPresentation("tight")).toEqual({
       showCarets: false,
@@ -46,7 +49,39 @@ describe("composer control layout", () => {
       showModeLabel: false,
       showModelLabel: false,
       aggregateFeatures: true,
+      showQuickPromptTrigger: true,
     });
+    expect(resolveComposerControlPresentation("icons")).toEqual({
+      showCarets: false,
+      showEffortSuffix: false,
+      showModeLabel: false,
+      showModelLabel: false,
+      aggregateFeatures: true,
+      showQuickPromptTrigger: false,
+    });
+  });
+
+  it("shows the gauge exactly when the model label is gone", () => {
+    expect(
+      COMPOSER_CONTROL_DENSITIES.map((density) =>
+        resolveIntelligenceTriggerKind(resolveComposerControlPresentation(density)),
+      ),
+    ).toEqual(["pill", "pill", "pill", "pill", "gauge", "gauge"]);
+  });
+
+  it("keeps extra features off the toolbar once the trigger owns an Advanced page", () => {
+    const gap = COMPOSER_TOOLBAR_GEOMETRY.controlGap;
+    const withFeature = estimateComposerControlsWidth(CLAUDE_CONTROLS, "tight", gap);
+    const withoutFeature = estimateComposerControlsWidth(
+      { ...CLAUDE_CONTROLS, features: [] },
+      "tight",
+      gap,
+    );
+    expect(withFeature).toBe(withoutFeature);
+    expect(
+      estimateComposerControlsWidth({ ...CLAUDE_CONTROLS, hasModel: false }, "tight", gap),
+    ).toBe(withoutFeature);
+    expect(estimateComposerControlsWidth(CLAUDE_CONTROLS, "icons", gap)).toBe(withFeature);
   });
 
   it("shrinks the pill from model · effort ▾ down to the provider glyph alone", () => {
@@ -74,7 +109,8 @@ describe("composer control layout", () => {
   });
 
   it("fits the iPad mini portrait composer with the sidebar open without overflowing", () => {
-    // 368pt interior minus +, context ring, mic, stop and their touch gaps.
+    // 368pt interior minus +, context ring, mic, stop and their touch gaps. The feature badge
+    // no longer takes a slot, so the mode label survives.
     const availableWidth = 368 - 28 - 12 - 28 - 28 - 32 - 12;
     const gap = COMPOSER_TOOLBAR_GEOMETRY.touchControlGap;
     const density = resolveComposerControlDensity({
@@ -83,7 +119,7 @@ describe("composer control layout", () => {
       controls: CLAUDE_CONTROLS,
       controlGap: gap,
     });
-    expect(density).toBe("no-mode");
+    expect(density).toBe("no-effort");
     expect(estimateComposerControlsWidth(CLAUDE_CONTROLS, density, gap)).toBeLessThanOrEqual(
       availableWidth,
     );
@@ -114,7 +150,19 @@ describe("composer control layout", () => {
       { showEffortSuffix: false, showModeLabel: false, showCarets: true, showModelLabel: true },
       { showEffortSuffix: false, showModeLabel: false, showCarets: false, showModelLabel: true },
       { showEffortSuffix: false, showModeLabel: false, showCarets: false, showModelLabel: false },
+      { showModelLabel: false, showQuickPromptTrigger: false },
     ]);
+  });
+
+  it("bottoms out at icons when even the glyph-only row cannot fit", () => {
+    expect(
+      resolveComposerControlDensity({
+        availableWidth: 40,
+        currentDensity: "tight",
+        controls: CLAUDE_CONTROLS,
+        controlGap: COMPOSER_TOOLBAR_GEOMETRY.controlGap,
+      }),
+    ).toBe("icons");
   });
 
   it("budgets extra features and larger text before restoring full labels", () => {
@@ -209,7 +257,8 @@ describe("quick prompt capacity", () => {
       showDefaultLabel: true,
       visiblePinCount: 0,
     });
-    expect(resolveQuickPromptPresentation({ ...base, availableWidth: 240 })).toMatchObject({
+    expect(resolveQuickPromptPresentation({ ...base, availableWidth: 200 })).toMatchObject({
+      showTrigger: true,
       showDefaultLabel: false,
       visiblePinCount: 0,
     });
@@ -218,8 +267,47 @@ describe("quick prompt capacity", () => {
     const result = resolveQuickPromptPresentation({ ...base, availableWidth: 260 });
     expect(result).toMatchObject({ showDefaultLabel: true, visiblePinCount: 0, density: "tight" });
     expect(resolveComposerControlPresentation(result.density).showModelLabel).toBe(false);
-    const narrower = resolveQuickPromptPresentation({ ...base, availableWidth: 240 });
+    const narrower = resolveQuickPromptPresentation({ ...base, availableWidth: 200 });
     expect(narrower.showDefaultLabel).toBe(false);
+  });
+
+  it("drops the icon-only trigger into the attachment menu as the last stage", () => {
+    // Mode icon + gauge + a 44pt bookmark with touch gaps.
+    const floor = 28 + 12 + 28 + 12 + 46;
+    const withTrigger = resolveQuickPromptPresentation({ ...base, availableWidth: floor });
+    expect(withTrigger).toMatchObject({ showTrigger: true, density: "tight", width: 46 });
+    const phoneRow = resolveQuickPromptPresentation({ ...base, availableWidth: floor - 1 });
+    expect(phoneRow).toEqual({
+      showTrigger: false,
+      showDefaultLabel: false,
+      visiblePinCount: 0,
+      width: 0,
+      density: "icons",
+    });
+    expect(
+      resolveQuickPromptPresentation({ ...base, availableWidth: floor + 11, current: phoneRow })
+        .showTrigger,
+    ).toBe(false);
+    expect(
+      resolveQuickPromptPresentation({ ...base, availableWidth: floor + 13, current: phoneRow })
+        .showTrigger,
+    ).toBe(true);
+    expect(
+      resolveQuickPromptPresentation({ ...base, availableWidth: floor - 11, current: withTrigger })
+        .showTrigger,
+    ).toBe(true);
+  });
+
+  it("is always the phone row on compact layouts", () => {
+    expect(
+      resolveQuickPromptPresentation({ ...base, compact: true, availableWidth: 1000 }),
+    ).toEqual({
+      showTrigger: false,
+      showDefaultLabel: false,
+      visiblePinCount: 0,
+      width: 0,
+      density: "icons",
+    });
   });
 
   it.each([true, false])(
@@ -267,23 +355,29 @@ describe("quick prompt capacity", () => {
   });
 
   it("keeps quick prompt labels stable across resize noise and restores after 12px", () => {
-    const wide = resolveQuickPromptPresentation({ ...base, availableWidth: 260 });
+    // Mode icon + gauge + the "Summary" split with touch gaps.
+    const floor = 28 + 12 + 28 + 12 + (44 + 7 * 7 + 44 + 2);
+    const wide = resolveQuickPromptPresentation({ ...base, availableWidth: floor + 6 });
     expect(wide.showDefaultLabel).toBe(true);
-    const jitter = resolveQuickPromptPresentation({ ...base, availableWidth: 253, current: wide });
+    const jitter = resolveQuickPromptPresentation({
+      ...base,
+      availableWidth: floor - 1,
+      current: wide,
+    });
     expect(jitter.showDefaultLabel).toBe(true);
     expect(jitter.density).toBe(wide.density);
     const narrow = resolveQuickPromptPresentation({
       ...base,
-      availableWidth: 244,
+      availableWidth: floor - 13,
       current: jitter,
     });
     expect(narrow.showDefaultLabel).toBe(false);
     expect(
-      resolveQuickPromptPresentation({ ...base, availableWidth: 265, current: narrow })
+      resolveQuickPromptPresentation({ ...base, availableWidth: floor + 11, current: narrow })
         .showDefaultLabel,
     ).toBe(false);
     expect(
-      resolveQuickPromptPresentation({ ...base, availableWidth: 275, current: narrow })
+      resolveQuickPromptPresentation({ ...base, availableWidth: floor + 13, current: narrow })
         .showDefaultLabel,
     ).toBe(true);
   });
@@ -332,9 +426,9 @@ describe("quick prompt capacity", () => {
     expect(
       resolveQuickPromptPresentation({
         ...base,
-        availableWidth: 300,
+        availableWidth: 260,
         controls: { ...base.controls, fontScale: 2 },
       }),
-    ).toMatchObject({ showDefaultLabel: false, visiblePinCount: 0 });
+    ).toMatchObject({ showTrigger: true, showDefaultLabel: false, visiblePinCount: 0 });
   });
 });

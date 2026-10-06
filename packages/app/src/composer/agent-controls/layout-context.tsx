@@ -17,6 +17,7 @@ const DEFAULT_LAYOUT: ComposerControlLayoutValue = {
     showModeLabel: true,
     showModelLabel: true,
     aggregateFeatures: false,
+    showQuickPromptTrigger: true,
   },
   hitSlop: undefined,
 };

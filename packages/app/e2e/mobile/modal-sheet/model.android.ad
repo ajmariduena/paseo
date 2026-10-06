@@ -5,20 +5,26 @@ env APP_ID=sh.paseo.debug
 
 open "${APP_ID}" "${FORM_URL}"
 wait "id=\"combined-model-selector\"" 20000
+# The gauge opens the effort overlay; its label opens the Advanced sheet.
 press "id=\"combined-model-selector\""
+wait "id=\"agent-effort-advanced\"" 10000
+press "id=\"agent-effort-advanced\""
 wait "id=\"agent-effort-model\"" 10000
 gesture pan 540 790 0 960 500
 wait "id=\"combined-model-selector\"" 3000
 
-# Reopen the card and its model browser; dismissing the sheet closes both pages.
+# Reopen Advanced and its model browser; dismissing the sheet closes both pages.
 press "id=\"combined-model-selector\""
+wait "id=\"agent-effort-advanced\"" 10000
+press "id=\"agent-effort-advanced\""
 wait "id=\"agent-effort-model\"" 10000
 press "id=\"agent-effort-model\""
 wait "id=\"agent-model-browser\"" 10000
 gesture pan 540 790 0 960 500
 wait "id=\"combined-model-selector\"" 3000
+# The overlay closes on a downward swipe over the slider's label.
 press "id=\"combined-model-selector\""
-wait "id=\"agent-effort-card\"" 10000
-gesture pan 540 790 0 960 500
+wait "id=\"agent-intelligence-overlay\"" 10000
+gesture pan 540 1500 0 300 300
 wait "id=\"combined-model-selector\"" 3000
 close

@@ -318,6 +318,22 @@ export const ko: TranslationResources = {
       slider: "노력 수준",
       openWithValue: "모델 및 노력 변경 ({{value}})",
     },
+    intelligence: {
+      title: "지능",
+      managed: "모델이 관리",
+      selectWithValue: "지능 선택 ({{value}})",
+      dismiss: "지능 닫기",
+    },
+    advanced: {
+      title: "고급",
+      open: "고급 설정 열기",
+      model: "모델",
+      reset: "기본값으로 재설정",
+    },
+    speed: {
+      title: "속도",
+      standard: "표준",
+    },
     model: {
       unknown: "알 수 없는 모델",
     },

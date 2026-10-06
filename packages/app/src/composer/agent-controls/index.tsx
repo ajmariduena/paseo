@@ -57,9 +57,9 @@ import type {
 } from "@getpaseo/protocol/agent-types";
 import type { AgentProviderDefinition } from "@getpaseo/protocol/provider-manifest";
 import {
-  getFeatureHighlightColor,
   getFeatureTooltip,
   resolveAgentModelSelection,
+  resolveFeatureIconTint,
 } from "@/composer/agent-controls/utils";
 import { resolveEffortAfterModelSwitch } from "@/components/ui/effort-stops";
 import { useControlDensity, useIsCompactFormFactor } from "@/constants/layout";
@@ -90,10 +90,11 @@ import {
 import { ComposerToolbarGlyph } from "@/composer/agent-controls/glyph";
 import { AgentControlTrigger } from "@/composer/agent-controls/control";
 import {
-  ModelEffortControl,
-  type EffortOption,
-  type ModelEffortControlProps,
-} from "@/composer/agent-controls/effort-card";
+  IntelligenceControl,
+  type IntelligenceControlProps,
+} from "@/composer/agent-controls/intelligence-control";
+import type { EffortOption } from "@/composer/agent-controls/effort-selection";
+import { SheetFeatureItem } from "@/composer/agent-controls/advanced-page";
 import {
   useAgentProfileEditor,
   useAgentProfilePicker,
@@ -111,6 +112,8 @@ interface AgentControlOption {
 }
 
 type AgentControlSelector = "model" | `feature-${string}`;
+/** The Advanced page's rows report their own ids, so the open selector is any row id. */
+type OpenSelector = string;
 
 const EMPTY_AGENT_PROVIDER_DEFINITIONS: AgentProviderDefinition[] = [];
 const EMPTY_EFFORT_OPTIONS: EffortOption[] = [];
@@ -180,15 +183,15 @@ interface AgentControlsProps {
 }
 
 /**
- * The controls live in two toolbar clusters — the permission mode and provider features start
- * the row, the model · effort pill ends it — but share one density, one open selector and one
- * set of sheets. The host component owns that state and publishes each cluster's content here;
+ * The controls live in two toolbar clusters — the permission mode starts the row, the
+ * intelligence trigger ends it — but share one density, one open selector and one set of
+ * sheets. The host component owns that state and publishes each cluster's content here;
  * `AgentControlsStart` and `AgentControlsEnd` render it from inside the composer's toolbar.
  */
 interface AgentControlsSlots {
   layout: ComposerControlLayoutValue;
   start: StartClusterProps;
-  end: ModelEffortControlProps | null;
+  end: IntelligenceControlProps | null;
   onStartLayout: (event: LayoutChangeEvent) => void;
   onEndLayout: (event: LayoutChangeEvent) => void;
   isTouchDensity: boolean;
@@ -222,7 +225,7 @@ export function AgentControlsEnd() {
       testID="agent-controls-end"
     >
       <ComposerControlLayoutProvider value={slots.layout}>
-        <ModelEffortControl {...slots.end} />
+        <IntelligenceControl {...slots.end} />
       </ComposerControlLayoutProvider>
     </View>
   );
@@ -259,32 +262,6 @@ function getModeProviderDefinitions(modeControl: AgentModeControlValue | null) {
   return modeControl?.providerDefinitions ?? EMPTY_AGENT_PROVIDER_DEFINITIONS;
 }
 
-function getFeatureIconColor(
-  featureId: string,
-  enabled: boolean,
-  palette: {
-    blue: { 400: string };
-    green: { 400: string };
-    yellow: { 400: string };
-  },
-  foregroundMuted: string,
-): string {
-  if (!enabled) {
-    return foregroundMuted;
-  }
-
-  switch (getFeatureHighlightColor(featureId)) {
-    case "blue":
-      return palette.blue[400];
-    case "green":
-      return palette.green[400];
-    case "yellow":
-      return palette.yellow[400];
-    default:
-      return foregroundMuted;
-  }
-}
-
 function toEffortOptions(
   options:
     | readonly NonNullable<AgentModelDefinition["thinkingOptions"]>[number][]
@@ -299,7 +276,7 @@ function toEffortOptions(
   }));
 }
 
-/** Fast lives in the effort card; every other feature keeps its toolbar control. */
+/** Fast is the Speed row; every other feature is an Advanced row, or a toolbar control at full density. */
 function splitFeatures(features: AgentFeature[] | undefined): {
   fastFeature: AgentFeatureToggle | null;
   toolbarFeatures: AgentFeature[];
@@ -534,6 +511,15 @@ function useAgentControlsDensity({
   return { density, handleStartLayout, handleEndLayout };
 }
 
+function resolveComposerDensity(input: {
+  isCompact: boolean;
+  quickPromptDensity: ComposerControlDensity | null;
+  measuredDensity: ComposerControlDensity;
+}): ComposerControlDensity {
+  if (input.isCompact) return "icons";
+  return input.quickPromptDensity ?? input.measuredDensity;
+}
+
 function resolveControlPresence(input: {
   hasPill: boolean;
   hasMode: boolean;
@@ -603,7 +589,7 @@ function ControlledAgentControls({
     : COMPOSER_TOOLBAR_GEOMETRY.controlGap;
   const { fontScale } = useWindowDimensions();
   const [isFeaturesSheetOpen, setIsFeaturesSheetOpen] = useState(false);
-  const [openSelector, setOpenSelector] = useState<AgentControlSelector | null>(null);
+  const [openSelector, setOpenSelector] = useState<OpenSelector | null>(null);
 
   const canSelectModel = Boolean(onSelectModel || onSelectProviderAndModel);
   const canSwitchProvider = Boolean(onSelectProviderAndModel);
@@ -646,13 +632,14 @@ function ControlledAgentControls({
     handleStartLayout,
     handleEndLayout,
   } = useAgentControlsDensity({
-    initialDensity: isCompact ? "tight" : "full",
+    initialDensity: isCompact ? "icons" : "full",
     controlPresence,
     controlGap,
   });
   usePublishQuickPromptControls(controlPresence);
   const quickPromptDensity = useQuickPromptControlDensity();
-  const density = quickPromptDensity ?? measuredDensity;
+  // Compact is the phone row outright; only wide layouts measure their way down the ladder.
+  const density = resolveComposerDensity({ isCompact, quickPromptDensity, measuredDensity });
   const presentation = useMemo(() => resolveComposerControlPresentation(density), [density]);
   const layout = useMemo(
     () => ({
@@ -676,7 +663,7 @@ function ControlledAgentControls({
   );
   const handleModelOpenChange = useMemo(() => handleOpenChange("model"), [handleOpenChange]);
   const handleSheetOpenChange = useCallback(
-    (selector: AgentControlSelector) => (nextOpen: boolean) => {
+    (selector: string) => (nextOpen: boolean) => {
       setOpenSelector(nextOpen ? selector : null);
     },
     [],
@@ -709,6 +696,8 @@ function ControlledAgentControls({
       modeControl,
       toolbarFeatures,
       aggregateFeatures: presentation.aggregateFeatures,
+      // With a trigger the aggregated features live on its Advanced page instead of a badge.
+      showFeaturesBadge: !hasPill,
       disabled,
       openSelector,
       onOpenChange: handleOpenChange,
@@ -725,6 +714,7 @@ function ControlledAgentControls({
       handleOpenChange,
       handleOpenFeatures,
       handleSheetOpenChange,
+      hasPill,
       isFeaturesSheetOpen,
       modeControl,
       onDropdownClose,
@@ -735,7 +725,7 @@ function ControlledAgentControls({
     ],
   );
 
-  const end = useMemo<ModelEffortControlProps | null>(
+  const end = useMemo<IntelligenceControlProps | null>(
     () =>
       hasPill
         ? {
@@ -752,6 +742,7 @@ function ControlledAgentControls({
             selectedEffortId,
             onSelectEffort,
             fastFeature,
+            features: toolbarFeatures,
             onSetFeature,
             profiles: agentProfiles,
             onApplyProfile: onApplyAgentProfile,
@@ -791,6 +782,7 @@ function ControlledAgentControls({
       providers,
       selectedEffortId,
       selectedModelId,
+      toolbarFeatures,
     ],
   );
 
@@ -818,10 +810,11 @@ interface StartClusterProps {
   modeControl: AgentModeControlValue | null | undefined;
   toolbarFeatures: AgentFeature[];
   aggregateFeatures: boolean;
+  showFeaturesBadge: boolean;
   disabled: boolean;
-  openSelector: AgentControlSelector | null;
+  openSelector: OpenSelector | null;
   onOpenChange: (selector: AgentControlSelector) => (nextOpen: boolean) => void;
-  onSheetOpenChange: (selector: AgentControlSelector) => (nextOpen: boolean) => void;
+  onSheetOpenChange: (selector: string) => (nextOpen: boolean) => void;
   onSetFeature: ((featureId: string, value: unknown) => void) | undefined;
   onDropdownClose: (() => void) | undefined;
   isFeaturesSheetOpen: boolean;
@@ -829,10 +822,22 @@ interface StartClusterProps {
   onCloseFeatures: () => void;
 }
 
+/** Inline at full density; a badge only while no trigger offers an Advanced page; else nothing. */
+function resolveStartFeaturesPlacement(input: {
+  aggregateFeatures: boolean;
+  showFeaturesBadge: boolean;
+  hasFeatures: boolean;
+}): "inline" | "badge" | "none" {
+  if (!input.hasFeatures) return "none";
+  if (!input.aggregateFeatures) return "inline";
+  return input.showFeaturesBadge ? "badge" : "none";
+}
+
 function StartCluster({
   modeControl,
   toolbarFeatures,
   aggregateFeatures,
+  showFeaturesBadge,
   disabled,
   openSelector,
   onOpenChange,
@@ -850,11 +855,16 @@ function StartCluster({
     () => ({ title: t("agentControls.features.title") }),
     [t],
   );
+  const featuresPlacement = resolveStartFeaturesPlacement({
+    aggregateFeatures,
+    showFeaturesBadge,
+    hasFeatures: toolbarFeatures.length > 0,
+  });
 
   return (
     <>
       {modeControl ? <AgentModeControl {...modeControl} onClose={onDropdownClose} /> : null}
-      {aggregateFeatures && toolbarFeatures.length > 0 ? (
+      {featuresPlacement === "badge" ? (
         <>
           <Pressable
             onPress={onOpenFeatures}
@@ -887,19 +897,20 @@ function StartCluster({
             ))}
           </AdaptiveModalSheet>
         </>
-      ) : (
-        toolbarFeatures.map((feature) => (
-          <DesktopFeatureItem
-            key={`feature-${feature.id}`}
-            feature={feature}
-            disabled={disabled}
-            openSelector={openSelector}
-            handleOpenChange={onOpenChange}
-            onSetFeature={onSetFeature}
-            onActionComplete={onDropdownClose}
-          />
-        ))
-      )}
+      ) : null}
+      {featuresPlacement === "inline"
+        ? toolbarFeatures.map((feature) => (
+            <DesktopFeatureItem
+              key={`feature-${feature.id}`}
+              feature={feature}
+              disabled={disabled}
+              openSelector={openSelector}
+              handleOpenChange={onOpenChange}
+              onSetFeature={onSetFeature}
+              onActionComplete={onDropdownClose}
+            />
+          ))
+        : null}
     </>
   );
 }
@@ -914,12 +925,11 @@ function DesktopFeatureItem({
 }: {
   feature: AgentFeature;
   disabled: boolean;
-  openSelector: AgentControlSelector | null;
+  openSelector: OpenSelector | null;
   handleOpenChange: (selector: AgentControlSelector) => (nextOpen: boolean) => void;
   onSetFeature?: (featureId: string, value: unknown) => void;
   onActionComplete?: () => void;
 }) {
-  const { theme } = useUnistyles();
   const featureSelector: AgentControlSelector = `feature-${feature.id}`;
   const featureAnchorRef = useRef<View>(null);
 
@@ -960,12 +970,7 @@ function DesktopFeatureItem({
         <TooltipTrigger asChild triggerRefProp="ref">
           <AgentControlTrigger
             icon={FeatureIcon}
-            iconColor={getFeatureIconColor(
-              feature.id,
-              feature.value,
-              theme.colors.palette,
-              theme.colors.foregroundMuted,
-            )}
+            iconTint={resolveFeatureIconTint(feature.id, feature.value)}
             surface="toolbar"
             label={feature.label}
             showToolbarLabel={false}
@@ -1019,121 +1024,6 @@ function DesktopFeatureItem({
           onOpenChange={handleFeatureOpenChange}
           anchorRef={featureAnchorRef}
           desktopPlacement="top-start"
-        />
-      </>
-    );
-  }
-
-  return null;
-}
-
-function SheetFeatureItem({
-  feature,
-  disabled,
-  openSelector,
-  handleOpenChange,
-  onSetFeature,
-}: {
-  feature: AgentFeature;
-  disabled: boolean;
-  openSelector: AgentControlSelector | null;
-  handleOpenChange: (selector: AgentControlSelector) => (nextOpen: boolean) => void;
-  onSetFeature?: (featureId: string, value: unknown) => void;
-}) {
-  const { theme } = useUnistyles();
-  const { t } = useTranslation();
-  const featureSelector: AgentControlSelector = `feature-${feature.id}`;
-  const featureAnchorRef = useRef<View>(null);
-
-  const handleFeatureOpenChange = useMemo(
-    () => handleOpenChange(featureSelector),
-    [handleOpenChange, featureSelector],
-  );
-  const handleSelectPress = useCallback(
-    () => handleFeatureOpenChange(openSelector !== featureSelector),
-    [featureSelector, handleFeatureOpenChange, openSelector],
-  );
-  const sheetHeader = useMemo<SheetHeader>(() => ({ title: feature.label }), [feature.label]);
-
-  const handleSelectOption = useCallback(
-    (optionId: string) => {
-      onSetFeature?.(feature.id, feature.type === "toggle" ? optionId === "true" : optionId);
-    },
-    [feature.id, feature.type, onSetFeature],
-  );
-  const comboboxOptions = useMemo<ComboboxOption[]>(() => {
-    if (feature.type === "select") {
-      return feature.options.map((option) => ({ id: option.id, label: option.label }));
-    }
-    return [
-      { id: "true", label: t("agentControls.features.on") },
-      { id: "false", label: t("agentControls.features.off") },
-    ];
-  }, [feature, t]);
-
-  if (feature.type === "toggle") {
-    const FeatureIcon = getAgentFeatureIcon(feature.icon);
-    return (
-      <>
-        <AgentControlTrigger
-          ref={featureAnchorRef}
-          icon={FeatureIcon}
-          iconColor={getFeatureIconColor(
-            feature.id,
-            feature.value,
-            theme.colors.palette,
-            theme.colors.foregroundMuted,
-          )}
-          surface="sheet"
-          label={feature.label}
-          value={feature.value ? t("agentControls.features.on") : t("agentControls.features.off")}
-          open={openSelector === featureSelector}
-          disabled={disabled}
-          onPress={handleSelectPress}
-          accessibilityLabel={getFeatureTooltip(feature)}
-          testID={`agent-feature-${feature.id}`}
-        />
-        <Combobox
-          options={comboboxOptions}
-          value={String(feature.value)}
-          onSelect={handleSelectOption}
-          open={openSelector === featureSelector}
-          onOpenChange={handleFeatureOpenChange}
-          anchorRef={featureAnchorRef}
-          presentation="push"
-          searchable={false}
-          header={sheetHeader}
-        />
-      </>
-    );
-  }
-
-  if (feature.type === "select") {
-    const FeatureIcon = getAgentFeatureIcon(feature.icon);
-    const selectedOption = feature.options.find((o) => o.id === feature.value);
-    return (
-      <>
-        <AgentControlTrigger
-          ref={featureAnchorRef}
-          icon={FeatureIcon}
-          surface="sheet"
-          label={feature.label}
-          value={selectedOption?.label ?? feature.label}
-          open={openSelector === featureSelector}
-          disabled={disabled}
-          onPress={handleSelectPress}
-          accessibilityLabel={getFeatureTooltip(feature)}
-          testID={`agent-feature-${feature.id}`}
-        />
-        <Combobox
-          options={comboboxOptions}
-          value={String(feature.value)}
-          onSelect={handleSelectOption}
-          open={openSelector === featureSelector}
-          onOpenChange={handleFeatureOpenChange}
-          anchorRef={featureAnchorRef}
-          presentation="push"
-          header={sheetHeader}
         />
       </>
     );

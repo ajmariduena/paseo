@@ -321,6 +321,22 @@ export const es: TranslationResources = {
       slider: "Nivel de esfuerzo",
       openWithValue: "Cambiar modelo y esfuerzo ({{value}})",
     },
+    intelligence: {
+      title: "Inteligencia",
+      managed: "Gestionada por el modelo",
+      selectWithValue: "Seleccionar inteligencia ({{value}})",
+      dismiss: "Cerrar inteligencia",
+    },
+    advanced: {
+      title: "Avanzado",
+      open: "Abrir ajustes avanzados",
+      model: "Modelo",
+      reset: "Restablecer valores predeterminados",
+    },
+    speed: {
+      title: "Velocidad",
+      standard: "Estándar",
+    },
     model: {
       unknown: "Modelo desconocido",
     },

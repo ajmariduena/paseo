@@ -24,11 +24,19 @@ import {
   stepEffortIndex,
 } from "./effort-stops";
 
-export const EFFORT_SLIDER_TRACK_HEIGHT = 32;
-export const EFFORT_SLIDER_THUMB_SIZE = 28;
-const THUMB_INSET = (EFFORT_SLIDER_TRACK_HEIGHT - EFFORT_SLIDER_THUMB_SIZE) / 2;
-const THUMB_RADIUS = EFFORT_SLIDER_THUMB_SIZE / 2;
-const STOP_DOT_SIZE = 4;
+export type EffortSliderSize = "default" | "large";
+
+interface EffortSliderGeometry {
+  trackHeight: number;
+  thumbSize: number;
+  dotSize: number;
+}
+
+/** `large` is the touch overlay's one-gesture track; `default` sits inside a popover card. */
+export const EFFORT_SLIDER_GEOMETRY: Record<EffortSliderSize, EffortSliderGeometry> = {
+  default: { trackHeight: 32, thumbSize: 28, dotSize: 4 },
+  large: { trackHeight: 56, thumbSize: 44, dotSize: 6 },
+};
 /** The arrival pulse: a glow swells on the thumb and fades, 0.9 s end to end. */
 export const EFFORT_ARRIVAL_PULSE_MS = 900;
 const ARRIVAL_RISE_MS = 300;
@@ -46,18 +54,20 @@ interface EffortSliderProps {
   value: string;
   onChange: (id: string) => void;
   disabled?: boolean;
+  size?: EffortSliderSize;
   accessibilityLabel: string;
   testID?: string;
 }
 
-function thumbCenterForRatio(ratio: number, trackWidth: number): number {
+function thumbCenterForRatio(ratio: number, trackWidth: number, trackHeight: number): number {
   "worklet";
-  return THUMB_INSET + THUMB_RADIUS + ratio * Math.max(0, trackWidth - EFFORT_SLIDER_TRACK_HEIGHT);
+  // The thumb's center travels from half a track height in to half a track height from the end.
+  return trackHeight / 2 + ratio * Math.max(0, trackWidth - trackHeight);
 }
 
-function ratioForPointer(x: number, trackWidth: number): number {
-  const travel = Math.max(1, trackWidth - EFFORT_SLIDER_TRACK_HEIGHT);
-  return (x - THUMB_INSET - THUMB_RADIUS) / travel;
+function ratioForPointer(x: number, trackWidth: number, trackHeight: number): number {
+  const travel = Math.max(1, trackWidth - trackHeight);
+  return (x - trackHeight / 2) / travel;
 }
 
 function hapticForStop(tier: ReturnType<typeof resolveEffortTier>) {
@@ -74,9 +84,13 @@ export function EffortSlider({
   value,
   onChange,
   disabled = false,
+  size = "default",
   accessibilityLabel,
   testID,
 }: EffortSliderProps) {
+  const { trackHeight, thumbSize, dotSize } = EFFORT_SLIDER_GEOMETRY[size];
+  const thumbInset = (trackHeight - thumbSize) / 2;
+  const thumbRadius = thumbSize / 2;
   const count = stops.length;
   const index = resolveEffortStopIndex(stops, value);
   const tier = resolveEffortTier(index, count);
@@ -122,9 +136,11 @@ export function EffortSlider({
   const selectFromPointer = useCallback(
     (x: number) => {
       if (trackWidthRef.current <= 0) return;
-      selectIndex(effortStopFromRatio(ratioForPointer(x, trackWidthRef.current), count));
+      selectIndex(
+        effortStopFromRatio(ratioForPointer(x, trackWidthRef.current, trackHeight), count),
+      );
     },
-    [count, selectIndex],
+    [count, selectIndex, trackHeight],
   );
 
   const step = useCallback(
@@ -167,15 +183,20 @@ export function EffortSlider({
   );
 
   const fillStyle = useAnimatedStyle(() => ({
-    width: thumbCenterForRatio(ratio.value, trackWidth) + THUMB_RADIUS,
+    width: thumbCenterForRatio(ratio.value, trackWidth, trackHeight) + thumbRadius,
   }));
   const thumbStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: thumbCenterForRatio(ratio.value, trackWidth) - THUMB_RADIUS }],
+    transform: [
+      { translateX: thumbCenterForRatio(ratio.value, trackWidth, trackHeight) - thumbRadius },
+    ],
   }));
   const haloStyle = useAnimatedStyle(() => ({
     opacity: arrival.value * 0.55,
     transform: [
-      { translateX: thumbCenterForRatio(ratio.value, trackWidth) - THUMB_RADIUS - HALO_SPREAD },
+      {
+        translateX:
+          thumbCenterForRatio(ratio.value, trackWidth, trackHeight) - thumbRadius - HALO_SPREAD,
+      },
       { scale: 0.8 + arrival.value * 0.3 },
     ],
   }));
@@ -185,9 +206,25 @@ export function EffortSlider({
     return stops.map((stop, stopIndex) => ({
       key: stop.id,
       visible: stopIndex > index,
-      left: thumbCenterForRatio(effortStopRatio(stopIndex, count), trackWidth) - STOP_DOT_SIZE / 2,
+      left:
+        thumbCenterForRatio(effortStopRatio(stopIndex, count), trackWidth, trackHeight) -
+        dotSize / 2,
     }));
-  }, [count, index, stops, trackWidth]);
+  }, [count, dotSize, index, stops, trackHeight, trackWidth]);
+
+  const geometryStyles = useMemo(
+    () => ({
+      track: { height: trackHeight },
+      stopDot: { width: dotSize, height: dotSize },
+      halo: {
+        top: thumbInset - HALO_SPREAD,
+        width: thumbSize + HALO_SPREAD * 2,
+        height: thumbSize + HALO_SPREAD * 2,
+      },
+      thumb: { top: thumbInset, width: thumbSize, height: thumbSize },
+    }),
+    [dotSize, thumbInset, thumbSize, trackHeight],
+  );
 
   const selected = stops[index];
   const accessibilityValue = useMemo(
@@ -198,7 +235,7 @@ export function EffortSlider({
   return (
     <GestureDetector gesture={gesture}>
       <View
-        style={[styles.track, disabled && styles.trackDisabled]}
+        style={[styles.track, geometryStyles.track, disabled && styles.trackDisabled]}
         onLayout={handleLayout}
         accessible
         accessibilityRole="adjustable"
@@ -212,17 +249,22 @@ export function EffortSlider({
           {isTop ? (
             <EffortSliderTopFill
               width={trackWidth}
-              height={EFFORT_SLIDER_TRACK_HEIGHT}
+              height={trackHeight}
               reduceMotion={reduceMotion}
             />
           ) : null}
         </Animated.View>
         {stopDots.map((dot) =>
-          dot.visible ? <View key={dot.key} style={[styles.stopDot, { left: dot.left }]} /> : null,
+          dot.visible ? (
+            <View
+              key={dot.key}
+              style={[styles.stopDot, geometryStyles.stopDot, { left: dot.left }]}
+            />
+          ) : null,
         )}
-        <Animated.View style={[styles.halo, haloStyle]} pointerEvents="none" />
+        <Animated.View style={[styles.halo, geometryStyles.halo, haloStyle]} pointerEvents="none" />
         <Animated.View
-          style={[styles.thumb, thumbStyle]}
+          style={[styles.thumb, geometryStyles.thumb, thumbStyle]}
           pointerEvents="none"
           testID={testID ? `${testID}-thumb` : undefined}
         />
@@ -235,7 +277,6 @@ const ACCESSIBILITY_ACTIONS = [{ name: "increment" }, { name: "decrement" }] as 
 
 const styles = StyleSheet.create((theme) => ({
   track: {
-    height: EFFORT_SLIDER_TRACK_HEIGHT,
     borderRadius: theme.borderRadius.full,
     backgroundColor: theme.colors.surface3,
     overflow: "hidden",
@@ -258,27 +299,19 @@ const styles = StyleSheet.create((theme) => ({
   },
   stopDot: {
     position: "absolute",
-    width: STOP_DOT_SIZE,
-    height: STOP_DOT_SIZE,
     borderRadius: theme.borderRadius.full,
     backgroundColor: theme.colors.foregroundMuted,
     opacity: theme.opacity[50],
   },
   halo: {
     position: "absolute",
-    top: THUMB_INSET - HALO_SPREAD,
     left: 0,
-    width: EFFORT_SLIDER_THUMB_SIZE + HALO_SPREAD * 2,
-    height: EFFORT_SLIDER_THUMB_SIZE + HALO_SPREAD * 2,
     borderRadius: theme.borderRadius.full,
     backgroundColor: theme.colors.palette.white,
   },
   thumb: {
     position: "absolute",
-    top: THUMB_INSET,
     left: 0,
-    width: EFFORT_SLIDER_THUMB_SIZE,
-    height: EFFORT_SLIDER_THUMB_SIZE,
     borderRadius: theme.borderRadius.full,
     backgroundColor: theme.colors.palette.white,
     shadowColor: theme.colors.palette.black,

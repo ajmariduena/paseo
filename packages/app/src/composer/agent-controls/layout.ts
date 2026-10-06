@@ -6,6 +6,7 @@ export const COMPOSER_CONTROL_DENSITIES = [
   "no-mode",
   "condensed",
   "tight",
+  "icons",
 ] as const;
 export type ComposerControlDensity = (typeof COMPOSER_CONTROL_DENSITIES)[number];
 
@@ -26,15 +27,18 @@ export type ComposerFeatureControlPresence = { type: "toggle" } | { type: "selec
 
 /**
  * What each density keeps. The order controls give things up in, as the toolbar narrows:
- * effort suffix → mode label → carets → model label. The provider glyph and every control's
- * hit target stay at every density.
+ * effort suffix → mode label → carets → model label → the quick-prompt slot. Every control's
+ * hit target stays at every density; once the model label is gone the trigger is the gauge.
  */
 export interface ComposerControlPresentation {
   showCarets: boolean;
   showEffortSuffix: boolean;
   showModeLabel: boolean;
   showModelLabel: boolean;
+  /** Extra provider features leave the toolbar for the Advanced page (or one badge without a trigger). */
   aggregateFeatures: boolean;
+  /** `icons` is the phone row: quick prompts live in the attachment menu instead of the toolbar. */
+  showQuickPromptTrigger: boolean;
 }
 
 export const COMPOSER_TOOLBAR_GEOMETRY = {
@@ -134,7 +138,10 @@ export function estimateComposerControlsWidth(
   const widths: number[] = [];
   if (controls.hasMode) widths.push(estimateModeWidth(controls, presentation.showModeLabel));
   if (presentation.aggregateFeatures) {
-    if (controls.features.length > 0) widths.push(COMPOSER_TOOLBAR_GEOMETRY.controlSize);
+    // With a trigger the features live on its Advanced page; the badge only stands in without one.
+    if (controls.features.length > 0 && !controls.hasModel) {
+      widths.push(COMPOSER_TOOLBAR_GEOMETRY.controlSize);
+    }
   } else {
     for (const feature of controls.features) {
       widths.push(resolveFeatureControlWidth(feature, fontScale, false));
@@ -167,7 +174,7 @@ function resolveDensityWithHysteresis(
     if (index === currentIndex) threshold -= DENSITY_HYSTERESIS;
     if (availableWidth >= threshold) return density;
   }
-  return "tight";
+  return "icons";
 }
 
 export function resolveComposerControlPresentation(
@@ -177,9 +184,17 @@ export function resolveComposerControlPresentation(
     showEffortSuffix: density === "full",
     showModeLabel: density === "full" || density === "no-effort",
     showCarets: density === "full" || density === "no-effort" || density === "no-mode",
-    showModelLabel: density !== "tight",
+    showModelLabel: density !== "tight" && density !== "icons",
     aggregateFeatures: density !== "full",
+    showQuickPromptTrigger: density !== "icons",
   };
+}
+
+/** The toolbar trigger reads the model name while it fits and becomes the gauge once it doesn't. */
+export function resolveIntelligenceTriggerKind(
+  presentation: Pick<ComposerControlPresentation, "showModelLabel">,
+): "pill" | "gauge" {
+  return presentation.showModelLabel ? "pill" : "gauge";
 }
 
 export function resolveComposerToolbarGlyphSize(platform: "web" | "native"): number {
@@ -187,11 +202,21 @@ export function resolveComposerToolbarGlyphSize(platform: "web" | "native"): num
 }
 
 export interface QuickPromptPresentation {
+  /** False moves the picker into the attachment menu and the feedback above the input. */
+  showTrigger: boolean;
   showDefaultLabel: boolean;
   visiblePinCount: number;
   width: number;
   density: ComposerControlDensity;
 }
+
+const PHONE_QUICK_PROMPT_PRESENTATION: QuickPromptPresentation = {
+  showTrigger: false,
+  showDefaultLabel: false,
+  visiblePinCount: 0,
+  width: 0,
+  density: "icons",
+};
 
 /** Attachment, context ring, mic and send/stop retain their complete target frames. */
 export function estimateComposerFixedWidth(touch: boolean): number {
@@ -209,8 +234,9 @@ export function estimateQuickPromptPillWidth(label: string, fontScale: number): 
 
 /**
  * Resolve the joint budget: secondary pins disappear first, then model/effort/mode labels,
- * then the default prompt label. Both clusters consume this same decision, so a prompt
- * cannot keep the model at a density whose labels would overflow the remaining space.
+ * then the default prompt label, and last the icon-only trigger itself. Both clusters consume
+ * this same decision, so a prompt cannot keep the model at a density whose labels would
+ * overflow the remaining space. Compact layouts are the phone row outright.
  */
 export function resolveQuickPromptPresentation(input: {
   /** Button-row interior after the fixed attachment/ring/mic/send slots. */
@@ -222,6 +248,7 @@ export function resolveQuickPromptPresentation(input: {
   controls: ComposerControlPresence;
   current?: QuickPromptPresentation;
 }): QuickPromptPresentation {
+  if (input.compact) return PHONE_QUICK_PROMPT_PRESENTATION;
   const gap = input.touch
     ? COMPOSER_TOOLBAR_GEOMETRY.touchControlGap
     : COMPOSER_TOOLBAR_GEOMETRY.controlGap;
@@ -236,8 +263,12 @@ export function resolveQuickPromptPresentation(input: {
     const margin = wasVisible ? -DENSITY_HYSTERESIS : DENSITY_HYSTERESIS;
     return input.availableWidth >= floor + margin;
   };
+  const showTrigger = fits(
+    controlsWidth("tight") + gap + target + 2,
+    input.current?.showTrigger ?? true,
+  );
+  if (!showTrigger) return PHONE_QUICK_PROMPT_PRESENTATION;
   const showDefaultLabel =
-    !input.compact &&
     input.defaultLabel !== null &&
     fits(controlsWidth("tight") + gap + splitWidth, input.current?.showDefaultLabel ?? false);
   let width = showDefaultLabel ? splitWidth : target + 2;
@@ -261,7 +292,7 @@ export function resolveQuickPromptPresentation(input: {
     input.current?.density,
     controlsWidth,
   );
-  return { showDefaultLabel, visiblePinCount, width, density };
+  return { showTrigger, showDefaultLabel, visiblePinCount, width, density };
 }
 
 /** Inline feedback can wrap vertically but never grows beyond the toolbar's remaining width. */

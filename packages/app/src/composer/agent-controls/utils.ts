@@ -201,3 +201,13 @@ export function resolveAgentModelSelection(input: {
     displayThinking,
   };
 }
+
+/** A feature's glyph only takes its highlight color while it is on. */
+export function resolveFeatureIconTint(
+  featureId: string,
+  enabled: boolean,
+): "muted" | "blue" | "green" | "yellow" {
+  if (!enabled) return "muted";
+  const highlight = getFeatureHighlightColor(featureId);
+  return highlight === "default" ? "muted" : highlight;
+}

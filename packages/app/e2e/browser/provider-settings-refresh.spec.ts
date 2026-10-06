@@ -23,6 +23,8 @@ async function openProviderSettingsFromModelSelector(page: Page) {
   await page.getByTestId("combined-model-selector").click();
   const configuration = page.getByTestId("agent-effort-card");
   await expect(configuration).toBeVisible({ timeout: 10_000 });
+  await page.getByTestId("agent-effort-advanced").click();
+  await expect(page.getByTestId("agent-advanced-page")).toBeVisible({ timeout: 10_000 });
   await page.getByTestId("agent-effort-model").click();
 
   const modelBrowser = page.getByTestId("agent-model-browser");
@@ -151,6 +153,7 @@ test.describe("provider settings overlay stack", () => {
       await expectComposerVisible(page);
 
       await page.getByTestId("combined-model-selector").click();
+      await page.getByTestId("agent-effort-advanced").click();
       await page.getByTestId("agent-effort-model").click();
       const selector = page.getByTestId("combobox-desktop-container");
       await expect(selector).toBeVisible({ timeout: 10_000 });

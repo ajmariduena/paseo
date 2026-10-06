@@ -319,6 +319,22 @@ export const ptBR: TranslationResources = {
       slider: "Nível de esforço",
       openWithValue: "Alterar modelo e esforço ({{value}})",
     },
+    intelligence: {
+      title: "Inteligência",
+      managed: "Gerenciada pelo modelo",
+      selectWithValue: "Selecionar inteligência ({{value}})",
+      dismiss: "Fechar inteligência",
+    },
+    advanced: {
+      title: "Avançado",
+      open: "Abrir configurações avançadas",
+      model: "Modelo",
+      reset: "Restaurar padrões",
+    },
+    speed: {
+      title: "Velocidade",
+      standard: "Padrão",
+    },
     model: {
       unknown: "Modelo desconhecido",
     },

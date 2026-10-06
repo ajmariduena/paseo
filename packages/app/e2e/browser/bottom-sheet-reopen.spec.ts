@@ -78,10 +78,13 @@ async function openTabSwitcher(page: Page) {
   await expectBottomSheetOpen(page);
 }
 
+/** The gauge opens the keyboard-preserving overlay; its label opens the Advanced sheet. */
 async function openModelSelector(page: Page) {
   await page.getByTestId("combined-model-selector").click();
+  await expect(page.getByTestId("agent-intelligence-overlay")).toBeVisible({ timeout: 10_000 });
+  await page.getByTestId("agent-effort-advanced").click();
   await expectBottomSheetOpen(page);
-  await expect(page.getByTestId("agent-effort-card")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTestId("agent-advanced-page")).toBeVisible({ timeout: 10_000 });
 }
 
 async function dismissModelBrowserAndReopenCard(page: Page) {
@@ -89,7 +92,7 @@ async function dismissModelBrowserAndReopenCard(page: Page) {
   await expect(page.getByTestId("agent-model-browser")).toBeVisible();
   await closeBottomSheetWithBackdrop(page);
   await expect(page.getByTestId("agent-model-browser")).not.toBeVisible();
-  await expect(page.getByTestId("agent-effort-card")).not.toBeVisible();
+  await expect(page.getByTestId("agent-advanced-page")).not.toBeVisible();
   await openModelSelector(page);
 }
 
@@ -121,7 +124,7 @@ test.describe("mobile bottom sheet reopen", () => {
 
       await test.step("model search returns to configuration", async () => {
         await openModelSelector(page);
-        const sheet = page.getByTestId("agent-effort-card");
+        const sheet = page.getByTestId("agent-advanced-page");
 
         await dismissModelBrowserAndReopenCard(page);
         await page.getByTestId("agent-effort-model").click();
@@ -135,7 +138,6 @@ test.describe("mobile bottom sheet reopen", () => {
         await model.click();
 
         await expect(sheet).toBeVisible();
-        await expect(page.getByTestId("agent-effort-card")).toBeVisible();
         await expect(page.getByTestId("agent-effort-model")).toContainText("Ten second stream");
         await expect(page.getByTestId("agent-model-browser")).not.toBeVisible();
       });

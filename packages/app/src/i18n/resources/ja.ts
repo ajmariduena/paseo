@@ -320,6 +320,22 @@ export const ja: TranslationResources = {
       slider: "労力レベル",
       openWithValue: "モデルと労力を変更（{{value}}）",
     },
+    intelligence: {
+      title: "インテリジェンス",
+      managed: "モデルが管理",
+      selectWithValue: "インテリジェンスを選択（{{value}}）",
+      dismiss: "インテリジェンスを閉じる",
+    },
+    advanced: {
+      title: "詳細設定",
+      open: "詳細設定を開く",
+      model: "モデル",
+      reset: "デフォルトに戻す",
+    },
+    speed: {
+      title: "速度",
+      standard: "標準",
+    },
     model: {
       unknown: "不明なモデル",
     },

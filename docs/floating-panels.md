@@ -7,18 +7,21 @@ canonical files and are trying to add or change one.
 
 ## Canonical files
 
-| File                                     | Use case                                                          |
-| ---------------------------------------- | ----------------------------------------------------------------- |
-| `components/ui/combobox.tsx`             | Anchored picker with search; mobile falls back to bottom sheet    |
-| `components/ui/tooltip.tsx`              | Non-interactive hover/long-press tooltip                          |
-| `components/workspace-hover-card.tsx`    | Desktop-web hover card with measure + computePosition + Portal    |
-| `components/ui/autocomplete-popover.tsx` | Slash-command autocomplete anchored to the focused composer input |
+| File                                               | Use case                                                                |
+| -------------------------------------------------- | ----------------------------------------------------------------------- |
+| `components/ui/combobox.tsx`                       | Anchored picker with search; mobile falls back to bottom sheet          |
+| `components/ui/tooltip.tsx`                        | Non-interactive hover/long-press tooltip                                |
+| `components/workspace-hover-card.tsx`              | Desktop-web hover card with measure + computePosition + Portal          |
+| `components/ui/autocomplete-popover.tsx`           | Slash-command autocomplete anchored to the focused composer input       |
+| `composer/agent-controls/intelligence-overlay.tsx` | Effort slider floating above the keyboard with a blurred chat behind it |
 
 Each handles a different mix of concerns: combobox owns input focus, tooltip is
 non-interactive, hover-card is web-only desktop, autocomplete keeps the composer
-input focused while its scrollable list lives in a Portal. There is no shared
-"floating panel" primitive yet — when a fifth use case shows up we can revisit;
-until then prefer copying the closest file and trimming.
+input focused while its scrollable list lives in a Portal, and the intelligence
+overlay is a full-host Portal (blur or scrim, one label, one slider) that keeps
+the IME attached and sits above the keyboard through `useKeyboardShift`. There is
+no shared "floating panel" primitive yet — prefer copying the closest file and
+trimming.
 
 ## Popover width contract
 
@@ -35,6 +38,7 @@ trigger still wins when it is wider. Changing this default requires re-verifying
 every consumer listed here.
 
 Consumers: `composer/agent-controls/mode-control.tsx`,
+`composer/agent-controls/intelligence-control.tsx`, `composer/agent-controls/advanced-page.tsx`,
 `composer/agent-controls/index.tsx`, `composer/index.tsx`,
 `components/combined-model-selector.tsx`, `components/hosts/host-picker.tsx`
 (including `components/hosts/host-filter.tsx`), `components/branch-switcher.tsx`,

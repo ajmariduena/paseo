@@ -486,6 +486,8 @@ run_host_overlays() {
     done
     prepare_composer "${mode}"
     press_composer_control combined-model-selector
+    ad press 'id="agent-effort-advanced"' --settle
+    ad press 'id="agent-effort-model"' --settle
     ad wait 'id="compact-provider-list"' 10000
     capture_screen "${ARTIFACTS_DIR}/${host}-model-${mode}.png"
     ad press 'label="Close"' --settle
@@ -514,6 +516,8 @@ run_host_scroll() {
   # Submit through each real host; draft/workspace creation then mounts its chat.
   # A selectable mock model keeps this test independent of provider credentials.
   press_composer_control combined-model-selector
+  ad press 'id="agent-effort-advanced"' --settle
+  ad press 'id="agent-effort-model"' --settle
   ad wait 'id="model-search-all-input"' 10000
   ad fill 'id="model-search-all-input"' 'Ten second stream'
   ad wait 'id="model-row-mock-ten-second-stream"' 10000

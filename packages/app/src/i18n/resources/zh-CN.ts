@@ -318,6 +318,22 @@ export const zhCN: TranslationResources = {
       slider: "努力程度级别",
       openWithValue: "更改模型和努力程度（{{value}}）",
     },
+    intelligence: {
+      title: "智能",
+      managed: "由模型管理",
+      selectWithValue: "选择智能（{{value}}）",
+      dismiss: "关闭智能",
+    },
+    advanced: {
+      title: "高级",
+      open: "打开高级设置",
+      model: "模型",
+      reset: "恢复默认值",
+    },
+    speed: {
+      title: "速度",
+      standard: "标准",
+    },
     model: {
       unknown: "未知 Model",
     },

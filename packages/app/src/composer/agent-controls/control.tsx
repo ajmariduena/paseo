@@ -6,12 +6,16 @@ import { useComposerControlLayout } from "@/composer/agent-controls/layout-conte
 import { ComposerToolbarGlyph } from "@/composer/agent-controls/glyph";
 import type { AgentControlIcon } from "@/agent-controls/icons";
 
+export type AgentControlIconTint = "muted" | "accent" | "blue" | "green" | "yellow";
+
 type AgentControlTriggerProps = Omit<
   ComponentProps<typeof ComboboxTrigger>,
   "accessibilityLabel" | "block" | "children" | "chevron" | "onPress" | "style"
 > & {
   icon: AgentControlIcon;
   iconColor?: string;
+  /** A theme-resolved glyph color; `iconColor` wins when a caller already holds a theme value. */
+  iconTint?: AgentControlIconTint;
   surface: "toolbar" | "sheet";
   label: string;
   value?: string;
@@ -27,6 +31,7 @@ export const AgentControlTrigger = forwardRef<View, AgentControlTriggerProps>(
     {
       icon: Icon,
       iconColor,
+      iconTint = "muted",
       surface,
       label,
       value,
@@ -44,7 +49,7 @@ export const AgentControlTrigger = forwardRef<View, AgentControlTriggerProps>(
     const { glyphSize, hitSlop } = useComposerControlLayout();
     const isSheet = surface === "sheet";
     const resolvedGlyphSize = isSheet ? 16 : glyphSize;
-    const resolvedIconColor = iconColor ?? styles.iconColor.color;
+    const resolvedIconColor = iconColor ?? resolveTintColor(iconTint);
     const showValue = isSheet || showToolbarLabel;
     const triggerStyle = useCallback(
       ({ pressed, hovered }: PressableStateCallbackType) => [
@@ -94,6 +99,23 @@ export const AgentControlTrigger = forwardRef<View, AgentControlTriggerProps>(
     );
   },
 );
+
+function resolveTintColor(tint: AgentControlIconTint): string {
+  switch (tint) {
+    case "muted":
+      return styles.iconColor.color;
+    case "accent":
+      return styles.iconAccent.color;
+    case "blue":
+      return styles.iconBlue.color;
+    case "green":
+      return styles.iconGreen.color;
+    case "yellow":
+      return styles.iconYellow.color;
+    default:
+      throw new Error("unreachable");
+  }
+}
 
 const styles = StyleSheet.create((theme) => ({
   toolbarControl: {
@@ -167,5 +189,17 @@ const styles = StyleSheet.create((theme) => ({
   },
   iconColor: {
     color: theme.colors.foregroundMuted,
+  },
+  iconAccent: {
+    color: theme.colors.accentBright,
+  },
+  iconBlue: {
+    color: theme.colors.palette.blue[400],
+  },
+  iconGreen: {
+    color: theme.colors.palette.green[400],
+  },
+  iconYellow: {
+    color: theme.colors.palette.yellow[400],
   },
 }));

@@ -7,17 +7,28 @@ env PROVIDER_ID=codex
 open "${APP_ID}" "${AGENT_URL}"
 wait "label=\"${AGENT_TITLE}\"" 20000
 wait "id=\"combined-model-selector\"" 10000
+# The trigger opens the effort popover; its label opens Advanced, whose Model row opens the browser.
 press "id=\"combined-model-selector\""
+wait "id=\"agent-effort-advanced\"" 10000
+press "id=\"agent-effort-advanced\""
+wait "id=\"agent-effort-model\"" 10000
+press "id=\"agent-effort-model\""
 wait "id=\"model-provider-${PROVIDER_ID}\"" 10000
 press "id=\"model-provider-${PROVIDER_ID}\""
 wait "id=\"compact-model-list\"" 3000
 press "id=\"model-row-${PROVIDER_ID}-${MODEL_ID}\""
-wait "id=\"combined-model-selector\" label=\"Select model (${MODEL_LABEL})\"" 3000
+wait "id=\"agent-effort-model\" label=\"Select model (${MODEL_LABEL})\"" 3000
+back
+wait "id=\"combined-model-selector\"" 3000
 
 press "id=\"combined-model-selector\""
+wait "id=\"agent-effort-advanced\"" 10000
+press "id=\"agent-effort-advanced\""
+wait "id=\"agent-effort-model\"" 10000
+press "id=\"agent-effort-model\""
 wait "id=\"model-provider-${PROVIDER_ID}\"" 10000
 press "id=\"model-provider-${PROVIDER_ID}\""
 wait "id=\"model-row-${PROVIDER_ID}-${MODEL_ID}\"" 3000
 back
-wait "id=\"combined-model-selector\" label=\"Select model (${MODEL_LABEL})\"" 3000
+wait "id=\"combined-model-selector\"" 3000
 close
