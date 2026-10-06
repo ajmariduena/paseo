@@ -1,5 +1,6 @@
 export const en = {
   quickPrompts: {
+    longPressOpens: "Long press to choose another prompt",
     defaultBadge: "Default",
     pinnedBadge: "Pinned",
     actions: "Quick prompt actions",

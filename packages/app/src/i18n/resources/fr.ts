@@ -3,6 +3,7 @@ import { pluginSettings } from "./plugin-settings";
 
 export const fr: TranslationResources = {
   quickPrompts: {
+    longPressOpens: "Appui long pour choisir un autre prompt",
     defaultBadge: "Par défaut",
     pinnedBadge: "Épinglé",
     actions: "Actions du prompt rapide",

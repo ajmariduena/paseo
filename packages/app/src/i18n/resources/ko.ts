@@ -3,6 +3,7 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ko: TranslationResources = {
   quickPrompts: {
+    longPressOpens: "길게 눌러 다른 프롬프트 선택",
     defaultBadge: "기본",
     pinnedBadge: "고정됨",
     actions: "빠른 프롬프트 작업",

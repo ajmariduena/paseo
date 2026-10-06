@@ -9,6 +9,7 @@ import {
 } from "react";
 import {
   Pressable,
+  type GestureResponderEvent,
   type View,
   type PressableProps,
   type PressableStateCallbackType,
@@ -68,8 +69,13 @@ function assignRef<T>(ref: Ref<T> | undefined, value: T | null): void {
   Object.assign(ref, { current: value });
 }
 
+/**
+ * Pressing toggles the menu unless the trigger supplies its own `onPress`; then the tap is its
+ * action (a one-tap send, say) and the menu opens from whatever else it wires, such as a long
+ * press.
+ */
 export const MenuTrigger = forwardRef<View, MenuTriggerProps>(function MenuTrigger(
-  { children, disabled, style, accessibilityState, ...props },
+  { children, disabled, style, accessibilityState, onPress, ...props },
   forwardedRef,
 ): ReactElement {
   const ctx = useMenuContext("MenuTrigger");
@@ -82,10 +88,17 @@ export const MenuTrigger = forwardRef<View, MenuTriggerProps>(function MenuTrigg
     [ctx.triggerRef, forwardedRef],
   );
 
-  const handlePress = useCallback(() => {
-    if (disabled) return;
-    ctx.setOpen(!ctx.open);
-  }, [disabled, ctx]);
+  const handlePress = useCallback(
+    (event: GestureResponderEvent) => {
+      if (disabled) return;
+      if (onPress) {
+        onPress(event);
+        return;
+      }
+      ctx.setOpen(!ctx.open);
+    },
+    [disabled, ctx, onPress],
+  );
 
   const pressableStyle = useCallback(
     ({ pressed, hovered = false }: PressableStateCallbackType & { hovered?: boolean }) => {

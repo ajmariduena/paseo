@@ -12,6 +12,8 @@ import {
   resolveComposerControlPresentation,
   resolveComposerToolbarGlyphSize,
   resolveIntelligenceTriggerKind,
+  resolveComposerLayoutMode,
+  LEAN_COMPOSER_MAX_WIDTH,
   type ComposerControlPresence,
 } from "./layout";
 
@@ -79,9 +81,10 @@ describe("composer control layout", () => {
       gap,
     );
     expect(withFeature).toBe(withoutFeature);
+    // Without a trigger the badge stands in: the same slot, minus the pill's frame.
     expect(
       estimateComposerControlsWidth({ ...CLAUDE_CONTROLS, hasModel: false }, "tight", gap),
-    ).toBe(withoutFeature);
+    ).toBe(withoutFeature - COMPOSER_TOOLBAR_GEOMETRY.pillBorder);
     expect(estimateComposerControlsWidth(CLAUDE_CONTROLS, "icons", gap)).toBe(withFeature);
   });
 
@@ -100,13 +103,56 @@ describe("composer control layout", () => {
     );
     expect(full).toBeGreaterThan(condensed);
     expect(condensed).toBeGreaterThan(tight);
-    expect(tight).toBe(COMPOSER_TOOLBAR_GEOMETRY.controlSize);
+    expect(tight).toBe(
+      COMPOSER_TOOLBAR_GEOMETRY.controlSize + COMPOSER_TOOLBAR_GEOMETRY.pillBorder,
+    );
     expect(
       estimateModelPillWidth(
         { ...CLAUDE_CONTROLS, hasEffort: false },
         resolveComposerControlPresentation("full"),
       ),
     ).toBeLessThan(full);
+  });
+
+  it("drops the effort suffix before a long level name could truncate the mode label", () => {
+    // iPad mini portrait, sidebar closed: 692pt interior minus the fixed targets and the
+    // "Resumen corto" split, with touch gaps.
+    const controls = {
+      ...CLAUDE_CONTROLS,
+      features: [],
+      modelLabel: "Sonnet 5",
+      effortLabel: "Ultra code",
+      modeLabel: "Always ask",
+    };
+    const gap = COMPOSER_TOOLBAR_GEOMETRY.touchControlGap;
+    const availableWidth =
+      692 -
+      estimateComposerFixedWidth(true) -
+      (estimateQuickPromptPillWidth("Resumen corto", 1) + 44 + 2) -
+      gap;
+    expect(estimateComposerControlsWidth(controls, "full", gap)).toBeGreaterThan(availableWidth);
+    const density = resolveComposerControlDensity({
+      availableWidth,
+      currentDensity: "full",
+      controls,
+      controlGap: gap,
+    });
+    expect(density).toBe("no-effort");
+    expect(resolveComposerControlPresentation(density)).toMatchObject({
+      showModeLabel: true,
+      showEffortSuffix: false,
+    });
+    expect(estimateComposerControlsWidth(controls, density, gap)).toBeLessThanOrEqual(
+      availableWidth,
+    );
+    expect(
+      resolveComposerControlDensity({
+        availableWidth,
+        currentDensity: "full",
+        controls: { ...controls, effortLabel: "Extra high" },
+        controlGap: gap,
+      }),
+    ).toBe("no-effort");
   });
 
   it("fits the iPad mini portrait composer with the sidebar open without overflowing", () => {
@@ -235,6 +281,7 @@ describe("composer control layout", () => {
       iconLabelGap: 4,
       labelPadding: 8,
       caretSize: 14,
+      pillBorder: 2,
     });
     expect(resolveComposerToolbarGlyphSize("web")).toBe(16);
     expect(resolveComposerToolbarGlyphSize("native")).toBe(20);
@@ -274,7 +321,7 @@ describe("quick prompt capacity", () => {
 
   it("drops the icon-only trigger into the attachment menu as the last stage", () => {
     // Mode icon + gauge + a 44pt bookmark with touch gaps.
-    const floor = 28 + 12 + 28 + 12 + 46;
+    const floor = estimateComposerControlsWidth(CLAUDE_CONTROLS, "tight", 12) + 12 + 46;
     const withTrigger = resolveQuickPromptPresentation({ ...base, availableWidth: floor });
     expect(withTrigger).toMatchObject({ showTrigger: true, density: "tight", width: 46 });
     const phoneRow = resolveQuickPromptPresentation({ ...base, availableWidth: floor - 1 });
@@ -284,6 +331,7 @@ describe("quick prompt capacity", () => {
       visiblePinCount: 0,
       width: 0,
       density: "icons",
+      tapSendsDefault: false,
     });
     expect(
       resolveQuickPromptPresentation({ ...base, availableWidth: floor + 11, current: phoneRow })
@@ -308,88 +356,23 @@ describe("quick prompt capacity", () => {
       visiblePinCount: 0,
       width: 0,
       density: "icons",
+      tapSendsDefault: false,
     });
   });
 
-  it.each([true, false])(
-    "fits all controls into the 368px iPad mini interior (touch=%s)",
-    (touch) => {
-      const gap = touch
-        ? COMPOSER_TOOLBAR_GEOMETRY.touchControlGap
-        : COMPOSER_TOOLBAR_GEOMETRY.controlGap;
-      const fixed = estimateComposerFixedWidth(touch);
-      const result = resolveQuickPromptPresentation({
-        ...base,
-        touch,
-        availableWidth: 368 - fixed,
-      });
-      const occupied =
-        fixed +
-        result.width +
-        gap +
-        estimateComposerControlsWidth(base.controls, result.density, gap);
-      expect(occupied).toBeLessThanOrEqual(368);
-      expect(result.visiblePinCount).toBe(0);
-    },
-  );
-
-  it.each([1, 1.5, 2])("fits longer localized labels at font scale %s", (fontScale) => {
-    const controls = {
-      ...CLAUDE_CONTROLS,
-      fontScale,
-      modelLabel: "GPT-6 Astra",
-      effortLabel: "Extra high",
-      modeLabel: "Ask before edits",
-    };
-    for (const interior of [368, 420, 600, 1000]) {
-      const fixed = estimateComposerFixedWidth(true);
-      const result = resolveQuickPromptPresentation({
-        ...base,
-        controls,
-        defaultLabel: "Resumen corto",
-        availableWidth: interior - fixed,
-      });
-      expect(
-        fixed + result.width + 12 + estimateComposerControlsWidth(controls, result.density, 12),
-      ).toBeLessThanOrEqual(interior);
-    }
-  });
-
-  it("budgets a title at base-size glyph widths so a fitting title never ellipsizes", () => {
-    // Glyph slot, its gap, label padding, then 8px a character.
-    expect(estimateQuickPromptPillWidth("Resumen corto", 1)).toBe(28 + 4 + 8 + 13 * 8);
-    expect(estimateQuickPromptPillWidth("A title longer than fourteen", 1)).toBe(
-      estimateQuickPromptPillWidth("Fourteen chars", 1),
-    );
-    expect(estimateQuickPromptPillWidth("Tests", 2)).toBe(28 + 4 + 8 + 5 * 8 * 2);
-  });
-
-  it("shows a pin from the slack at the current density, never at a label's expense", () => {
-    // Three inline features keep full out of reach, but no-effort leaves room for one pin.
-    const controls = {
-      ...CLAUDE_CONTROLS,
-      features: [
-        { type: "toggle" as const },
-        { type: "toggle" as const },
-        { type: "toggle" as const },
-      ],
-    };
-    const gap = COMPOSER_TOOLBAR_GEOMETRY.touchControlGap;
-    const split = estimateQuickPromptPillWidth("Summary", 1) + 44 + 2;
-    const pin = estimateQuickPromptPillWidth("Tests", 1);
-    const availableWidth =
-      estimateComposerControlsWidth(controls, "no-effort", gap) + gap + split + gap + pin;
-    expect(availableWidth).toBeLessThan(
-      estimateComposerControlsWidth(controls, "full", gap) + gap + split,
-    );
-    expect(resolveQuickPromptPresentation({ ...base, controls, availableWidth })).toMatchObject({
-      showDefaultLabel: true,
-      visiblePinCount: 1,
-      density: "no-effort",
+  it("gives the lean tablet row one bookmark that sends on tap", () => {
+    expect(resolveQuickPromptPresentation({ ...base, lean: true, availableWidth: 1000 })).toEqual({
+      showTrigger: true,
+      showDefaultLabel: false,
+      visiblePinCount: 0,
+      width: 46,
+      density: "icons",
+      tapSendsDefault: true,
     });
     expect(
-      resolveQuickPromptPresentation({ ...base, controls, availableWidth: availableWidth - 1 }),
-    ).toMatchObject({ showDefaultLabel: true, visiblePinCount: 0, density: "no-effort" });
+      resolveQuickPromptPresentation({ ...base, compact: true, lean: true, availableWidth: 1000 })
+        .showTrigger,
+    ).toBe(false);
   });
 
   it("keeps quick prompt labels stable across resize noise and restores after 12px", () => {
@@ -482,9 +465,156 @@ describe("quick prompt capacity", () => {
     expect(
       resolveQuickPromptPresentation({
         ...base,
-        availableWidth: 260,
+        availableWidth: 250,
         controls: { ...base.controls, fontScale: 2 },
       }),
     ).toMatchObject({ showTrigger: true, showDefaultLabel: false, visiblePinCount: 0 });
+  });
+
+  it.each([true, false])(
+    "fits all controls into the 368px iPad mini interior (touch=%s)",
+    (touch) => {
+      const gap = touch
+        ? COMPOSER_TOOLBAR_GEOMETRY.touchControlGap
+        : COMPOSER_TOOLBAR_GEOMETRY.controlGap;
+      const fixed = estimateComposerFixedWidth(touch);
+      const result = resolveQuickPromptPresentation({
+        ...base,
+        touch,
+        availableWidth: 368 - fixed,
+      });
+      const occupied =
+        fixed +
+        result.width +
+        gap +
+        estimateComposerControlsWidth(base.controls, result.density, gap);
+      expect(occupied).toBeLessThanOrEqual(368);
+      expect(result.visiblePinCount).toBe(0);
+    },
+  );
+
+  it.each([1, 1.5, 2])("fits longer localized labels at font scale %s", (fontScale) => {
+    const controls = {
+      ...CLAUDE_CONTROLS,
+      fontScale,
+      modelLabel: "GPT-6 Astra",
+      effortLabel: "Extra high",
+      modeLabel: "Ask before edits",
+    };
+    for (const interior of [368, 420, 600, 1000]) {
+      const fixed = estimateComposerFixedWidth(true);
+      const result = resolveQuickPromptPresentation({
+        ...base,
+        controls,
+        defaultLabel: "Resumen corto",
+        availableWidth: interior - fixed,
+      });
+      expect(
+        fixed + result.width + 12 + estimateComposerControlsWidth(controls, result.density, 12),
+      ).toBeLessThanOrEqual(interior);
+    }
+  });
+
+  it("budgets a title at base-size glyph widths so a fitting title never ellipsizes", () => {
+    // Glyph slot, its gap, label padding, then 8px a character.
+    expect(estimateQuickPromptPillWidth("Resumen corto", 1)).toBe(28 + 4 + 8 + 13 * 8);
+    expect(estimateQuickPromptPillWidth("A title longer than fourteen", 1)).toBe(
+      estimateQuickPromptPillWidth("Fourteen chars", 1),
+    );
+    expect(estimateQuickPromptPillWidth("Tests", 2)).toBe(28 + 4 + 8 + 5 * 8 * 2);
+  });
+
+  it("shows a pin from the slack at the current density, never at a label's expense", () => {
+    // Three inline features keep full out of reach, but no-effort leaves room for one pin.
+    const controls = {
+      ...CLAUDE_CONTROLS,
+      features: [
+        { type: "toggle" as const },
+        { type: "toggle" as const },
+        { type: "toggle" as const },
+      ],
+    };
+    const gap = COMPOSER_TOOLBAR_GEOMETRY.touchControlGap;
+    const split = estimateQuickPromptPillWidth("Summary", 1) + 44 + 2;
+    const pin = estimateQuickPromptPillWidth("Tests", 1);
+    const availableWidth =
+      estimateComposerControlsWidth(controls, "no-effort", gap) + gap + split + gap + pin;
+    expect(availableWidth).toBeLessThan(
+      estimateComposerControlsWidth(controls, "full", gap) + gap + split,
+    );
+    expect(resolveQuickPromptPresentation({ ...base, controls, availableWidth })).toMatchObject({
+      showDefaultLabel: true,
+      visiblePinCount: 1,
+      density: "no-effort",
+    });
+    expect(
+      resolveQuickPromptPresentation({ ...base, controls, availableWidth: availableWidth - 1 }),
+    ).toMatchObject({ showDefaultLabel: true, visiblePinCount: 0, density: "no-effort" });
+  });
+});
+
+describe("composer layout mode", () => {
+  it("is lean on compact, and on a touch device whose composer is narrow", () => {
+    expect(
+      resolveComposerLayoutMode({
+        compact: true,
+        touch: false,
+        interiorWidth: 1200,
+        windowWidth: 1400,
+      }),
+    ).toBe("lean");
+    // iPad mini portrait, sidebar closed.
+    expect(
+      resolveComposerLayoutMode({
+        compact: false,
+        touch: true,
+        interiorWidth: 692,
+        windowWidth: 744,
+      }),
+    ).toBe("lean");
+    expect(
+      resolveComposerLayoutMode({
+        compact: false,
+        touch: true,
+        interiorWidth: LEAN_COMPOSER_MAX_WIDTH + 1,
+        windowWidth: 1133,
+      }),
+    ).toBe("roomy");
+    // iPad mini landscape beside the sidebar.
+    expect(
+      resolveComposerLayoutMode({
+        compact: false,
+        touch: true,
+        interiorWidth: 761,
+        windowWidth: 1133,
+      }),
+    ).toBe("roomy");
+  });
+
+  it("never leans with a pointer, and guesses from the window before the row is measured", () => {
+    expect(
+      resolveComposerLayoutMode({
+        compact: false,
+        touch: false,
+        interiorWidth: 500,
+        windowWidth: 600,
+      }),
+    ).toBe("roomy");
+    expect(
+      resolveComposerLayoutMode({
+        compact: false,
+        touch: true,
+        interiorWidth: 0,
+        windowWidth: 744,
+      }),
+    ).toBe("lean");
+    expect(
+      resolveComposerLayoutMode({
+        compact: false,
+        touch: true,
+        interiorWidth: 0,
+        windowWidth: 1133,
+      }),
+    ).toBe("roomy");
   });
 });

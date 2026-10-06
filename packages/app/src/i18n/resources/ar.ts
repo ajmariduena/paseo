@@ -3,6 +3,7 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ar: TranslationResources = {
   quickPrompts: {
+    longPressOpens: "اضغط مطولًا لاختيار موجّه آخر",
     defaultBadge: "افتراضي",
     pinnedBadge: "مثبّت",
     actions: "إجراءات الموجّه السريع",

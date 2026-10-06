@@ -6,13 +6,16 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { LayoutChangeEvent } from "react-native";
+import { useWindowDimensions, type LayoutChangeEvent } from "react-native";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import { useStore } from "zustand";
-import type {
-  ComposerControlDensity,
-  ComposerControlPresence,
+import {
+  resolveComposerLayoutMode,
+  type ComposerControlDensity,
+  type ComposerControlPresence,
+  type ComposerLayoutMode,
 } from "@/composer/agent-controls/layout";
+import { useControlDensity } from "@/constants/layout";
 
 const EMPTY_CONTROLS: ComposerControlPresence = {
   hasModel: false,
@@ -105,4 +108,12 @@ export function usePublishQuickPromptDensity(density: ComposerControlDensity | n
 
 export function useQuickPromptControlDensity() {
   return useStore(useContext(CapacityContext) ?? emptyStore, (state) => state.density);
+}
+
+/** Lean or roomy for this composer, from its measured row and the device's density. */
+export function useComposerLayoutMode(compact: boolean): ComposerLayoutMode {
+  const interiorWidth = useStore(useContext(CapacityContext) ?? emptyStore, (state) => state.width);
+  const touch = useControlDensity() === "touch";
+  const { width: windowWidth } = useWindowDimensions();
+  return resolveComposerLayoutMode({ compact, touch, interiorWidth, windowWidth });
 }

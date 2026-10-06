@@ -173,8 +173,10 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize["2xl"],
     lineHeight: theme.fontSize["2xl"] * 1.4,
   },
+  // The trigger row's own gap is 4pt; a word-space at this size needs the full step.
   effortName: {
     flexShrink: 0,
+    marginLeft: theme.spacing[1],
     fontWeight: theme.fontWeight.normal,
     textShadowColor: theme.colors.statusMerged,
     textShadowOffset: { width: 0, height: 0 },

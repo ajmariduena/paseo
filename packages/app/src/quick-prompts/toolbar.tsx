@@ -23,7 +23,11 @@ import {
   type QuickPromptPresentation,
 } from "@/composer/agent-controls/layout";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
-import { useQuickPromptCapacity, usePublishQuickPromptDensity } from "./capacity";
+import {
+  useComposerLayoutMode,
+  useQuickPromptCapacity,
+  usePublishQuickPromptDensity,
+} from "./capacity";
 import { QuickPromptFeedback } from "./feedback";
 import { QuickPromptPickerList, isQuickPromptSendDisabled, type QuickPromptPicker } from "./picker";
 
@@ -31,6 +35,7 @@ export type { QuickPromptToolbarBinding } from "./picker";
 
 const ThemedChevron = withUnistyles(ChevronDown);
 const iconMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
+const readyIconMapping = (theme: Theme) => ({ color: theme.colors.accentBright });
 const LONG_PRESS_MS = 500;
 
 /** Keeps the slot on the same glyph size and hit slop as the clusters beside it. */
@@ -67,11 +72,57 @@ function QuickPromptMenuTrigger({
   );
 }
 
-function BookmarkGlyph(): ReactElement {
+function BookmarkGlyph({ ready = false }: { ready?: boolean }): ReactElement {
   const { glyphSize } = useComposerControlLayout();
-  return <ThemedBookmark size={glyphSize} uniProps={iconMapping} />;
+  return <ThemedBookmark size={glyphSize} uniProps={ready ? readyIconMapping : iconMapping} />;
 }
 const ThemedBookmark = withUnistyles(Bookmark);
+
+/**
+ * The lean tablet row's one bookmark: with a default prompt a tap sends it and a long press opens
+ * the picker; without one a tap opens the picker. The tint says a tap will send.
+ */
+function LeanBookmarkTrigger({
+  defaultPrompt,
+  disabled,
+  onSend,
+  onOpen,
+}: {
+  defaultPrompt: QuickPrompt | undefined;
+  disabled: boolean;
+  onSend: (prompt: QuickPrompt) => void;
+  onOpen: () => void;
+}): ReactElement {
+  const { t } = useTranslation();
+  const { hitSlop } = useComposerControlLayout();
+  const ready = defaultPrompt !== undefined;
+  const send = useCallback(() => {
+    if (defaultPrompt) onSend(defaultPrompt);
+  }, [defaultPrompt, onSend]);
+  const triggerStyle = useMemo(
+    () => [styles.trigger, styles.leanTrigger, ready ? styles.leanTriggerReady : null],
+    [ready],
+  );
+  const label = defaultPrompt
+    ? t("quickPrompts.sendNamed", { title: defaultPrompt.title })
+    : t("quickPrompts.open");
+  return (
+    <MenuTrigger
+      style={triggerStyle}
+      hitSlop={hitSlop}
+      disabled={disabled}
+      onPress={ready ? send : undefined}
+      onLongPress={ready ? onOpen : undefined}
+      delayLongPress={LONG_PRESS_MS}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityHint={ready ? t("quickPrompts.longPressOpens") : undefined}
+      testID={ready ? "quick-prompt-default" : "quick-prompts-picker-trigger"}
+    >
+      <BookmarkGlyph ready={ready} />
+    </MenuTrigger>
+  );
+}
 
 /**
  * The toolbar's quick-prompt slot. It always owns the capacity decision, but only draws the split
@@ -102,6 +153,25 @@ export function QuickPromptToolbar({ picker }: { picker: QuickPromptPicker }) {
   const openPicker = useCallback(() => setMenuOpen(true), [setMenuOpen]);
   if (!presentation || !presentation.showTrigger) return null;
   const showDefault = presentation.showDefaultLabel && defaultPrompt !== undefined;
+  if (presentation.tapSendsDefault) {
+    return (
+      <View style={[styles.cluster, touch && styles.clusterTouch]} testID="quick-prompts-toolbar">
+        <MenuRoot open={open} onOpenChange={setMenuOpen} compactMode="sheet">
+          <TouchTarget slotSize={COMPOSER_TOOLBAR_GEOMETRY.controlSize}>
+            <LeanBookmarkTrigger
+              defaultPrompt={defaultPrompt}
+              disabled={defaultPrompt ? isQuickPromptSendDisabled(picker, defaultPrompt) : false}
+              onSend={picker.activate}
+              onOpen={openPicker}
+            />
+          </TouchTarget>
+          <MenuSurface side="top" align="end" width={380} sheetTitle={t("quickPrompts.section")}>
+            <QuickPromptPickerList picker={picker} />
+          </MenuSurface>
+        </MenuRoot>
+      </View>
+    );
+  }
   return (
     <View style={[styles.cluster, touch && styles.clusterTouch]} testID="quick-prompts-toolbar">
       {pinned.slice(0, hasFeedback ? 0 : visiblePinCount).map((prompt) => (
@@ -166,6 +236,7 @@ function useQuickPromptPresentation(picker: QuickPromptPicker): {
 } {
   const { binding, state, defaultPrompt, pinned, supported, loaded } = picker;
   const compact = useIsCompactFormFactor();
+  const lean = useComposerLayoutMode(compact) === "lean";
   const touch = useControlDensity() === "touch";
   const { controls, width, blocked } = useQuickPromptCapacity();
   const previousPresentation = useRef<QuickPromptPresentation | undefined>(undefined);
@@ -176,6 +247,7 @@ function useQuickPromptPresentation(picker: QuickPromptPicker): {
         // Attachment, context meter, mic and primary action keep their own space.
         availableWidth: width - estimateComposerFixedWidth(touch),
         compact,
+        lean,
         touch,
         defaultLabel: defaultPrompt?.title ?? null,
         pinnedLabels: pinned.map((prompt) => prompt.title),
@@ -185,12 +257,14 @@ function useQuickPromptPresentation(picker: QuickPromptPicker): {
   useLayoutEffect(() => {
     if (presentation) previousPresentation.current = presentation;
   });
-  const hostsFeedback = Boolean(presentation?.showTrigger) && state.status !== "idle";
+  // The lean bookmark keeps its glyph while a send waits; the bar above the input is its feedback.
+  const hostsFeedback =
+    Boolean(presentation?.showTrigger) && !presentation?.tapSendsDefault && state.status !== "idle";
   const density = resolvePublishedDensity({ supported, hostsFeedback, presentation });
   usePublishQuickPromptDensity(density);
   const presentationKey = resolvePresentationKey({
     presentation,
-    compact,
+    compact: compact || lean,
     touch,
     fontScale: controls.fontScale,
     pinned,
@@ -301,6 +375,12 @@ const styles = StyleSheet.create((theme) => ({
     height: COMPOSER_TOOLBAR_GEOMETRY.controlSize,
     alignItems: "center",
     justifyContent: "center",
+  },
+  leanTrigger: {
+    borderRadius: theme.borderRadius.full,
+  },
+  leanTriggerReady: {
+    backgroundColor: theme.colors.interactionHighlight,
   },
   // Inside the segment's rounded corner: at 4pt the dot lands on the 16pt arc and reads as
   // sitting on the border.

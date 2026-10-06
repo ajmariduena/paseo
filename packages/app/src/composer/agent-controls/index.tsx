@@ -1,5 +1,6 @@
 import { hasModelEffortControl } from "@/components/ui/effort-stops";
 import {
+  useComposerLayoutMode,
   usePublishQuickPromptControls,
   useQuickPromptControlDensity,
 } from "@/quick-prompts/capacity";
@@ -517,11 +518,11 @@ function useAgentControlsDensity({
 }
 
 function resolveComposerDensity(input: {
-  isCompact: boolean;
+  isLean: boolean;
   quickPromptDensity: ComposerControlDensity | null;
   measuredDensity: ComposerControlDensity;
 }): ComposerControlDensity {
-  if (input.isCompact) return "icons";
+  if (input.isLean) return "icons";
   return input.quickPromptDensity ?? input.measuredDensity;
 }
 
@@ -588,6 +589,7 @@ function ControlledAgentControls({
 }: ControlledAgentControlsProps) {
   const isCompactFormFactor = useIsCompactFormFactor();
   const isCompact = isCompactLayout ?? isCompactFormFactor;
+  const isLean = useComposerLayoutMode(isCompact) === "lean";
   const isTouchDensity = useControlDensity() === "touch";
   const controlGap = isTouchDensity
     ? COMPOSER_TOOLBAR_GEOMETRY.touchControlGap
@@ -637,14 +639,14 @@ function ControlledAgentControls({
     handleStartLayout,
     handleEndLayout,
   } = useAgentControlsDensity({
-    initialDensity: isCompact ? "icons" : "full",
+    initialDensity: isLean ? "icons" : "full",
     controlPresence,
     controlGap,
   });
   usePublishQuickPromptControls(controlPresence);
   const quickPromptDensity = useQuickPromptControlDensity();
-  // Compact is the phone row outright; only wide layouts measure their way down the ladder.
-  const density = resolveComposerDensity({ isCompact, quickPromptDensity, measuredDensity });
+  // Lean is the phone row outright; only roomy layouts measure their way down the ladder.
+  const density = resolveComposerDensity({ isLean, quickPromptDensity, measuredDensity });
   const presentation = useMemo(() => resolveComposerControlPresentation(density), [density]);
   const layout = useMemo(
     () => ({
@@ -749,6 +751,7 @@ function ControlledAgentControls({
             fastFeature,
             features: toolbarFeatures,
             onSetFeature,
+            lean: isLean,
             profiles: agentProfiles,
             onApplyProfile: onApplyAgentProfile,
             onEditProfiles: onEditAgentProfiles,
@@ -788,6 +791,7 @@ function ControlledAgentControls({
       selectedEffortId,
       selectedModelId,
       toolbarFeatures,
+      isLean,
     ],
   );
 

@@ -3,6 +3,7 @@ import { pluginSettings } from "./plugin-settings";
 
 export const zhCN: TranslationResources = {
   quickPrompts: {
+    longPressOpens: "长按可选择其他提示",
     defaultBadge: "默认",
     pinnedBadge: "已固定",
     actions: "快捷提示操作",

@@ -51,6 +51,8 @@ export const COMPOSER_TOOLBAR_GEOMETRY = {
   iconLabelGap: 4,
   labelPadding: 8,
   caretSize: 14,
+  /** The intelligence pill draws a 1pt frame on both sides. */
+  pillBorder: 2,
 } as const;
 
 export const COMPOSER_TOOLBAR_TOUCH_HIT_SLOP = {
@@ -61,7 +63,9 @@ export const COMPOSER_TOOLBAR_TOUCH_HIT_SLOP = {
 } as const;
 
 const DENSITY_HYSTERESIS = 12;
-const LABEL_CHAR_WIDTH = 7;
+// Base-size text averages a little over 7px a glyph; budgeting 8 keeps every stage from
+// overflowing into an ellipsis, which the toolbar must never show.
+const LABEL_CHAR_WIDTH = 8;
 
 function normalizedFontScale(fontScale: number): number {
   return Number.isFinite(fontScale) ? Math.max(1, fontScale) : 1;
@@ -99,8 +103,9 @@ export function estimateModelPillWidth(
   >,
 ): number {
   const fontScale = normalizedFontScale(controls.fontScale);
-  const { controlSize, iconLabelGap, labelPadding, caretSize } = COMPOSER_TOOLBAR_GEOMETRY;
-  let width = controlSize;
+  const { controlSize, iconLabelGap, labelPadding, caretSize, pillBorder } =
+    COMPOSER_TOOLBAR_GEOMETRY;
+  let width = controlSize + pillBorder;
   if (presentation.showModelLabel) {
     width += iconLabelGap + estimateLabelWidth(controls.modelLabel, fontScale) + labelPadding;
   }
@@ -201,6 +206,37 @@ export function resolveComposerToolbarGlyphSize(platform: "web" | "native"): num
   return platform === "native" ? 20 : 16;
 }
 
+export type ComposerLayoutMode = "lean" | "roomy";
+
+/**
+ * The widest toolbar interior that still gets the phone row on a touch device. An iPad mini in
+ * portrait measures about 692pt; the same device in landscape beside the sidebar measures about
+ * 760pt and keeps its labels.
+ */
+export const LEAN_COMPOSER_MAX_WIDTH = 720;
+// Before the row is measured, the window minus the composer's margins and padding stands in.
+const COMPOSER_WINDOW_INSET = 48;
+
+/**
+ * `lean` is the phone row — every control an icon, quick prompts behind one bookmark or the
+ * attachment menu, the effort slider in an overlay. Compact layouts are always lean; a touch
+ * device whose composer is narrow (an iPad in portrait, Split View or Slide Over) is lean by
+ * measured width; a pointer never is, it walks the density ladder instead.
+ */
+export function resolveComposerLayoutMode(input: {
+  compact: boolean;
+  touch: boolean;
+  /** The toolbar's measured interior, or 0 before the first layout. */
+  interiorWidth: number;
+  windowWidth: number;
+}): ComposerLayoutMode {
+  if (input.compact) return "lean";
+  if (!input.touch) return "roomy";
+  const width =
+    input.interiorWidth > 0 ? input.interiorWidth : input.windowWidth - COMPOSER_WINDOW_INSET;
+  return width <= LEAN_COMPOSER_MAX_WIDTH ? "lean" : "roomy";
+}
+
 export interface QuickPromptPresentation {
   /** False moves the picker into the attachment menu and the feedback above the input. */
   showTrigger: boolean;
@@ -208,6 +244,8 @@ export interface QuickPromptPresentation {
   visiblePinCount: number;
   width: number;
   density: ComposerControlDensity;
+  /** The lean tablet row: one bookmark that sends the default on tap and opens on a long press. */
+  tapSendsDefault: boolean;
 }
 
 const PHONE_QUICK_PROMPT_PRESENTATION: QuickPromptPresentation = {
@@ -216,7 +254,19 @@ const PHONE_QUICK_PROMPT_PRESENTATION: QuickPromptPresentation = {
   visiblePinCount: 0,
   width: 0,
   density: "icons",
+  tapSendsDefault: false,
 };
+
+function leanQuickPromptPresentation(target: number): QuickPromptPresentation {
+  return {
+    showTrigger: true,
+    showDefaultLabel: false,
+    visiblePinCount: 0,
+    width: target + 2,
+    density: "icons",
+    tapSendsDefault: true,
+  };
+}
 
 /** Attachment, context ring, mic and send/stop retain their complete target frames. */
 export function estimateComposerFixedWidth(touch: boolean): number {
@@ -253,6 +303,8 @@ export function resolveQuickPromptPresentation(input: {
   /** Button-row interior after the fixed attachment/ring/mic/send slots. */
   availableWidth: number;
   compact: boolean;
+  /** The lean touch row on a tablet; compact wins when both are set. */
+  lean?: boolean;
   touch: boolean;
   defaultLabel: string | null;
   pinnedLabels: readonly string[];
@@ -264,6 +316,7 @@ export function resolveQuickPromptPresentation(input: {
     ? COMPOSER_TOOLBAR_GEOMETRY.touchControlGap
     : COMPOSER_TOOLBAR_GEOMETRY.controlGap;
   const target = input.touch ? 44 : 28;
+  if (input.lean) return leanQuickPromptPresentation(target);
   const pillWidth = (label: string) =>
     estimateQuickPromptPillWidth(label, input.controls.fontScale);
   const splitWidth = input.defaultLabel === null ? 0 : pillWidth(input.defaultLabel) + target + 2;
@@ -301,7 +354,7 @@ export function resolveQuickPromptPresentation(input: {
     width = nextWidth;
     visiblePinCount++;
   }
-  return { showTrigger, showDefaultLabel, visiblePinCount, width, density };
+  return { showTrigger, showDefaultLabel, visiblePinCount, width, density, tapSendsDefault: false };
 }
 
 /** Inline feedback can wrap vertically but never grows beyond the toolbar's remaining width. */

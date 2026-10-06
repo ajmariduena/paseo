@@ -59,6 +59,8 @@ export interface IntelligenceControlProps {
   /** Every other provider feature, listed on the Advanced page. */
   features: readonly AgentFeature[];
   onSetFeature: ((featureId: string, value: unknown) => void) | undefined;
+  /** The lean row opens the overlay; a roomy one opens the popover. */
+  lean: boolean;
   profiles: AgentProfilePicker | null;
   onApplyProfile?: (profileId: string) => void;
   onEditProfiles?: () => void;
@@ -273,12 +275,13 @@ function usePageHeaders(input: {
   page: IntelligencePage;
   browser: ModelBrowserState;
   isCompact: boolean;
+  lean: boolean;
   hasEffort: boolean;
   backToAdvanced: () => void;
   backToQuick: () => void;
 }): SheetHeader | undefined {
   const { t } = useTranslation();
-  const { page, browser, isCompact, hasEffort, backToAdvanced, backToQuick } = input;
+  const { page, browser, isCompact, lean, hasEffort, backToAdvanced, backToQuick } = input;
   return useMemo(() => {
     switch (page) {
       case "models":
@@ -288,17 +291,17 @@ function usePageHeaders(input: {
           back: browser.header.back ?? { onPress: backToAdvanced },
         };
       case "advanced":
-        // Compact reaches Advanced from the overlay, which is already gone; wide steps back.
+        // Lean reaches Advanced from the overlay, which is already gone; roomy steps back.
         return {
           title: t("agentControls.advanced.title"),
-          back: isCompact || !hasEffort ? undefined : { onPress: backToQuick },
+          back: lean || !hasEffort ? undefined : { onPress: backToQuick },
         };
       case "quick":
         return isCompact ? { title: t("agentControls.intelligence.title") } : undefined;
       default:
         throw new Error("unreachable");
     }
-  }, [backToAdvanced, backToQuick, browser, hasEffort, isCompact, page, t]);
+  }, [backToAdvanced, backToQuick, browser, hasEffort, isCompact, lean, page, t]);
 }
 
 /**
@@ -342,6 +345,7 @@ export function IntelligenceControl(props: IntelligenceControlProps) {
     page,
     browser,
     isCompact,
+    lean: props.lean,
     hasEffort: effort.hasEffort,
     backToAdvanced: navigation.backToAdvanced,
     backToQuick: navigation.backToQuick,
@@ -368,7 +372,7 @@ export function IntelligenceControl(props: IntelligenceControlProps) {
   const modelLabel = props.canSelectModel ? browser.triggerLabel : "";
   const effortLabel = effort.hasEffort ? effort.selectedLabel : null;
   const sliderDisabled = props.disabled || onSelectEffort === undefined;
-  const overlayVisible = isCompact && props.open && page === "quick";
+  const overlayVisible = props.lean && props.open && page === "quick";
   const surface = resolveSurfaceLayout({ isModelsPage: page === "models", browser });
 
   return (

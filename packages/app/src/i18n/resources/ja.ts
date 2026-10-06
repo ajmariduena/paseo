@@ -3,6 +3,7 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ja: TranslationResources = {
   quickPrompts: {
+    longPressOpens: "長押しで別のプロンプトを選択",
     defaultBadge: "デフォルト",
     pinnedBadge: "固定",
     actions: "クイックプロンプトの操作",

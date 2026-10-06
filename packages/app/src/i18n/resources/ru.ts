@@ -3,6 +3,7 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ru: TranslationResources = {
   quickPrompts: {
+    longPressOpens: "Удерживайте, чтобы выбрать другой промпт",
     defaultBadge: "По умолчанию",
     pinnedBadge: "Закреплено",
     actions: "Действия с быстрым промптом",
