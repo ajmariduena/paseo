@@ -2175,7 +2175,7 @@ function ComposerContentImpl({
   );
 
   const contextWindowPending = agentState.status === "initializing" || isAgentRunning;
-  const contextWindowMeterGlyphSize = resolveContextWindowMeterGlyphSize(isCompactLayout);
+  const contextWindowMeterGlyphSize = resolveContextWindowMeterGlyphSize(isWeb ? "web" : "native");
 
   const queueCompaction = useCallback(
     async (text: string) => {

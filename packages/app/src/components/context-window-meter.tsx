@@ -13,8 +13,6 @@ import { useMenuContext } from "@/components/ui/menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { TouchTarget, useTouchHitSlop } from "@/components/ui/touch-target";
 import type { CompactTiming } from "@/composer/compaction/model";
-import { isWeb } from "@/constants/platform";
-import { ICON_SIZE } from "@/styles/theme";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
 import {
   formatTokenCount,
@@ -24,6 +22,7 @@ import {
 } from "./context-window-meter.utils";
 
 export {
+  resolveContextWindowMeterGlyphSize,
   resolveContextWindowMeterRing,
   type ContextWindowMeterRing,
 } from "./context-window-meter.utils";
@@ -121,12 +120,6 @@ function getMeterGeometry(showPercentage: boolean, glyphSize?: number) {
 }
 
 type MeterGeometry = ReturnType<typeof getMeterGeometry>;
-
-/** The toolbar ring's glyph envelope: the compact row fixes it, wider rows take the button icon size. */
-export function resolveContextWindowMeterGlyphSize(isCompactLayout: boolean): number {
-  if (isCompactLayout) return ICON_SIZE.md;
-  return isWeb ? ICON_SIZE.md : ICON_SIZE.lg;
-}
 
 interface MeterUsage {
   usedTokens: number;

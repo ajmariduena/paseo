@@ -76,7 +76,7 @@ import { useComposerKeyboardScope } from "@/composer/keyboard-scope";
 import {
   resolveContextWindowMeterGlyphSize,
   resolveContextWindowMeterRing,
-} from "@/components/context-window-meter";
+} from "@/components/context-window-meter.utils";
 import { isNative } from "@/constants/platform";
 import {
   COMPOSER_TOOLBAR_GEOMETRY,
@@ -660,11 +660,13 @@ function ControlledAgentControls({
   const layout = useMemo(
     () => ({
       glyphSize: resolveComposerToolbarGlyphSize(isNative ? "native" : "web"),
-      ring: resolveContextWindowMeterRing(resolveContextWindowMeterGlyphSize(isCompact)),
+      ring: resolveContextWindowMeterRing(
+        resolveContextWindowMeterGlyphSize(isNative ? "native" : "web"),
+      ),
       presentation,
       hitSlop: isTouchDensity ? COMPOSER_TOOLBAR_TOUCH_HIT_SLOP : undefined,
     }),
-    [isCompact, isTouchDensity, presentation],
+    [isTouchDensity, presentation],
   );
 
   const fallbackModelSelectorProviders = useMemo(
