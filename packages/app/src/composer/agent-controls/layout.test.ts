@@ -156,9 +156,9 @@ describe("composer control layout", () => {
   });
 
   it("fits the iPad mini portrait composer with the sidebar open without overflowing", () => {
-    // 368pt interior minus +, context ring, mic, stop and their touch gaps. The feature badge
-    // no longer takes a slot, so the mode label survives.
-    const availableWidth = 368 - 28 - 12 - 28 - 28 - 32 - 12;
+    // 368pt interior minus the +, context ring, mic and stop slots and the clusters' insets.
+    // With every touch control in a 44 slot the mode label no longer fits beside the pill.
+    const availableWidth = 368 - estimateComposerFixedWidth(true);
     const gap = COMPOSER_TOOLBAR_GEOMETRY.touchControlGap;
     const density = resolveComposerControlDensity({
       availableWidth,
@@ -166,7 +166,7 @@ describe("composer control layout", () => {
       controls: CLAUDE_CONTROLS,
       controlGap: gap,
     });
-    expect(density).toBe("no-effort");
+    expect(density).toBe("condensed");
     expect(estimateComposerControlsWidth(CLAUDE_CONTROLS, density, gap)).toBeLessThanOrEqual(
       availableWidth,
     );
@@ -276,7 +276,7 @@ describe("composer control layout", () => {
     expect(COMPOSER_TOOLBAR_GEOMETRY).toEqual({
       controlSize: 28,
       controlGap: 4,
-      touchControlGap: 12,
+      touchControlGap: 16,
       primaryTouchSize: 32,
       iconLabelGap: 4,
       labelPadding: 8,
@@ -321,7 +321,8 @@ describe("quick prompt capacity", () => {
 
   it("drops the icon-only trigger into the attachment menu as the last stage", () => {
     // Mode icon + gauge + a 44pt bookmark with touch gaps.
-    const floor = estimateComposerControlsWidth(CLAUDE_CONTROLS, "tight", 12) + 12 + 46;
+    const gap = COMPOSER_TOOLBAR_GEOMETRY.touchControlGap;
+    const floor = estimateComposerControlsWidth(CLAUDE_CONTROLS, "tight", gap) + gap + 46;
     const withTrigger = resolveQuickPromptPresentation({ ...base, availableWidth: floor });
     expect(withTrigger).toMatchObject({ showTrigger: true, density: "tight", width: 46 });
     const phoneRow = resolveQuickPromptPresentation({ ...base, availableWidth: floor - 1 });
@@ -377,9 +378,10 @@ describe("quick prompt capacity", () => {
 
   it("keeps quick prompt labels stable across resize noise and restores after 12px", () => {
     // Mode icon + gauge + the "Summary" split with touch gaps.
+    const gap = COMPOSER_TOOLBAR_GEOMETRY.touchControlGap;
     const floor =
-      estimateComposerControlsWidth(CLAUDE_CONTROLS, "tight", 12) +
-      12 +
+      estimateComposerControlsWidth(CLAUDE_CONTROLS, "tight", gap) +
+      gap +
       estimateQuickPromptPillWidth("Summary", 1) +
       44 +
       2;
@@ -448,8 +450,12 @@ describe("quick prompt capacity", () => {
     expect(
       width +
         estimateComposerFixedWidth(true) +
-        estimateComposerControlsWidth(base.controls, "tight", 12) +
-        12,
+        estimateComposerControlsWidth(
+          base.controls,
+          "tight",
+          COMPOSER_TOOLBAR_GEOMETRY.touchControlGap,
+        ) +
+        COMPOSER_TOOLBAR_GEOMETRY.touchControlGap,
     ).toBeLessThanOrEqual(368);
   });
 
@@ -509,8 +515,9 @@ describe("quick prompt capacity", () => {
         defaultLabel: "Resumen corto",
         availableWidth: interior - fixed,
       });
+      const gap = COMPOSER_TOOLBAR_GEOMETRY.touchControlGap;
       expect(
-        fixed + result.width + 12 + estimateComposerControlsWidth(controls, result.density, 12),
+        fixed + result.width + gap + estimateComposerControlsWidth(controls, result.density, gap),
       ).toBeLessThanOrEqual(interior);
     }
   });

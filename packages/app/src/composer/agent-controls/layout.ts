@@ -44,9 +44,9 @@ export interface ComposerControlPresentation {
 export const COMPOSER_TOOLBAR_GEOMETRY = {
   controlSize: 28,
   controlGap: 4,
-  // Under touch density: 28 + 12 makes an icon-only control's target 40 wide, and send/stop
-  // become a visible 32 circle.
-  touchControlGap: 12,
+  // Under touch density every control sits in a 44 slot: 28 + 16 matches the TouchTarget frames
+  // of the attachment, ring and mic beside the clusters, and send/stop become a visible 32 circle.
+  touchControlGap: 16,
   primaryTouchSize: 32,
   iconLabelGap: 4,
   labelPadding: 8,
@@ -268,10 +268,15 @@ function leanQuickPromptPresentation(target: number): QuickPromptPresentation {
   };
 }
 
+/** Touch clusters carry half a gap on each edge, so their controls sit in the same 44 slots. */
+export function resolveComposerClusterInset(touch: boolean): number {
+  return touch ? COMPOSER_TOOLBAR_GEOMETRY.touchControlGap : 0;
+}
+
 /** Attachment, context ring, mic and send/stop retain their complete target frames. */
 export function estimateComposerFixedWidth(touch: boolean): number {
   return touch
-    ? 4 * 44
+    ? 4 * 44 + 2 * resolveComposerClusterInset(touch)
     : 4 * COMPOSER_TOOLBAR_GEOMETRY.controlSize + 5 * COMPOSER_TOOLBAR_GEOMETRY.controlGap;
 }
 

@@ -77,6 +77,7 @@ import { isNative } from "@/constants/platform";
 import {
   COMPOSER_TOOLBAR_GEOMETRY,
   COMPOSER_TOOLBAR_TOUCH_HIT_SLOP,
+  resolveComposerClusterInset,
   resolveComposerControlDensity,
   resolveComposerControlPresentation,
   resolveComposerToolbarGlyphSize,
@@ -467,10 +468,13 @@ function useAgentControlsDensity({
   initialDensity,
   controlPresence,
   controlGap,
+  clusterInset,
 }: {
   initialDensity: ComposerControlDensity;
   controlPresence: ComposerControlPresence;
   controlGap: number;
+  /** Horizontal padding a measured cluster carries, which its controls cannot use. */
+  clusterInset: number;
 }) {
   const [density, setDensity] = useState<ComposerControlDensity>(initialDensity);
   const densityRef = useRef<ComposerControlDensity>(initialDensity);
@@ -495,19 +499,19 @@ function useAgentControlsDensity({
     (event: LayoutChangeEvent) => {
       const width = readMeasuredWidth(event);
       if (width === null) return;
-      startWidthRef.current = width;
+      startWidthRef.current = Math.max(0, width - clusterInset);
       updateDensity();
     },
-    [updateDensity],
+    [clusterInset, updateDensity],
   );
   const handleEndLayout = useCallback(
     (event: LayoutChangeEvent) => {
       const width = readMeasuredWidth(event);
       if (width === null) return;
-      endWidthRef.current = width;
+      endWidthRef.current = Math.max(0, width - clusterInset);
       updateDensity();
     },
-    [updateDensity],
+    [clusterInset, updateDensity],
   );
 
   useEffect(() => {
@@ -642,6 +646,7 @@ function ControlledAgentControls({
     initialDensity: isLean ? "icons" : "full",
     controlPresence,
     controlGap,
+    clusterInset: resolveComposerClusterInset(isTouchDensity),
   });
   usePublishQuickPromptControls(controlPresence);
   const quickPromptDensity = useQuickPromptControlDensity();
@@ -1476,6 +1481,7 @@ const styles = StyleSheet.create((theme) => ({
   // without taking more height in the composer.
   clusterTouch: {
     gap: COMPOSER_TOOLBAR_GEOMETRY.touchControlGap,
+    paddingHorizontal: COMPOSER_TOOLBAR_TOUCH_HIT_SLOP.left,
     paddingVertical: COMPOSER_TOOLBAR_TOUCH_HIT_SLOP.top,
     marginVertical: -COMPOSER_TOOLBAR_TOUCH_HIT_SLOP.top,
   },
