@@ -66,7 +66,8 @@ type ActiveStatusBucket = Exclude<ReturnType<typeof deriveSidebarStateBucket>, "
 
 /** The sidebar's list order, minus the state that earns no mark. */
 const ACTIVE_STATUS_BUCKET_ORDER = STATUS_BUCKET_ORDER.filter(
-  (bucket): bucket is ActiveStatusBucket => bucket !== "done" && bucket !== "waiting",
+  (bucket): bucket is ActiveStatusBucket =>
+    bucket !== "done" && bucket !== "waiting" && bucket !== "background",
 );
 
 /** One state the pill reports, and how many children are in it. */

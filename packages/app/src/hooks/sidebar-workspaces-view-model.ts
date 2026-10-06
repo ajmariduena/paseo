@@ -1,3 +1,4 @@
+import type { AgentBackgroundTask } from "@getpaseo/protocol/agent-types";
 import type { PrHint } from "@/git/pr-hint";
 import { selectPrHintFromStatus } from "@/git/pr-hint";
 import { type HostProjectListItem } from "@/projects/host-project-model";
@@ -56,6 +57,7 @@ export interface SidebarWorkspaceEntry extends SidebarStatusWorkspacePlacement {
   archiveUnpushedCommitCount: number | null;
   scripts: WorkspaceDescriptor["scripts"];
   hasRunningScripts: boolean;
+  backgroundTasks: readonly AgentBackgroundTask[];
 }
 
 export interface SidebarProjectEntry {
@@ -187,10 +189,13 @@ export function createSidebarWorkspaceEntry(input: {
     archiveUnpushedCommitCount: input.workspace.gitRuntime?.aheadOfOrigin ?? null,
     scripts: input.workspace.scripts,
     hasRunningScripts: input.workspace.scripts.some((script) => script.lifecycle === "running"),
+    backgroundTasks:
+      input.workspaceAgentActivity?.get(input.workspace.id)?.backgroundTasks ?? NO_BACKGROUND_TASKS,
   };
 }
 
 const EMPTY_WORKSPACE_LABELS: string[] = [];
+const NO_BACKGROUND_TASKS: readonly AgentBackgroundTask[] = [];
 
 function deriveEffectiveWorkspaceStatus(input: {
   serverId: string;

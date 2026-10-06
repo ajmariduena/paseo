@@ -33,6 +33,7 @@ function ws(
     archiveUnpushedCommitCount: null,
     scripts: [],
     hasRunningScripts: false,
+    backgroundTasks: [],
     workspaceKey: input.workspaceKey,
   };
 }
@@ -175,6 +176,16 @@ describe("buildStatusGroups", () => {
       ws({
         workspaceKey: "srv:run",
         statusBucket: "running",
+        statusEnteredAt: d("2026-01-01T00:00:00Z"),
+      }),
+      ws({
+        workspaceKey: "srv:bg",
+        statusBucket: "background",
+        statusEnteredAt: d("2026-01-01T00:00:00Z"),
+      }),
+      ws({
+        workspaceKey: "srv:wait",
+        statusBucket: "waiting",
         statusEnteredAt: d("2026-01-01T00:00:00Z"),
       }),
       ws({ workspaceKey: "srv:dn", statusBucket: "done", statusEnteredAt: null }),
