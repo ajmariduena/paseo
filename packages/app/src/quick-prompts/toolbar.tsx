@@ -35,7 +35,10 @@ export type { QuickPromptToolbarBinding } from "./picker";
 
 const ThemedChevron = withUnistyles(ChevronDown);
 const iconMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
-const readyIconMapping = (theme: Theme) => ({ color: theme.colors.accentBright });
+const readyIconMapping = (theme: Theme) => ({
+  color: theme.colors.accentBright,
+  fill: theme.colors.accentBright,
+});
 const LONG_PRESS_MS = 500;
 
 /** Keeps the slot on the same glyph size and hit slop as the clusters beside it. */
@@ -80,7 +83,8 @@ const ThemedBookmark = withUnistyles(Bookmark);
 
 /**
  * The lean tablet row's one bookmark: with a default prompt a tap sends it and a long press opens
- * the picker; without one a tap opens the picker. The tint says a tap will send.
+ * the picker; without one a tap opens the picker. A bare glyph like the mic beside it; the filled
+ * green says a tap will send.
  */
 function LeanBookmarkTrigger({
   defaultPrompt,
@@ -99,10 +103,7 @@ function LeanBookmarkTrigger({
   const send = useCallback(() => {
     if (defaultPrompt) onSend(defaultPrompt);
   }, [defaultPrompt, onSend]);
-  const triggerStyle = useMemo(
-    () => [styles.trigger, styles.leanTrigger, ready ? styles.leanTriggerReady : null],
-    [ready],
-  );
+  const triggerStyle = useMemo(() => [styles.trigger, styles.leanTrigger], []);
   const label = defaultPrompt
     ? t("quickPrompts.sendNamed", { title: defaultPrompt.title })
     : t("quickPrompts.open");
@@ -378,9 +379,6 @@ const styles = StyleSheet.create((theme) => ({
   },
   leanTrigger: {
     borderRadius: theme.borderRadius.full,
-  },
-  leanTriggerReady: {
-    backgroundColor: theme.colors.interactionHighlight,
   },
   // Inside the segment's rounded corner: at 4pt the dot lands on the 16pt arc and reads as
   // sitting on the border.

@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, type ReactElement } from "react";
+import { forwardRef, useCallback, useMemo, type ReactElement } from "react";
 import { Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { Gauge } from "lucide-react-native";
@@ -39,7 +39,8 @@ export interface IntelligenceTriggerProps {
 
 /**
  * The toolbar's entry to model, effort and speed. With room it is the model · effort pill; once
- * the model label no longer fits it is the gauge, tinted by tier and dotted when Fast is on.
+ * the model label no longer fits it is the gauge, a bare glyph like the mic beside it, tinted by
+ * tier and dotted when Fast is on.
  */
 export const IntelligenceTrigger = forwardRef<View, IntelligenceTriggerProps>(
   function IntelligenceTrigger(
@@ -66,7 +67,7 @@ export const IntelligenceTrigger = forwardRef<View, IntelligenceTriggerProps>(
       ({ pressed, hovered }: PressableStateCallbackType & { hovered?: boolean }) => [
         styles.trigger,
         kind === "gauge" && styles.triggerGauge,
-        isTop && !open && styles.triggerTop,
+        isTop && !open && kind === "pill" && styles.triggerTop,
         Boolean(hovered) && styles.triggerHovered,
         (pressed || open) && styles.triggerPressed,
         disabled && styles.triggerDisabled,
@@ -104,11 +105,19 @@ export const IntelligenceTrigger = forwardRef<View, IntelligenceTriggerProps>(
   },
 );
 
+// Lucide's gauge is an arc about (12,14) with its ends at y=19, so its ink spans rows 3..20 of
+// the 24-unit box and centres half a unit above the box centre. Centre the ink, not the box.
+const GAUGE_INK_OFFSET = 0.5 / 24;
+
 function GaugeGlyph({ tier, isFast }: { tier: EffortTier; isFast: boolean }): ReactElement {
   const { glyphSize } = useComposerControlLayout();
+  const inkStyle = useMemo(
+    () => ({ transform: [{ translateY: glyphSize * GAUGE_INK_OFFSET }] }),
+    [glyphSize],
+  );
   return (
     <ComposerToolbarGlyph size={glyphSize}>
-      <ThemedGauge size={glyphSize} style={styles.gauge} uniProps={gaugeTierMapping[tier]} />
+      <ThemedGauge size={glyphSize} style={inkStyle} uniProps={gaugeTierMapping[tier]} />
       {isFast ? <View style={styles.fastDot} testID="agent-intelligence-fast-dot" /> : null}
     </ComposerToolbarGlyph>
   );
@@ -223,11 +232,6 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.base,
     fontWeight: theme.fontWeight.normal,
-  },
-  // Lucide's gauge is an arc whose ends stop at 19/24, so its mass sits 1.5 units above the
-  // box centre; one point down puts the arc and needle on the row's centerline.
-  gauge: {
-    transform: [{ translateY: 1 }],
   },
   fastDot: {
     position: "absolute",
