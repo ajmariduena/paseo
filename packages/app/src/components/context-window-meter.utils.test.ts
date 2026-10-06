@@ -28,12 +28,8 @@ describe("toolbar ring", () => {
     expect(resolveContextWindowMeterGlyphSize("web")).toBe(16);
   });
 
-  it("strokes the ring as a Lucide glyph of the same size renders under the app stroke", () => {
-    expect(resolveContextWindowMeterRing(20)).toEqual({ size: 20, strokeWidth: 1.25 });
-    expect(resolveContextWindowMeterRing(16)).toEqual({ size: 16, strokeWidth: 1 });
-  });
-
-  it("keeps the standalone meter at 14pt with a 2pt stroke", () => {
+  it("keeps the ring's outer diameter at the glyph size with a 2pt stroke", () => {
+    expect(resolveContextWindowMeterRing(20)).toEqual({ size: 20, strokeWidth: 2 });
     expect(resolveContextWindowMeterRing()).toEqual({ size: 14, strokeWidth: 2 });
   });
 });

@@ -1,42 +1,35 @@
 import { describe, expect, it } from "vitest";
-import { resolveGaugeRender } from "./gauge-icon";
+import { resolveCircleGaugeRender } from "./gauge-icon";
 
-// Lucide's gauge arc: radius 10 about (12,14) on the 24 grid.
-function arcInk(ring: { size: number; strokeWidth: number }) {
-  const render = resolveGaugeRender(ring);
-  const unit = render.size / 24;
-  const stroke = render.strokeWidth * unit;
-  return { outerWidth: 20 * unit + stroke, stroke, box: render.size };
-}
-
-describe("resolveGaugeRender", () => {
+describe("resolveCircleGaugeRender", () => {
   it.each([
-    { size: 20, strokeWidth: 1.25 },
-    { size: 16, strokeWidth: 1 },
+    { size: 20, strokeWidth: 2 },
+    { size: 16, strokeWidth: 2 },
     { size: 14, strokeWidth: 2 },
-  ])("draws the arc to the $size pt ring's width and stroke", (ring) => {
-    const ink = arcInk(ring);
-    expect(ink.outerWidth).toBeCloseTo(ring.size, 6);
-    expect(ink.stroke).toBeCloseTo(ring.strokeWidth, 6);
+  ])("draws the circle to the $size pt ring's diameter and stroke", (ring) => {
+    const render = resolveCircleGaugeRender(ring, "top");
+    expect(render.size).toBe(ring.size);
+    expect(render.strokeWidth).toBe(ring.strokeWidth);
+    expect(render.radius * 2 + render.strokeWidth).toBe(ring.size);
+    expect(render.center).toBe(ring.size / 2);
   });
 
-  it("centres the arc's rasterised ink in an even integer box through the transform", () => {
-    const ring = { size: 20, strokeWidth: 1.25 };
-    const render = resolveGaugeRender(ring);
-    const unit = render.size / 24;
-    const shift = render.inset + render.offsetY;
-    // The caps rasterise a quarter unit short of their geometric reach at the bottom.
-    const inkTop = 4 * unit - (render.strokeWidth * unit) / 2 + shift;
-    const inkBottom = 18.5 * unit + (render.strokeWidth * unit) / 2 + shift;
-    expect(render.box).toBe(24);
-    expect(render.inset * 2 + render.size).toBeCloseTo(render.box, 6);
-    expect((inkTop + inkBottom) / 2).toBeCloseTo(render.box / 2, 6);
-  });
-
-  it("widens the stroke in grid units rather than scaling the glyph up to it", () => {
+  it("keeps the needle inside the circle's inner edge on every tier", () => {
     const ring = { size: 20, strokeWidth: 2 };
-    const render = resolveGaugeRender(ring);
-    expect(render.strokeWidth).toBeGreaterThan(2);
-    expect(render.size).toBeLessThan((ring.size * 24) / 20);
+    for (const tier of ["low", "mid", "high", "top"] as const) {
+      const render = resolveCircleGaugeRender(ring, tier);
+      const reach = Math.hypot(render.needle.x - render.center, render.needle.y - render.center);
+      expect(reach + render.strokeWidth / 2).toBeLessThan(render.radius - render.strokeWidth / 2);
+    }
+  });
+
+  it("sweeps the needle left to right as the tier rises", () => {
+    const ring = { size: 20, strokeWidth: 2 };
+    const xs = (["low", "mid", "high", "top"] as const).map(
+      (tier) => resolveCircleGaugeRender(ring, tier).needle.x,
+    );
+    expect(xs).toEqual([...xs].sort((a, b) => a - b));
+    expect(xs[0]).toBeLessThan(ring.size / 2);
+    expect(xs[3]).toBeGreaterThan(ring.size / 2);
   });
 });
