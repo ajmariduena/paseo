@@ -163,12 +163,12 @@ function useIntelligenceNavigation(input: {
   const { isActiveComposer } = useComposerKeyboardScope();
   const [page, setPage] = useState<IntelligencePage>("quick");
 
+  // The page stays put while the surface animates out; the next open picks its own page.
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
       if (nextOpen) {
         onOpen?.();
       } else {
-        setPage("quick");
         browser.reset();
         onClose?.();
       }
