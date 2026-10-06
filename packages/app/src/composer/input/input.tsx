@@ -962,7 +962,12 @@ function computeShouldShowDictationOverlay(
   isDictationProcessing: boolean,
   dictationStatus: string,
 ): boolean {
-  return isDictating || isDictationProcessing || dictationStatus === "failed";
+  return (
+    isDictating ||
+    isDictationProcessing ||
+    dictationStatus === "starting" ||
+    dictationStatus === "failed"
+  );
 }
 
 function computeIsDictationStartEnabled(

@@ -47,8 +47,9 @@ export function DictationControls({
   const { theme } = useUnistyles();
   const { t } = useTranslation();
   const isFailed = status === "failed";
-  const showActiveState = isRecording || isProcessing || isFailed;
-  const actionsDisabled = isProcessing;
+  const isStarting = status === "starting";
+  const showActiveState = isStarting || isRecording || isProcessing || isFailed;
+  const actionsDisabled = isStarting || isProcessing;
   const handleCancel = isFailed && onDiscard ? onDiscard : onCancel;
 
   const micButtonStyle = useMemo(
@@ -85,9 +86,18 @@ export function DictationControls({
   return (
     <View style={styles.activeContainer}>
       <View style={styles.meterWrapper}>
-        <VolumeMeter volume={volume} isMuted={false} isSpeaking={false} orientation="horizontal" />
+        {isStarting ? (
+          <Mic size={theme.iconSize.sm} color={theme.colors.foreground} />
+        ) : (
+          <VolumeMeter
+            volume={volume}
+            isMuted={false}
+            isSpeaking={false}
+            orientation="horizontal"
+          />
+        )}
       </View>
-      <Text style={timerTextStyle}>{formatDuration(duration)}</Text>
+      {!isStarting ? <Text style={timerTextStyle}>{formatDuration(duration)}</Text> : null}
       <View style={styles.actionGroup}>
         <Pressable
           onPress={handleCancel}
@@ -154,8 +164,9 @@ export function DictationOverlay({
   const { theme } = useUnistyles();
   const { t } = useTranslation();
   const isFailed = status === "failed";
-  const showActiveState = isRecording || isProcessing || isFailed;
-  const actionsDisabled = isProcessing;
+  const isStarting = status === "starting";
+  const showActiveState = isStarting || isRecording || isProcessing || isFailed;
+  const actionsDisabled = isStarting || isProcessing;
   const handleCancel = isFailed && onDiscard ? onDiscard : onCancel;
 
   const containerStyle = useMemo(
@@ -201,14 +212,20 @@ export function DictationOverlay({
 
       <View style={overlayStyles.centerContainer}>
         <View style={overlayStyles.meterRow}>
-          <VolumeMeter
-            volume={volume}
-            isMuted={false}
-            isSpeaking={false}
-            orientation="horizontal"
-            color={theme.colors.accentForeground}
-          />
-          <Text style={overlayTimerTextStyle}>{formatDuration(duration)}</Text>
+          {isStarting ? (
+            <Mic size={theme.iconSize.lg} color={theme.colors.accentForeground} />
+          ) : (
+            <>
+              <VolumeMeter
+                volume={volume}
+                isMuted={false}
+                isSpeaking={false}
+                orientation="horizontal"
+                color={theme.colors.accentForeground}
+              />
+              <Text style={overlayTimerTextStyle}>{formatDuration(duration)}</Text>
+            </>
+          )}
         </View>
         {isFailed ? (
           <Text numberOfLines={2} style={overlayTranscriptTextStyle}>
