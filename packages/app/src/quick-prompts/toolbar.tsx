@@ -90,12 +90,10 @@ function LeanBookmarkTrigger({
   defaultPrompt,
   disabled,
   onSend,
-  onOpen,
 }: {
   defaultPrompt: QuickPrompt | undefined;
   disabled: boolean;
   onSend: (prompt: QuickPrompt) => void;
-  onOpen: () => void;
 }): ReactElement {
   const { t } = useTranslation();
   const { hitSlop } = useComposerControlLayout();
@@ -112,8 +110,8 @@ function LeanBookmarkTrigger({
       style={triggerStyle}
       hitSlop={hitSlop}
       disabled={disabled}
+      activation={ready ? "longPress" : "press"}
       onPress={ready ? send : undefined}
-      onLongPress={ready ? onOpen : undefined}
       delayLongPress={LONG_PRESS_MS}
       accessibilityRole="button"
       accessibilityLabel={label}
@@ -163,7 +161,6 @@ export function QuickPromptToolbar({ picker }: { picker: QuickPromptPicker }) {
               defaultPrompt={defaultPrompt}
               disabled={defaultPrompt ? isQuickPromptSendDisabled(picker, defaultPrompt) : false}
               onSend={picker.activate}
-              onOpen={openPicker}
             />
           </TouchTarget>
           <MenuSurface side="top" align="end" width={380} sheetTitle={t("quickPrompts.section")}>

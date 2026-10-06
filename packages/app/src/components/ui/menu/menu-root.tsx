@@ -58,6 +58,12 @@ type TriggerStyleProp = StyleProp<ViewStyle> | ((state: MenuTriggerState) => Sty
 export interface MenuTriggerProps extends Omit<PressableProps, "style" | "children"> {
   style?: TriggerStyleProp;
   children: ReactNode | ((state: MenuTriggerState) => ReactNode);
+  /**
+   * What opens the menu. `press` (the default) toggles it on tap, after any `onPress` the
+   * caller composed in — a tooltip wraps triggers that way. `longPress` keeps the tap for the
+   * caller's own `onPress` (a one-tap send, say) and opens the menu on a long press instead.
+   */
+  activation?: "press" | "longPress";
 }
 
 function assignRef<T>(ref: Ref<T> | undefined, value: T | null): void {
@@ -69,13 +75,27 @@ function assignRef<T>(ref: Ref<T> | undefined, value: T | null): void {
   Object.assign(ref, { current: value });
 }
 
-/**
- * Pressing toggles the menu unless the trigger supplies its own `onPress`; then the tap is its
- * action (a one-tap send, say) and the menu opens from whatever else it wires, such as a long
- * press.
- */
+export type MenuTriggerActivation = NonNullable<MenuTriggerProps["activation"]>;
+
+/** Which gesture toggles the menu; the other one is left to the caller's own handler. */
+export function resolveMenuTriggerActivation(activation: MenuTriggerActivation): {
+  pressOpens: boolean;
+  longPressOpens: boolean;
+} {
+  return { pressOpens: activation === "press", longPressOpens: activation === "longPress" };
+}
+
 export const MenuTrigger = forwardRef<View, MenuTriggerProps>(function MenuTrigger(
-  { children, disabled, style, accessibilityState, onPress, ...props },
+  {
+    children,
+    disabled,
+    style,
+    accessibilityState,
+    onPress,
+    onLongPress,
+    activation = "press",
+    ...props
+  },
   forwardedRef,
 ): ReactElement {
   const ctx = useMenuContext("MenuTrigger");
@@ -88,16 +108,23 @@ export const MenuTrigger = forwardRef<View, MenuTriggerProps>(function MenuTrigg
     [ctx.triggerRef, forwardedRef],
   );
 
+  const { pressOpens, longPressOpens } = resolveMenuTriggerActivation(activation);
   const handlePress = useCallback(
     (event: GestureResponderEvent) => {
       if (disabled) return;
-      if (onPress) {
-        onPress(event);
-        return;
-      }
-      ctx.setOpen(!ctx.open);
+      onPress?.(event);
+      if (pressOpens) ctx.setOpen(!ctx.open);
     },
-    [disabled, ctx, onPress],
+    [pressOpens, disabled, ctx, onPress],
+  );
+
+  const handleLongPress = useCallback(
+    (event: GestureResponderEvent) => {
+      if (disabled) return;
+      onLongPress?.(event);
+      if (longPressOpens) ctx.setOpen(true);
+    },
+    [longPressOpens, disabled, ctx, onLongPress],
   );
 
   const pressableStyle = useCallback(
@@ -135,6 +162,7 @@ export const MenuTrigger = forwardRef<View, MenuTriggerProps>(function MenuTrigg
       disabled={disabled}
       accessibilityState={resolvedAccessibilityState}
       onPress={handlePress}
+      onLongPress={handleLongPress}
       style={pressableStyle}
     >
       {renderChildren}
