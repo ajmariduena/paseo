@@ -302,10 +302,12 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "center",
   },
+  // Inside the segment's rounded corner: at 4pt the dot lands on the 16pt arc and reads as
+  // sitting on the border.
   dot: {
     position: "absolute",
-    right: theme.spacing[1],
-    top: theme.spacing[1],
+    right: theme.spacing[1.5],
+    top: theme.spacing[1.5],
     width: 4,
     height: 4,
     borderRadius: theme.borderRadius.full,
