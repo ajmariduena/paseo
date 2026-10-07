@@ -29,6 +29,7 @@ import type { IncomingShare } from "./model";
 import {
   canGoBack,
   createIncomingShareSheetState,
+  hostChoicesForShare,
   reduceIncomingShareSheet,
   type IncomingShareDelivery,
 } from "./sheet-state";
@@ -318,8 +319,9 @@ function useShareSummary(share: IncomingShare): string {
   if (share.text) {
     parts.push(t("incomingShare.summary.text"));
   }
-  if (share.files.length > 0) {
-    parts.push(t("incomingShare.summary.attachments", { count: share.files.length }));
+  const attachmentCount = share.files.length + (share.attachments?.length ?? 0);
+  if (attachmentCount > 0) {
+    parts.push(t("incomingShare.summary.attachments", { count: attachmentCount }));
   }
   return parts.join(" · ");
 }
@@ -335,9 +337,13 @@ function IncomingShareSheetBody({
 }) {
   const { t } = useTranslation();
   const hosts = useHosts();
+  const hostChoices = hostChoicesForShare(
+    hosts.map((host) => host.serverId),
+    share.serverId,
+  );
   const [state, dispatch] = useReducer(
     reduceIncomingShareSheet,
-    hosts.map((host) => host.serverId),
+    hostChoices,
     createIncomingShareSheetState,
   );
   const [query, setQuery] = useState("");
@@ -384,7 +390,7 @@ function IncomingShareSheetBody({
           {summary}
         </Text>
       ) : undefined,
-      back: canGoBack({ page, hostCount: hosts.length }) ? { onPress: goBack } : undefined,
+      back: canGoBack({ page, hostCount: hostChoices.length }) ? { onPress: goBack } : undefined,
       search:
         page.kind === "workspace"
           ? {
@@ -395,7 +401,7 @@ function IncomingShareSheetBody({
             }
           : undefined,
     }),
-    [goBack, hosts.length, page, summary, t],
+    [goBack, hostChoices.length, page, summary, t],
   );
 
   return (

@@ -196,6 +196,9 @@ import {
   createGitMetadataGenerator,
 } from "./session/checkout/git-metadata-generator.js";
 import { ScheduleSession } from "./session/schedule/schedule-session.js";
+import { createNoteSession, type NoteSession } from "./session/notes/note-session.js";
+import type { NoteStore } from "./notes/store.js";
+import { noteIdFromAttachment } from "@getpaseo/protocol/notes/types";
 import { ProviderCatalogSession } from "./session/provider/provider-catalog-session.js";
 import { UsageSession } from "./session/usage/usage-session.js";
 import { WorkspaceFilesSession } from "./session/files/workspace-files-session.js";
@@ -554,6 +557,7 @@ export interface SessionOptions {
   agentStop?: Pick<AgentStop, "stop"> | null;
   filesystem?: SessionFileSystem;
   scheduleService: ScheduleService;
+  noteStore?: NoteStore;
   checkoutDiffManager: CheckoutDiffManager;
   github?: ForgeService;
   createAgentMcpTransport?: AgentMcpTransportFactory;
@@ -902,6 +906,8 @@ export class Session {
   private readonly voiceSessions: VoiceSessions;
   private readonly checkoutSession: CheckoutSession;
   private readonly scheduleSession: ScheduleSession;
+  private readonly noteSession: NoteSession | null;
+  private readonly noteStore: NoteStore | undefined;
   private readonly providerCatalogSession: ProviderCatalogSession;
   private readonly usageSession: UsageSession;
   private readonly workspaceFilesSession: WorkspaceFilesSession;
@@ -943,6 +949,7 @@ export class Session {
       delegations,
       filesystem,
       scheduleService,
+      noteStore,
       checkoutDiffManager,
       github,
       renameCurrentBranch,
@@ -1096,6 +1103,12 @@ export class Session {
     this.scheduleSession = new ScheduleSession({
       host: { emit: (msg) => this.emit(msg) },
       scheduleService,
+      logger: this.sessionLogger,
+    });
+    this.noteStore = noteStore;
+    this.noteSession = createNoteSession({
+      noteStore,
+      emit: (msg) => this.emit(msg),
       logger: this.sessionLogger,
     });
     this.providerCatalogSession = new ProviderCatalogSession({
@@ -3674,6 +3687,10 @@ export class Session {
     }
   }
 
+  private dispatchNoteMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+    return this.noteSession ? this.noteSession.dispatch(msg) : undefined;
+  }
+
   private dispatchScheduleMessage(msg: SessionInboundMessage): Promise<void> | undefined {
     switch (msg.type) {
       case "schedule/create":
@@ -3695,7 +3712,7 @@ export class Session {
       case "schedule/update":
         return this.scheduleSession.handleScheduleUpdateRequest(msg);
       default:
-        return undefined;
+        return this.dispatchNoteMessage(msg);
     }
   }
 
@@ -4485,6 +4502,21 @@ export class Session {
     }
   }
 
+  private linkNotesFromAttachments(
+    agentId: string,
+    attachments: readonly AgentAttachment[] | undefined,
+  ): void {
+    const noteStore = this.noteStore;
+    if (!noteStore || !attachments) return;
+    for (const attachment of attachments) {
+      const noteId = noteIdFromAttachment(attachment);
+      if (!noteId) continue;
+      void noteStore.linkAgent(noteId, agentId).catch((error: unknown) => {
+        this.sessionLogger.warn({ err: error, noteId, agentId }, "Failed to link note to agent");
+      });
+    }
+  }
+
   /**
    * Handle text message to agent (with optional image attachments)
    */
@@ -4514,6 +4546,7 @@ export class Session {
 
     const promptText = options?.spokenInput ? wrapSpokenInput(text) : text;
     const prompt = buildAgentPrompt(promptText, images, attachments);
+    this.linkNotesFromAttachments(agentId, attachments);
 
     try {
       const dispatch = await sendPromptToAgent({
@@ -4961,6 +4994,7 @@ export class Session {
         },
       );
       createdAgentId = snapshot.id;
+      this.linkNotesFromAttachments(snapshot.id, attachments);
       await this.agentUpdates.forwardLiveAgent(snapshot);
       if (!explicitTitle && provisionalTitle) {
         this.workspaceAutoName.scheduleForAgent(
@@ -8936,6 +8970,7 @@ export class Session {
       const agentId = resolved.agentId;
 
       const prompt = buildAgentPrompt(msg.text, msg.images, msg.attachments);
+      this.linkNotesFromAttachments(agentId, msg.attachments);
       this.sessionLogger.trace(
         {
           agentId,

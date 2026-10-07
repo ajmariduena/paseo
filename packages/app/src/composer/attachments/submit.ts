@@ -1,3 +1,4 @@
+import { noteAttachmentToAgentAttachment } from "@/notes/attachment";
 import type { ComposerAttachment } from "@/attachments/types";
 import type { ImageAttachment } from "@/composer/types";
 import {
@@ -62,6 +63,11 @@ export function splitComposerAttachmentsForSubmit(
 
     if (attachment.kind === "plugin_resource") {
       agentAttachments.push(pluginResourceAttachmentToAgentAttachment(attachment));
+      continue;
+    }
+
+    if (attachment.kind === "note") {
+      agentAttachments.push(noteAttachmentToAgentAttachment(attachment));
       continue;
     }
 

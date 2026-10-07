@@ -905,6 +905,7 @@ function RootStack() {
         <Stack.Screen name="open-project" />
         <Stack.Screen name="sessions" />
         <Stack.Screen name="schedules" />
+        <Stack.Screen name="notes" />
         <Stack.Screen name="usage" />
         <Stack.Screen name="pair-scan" />
       </Stack.Protected>

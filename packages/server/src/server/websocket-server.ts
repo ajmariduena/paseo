@@ -1,3 +1,4 @@
+import type { NoteStore } from "./notes/store.js";
 import { stat } from "node:fs/promises";
 import type { CreationSnapshot } from "@getpaseo/protocol/messages";
 import { CreationService } from "./creation/index.js";
@@ -556,6 +557,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly projectRegistry: ProjectRegistry;
   private readonly workspaceRegistry: WorkspaceRegistry;
   private readonly workspaceLabelService: WorkspaceLabelService | null;
+  private readonly noteStore: NoteStore | undefined;
   private readAloudService!: ReadAloudService | null;
   private readonly voiceOrchestrator: VoiceOrchestrator | null | undefined;
   private readonly delegations: DelegationService | null | undefined;
@@ -683,6 +685,7 @@ export class VoiceAssistantWebSocketServer {
     voiceOrchestrator?: VoiceOrchestrator | null,
     delegations?: DelegationService | null,
     agentStop?: AgentStop | null,
+    noteStore?: NoteStore,
   ) {
     this.logger = logger.child({ module: "websocket-server" });
     this.voiceOrchestrator = voiceOrchestrator;
@@ -716,6 +719,7 @@ export class VoiceAssistantWebSocketServer {
     this.projectRegistry = projectRegistry ?? createNoopProjectRegistry();
     this.workspaceRegistry = workspaceRegistry ?? createNoopWorkspaceRegistry();
     this.workspaceLabelService = workspaceLabelService ?? null;
+    this.noteStore = noteStore;
     const requiredServices = requireWebSocketServices({
       scheduleService,
       checkoutDiffManager,
@@ -1520,6 +1524,7 @@ export class VoiceAssistantWebSocketServer {
       projectRegistry: this.projectRegistry,
       workspaceRegistry: this.workspaceRegistry,
       workspaceLabelService: this.workspaceLabelService ?? undefined,
+      noteStore: this.noteStore,
       readAloud: this.readAloudService ?? undefined,
       voiceOrchestrator: this.voiceOrchestrator,
       delegations: this.delegations,
@@ -1842,6 +1847,7 @@ export class VoiceAssistantWebSocketServer {
         waitingOnSubagents: true,
         // COMPAT(workspaceLabels): added in v0.5.0, remove after 2027-08-14.
         ...(this.workspaceLabelService ? { workspaceLabels: true } : {}),
+        ...(this.noteStore ? { notes: true } : {}),
         // COMPAT(workspaceSetupRun): added in v0.7.3, remove gate after 2027-09-02.
         workspaceSetupRun: true,
         // COMPAT(providersSnapshot): keep optional until all clients rely on snapshot flow.

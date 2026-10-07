@@ -134,6 +134,8 @@ import type {
   PaseoToolRuntimeContext,
 } from "./types.js";
 import { READ_ONLY_TOOL_ANNOTATIONS } from "./read-only-tools.js";
+import type { NoteStore } from "../../notes/store.js";
+import { NoteSchema, NoteTodoStateSchema, type Note } from "@getpaseo/protocol/notes/types";
 import type { ProviderPaseoToolsPolicy } from "@getpaseo/protocol/provider-config";
 import { isPaseoToolEnabled } from "../paseo-tool-policy.js";
 
@@ -143,6 +145,7 @@ export interface PaseoToolHostDependencies {
   terminalManager?: TerminalManager | null;
   getDaemonTcpPort?: () => number | null;
   scheduleService?: ScheduleService | null;
+  noteStore?: NoteStore | null;
   providerSnapshotManager: ProviderSnapshotManager;
   daemonConfigStore?: Pick<DaemonConfigStore, "get">;
   github?: ForgeService;
@@ -3552,6 +3555,125 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     },
   );
 
+  const noteStore = options.noteStore;
+  if (noteStore) {
+    const resolveCallerNoteContext = async (): Promise<{
+      workspaceId: string | null;
+      projectId: string | null;
+    }> => {
+      const workspaceId = callerAgentId
+        ? (agentManager.getAgent(callerAgentId)?.workspaceId ?? null)
+        : null;
+      if (!workspaceId || !options.workspaceRegistry) return { workspaceId, projectId: null };
+      const workspace = await options.workspaceRegistry.get(workspaceId);
+      return { workspaceId, projectId: workspace?.projectId ?? null };
+    };
+    const noteResult = (note: Note): PaseoToolResult => ({
+      content: [],
+      structuredContent: ensureValidJson(note),
+    });
+
+    registerTool(
+      "list_notes",
+      {
+        annotations: READ_ONLY_TOOL_ANNOTATIONS,
+        title: "List notes",
+        description:
+          "List the user's notes and todos, newest first. Notes are things the user (or an agent) wrote down to remember or hand to an agent later; a note with todoState is a todo.",
+        inputSchema: {
+          todosOnly: z.boolean().optional().describe("Only return todos (open or done)."),
+          includeDone: z
+            .boolean()
+            .optional()
+            .describe("Include completed todos. Defaults to true unless todosOnly is set."),
+          includeArchived: z.boolean().optional().describe("Include archived notes."),
+          projectId: z.string().optional().describe("Only notes attached to this project."),
+        },
+        outputSchema: { notes: z.array(NoteSchema) },
+      },
+      async ({ todosOnly, includeDone, includeArchived, projectId }) => {
+        const showDone = includeDone ?? !todosOnly;
+        const notes = (await noteStore.list({ includeArchived })).filter(
+          (note) =>
+            (!todosOnly || note.todoState !== null) &&
+            (showDone || note.todoState !== "done") &&
+            (projectId === undefined || note.projectId === projectId),
+        );
+        return { content: [], structuredContent: ensureValidJson({ notes }) };
+      },
+    );
+
+    registerTool(
+      "get_note",
+      {
+        annotations: READ_ONLY_TOOL_ANNOTATIONS,
+        title: "Get note",
+        description: "Read one note or todo, including its full Markdown body.",
+        inputSchema: { id: z.string() },
+        outputSchema: NoteSchema.shape,
+      },
+      async ({ id }) => noteResult(await noteStore.require(id)),
+    );
+
+    registerTool(
+      "create_note",
+      {
+        title: "Create note",
+        description:
+          "Write a note or todo for the user. Use it for follow-ups you found but should not do now, so they are not lost in the chat. It is attached to your workspace's project unless you pass projectId.",
+        inputSchema: {
+          title: z.string().describe("Short title, one line."),
+          body: z.string().optional().describe("Markdown body with the context needed later."),
+          todo: z.boolean().optional().describe("Create it as an open todo."),
+          projectId: z.string().nullable().optional(),
+        },
+        outputSchema: NoteSchema.shape,
+      },
+      async ({ title, body, todo, projectId }) => {
+        const context = await resolveCallerNoteContext();
+        const note = await noteStore.create({
+          title,
+          body,
+          todo,
+          projectId: projectId === undefined ? context.projectId : projectId,
+          workspaceId: context.workspaceId,
+          author: callerAgentId ? { type: "agent", agentId: callerAgentId } : { type: "user" },
+        });
+        return noteResult(note);
+      },
+    );
+
+    registerTool(
+      "update_note",
+      {
+        title: "Update note",
+        description:
+          "Edit a note or todo. Only the fields you pass change. Set todoState to done to complete a todo, open to reopen it, or null to turn it back into a plain note.",
+        inputSchema: {
+          id: z.string(),
+          title: z.string().optional(),
+          body: z.string().optional(),
+          todoState: NoteTodoStateSchema.nullable().optional(),
+        },
+        outputSchema: NoteSchema.shape,
+      },
+      async ({ id, title, body, todoState }) =>
+        noteResult(await noteStore.update(id, { title, body, todoState })),
+    );
+
+    registerTool(
+      "archive_note",
+      {
+        title: "Archive note",
+        description:
+          "Archive a note or todo so it leaves the user's list. Archived notes can be restored; there is no tool to delete a note permanently.",
+        inputSchema: { id: z.string() },
+        outputSchema: NoteSchema.shape,
+      },
+      async ({ id }) => noteResult(await noteStore.setArchived(id, true)),
+    );
+  }
+
   registerTool(
     "list_schedules",
     {
@@ -3853,6 +3975,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
             terminals: tools.has("create_terminal"),
             workspaceScripts: tools.has("start_workspace_script"),
             schedules: tools.has("create_schedule"),
+            notes: tools.has("create_note"),
             heartbeats: tools.has("create_heartbeat"),
             browser: tools.has("browser_navigate"),
             pullRequestWatch: tools.has("watch_pull_request"),
