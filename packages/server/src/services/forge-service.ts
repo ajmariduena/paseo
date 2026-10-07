@@ -126,6 +126,8 @@ export interface CurrentPullRequestStatus {
   state: string;
   baseRefName: string;
   headRefName: string;
+  /** The head commit, on forges that report it. */
+  headSha?: string;
   isMerged: boolean;
   isDraft?: boolean;
   mergeable: PullRequestMergeable;

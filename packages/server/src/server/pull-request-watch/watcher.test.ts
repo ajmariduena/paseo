@@ -1,3 +1,4 @@
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 
@@ -27,6 +28,7 @@ const AGENT_LOGIN = "agent-bot";
 interface FakeForge {
   service: PullRequestWatchForgeService;
   state: string;
+  headSha: string;
   checks: PullRequestCheck[];
   requiredCheckNames: string[];
   mergeable: PullRequestMergeable;
@@ -38,6 +40,7 @@ interface FakeForge {
 function createFakeForge(): FakeForge {
   const forge: FakeForge = {
     state: "OPEN",
+    headSha: "aaa111",
     checks: [],
     requiredCheckNames: [],
     mergeable: "MERGEABLE",
@@ -70,6 +73,7 @@ function createFakeForge(): FakeForge {
           state: forge.state.toLowerCase(),
           baseRefName: "main",
           headRefName: "feature",
+          headSha: forge.headSha,
           isMerged: merged,
           mergeable: forge.mergeable,
           checks: forge.checks,
@@ -253,6 +257,97 @@ test("comments from someone else wake the agent, and its own comments do not", a
   expect(prompts(current)).toEqual([
     expect.stringContaining(`- 1 new comment:\n  - reviewer: "Please rename this" ${PR_URL}#c2\n`),
   ]);
+});
+
+test("a push resets the failed checks, so the same failure on the new head wakes again", async () => {
+  const current = await startWatching();
+  current.forge.checks = [check("test", "failure")];
+  await watch(current);
+
+  current.forge.headSha = "bbb222";
+  current.forge.checks = [check("test", "pending")];
+  await sweep(current);
+  current.forge.checks = [check("test", "failure")];
+  await sweep(current);
+
+  expect(prompts(current)).toEqual([expect.stringContaining("  - test https://ci.example/test")]);
+});
+
+test("a push whose checks all finish between two passes still wakes", async () => {
+  const current = await startWatching();
+  current.forge.checks = [check("test", "success")];
+  await watch(current);
+
+  current.forge.headSha = "bbb222";
+  await sweep(current);
+
+  expect(prompts(current)).toEqual([expect.stringContaining("- All 1 check passed.")]);
+});
+
+test("a required check that first appears already passed wakes again", async () => {
+  const current = await startWatching();
+  current.forge.requiredCheckNames = ["tests", "gate"];
+  current.forge.checks = [check("tests", "pending")];
+  await watch(current);
+
+  current.forge.checks = [check("tests", "success")];
+  await sweep(current);
+  current.host.session(current.agentId).completeTurn("noted");
+  current.forge.checks = [check("tests", "success"), check("gate", "success")];
+  await sweep(current);
+  current.host.session(current.agentId).completeTurn("noted");
+  current.forge.checks.push(check("advisory", "success"));
+  await sweep(current);
+
+  expect(prompts(current)).toEqual([
+    expect.stringContaining("- All 1 required check passed."),
+    expect.stringContaining("- All 2 required checks passed."),
+  ]);
+});
+
+test("a watch saved before head and passed-check tracking adopts them without a wake", async () => {
+  const current = await startWatching();
+  current.forge.checks = [check("lint", "failure"), check("test", "success")];
+  await writeFile(
+    join(current.host.root, "pull-request-watches.json"),
+    JSON.stringify({
+      version: 1,
+      watches: [
+        {
+          id: "legacy",
+          agentId: current.agentId,
+          cwd: current.host.root,
+          number: 42,
+          url: PR_URL,
+          title: "Add the widget",
+          headRefName: "feature",
+          startedAt: "2026-10-01T12:00:00.000Z",
+          progress: {
+            failedChecks: ["lint"],
+            passed: false,
+            remarksThrough: 0,
+            remarkIds: [],
+            conflicting: false,
+            wakes: 0,
+          },
+        },
+      ],
+    }),
+  );
+
+  await sweep(current);
+
+  expect(prompts(current)).toEqual([]);
+  expect((await current.store.get("legacy"))?.progress).toEqual({
+    headSha: "aaa111",
+    failedChecks: ["lint"],
+    passed: false,
+    passedChecks: [],
+    remarksThrough: 0,
+    remarkIds: [],
+    conflicting: false,
+    wakes: 0,
+  });
 });
 
 test("a new merge conflict wakes the agent once", async () => {

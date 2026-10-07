@@ -137,8 +137,10 @@ export class PullRequestWatcher {
       headRefName: summary.headRefName,
       startedAt: new Date(this.now()).toISOString(),
       progress: {
+        headSha: null,
         failedChecks: [],
         passed: false,
+        passedChecks: [],
         remarksThrough: Math.floor(this.now() / 1000) * 1000,
         remarkIds: [],
         conflicting: false,
@@ -352,6 +354,7 @@ export class PullRequestWatcher {
       kind: "open",
       status,
       observation: {
+        headSha: status.headSha ?? null,
         checks: status.checks,
         requiredCheckNames,
         mergeable: status.mergeable,
