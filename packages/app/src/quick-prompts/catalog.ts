@@ -2,6 +2,13 @@ import type { QuickPrompt } from "@getpaseo/protocol/messages";
 
 export type QuickPromptPickerAction = "send" | "insert" | "pin" | "default";
 
+/** An explicit choice wins; otherwise the first pinned prompt is the toolbar shortcut. */
+export function resolveQuickPromptShortcut(
+  prompts: readonly QuickPrompt[],
+): QuickPrompt | undefined {
+  return prompts.find((prompt) => prompt.isDefault) ?? prompts.find((prompt) => prompt.pinned);
+}
+
 export function updateQuickPrompt(
   prompts: readonly QuickPrompt[],
   prompt: QuickPrompt,

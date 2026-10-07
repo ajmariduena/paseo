@@ -8,6 +8,7 @@ import {
   isQuickPromptActionDisabled,
   selectQuickPrompt,
   moveQuickPrompt,
+  resolveQuickPromptShortcut,
   updateQuickPrompt,
 } from "@/quick-prompts/catalog";
 import { openQuickPromptForm } from "@/quick-prompts/form";
@@ -579,6 +580,27 @@ describe("deferred quick prompt sends", () => {
 });
 
 describe("quick prompt picker actions", () => {
+  it("uses the selected default, then the first pinned favorite, for the toolbar shortcut", () => {
+    const ordinary: QuickPrompt = {
+      id: "ordinary",
+      title: "Ordinary",
+      text: "Ordinary prompt",
+      mode: "send",
+      pinned: false,
+      isDefault: false,
+    };
+    const firstPinned = { ...ordinary, id: "first", pinned: true };
+    const secondPinned = { ...ordinary, id: "second", pinned: true };
+    const selected = { ...ordinary, id: "selected", isDefault: true };
+
+    expect(resolveQuickPromptShortcut([ordinary, firstPinned, secondPinned, selected])).toEqual(
+      selected,
+    );
+    expect(resolveQuickPromptShortcut([ordinary, firstPinned, secondPinned])).toEqual(firstPinned);
+    expect(resolveQuickPromptShortcut([ordinary])).toBeUndefined();
+    expect(resolveQuickPromptShortcut([])).toBeUndefined();
+  });
+
   it("permits insert while sends are blocked, and only blocks inserts during a catalog write", () => {
     expect(isQuickPromptActionDisabled("insert", false, true)).toBe(false);
     expect(isQuickPromptActionDisabled("insert", true, false)).toBe(true);

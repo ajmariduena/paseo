@@ -13,7 +13,7 @@ export function QuickPromptMenuTrigger({ picker }: { picker: QuickPromptPicker }
       <MenuSeparator />
       <MenuSubTrigger
         id={QUICK_PROMPT_MENU_PAGE_ID}
-        value={picker.defaultPrompt?.title}
+        value={picker.shortcutPrompt?.title}
         testID="quick-prompts-menu-trigger"
       >
         {t("quickPrompts.section")}
