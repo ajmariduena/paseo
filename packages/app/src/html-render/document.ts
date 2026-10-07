@@ -96,8 +96,30 @@ export interface RenderBridgeMessage {
   nonce: string;
   renderId: string;
   id?: string | number;
-  method: "ui/notifications/size-changed" | "ui/open-link";
-  params: { height: number } | { url: string };
+  method: "ui/notifications/size-changed" | "ui/notifications/hover-changed" | "ui/open-link";
+  params: { height: number } | { hovered: boolean } | { url: string };
+}
+
+function validRenderBridgeParams(
+  message: Record<string, unknown>,
+  fields: Record<string, unknown>,
+): boolean {
+  if (message.method === "ui/notifications/size-changed") {
+    return typeof fields.height === "number" && Number.isFinite(fields.height) && fields.height > 0;
+  }
+  if (message.method === "ui/notifications/hover-changed") {
+    return typeof fields.hovered === "boolean";
+  }
+  if (message.method === "ui/open-link") {
+    return (
+      (typeof message.id === "string" || typeof message.id === "number") &&
+      (typeof message.id !== "string" || message.id.length <= 128) &&
+      typeof fields.url === "string" &&
+      /^https?:\/\//i.test(fields.url) &&
+      fields.url.length <= 2048
+    );
+  }
+  return false;
 }
 
 export function readRenderBridgeMessage(
@@ -112,25 +134,9 @@ export function readRenderBridgeMessage(
   const params = message.params;
   if (typeof params !== "object" || params === null) return null;
   const fields = params as Record<string, unknown>;
-  if (
-    message.method === "ui/notifications/size-changed" &&
-    typeof fields.height === "number" &&
-    Number.isFinite(fields.height) &&
-    fields.height > 0
-  ) {
-    return message as unknown as RenderBridgeMessage;
-  }
-  if (
-    message.method === "ui/open-link" &&
-    (typeof message.id === "string" || typeof message.id === "number") &&
-    (typeof message.id !== "string" || message.id.length <= 128) &&
-    typeof fields.url === "string" &&
-    /^https?:\/\//i.test(fields.url) &&
-    fields.url.length <= 2048
-  ) {
-    return message as unknown as RenderBridgeMessage;
-  }
-  return null;
+  return validRenderBridgeParams(message, fields)
+    ? (message as unknown as RenderBridgeMessage)
+    : null;
 }
 
 export function renderThemeMessage(theme: RenderTheme) {
@@ -161,7 +167,10 @@ export interface PrepareRenderDocumentInput {
 
 export function prepareRenderDocument(input: PrepareRenderDocumentInput): string {
   const { html, theme, nonce, renderId, linkMode } = input;
-  const payload = JSON.stringify({ nonce, renderId }).replace(/</g, "\\u003c");
+  const payload = JSON.stringify({ nonce, renderId, web: linkMode === "web" }).replace(
+    /</g,
+    "\\u003c",
+  );
   const linkAction =
     linkMode === "native"
       ? 'a.setAttribute("target","_blank");a.setAttribute("rel","noopener");'
@@ -194,6 +203,7 @@ export function prepareRenderDocument(input: PrepareRenderDocumentInput): string
         ${linkAction}
       }catch(x){}
     },true);
+    if(p.web){var hovering=false;function hover(value){if(hovering===value)return;hovering=value;send("ui/notifications/hover-changed",{hovered:value});}window.addEventListener("mouseenter",function(){hover(true);});document.addEventListener("pointermove",function(){hover(true);},{passive:true});window.addEventListener("mouseleave",function(){hover(false);});}
     var h=0;
     function size(){
       var b=document.body,v=b?Math.ceil(Math.max(b.scrollHeight,b.getBoundingClientRect().height)):0;

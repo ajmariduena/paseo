@@ -52,6 +52,7 @@ export interface VisualizationBridgeMessage {
   id?: string;
   method:
     | "visualization/size"
+    | "visualization/hover"
     | "visualization/set-state"
     | "visualization/follow-up"
     | "visualization/open-external";
@@ -67,6 +68,7 @@ function validBridgeParams(method: unknown, params: Record<string, unknown>): bo
       params.height <= 100_000
     );
   }
+  if (method === "visualization/hover") return typeof params.hovered === "boolean";
   if (method === "visualization/set-state") {
     if (!("state" in params)) return false;
     try {
@@ -94,7 +96,7 @@ export function readVisualizationBridgeMessage(
     return null;
   if (typeof message.params !== "object" || message.params === null) return null;
   const params = message.params as Record<string, unknown>;
-  if (message.method !== "visualization/size") {
+  if (message.method !== "visualization/size" && message.method !== "visualization/hover") {
     if (typeof message.id !== "string" || message.id.length === 0 || message.id.length > 128)
       return null;
   }
@@ -247,6 +249,7 @@ export function prepareVisualizationDocument(input: {
     window.openai=api;
     function Tweak(){this.supported=false;}Tweak.supported=false;["addSlider","addColorPicker","addToggle","addSelect"].forEach(function(name){Tweak.prototype[name]=function(){return this;};});window.Tweak=Tweak;
     document.addEventListener("click",function(e){var a=e.isTrusted?e.composedPath().find(function(t){return t&&t.matches&&t.matches("a[href]");}):null;if(!a)return;try{var u=new URL(a.href);if(!/^https?:$/.test(u.protocol))return;if(p.native){a.setAttribute("target","_blank");a.setAttribute("rel","noopener");}else{e.preventDefault();request("visualization/open-external",{url:u.href}).catch(function(){});}}catch(x){}},true);
+    if(!p.native){var hovering=false;function hover(value){if(hovering===value)return;hovering=value;send("visualization/hover",{hovered:value});}window.addEventListener("mouseenter",function(){hover(true);});document.addEventListener("pointermove",function(){hover(true);},{passive:true});window.addEventListener("mouseleave",function(){hover(false);});}
     var h=0;function size(){var b=document.body,v=b?Math.ceil(Math.max(b.scrollHeight,b.getBoundingClientRect().height)):0;if(v>0&&v!==h){h=v;send("visualization/size",{height:v});}}
     document.addEventListener("DOMContentLoaded",function(){if(window.ResizeObserver){var o=new ResizeObserver(size);o.observe(document.documentElement);if(document.body)o.observe(document.body);}size();});window.addEventListener("load",size);window.addEventListener("resize",function(){emit();size();});
   })();`;

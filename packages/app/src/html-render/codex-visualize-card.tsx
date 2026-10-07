@@ -44,15 +44,13 @@ function CodexVisualizeCardContent(props: {
   canRetryAction: boolean;
   actionPending: boolean;
   reloadToken: number;
-  controlsVisible: boolean;
-  compact: boolean;
   inlineHeight: number;
   onHeightChange: (height: number) => void;
+  onHoverChange: (hovered: boolean) => void;
   cardStyle: StyleProp<ViewStyle>;
   hintStyle: StyleProp<TextStyle>;
   retryFetch: () => void;
   retryAction: () => void;
-  open: () => void;
   close: () => void;
 }) {
   const { data, visualization } = props;
@@ -75,6 +73,7 @@ function CodexVisualizeCardContent(props: {
           theme={props.theme}
           visualization={visualization}
           onHeightChange={props.onHeightChange}
+          onHoverChange={props.onHoverChange}
         />
       ) : null}
       {data && props.expanded ? <View style={placeholderStyle} /> : null}
@@ -92,14 +91,6 @@ function CodexVisualizeCardContent(props: {
             </Button>
           ) : null}
         </View>
-      ) : null}
-      {data && visualization ? (
-        <RenderExpandControl
-          visible={props.controlsVisible}
-          compact={props.compact}
-          label="Expand visualization"
-          onPress={props.open}
-        />
       ) : null}
       {props.expanded && data && visualization ? (
         <HtmlRenderViewer
@@ -347,17 +338,23 @@ function CodexVisualizeCardImpl({
         canRetryAction={actions.failedState !== null || actions.failedFollowUp !== null}
         actionPending={actions.saving || actions.sending}
         reloadToken={actions.reloadToken}
-        controlsVisible={controlsVisible}
-        compact={isCompact}
         inlineHeight={inlineHeight}
         onHeightChange={setInlineHeight}
+        onHoverChange={setIsHovered}
         cardStyle={cardStyle}
         hintStyle={hintStyle}
         retryFetch={retryFetch}
         retryAction={actions.retryAction}
-        open={open}
         close={close}
       />
+      {fetched.data && visualization ? (
+        <RenderExpandControl
+          visible={controlsVisible}
+          compact={isCompact}
+          label="Expand visualization"
+          onPress={open}
+        />
+      ) : null}
     </View>
   );
 }

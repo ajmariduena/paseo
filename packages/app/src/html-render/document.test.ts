@@ -122,6 +122,15 @@ test("maps live light and dark themes and bounds height messages", () => {
       "r",
     ),
   ).toBeNull();
+  const hover = {
+    jsonrpc: "2.0",
+    nonce: "n",
+    renderId: "r",
+    method: "ui/notifications/hover-changed",
+    params: { hovered: true },
+  };
+  expect(readRenderBridgeMessage(hover, "n", "r")).toEqual(hover);
+  expect(readRenderBridgeMessage({ ...hover, params: { hovered: "yes" } }, "n", "r")).toBeNull();
   expect(
     readRenderBridgeMessage(
       {
@@ -213,6 +222,13 @@ test("visualization themes and bridge reject forged or unsafe requests", () => {
   };
   expect(readVisualizationBridgeMessage(size, "n", "/work/fruit-chart.html")).toEqual(size);
   expect(readVisualizationBridgeMessage(size, "wrong", "/work/fruit-chart.html")).toBeNull();
+  expect(
+    readVisualizationBridgeMessage(
+      { ...size, method: "visualization/hover", params: { hovered: true } },
+      "n",
+      size.identity,
+    ),
+  ).not.toBeNull();
   expect(
     readVisualizationBridgeMessage({ ...size, params: { height: 0 } }, "n", size.identity),
   ).toBeNull();

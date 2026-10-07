@@ -33,6 +33,7 @@ export interface HtmlRenderFrameProps {
   theme: RenderTheme;
   fullscreen?: boolean;
   onHeightChange?: (height: number) => void;
+  onHoverChange?: (hovered: boolean) => void;
   visualization?: VisualizationFrameOptions;
 }
 

@@ -25,6 +25,7 @@ export interface HtmlRenderFrameProps {
   theme: RenderTheme;
   fullscreen?: boolean;
   onHeightChange?: (height: number) => void;
+  onHoverChange?: (hovered: boolean) => void;
   visualization?: VisualizationFrameOptions;
 }
 
@@ -35,12 +36,17 @@ function handleVisualizationFrameMessage(input: {
   nonce: string;
   followUpPending: { current: boolean };
   setContentHeight: (height: number) => void;
+  onHoverChange?: (hovered: boolean) => void;
 }) {
-  const { value, frame, visual, nonce, followUpPending, setContentHeight } = input;
+  const { value, frame, visual, nonce, followUpPending, setContentHeight, onHoverChange } = input;
   const message = readVisualizationBridgeMessage(value, nonce, visual.canonicalPath);
   if (!message) return;
   if (message.method === "visualization/size") {
     setContentHeight(message.params.height as number);
+    return;
+  }
+  if (message.method === "visualization/hover") {
+    onHoverChange?.(message.params.hovered as boolean);
     return;
   }
   const reply = (result: unknown, error: string | null) => {
@@ -168,12 +174,13 @@ export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
   }, [nonce, props.theme, props.visualization]);
 
   const followUpPending = useRef(false);
+  const { onHoverChange, renderId, visualization } = props;
 
   useEffect(() => {
     function receive(event: MessageEvent) {
       const frame = frameRef.current;
       if (!frame || event.source !== frame.contentWindow) return;
-      const visual = props.visualization;
+      const visual = visualization;
       if (visual) {
         handleVisualizationFrameMessage({
           value: event.data,
@@ -182,13 +189,17 @@ export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
           nonce,
           followUpPending,
           setContentHeight,
+          onHoverChange,
         });
         return;
       }
-      const message = readRenderBridgeMessage(event.data, nonce, props.renderId);
+      const message = readRenderBridgeMessage(event.data, nonce, renderId);
       if (!message) return;
       if (message.method === "ui/notifications/size-changed" && "height" in message.params) {
         setContentHeight(message.params.height);
+      }
+      if (message.method === "ui/notifications/hover-changed" && "hovered" in message.params) {
+        onHoverChange?.(message.params.hovered);
       }
       if (message.method === "ui/open-link" && "url" in message.params) {
         if (document.activeElement === frame && navigator.userActivation?.isActive) {
@@ -199,7 +210,7 @@ export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
     }
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);
-  }, [nonce, props.renderId, props.visualization]);
+  }, [nonce, onHoverChange, renderId, visualization]);
 
   useEffect(() => {
     onLoad();

@@ -27,7 +27,7 @@ const expandOverlayStyle = {
   position: "absolute" as const,
   top: 0,
   right: 0,
-  zIndex: 1,
+  zIndex: 10,
   width: 30,
   height: 30,
   opacity: 1,
@@ -89,7 +89,6 @@ function HtmlRenderCardImpl({ client, serverId, agentId, render, theme }: CardPr
       width: "100%" as const,
       minHeight: fetched.data ? undefined : render.height,
       backgroundColor: activeTheme.variables["--background"],
-      position: "relative" as const,
     }),
     [activeTheme, fetched.data, render.height],
   );
@@ -136,17 +135,10 @@ function HtmlRenderCardImpl({ client, serverId, agentId, render, theme }: CardPr
             height={render.height}
             theme={activeTheme}
             onHeightChange={setInlineHeight}
+            onHoverChange={setIsHovered}
           />
         ) : null}
         {fetched.data && expanded ? <View style={placeholderStyle} /> : null}
-        {fetched.data ? (
-          <RenderExpandControl
-            visible={showControls}
-            compact={isCompact}
-            label="Expand HTML page"
-            onPress={open}
-          />
-        ) : null}
         {expanded && fetched.data ? (
           <HtmlRenderViewer
             html={fetched.data.html}
@@ -158,6 +150,14 @@ function HtmlRenderCardImpl({ client, serverId, agentId, render, theme }: CardPr
           />
         ) : null}
       </View>
+      {fetched.data ? (
+        <RenderExpandControl
+          visible={showControls}
+          compact={isCompact}
+          label="Expand HTML page"
+          onPress={open}
+        />
+      ) : null}
     </View>
   );
 }
