@@ -1,4 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
+import { HtmlRenderStore, MAX_HTML_CHARS, prepareHtmlPreview } from "../html-render/store.js";
+import {
+  ensureHeadlessShell,
+  headlessShellPlatform,
+  headlessShellStatus,
+} from "../html-render/browser-install.js";
+import { captureHtmlPreview, measureHtmlRenderHeights } from "../html-render/headless-preview.js";
+import { STOCK_RENDER_THEMES } from "../html-render/stock-theme.js";
+import { RENDER_WIDTHS } from "@getpaseo/protocol/html-render";
 import { stat } from "node:fs/promises";
 import { z } from "zod";
 import { ensureValidJson } from "../../json-utils.js";
@@ -165,6 +174,7 @@ export interface PaseoToolHostDependencies {
   browserToolsBroker?: BrowserToolsBroker | null;
   paseoToolPolicy?: ProviderPaseoToolsPolicy;
   paseoHome?: string;
+  previewBrowserExecutable?: string;
   worktreesRoot?: string;
   delegations?: Pick<
     DelegationService,
@@ -744,6 +754,7 @@ async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Prom
   }
 }
 
+// eslint-disable-next-line complexity
 export function createPaseoToolCatalog(options: PaseoToolHostDependencies): PaseoToolCatalog {
   const {
     agentManager,
@@ -812,6 +823,176 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       return tool.handler(await parseToolInput(tool, input), context);
     },
   });
+
+  if (callerAgentId && options.paseoHome && !options.voiceOnly) {
+    const caller = agentManager.getAgent(callerAgentId);
+    const previewSupported =
+      headlessShellPlatform() !== null &&
+      !(
+        options.transport === "native" &&
+        caller?.provider === "opencode" &&
+        caller.capabilities.supportsToolResultImages !== true
+      );
+    if (previewSupported)
+      registerTool(
+        "html_preview",
+        {
+          title: "Preview an HTML page",
+          description:
+            "Render a self-contained HTML page in Paseo's headless browser and receive a PNG screenshot, contentHeight, and console output, including uncaught exceptions with stacks pointing into page.html. console.log is a fine way to report your own checks. Use it to check and iterate before html_render. " +
+            "The first call may install the preview browser; if Paseo says it is still installing, call again in a minute. Local images under your cwd or the OS temp directory are inlined; unreadable images appear in missingImages. HTTPS scripts, styles, images, fonts and media follow the same CSP as the reader's page. The preview uses Paseo's default light or dark theme; a reader's custom theme may differ. Try width 390 for phones. Resource loads can make outbound HTTPS requests.",
+          inputSchema: {
+            html: z
+              .string()
+              .min(1)
+              .max(MAX_HTML_CHARS)
+              .describe("Complete self-contained HTML document"),
+            width: z
+              .number()
+              .int()
+              .min(240)
+              .max(1600)
+              .optional()
+              .describe("Width in CSS pixels, 240–1600; defaults to 728"),
+            appearance: z
+              .enum(["dark", "light"])
+              .optional()
+              .describe("Default stock theme, dark or light; defaults to dark"),
+          },
+          annotations: {
+            readOnlyHint: true,
+            destructiveHint: false,
+            idempotentHint: true,
+            openWorldHint: true,
+          },
+        },
+        async (input: { html: string; width?: number; appearance?: "dark" | "light" }, context) => {
+          try {
+            const agent = agentManager.getAgent(callerAgentId);
+            if (!agent) throw new Error("Preview requires an agent caller");
+            const executable =
+              options.previewBrowserExecutable ?? (await ensureHeadlessShell(options.paseoHome!));
+            if (!executable)
+              return {
+                isError: true,
+                content: [
+                  {
+                    type: "text",
+                    text: "Paseo is installing its preview browser; call html_preview again in a minute.",
+                  },
+                ],
+              };
+            const prepared = await prepareHtmlPreview(input.html, agent.cwd);
+            const width = input.width ?? 728;
+            const screenshot = await captureHtmlPreview({
+              executable,
+              html: prepared.html,
+              width,
+              theme: STOCK_RENDER_THEMES[input.appearance ?? "dark"],
+              signal: context.signal,
+            });
+            const metadata = {
+              width,
+              contentHeight: screenshot.contentHeight,
+              capturedHeight: screenshot.capturedHeight,
+              consoleMessages: screenshot.consoleMessages,
+              ...(prepared.missingImages.length ? { missingImages: prepared.missingImages } : {}),
+              screenshot: { mimeType: "image/png", width, height: screenshot.capturedHeight },
+            };
+            return {
+              structuredContent: metadata,
+              content: [
+                { type: "text", text: JSON.stringify(metadata) },
+                { type: "image", mimeType: "image/png", data: screenshot.png },
+              ],
+            };
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "Preview failed";
+            return {
+              isError: true,
+              content: [{ type: "text", text: `HTML preview failed: ${message.slice(0, 500)}` }],
+            };
+          }
+        },
+      );
+    registerTool(
+      "html_render",
+      {
+        title: "Render an HTML page",
+        description:
+          "Show a finished self-contained HTML page (chart, dashboard, table, diagram, collage, mockup) inline above your final reply. Call before the reply; add only what the page does not say. " +
+          (previewSupported && isPaseoToolEnabled(options.paseoToolPolicy, "html_preview")
+            ? "Check the page with html_preview first. "
+            : "") +
+          "Supply one document with inline style and script, a short title, and a height of 80–2000 CSS pixels. The frame grows to the page height at each reader width when measurements are available; a smaller requested height intentionally scrolls inside the frame. " +
+          "The frame is borderless and aligned with reply text. Use fluid width, no outer card or banner, and avoid viewport heights. Absolute local image paths under this agent's cwd or the OS temp directory are inlined. " +
+          "HTTPS scripts, styles, images, fonts, and media can load from any host, including chart CDNs, and can send data present in the page to that host. connect-src blocks fetch, XHR, and WebSocket only; it is not network isolation. Forms and nested frames are blocked. The page contains only what you author, and you already have that data and network access. " +
+          "Use CSS variables --background, --foreground, --muted, --muted-foreground, --card, --card-foreground, --popover, --popover-foreground, --secondary, --secondary-foreground, --border, --input, --ring, --primary, --primary-foreground, --accent, --accent-foreground, --accent-surface, --accent-surface-foreground, " +
+          "--destructive, --destructive-foreground, --destructive-surface, --warning, --warning-foreground, --warning-surface, --success, --success-foreground, --info, --info-foreground, --code-background, --code-foreground, --chart-1 through --chart-6, --radius, --font-sans and --font-mono. They follow the reader's theme live.",
+        inputSchema: {
+          html: z
+            .string()
+            .min(1)
+            .max(MAX_HTML_CHARS)
+            .describe("Complete self-contained HTML document"),
+          title: z.string().trim().min(1).max(200).describe("Short name for the page"),
+          height: z
+            .number()
+            .int()
+            .describe(
+              "Requested cap in CSS pixels, 80–2000. Use preview contentHeight at the reply width to fit the page; a smaller value intentionally scrolls within the frame.",
+            ),
+        },
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: false,
+          openWorldHint: true,
+        },
+      },
+      async (input: { html: string; title: string; height: number }, context) => {
+        const agent = resolveCallerAgent();
+        if (!agent) throw new Error("html_render requires an agent caller");
+        const store = new HtmlRenderStore(options.paseoHome!);
+        const htmlRender = await store.publish({
+          agentId: agent.id,
+          cwd: agent.cwd,
+          ...input,
+        });
+        let heights: [number, number][] | undefined;
+        try {
+          const browser =
+            options.previewBrowserExecutable ??
+            (await headlessShellStatus(options.paseoHome!)).executable;
+          if (browser) {
+            const prepared = await store.get(agent.id, htmlRender.renderId);
+            heights = await measureHtmlRenderHeights({
+              executable: browser,
+              html: prepared.html,
+              widths: RENDER_WIDTHS,
+              theme: STOCK_RENDER_THEMES.dark,
+              signal: context.signal,
+            });
+          }
+        } catch (error) {
+          childLogger.warn(
+            { error: error instanceof Error ? error.message.slice(0, 500) : "unknown" },
+            "Could not measure HTML render widths",
+          );
+        }
+        const reference = { ...htmlRender, ...(heights ? { heights } : {}) };
+        const result = {
+          htmlRender: reference,
+          message:
+            "Shown to the reader above your reply. Reply with only what the page does not already say.",
+        };
+        return {
+          structuredContent: result,
+          content: [{ type: "text", text: JSON.stringify(result) }],
+        };
+      },
+    );
+  }
 
   const buildCronScheduleCadence = (input: {
     cron: string | undefined;

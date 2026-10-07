@@ -17,7 +17,9 @@ export type PaseoActivity =
   | "answeredPermissions"
   | "createdSchedules"
   | "createdHeartbeats"
-  | "checkedCapabilities";
+  | "checkedCapabilities"
+  | "previewedHtml"
+  | "renderedHtml";
 
 const PASEO_ACTIVITY_BY_LEAF: Readonly<Record<string, PaseoActivity>> = {
   send_agent_prompt: "sentPrompts",
@@ -31,6 +33,8 @@ const PASEO_ACTIVITY_BY_LEAF: Readonly<Record<string, PaseoActivity>> = {
   create_schedule: "createdSchedules",
   create_heartbeat: "createdHeartbeats",
   get_orchestration_capabilities: "checkedCapabilities",
+  html_preview: "previewedHtml",
+  html_render: "renderedHtml",
 };
 
 const PASEO_ACTIVITY_ORDER: readonly PaseoActivity[] = [
@@ -44,6 +48,8 @@ const PASEO_ACTIVITY_ORDER: readonly PaseoActivity[] = [
   "createdSchedules",
   "createdHeartbeats",
   "checkedCapabilities",
+  "previewedHtml",
+  "renderedHtml",
 ];
 
 /** Activities whose count is the agents they touched rather than the calls made. */
@@ -88,7 +94,12 @@ interface PaseoActivityTally {
 }
 
 function isPaseoCall(name: string, normalizedName: string): boolean {
-  return isPaseoToolName(name) || normalizedName.startsWith(DIRECT_PASEO_TOOL_PREFIX);
+  return (
+    isPaseoToolName(name) ||
+    normalizedName.startsWith(DIRECT_PASEO_TOOL_PREFIX) ||
+    normalizedName === "html_preview" ||
+    normalizedName === "html_render"
+  );
 }
 
 function isSearchCall(name: string): boolean {
@@ -162,7 +173,10 @@ export function summarizeOverviewToolCalls(calls: readonly ToolCallItem[]): {
       continue;
     }
     if (isPaseoCall(descriptor.name, normalizedName)) {
-      const leaf = getPaseoCallLeafName(descriptor.name);
+      const leaf =
+        normalizedName === "html_preview" || normalizedName === "html_render"
+          ? normalizedName
+          : getPaseoCallLeafName(descriptor.name);
       const activity = leaf ? PASEO_ACTIVITY_BY_LEAF[leaf] : undefined;
       if (activity) tallyPaseoActivity(paseoTallies, activity, call);
       else paseoCallCount += 1;

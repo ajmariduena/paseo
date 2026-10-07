@@ -89,8 +89,11 @@ import { isStaleProviderSessionError } from "./stale-provider-session-error.js";
 import { stripInternalPaseoMcpServer, withRuntimePaseoMcpServer } from "./runtime-mcp-config.js";
 import { resolveCreateAgentTitles } from "./create-agent-title.js";
 import type { PaseoToolCatalogFactory } from "./tools/types.js";
-import { isPaseoToolPolicyEnabled } from "./paseo-tool-policy.js";
+import { isPaseoToolEnabled, isPaseoToolPolicyEnabled } from "./paseo-tool-policy.js";
+import { headlessShellPlatform } from "./html-render/browser-install.js";
 import { buildPaseoOrchestrationInstructions } from "./orchestration-instructions.js";
+import { HtmlRenderStore } from "./html-render/store.js";
+import { CodexVisualizationStore } from "./visualization/resolve.js";
 import { composeSystemPromptParts } from "./system-prompt.js";
 import {
   PromptAnnotationStore,
@@ -128,6 +131,14 @@ type TimeoutResult = "completed" | "timed_out";
 
 function resolvePromptAnnotations(options: AgentManagerOptions): PromptAnnotationStore {
   return options.promptAnnotations ?? new PromptAnnotationStore(null);
+}
+
+function resolveHtmlRenderStore(options: AgentManagerOptions): HtmlRenderStore | null {
+  return options.paseoHome ? new HtmlRenderStore(options.paseoHome) : null;
+}
+
+function resolveVisualizationStore(options: AgentManagerOptions): CodexVisualizationStore | null {
+  return options.paseoHome ? new CodexVisualizationStore(options.paseoHome) : null;
 }
 
 function toNotificationItem(
@@ -249,6 +260,7 @@ interface NotificationPrompt {
 interface AttachedPaseoTools {
   toolsAttached: boolean;
   paseoToolPolicy: ProviderPaseoToolsPolicy | undefined;
+  previewAvailable: boolean;
 }
 
 interface PreparedSessionConfig {
@@ -401,6 +413,7 @@ export interface CreateAgentOptions {
 }
 
 export interface AgentManagerOptions {
+  paseoHome?: string;
   pluginLifecycle?: PluginLifecycle;
   clients?: ProviderClientMap;
   providerDefinitions?: ProviderEnabledMap;
@@ -868,6 +881,8 @@ export class AgentManager {
   private paseoToolsEnabled = true;
   private paseoToolCatalogFactory: PaseoToolCatalogFactory | null = null;
   private readonly paseoToolPolicies = new Map<string, ProviderPaseoToolsPolicy | undefined>();
+  private readonly htmlRenderStore: HtmlRenderStore | null;
+  private readonly visualizationStore: CodexVisualizationStore | null;
   private readonly resolvePaseoToolPolicy: (
     provider: AgentProvider,
   ) => ProviderPaseoToolsPolicy | undefined;
@@ -881,6 +896,8 @@ export class AgentManager {
   private acceptingAgentRegistrations = true;
 
   constructor(options: AgentManagerOptions) {
+    this.htmlRenderStore = resolveHtmlRenderStore(options);
+    this.visualizationStore = resolveVisualizationStore(options);
     this.pluginLifecycle = options.pluginLifecycle;
     this.idFactory = options?.idFactory ?? (() => randomUUID());
     this.registry = options?.registry;
@@ -3626,6 +3643,8 @@ export class AgentManager {
     this.discardRetainedAgentState(agentId);
     await this.deleteCommittedTimeline(agentId);
     await this.promptAnnotations.delete(agentId);
+    await this.htmlRenderStore?.deleteAgent(agentId);
+    await this.visualizationStore?.deleteAgent(agentId);
   }
 
   /**
@@ -5728,6 +5747,14 @@ export class AgentManager {
           toolsEnabled &&
           (this.mcpBaseUrl !== null || this.hasNativePaseoTools(storedConfig.provider)),
         paseoToolPolicy,
+        previewAvailable:
+          headlessShellPlatform() !== null &&
+          isPaseoToolEnabled(paseoToolPolicy, "html_preview") &&
+          !(
+            storedConfig.provider === "opencode" &&
+            this.hasNativePaseoTools(storedConfig.provider) &&
+            this.clients.get(storedConfig.provider)?.capabilities.supportsToolResultImages !== true
+          ),
       },
     );
     return { storedConfig, launchConfig, paseoToolPolicy };
@@ -5744,7 +5771,11 @@ export class AgentManager {
   ): AgentSessionConfig {
     const orchestration =
       tools.toolsAttached && !config.internal
-        ? buildPaseoOrchestrationInstructions(tools.paseoToolPolicy)
+        ? buildPaseoOrchestrationInstructions(
+            tools.paseoToolPolicy,
+            config.provider,
+            tools.previewAvailable,
+          )
         : undefined;
     const daemonAppendSystemPrompt = composeSystemPromptParts(
       orchestration,

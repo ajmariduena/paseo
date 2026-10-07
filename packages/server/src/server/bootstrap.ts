@@ -14,6 +14,7 @@ import { z } from "zod";
 import { createBranchChangeRouteHandler } from "./script-route-branch-handler.js";
 import { startWorktreeStorageSweeper } from "./worktree-storage-sweeper.js";
 import { resolvePaseoWorktreesBaseRoot } from "../utils/worktree.js";
+import { HtmlRenderStore } from "./agent/html-render/store.js";
 
 export type ListenTarget =
   | { type: "tcp"; host: string; port: number }
@@ -1040,6 +1041,7 @@ export async function createPaseoDaemon(
   });
   const initialAgentManagerState = providerSnapshotManager.getAgentManagerProviderState();
   const agentManager = new AgentManager({
+    paseoHome: config.paseoHome,
     pluginLifecycle: pluginRuntime,
     clients: initialAgentManagerState.clients,
     providerDefinitions: initialAgentManagerState.providerDefinitions,
@@ -1093,6 +1095,7 @@ export async function createPaseoDaemon(
     agentManager,
     agentStorage,
   );
+  await new HtmlRenderStore(config.paseoHome).initialize();
   await agentStorage.initialize();
   logger.info({ elapsed: elapsed() }, "Agent storage initialized");
   agentManager.messageQueue.setFallbackDeliverer(

@@ -45,6 +45,15 @@ export default {
               `/sessions/${encodeURIComponent(binding.sessionID)}/tools/${encodeURIComponent(definition.name)}`,
               input,
             );
+            if (result.isError) {
+              const message = Array.isArray(result.content)
+                ? result.content
+                    .filter((part) => part?.type === "text" && typeof part.text === "string")
+                    .map((part) => part.text)
+                    .join("\n")
+                : "";
+              throw new Error(message || `Paseo tool ${definition.name} failed`);
+            }
             return { content: result.content, metadata: { paseoTool: definition.name } };
           },
         });

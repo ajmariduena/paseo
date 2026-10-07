@@ -33,6 +33,20 @@ function humanizeToolName(name: string): string {
   if (!trimmed) {
     return name;
   }
+  if (
+    /^(?:html_preview|paseo_html_preview|mcp__paseo(?:_[a-z0-9_-]+)?__html_preview|paseo(?:_[a-z0-9_-]+)?\.html_preview)$/i.test(
+      trimmed,
+    )
+  ) {
+    return "Preview an HTML page";
+  }
+  if (
+    /^(?:html_render|paseo_html_render|mcp__paseo(?:_[a-z0-9_-]+)?__html_render|paseo(?:_[a-z0-9_-]+)?\.html_render)$/i.test(
+      trimmed,
+    )
+  ) {
+    return "Render an HTML page";
+  }
   if (isPaseoToolName(trimmed)) {
     const leaf = getPaseoToolLeafName(trimmed);
     if (leaf) {

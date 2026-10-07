@@ -684,6 +684,54 @@ describe("turn folding", () => {
     expect(result.turnFolds.rowsById.get("prompt:turn-files")?.role).toBe("files");
   });
 
+  it("keeps a Codex visualization directive in its assistant row through history projection and folds", () => {
+    const marker = '\uE200visualize\uE202{"path":"/work/fruit-chart.html"}\uE201';
+    const answerWithVisual = { ...answer, text: `Intro\n\n${marker}\n\nConclusion` };
+    const result = present({ tail: [prompt, ...work, answerWithVisual] });
+    const answerRows = result.tail.filter(
+      (item) => item.kind === "assistant_message" && item.id.startsWith("answer:block:"),
+    );
+    expect(
+      answerRows.map((item) => (item.kind === "assistant_message" ? item.text : "")).join("\n"),
+    ).toContain(marker);
+    expect(result.turnFolds.rowsById.get("prompt:turn-fold")?.fold.state).toBe("complete");
+    expect(answerRows.map((item) => item.id)).toEqual(
+      present({ tail: [prompt, ...work, answerWithVisual] })
+        .tail.filter(
+          (item) => item.kind === "assistant_message" && item.id.startsWith("answer:block:"),
+        )
+        .map((item) => item.id),
+    );
+  });
+
+  it.each(["detailed", "overview"] as const)(
+    "keeps a completed HTML render at its tool position in %s mode",
+    (level) => {
+      const render = workCall(
+        "render",
+        6,
+        {
+          type: "unknown",
+          input: {},
+          output: {
+            htmlRender: {
+              renderId: "550e8400-e29b-41d4-a716-446655440000",
+              title: "Chart",
+              height: 400,
+            },
+          },
+        },
+        { name: "mcp__paseo__html_render" },
+      );
+      const result = present({ tail: [prompt, ...work, render, answer], level });
+      expect(ids(result.tail)).toContain("render");
+      expect(ids(result.tail).indexOf("render")).toBeLessThan(
+        ids(result.tail).indexOf("answer:block:0"),
+      );
+      expect(result.turnFolds.rowsById.get("prompt:turn-fold")?.fold.state).toBe("complete");
+    },
+  );
+
   it.each(["detailed", "overview"] as const)(
     "shows exactly the unfolded %s rows once expanded",
     (level) => {

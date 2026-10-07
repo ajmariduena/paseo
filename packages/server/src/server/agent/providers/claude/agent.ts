@@ -92,6 +92,7 @@ import {
   renderProviderImageOutputAsAssistantMarkdown,
   type ProviderImageOutput,
 } from "../provider-image-output.js";
+import { visibleToolResultImages } from "../preview-image-visibility.js";
 
 import {
   getAgentStreamEventTurnId,
@@ -5368,7 +5369,7 @@ class ClaudeAgentSession implements AgentSession {
       );
     }
 
-    for (const image of images) {
+    for (const image of visibleToolResultImages(toolName, images)) {
       const imageItem = renderProviderImageOutputAsAssistantMarkdown(image, {
         materialize: materializeProviderImage,
       });

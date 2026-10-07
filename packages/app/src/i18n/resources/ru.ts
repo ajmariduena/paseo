@@ -2295,6 +2295,22 @@ export const ru: TranslationResources = {
       },
       checkedCapabilities: "проверены возможности оркестрации",
       checkedCapabilitiesFailed: "не удалось проверить возможности оркестрации",
+      previewedHtml: {
+        one: "предварительно просмотрена {{count}} HTML-страница",
+        other: "предварительно просмотрено {{count}} HTML-страниц",
+      },
+      previewedHtmlFailed: {
+        one: "попытка просмотра {{count}} HTML-страницы",
+        other: "попытка просмотра {{count}} HTML-страниц",
+      },
+      renderedHtml: {
+        one: "показана {{count}} HTML-страница",
+        other: "показано {{count}} HTML-страниц",
+      },
+      renderedHtmlFailed: {
+        one: "попытка показать {{count}} HTML-страницу",
+        other: "попытка показать {{count}} HTML-страниц",
+      },
     },
     and: "и",
   },

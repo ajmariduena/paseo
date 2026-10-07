@@ -7,6 +7,7 @@ export const V2_CAPABILITIES: AgentCapabilityFlags = {
   supportsMcpServers: true,
   supportsReasoningStream: true,
   supportsToolInvocations: true,
+  supportsToolResultImages: true,
   supportsRewindBoth: true,
   supportsRewindConversation: false,
   supportsRewindFiles: false,

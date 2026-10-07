@@ -2250,6 +2250,16 @@ export const ar: TranslationResources = {
       },
       checkedCapabilities: "فحص قدرات التنسيق",
       checkedCapabilitiesFailed: "حاول فحص قدرات التنسيق",
+      previewedHtml: { one: "عاين {{count}} صفحة HTML", other: "عاين {{count}} صفحات HTML" },
+      previewedHtmlFailed: {
+        one: "حاول معاينة {{count}} صفحة HTML",
+        other: "حاول معاينة {{count}} صفحات HTML",
+      },
+      renderedHtml: { one: "عرض {{count}} صفحة HTML", other: "عرض {{count}} صفحات HTML" },
+      renderedHtmlFailed: {
+        one: "حاول عرض {{count}} صفحة HTML",
+        other: "حاول عرض {{count}} صفحات HTML",
+      },
     },
     and: "و",
   },

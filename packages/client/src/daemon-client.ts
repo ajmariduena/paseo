@@ -3585,6 +3585,129 @@ export class DaemonClient {
     return payload;
   }
 
+  async getHtmlRender(agentId: string, renderId: string): Promise<{ html: string; title: string }> {
+    const requestId = this.createRequestId();
+    const message = SessionInboundMessageSchema.parse({
+      type: "agent.html_render.get.request",
+      requestId,
+      agentId,
+      renderId,
+    });
+    const payload = await this.sendRequest({
+      requestId,
+      message,
+      options: { skipQueue: true },
+      select: (response) =>
+        response.type === "agent.html_render.get.response" &&
+        response.payload.requestId === requestId
+          ? response.payload
+          : null,
+    });
+    if (payload.error || payload.html === null || payload.title === null) {
+      throw new Error(payload.error ?? "Render not found");
+    }
+    return { html: payload.html, title: payload.title };
+  }
+
+  async getPreviewBrowserStatus() {
+    const requestId = this.createRequestId();
+    const payload = await this.sendRequest({
+      requestId,
+      message: SessionInboundMessageSchema.parse({
+        type: "daemon.browser.get_status.request",
+        requestId,
+      }),
+      select: (response) =>
+        response.type === "daemon.browser.get_status.response" &&
+        response.payload.requestId === requestId
+          ? response.payload
+          : null,
+    });
+    if (!payload.status || payload.error)
+      throw new Error(payload.error ?? "Preview browser status unavailable");
+    return payload.status;
+  }
+
+  async setupPreviewBrowser() {
+    const requestId = this.createRequestId();
+    const payload = await this.sendRequest({
+      requestId,
+      message: SessionInboundMessageSchema.parse({
+        type: "daemon.browser.setup.request",
+        requestId,
+      }),
+      timeout: 20 * 60_000,
+      select: (response) =>
+        response.type === "daemon.browser.setup.response" &&
+        response.payload.requestId === requestId
+          ? response.payload
+          : null,
+    });
+    if (!payload.status || payload.error)
+      throw new Error(payload.error ?? "Preview browser setup failed");
+    return payload.status;
+  }
+
+  async getVisualization(
+    agentId: string,
+    path: string,
+  ): Promise<{
+    canonicalPath: string;
+    revision: string;
+    html: string;
+    state: unknown;
+  }> {
+    const requestId = this.createRequestId();
+    const message = SessionInboundMessageSchema.parse({
+      type: "agent.visualization.get.request",
+      requestId,
+      agentId,
+      path,
+    });
+    const payload = await this.sendRequest({
+      requestId,
+      message,
+      options: { skipQueue: true },
+      select: (response) =>
+        response.type === "agent.visualization.get.response" &&
+        response.payload.requestId === requestId
+          ? response.payload
+          : null,
+    });
+    if (payload.error || !payload.canonicalPath || !payload.revision || payload.html === null) {
+      throw new Error(payload.error ?? "Visualization unavailable");
+    }
+    return {
+      canonicalPath: payload.canonicalPath,
+      revision: payload.revision,
+      html: payload.html,
+      state: payload.state,
+    };
+  }
+
+  async setVisualizationState(agentId: string, path: string, state: unknown): Promise<unknown> {
+    const requestId = this.createRequestId();
+    const message = SessionInboundMessageSchema.parse({
+      type: "agent.visualization.set_state.request",
+      requestId,
+      agentId,
+      path,
+      state,
+    });
+    const payload = await this.sendRequest({
+      requestId,
+      message,
+      options: { skipQueue: true },
+      select: (response) =>
+        response.type === "agent.visualization.set_state.response" &&
+        response.payload.requestId === requestId
+          ? response.payload
+          : null,
+    });
+    if (payload.error) throw new Error(payload.error);
+    return payload.state;
+  }
+
   async appendAgentTimelineItem(
     agentId: string,
     item: Omit<import("@getpaseo/protocol/agent-types").PluginTimelineItem, "pluginId">,

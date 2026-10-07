@@ -33,6 +33,18 @@ function createCatalog(): PaseoToolCatalog {
     inputSchema: { value: z.string() },
     async handler(input: unknown) {
       const parsed = z.object({ value: z.string() }).parse(input);
+      if (parsed.value === "preview-image")
+        return {
+          content: [
+            { type: "text", text: "width 390" },
+            { type: "image", mimeType: "image/png", data: "image-bytes" },
+          ],
+        };
+      if (parsed.value === "preview-failure")
+        return {
+          isError: true,
+          content: [{ type: "text", text: "HTML preview failed: browser busy" }],
+        };
       return { content: [{ type: "text", text: parsed.value }] };
     },
   };
@@ -289,6 +301,21 @@ describe("OpenCodeBridge", () => {
       await expect(
         tools.get("paseo_echo_context")!.execute({ value: "child result" }, { sessionID: "child" }),
       ).resolves.toMatchObject({ content: [{ type: "text", text: "child result" }] });
+      await expect(
+        tools
+          .get("paseo_echo_context")!
+          .execute({ value: "preview-image" }, { sessionID: "child" }),
+      ).resolves.toMatchObject({
+        content: [
+          { type: "text", text: "width 390" },
+          { type: "image", data: "image-bytes" },
+        ],
+      });
+      await expect(
+        tools
+          .get("paseo_echo_context")!
+          .execute({ value: "preview-failure" }, { sessionID: "child" }),
+      ).rejects.toThrow("HTML preview failed: browser busy");
       await expect(
         tools.get("paseo_echo_context")!.execute({ value: "blocked" }, { sessionID: "disabled" }),
       ).rejects.toThrow("HTTP 403");

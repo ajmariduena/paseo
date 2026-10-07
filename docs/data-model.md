@@ -648,6 +648,16 @@ The timeline is rebuilt from provider history on load, and provider history keep
 
 ---
 
+## Inline visual storage
+
+**Path:** `$PASEO_HOME/html-renders/{agentId}/{renderId}.html` with a small title sidecar.
+
+`html_render` writes each page atomically under its caller agent. The tool result carries the random render ID, title, initial height, and an optional nine-width height table when the preview browser was already installed. Provider history replays that completed call, so the inline card returns at the same timeline position after restart. The app fetches the HTML through the agent-scoped `agent.html_render.get` RPC and keeps it in memory only. The height table is result data, not a stored page field; older results keep the client width heuristic. On startup, the daemon removes temporary render files older than one hour. Complete pages remain even when no tool call references them; archiving keeps them, and hard deletion or agent ID replacement removes the agent's render directory. `html_preview` keeps its screenshot and prepared page in memory for one call and stores neither.
+
+Codex `visualize` references stay in provider history, so replay recreates their inline position without copying the fragment into Paseo's store. `agent.visualization.get` reads an existing file only from that agent's cwd, recorded workspace, or its own Codex thread visualization directory. Missing files remain unavailable after restart. Widget state is separate: `$PASEO_HOME/visualization-state/{agentId}/{sha256(canonicalPath)}.json` keeps at most 16 KiB per visual. Archive retains it; hard deletion removes the agent's state directory. State saves do not add `modelContent` to the next provider prompt.
+
+---
+
 ## Client-side stores (App)
 
 These live in React Native `AsyncStorage` or browser `IndexedDB`, not on the daemon filesystem.

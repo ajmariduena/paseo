@@ -148,6 +148,16 @@ Run it locally with the same command owned by the Ubuntu `desktop-tests` require
 npm run test:e2e:browser-tabs --workspace=@getpaseo/desktop
 ```
 
+### HTML preview browser gate
+
+The real browser tests need the pinned Chrome for Testing headless shell. After `paseo browser setup`, set `PASEO_TEST_HEADLESS_SHELL` to that install's executable and run only the focused file:
+
+```bash
+PASEO_TEST_HEADLESS_SHELL=/absolute/path/to/chrome-headless-shell npx vitest run packages/server/src/server/agent/html-render/headless-preview.test.ts --bail=1
+```
+
+To exercise installer repair without another download, also set `PASEO_TEST_HEADLESS_SHELL_ARCHIVE` to the verified ZIP for the running platform when running `browser-install.test.ts`. These tests are opt-in and are not part of the default server test job.
+
 ## Test organization
 
 - Collocate tests with implementation: `thing.ts` + `thing.test.ts`

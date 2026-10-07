@@ -1996,6 +1996,39 @@ export const ProviderSubagentTimelineRequestMessageSchema = z.object({
   limit: z.number().int().nonnegative().optional(),
 });
 
+export const AgentHtmlRenderGetRequestMessageSchema = z.object({
+  type: z.literal("agent.html_render.get.request"),
+  requestId: z.string(),
+  agentId: z.string(),
+  renderId: z.string(),
+});
+
+// COMPAT(preview-browser): added in v0.11.0-beta.3, remove after 2027-04-07 when daemon floor includes browser RPCs.
+export const DaemonBrowserStatusRequestMessageSchema = z.object({
+  type: z.literal("daemon.browser.get_status.request"),
+  requestId: z.string(),
+});
+
+export const DaemonBrowserSetupRequestMessageSchema = z.object({
+  type: z.literal("daemon.browser.setup.request"),
+  requestId: z.string(),
+});
+
+export const AgentVisualizationGetRequestMessageSchema = z.object({
+  type: z.literal("agent.visualization.get.request"),
+  requestId: z.string(),
+  agentId: z.string(),
+  path: z.string(),
+});
+
+export const AgentVisualizationSetStateRequestMessageSchema = z.object({
+  type: z.literal("agent.visualization.set_state.request"),
+  requestId: z.string(),
+  agentId: z.string(),
+  path: z.string(),
+  state: z.unknown(),
+});
+
 export const SetAgentTimelineSubscriptionRequestMessageSchema = z.object({
   type: z.literal("agent.timeline.set_subscription.request"),
   agentIds: z.array(z.string()),
@@ -3567,6 +3600,11 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   AgentTimelineListPromptsRequestMessageSchema,
   ProviderSubagentListRequestMessageSchema,
   ProviderSubagentTimelineRequestMessageSchema,
+  AgentHtmlRenderGetRequestMessageSchema,
+  DaemonBrowserStatusRequestMessageSchema,
+  DaemonBrowserSetupRequestMessageSchema,
+  AgentVisualizationGetRequestMessageSchema,
+  AgentVisualizationSetStateRequestMessageSchema,
   SetAgentTimelineSubscriptionRequestMessageSchema,
   AgentForkContextRequestMessageSchema,
   AgentQueueListRequestMessageSchema,
@@ -3904,6 +3942,10 @@ export const ServerInfoStatusPayloadSchema = z
         creationLifecycle: z.boolean().optional(),
         // COMPAT(hubAgentRpc): added in v0.8.0; remove gate after 2027-03-05.
         hubAgentRpc: z.boolean().optional(),
+        // COMPAT(htmlRender): added in v0.11.x, remove after 2027-04-06 once daemon floor supports renders.
+        htmlRender: z.boolean().optional(),
+        // COMPAT(codexVisualization): added in v0.11.x, remove after 2027-04-07 once daemon floor supports visualizations.
+        codexVisualization: z.boolean().optional(),
         providersSnapshot: z.boolean().optional(),
         usageSources: z.boolean().optional(),
         // COMPAT(providersSnapshotCwd): added in v0.3.2, remove gate after 2027-02-10.
@@ -7417,7 +7459,76 @@ export const AgentSkillsImportLegacySelectionResponseSchema = z.object({
   }),
 });
 
+export const AgentHtmlRenderGetResponseMessageSchema = z.object({
+  type: z.literal("agent.html_render.get.response"),
+  payload: z.object({
+    requestId: z.string(),
+    agentId: z.string(),
+    renderId: z.string(),
+    html: z.string().nullable(),
+    title: z.string().nullable(),
+    error: z.string().nullable(),
+  }),
+});
+
+const DaemonBrowserStatusSchema = z.object({
+  state: z.enum(["unsupported", "missing", "installing", "installed", "failed"]),
+  version: z.string(),
+  platform: z.string().nullable(),
+  executable: z.string().optional(),
+  message: z.string().optional(),
+});
+
+// COMPAT(preview-browser-response): added in v0.11.0-beta.3, remove after 2027-04-07 when daemon floor includes browser RPCs.
+export const DaemonBrowserStatusResponseMessageSchema = z.object({
+  type: z.literal("daemon.browser.get_status.response"),
+  payload: z.object({
+    requestId: z.string(),
+    status: DaemonBrowserStatusSchema.optional(),
+    error: z.string().optional(),
+  }),
+});
+
+export const DaemonBrowserSetupResponseMessageSchema = z.object({
+  type: z.literal("daemon.browser.setup.response"),
+  payload: z.object({
+    requestId: z.string(),
+    status: DaemonBrowserStatusSchema.optional(),
+    error: z.string().optional(),
+  }),
+});
+
+export const AgentVisualizationGetResponseMessageSchema = z.object({
+  type: z.literal("agent.visualization.get.response"),
+  payload: z.object({
+    requestId: z.string(),
+    agentId: z.string(),
+    path: z.string(),
+    canonicalPath: z.string().nullable(),
+    revision: z.string().nullable(),
+    html: z.string().nullable(),
+    state: z.unknown().nullable(),
+    error: z.string().nullable(),
+  }),
+});
+
+export const AgentVisualizationSetStateResponseMessageSchema = z.object({
+  type: z.literal("agent.visualization.set_state.response"),
+  payload: z.object({
+    requestId: z.string(),
+    agentId: z.string(),
+    path: z.string(),
+    state: z.unknown().nullable(),
+    error: z.string().nullable(),
+  }),
+});
+
 export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
+  AgentHtmlRenderGetResponseMessageSchema,
+  DaemonBrowserStatusResponseMessageSchema,
+  DaemonBrowserSetupResponseMessageSchema,
+  AgentVisualizationGetResponseMessageSchema,
+  AgentVisualizationSetStateResponseMessageSchema,
   BrowserHostRegisterResponseSchema,
   SubscriptionReleaseResponseSchema,
   SessionEventsSetSubscriptionResponseSchema,

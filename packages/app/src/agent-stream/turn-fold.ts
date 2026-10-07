@@ -2,6 +2,7 @@ import type { StreamItem, ToolCallItem, UserMessageItem } from "@/types/stream";
 import { describeToolCall } from "@/tool-calls/detail-level/grouping";
 import { isSubagentNotification } from "@/subagents/timeline/notification-source";
 import { isSubagentSpawnCall } from "@/subagents/timeline/spawn-call";
+import { htmlRenderFromToolCall } from "@/html-render/reference";
 import {
   summarizeOverviewToolCalls,
   type OverviewSummary,
@@ -159,6 +160,7 @@ export function collectTurnFileChanges(calls: readonly ToolCallItem[]): TurnFile
 function isPinnedCall(call: ToolCallItem): boolean {
   const descriptor = describeToolCall(call);
   return (
+    htmlRenderFromToolCall(call) !== null ||
     descriptor.detail.type === "plan" ||
     QUESTION_TOOL_NAME.test(descriptor.name.trim().toLowerCase()) ||
     isSubagentSpawnCall(call)

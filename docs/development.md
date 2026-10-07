@@ -29,6 +29,8 @@ the titlebar row. Production builds leave the variable unset and show no label.
 
 `npm run dev` is only a shorthand for `npm run dev:server`. Keep `127.0.0.1:6767` for the packaged app and production-style `~/.paseo` state.
 
+For HTML previews, `paseo browser status` reads the selected daemon's browser state and `paseo browser setup` installs and smoke-tests its pinned headless shell. In this checkout, use `npm run cli -- browser status` or `npm run cli -- browser setup` to target the dev daemon's home. `html_render` does not install a browser; without one it publishes a page without measured heights.
+
 ## Nix desktop package
 
 The flake exposes `packages.<system>.desktop` on Linux and macOS:

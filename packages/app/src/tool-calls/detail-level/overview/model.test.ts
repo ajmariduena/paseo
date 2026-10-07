@@ -54,6 +54,17 @@ describe("Paseo orchestration summaries", () => {
     ).toEqual(["sent 3 prompts to 2 agents"]);
   });
 
+  it("groups HTML previews and renders by their own action", () => {
+    expect(
+      phrases([
+        paseoCall("html_preview"),
+        paseoCall("html_preview", {}, { name: "html_preview" }),
+        paseoCall("html_render"),
+        paseoCall("html_render", {}, { name: "html_render" }),
+      ]),
+    ).toEqual(["previewed 2 HTML pages", "rendered 2 HTML pages"]);
+  });
+
   it("counts checked agents once however often they are polled", () => {
     expect(
       phrases([
