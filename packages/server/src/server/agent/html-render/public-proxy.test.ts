@@ -13,8 +13,18 @@ test("refuses private, mapped, metadata, and host interface addresses", () => {
     "192.168.1.1",
     "169.254.169.254",
     "100.64.1.1",
+    "192.0.0.1",
+    "192.0.2.1",
+    "192.88.99.1",
+    "198.51.100.1",
+    "203.0.113.1",
+    "240.0.0.1",
     "::1",
     "::ffff:127.0.0.1",
+    "::ffff:192.0.2.1",
+    "64:ff9b::c000:201",
+    "2001:db8::1",
+    "3fff::1",
     "fc00::1",
     "64:ff9b::a00:1",
     "2002:0a00:0001::",
@@ -23,8 +33,8 @@ test("refuses private, mapped, metadata, and host interface addresses", () => {
   }
   expect(isPublicPreviewAddress("8.8.8.8")).toBe(true);
   expect(
-    isPublicPreviewAddress("203.0.113.7", {
-      en0: [{ address: "203.0.113.7", family: "IPv4" }],
+    isPublicPreviewAddress("8.8.8.8", {
+      en0: [{ address: "8.8.8.8", family: "IPv4" }],
     } as ReturnType<(typeof import("node:os"))["networkInterfaces"]>),
   ).toBe(false);
 });
@@ -47,6 +57,16 @@ test("rejects mixed DNS answers and resolves once before connection", async () =
     ),
   ).toBeNull();
   expect(calls).toBe(1);
+  expect(
+    await resolvePublicPreviewAddresses(
+      "example.invalid",
+      async () =>
+        [
+          { address: "8.8.8.8", family: 4 },
+          { address: "192.0.2.1", family: 4 },
+        ] as never,
+    ),
+  ).toBeNull();
 });
 
 test("SOCKS proxy refuses loopback targets", async () => {
@@ -57,6 +77,27 @@ test("SOCKS proxy refuses loopback targets", async () => {
     socket.on("data", (chunk: Buffer) => {
       chunks.push(chunk);
       if (chunks.length === 1) socket.write(Buffer.from([5, 1, 0, 1, 127, 0, 0, 1, 0, 80]));
+    });
+    socket.write(Buffer.from([5, 1, 0]));
+    await new Promise<void>((resolve, reject) => {
+      socket.on("close", resolve);
+      socket.on("error", reject);
+    });
+    expect(chunks[0]).toEqual(Buffer.from([5, 0]));
+    expect(chunks[1]?.[1]).toBe(2);
+  } finally {
+    await proxy.close();
+  }
+});
+
+test("SOCKS proxy refuses special-use IPv4 targets", async () => {
+  const proxy = await startPublicPreviewProxy();
+  try {
+    const socket = net.connect(proxy.port, "127.0.0.1");
+    const chunks: Buffer[] = [];
+    socket.on("data", (chunk: Buffer) => {
+      chunks.push(chunk);
+      if (chunks.length === 1) socket.write(Buffer.from([5, 1, 0, 1, 192, 0, 2, 1, 0, 80]));
     });
     socket.write(Buffer.from([5, 1, 0]));
     await new Promise<void>((resolve, reject) => {

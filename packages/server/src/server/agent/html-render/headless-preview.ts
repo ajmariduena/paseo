@@ -2,6 +2,7 @@ import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { promisify } from "node:util";
 import { prepareRenderDocument, type RenderTheme } from "@getpaseo/protocol/html-render";
 import { startPublicPreviewProxy } from "./public-proxy.js";
@@ -38,7 +39,7 @@ class CdpPipe {
     number,
     { resolve: (value: Record<string, unknown>) => void; reject: (error: Error) => void }
   >();
-  private buffer = "";
+  private readonly frames = new CdpFrameDecoder();
   private listeners = new Set<(message: CdpMessage) => void>();
   private failure: Error | null = null;
 
@@ -46,21 +47,12 @@ class CdpPipe {
     const reader = child.stdio[4];
     if (!reader || !("on" in reader)) throw new Error("Preview browser CDP pipe is unavailable");
     reader.on("data", (chunk: Buffer) => {
-      this.buffer += chunk.toString("utf8");
-      if (this.buffer.length > 14 * 1024 * 1024) {
-        this.fail(new Error("screenshot_too_large"));
-        return;
-      }
-      let end = this.buffer.indexOf("\0");
-      while (end >= 0) {
-        const raw = this.buffer.slice(0, end);
-        this.buffer = this.buffer.slice(end + 1);
-        try {
+      try {
+        for (const raw of this.frames.push(chunk)) {
           this.receive(JSON.parse(raw) as CdpMessage);
-        } catch {
-          this.fail(new Error("Invalid preview browser response"));
         }
-        end = this.buffer.indexOf("\0");
+      } catch (error) {
+        this.fail(error instanceof Error ? error : new Error("Invalid preview browser response"));
       }
     });
     reader.on("error", (error) => this.fail(error));
@@ -121,6 +113,24 @@ class CdpPipe {
   }
 }
 
+export class CdpFrameDecoder {
+  private readonly decoder = new StringDecoder("utf8");
+  private buffer = "";
+
+  push(chunk: Buffer): string[] {
+    this.buffer += this.decoder.write(chunk);
+    if (this.buffer.length > 14 * 1024 * 1024) throw new Error("screenshot_too_large");
+    const frames: string[] = [];
+    let end = this.buffer.indexOf("\0");
+    while (end >= 0) {
+      frames.push(this.buffer.slice(0, end));
+      this.buffer = this.buffer.slice(end + 1);
+      end = this.buffer.indexOf("\0");
+    }
+    return frames;
+  }
+}
+
 let activeBrowsers = 0;
 const waiters: (() => void)[] = [];
 async function acquireBrowser(waitMs: number, signal?: AbortSignal): Promise<() => void> {
@@ -164,13 +174,14 @@ async function withBrowser<T>(
 ): Promise<T> {
   const started = Date.now();
   const release = await acquireBrowser(timeoutMs, signal);
-  const scratch = await mkdtemp(path.join(tmpdir(), "paseo-html-preview-"));
+  let scratch: string | null = null;
   let child: ChildProcess | null = null;
   let proxy: Awaited<ReturnType<typeof startPublicPreviewProxy>> | null = null;
   let timer: NodeJS.Timeout | null = null;
   let stderrTail = "";
   let onAbort: (() => void) | null = null;
   try {
+    scratch = await mkdtemp(path.join(tmpdir(), "paseo-html-preview-"));
     proxy = await startPublicPreviewProxy();
     child = spawn(
       executable,
@@ -243,9 +254,12 @@ async function withBrowser<T>(
           setTimeout(resolve, 2000).unref();
         });
     }
-    await proxy?.close();
-    await rm(scratch, { recursive: true, force: true });
-    release();
+    try {
+      await proxy?.close();
+      if (scratch) await rm(scratch, { recursive: true, force: true });
+    } finally {
+      release();
+    }
   }
 }
 

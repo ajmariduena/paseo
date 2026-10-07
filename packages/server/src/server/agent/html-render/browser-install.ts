@@ -1,7 +1,20 @@
 import { createHash, randomUUID } from "node:crypto";
-import { constants } from "node:fs";
-import { lstat, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { constants, createReadStream } from "node:fs";
+import {
+  copyFile,
+  lstat,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 import { inflateRawSync } from "node:zlib";
 
 export const HEADLESS_SHELL_VERSION = "155.0.8059.39";
@@ -28,6 +41,7 @@ const ARCHIVES = {
   },
 } as const;
 type ChromePlatform = keyof typeof ARCHIVES;
+const execFileAsync = promisify(execFile);
 
 export function headlessShellPlatform(
   platform: NodeJS.Platform = process.platform,
@@ -61,23 +75,127 @@ function releaseDirectory(home: string, platform: ChromePlatform): string {
   return path.join(home, "tools", "chrome-headless-shell", platform);
 }
 
+const verifiedExecutables = new Map<string, { signature: string; sha256: string }>();
+
+async function cachedExecutableSha256(
+  candidate: string,
+  info: Awaited<ReturnType<typeof lstat>>,
+): Promise<string> {
+  const signature = `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+  const cached = verifiedExecutables.get(candidate);
+  if (cached?.signature === signature) return cached.sha256;
+  const sha256 = await fileSha256(candidate);
+  verifiedExecutables.set(candidate, { signature, sha256 });
+  return sha256;
+}
+
+async function installationFiles(
+  directory: string,
+): Promise<Record<string, { bytes: number; sha256: string }>> {
+  const files: Record<string, { bytes: number; sha256: string }> = {};
+  async function visit(relative: string): Promise<void> {
+    for (const entry of await readdir(path.join(directory, relative), { withFileTypes: true })) {
+      if (!relative && entry.name === "install.json") continue;
+      const child = path.join(relative, entry.name);
+      if (entry.isDirectory()) {
+        await visit(child);
+      } else if (entry.isFile()) {
+        const filename = path.join(directory, child);
+        const info = await lstat(filename);
+        if (!info.isFile()) throw new Error("Preview browser installation contains an unsafe file");
+        files[child] = { bytes: info.size, sha256: await cachedExecutableSha256(filename, info) };
+      } else throw new Error("Preview browser installation contains an unsafe file");
+    }
+  }
+  await visit("");
+  return files;
+}
+
 async function installedPath(home: string, platform: ChromePlatform): Promise<string | null> {
-  const candidate = path.join(
-    releaseDirectory(home, platform),
-    HEADLESS_SHELL_VERSION,
-    executableName(platform),
-  );
+  const directory = path.join(releaseDirectory(home, platform), HEADLESS_SHELL_VERSION);
+  const candidate = path.join(directory, executableName(platform));
   try {
-    if (!(await lstat(path.dirname(candidate))).isDirectory()) return null;
+    if (!(await lstat(directory)).isDirectory()) return null;
     const info = await lstat(candidate);
-    return info.isFile() && (platform === "win64" || (info.mode & 0o111) !== 0) ? candidate : null;
+    if (!info.isFile() || (platform !== "win64" && (info.mode & 0o111) === 0)) return null;
+    const manifest = JSON.parse(await readFile(path.join(directory, "install.json"), "utf8")) as {
+      version?: unknown;
+      platform?: unknown;
+      executableBytes?: unknown;
+      executableSha256?: unknown;
+      files?: unknown;
+    };
+    const files = await installationFiles(directory);
+    const expectedFiles =
+      manifest.files && typeof manifest.files === "object" && !Array.isArray(manifest.files)
+        ? (manifest.files as Record<string, { bytes?: unknown; sha256?: unknown }>)
+        : null;
+    if (
+      manifest.version !== HEADLESS_SHELL_VERSION ||
+      manifest.platform !== platform ||
+      manifest.executableBytes !== info.size ||
+      typeof manifest.executableSha256 !== "string" ||
+      manifest.executableSha256 !== (await cachedExecutableSha256(candidate, info)) ||
+      !expectedFiles ||
+      Object.keys(expectedFiles).length !== Object.keys(files).length ||
+      Object.entries(files).some(
+        ([name, file]) =>
+          expectedFiles[name]?.bytes !== file.bytes || expectedFiles[name]?.sha256 !== file.sha256,
+      )
+    )
+      return null;
+    return candidate;
   } catch {
     return null;
   }
 }
 
+async function fileSha256(filename: string): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(filename)) hash.update(chunk);
+  return hash.digest("hex");
+}
+
+async function smokeTest(candidate: string): Promise<void> {
+  const { stdout } = await execFileAsync(candidate, ["--version"], { timeout: 10_000 });
+  if (!stdout.includes(HEADLESS_SHELL_VERSION))
+    throw new Error("Preview browser executable has the wrong version");
+}
+
 const installs = new Map<string, Promise<string>>();
 const failures = new Map<string, string>();
+
+interface LockOwner {
+  pid: number;
+  token: string;
+}
+
+async function readLockOwner(lock: string): Promise<LockOwner | null> {
+  try {
+    if (!(await lstat(lock)).isDirectory()) return null;
+    const value = JSON.parse(await readFile(path.join(lock, "owner.json"), "utf8")) as LockOwner;
+    return Number.isInteger(value.pid) && value.pid > 0 && typeof value.token === "string"
+      ? value
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function ownerAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+async function assertLockOwner(lock: string, owner: LockOwner): Promise<void> {
+  const current = await readLockOwner(lock);
+  if (current?.pid !== owner.pid || current.token !== owner.token)
+    throw new Error("Preview browser install lock ownership changed");
+}
 
 export async function headlessShellStatus(home: string): Promise<BrowserInstallStatus> {
   const platform = headlessShellPlatform();
@@ -88,6 +206,20 @@ export async function headlessShellStatus(home: string): Promise<BrowserInstallS
   const directory = releaseDirectory(home, platform);
   if (installs.has(directory))
     return { state: "installing", platform, version: HEADLESS_SHELL_VERSION };
+  const lock = path.join(directory, ".install-lock");
+  if (await lstat(lock).catch(() => null)) {
+    const owner = await readLockOwner(lock);
+    if (owner && ownerAlive(owner.pid))
+      return { state: "installing", platform, version: HEADLESS_SHELL_VERSION };
+    return {
+      state: "failed",
+      platform,
+      version: HEADLESS_SHELL_VERSION,
+      message: owner
+        ? "An abandoned preview browser install can be repaired by setup"
+        : "Preview browser install lock has no valid owner",
+    };
+  }
   if (failures.has(directory))
     return {
       state: "failed",
@@ -259,46 +391,121 @@ export async function extractHeadlessShell(
   for (const entry of entries) await writeZipEntry(zip, entry, destination);
 }
 
-async function installLocked(home: string, platform: ChromePlatform): Promise<string> {
+async function recoverAbandonedLock(
+  lock: string,
+  current: LockOwner,
+  cause: unknown,
+): Promise<void> {
+  const abandoned = path.join(path.dirname(lock), `.abandoned-${randomUUID()}`);
+  try {
+    await rename(lock, abandoned);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  const moved = await readLockOwner(abandoned);
+  if (moved?.token !== current.token || moved.pid !== current.pid) {
+    await rename(abandoned, lock).catch(() => undefined);
+    throw new Error("Preview browser install lock changed during recovery", { cause });
+  }
+  await rm(abandoned, { recursive: true, force: true });
+}
+
+async function acquireInstallLock(lock: string, owner: LockOwner): Promise<void> {
+  const root = path.dirname(lock);
+  for (;;) {
+    const proposed = path.join(root, `.lock-${owner.token}`);
+    await mkdir(proposed, { mode: 0o700 });
+    try {
+      await writeFile(path.join(proposed, "owner.json"), JSON.stringify(owner), {
+        flag: "wx",
+        mode: 0o600,
+      });
+      await rename(proposed, lock);
+      return;
+    } catch (error) {
+      await rm(proposed, { recursive: true, force: true });
+      if (!["EEXIST", "ENOTEMPTY"].includes((error as NodeJS.ErrnoException).code ?? ""))
+        throw error;
+      const current = await readLockOwner(lock);
+      if (!current)
+        throw new Error("Preview browser install lock has no valid owner", { cause: error });
+      if (!ownerAlive(current.pid)) await recoverAbandonedLock(lock, current, error);
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  }
+}
+
+async function installLocked(
+  home: string,
+  platform: ChromePlatform,
+  archiveSource?: string,
+): Promise<string> {
   const root = releaseDirectory(home, platform);
   await mkdir(root, { recursive: true, mode: 0o700 });
   if (!(await lstat(root)).isDirectory())
     throw new Error("Preview browser install root is not a real directory");
   const lock = path.join(root, ".install-lock");
   const destination = path.join(root, HEADLESS_SHELL_VERSION);
-  let owner = false;
-  for (;;) {
-    const installed = await installedPath(home, platform);
-    if (installed) return installed;
-    try {
-      await mkdir(lock);
-      owner = true;
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      const info = await stat(lock).catch(() => null);
-      if (info && Date.now() - info.mtimeMs > 20 * 60_000)
-        await rm(lock, { recursive: true, force: true });
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
-  }
+  const owner: LockOwner = { pid: process.pid, token: randomUUID() };
+  const existing = await installedPath(home, platform);
+  if (existing) return existing;
+  await acquireInstallLock(lock, owner);
   const staging = path.join(root, `.install-${randomUUID()}`);
   try {
+    await assertLockOwner(lock, owner);
+    const installedAfterLock = await installedPath(home, platform);
+    if (installedAfterLock) return installedAfterLock;
+    for (const entry of await readdir(root)) {
+      if (entry.startsWith(".install-") && entry !== ".install-lock")
+        await rm(path.join(root, entry), { recursive: true, force: true });
+    }
     await mkdir(staging, { mode: 0o700 });
     const archive = path.join(staging, "download.zip");
-    await downloadArchive(platform, archive);
+    if (archiveSource) {
+      await copyFile(archiveSource, archive);
+      const info = await stat(archive);
+      if (
+        info.size !== ARCHIVES[platform].bytes ||
+        (await fileSha256(archive)) !== ARCHIVES[platform].sha256
+      )
+        throw new Error("Preview browser archive failed length or SHA-256 verification");
+    } else await downloadArchive(platform, archive);
     const unpacked = path.join(staging, "browser");
     await extractHeadlessShell(archive, platform, unpacked);
-    await rm(destination, { recursive: true, force: true });
+    const candidate = path.join(unpacked, executableName(platform));
+    await smokeTest(candidate);
+    const executableInfo = await lstat(candidate);
+    await writeFile(
+      path.join(unpacked, "install.json"),
+      JSON.stringify({
+        version: HEADLESS_SHELL_VERSION,
+        platform,
+        executableBytes: executableInfo.size,
+        executableSha256: await fileSha256(candidate),
+        files: await installationFiles(unpacked),
+      }),
+      { flag: "wx", mode: 0o600 },
+    );
+    await assertLockOwner(lock, owner);
+    if (await lstat(destination).catch(() => null))
+      await rename(destination, path.join(root, `.corrupt-${randomUUID()}`));
     await rename(unpacked, destination);
-    return path.join(destination, executableName(platform));
+    const installed = await installedPath(home, platform);
+    if (!installed) throw new Error("Preview browser installation failed verification");
+    return installed;
   } finally {
     await rm(staging, { recursive: true, force: true });
-    if (owner) await rm(lock, { recursive: true, force: true });
+    if (await readLockOwner(lock).then((current) => current?.token === owner.token))
+      await rm(lock, { recursive: true, force: true });
   }
 }
 
-export async function ensureHeadlessShell(home: string, waitMs = 45_000): Promise<string | null> {
+export async function ensureHeadlessShell(
+  home: string,
+  waitMs = 45_000,
+  archiveSource?: string,
+): Promise<string | null> {
   const platform = headlessShellPlatform();
   if (!platform) throw new Error("Preview browser is unsupported on this platform");
   const directory = releaseDirectory(home, platform);
@@ -306,7 +513,7 @@ export async function ensureHeadlessShell(home: string, waitMs = 45_000): Promis
   if (existing) return existing;
   let pending = installs.get(directory);
   if (!pending) {
-    pending = installLocked(home, platform);
+    pending = installLocked(home, platform, archiveSource);
     installs.set(directory, pending);
     void (async () => {
       try {

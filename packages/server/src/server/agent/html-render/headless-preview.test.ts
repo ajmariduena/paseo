@@ -3,11 +3,51 @@ import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { RENDER_WIDTHS } from "@getpaseo/protocol/html-render";
-import { captureHtmlPreview, measureHtmlRenderHeights } from "./headless-preview.js";
+import {
+  CdpFrameDecoder,
+  captureHtmlPreview,
+  measureHtmlRenderHeights,
+} from "./headless-preview.js";
 import { STOCK_RENDER_THEMES } from "./stock-theme.js";
 
 const executable = process.env.PASEO_TEST_HEADLESS_SHELL;
 const live = test.skipIf(!executable);
+
+test("decodes a CDP frame split inside a UTF-8 character", () => {
+  const decoder = new CdpFrameDecoder();
+  const frame = Buffer.from(
+    `${JSON.stringify({ method: "Runtime.consoleAPICalled", params: { text: "café 🍋" } })}\0`,
+  );
+  const split = frame.indexOf(Buffer.from("é")) + 1;
+  expect(decoder.push(frame.subarray(0, split))).toEqual([]);
+  expect(decoder.push(frame.subarray(split))).toEqual([
+    JSON.stringify({ method: "Runtime.consoleAPICalled", params: { text: "café 🍋" } }),
+  ]);
+});
+
+live(
+  "releases browser slots when profile creation fails",
+  async () => {
+    const previous = process.env.TMPDIR;
+    process.env.TMPDIR = path.join(tmpdir(), "paseo-missing-preview-temp", "missing");
+    const input = {
+      executable: executable!,
+      width: 320,
+      theme: STOCK_RENDER_THEMES.dark,
+      html: "<html><body>Recovered</body></html>",
+    };
+    try {
+      await expect(captureHtmlPreview(input)).rejects.toThrow(/ENOENT/);
+      await expect(captureHtmlPreview(input)).rejects.toThrow(/ENOENT/);
+    } finally {
+      if (previous === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = previous;
+    }
+    const result = await captureHtmlPreview(input);
+    expect(result.png.length).toBeGreaterThan(100);
+  },
+  30_000,
+);
 
 live(
   "captures a real PNG at the requested width with theme, console, and short-page height",
