@@ -323,6 +323,12 @@ export const en = {
       model: "Model",
       reset: "Reset to defaults",
     },
+    quick: {
+      change: "Change",
+      changeModel: "Change model",
+      fast: "Fast",
+      context: "{{size}} context",
+    },
     speed: {
       title: "Speed",
       standard: "Standard",
@@ -1788,6 +1794,14 @@ export const en = {
     searchAllPlaceholder: "Search all models...",
     searchPlaceholder: "Search models...",
     openProviderSettings: "Open {{provider}} settings",
+    favorites: "Favorites",
+    favorite: "Add to favorites",
+    unfavorite: "Remove from favorites",
+    favoritesEmpty: "Star a model to keep it here",
+    providerLocked: "{{provider}} isn't available in this chat",
+    providerLockedNote:
+      "This chat started with {{provider}}. To use another provider, start a new chat.",
+    manageModels: "Manage models",
   },
   providerCatalog: {
     title: "Add provider",
@@ -2899,6 +2913,7 @@ export const en = {
         cycleTheme: "Cycle theme",
         focusMessageInput: "Focus message input",
         cycleAgentMode: "Cycle agent mode",
+        openModelPicker: "Change model",
         startStopDictation: "Start/stop dictation",
         interruptAgent: "Interrupt agent",
         sendMessage: "Send message",

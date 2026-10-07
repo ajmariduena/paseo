@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+  type ReactElement,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { Keyboard, Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
@@ -9,26 +17,31 @@ import type {
 } from "@getpaseo/protocol/agent-types";
 import type { AgentProfilePicker, AgentProfileSeed } from "@/agent-profiles";
 import type { SheetHeader } from "@/components/adaptive-modal-sheet";
-import { ModelBrowser, useModelBrowser, type ModelBrowserState } from "@/components/model-browser";
+import {
+  MODEL_BROWSER_MIN_WIDTH,
+  ModelBrowser,
+  useModelBrowser,
+  useModelShortcutKeys,
+  type ModelBrowserState,
+} from "@/components/model-browser";
 import { resolveModelBrowserScrolling } from "@/components/model-browser-view";
 import { Combobox } from "@/components/ui/combobox";
-import { EffortSlider } from "@/components/ui/effort-slider";
 import { resolveEffortDefaultIndex } from "@/components/ui/effort-stops";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AdvancedPage } from "@/composer/agent-controls/advanced-page";
 import {
   resolveEffortSelection,
-  resolveIntelligenceOpeningPage,
   type EffortOption,
   type EffortSelection,
   describeIntelligence,
 } from "@/composer/agent-controls/effort-selection";
-import { IntelligenceLabel } from "@/composer/agent-controls/intelligence-label";
 import { IntelligenceOverlay } from "@/composer/agent-controls/intelligence-overlay";
 import { IntelligenceTrigger } from "@/composer/agent-controls/intelligence-trigger";
-import { resolveModelSheetOpening } from "@/composer/agent-controls/model-sheet-flow";
+import { QuickCard } from "@/composer/agent-controls/quick-card";
 import { getAgentControlHintKey } from "@/composer/agent-controls/utils";
 import { useComposerKeyboardScope } from "@/composer/keyboard-scope";
+import { useKeyboardActionHandler } from "@/hooks/use-keyboard-action-handler";
+import type { KeyboardActionDefinition } from "@/keyboard/keyboard-action-dispatcher";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { isNative, isWeb } from "@/constants/platform";
 import type { ProviderSelectorProvider } from "@/provider-selection/provider-selection";
@@ -36,7 +49,6 @@ import type { ProviderSelectorProvider } from "@/provider-selection/provider-sel
 const ADVANCED_SNAP_POINTS: readonly string[] = ["55%", "90%"];
 const MODELS_SNAP_POINTS: readonly string[] = ["85%", "90%"];
 const CARD_MIN_WIDTH = 320;
-const MODELS_MIN_WIDTH = 360;
 const EMPTY_OPTIONS: never[] = [];
 
 function noop() {}
@@ -77,19 +89,9 @@ export interface IntelligenceControlProps {
 
 interface IntelligenceLabels {
   advanced: string;
+  changeModel: string;
   slider: string;
   dismiss: string;
-}
-
-function resolveAvailableProviders(input: {
-  canSwitchProvider: boolean;
-  providers: ProviderSelectorProvider[];
-  provider: string;
-}): ProviderSelectorProvider[] {
-  if (input.canSwitchProvider) return input.providers;
-  const fixedProvider =
-    input.providers.find((entry) => entry.id === input.provider) ?? input.providers[0] ?? null;
-  return fixedProvider ? [fixedProvider] : [];
 }
 
 /** Reset returns the effort to the model's default and switches Fast off. */
@@ -115,10 +117,11 @@ function useResetAction(input: {
 function resolveSurfaceLayout(input: { isModelsPage: boolean; browser: ModelBrowserState }) {
   if (input.isModelsPage) {
     return {
-      desktopMinWidth: MODELS_MIN_WIDTH,
+      desktopMinWidth: MODEL_BROWSER_MIN_WIDTH,
       desktopFixedHeight: input.browser.desktopFixedHeight,
       mobileSnapPoints: MODELS_SNAP_POINTS,
-      mobileChildrenScrollEnabled: !input.browser.isProviderView || !isNative,
+      // The browser owns its scroller inside the native sheet.
+      mobileChildrenScrollEnabled: !isNative,
     };
   }
   return {
@@ -143,24 +146,21 @@ function resolveOpenLabel(page: IntelligencePage, t: (key: string) => string): s
 }
 
 /**
- * Page state for the control. The trigger opens the slider, or Advanced straight away when the
- * model has no effort scale; Advanced leads to the model browser and back.
+ * Page state for the control. The trigger opens the quick card; its model row goes straight to
+ * the model browser, and picking a model comes back to the card.
  */
 function useIntelligenceNavigation(input: {
   open: boolean;
-  hasEffort: boolean;
   isCompact: boolean;
   browser: ModelBrowserState;
-  availableProviders: ProviderSelectorProvider[];
-  canSwitchProvider: boolean;
-  provider: string;
   onOpenChange: (open: boolean) => void;
   onOpen?: () => void;
   onClose?: () => void;
 }) {
-  const { open, hasEffort, isCompact, browser, onOpenChange, onOpen, onClose } = input;
+  const { open, isCompact, browser, onOpenChange, onOpen, onClose } = input;
   const { isActiveComposer } = useComposerKeyboardScope();
   const [page, setPage] = useState<IntelligencePage>("quick");
+  const [modelsReturnPage, setModelsReturnPage] = useState<"quick" | "advanced">("quick");
 
   // The page stays put while the surface animates out; the next open picks its own page.
   const handleOpenChange = useCallback(
@@ -176,14 +176,16 @@ function useIntelligenceNavigation(input: {
     [browser, onClose, onOpen, onOpenChange],
   );
   const close = useCallback(() => handleOpenChange(false), [handleOpenChange]);
+  const pageRef = useRef(page);
+  pageRef.current = page;
   const toggle = useCallback(() => {
     if (open) {
       close();
       return;
     }
-    setPage(resolveIntelligenceOpeningPage(hasEffort));
+    setPage("quick");
     handleOpenChange(true);
-  }, [close, hasEffort, handleOpenChange, open]);
+  }, [close, handleOpenChange, open]);
 
   // The overlay is portal'd, so a pane switch would leave it behind: close with the composer.
   useEffect(() => {
@@ -195,34 +197,49 @@ function useIntelligenceNavigation(input: {
     if (isCompact) Keyboard.dismiss();
     setPage("advanced");
   }, [isCompact]);
-  const openModels = useCallback(() => {
-    const destination = resolveModelSheetOpening({
-      canSwitchProvider: input.canSwitchProvider,
-      providers: input.availableProviders,
-      selectedProvider: input.provider,
-    });
-    if (destination.kind === "all") {
-      browser.showAll();
-    } else {
-      browser.drillDown(destination.providerId, destination.providerLabel);
+  const openModelsFrom = useCallback(
+    (returnPage: "quick" | "advanced") => {
+      if (isCompact) Keyboard.dismiss();
+      browser.prepareToOpen();
+      setModelsReturnPage(returnPage);
+      setPage("models");
+    },
+    [browser, isCompact],
+  );
+  const openModels = useCallback(() => openModelsFrom("quick"), [openModelsFrom]);
+  const openModelsFromAdvanced = useCallback(() => openModelsFrom("advanced"), [openModelsFrom]);
+  const backFromModels = useCallback(() => {
+    setPage(modelsReturnPage);
+    browser.reset();
+  }, [browser, modelsReturnPage]);
+  const backToQuick = useCallback(() => setPage("quick"), []);
+  /** ⌘⇧M: straight to the model browser, or closed again when it is already showing. */
+  const toggleModels = useCallback(() => {
+    if (open && pageRef.current === "models") {
+      close();
+      return;
     }
-    setPage("models");
-  }, [browser, input.availableProviders, input.canSwitchProvider, input.provider]);
-  const backToAdvanced = useCallback(() => {
-    setPage("advanced");
+    if (!open) handleOpenChange(true);
+    openModelsFrom("quick");
+  }, [close, handleOpenChange, open, openModelsFrom]);
+  const returnToQuick = useCallback(() => {
+    setPage("quick");
     browser.reset();
   }, [browser]);
-  const backToQuick = useCallback(() => setPage("quick"), []);
 
   return {
     page,
+    modelsReturnPage,
     close,
     handleOpenChange,
     toggle,
     openAdvanced,
     openModels,
-    backToAdvanced,
+    openModelsFromAdvanced,
+    backFromModels,
     backToQuick,
+    returnToQuick,
+    toggleModels,
   };
 }
 
@@ -270,55 +287,100 @@ function useProfileActions(input: {
 
 function usePageHeaders(input: {
   page: IntelligencePage;
+  modelsReturnPage: "quick" | "advanced";
   browser: ModelBrowserState;
   isCompact: boolean;
   lean: boolean;
-  hasEffort: boolean;
-  backToAdvanced: () => void;
+  backFromModels: () => void;
   backToQuick: () => void;
 }): SheetHeader | undefined {
   const { t } = useTranslation();
-  const { page, browser, isCompact, lean, hasEffort, backToAdvanced, backToQuick } = input;
+  const { page, modelsReturnPage, browser, isCompact, lean, backFromModels, backToQuick } = input;
   return useMemo(() => {
     switch (page) {
-      case "models":
+      case "models": {
+        const backLabel =
+          modelsReturnPage === "advanced"
+            ? t("agentControls.advanced.title")
+            : t("agentControls.effort.title");
         return {
           ...browser.header,
-          title: browser.isProviderView ? browser.header.title : t("modelSelector.selectModel"),
-          back: browser.header.back ?? { onPress: backToAdvanced },
+          back: { onPress: backFromModels, label: backLabel },
         };
+      }
       case "advanced":
         // Lean reaches Advanced from the overlay, which is already gone; roomy steps back.
         return {
           title: t("agentControls.advanced.title"),
-          back: lean || !hasEffort ? undefined : { onPress: backToQuick },
+          back: lean ? undefined : { onPress: backToQuick },
         };
       case "quick":
         return isCompact ? { title: t("agentControls.intelligence.title") } : undefined;
       default:
         throw new Error("unreachable");
     }
-  }, [backToAdvanced, backToQuick, browser, hasEffort, isCompact, lean, page, t]);
+  }, [backFromModels, backToQuick, browser, isCompact, lean, modelsReturnPage, page, t]);
+}
+
+/** ⌘⇧M opens the model browser of the composer that has keyboard focus. */
+function useModelPickerShortcut({
+  enabled,
+  onTrigger,
+}: {
+  enabled: boolean;
+  onTrigger: () => void;
+}) {
+  const { isActiveComposer } = useComposerKeyboardScope();
+  const handlerIdRef = useRef(`model-picker:${Math.random().toString(36).slice(2)}`);
+  const handle = useCallback(
+    (action: KeyboardActionDefinition): boolean => {
+      if (action.id !== "message-input.model-picker" || !isActiveComposer) return false;
+      onTrigger();
+      return true;
+    },
+    [isActiveComposer, onTrigger],
+  );
+  useKeyboardActionHandler({
+    handlerId: handlerIdRef.current,
+    actions: ["message-input.model-picker"],
+    enabled: enabled && isActiveComposer,
+    priority: 200,
+    handle,
+  });
+}
+
+/** The fast toggle for the quick chips, or undefined when nothing can flip it. */
+function useFastToggle(input: {
+  fastFeature: AgentFeatureToggle | null;
+  isFast: boolean;
+  onSetFeature: ((featureId: string, value: unknown) => void) | undefined;
+}): (() => void) | undefined {
+  const { fastFeature, isFast, onSetFeature } = input;
+  const toggle = useCallback(() => {
+    if (fastFeature) onSetFeature?.(fastFeature.id, !isFast);
+  }, [fastFeature, isFast, onSetFeature]);
+  return fastFeature && onSetFeature ? toggle : undefined;
 }
 
 /**
- * The composer's intelligence control: the toolbar trigger, the one-gesture effort surface, and
- * the Advanced page behind it. On compact layouts the effort surface is a keyboard-preserving
- * overlay and Advanced is a sheet; on wide layouts everything is one popover with pages.
+ * The composer's intelligence control: the toolbar trigger, the quick card with the model and the
+ * effort slider, the model browser and Advanced behind it. On compact layouts the quick surface is
+ * a keyboard-preserving overlay and the rest is a sheet; on wide layouts everything is one popover
+ * with pages.
  */
 export function IntelligenceControl(props: IntelligenceControlProps) {
   const { t } = useTranslation();
   const isCompact = useIsCompactFormFactor();
   const anchorRef = useRef<View>(null);
-  const availableProviders = useMemo(() => resolveAvailableProviders(props), [props]);
   const browser = useModelBrowser({
-    providers: availableProviders,
+    providers: props.providers,
     selectedProvider: props.provider,
     selectedModel: props.selectedModelId,
     isLoading: props.isModelLoading,
     autoFocusSearch: isWeb && !isCompact,
     profiles: props.profiles,
     serverId: props.serverId,
+    lockedProvider: props.canSwitchProvider ? null : props.provider,
   });
   const effort = useMemo(
     () => resolveEffortSelection(props.effortOptions, props.selectedEffortId),
@@ -326,12 +388,8 @@ export function IntelligenceControl(props: IntelligenceControlProps) {
   );
   const navigation = useIntelligenceNavigation({
     open: props.open,
-    hasEffort: effort.hasEffort,
     isCompact,
     browser,
-    availableProviders,
-    canSwitchProvider: props.canSwitchProvider,
-    provider: props.provider,
     onOpenChange: props.onOpenChange,
     onOpen: props.onOpen,
     onClose: props.onClose,
@@ -340,27 +398,40 @@ export function IntelligenceControl(props: IntelligenceControlProps) {
   const profileActions = useProfileActions({ close, ...props });
   const header = usePageHeaders({
     page,
+    modelsReturnPage: navigation.modelsReturnPage,
     browser,
     isCompact,
     lean: props.lean,
-    hasEffort: effort.hasEffort,
-    backToAdvanced: navigation.backToAdvanced,
+    backFromModels: navigation.backFromModels,
     backToQuick: navigation.backToQuick,
   });
 
   const { onSelectModel, onSelectEffort, fastFeature, effortOptions } = props;
+  const [highlightToken, bumpHighlight] = useReducer((token: number) => token + 1, 0);
   const handleModelSelect = useCallback(
     (nextProvider: string, modelId: string) => {
       onSelectModel(nextProvider, modelId);
-      navigation.backToAdvanced();
+      navigation.returnToQuick();
+      bumpHighlight();
     },
     [navigation, onSelectModel],
   );
   const { reset, canReset, isFast } = useResetAction({ effort, ...props });
+  const modelShortcutKeys = useModelShortcutKeys(
+    browser,
+    handleModelSelect,
+    props.open && page === "models" && !isCompact,
+  );
+  useModelPickerShortcut({
+    enabled: props.canSelectModel && !props.disabled,
+    onTrigger: navigation.toggleModels,
+  });
+  const toggleFast = useFastToggle({ fastFeature, isFast, onSetFeature: props.onSetFeature });
 
   const labels = useMemo<IntelligenceLabels>(
     () => ({
       advanced: t("agentControls.advanced.open"),
+      changeModel: t("agentControls.quick.changeModel"),
       slider: t("agentControls.effort.slider"),
       dismiss: t("agentControls.intelligence.dismiss"),
     }),
@@ -371,6 +442,7 @@ export function IntelligenceControl(props: IntelligenceControlProps) {
   const sliderDisabled = props.disabled || onSelectEffort === undefined;
   const overlayVisible = props.lean && props.open && page === "quick";
   const surface = resolveSurfaceLayout({ isModelsPage: page === "models", browser });
+  const openModels = props.canSelectModel ? navigation.openModels : undefined;
 
   return (
     <>
@@ -407,16 +479,21 @@ export function IntelligenceControl(props: IntelligenceControlProps) {
       <IntelligenceOverlay
         visible={overlayVisible}
         modelLabel={modelLabel}
-        effortLabel={effort.selectedLabel}
+        effortLabel={effortLabel}
         tier={effort.tier}
         isFast={isFast}
         stops={effortOptions}
         value={effort.selectedId}
         onChange={onSelectEffort ?? noop}
         disabled={sliderDisabled}
+        onPressLabel={openModels ?? navigation.openAdvanced}
         onOpenAdvanced={navigation.openAdvanced}
+        fastFeature={fastFeature}
+        onToggleFast={toggleFast}
+        contextWindowMaxTokens={browser.selectedRow?.contextWindowMaxTokens}
         onDismiss={close}
         labels={labels}
+        labelAccessibility={openModels ? labels.changeModel : labels.advanced}
       />
       <Combobox
         options={EMPTY_OPTIONS}
@@ -429,6 +506,7 @@ export function IntelligenceControl(props: IntelligenceControlProps) {
         desktopMinWidth={surface.desktopMinWidth}
         desktopLockWidth
         desktopFixedHeight={surface.desktopFixedHeight}
+        desktopKeyInterceptor={modelShortcutKeys}
         desktopChildrenScrollEnabled={false}
         header={header}
         mobileChildrenScrollEnabled={surface.mobileChildrenScrollEnabled}
@@ -447,8 +525,13 @@ export function IntelligenceControl(props: IntelligenceControlProps) {
           canReset={canReset}
           onReset={reset}
           onModelSelect={handleModelSelect}
-          onOpenModels={props.canSelectModel ? navigation.openModels : undefined}
+          onOpenModels={openModels}
+          onOpenModelsFromAdvanced={
+            props.canSelectModel ? navigation.openModelsFromAdvanced : undefined
+          }
           onOpenAdvanced={navigation.openAdvanced}
+          onToggleFast={toggleFast}
+          highlightToken={highlightToken}
           profileActions={profileActions}
           {...props}
         />
@@ -470,7 +553,10 @@ interface IntelligencePagesProps extends IntelligenceControlProps {
   onReset: () => void;
   onModelSelect: (provider: string, modelId: string) => void;
   onOpenModels: (() => void) | undefined;
+  onOpenModelsFromAdvanced: (() => void) | undefined;
   onOpenAdvanced: () => void;
+  onToggleFast: (() => void) | undefined;
+  highlightToken: number;
   profileActions: ReturnType<typeof useProfileActions>;
 }
 
@@ -489,7 +575,6 @@ function IntelligencePages(props: IntelligencePagesProps): ReactElement {
             onRetryProvider={props.onRetryProvider}
             isRetryingProvider={props.isRetryingProvider}
             scrolling={resolveModelBrowserScrolling({ isNative, isCompact: props.isCompact })}
-            searchAllOnFocus={props.isCompact}
           />
         </View>
       );
@@ -497,7 +582,7 @@ function IntelligencePages(props: IntelligencePagesProps): ReactElement {
       return (
         <AdvancedPage
           modelLabel={props.browser.selectedModelLabel}
-          onOpenModels={props.onOpenModels}
+          onOpenModels={props.onOpenModelsFromAdvanced}
           effort={props.effort}
           effortOptions={props.effortOptions}
           onSelectEffort={props.onSelectEffort}
@@ -511,27 +596,27 @@ function IntelligencePages(props: IntelligencePagesProps): ReactElement {
       );
     case "quick":
       return (
-        <View style={styles.quick} testID="agent-effort-card">
-          <IntelligenceLabel
-            modelLabel={props.modelLabel}
-            effortLabel={props.effort.selectedLabel}
-            tier={props.effort.tier}
-            isFast={props.isFast}
-            size="card"
-            disabled={props.disabled}
-            onPress={props.onOpenAdvanced}
-            accessibilityLabel={props.labels.advanced}
-            testID="agent-effort-advanced"
-          />
-          <EffortSlider
-            stops={props.effortOptions}
-            value={props.effort.selectedId}
-            onChange={props.onSelectEffort ?? noop}
-            disabled={props.sliderDisabled}
-            accessibilityLabel={props.labels.slider}
-            testID="agent-effort-slider"
-          />
-        </View>
+        <QuickCard
+          provider={props.provider}
+          providerLabel={
+            props.providers.find((entry) => entry.id === props.provider)?.label ?? null
+          }
+          serverId={props.serverId}
+          modelLabel={props.modelLabel || props.browser.selectedModelLabel}
+          highlightToken={props.highlightToken}
+          onChangeModel={props.onOpenModels}
+          effort={props.effort}
+          effortOptions={props.effortOptions}
+          onSelectEffort={props.onSelectEffort ?? noop}
+          sliderDisabled={props.sliderDisabled}
+          sliderLabel={props.labels.slider}
+          fastFeature={props.fastFeature}
+          isFast={props.isFast}
+          onToggleFast={props.onToggleFast}
+          contextWindowMaxTokens={props.browser.selectedRow?.contextWindowMaxTokens}
+          onOpenAdvanced={props.onOpenAdvanced}
+          disabled={props.disabled}
+        />
       );
     default:
       throw new Error("unreachable");
@@ -546,12 +631,6 @@ const styles = StyleSheet.create((theme) => ({
   },
   mobileContent: {
     paddingHorizontal: 0,
-  },
-  quick: {
-    paddingHorizontal: theme.spacing[3],
-    paddingTop: theme.spacing[2],
-    paddingBottom: theme.spacing[3],
-    gap: theme.spacing[2],
   },
   modelsPage: { flexGrow: 1, flexShrink: 1, minHeight: 0 },
 }));

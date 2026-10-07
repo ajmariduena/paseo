@@ -358,9 +358,21 @@ function pickerViewport(page: Page): Locator {
   return page.getByTestId("combobox-desktop-container");
 }
 
+/** The composer opens its quick card first; "Change" on the model row leads to the browser. */
 export async function openModelPicker(page: Page): Promise<void> {
   await page.getByTestId("combined-model-selector").filter({ visible: true }).first().click();
   await expect(pickerViewport(page)).toBeVisible({ timeout: 30_000 });
+  const change = pickerViewport(page).getByTestId("agent-quick-change-model");
+  if (await change.isVisible()) {
+    await change.click();
+  }
+  await expect(pickerViewport(page).getByTestId("model-search-all-input")).toBeVisible({
+    timeout: 30_000,
+  });
+}
+
+export async function openProfilesTab(page: Page): Promise<void> {
+  await pickerViewport(page).getByTestId("model-tab-profiles").click();
 }
 
 export async function closeModelPicker(page: Page): Promise<void> {
@@ -374,33 +386,11 @@ export function profilePickerRow(page: Page, name: string): Locator {
     .filter({ hasText: name });
 }
 
-/**
- * Profiles are pinned above the provider list, so "pinned" is an ordering claim:
- * the profile row's top edge sits above every provider row's.
- */
-export async function expectProfilePinnedAboveProviders(
-  page: Page,
-  input: { name: string; summary: string },
-): Promise<void> {
-  const viewport = pickerViewport(page);
-  await expect(viewport.getByText("Profiles", { exact: true })).toBeVisible({ timeout: 30_000 });
-  const row = profilePickerRow(page, input.name);
-  await expect(row).toBeVisible({ timeout: 30_000 });
-  await expect(row.getByText(input.summary, { exact: true })).toBeVisible();
-
-  const profileTop = await boxTop(row);
-  const providerRows = viewport.locator('[data-testid^="model-provider-"]');
-  await expect(providerRows.first()).toBeVisible();
-  const providerCount = await providerRows.count();
-  for (let index = 0; index < providerCount; index += 1) {
-    expect(profileTop).toBeLessThan(await boxTop(providerRows.nth(index)));
-  }
-}
-
 export async function expectProfileVisibleForProvider(
   page: Page,
   input: { name: string; summary: string },
 ): Promise<void> {
+  await openProfilesTab(page);
   const viewport = pickerViewport(page);
   await expect(viewport.getByText("Profiles", { exact: true })).toBeVisible({ timeout: 30_000 });
   const row = profilePickerRow(page, input.name);
@@ -417,6 +407,7 @@ export async function expectProfileEditIsPencilOnly(page: Page): Promise<void> {
 }
 
 export async function expectAgentProfilesEmptyPrompt(page: Page): Promise<void> {
+  await openProfilesTab(page);
   const viewport = pickerViewport(page);
   await expect(viewport.getByText("Profiles", { exact: true })).toHaveCount(0);
   await expect(
@@ -450,23 +441,11 @@ async function boxTop(locator: Locator): Promise<number> {
 }
 
 export async function applyProfileFromPicker(page: Page, name: string): Promise<void> {
+  if (!(await profilePickerRow(page, name).isVisible())) {
+    await openProfilesTab(page);
+  }
   await profilePickerRow(page, name).click();
   await expect(pickerViewport(page)).toHaveCount(0, { timeout: 30_000 });
-}
-
-/**
- * Applying a profile materializes it and forgets it: nothing in the root view
- * claims selection. Model rows do carry `aria-selected`, so a count of zero here
- * is the absence of a checkmark, not the absence of the attribute everywhere.
- */
-export async function expectNothingSelectedInPickerRoot(page: Page): Promise<void> {
-  await expect(pickerViewport(page).locator("[aria-selected]")).toHaveCount(0);
-}
-
-export async function expectAgentProfilesEditShortcut(page: Page): Promise<void> {
-  await expect(
-    pickerViewport(page).getByRole("button", { name: "Edit agent profiles", exact: true }),
-  ).toBeVisible({ timeout: 30_000 });
 }
 
 export async function drillIntoProvider(page: Page, providerId: string): Promise<void> {
@@ -552,9 +531,10 @@ function escapeForRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** Search results replace the whole root view, pinned profiles included. */
+/** Search results replace the open tab, and the rail steps aside while they show. */
 export async function expectPinnedProfilesHidden(page: Page): Promise<void> {
   await expect(pickerViewport(page).locator('[data-testid^="model-profile-row-"]')).toHaveCount(0);
+  await expect(pickerViewport(page).getByTestId("model-browser-tabs")).toHaveCount(0);
 }
 
 export async function expectModelSearchEmptyState(page: Page, query: string): Promise<void> {

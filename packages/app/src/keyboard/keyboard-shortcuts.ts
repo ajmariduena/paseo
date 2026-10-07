@@ -202,6 +202,7 @@ export const SHORTCUT_HELP_ROW_ORDER: Record<ShortcutSectionId, readonly string[
   "agent-input": [
     "focus-message-input",
     "cycle-agent-mode",
+    "open-model-picker",
     "dictation-toggle",
     "agent-interrupt",
     "steer-queued-message",
@@ -253,6 +254,7 @@ const SHORTCUT_HELP_LABEL_KEYS: Record<string, string> = {
   "cycle-theme": "settings.shortcuts.help.cycleTheme",
   "focus-message-input": "settings.shortcuts.help.focusMessageInput",
   "cycle-agent-mode": "settings.shortcuts.help.cycleAgentMode",
+  "open-model-picker": "settings.shortcuts.help.openModelPicker",
   "dictation-toggle": "settings.shortcuts.help.startStopDictation",
   "agent-interrupt": "settings.shortcuts.help.interruptAgent",
   "steer-queued-message": "settings.shortcuts.help.steerQueuedMessage",
@@ -1191,6 +1193,30 @@ const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
       id: "cycle-agent-mode",
       section: "agent-input",
       label: "Cycle agent mode",
+    },
+  },
+  {
+    id: "message-input-model-picker-cmd-shift-m-mac",
+    action: "message-input.action",
+    combo: "Cmd+Shift+M",
+    when: { mac: true, commandCenter: false, terminal: false },
+    payload: { type: "message-input", kind: "model-picker" },
+    help: {
+      id: "open-model-picker",
+      section: "agent-input",
+      label: "Change model",
+    },
+  },
+  {
+    id: "message-input-model-picker-ctrl-shift-m-non-mac",
+    action: "message-input.action",
+    combo: "Ctrl+Shift+M",
+    when: { mac: false, commandCenter: false, terminal: false },
+    payload: { type: "message-input", kind: "model-picker" },
+    help: {
+      id: "open-model-picker",
+      section: "agent-input",
+      label: "Change model",
     },
   },
   {

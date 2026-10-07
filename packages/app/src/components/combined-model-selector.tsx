@@ -7,7 +7,13 @@ import type { AgentProfilePicker, AgentProfileSeed } from "@/agent-profiles";
 import { ComboboxTrigger } from "@/components/ui/combobox-trigger";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { Combobox, type ComboboxOption, type ComboboxProps } from "@/components/ui/combobox";
-import { ModelBrowser, ModelProviderGlyph, useModelBrowser } from "@/components/model-browser";
+import {
+  MODEL_BROWSER_MIN_WIDTH,
+  ModelBrowser,
+  ModelProviderGlyph,
+  useModelBrowser,
+  useModelShortcutKeys,
+} from "@/components/model-browser";
 import { resolveModelBrowserScrolling } from "@/components/model-browser-view";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { isNative, isWeb } from "@/constants/platform";
@@ -22,6 +28,10 @@ const foregroundMutedMapping = (theme: Theme) => ({
 });
 
 function noop() {}
+
+function resolveBrowserMinWidth(requested: number | undefined): number {
+  return Math.max(requested ?? 0, MODEL_BROWSER_MIN_WIDTH);
+}
 
 interface CombinedModelSelectorProps {
   providers: ProviderSelectorProvider[];
@@ -126,6 +136,8 @@ export function CombinedModelSelector({
     },
     [handleOpenChange, onSelect],
   );
+
+  const modelShortcutKeys = useModelShortcutKeys(browser, handleSelect, isOpen && !isCompact);
 
   useEffect(() => {
     if (isWeb) return () => {};
@@ -275,12 +287,13 @@ export function CombinedModelSelector({
         onOpenChange={handleOpenChange}
         anchorRef={anchorRef}
         desktopPlacement={desktopPlacement}
-        desktopMinWidth={desktopMinWidth}
+        desktopMinWidth={resolveBrowserMinWidth(desktopMinWidth)}
         desktopLockWidth
         desktopFixedHeight={browser.desktopFixedHeight}
+        desktopKeyInterceptor={modelShortcutKeys}
         desktopChildrenScrollEnabled={false}
         header={browser.header}
-        mobileChildrenScrollEnabled={!browser.isProviderView || !isNative}
+        mobileChildrenScrollEnabled={!isNative}
         mobileChildrenContentContainerStyle={styles.mobileBrowserContent}
       >
         {selectorBody}

@@ -330,6 +330,12 @@ export const es: TranslationResources = {
       model: "Modelo",
       reset: "Restablecer valores predeterminados",
     },
+    quick: {
+      change: "Cambiar",
+      changeModel: "Cambiar modelo",
+      fast: "Rápido",
+      context: "Contexto {{size}}",
+    },
     speed: {
       title: "Velocidad",
       standard: "Estándar",
@@ -1811,6 +1817,14 @@ export const es: TranslationResources = {
     searchAllPlaceholder: "Buscar en todos los modelos...",
     searchPlaceholder: "Buscar modelos...",
     openProviderSettings: "Abrir configuración de{{provider}}",
+    favorites: "Favoritos",
+    favorite: "Añadir a favoritos",
+    unfavorite: "Quitar de favoritos",
+    favoritesEmpty: "Marca un modelo con la estrella para tenerlo aquí",
+    providerLocked: "{{provider}} no está disponible en este chat",
+    providerLockedNote:
+      "Este chat empezó con {{provider}}. Para usar otro proveedor, crea un chat nuevo.",
+    manageModels: "Administrar modelos",
   },
   providerCatalog: {
     title: "Agregar proveedor",
@@ -2835,6 +2849,7 @@ export const es: TranslationResources = {
         cycleTheme: "Tema del ciclo",
         focusMessageInput: "Entrada de mensaje de enfoque",
         cycleAgentMode: "Alternar modo del agente",
+        openModelPicker: "Cambiar modelo",
         startStopDictation: "Iniciar dictado/stop",
         interruptAgent: "agente de interrupción",
         sendMessage: "enviar mensaje",

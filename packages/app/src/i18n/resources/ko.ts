@@ -327,6 +327,12 @@ export const ko: TranslationResources = {
       model: "모델",
       reset: "기본값으로 재설정",
     },
+    quick: {
+      change: "변경",
+      changeModel: "모델 변경",
+      fast: "빠르게",
+      context: "컨텍스트 {{size}}",
+    },
     speed: {
       title: "속도",
       standard: "표준",
@@ -1773,6 +1779,14 @@ export const ko: TranslationResources = {
     searchAllPlaceholder: "모든 모델 검색...",
     searchPlaceholder: "모델 검색...",
     openProviderSettings: "{{provider}} 설정 열기",
+    favorites: "즐겨찾기",
+    favorite: "즐겨찾기에 추가",
+    unfavorite: "즐겨찾기에서 제거",
+    favoritesEmpty: "모델에 별표를 표시하면 여기에 표시됩니다",
+    providerLocked: "이 채팅에서는 {{provider}}을(를) 사용할 수 없습니다",
+    providerLockedNote:
+      "이 채팅은 {{provider}}(으)로 시작되었습니다. 다른 제공자를 사용하려면 새 채팅을 시작하세요.",
+    manageModels: "모델 관리",
   },
   providerCatalog: {
     title: "프로바이더 추가",
@@ -2787,6 +2801,7 @@ export const ko: TranslationResources = {
         cycleTheme: "테마 순환",
         focusMessageInput: "메시지 입력란에 포커스",
         cycleAgentMode: "에이전트 모드 전환",
+        openModelPicker: "모델 변경",
         startStopDictation: "받아쓰기 시작/중지",
         interruptAgent: "에이전트 중단",
         sendMessage: "메시지 보내기",

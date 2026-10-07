@@ -102,7 +102,7 @@ export function IntelligenceLabel({
 }
 
 /** The level's name, tinted by tier, with a glow that swells when the thumb lands on the top stop. */
-function EffortName({
+export function EffortName({
   label,
   tier,
   textStyle,

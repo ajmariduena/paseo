@@ -329,6 +329,12 @@ export const ja: TranslationResources = {
       model: "モデル",
       reset: "デフォルトに戻す",
     },
+    quick: {
+      change: "変更",
+      changeModel: "モデルを変更",
+      fast: "高速",
+      context: "コンテキスト {{size}}",
+    },
     speed: {
       title: "速度",
       standard: "標準",
@@ -1781,6 +1787,14 @@ export const ja: TranslationResources = {
     searchAllPlaceholder: "すべてのモデルを検索...",
     searchPlaceholder: "モデルを検索...",
     openProviderSettings: "{{provider}}の設定を開く",
+    favorites: "お気に入り",
+    favorite: "お気に入りに追加",
+    unfavorite: "お気に入りから削除",
+    favoritesEmpty: "モデルにスターを付けるとここに表示されます",
+    providerLocked: "{{provider}} はこのチャットでは使用できません",
+    providerLockedNote:
+      "このチャットは {{provider}} で開始されました。別のプロバイダーを使うには新しいチャットを開始してください。",
+    manageModels: "モデルを管理",
   },
   providerCatalog: {
     title: "プロバイダーを追加",
@@ -2808,6 +2822,7 @@ export const ja: TranslationResources = {
         cycleTheme: "テーマを順に切り替え",
         focusMessageInput: "メッセージ入力にフォーカス",
         cycleAgentMode: "エージェントモードを順に切り替え",
+        openModelPicker: "モデルを変更",
         startStopDictation: "音声入力を開始/停止",
         interruptAgent: "エージェントを中断",
         sendMessage: "メッセージを送信",

@@ -132,6 +132,8 @@ export interface ComboboxProps {
   desktopLockWidth?: boolean;
   /** Fixed height for the desktop popover (overrides default 400px max). */
   desktopFixedHeight?: number;
+  /** Sees desktop keys before the popover's own handling; return true to consume. */
+  desktopKeyInterceptor?: (event: KeyboardEvent) => boolean;
   /** Content rendered above the scroll area on desktop (sticky header). */
   stickyHeader?: ReactNode;
   /** Content rendered below the scroll area. */
@@ -1039,6 +1041,7 @@ interface DesktopBodyProps {
   isOpen: boolean;
   handleClose: () => void;
   handleDesktopKey: (key: DesktopKey, event?: KeyboardEvent) => boolean;
+  desktopKeyInterceptor: ((event: KeyboardEvent) => boolean) | undefined;
   refs: ReturnType<typeof useFloating>["refs"];
   shouldUseDesktopFade: boolean;
   desktopFrameStyle: StyleProp<ViewStyle>;
@@ -1165,12 +1168,17 @@ function DesktopComboboxOptionsBody(props: {
 
 function DesktopComboboxBody(props: DesktopBodyProps): ReactElement {
   const handleDesktopKey = props.handleDesktopKey;
+  const desktopKeyInterceptor = props.desktopKeyInterceptor;
   const handleWebOverlayKeyDown = useCallback(
     (event: KeyboardEvent) => {
+      if (desktopKeyInterceptor?.(event)) {
+        event.preventDefault();
+        return true;
+      }
       if (!isDesktopKey(event.key)) return false;
       return handleDesktopKey(event.key, event);
     },
-    [handleDesktopKey],
+    [desktopKeyInterceptor, handleDesktopKey],
   );
   const setWebOverlayScope = useWebOverlayRegistration({
     active: isWeb && props.isOpen,
@@ -1293,6 +1301,7 @@ export function Combobox({
   desktopMinWidth,
   desktopLockWidth,
   desktopFixedHeight,
+  desktopKeyInterceptor,
   stickyHeader,
   footer,
   keepOpenOnSelect = false,
@@ -1610,6 +1619,7 @@ export function Combobox({
       isOpen={isOpen}
       handleClose={handleClose}
       handleDesktopKey={handleDesktopKey}
+      desktopKeyInterceptor={desktopKeyInterceptor}
       refs={refs}
       shouldUseDesktopFade={shouldUseDesktopFade}
       desktopFrameStyle={desktopFrameStyle}

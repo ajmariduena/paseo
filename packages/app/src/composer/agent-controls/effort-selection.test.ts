@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  GAUGE_TIER_COLOR,
-  describeIntelligence,
-  resolveEffortSelection,
-  resolveIntelligenceOpeningPage,
-} from "./effort-selection";
+import { GAUGE_TIER_COLOR, describeIntelligence, resolveEffortSelection } from "./effort-selection";
 
 const STOPS = [
   { id: "low", label: "Low" },
@@ -61,8 +56,6 @@ describe("effort selection", () => {
       selectedId: "",
       selectedLabel: "",
     });
-    expect(resolveIntelligenceOpeningPage(single.hasEffort)).toBe("advanced");
-    expect(resolveIntelligenceOpeningPage(true)).toBe("quick");
   });
 });
 

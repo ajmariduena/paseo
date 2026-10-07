@@ -1,13 +1,16 @@
 import {
   filterAndRankModelRows,
   getAllProviderModelRows,
+  getProviderModelRows,
   type ProviderSelectionModelRow,
   type ProviderSelectorProvider,
 } from "@/provider-selection/provider-selection";
 
+/** The rail's tabs: starred models, one provider's catalog, or the agent profiles. */
 export type ModelBrowserView =
-  | { kind: "all" }
-  | { kind: "provider"; providerId: string; providerLabel: string };
+  | { kind: "favorites" }
+  | { kind: "provider"; providerId: string; providerLabel: string }
+  | { kind: "profiles" };
 
 export function resolveModelBrowserScrolling({
   isNative,
@@ -49,63 +52,120 @@ export function groupProfilesByProviderModel<T extends ModelProfileRef>(
   return lookup;
 }
 
-/** What the root view shows: the provider drill-down, or ranked cross-provider results. */
-export type ModelBrowserAllView =
-  | { kind: "browse" }
-  | { kind: "searchResults"; rows: ProviderSelectionModelRow[] }
-  | { kind: "noSearchMatches" };
+/** A started chat can only switch models within its own provider; the rest stay visible. */
+export function resolveSelectableProviders(
+  providers: ProviderSelectorProvider[],
+  lockedProvider: string | null,
+): ProviderSelectorProvider[] {
+  if (lockedProvider === null) return providers;
+  return providers.filter((provider) => provider.id === lockedProvider);
+}
 
-export function resolveModelBrowserAllView({
+/** Starred rows in catalog order. Stars on models a host no longer lists are skipped. */
+export function resolveFavoriteRows({
+  providers,
+  favoriteKeys,
+}: {
+  providers: ProviderSelectorProvider[];
+  favoriteKeys: readonly string[];
+}): ProviderSelectionModelRow[] {
+  if (favoriteKeys.length === 0) return [];
+  const starred = new Set(favoriteKeys);
+  return getAllProviderModelRows(providers).filter((row) => starred.has(row.favoriteKey));
+}
+
+export type ModelBrowserSearch =
+  | { kind: "idle" }
+  | { kind: "results"; rows: ProviderSelectionModelRow[] }
+  | { kind: "noMatches" };
+
+/** Typing searches every provider the chat can use; the rail steps aside while it does. */
+export function resolveModelBrowserSearch({
   providers,
   normalizedQuery,
-  isSearchFocused,
 }: {
   providers: ProviderSelectorProvider[];
   normalizedQuery: string;
-  isSearchFocused: boolean;
-}): ModelBrowserAllView {
-  if (!normalizedQuery && !isSearchFocused) {
-    return { kind: "browse" };
-  }
-  const allRows = getAllProviderModelRows(providers);
-  const rows = normalizedQuery ? filterAndRankModelRows(allRows, normalizedQuery) : allRows;
-  if (rows.length === 0) {
-    return { kind: "noSearchMatches" };
-  }
-  return { kind: "searchResults", rows };
+}): ModelBrowserSearch {
+  if (!normalizedQuery) return { kind: "idle" };
+  const rows = filterAndRankModelRows(getAllProviderModelRows(providers), normalizedQuery);
+  return rows.length === 0 ? { kind: "noMatches" } : { kind: "results", rows };
 }
 
-/** Where the picker lands when it opens. A sole provider skips the redundant root view. */
+/**
+ * Where the picker lands: Favorites once the user has starred something it can pick, otherwise
+ * the provider in use, otherwise the first one.
+ */
 export function resolveInitialModelBrowserView({
   providers,
   selectedProvider,
-  selectedModel,
+  favoriteCount,
   hasProfiles,
 }: {
   providers: ProviderSelectorProvider[];
   selectedProvider: string;
-  selectedModel: string;
+  favoriteCount: number;
   hasProfiles: boolean;
 }): ModelBrowserView {
-  const singleProvider = providers.length === 1 ? providers[0] : undefined;
-  if (singleProvider) {
-    return {
-      kind: "provider",
-      providerId: singleProvider.id,
-      providerLabel: singleProvider.label,
-    };
+  if (favoriteCount > 0) return { kind: "favorites" };
+  const provider = providers.find((entry) => entry.id === selectedProvider) ?? providers[0];
+  if (provider) {
+    return { kind: "provider", providerId: provider.id, providerLabel: provider.label };
   }
+  return hasProfiles ? { kind: "profiles" } : { kind: "favorites" };
+}
 
-  if (hasProfiles) {
-    return { kind: "all" };
-  }
+/**
+ * ⌘1–⌘9 (Ctrl on other platforms) pick a row of the open picker. Returns the 0-based row, or
+ * null for any other key.
+ */
+export function resolveModelShortcutIndex(
+  event: { key: string; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean },
+  isMac: boolean,
+): number | null {
+  const modifier = isMac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+  if (!modifier || event.shiftKey || event.altKey) return null;
+  if (!/^[1-9]$/.test(event.key)) return null;
+  return Number(event.key) - 1;
+}
 
-  if (selectedProvider.length > 0 && selectedModel.length > 0) {
-    const provider = providers.find((entry) => entry.id === selectedProvider);
-    if (provider) {
-      return { kind: "provider", providerId: provider.id, providerLabel: provider.label };
+/** The rows on screen: search results while typing, otherwise the open tab's list. */
+export function resolveVisibleModelRows(input: {
+  view: ModelBrowserView;
+  search: ModelBrowserSearch;
+  selectableProviders: ProviderSelectorProvider[];
+  favoriteRows: ProviderSelectionModelRow[];
+}): ProviderSelectionModelRow[] {
+  if (input.search.kind === "results") return input.search.rows;
+  if (input.search.kind === "noMatches") return [];
+  const view = input.view;
+  switch (view.kind) {
+    case "favorites":
+      return input.favoriteRows;
+    case "provider": {
+      const provider = input.selectableProviders.find((entry) => entry.id === view.providerId);
+      return provider ? getProviderModelRows(provider) : [];
     }
+    case "profiles":
+      return [];
+    default:
+      throw new Error("unreachable");
   }
+}
 
-  return { kind: "all" };
+/**
+ * A started chat's rail: every provider on the host, in host order, with the chat's own provider
+ * (which carries its live catalog) in its slot.
+ */
+export function resolveLockedRailProviders({
+  own,
+  all,
+}: {
+  own: ProviderSelectorProvider[];
+  all: ProviderSelectorProvider[];
+}): ProviderSelectorProvider[] {
+  const ownById = new Map(own.map((provider) => [provider.id, provider]));
+  const merged = all.map((provider) => ownById.get(provider.id) ?? provider);
+  const missing = own.filter((provider) => !all.some((entry) => entry.id === provider.id));
+  return [...missing, ...merged];
 }

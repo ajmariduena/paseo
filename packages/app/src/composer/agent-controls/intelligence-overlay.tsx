@@ -12,6 +12,8 @@ import { EffortSlider, type EffortSliderStop } from "@/components/ui/effort-slid
 import type { EffortTier } from "@/components/ui/effort-stops";
 import { IntelligenceBackdrop } from "@/composer/agent-controls/intelligence-backdrop";
 import { IntelligenceLabel } from "@/composer/agent-controls/intelligence-label";
+import { QuickChips } from "@/composer/agent-controls/quick-card";
+import type { AgentFeatureToggle } from "@getpaseo/protocol/agent-types";
 import { isWeb } from "@/constants/platform";
 import { useKeyboardShift } from "@/keyboard/shift";
 import { useOverlayLayer, useWebOverlayRegistration } from "@/lib/overlay-root";
@@ -27,17 +29,23 @@ const SHEET_MAX_WIDTH = 420;
 export interface IntelligenceOverlayProps {
   visible: boolean;
   modelLabel: string;
-  effortLabel: string;
+  /** Null when the model has no effort scale; the slider then stays out. */
+  effortLabel: string | null;
   tier: EffortTier;
   isFast: boolean;
   stops: readonly EffortSliderStop[];
   value: string;
   onChange: (id: string) => void;
   disabled: boolean;
+  /** The big label changes the model, or opens Advanced when the model is fixed. */
+  onPressLabel: () => void;
+  labelAccessibility: string;
   onOpenAdvanced: () => void;
+  fastFeature: AgentFeatureToggle | null;
+  onToggleFast: (() => void) | undefined;
+  contextWindowMaxTokens: number | undefined;
   onDismiss: () => void;
   labels: {
-    advanced: string;
     slider: string;
     dismiss: string;
   };
@@ -140,18 +148,28 @@ export function IntelligenceOverlay(props: IntelligenceOverlayProps): ReactEleme
                 isFast={props.isFast}
                 size="overlay"
                 disabled={props.disabled}
-                onPress={props.onOpenAdvanced}
-                accessibilityLabel={props.labels.advanced}
-                testID="agent-effort-advanced"
+                onPress={props.onPressLabel}
+                accessibilityLabel={props.labelAccessibility}
+                testID="agent-quick-change-model"
               />
-              <EffortSlider
-                stops={props.stops}
-                value={props.value}
-                onChange={props.onChange}
+              {props.effortLabel !== null ? (
+                <EffortSlider
+                  stops={props.stops}
+                  value={props.value}
+                  onChange={props.onChange}
+                  disabled={props.disabled}
+                  size="large"
+                  accessibilityLabel={props.labels.slider}
+                  testID="agent-effort-slider"
+                />
+              ) : null}
+              <QuickChips
+                fastFeature={props.fastFeature}
+                isFast={props.isFast}
+                onToggleFast={props.onToggleFast}
+                contextWindowMaxTokens={props.contextWindowMaxTokens}
+                onOpenAdvanced={props.onOpenAdvanced}
                 disabled={props.disabled}
-                size="large"
-                accessibilityLabel={props.labels.slider}
-                testID="agent-effort-slider"
               />
             </View>
           </GestureDetector>

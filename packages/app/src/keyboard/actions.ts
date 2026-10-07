@@ -13,6 +13,7 @@ export type MessageInputKeyboardActionKind =
   | "dictation-cancel"
   | "dictation-confirm"
   | "mode-cycle"
+  | "model-picker"
   | "steer-queued";
 
 export type KeyboardActionId =
