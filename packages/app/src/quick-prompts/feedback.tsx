@@ -14,11 +14,6 @@ import { Button } from "@/components/ui/button";
 import type { QuickPromptSendState } from "./deferred-send";
 import type { QuickPromptPicker } from "./picker";
 
-const feedbackKey = {
-  started: "quickPrompts.sent",
-  steered: "quickPrompts.steered",
-  queued: "quickPrompts.queued",
-} as const;
 const actionKey = {
   send: "quickPrompts.send",
   steer: "quickPrompts.steer",
@@ -40,8 +35,6 @@ function resolveFeedbackLabel(state: QuickPromptSendState, t: (key: string) => s
       return t("quickPrompts.sending");
     case "failed":
       return t("quickPrompts.failed");
-    case "accepted":
-      return t(feedbackKey[state.disposition]);
     default:
       throw new Error("unreachable");
   }

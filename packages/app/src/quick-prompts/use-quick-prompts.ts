@@ -37,7 +37,7 @@ export function useQuickPrompts(serverId: string) {
   );
   return {
     prompts: config?.quickPrompts ?? EMPTY_PROMPTS,
-    undoMs: config?.quickPromptUndoMs ?? 2500,
+    undoMs: config?.quickPromptUndoMs ?? 0,
     loaded: config !== null,
     supported,
     connected,

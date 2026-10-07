@@ -267,7 +267,6 @@ export interface QuickPromptPresentation {
   /** False moves the picker into the attachment menu and the feedback above the input. */
   showTrigger: boolean;
   showDefaultLabel: boolean;
-  visiblePinCount: number;
   width: number;
   density: ComposerControlDensity;
   /** The lean tablet row: one bookmark that sends the default on tap and opens on a long press. */
@@ -277,7 +276,6 @@ export interface QuickPromptPresentation {
 const PHONE_QUICK_PROMPT_PRESENTATION: QuickPromptPresentation = {
   showTrigger: false,
   showDefaultLabel: false,
-  visiblePinCount: 0,
   width: 0,
   density: "icons",
   tapSendsDefault: false,
@@ -287,7 +285,6 @@ function leanQuickPromptPresentation(target: number): QuickPromptPresentation {
   return {
     showTrigger: true,
     showDefaultLabel: false,
-    visiblePinCount: 0,
     width: target + 2,
     density: "icons",
     tapSendsDefault: true,
@@ -306,15 +303,14 @@ export function estimateComposerFixedWidth(touch: boolean): number {
     : 4 * COMPOSER_TOOLBAR_GEOMETRY.controlSize + 5 * COMPOSER_TOOLBAR_GEOMETRY.controlGap;
 }
 
-const QUICK_PROMPT_LABEL_CHARS = 14;
-// Base-size text runs wider than the toolbar's 7px estimate; the pill budgets 8px a glyph so a
+// Base-size text runs wider than the toolbar's 7px estimate; the pill budgets 9px a glyph so a
 // title that fits the budget never ellipsizes in the real control.
-const QUICK_PROMPT_CHAR_WIDTH = 8;
+const QUICK_PROMPT_CHAR_WIDTH = 9;
 
-/** A bounded pill: padding, bookmark glyph, its gap, and up to one line of text. */
+/** The default prompt's pill at its full title; the toolbar drops the label rather than truncate it. */
 export function estimateQuickPromptPillWidth(label: string, fontScale: number): number {
   const { controlSize, iconLabelGap, labelPadding } = COMPOSER_TOOLBAR_GEOMETRY;
-  const chars = Math.min(Array.from(label).length, QUICK_PROMPT_LABEL_CHARS);
+  const chars = Array.from(label).length;
   return (
     controlSize +
     iconLabelGap +
@@ -324,11 +320,10 @@ export function estimateQuickPromptPillWidth(label: string, fontScale: number): 
 }
 
 /**
- * Resolve the joint budget: secondary pins disappear first, then model/effort/mode labels,
- * then the default prompt label, and last the icon-only trigger itself. Both clusters consume
- * this same decision, so a prompt cannot keep the model at a density whose labels would
- * overflow the remaining space; pins only take the slack left at that density, so they never
- * cost a label. Compact layouts are the phone row outright.
+ * Resolve the joint budget: model/effort/mode labels disappear first, then the default prompt
+ * label, and last the icon-only trigger itself. Both clusters consume this same decision, so a
+ * prompt cannot keep the model at a density whose labels would overflow the remaining space.
+ * Compact layouts are the phone row outright.
  */
 export function resolveQuickPromptPresentation(input: {
   /** Button-row interior after the fixed attachment/ring/mic/send slots. */
@@ -338,7 +333,6 @@ export function resolveQuickPromptPresentation(input: {
   lean?: boolean;
   touch: boolean;
   defaultLabel: string | null;
-  pinnedLabels: readonly string[];
   controls: ComposerControlPresence;
   current?: QuickPromptPresentation;
 }): QuickPromptPresentation {
@@ -348,9 +342,10 @@ export function resolveQuickPromptPresentation(input: {
     : COMPOSER_TOOLBAR_GEOMETRY.controlGap;
   const target = input.touch ? 44 : 28;
   if (input.lean) return leanQuickPromptPresentation(target);
-  const pillWidth = (label: string) =>
-    estimateQuickPromptPillWidth(label, input.controls.fontScale);
-  const splitWidth = input.defaultLabel === null ? 0 : pillWidth(input.defaultLabel) + target + 2;
+  const splitWidth =
+    input.defaultLabel === null
+      ? 0
+      : estimateQuickPromptPillWidth(input.defaultLabel, input.controls.fontScale) + target + 2;
   const controlsWidth = (density: ComposerControlDensity) =>
     estimateComposerControlsWidth(input.controls, density, gap);
   const fits = (floor: number, wasVisible: boolean) => {
@@ -366,26 +361,13 @@ export function resolveQuickPromptPresentation(input: {
   const showDefaultLabel =
     input.defaultLabel !== null &&
     fits(controlsWidth("tight") + gap + splitWidth, input.current?.showDefaultLabel ?? false);
-  let width = showDefaultLabel ? splitWidth : target + 2;
+  const width = showDefaultLabel ? splitWidth : target + 2;
   const density = resolveDensityWithHysteresis(
     input.availableWidth - width - gap,
     input.current?.density,
     controlsWidth,
   );
-  let visiblePinCount = 0;
-  for (const label of input.pinnedLabels.slice(0, 3)) {
-    const nextWidth = width + gap + pillWidth(label);
-    if (
-      !fits(
-        controlsWidth(density) + gap + nextWidth,
-        visiblePinCount < (input.current?.visiblePinCount ?? 0),
-      )
-    )
-      break;
-    width = nextWidth;
-    visiblePinCount++;
-  }
-  return { showTrigger, showDefaultLabel, visiblePinCount, width, density, tapSendsDefault: false };
+  return { showTrigger, showDefaultLabel, width, density, tapSendsDefault: false };
 }
 
 /** Inline feedback can wrap vertically but never grows beyond the toolbar's remaining width. */

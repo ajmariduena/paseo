@@ -295,27 +295,20 @@ describe("quick prompt capacity", () => {
     compact: false,
     touch: true,
     defaultLabel: "Summary",
-    pinnedLabels: ["Tests", "Commit", "Review"],
     controls: CLAUDE_CONTROLS,
   };
-  it("keeps at most three pins and removes them before the default label", () => {
-    expect(resolveQuickPromptPresentation({ ...base, availableWidth: 1000 })).toMatchObject({
-      showDefaultLabel: true,
-      visiblePinCount: 3,
-    });
+  it("drops the default label to the glyph when it cannot fit", () => {
     expect(resolveQuickPromptPresentation({ ...base, availableWidth: 400 })).toMatchObject({
       showDefaultLabel: true,
-      visiblePinCount: 0,
     });
     expect(resolveQuickPromptPresentation({ ...base, availableWidth: 200 })).toMatchObject({
       showTrigger: true,
       showDefaultLabel: false,
-      visiblePinCount: 0,
     });
   });
   it("reserves the default label until the model pill has collapsed to its glyph", () => {
     const result = resolveQuickPromptPresentation({ ...base, availableWidth: 260 });
-    expect(result).toMatchObject({ showDefaultLabel: true, visiblePinCount: 0, density: "tight" });
+    expect(result).toMatchObject({ showDefaultLabel: true, density: "tight" });
     expect(resolveComposerControlPresentation(result.density).showModelLabel).toBe(false);
     const narrower = resolveQuickPromptPresentation({ ...base, availableWidth: 200 });
     expect(narrower.showDefaultLabel).toBe(false);
@@ -331,7 +324,6 @@ describe("quick prompt capacity", () => {
     expect(phoneRow).toEqual({
       showTrigger: false,
       showDefaultLabel: false,
-      visiblePinCount: 0,
       width: 0,
       density: "icons",
       tapSendsDefault: false,
@@ -356,7 +348,6 @@ describe("quick prompt capacity", () => {
     ).toEqual({
       showTrigger: false,
       showDefaultLabel: false,
-      visiblePinCount: 0,
       width: 0,
       density: "icons",
       tapSendsDefault: false,
@@ -367,7 +358,6 @@ describe("quick prompt capacity", () => {
     expect(resolveQuickPromptPresentation({ ...base, lean: true, availableWidth: 1000 })).toEqual({
       showTrigger: true,
       showDefaultLabel: false,
-      visiblePinCount: 0,
       width: 46,
       density: "icons",
       tapSendsDefault: true,
@@ -412,40 +402,6 @@ describe("quick prompt capacity", () => {
     ).toBe(true);
   });
 
-  it("keeps pins through the same dead band", () => {
-    const gap = COMPOSER_TOOLBAR_GEOMETRY.touchControlGap;
-    const floor =
-      estimateComposerControlsWidth(CLAUDE_CONTROLS, "full", gap) +
-      gap +
-      estimateQuickPromptPillWidth("Summary", 1) +
-      44 +
-      2 +
-      gap +
-      estimateQuickPromptPillWidth("Tests", 1);
-    const wide = resolveQuickPromptPresentation({ ...base, availableWidth: floor });
-    expect(wide).toMatchObject({ visiblePinCount: 1, density: "full" });
-    const jitter = resolveQuickPromptPresentation({
-      ...base,
-      availableWidth: floor - 10,
-      current: wide,
-    });
-    expect(jitter.visiblePinCount).toBe(1);
-    const narrow = resolveQuickPromptPresentation({
-      ...base,
-      availableWidth: floor - 20,
-      current: jitter,
-    });
-    expect(narrow.visiblePinCount).toBe(0);
-    expect(
-      resolveQuickPromptPresentation({ ...base, availableWidth: floor, current: narrow })
-        .visiblePinCount,
-    ).toBe(0);
-    expect(
-      resolveQuickPromptPresentation({ ...base, availableWidth: floor + 13, current: narrow })
-        .visiblePinCount,
-    ).toBe(1);
-  });
-
   it("budgets inline feedback inside the 368px touch toolbar", () => {
     const width = resolveQuickPromptFeedbackWidth(368, true, base.controls);
     expect(width).toBeGreaterThanOrEqual(44);
@@ -476,7 +432,7 @@ describe("quick prompt capacity", () => {
         availableWidth: 250,
         controls: { ...base.controls, fontScale: 2 },
       }),
-    ).toMatchObject({ showTrigger: true, showDefaultLabel: false, visiblePinCount: 0 });
+    ).toMatchObject({ showTrigger: true, showDefaultLabel: false });
   });
 
   it.each([true, false])(
@@ -497,7 +453,6 @@ describe("quick prompt capacity", () => {
         gap +
         estimateComposerControlsWidth(base.controls, result.density, gap);
       expect(occupied).toBeLessThanOrEqual(368);
-      expect(result.visiblePinCount).toBe(0);
     },
   );
 
@@ -524,41 +479,13 @@ describe("quick prompt capacity", () => {
     }
   });
 
-  it("budgets a title at base-size glyph widths so a fitting title never ellipsizes", () => {
-    // Glyph slot, its gap, label padding, then 8px a character.
-    expect(estimateQuickPromptPillWidth("Resumen corto", 1)).toBe(28 + 4 + 8 + 13 * 8);
+  it("budgets the full title at base-size glyph widths so the label never ellipsizes", () => {
+    // Glyph slot, its gap, label padding, then 9px a character.
+    expect(estimateQuickPromptPillWidth("Resumen corto", 1)).toBe(28 + 4 + 8 + 13 * 9);
     expect(estimateQuickPromptPillWidth("A title longer than fourteen", 1)).toBe(
-      estimateQuickPromptPillWidth("Fourteen chars", 1),
+      28 + 4 + 8 + 28 * 9,
     );
-    expect(estimateQuickPromptPillWidth("Tests", 2)).toBe(28 + 4 + 8 + 5 * 8 * 2);
-  });
-
-  it("shows a pin from the slack at the current density, never at a label's expense", () => {
-    // Three inline features keep full out of reach, but no-effort leaves room for one pin.
-    const controls = {
-      ...CLAUDE_CONTROLS,
-      features: [
-        { type: "toggle" as const },
-        { type: "toggle" as const },
-        { type: "toggle" as const },
-      ],
-    };
-    const gap = COMPOSER_TOOLBAR_GEOMETRY.touchControlGap;
-    const split = estimateQuickPromptPillWidth("Summary", 1) + 44 + 2;
-    const pin = estimateQuickPromptPillWidth("Tests", 1);
-    const availableWidth =
-      estimateComposerControlsWidth(controls, "no-effort", gap) + gap + split + gap + pin;
-    expect(availableWidth).toBeLessThan(
-      estimateComposerControlsWidth(controls, "full", gap) + gap + split,
-    );
-    expect(resolveQuickPromptPresentation({ ...base, controls, availableWidth })).toMatchObject({
-      showDefaultLabel: true,
-      visiblePinCount: 1,
-      density: "no-effort",
-    });
-    expect(
-      resolveQuickPromptPresentation({ ...base, controls, availableWidth: availableWidth - 1 }),
-    ).toMatchObject({ showDefaultLabel: true, visiblePinCount: 0, density: "no-effort" });
+    expect(estimateQuickPromptPillWidth("Tests", 2)).toBe(28 + 4 + 8 + 5 * 9 * 2);
   });
 });
 

@@ -43,7 +43,6 @@ export interface QuickPromptPicker {
   undoMs: number;
   state: QuickPromptSendState;
   defaultPrompt: QuickPrompt | undefined;
-  pinned: readonly QuickPrompt[];
   pinCount: number;
   writePending: boolean;
   writeError: string;
@@ -74,10 +73,6 @@ export function useQuickPromptPicker(binding: QuickPromptToolbarBinding): QuickP
   const [write, setWrite] = useState({ pending: false, error: "" });
   const writing = useRef(false);
   const defaultPrompt = catalog.prompts.find((prompt) => prompt.isDefault);
-  const pinned = useMemo(
-    () => catalog.prompts.filter((prompt) => prompt.pinned && prompt.id !== defaultPrompt?.id),
-    [catalog.prompts, defaultPrompt?.id],
-  );
   const ready = isQuickPromptReady(catalog, binding.available, blocked);
   const select = useCallback(
     (prompt: QuickPrompt, action: QuickPromptPickerAction) => {
@@ -168,7 +163,6 @@ export function useQuickPromptPicker(binding: QuickPromptToolbarBinding): QuickP
       undoMs,
       state,
       defaultPrompt,
-      pinned,
       pinCount,
       writePending: write.pending,
       writeError: write.error,
@@ -192,7 +186,6 @@ export function useQuickPromptPicker(binding: QuickPromptToolbarBinding): QuickP
       editor,
       loaded,
       pinCount,
-      pinned,
       prepareSelection,
       prompts,
       retry,
@@ -219,22 +212,27 @@ export function QuickPromptPickerList({ picker }: { picker: QuickPromptPicker })
     () => <ThemedFilePlus size={ICON_SIZE.md} uniProps={mutedMapping} />,
     [],
   );
+  const pinnedRows = picker.prompts.filter((prompt) => prompt.pinned);
+  const otherRows = picker.prompts.filter((prompt) => !prompt.pinned);
+  const renderRow = (prompt: QuickPrompt) => (
+    <QuickPromptPickerRow
+      key={prompt.id}
+      prompt={prompt}
+      disabled={picker.rowDisabled}
+      pinLimit={picker.pinCount >= 3}
+      writing={picker.writePending}
+      onSelect={picker.prepareSelection}
+    />
+  );
   return (
     <>
       {!picker.loaded ? <MenuItem disabled>{t("quickPrompts.loading")}</MenuItem> : null}
       {picker.loaded && !picker.prompts.length ? (
         <MenuItem disabled>{t("quickPrompts.empty")}</MenuItem>
       ) : null}
-      {picker.prompts.map((prompt) => (
-        <QuickPromptPickerRow
-          key={prompt.id}
-          prompt={prompt}
-          disabled={picker.rowDisabled}
-          pinLimit={picker.pinCount >= 3}
-          writing={picker.writePending}
-          onSelect={picker.prepareSelection}
-        />
-      ))}
+      {pinnedRows.map(renderRow)}
+      {pinnedRows.length > 0 && otherRows.length > 0 ? <MenuSeparator /> : null}
+      {otherRows.map(renderRow)}
       <MenuSeparator />
       {picker.defaultPrompt ? null : (
         <MenuItem disabled>{t("quickPrompts.chooseDefault")}</MenuItem>
