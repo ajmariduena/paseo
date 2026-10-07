@@ -76,7 +76,9 @@ The base image does not preinstall Claude Code, Codex, OpenCode, Copilot, Pi, or
 other agent CLIs. That keeps the default image small and avoids coupling Paseo
 releases to third-party agent release cycles.
 
-The base image also omits Chrome and its shared libraries. For `html_preview`, build a separate browser-enabled child image with Chrome's Linux libraries, run the daemon as the normal non-root `paseo` user, and use `paseo browser setup --host <daemon>` after startup to install the pinned shell into the persistent Paseo home. The container host must permit Chrome's user-namespace sandbox through its AppArmor and seccomp policy. Check `paseo browser status --host <daemon>` and a real preview before treating that image as supported. `PASEO_PREVIEW_BROWSER_SANDBOX=0` explicitly disables the sandbox and is unsafe for untrusted HTML; the base image does not set it.
+### HTML preview browser
+
+The base image omits Chrome and its shared libraries. For `html_preview`, build a browser-enabled child image and install the libraries **before** running `paseo browser setup --host <daemon>`: setup launches the pinned shell to verify it and fails if a library such as `libnspr4.so` is missing. Keep the daemon and browser under the non-root `paseo` user, with Paseo home persisted across restarts.
 
 For Debian Bookworm, start the child image with the shell's shared libraries:
 
@@ -90,7 +92,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 ```
 
-The host namespace policy is separate from this image. `paseo browser status` reports missing libraries and common AppArmor restrictions; run a real preview after configuring the host.
+On Bookworm, `libnss3` brings in `libnspr4`. Docker's default seccomp profile can block the namespace syscalls Chrome needs. Prefer a profile based on Docker's default that permits `clone`, `setns`, and `unshare`, following [Playwright's Chromium sandbox profile](https://playwright.dev/docs/docker#run-the-image) and [profile JSON](https://github.com/microsoft/playwright/blob/main/utils/docker/seccomp_profile.json). Pass it with `--security-opt seccomp=/absolute/path/seccomp_profile.json` (or Compose `security_opt: ["seccomp:/absolute/path/seccomp_profile.json"]`). The host's user-namespace and AppArmor policies must also allow the sandbox.
+
+`--security-opt seccomp=unconfined` is another option when a suitable profile is unavailable. It removes Docker's seccomp syscall filter for the **whole container**, increasing its attack surface; it does not override host AppArmor restrictions. `PASEO_PREVIEW_BROWSER_SANDBOX=0` is the last resort: it disables Chrome's own sandbox and is unsafe for untrusted HTML. The base image sets neither option.
+
+After choosing the host policy, run `paseo browser setup --host <daemon>`, check `paseo browser status --host <daemon>`, and run a real preview. The preview launch error links back to this section for sandbox failures.
 
 Create a child image for the agents you use:
 
