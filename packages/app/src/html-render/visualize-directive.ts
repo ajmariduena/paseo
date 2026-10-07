@@ -12,7 +12,7 @@ export type CodexVisualizePart =
 const UNICODE_REFERENCE = /^ {0,3}\uE200visualize\uE202(\{[^\r\n]*\})\uE201[ \t]*$/;
 const ALIAS_REFERENCE = /^ {0,3}::visualize(\{[^\r\n]*\})[ \t]*$/;
 const BASENAME = /^[a-z0-9]+(?:-[a-z0-9]+)*\.html$/;
-const STARTS_REFERENCE = /^ {0,3}(?:\uE200|::v)/;
+const STARTS_REFERENCE = /^ {0,3}(?:\uE200|::)/;
 
 function validReferenceFields(fields: Record<string, unknown>): fields is {
   path: string;

@@ -46,6 +46,9 @@ test("withholds a partial streaming marker until a newline or completed message"
   expect(splitCodexVisualizeDirectives(`Lead\n\uE200visu`, { complete: false })).toEqual([
     { kind: "markdown", text: "Lead\n" },
   ]);
+  expect(splitCodexVisualizeDirectives("Lead\n::", { complete: false })).toEqual([
+    { kind: "markdown", text: "Lead\n" },
+  ]);
   expect(splitCodexVisualizeDirectives(apple, { complete: false })).toEqual([
     { kind: "markdown", text: "" },
   ]);

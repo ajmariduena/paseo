@@ -43,6 +43,7 @@ function CodexVisualizeCardContent(props: {
   actionError: string | null;
   canRetryAction: boolean;
   actionPending: boolean;
+  reloadToken: number;
   controlsVisible: boolean;
   cardStyle: StyleProp<ViewStyle>;
   hintStyle: StyleProp<TextStyle>;
@@ -63,7 +64,7 @@ function CodexVisualizeCardContent(props: {
       ) : null}
       {data && visualization ? (
         <HtmlRenderFrame
-          key={data.revision}
+          key={`${data.revision}:${props.reloadToken}`}
           html={data.html}
           renderId={data.revision}
           title={props.title}
@@ -102,6 +103,7 @@ function CodexVisualizeCardContent(props: {
       ) : null}
       {props.expanded && data && visualization ? (
         <HtmlRenderViewer
+          key={`${data.revision}:${props.reloadToken}`}
           html={data.html}
           renderId={data.revision}
           title={props.title}
@@ -131,6 +133,7 @@ function useVisualizationActions(input: {
   const [saving, setSaving] = useState(false);
   const [sending, setSending] = useState(false);
   const [currentState, setCurrentState] = useState<unknown>(undefined);
+  const [reloadToken, setReloadToken] = useState(0);
   const followUpPending = useRef(false);
   const saveTail = useRef<Promise<void>>(Promise.resolve());
   useEffect(() => {
@@ -198,7 +201,10 @@ function useVisualizationActions(input: {
   const onError = useCallback((message: string) => setActionError(message), []);
   const retryAction = useCallback(() => {
     if (failedState !== null) {
-      void saveState(failedState).catch(() => undefined);
+      void saveState(failedState).then(
+        () => setReloadToken((token) => token + 1),
+        () => undefined,
+      );
     } else if (failedFollowUp) {
       void sendFollowUp(failedFollowUp.prompt, failedFollowUp.title).catch(() => undefined);
     }
@@ -206,6 +212,7 @@ function useVisualizationActions(input: {
   return {
     actionError,
     currentState,
+    reloadToken,
     failedState,
     failedFollowUp,
     saving,
@@ -347,6 +354,7 @@ function CodexVisualizeCardImpl({
         actionError={actions.actionError}
         canRetryAction={actions.failedState !== null || actions.failedFollowUp !== null}
         actionPending={actions.saving || actions.sending}
+        reloadToken={actions.reloadToken}
         controlsVisible={controlsVisible}
         cardStyle={cardStyle}
         hintStyle={hintStyle}
