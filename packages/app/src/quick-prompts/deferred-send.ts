@@ -25,12 +25,7 @@ export interface QuickPromptCapture {
 
 export type QuickPromptSendState =
   | { status: "idle" | "cancelled" | "unavailable" }
-  | { status: "pending" | "sending" | "failed"; capture: QuickPromptCapture }
-  | {
-      status: "accepted";
-      capture: QuickPromptCapture;
-      disposition: NonNullable<ComposerSendDisposition>;
-    };
+  | { status: "pending" | "sending" | "failed"; capture: QuickPromptCapture };
 
 export interface DeferredSendPorts {
   readContext: () => QuickPromptContext;
@@ -109,14 +104,9 @@ export function createDeferredQuickPromptSend(ports: DeferredSendPorts) {
     invalidateSelection();
     publish({ status: "sending", capture });
     try {
-      const disposition = await ports.dispatch(capture);
+      await ports.dispatch(capture);
       if (disposed) return;
-      publish(disposition ? { status: "accepted", capture, disposition } : { status: "idle" });
-      if (disposition) {
-        cancelTimer = ports.schedule(() => {
-          if (state.status === "accepted" && state.capture === capture) publish({ status: "idle" });
-        }, 1200);
-      }
+      publish({ status: "idle" });
     } catch {
       if (!disposed) publish({ status: "failed", capture });
     }

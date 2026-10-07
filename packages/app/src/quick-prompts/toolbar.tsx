@@ -19,7 +19,6 @@ import {
   resolveComposerToolbarGlyphStroke,
   resolveQuickPromptPresentation,
   estimateComposerFixedWidth,
-  estimateQuickPromptPillWidth,
   resolveQuickPromptFeedbackWidth,
   type ComposerControlDensity,
   type QuickPromptPresentation,
@@ -49,27 +48,18 @@ export function QuickPromptToolbarSlot({ picker }: { picker: QuickPromptPicker |
   return <ComposerControlLayoutProvider value={layout}>{toolbar}</ComposerControlLayoutProvider>;
 }
 
-function QuickPromptMenuTrigger({
-  labeled,
-  hiddenPins,
-}: {
-  labeled: boolean;
-  hiddenPins: boolean;
-}): ReactElement {
+function QuickPromptMenuTrigger({ labeled }: { labeled: boolean }): ReactElement {
   const { t } = useTranslation();
   const { hitSlop } = useComposerControlLayout();
-  const triggerStyle = useMemo(() => [styles.trigger, labeled ? styles.divider : null], [labeled]);
   return (
     <MenuTrigger
-      style={triggerStyle}
+      style={labeled ? styles.caretTrigger : styles.trigger}
       hitSlop={hitSlop}
       accessibilityRole="button"
       accessibilityLabel={t("quickPrompts.open")}
-      accessibilityHint={hiddenPins ? t("quickPrompts.hiddenPins") : undefined}
       testID="quick-prompts-picker-trigger"
     >
       {labeled ? <ThemedChevron size={ICON_SIZE.sm} uniProps={iconMapping} /> : <BookmarkGlyph />}
-      {hiddenPins ? <View style={styles.dot} /> : null}
     </MenuTrigger>
   );
 }
@@ -140,14 +130,14 @@ function LeanBookmarkTrigger({
  */
 export function QuickPromptToolbar({ picker }: { picker: QuickPromptPicker }) {
   const { t } = useTranslation();
-  const { binding, state, defaultPrompt, pinned } = picker;
+  const { binding, state, defaultPrompt } = picker;
   const touch = useControlDensity() === "touch";
-  const { controls } = useQuickPromptCapacity();
   const [open, setOpen] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  const handlePointerEnter = useCallback(() => setHovered(true), []);
+  const handlePointerLeave = useCallback(() => setHovered(false), []);
   const { presentation, feedbackWidth } = useQuickPromptPresentation(picker);
   const hasFeedback = state.status !== "idle";
-  const visiblePinCount = presentation?.visiblePinCount ?? 0;
-  const hiddenPins = pinned.length > visiblePinCount;
   const setMenuOpen = useCallback(
     (next: boolean) => {
       if (next) {
@@ -181,19 +171,13 @@ export function QuickPromptToolbar({ picker }: { picker: QuickPromptPicker }) {
   }
   return (
     <View style={[styles.cluster, touch && styles.clusterTouch]} testID="quick-prompts-toolbar">
-      {pinned.slice(0, hasFeedback ? 0 : visiblePinCount).map((prompt) => (
-        <TouchTarget key={prompt.id} slotSize={COMPOSER_TOOLBAR_GEOMETRY.controlSize}>
-          <PromptPill
-            prompt={prompt}
-            fontScale={controls.fontScale}
-            disabled={isQuickPromptSendDisabled(picker, prompt)}
-            onActivate={picker.activate}
-          />
-        </TouchTarget>
-      ))}
       <MenuRoot open={open} onOpenChange={setMenuOpen} compactMode="sheet">
         <TouchTarget slotSize={COMPOSER_TOOLBAR_GEOMETRY.controlSize}>
-          <View style={styles.split}>
+          <View
+            style={[styles.split, !hasFeedback && (hovered || open) && styles.splitActive]}
+            onPointerEnter={handlePointerEnter}
+            onPointerLeave={handlePointerLeave}
+          >
             {hasFeedback ? (
               <QuickPromptFeedback
                 variant="toolbar"
@@ -210,16 +194,12 @@ export function QuickPromptToolbar({ picker }: { picker: QuickPromptPicker }) {
                 {showDefault ? (
                   <PromptPill
                     prompt={defaultPrompt}
-                    fontScale={controls.fontScale}
                     disabled={isQuickPromptSendDisabled(picker, defaultPrompt)}
                     onActivate={picker.activate}
                     onOpen={openPicker}
                   />
                 ) : null}
-                <QuickPromptMenuTrigger
-                  labeled={presentation.showDefaultLabel}
-                  hiddenPins={hiddenPins}
-                />
+                <QuickPromptMenuTrigger labeled={showDefault} />
               </>
             )}
           </View>
@@ -241,7 +221,7 @@ function useQuickPromptPresentation(picker: QuickPromptPicker): {
   presentation: QuickPromptPresentation | null;
   feedbackWidth: number;
 } {
-  const { binding, state, defaultPrompt, pinned, supported, loaded } = picker;
+  const { binding, state, defaultPrompt, supported, loaded } = picker;
   const compact = useIsCompactFormFactor();
   const lean = useComposerLayoutMode(compact) === "lean";
   const touch = useControlDensity() === "touch";
@@ -257,7 +237,6 @@ function useQuickPromptPresentation(picker: QuickPromptPicker): {
         lean,
         touch,
         defaultLabel: defaultPrompt?.title ?? null,
-        pinnedLabels: pinned.map((prompt) => prompt.title),
         controls,
       })
     : null;
@@ -274,7 +253,6 @@ function useQuickPromptPresentation(picker: QuickPromptPicker): {
     compact: compact || lean,
     touch,
     fontScale: controls.fontScale,
-    pinned,
   });
   const ready = measured && supported && loaded && binding.available && !blocked;
   const { setSurface } = binding;
@@ -303,27 +281,20 @@ function resolvePresentationKey(input: {
   compact: boolean;
   touch: boolean;
   fontScale: number;
-  pinned: readonly QuickPrompt[];
 }): string {
   const { presentation } = input;
   if (!presentation) return "unmeasured";
-  const pins = input.pinned
-    .slice(0, presentation.visiblePinCount)
-    .map((prompt) => prompt.id)
-    .join(",");
-  return `${input.compact}:${input.touch}:${input.fontScale}:${presentation.density}:${presentation.showTrigger}:${presentation.showDefaultLabel}:${pins}`;
+  return `${input.compact}:${input.touch}:${input.fontScale}:${presentation.density}:${presentation.showTrigger}:${presentation.showDefaultLabel}`;
 }
 
 /** A named prompt, drawn exactly like the mode control: glyph, label, 28pt tall. */
 function PromptPill({
   prompt,
-  fontScale,
   disabled,
   onActivate,
   onOpen,
 }: {
   prompt: QuickPrompt;
-  fontScale: number;
   disabled: boolean;
   onActivate: (prompt: QuickPrompt) => void;
   onOpen?: () => void;
@@ -334,13 +305,8 @@ function PromptPill({
     prompt.mode === "insert"
       ? t("quickPrompts.insertNamed", { title: prompt.title })
       : t("quickPrompts.sendNamed", { title: prompt.title });
-  // The budget is a ceiling: the pill takes its natural width and ellipsizes only past it.
-  const boundsStyle = useMemo(
-    () => ({ maxWidth: estimateQuickPromptPillWidth(prompt.title, fontScale) }),
-    [fontScale, prompt.title],
-  );
   return (
-    <View style={[styles.pillBounds, boundsStyle]}>
+    <View style={styles.pillBounds}>
       <AgentControlTrigger
         icon={Bookmark}
         surface="toolbar"
@@ -364,19 +330,24 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[1],
   },
   clusterTouch: { gap: COMPOSER_TOOLBAR_GEOMETRY.touchControlGap },
-  // The same box as the model pill, with a visible frame because it holds two targets.
   split: {
     height: COMPOSER_TOOLBAR_GEOMETRY.controlSize,
     flexDirection: "row",
     alignItems: "center",
     borderRadius: theme.borderRadius["2xl"],
-    borderWidth: theme.borderWidth[1],
-    borderColor: theme.colors.borderAccent,
-    backgroundColor: theme.colors.surface2,
-    overflow: "hidden",
   },
-  pillBounds: { flexShrink: 1, minWidth: 0 },
-  divider: { borderLeftWidth: theme.borderWidth[1], borderLeftColor: theme.colors.borderAccent },
+  // One chip for both targets: the title's own hover would otherwise stop short of the caret.
+  splitActive: { backgroundColor: theme.colors.surface2 },
+  pillBounds: { flexShrink: 0 },
+  // Pulled into the pill's padding so the caret sits as close to the title as the model pill's.
+  caretTrigger: {
+    width: 16,
+    height: COMPOSER_TOOLBAR_GEOMETRY.controlSize,
+    marginLeft: -2,
+    marginRight: theme.spacing[2],
+    alignItems: "center",
+    justifyContent: "center",
+  },
   trigger: {
     width: COMPOSER_TOOLBAR_GEOMETRY.controlSize,
     height: COMPOSER_TOOLBAR_GEOMETRY.controlSize,
@@ -385,16 +356,5 @@ const styles = StyleSheet.create((theme) => ({
   },
   leanTrigger: {
     borderRadius: theme.borderRadius.full,
-  },
-  // Inside the segment's rounded corner: at 4pt the dot lands on the 16pt arc and reads as
-  // sitting on the border.
-  dot: {
-    position: "absolute",
-    right: theme.spacing[1.5],
-    top: theme.spacing[1.5],
-    width: 4,
-    height: 4,
-    borderRadius: theme.borderRadius.full,
-    backgroundColor: theme.colors.foregroundMuted,
   },
 }));

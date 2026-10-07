@@ -413,7 +413,7 @@ describe("deferred quick prompt sends", () => {
     await Promise.resolve();
     expect(test.sent).toHaveLength(1);
     expect(test.sent[0].text).toBe("Summarize.");
-    expect(test.controller.getState()).toMatchObject({ status: "accepted", disposition: "queued" });
+    expect(test.controller.getState()).toEqual({ status: "idle" });
   });
   it("finishes the wait when a running turn ends and resolves send at dispatch", async () => {
     const test = setup();
@@ -448,7 +448,7 @@ describe("deferred quick prompt sends", () => {
     expect(test.controller.getState().status).toBe("sending");
     expect(test.sent).toHaveLength(1);
     await Promise.resolve();
-    expect(test.controller.getState().status).toBe("accepted");
+    expect(test.controller.getState().status).toBe("idle");
     test.controller.start({ ...prompt, id: "second" }, 0);
     expect(test.sent).toHaveLength(2);
   });
@@ -491,13 +491,13 @@ describe("deferred quick prompt sends", () => {
     expect(test.controller.getState()).toEqual({ status: "cancelled" });
   });
   it.each(["started", "steered", "queued"] as const)(
-    "reports daemon disposition %s",
+    "returns to idle after the daemon reports %s, with no confirmation",
     async (disposition) => {
       const test = setup();
       test.reply(disposition);
       test.controller.start(prompt, 0);
       await Promise.resolve();
-      expect(test.controller.getState()).toMatchObject({ status: "accepted", disposition });
+      expect(test.controller.getState()).toEqual({ status: "idle" });
     },
   );
   it("never invents disposition feedback", async () => {
@@ -524,7 +524,7 @@ describe("deferred quick prompt sends", () => {
     test.tick();
     await Promise.resolve();
     expect(test.sent).toHaveLength(2);
-    expect(test.controller.getState()).toMatchObject({ status: "accepted", disposition: "queued" });
+    expect(test.controller.getState()).toEqual({ status: "idle" });
   });
   it("cannot retry a failure against another conversation", async () => {
     const test = setup();

@@ -222,7 +222,7 @@ snapshot so a mixed edit can apply its live subset and still name the paths that
     terminalProfiles: TerminalProfile[],  // named shell commands; omitted means DEFAULT_TERMINAL_PROFILES
     agentProfiles: AgentProfile[],        // named agent launch bundles; omitted means none
     quickPrompts?: QuickPrompt[],         // host-owned reusable text; omitted means none
-    quickPromptUndoMs?: number,           // 2500 by default; 0 disables the wait
+    quickPromptUndoMs?: number,           // 0 (send immediately) by default
     cors: { allowedOrigins: string[] },
     relay: { enabled: boolean, endpoint: string, publicEndpoint: string, useTls: boolean, publicUseTls: boolean }, // new homes materialize enabled: false
     auth: { password: string }    // bcrypt hash, optional
@@ -299,7 +299,7 @@ Absent and empty mean different things for terminal profiles — omitting the ke
 `DEFAULT_TERMINAL_PROFILES`, while `[]` means the user removed them all. Agent profiles and quick prompts have no
 default catalog, so both mean none. Quick prompts and their undo window belong to the host,
 including the chosen default. Devices do not keep a fallback catalog. An absent
-`quickPromptUndoMs` means 2500 ms; zero turns the wait off.
+`quickPromptUndoMs` means 0: the prompt sends immediately. A positive value adds an undo window.
 
 `PersistedConfigSchema` parses strictly, so a daemon that predates a field drops it on write
 rather than storing something it cannot describe. Gate agent profiles and quick prompts on
