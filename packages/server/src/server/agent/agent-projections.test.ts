@@ -115,6 +115,19 @@ it("projects the daemon-owned active turn identity", () => {
   });
 });
 
+it("carries how the last turn ended through the stored record into both snapshots", () => {
+  const agent = createManagedAgent({ provider: "codex", lastTurnOutcome: "canceled" });
+  const record = toStoredAgentRecord(agent);
+
+  expect(record.lastTurnOutcome).toBe("canceled");
+  expect(toAgentPayload(agent).lastTurnOutcome).toBe("canceled");
+  expect(buildStoredAgentPayload(record, ["codex"]).lastTurnOutcome).toBe("canceled");
+
+  const { lastTurnOutcome: _omitted, ...olderRecord } = record;
+  expect(buildStoredAgentPayload(olderRecord, ["codex"])).not.toHaveProperty("lastTurnOutcome");
+  expect(toAgentPayload(createManagedAgent())).not.toHaveProperty("lastTurnOutcome");
+});
+
 function createPermission(overrides: Partial<AgentPermissionRequest> = {}): AgentPermissionRequest {
   const base: AgentPermissionRequest = {
     id: "perm-1",

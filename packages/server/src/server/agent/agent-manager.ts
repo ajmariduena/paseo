@@ -13,6 +13,7 @@ import { stat } from "node:fs/promises";
 import {
   AGENT_LIFECYCLE_STATUSES,
   type AgentLifecycleStatus,
+  type AgentTurnOutcome,
 } from "@getpaseo/protocol/agent-lifecycle";
 import {
   getParentAgentIdFromLabels,
@@ -556,6 +557,8 @@ interface ManagedAgentBase {
   lastUsage?: AgentUsage;
   backgroundTasks: AgentBackgroundTask[];
   lastError?: string;
+  /** How the latest settled turn ended; stale while a turn runs. */
+  lastTurnOutcome?: AgentTurnOutcome;
   attention: AttentionState;
   foregroundTurnWaiters: Set<ForegroundTurnWaiter>;
   finalizedForegroundTurnIds: Set<string>;
@@ -1520,6 +1523,7 @@ export class AgentManager {
       workspaceId?: string;
       owner?: AgentOwner;
       attention?: AttentionState;
+      lastTurnOutcome?: AgentTurnOutcome;
     },
     resumeOptions?: AgentResumeSessionOptions,
   ): Promise<ManagedAgent> {
@@ -1552,6 +1556,7 @@ export class AgentManager {
       workspaceId?: string;
       owner?: AgentOwner;
       attention?: AttentionState;
+      lastTurnOutcome?: AgentTurnOutcome;
     },
     resumeOptions?: AgentResumeSessionOptions,
   ): Promise<ManagedAgent> {
@@ -1801,6 +1806,7 @@ export class AgentManager {
         historyPrimed: rehydrateFromDisk ? false : preservedHistoryPrimed,
         lastUsage: preservedLastUsage,
         lastError: preservedLastError,
+        lastTurnOutcome: existing.lastTurnOutcome,
         attention: preservedAttention,
         restoring: true,
       });
@@ -2226,6 +2232,7 @@ export class AgentManager {
         lastUsage: undefined,
         backgroundTasks: [],
         lastError: record.lastError ?? undefined,
+        lastTurnOutcome: record.lastTurnOutcome,
         attention,
         internal: record.internal,
         labels: record.labels,
@@ -3602,6 +3609,7 @@ export class AgentManager {
       this.runs.settleForegroundRun(agentId, run.token);
       if (!agent.pendingReplacement) {
         agent.lifecycle = "idle";
+        agent.lastTurnOutcome = "canceled";
         this.touchUpdatedAt(agent);
         this.emitState(agent);
       }
@@ -4025,6 +4033,7 @@ export class AgentManager {
       historyPrimed?: boolean;
       lastUsage?: AgentUsage;
       lastError?: string;
+      lastTurnOutcome?: AgentTurnOutcome;
       attention?: AttentionState;
       /**
        * Bringing a known agent back, rather than starting a new one. Its timestamps and
@@ -4208,6 +4217,7 @@ export class AgentManager {
           historyPrimed?: boolean;
           lastUsage?: AgentUsage;
           lastError?: string;
+          lastTurnOutcome?: AgentTurnOutcome;
           attention?: AttentionState;
           persistence?: AgentPersistenceHandle;
           workspaceId?: string;
@@ -4250,6 +4260,7 @@ export class AgentManager {
       lastUsage: options?.lastUsage,
       backgroundTasks: [],
       lastError: options?.lastError,
+      lastTurnOutcome: options?.lastTurnOutcome,
       attention: resolveInitialAttention(options?.attention),
       internal: config.internal ?? false,
       labels: options?.labels ?? {},
@@ -4944,6 +4955,7 @@ export class AgentManager {
           eventTurnId,
           isForegroundEvent,
           terminalDisposition,
+          options,
         });
         return undefined;
       case "turn_failed":
@@ -5045,8 +5057,9 @@ export class AgentManager {
     eventTurnId: string | undefined;
     isForegroundEvent: boolean;
     terminalDisposition: ActiveTurnTerminalDisposition;
+    options: { fromHistory?: boolean } | undefined;
   }): void {
-    const { agent, event, eventTurnId, isForegroundEvent, terminalDisposition } = params;
+    const { agent, event, eventTurnId, isForegroundEvent, terminalDisposition, options } = params;
     this.logger.trace(
       {
         agentId: agent.id,
@@ -5067,6 +5080,12 @@ export class AgentManager {
     // data accumulated during streaming isn't lost when the provider omits
     // it from the completion event.
     agent.lastError = undefined;
+    // A turn that completes while Stop waits for it still reads as stopped.
+    this.recordTurnOutcome(
+      agent,
+      this.stopRequests.has(agent.id) ? "canceled" : "completed",
+      options,
+    );
     if (
       !isForegroundEvent &&
       !agent.activeForegroundTurnId &&
@@ -5109,6 +5128,7 @@ export class AgentManager {
       agent.lifecycle = "error";
     }
     agent.lastError = event.error;
+    this.recordTurnOutcome(agent, "failed", options);
     await this.appendSystemErrorTimelineMessage(
       agent,
       event.provider,
@@ -5152,10 +5172,20 @@ export class AgentManager {
       agent.lifecycle = "idle";
     }
     agent.lastError = undefined;
+    this.recordTurnOutcome(agent, "canceled", options);
     this.resolvePendingPermissionsForAgent(agent, event.provider, options, "Interrupted");
     if (!isForegroundEvent && !agent.activeForegroundTurnId) {
       this.emitState(agent);
     }
+  }
+
+  private recordTurnOutcome(
+    agent: ActiveManagedAgent,
+    outcome: AgentTurnOutcome,
+    options: { fromHistory?: boolean } | undefined,
+  ): void {
+    if (options?.fromHistory) return;
+    agent.lastTurnOutcome = outcome;
   }
 
   private onStreamTurnStarted(params: {
@@ -5481,6 +5511,9 @@ export class AgentManager {
 
     // Check if agent transitioned from running to idle (finished)
     if (previousStatus === "running" && currentStatus === "idle") {
+      if (agent.lastTurnOutcome === "canceled" && getParentAgentIdFromLabels(agent.labels)) {
+        return;
+      }
       if (
         this.hasRunningDelegatedDescendant(agent.id) ||
         this.isHeldByDaemonBackgroundWork(agent.id)

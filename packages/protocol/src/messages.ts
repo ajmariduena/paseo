@@ -22,7 +22,7 @@ export { TerminalProfileSchema, type TerminalProfile } from "./terminal-profile.
 import { z } from "zod";
 import { TerminalActivitySchema } from "./terminal-activity.js";
 import { CLIENT_CAPS } from "./client-capabilities.js";
-import { AGENT_LIFECYCLE_STATUSES } from "./agent-lifecycle.js";
+import { AGENT_LIFECYCLE_STATUSES, AGENT_TURN_OUTCOMES } from "./agent-lifecycle.js";
 import { MAX_EXPLICIT_AGENT_TITLE_CHARS } from "./agent-title-limits.js";
 import { AgentProviderSchema } from "./provider-manifest.js";
 import { ProviderPaseoToolsPolicySchema } from "./provider-config.js";
@@ -302,6 +302,7 @@ import type {
 const JsonWireValueSchema = z.unknown() as z.ZodType<JsonValue>;
 
 export const AgentStatusSchema = z.enum(AGENT_LIFECYCLE_STATUSES);
+export const AgentTurnOutcomeSchema = z.enum(AGENT_TURN_OUTCOMES);
 
 const AgentModeSchema: z.ZodType<AgentMode> = z.object({
   id: z.string(),
@@ -917,6 +918,7 @@ export const AgentSnapshotPayloadSchema = z.object({
   lastUserMessageAt: z.string().nullable(),
   status: AgentStatusSchema,
   activeTurn: AgentActiveTurnPayloadSchema.nullable().optional(),
+  lastTurnOutcome: AgentTurnOutcomeSchema.optional(),
   capabilities: AgentCapabilityFlagsSchema,
   currentModeId: z.string().nullable(),
   availableModes: z.array(AgentModeSchema),

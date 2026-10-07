@@ -3456,7 +3456,10 @@ test("Stop settles a run whose provider interrupt hangs and ignores its late res
     });
     expect(fixture.session.interruptCalled).toBe(true);
     expect(streamed).toEqual(["turn_canceled"]);
-    expect(fixture.manager.getAgent(fixture.agentId)?.lifecycle).toBe("idle");
+    expect(fixture.manager.getAgent(fixture.agentId)).toMatchObject({
+      lifecycle: "idle",
+      lastTurnOutcome: "canceled",
+    });
 
     fixture.session.pushEvent({
       type: "turn_failed",
@@ -3499,6 +3502,7 @@ test("Stop settles a foreground run whose provider rejects the interrupt", async
     expect(fixture.manager.getAgent(fixture.agentId)).toMatchObject({
       lifecycle: "idle",
       activeForegroundTurnId: null,
+      lastTurnOutcome: "canceled",
     });
     expect(fixture.manager.getActiveRun(fixture.agentId)).toBeNull();
 
@@ -6297,6 +6301,85 @@ test("defers parent finished attention until its delegated child finishes", asyn
       attention: { attentionReason: "finished" },
     });
     expect(notifications).toEqual([parent.id, parent.id]);
+  } finally {
+    manager.prepareForShutdown();
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("a stopped child records a canceled turn, skips finished attention, and keeps it on disk", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-stopped-child-"));
+  class InterruptibleSession extends TestAgentSession {
+    private turn = 0;
+
+    override async startTurn(): Promise<{ turnId: string }> {
+      const turnId = `stoppable-turn-${++this.turn}`;
+      setTimeout(() => {
+        this.pushEvent({ type: "turn_started", provider: this.provider, turnId });
+      }, 0);
+      return { turnId };
+    }
+
+    override async interrupt(): Promise<void> {
+      const turnId = `stoppable-turn-${this.turn}`;
+      setTimeout(() => {
+        this.pushEvent({
+          type: "turn_canceled",
+          provider: this.provider,
+          reason: "interrupted",
+          turnId,
+        });
+      }, 0);
+    }
+
+    complete(): void {
+      const turnId = `stoppable-turn-${this.turn}`;
+      setTimeout(() => {
+        this.pushEvent({ type: "turn_completed", provider: this.provider, turnId });
+      }, 0);
+    }
+  }
+  const sessions: InterruptibleSession[] = [];
+  const client = new (class extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      const session = new InterruptibleSession(config);
+      sessions.push(session);
+      return session;
+    }
+  })();
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+
+  try {
+    const child = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: "child-workspace",
+      labels: { [PARENT_AGENT_ID_LABEL]: "parent-agent" },
+    });
+    const firstRun = drainAsyncGenerator(manager.streamAgent(child.id, "work"));
+    await manager.waitForAgentRunStart(child.id);
+
+    await expect(manager.cancelAgentRun(child.id)).resolves.toEqual({ status: "settled" });
+    await firstRun;
+    await manager.flush();
+
+    const stopped = manager.getAgent(child.id);
+    expect(stopped).toMatchObject({ lifecycle: "idle", lastTurnOutcome: "canceled" });
+    expect(stopped?.attention.requiresAttention).toBe(false);
+    expect(toAgentPayload(stopped!).lastTurnOutcome).toBe("canceled");
+    expect((await storage.get(child.id))?.lastTurnOutcome).toBe("canceled");
+
+    const resumed = drainAsyncGenerator(manager.streamAgent(child.id, "more work"));
+    await manager.waitForAgentRunStart(child.id);
+    sessions[0].complete();
+    await resumed;
+    await manager.flush();
+
+    expect(manager.getAgent(child.id)).toMatchObject({
+      lifecycle: "idle",
+      lastTurnOutcome: "completed",
+      attention: { attentionReason: "finished" },
+    });
+    expect((await storage.get(child.id))?.lastTurnOutcome).toBe("completed");
   } finally {
     manager.prepareForShutdown();
     rmSync(workdir, { recursive: true, force: true });
@@ -10150,6 +10233,7 @@ test("turn_failed emits a system error assistant timeline message and keeps erro
   const snapshot = manager.getAgent(agent.id);
   expect(snapshot?.lifecycle).toBe("error");
   expect(snapshot?.lastError).toBe("invalid model id");
+  expect(snapshot?.lastTurnOutcome).toBe("failed");
 
   const systemErrors = manager
     .getTimeline(agent.id)
