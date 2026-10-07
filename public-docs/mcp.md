@@ -190,11 +190,14 @@ Omit absent optional settings. If no profile fits, use provider discovery to cho
 
 ### Visuals
 
-| Tool          | Function                                                                                     |
-| ------------- | -------------------------------------------------------------------------------------------- |
-| `html_render` | Publish a self-contained HTML page inline in the agent's conversation above its final reply. |
+| Tool           | Function                                                                                     |
+| -------------- | -------------------------------------------------------------------------------------------- |
+| `html_preview` | Check a page at a chosen width and receive a PNG, content height, and console output.        |
+| `html_render`  | Publish a self-contained HTML page inline in the agent's conversation above its final reply. |
 
-The page follows the app's light or dark theme through CSS variables, and can include local images from the agent's working directory or OS temp directory. HTTPS scripts, styles, images, fonts, and media can load from any host; these requests can send data in the page to that host. The page contains only what the agent wrote, and the agent already has that data and network access. `connect-src 'none'` blocks fetch, XHR, and WebSocket, not all network access. The page stays available in archived conversations and is removed when the agent is permanently deleted. A preview/screenshot tool is planned for a later phase.
+Check a page with `html_preview` before publishing it. The first preview on a supported daemon may install its pinned browser; if installation is still running, call the tool again in a minute. Use `paseo browser status` or `paseo browser setup` to inspect or prepare that browser. Preview uses Paseo's stock light or dark theme; a reader's custom theme can differ. Pages with measured widths grow to fit narrower phone layouts up to the 2,000 px frame limit. A smaller requested `height` intentionally scrolls inside the frame.
+
+The page follows the app's light or dark theme through CSS variables, and can include local images from the agent's working directory or OS temp directory. HTTPS scripts, styles, images, fonts, and media can load from any host; these requests can send data in the page to that host. The page contains only what the agent wrote, and the agent already has that data and network access. `connect-src 'none'` blocks fetch, XHR, and WebSocket, not all network access. The page stays available in archived conversations and is removed when the agent is permanently deleted.
 
 Codex agents can also use their bundled `visualize` workflow. Its file references display inline without an `html_render` call; use one route for each visual. The source file must remain in the agent's workspace or its own Codex visualization directory for archived history to display it. Paseo restores that visual's saved widget state when it is opened again. Tabs, tooltips, carousels, and Lucide icons work in these fragments. The bundled `<viz-calendar>` widget and Tweak panel are not yet supported.
 

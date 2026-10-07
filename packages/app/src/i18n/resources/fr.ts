@@ -2294,6 +2294,22 @@ export const fr: TranslationResources = {
       },
       checkedCapabilities: "a vérifié les capacités d'orchestration",
       checkedCapabilitiesFailed: "a tenté de vérifier les capacités d'orchestration",
+      previewedHtml: {
+        one: "a prévisualisé {{count}} page HTML",
+        other: "a prévisualisé {{count}} pages HTML",
+      },
+      previewedHtmlFailed: {
+        one: "a tenté de prévisualiser {{count}} page HTML",
+        other: "a tenté de prévisualiser {{count}} pages HTML",
+      },
+      renderedHtml: {
+        one: "a affiché {{count}} page HTML",
+        other: "a affiché {{count}} pages HTML",
+      },
+      renderedHtmlFailed: {
+        one: "a tenté d’afficher {{count}} page HTML",
+        other: "a tenté d’afficher {{count}} pages HTML",
+      },
     },
     and: "et",
   },

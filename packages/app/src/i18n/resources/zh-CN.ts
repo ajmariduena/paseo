@@ -2215,6 +2215,22 @@ export const zhCN: TranslationResources = {
       },
       checkedCapabilities: "检查了编排能力",
       checkedCapabilitiesFailed: "尝试检查编排能力",
+      previewedHtml: {
+        one: "预览了 {{count}} 个 HTML 页面",
+        other: "预览了 {{count}} 个 HTML 页面",
+      },
+      previewedHtmlFailed: {
+        one: "尝试预览 {{count}} 个 HTML 页面",
+        other: "尝试预览 {{count}} 个 HTML 页面",
+      },
+      renderedHtml: {
+        one: "展示了 {{count}} 个 HTML 页面",
+        other: "展示了 {{count}} 个 HTML 页面",
+      },
+      renderedHtmlFailed: {
+        one: "尝试展示 {{count}} 个 HTML 页面",
+        other: "尝试展示 {{count}} 个 HTML 页面",
+      },
     },
     and: "并",
   },

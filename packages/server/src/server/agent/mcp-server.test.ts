@@ -912,13 +912,18 @@ describe("html_render tool", () => {
       const server = await createAgentMcpServer(options);
       const client = await connectInMemoryMcpClient(server);
       try {
-        const input = { html: "<html><body><p>Preview</p></body></html>", width: 390 };
+        const missingImage = join(paseoHome, "missing.png");
+        const input = {
+          html: `<html><body><img src="${missingImage}"><p>Preview</p></body></html>`,
+          width: 390,
+        };
         const response = await client.callTool({ name: "html_preview", arguments: input });
         expect(response.isError).not.toBe(true);
         expect(response.content.map((block) => block.type)).toEqual(["text", "image"]);
         const metadata = z
           .object({
             width: z.number(),
+            missingImages: z.array(z.string()),
             screenshot: z.object({
               mimeType: z.literal("image/png"),
               width: z.number(),
@@ -927,7 +932,9 @@ describe("html_render tool", () => {
           })
           .parse(response.structuredContent);
         expect(metadata.width).toBe(390);
-        expect(JSON.stringify(response.structuredContent)).not.toContain("data");
+        expect(metadata.missingImages).toEqual([missingImage]);
+        expect(response.structuredContent).not.toHaveProperty("screenshot.data");
+        expect(JSON.stringify(response.structuredContent)).not.toMatch(/"data"\s*:/);
         const native = createPaseoToolCatalog({ ...options, transport: "native" });
         const nativeResult = await native.executeTool("html_preview", input);
         expect(nativeResult.content.map((block) => block.type)).toEqual(["text", "image"]);

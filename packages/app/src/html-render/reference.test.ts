@@ -53,3 +53,16 @@ test("ignores failed and unrelated calls, and oversized JSON", () => {
   expect(htmlRenderFromToolCall(call("other.html_render", render))).toBeNull();
   expect(htmlRenderFromToolCall(call("html_render", "{" + " ".repeat(20_000) + "}"))).toBeNull();
 });
+
+test("keeps only a complete validated width table", () => {
+  const heights = [320, 375, 430, 520, 640, 728, 860, 1000, 1144].map((width) => [width, 900]);
+  expect(
+    htmlRenderFromToolCall(call("html_render", { htmlRender: { ...render.htmlRender, heights } }))
+      ?.heights,
+  ).toEqual(heights);
+  expect(
+    htmlRenderFromToolCall(
+      call("html_render", { htmlRender: { ...render.htmlRender, heights: heights.slice(1) } }),
+    ),
+  ).toEqual(render.htmlRender);
+});

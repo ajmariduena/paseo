@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { openExternalUrl } from "@/utils/open-external-url";
+import type { RenderHeights } from "@getpaseo/protocol/html-render";
 import {
   renderFrameHeight,
   prepareRenderDocument,
@@ -22,6 +23,7 @@ export interface HtmlRenderFrameProps {
   renderId: string;
   title: string;
   height: number;
+  heights?: RenderHeights;
   theme: RenderTheme;
   fullscreen?: boolean;
   onHeightChange?: (height: number) => void;
@@ -132,6 +134,7 @@ export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
     props.renderId,
   ]);
   const [contentHeight, setContentHeight] = useState<number | null>(null);
+  useEffect(() => setContentHeight(null), [props.renderId, visualIdentity]);
   const [frameWidth, setFrameWidth] = useState(728);
   useEffect(() => {
     const frame = frameRef.current;
@@ -149,7 +152,7 @@ export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
       1,
       Math.min(VISUALIZATION_MAX_HEIGHT, Math.ceil(contentHeight ?? VISUALIZATION_MIN_HEIGHT)),
     );
-  else frameHeight = renderFrameHeight(props.height, contentHeight, frameWidth);
+  else frameHeight = renderFrameHeight(props.height, contentHeight, frameWidth, props.heights);
   const { fullscreen, onHeightChange } = props;
   useEffect(() => {
     if (!fullscreen && typeof frameHeight === "number") onHeightChange?.(frameHeight);

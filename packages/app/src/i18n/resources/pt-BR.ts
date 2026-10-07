@@ -2274,6 +2274,19 @@ export const ptBR: TranslationResources = {
       },
       checkedCapabilities: "verificou as capacidades de orquestração",
       checkedCapabilitiesFailed: "tentou verificar as capacidades de orquestração",
+      previewedHtml: {
+        one: "pré-visualizou {{count}} página HTML",
+        other: "pré-visualizou {{count}} páginas HTML",
+      },
+      previewedHtmlFailed: {
+        one: "tentou pré-visualizar {{count}} página HTML",
+        other: "tentou pré-visualizar {{count}} páginas HTML",
+      },
+      renderedHtml: { one: "exibiu {{count}} página HTML", other: "exibiu {{count}} páginas HTML" },
+      renderedHtmlFailed: {
+        one: "tentou exibir {{count}} página HTML",
+        other: "tentou exibir {{count}} páginas HTML",
+      },
     },
     and: "e",
   },

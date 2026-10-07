@@ -2,6 +2,8 @@ import { Script } from "node:vm";
 import { parse } from "parse5";
 import { expect, test } from "vitest";
 import { darkTheme, lightTheme } from "@/styles/theme";
+import { RENDER_WIDTHS, validRenderHeights } from "@getpaseo/protocol/html-render";
+import { STOCK_RENDER_THEMES } from "../../../server/src/server/agent/html-render/stock-theme";
 import {
   clampRenderHeight,
   renderFrameHeight,
@@ -158,6 +160,25 @@ test("maps live light and dark themes and bounds height messages", () => {
       "r",
     ),
   ).toBeNull();
+});
+
+test("stock preview theme matches the app's default themes", () => {
+  expect(STOCK_RENDER_THEMES.dark).toEqual(mapRenderTheme(darkTheme));
+  expect(STOCK_RENDER_THEMES.light).toEqual(mapRenderTheme(lightTheme));
+});
+
+test("measured heights grow on phones, honor intentional caps, and validate the whole table", () => {
+  const heights = RENDER_WIDTHS.map((width) => [width, width < 728 ? 1500 : 900] as const);
+  expect(validRenderHeights(heights)).toBe(true);
+  expect(renderFrameHeight(900, null, 360, heights)).toBe(1500);
+  expect(renderFrameHeight(900, 1300, 360, heights)).toBe(1300);
+  expect(renderFrameHeight(900, 1500, 450, heights)).toBe(1500);
+  expect(renderFrameHeight(600, 1500, 360, heights)).toBe(600);
+  expect(renderFrameHeight(900, null, 1400, heights)).toBe(900);
+  expect(validRenderHeights([...heights.slice(0, -1), [1144, Number.POSITIVE_INFINITY]])).toBe(
+    false,
+  );
+  expect(validRenderHeights([...heights.slice(0, -1), [1143, 900]])).toBe(false);
 });
 
 test("visualization fragment has its own CDN CSP, base classes, and parseable bootstrap", () => {

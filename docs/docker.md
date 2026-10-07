@@ -76,6 +76,22 @@ The base image does not preinstall Claude Code, Codex, OpenCode, Copilot, Pi, or
 other agent CLIs. That keeps the default image small and avoids coupling Paseo
 releases to third-party agent release cycles.
 
+The base image also omits Chrome and its shared libraries. For `html_preview`, build a separate browser-enabled child image with Chrome's Linux libraries, run the daemon as the normal non-root `paseo` user, and use `paseo browser setup --host <daemon>` after startup to install the pinned shell into the persistent Paseo home. The container host must permit Chrome's user-namespace sandbox through its AppArmor and seccomp policy. Check `paseo browser status --host <daemon>` and a real preview before treating that image as supported. `PASEO_PREVIEW_BROWSER_SANDBOX=0` explicitly disables the sandbox and is unsafe for untrusted HTML; the base image does not set it.
+
+For Debian Bookworm, start the child image with the shell's shared libraries:
+
+```Dockerfile
+FROM ghcr.io/getpaseo/paseo:latest
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libnss3 libglib2.0-0 libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 \
+    libdbus-1-3 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 \
+    libxfixes3 libxrandr2 libxkbcommon0 libgbm1 libasound2 libexpat1 \
+    && rm -rf /var/lib/apt/lists/*
+```
+
+The host namespace policy is separate from this image. `paseo browser status` reports missing libraries and common AppArmor restrictions; run a real preview after configuring the host.
+
 Create a child image for the agents you use:
 
 ```Dockerfile

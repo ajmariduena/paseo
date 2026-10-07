@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WebView } from "react-native-webview";
 import type { WebViewMessageEvent } from "react-native-webview";
 import { openExternalUrl } from "@/utils/open-external-url";
+import type { RenderHeights } from "@getpaseo/protocol/html-render";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { isHttpUrl } from "@/utils/http-url";
 import {
@@ -30,6 +31,7 @@ export interface HtmlRenderFrameProps {
   renderId: string;
   title: string;
   height: number;
+  heights?: RenderHeights;
   theme: RenderTheme;
   fullscreen?: boolean;
   onHeightChange?: (height: number) => void;
@@ -76,13 +78,14 @@ export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
   const webviewRef = useRef<WebView>(null);
   const loadedRef = useRef<string | null>(null);
   const [contentHeight, setContentHeight] = useState<number | null>(null);
+  useEffect(() => setContentHeight(null), [props.renderId, visualIdentity]);
   const [frameWidth, setFrameWidth] = useState(728);
   const frameHeight = props.visualization
     ? Math.max(
         1,
         Math.min(VISUALIZATION_MAX_HEIGHT, Math.ceil(contentHeight ?? VISUALIZATION_MIN_HEIGHT)),
       )
-    : renderFrameHeight(props.height, contentHeight, frameWidth);
+    : renderFrameHeight(props.height, contentHeight, frameWidth, props.heights);
   const { fullscreen, onHeightChange } = props;
   useEffect(() => {
     if (!fullscreen) onHeightChange?.(frameHeight);

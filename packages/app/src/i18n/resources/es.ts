@@ -2288,6 +2288,19 @@ export const es: TranslationResources = {
       },
       checkedCapabilities: "revisó las capacidades de orquestación",
       checkedCapabilitiesFailed: "intentó revisar las capacidades de orquestación",
+      previewedHtml: {
+        one: "previsualizó {{count}} página HTML",
+        other: "previsualizó {{count}} páginas HTML",
+      },
+      previewedHtmlFailed: {
+        one: "intentó previsualizar {{count}} página HTML",
+        other: "intentó previsualizar {{count}} páginas HTML",
+      },
+      renderedHtml: { one: "mostró {{count}} página HTML", other: "mostró {{count}} páginas HTML" },
+      renderedHtmlFailed: {
+        one: "intentó mostrar {{count}} página HTML",
+        other: "intentó mostrar {{count}} páginas HTML",
+      },
     },
     and: "y",
   },

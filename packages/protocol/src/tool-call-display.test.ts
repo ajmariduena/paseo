@@ -14,6 +14,23 @@ describe("shared tool-call display mapping", () => {
       expect(display.displayName).toBe("Render an HTML page");
     }
   });
+  it("labels HTML preview calls across provider spellings", () => {
+    for (const name of [
+      "html_preview",
+      "paseo_html_preview",
+      "paseo.html_preview",
+      "mcp__paseo__html_preview",
+    ]) {
+      expect(
+        buildToolCallDisplayModel({
+          name,
+          status: "running",
+          error: null,
+          detail: { type: "unknown", input: {}, output: null },
+        }).displayName,
+      ).toBe("Preview an HTML page");
+    }
+  });
   it("builds summary from canonical detail", () => {
     const display = buildToolCallDisplayModel({
       name: "read_file",

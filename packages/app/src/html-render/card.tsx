@@ -133,6 +133,7 @@ function HtmlRenderCardImpl({ client, serverId, agentId, render, theme }: CardPr
             renderId={render.renderId}
             title={render.title}
             height={render.height}
+            heights={render.heights}
             theme={activeTheme}
             onHeightChange={setInlineHeight}
             onHoverChange={setIsHovered}
@@ -145,6 +146,7 @@ function HtmlRenderCardImpl({ client, serverId, agentId, render, theme }: CardPr
             renderId={render.renderId}
             title={render.title}
             height={render.height}
+            heights={render.heights}
             theme={activeTheme}
             onClose={close}
           />

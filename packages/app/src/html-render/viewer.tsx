@@ -6,12 +6,14 @@ import { isNative } from "@/constants/platform";
 import { HtmlRenderFrame } from "./frame";
 import type { RenderTheme } from "./document";
 import type { VisualizationFrameOptions } from "./visualize-bridge";
+import type { RenderHeights } from "@getpaseo/protocol/html-render";
 
 interface HtmlRenderViewerProps {
   html: string;
   renderId: string;
   title: string;
   height: number;
+  heights?: RenderHeights;
   theme: RenderTheme;
   onClose: () => void;
   visualization?: VisualizationFrameOptions;

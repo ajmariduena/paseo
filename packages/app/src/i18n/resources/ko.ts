@@ -2247,6 +2247,22 @@ export const ko: TranslationResources = {
       },
       checkedCapabilities: "오케스트레이션 기능 확인함",
       checkedCapabilitiesFailed: "오케스트레이션 기능 확인 시도함",
+      previewedHtml: {
+        one: "HTML 페이지 {{count}}개 미리 봄",
+        other: "HTML 페이지 {{count}}개 미리 봄",
+      },
+      previewedHtmlFailed: {
+        one: "HTML 페이지 {{count}}개 미리 보기 시도",
+        other: "HTML 페이지 {{count}}개 미리 보기 시도",
+      },
+      renderedHtml: {
+        one: "HTML 페이지 {{count}}개 표시함",
+        other: "HTML 페이지 {{count}}개 표시함",
+      },
+      renderedHtmlFailed: {
+        one: "HTML 페이지 {{count}}개 표시 시도",
+        other: "HTML 페이지 {{count}}개 표시 시도",
+      },
     },
     and: "그리고",
   },

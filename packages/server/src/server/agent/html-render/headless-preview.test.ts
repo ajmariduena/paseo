@@ -112,3 +112,19 @@ live(
   },
   30_000,
 );
+
+live(
+  "bounds console output and marks omitted entries",
+  async () => {
+    const result = await captureHtmlPreview({
+      executable: executable!,
+      width: 320,
+      theme: STOCK_RENDER_THEMES.dark,
+      html: '<html><body><script>for(let i=0;i<35;i++)console.log("x".repeat(600))</script></body></html>',
+    });
+    expect(result.consoleMessages).toHaveLength(21);
+    expect(result.consoleMessages[0]!.text.length).toBe(500);
+    expect(result.consoleMessages[20]!.text).toContain("omitted");
+  },
+  30_000,
+);

@@ -2268,6 +2268,19 @@ export const ja: TranslationResources = {
       },
       checkedCapabilities: "オーケストレーション機能を確認",
       checkedCapabilitiesFailed: "オーケストレーション機能の確認を試行",
+      previewedHtml: {
+        one: "HTMLページを{{count}}件プレビュー",
+        other: "HTMLページを{{count}}件プレビュー",
+      },
+      previewedHtmlFailed: {
+        one: "HTMLページ{{count}}件のプレビューを試行",
+        other: "HTMLページ{{count}}件のプレビューを試行",
+      },
+      renderedHtml: { one: "HTMLページを{{count}}件表示", other: "HTMLページを{{count}}件表示" },
+      renderedHtmlFailed: {
+        one: "HTMLページ{{count}}件の表示を試行",
+        other: "HTMLページ{{count}}件の表示を試行",
+      },
     },
     and: "および",
   },

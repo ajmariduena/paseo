@@ -2263,6 +2263,19 @@ export const en = {
       },
       checkedCapabilities: "checked orchestration capabilities",
       checkedCapabilitiesFailed: "tried to check orchestration capabilities",
+      previewedHtml: {
+        one: "previewed {{count}} HTML page",
+        other: "previewed {{count}} HTML pages",
+      },
+      previewedHtmlFailed: {
+        one: "tried to preview {{count}} HTML page",
+        other: "tried to preview {{count}} HTML pages",
+      },
+      renderedHtml: { one: "rendered {{count}} HTML page", other: "rendered {{count}} HTML pages" },
+      renderedHtmlFailed: {
+        one: "tried to render {{count}} HTML page",
+        other: "tried to render {{count}} HTML pages",
+      },
     },
     and: "and",
   },

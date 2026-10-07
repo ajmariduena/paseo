@@ -1,9 +1,11 @@
 import type { ToolCallItem } from "@/types/stream";
+import { validRenderHeights, type RenderHeights } from "@getpaseo/protocol/html-render";
 
 export interface HtmlRenderReference {
   renderId: string;
   title: string;
   height: number;
+  heights?: RenderHeights;
 }
 
 export function isHtmlRenderToolName(name: string): boolean {
@@ -23,7 +25,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function parseDirectReference(value: Record<string, unknown>): HtmlRenderReference | null {
   const candidate = value.htmlRender;
   if (!isRecord(candidate)) return null;
-  const { renderId, title, height } = candidate;
+  const { renderId, title, height, heights } = candidate;
   if (
     typeof renderId !== "string" ||
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(renderId)
@@ -32,7 +34,7 @@ function parseDirectReference(value: Record<string, unknown>): HtmlRenderReferen
   if (typeof title !== "string" || title.length === 0 || title.length > 200) return null;
   if (typeof height !== "number" || !Number.isInteger(height) || height < 80 || height > 2000)
     return null;
-  return { renderId, title, height };
+  return { renderId, title, height, ...(validRenderHeights(heights) ? { heights } : {}) };
 }
 
 function readReference(value: unknown, depth = 0): HtmlRenderReference | null {

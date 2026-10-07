@@ -1,5 +1,9 @@
 import { expect, test } from "@playwright/test";
-import { prepareRenderDocument, type RenderTheme } from "../../src/html-render/document";
+import {
+  prepareRenderDocument,
+  renderFrameHeight,
+  type RenderTheme,
+} from "../../src/html-render/document";
 import { prepareVisualizationDocument } from "../../src/html-render/visualize-bridge";
 
 const theme: RenderTheme = {
@@ -99,7 +103,7 @@ test("html render reports height and blocks fetch in the real iframe", async ({ 
         host.heights.push(event.data.params.height);
     });
   });
-  const document = prepareRenderDocument({
+  const renderMarkup = prepareRenderDocument({
     html: '<div style="height:320px">Page</div>',
     theme,
     nonce: "render-test",
@@ -108,7 +112,7 @@ test("html render reports height and blocks fetch in the real iframe", async ({ 
   });
   await page.locator("#render").evaluate((frame: HTMLIFrameElement, html) => {
     frame.srcdoc = html;
-  }, document);
+  }, renderMarkup);
   const render = page.frameLocator("#render");
   await expect(render.getByText("Page")).toBeVisible();
   await expect
@@ -124,4 +128,55 @@ test("html render reports height and blocks fetch in the real iframe", async ({ 
       }
     }),
   ).toBe("blocked");
+});
+
+test("a measured phone-width page grows to content height without inner scrolling", async ({
+  page,
+}) => {
+  await page.setContent(
+    '<iframe id="render" sandbox="allow-scripts" style="width:360px;border:0"></iframe>',
+  );
+  await page.evaluate(() => {
+    const host = window as unknown as { heights: number[] };
+    host.heights = [];
+    window.addEventListener("message", (event) => {
+      if (event.data?.method === "ui/notifications/size-changed")
+        host.heights.push(event.data.params.height);
+    });
+  });
+  const renderMarkup = prepareRenderDocument({
+    html: '<style>.panel{height:900px}@media(max-width:500px){.panel{height:1500px}}</style><div class="panel">Phone layout</div>',
+    theme,
+    nonce: "phone-test",
+    renderId: "phone-test",
+    linkMode: "web",
+  });
+  await page.locator("#render").evaluate((frame: HTMLIFrameElement, html) => {
+    frame.srcdoc = html;
+  }, renderMarkup);
+  await expect
+    .poll(() =>
+      page.evaluate(() => (window as unknown as { heights: number[] }).heights.at(-1) ?? 0),
+    )
+    .toBeGreaterThanOrEqual(1500);
+  const measured = [320, 375, 430, 520, 640, 728, 860, 1000, 1144].map(
+    (width) => [width, width < 728 ? 1500 : 900] as const,
+  );
+  const width = await page
+    .locator("#render")
+    .evaluate((frame: HTMLIFrameElement) => frame.getBoundingClientRect().width);
+  const live = await page.evaluate(
+    () => (window as unknown as { heights: number[] }).heights.at(-1)!,
+  );
+  const height = renderFrameHeight(900, live, width, measured);
+  expect(height).toBe(1500);
+  await page.locator("#render").evaluate((frame: HTMLIFrameElement, value) => {
+    frame.style.height = `${value}px`;
+  }, height);
+  expect(
+    await page
+      .frameLocator("#render")
+      .locator("body")
+      .evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1),
+  ).toBe(true);
 });
