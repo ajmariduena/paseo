@@ -73,6 +73,7 @@ import type { ForgeService } from "../../services/forge-service.js";
 import { areEquivalentPaths } from "../../utils/path.js";
 import type { TerminalManager } from "../../terminal/terminal-manager.js";
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
+import { formatPeerMessage } from "@getpaseo/protocol/peer-message";
 import { MutableDaemonConfigSchema, type AgentProfile } from "@getpaseo/protocol/messages";
 import type { DaemonConfigStore } from "../daemon-config-store.js";
 import type { BrowserToolsBroker, BrowserToolsExecuteInput } from "../browser-tools/broker.js";
@@ -276,6 +277,7 @@ function buildAgentManagerSpies() {
     subscribe: vi.fn().mockReturnValue(() => {}),
     streamAgent: vi.fn(() => (async function* noop() {})()),
     annotatePrompt: vi.fn().mockResolvedValue(undefined),
+    getLiveWorkSummary: vi.fn().mockReturnValue({ request: null, currentStep: null }),
     waitForAgentRunStart: vi.fn().mockResolvedValue(undefined),
     respondToPermission: vi.fn(),
     cancelAgentRun: vi.fn(),
@@ -4203,7 +4205,8 @@ describe("send_agent_prompt MCP tool", () => {
       currentModeId: null,
       availableModes: [],
       config: { title: "Child" },
-    } as ManagedAgent;
+      labels: { [PARENT_AGENT_ID_LABEL]: "parent-agent" },
+    } as unknown as ManagedAgent;
     spies.agentManager.getAgent.mockImplementation((agentId: string) => {
       if (agentId === "parent-agent") return parentAgent;
       if (agentId === "child-agent") return childAgent;
@@ -4234,10 +4237,7 @@ describe("send_agent_prompt MCP tool", () => {
     if (!parsed.success) {
       throw new Error("Expected caller send_agent_prompt input to parse");
     }
-    expect(parsed.data).toMatchObject({
-      background: true,
-      notifyOnFinish: true,
-    });
+    expect(parsed.data).toMatchObject({ background: true });
 
     const response = await tool.handler(parsed.data as Record<string, unknown>);
 
@@ -4258,6 +4258,80 @@ describe("send_agent_prompt MCP tool", () => {
       prompt: "Follow up",
       annotation: { kind: "origin", origin: { kind: "agent", agentId: "parent-agent" } },
     });
+  });
+
+  it("sends a prompt to another session as an attributed peer note without a finish wake", async () => {
+    const { agentManager, agentStorage, spies } = createTestDeps();
+    spies.agentManager.getAgent.mockImplementation((agentId: string) => {
+      if (agentId === "sender") {
+        return { id: "sender", cwd: existingCwd, workspaceId: "wks_a", labels: {} };
+      }
+      if (agentId === "peer") {
+        return {
+          id: "peer",
+          cwd: existingCwd,
+          lifecycle: "idle",
+          currentModeId: null,
+          availableModes: [],
+          labels: {},
+        };
+      }
+      return null;
+    });
+    spies.agentStorage.get.mockImplementation(async (agentId: string) =>
+      agentId === "sender"
+        ? createStoredRecord({ id: "sender", title: "Rename charge", workspaceId: "wks_a" })
+        : null,
+    );
+    const delegate = vi.fn(async () => null as never);
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      callerAgentId: "sender",
+      workspaceRegistry: {
+        get: async () => ({
+          workspaceId: "wks_a",
+          title: null,
+          displayName: "createCharge",
+          branch: "peers-create-charge",
+        }),
+        list: async () => [],
+      } as unknown as WorkspaceRegistry,
+      delegations: {
+        delegate,
+        acknowledgeChildResults: vi.fn(async () => null),
+        disposeChildTasks: vi.fn(async () => {}),
+        refreshChild: vi.fn(),
+      },
+      logger,
+    });
+
+    const response = await invokeToolWithParsedInput(registeredTool(server, "send_agent_prompt"), {
+      agentId: "peer",
+      prompt: "Heads up: charge is now createCharge.",
+    });
+
+    const expectedPrompt = formatPeerMessage({
+      sender: {
+        agentId: "sender",
+        title: "Rename charge",
+        workspaceTitle: "createCharge",
+        branch: "peers-create-charge",
+      },
+      body: "Heads up: charge is now createCharge.",
+    });
+    expect(spies.agentManager.annotatePrompt).toHaveBeenCalledWith("peer", {
+      messageId: expect.stringMatching(/^mcp:/),
+      prompt: expectedPrompt,
+      annotation: {
+        kind: "origin",
+        origin: { kind: "agent", agentId: "sender", relation: "peer" },
+      },
+    });
+    expect(delegate).not.toHaveBeenCalled();
+    expect(response.structuredContent.guidance).toBeUndefined();
+    expect(response.structuredContent.deliveredAs).toBe("peer_note");
   });
 
   it("leaves the result to the voice call when the caller acts for the user", async () => {
@@ -4412,7 +4486,7 @@ describe("send_agent_prompt MCP tool", () => {
       const child = await agentManager.createAgent(
         { provider: "codex", cwd: existingCwd },
         undefined,
-        { workspaceId: "wks_parent" },
+        { workspaceId: "wks_parent", labels: { [PARENT_AGENT_ID_LABEL]: parent.id } },
       );
       const server = await createAgentMcpServer({
         agentManager,
@@ -4542,7 +4616,7 @@ describe("send_agent_prompt MCP tool", () => {
       const child = await agentManager.createAgent(
         { provider: "codex", cwd: existingCwd },
         undefined,
-        { workspaceId: "wks_parent" },
+        { workspaceId: "wks_parent", labels: { [PARENT_AGENT_ID_LABEL]: parent.id } },
       );
       const server = await createAgentMcpServer({
         agentManager,
@@ -4599,7 +4673,7 @@ describe("send_agent_prompt MCP tool", () => {
       const child = await agentManager.createAgent(
         { provider: "codex", cwd: existingCwd },
         undefined,
-        { workspaceId: "wks_parent" },
+        { workspaceId: "wks_parent", labels: { [PARENT_AGENT_ID_LABEL]: parent.id } },
       );
       const server = await createAgentMcpServer({
         agentManager,
@@ -4676,7 +4750,10 @@ describe("send_agent_prompt delivery", () => {
   async function startBusyChild(steerable: boolean) {
     host = createControlledHost();
     const parentId = await host.createAgent({ steerable: false });
-    const childId = await host.createAgent({ steerable });
+    const childId = await host.createAgent({
+      steerable,
+      labels: { [PARENT_AGENT_ID_LABEL]: parentId },
+    });
     await host.startTurn(childId, "long task");
     return { parentId, childId, child: host.session(childId) };
   }
@@ -4764,7 +4841,13 @@ describe("send_agent_prompt delivery", () => {
     expect((await sendFrom(parentId, request)).disposition).toBe("started");
     child.completeTurn("ok");
     expect((await sendFrom(otherCallerId, request)).disposition).toBe("started");
-    expect(child.startPrompts).toEqual(["long task", "status?", "status?"]);
+    expect(child.startPrompts).toEqual([
+      "long task",
+      "status?",
+      expect.stringMatching(
+        /^<paseo-peer-message from_agent=[\s\S]*\nstatus\?\n<\/paseo-peer-message>$/,
+      ),
+    ]);
   });
 });
 
@@ -5221,13 +5304,73 @@ describe("list_agents scope filters", () => {
   });
 
   it("scopes to the caller's workspace or project", async () => {
-    expect(await listFor({})).toEqual(["sibling"]);
+    expect(await listFor({ scope: "cwd" })).toEqual(["sibling"]);
+    expect(await listFor({})).toEqual(["child-in-worktree", "grandchild", "sibling"]);
     expect(await listFor({ scope: "workspace" })).toEqual(["sibling"]);
     expect(await listFor({ scope: "project" })).toEqual([
       "child-in-worktree",
       "grandchild",
       "sibling",
     ]);
+  });
+
+  it("tells the caller where each agent works and what a running one is doing", async () => {
+    const { agentManager, agentStorage, spies } = createTestDeps();
+    const caller = createManagedAgent({ id: "caller", cwd: "/tmp/a", workspaceId: "ws-a" });
+    spies.agentManager.getAgent.mockImplementation((agentId: string) =>
+      agentId === "caller" ? caller : null,
+    );
+    spies.agentManager.listAgents.mockReturnValue([
+      caller,
+      createManagedAgent({
+        id: "busy-peer",
+        cwd: "/tmp/b",
+        workspaceId: "ws-b",
+        lifecycle: "running",
+      }),
+      createManagedAgent({
+        id: "my-child",
+        cwd: "/tmp/a",
+        workspaceId: "ws-a",
+        labels: { [PARENT_AGENT_ID_LABEL]: "caller" },
+      }),
+    ]);
+    spies.agentManager.getLiveWorkSummary.mockImplementation((agentId: string) =>
+      agentId === "busy-peer"
+        ? { request: "Switch amounts to integer cents", currentStep: "Updating invoice.js" }
+        : { request: null, currentStep: null },
+    );
+    const workspaces = [
+      { workspaceId: "ws-a", projectId: "p", title: null, displayName: "refunds", branch: "a" },
+      { workspaceId: "ws-b", projectId: "p", title: "Cents", displayName: "cents", branch: "b" },
+    ] as unknown as PersistedWorkspaceRecord[];
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      logger: createTestLogger(),
+      providerSnapshotManager: createClaudeOnlyManager(),
+      callerAgentId: "caller",
+      workspaceRegistry: {
+        get: async (workspaceId: string) =>
+          workspaces.find((workspace) => workspace.workspaceId === workspaceId) ?? null,
+        list: async () => workspaces,
+      } as unknown as WorkspaceRegistry,
+    });
+
+    const response = await registeredTool(server, "list_agents").handler({});
+    const byId = new Map(agentsOf(response).map((agent) => [String(agent.id), agent]));
+
+    expect(byId.get("busy-peer")).toMatchObject({
+      workspaceId: "ws-b",
+      workspaceTitle: "Cents",
+      branch: "b",
+      currentRequest: "Switch amounts to integer cents",
+      currentStep: "Updating invoice.js",
+      relation: "peer",
+    });
+    expect(byId.get("caller")).toMatchObject({ workspaceTitle: "refunds", relation: "you" });
+    expect(byId.get("my-child")).toMatchObject({ relation: "child" });
+    expect(byId.get("my-child")).not.toHaveProperty("currentRequest");
   });
 
   it("filters by title, case-insensitively", async () => {

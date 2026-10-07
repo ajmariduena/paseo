@@ -35,7 +35,7 @@ export function buildProviderDefinitions(
 
 export function resolveProviderLabel(
   provider: string,
-  snapshotEntries: ProviderSnapshotEntry[] | undefined,
+  snapshotEntries: readonly ProviderSnapshotEntry[] | undefined,
 ): string {
   return snapshotEntries?.find((entry) => entry.provider === provider)?.label ?? provider;
 }

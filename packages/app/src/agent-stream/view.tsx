@@ -119,6 +119,8 @@ import { PluginTimelineItemView, useInstalledTimelineTransform } from "@/plugins
 import { SubagentTimelineProvider } from "@/subagents/timeline/context";
 import { LineageMarker } from "@/subagents/timeline/lineage-marker";
 import { readAgentMessageSender } from "@/subagents/timeline/message-sender";
+import { readPeerNote } from "@/peer-notes/model";
+import { PeerNoteRow } from "@/peer-notes/row";
 import { resolveSendMarker, useSendMarkerStore } from "@/composer/submission/send-markers";
 import { SubagentNotificationRows } from "@/subagents/timeline/notification-row";
 import { readSubagentNotificationEntries } from "@/subagents/timeline/notification-source";
@@ -761,8 +763,51 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     }, []);
 
     const sendMarkers = useSendMarkerStore((state) => state.markers);
+    // A peer note arrives open while nothing has been prompted after it.
+    const latestUserMessageId = useMemo(
+      () =>
+        (effectiveStreamHead ?? EMPTY_STREAM_HEAD).findLast((item) => item.kind === "user_message")
+          ?.id ?? effectiveStreamItems.findLast((item) => item.kind === "user_message")?.id,
+      [effectiveStreamHead, effectiveStreamItems],
+    );
+    const renderPeerNoteBody = useCallback(
+      ({ itemId, body }: { itemId: string; body: string }) => (
+        <AssistantFileLinkResolverProvider
+          client={client}
+          serverId={resolvedServerId}
+          workspaceRoot={workspaceRoot}
+          onOpenWorkspaceFile={handleInlinePathPress}
+          toast={toast}
+        >
+          <AssistantMessage
+            renderFullContent
+            occurrenceKey={createAssistantImageOccurrenceKey({ agentId, itemId })}
+            message={body}
+            timestamp={0}
+            workspaceRoot={workspaceRoot}
+            serverId={resolvedServerId}
+            client={client}
+            phase="complete"
+          />
+        </AssistantFileLinkResolverProvider>
+      ),
+      [agentId, client, handleInlinePathPress, resolvedServerId, toast, workspaceRoot],
+    );
     const renderUserMessageItem = useCallback(
       (layoutItem: StreamLayoutItem, item: Extract<StreamItem, { kind: "user_message" }>) => {
+        const peerNote = readPeerNote(item);
+        if (peerNote) {
+          return (
+            <PeerNoteRow
+              itemId={item.id}
+              note={peerNote}
+              timestamp={item.timestamp}
+              defaultExpanded={item.id === latestUserMessageId}
+              isLastInSequence={layoutItem.isLastInToolSequence}
+              renderBody={renderPeerNoteBody}
+            />
+          );
+        }
         return (
           <UserMessage
             serverId={resolvedServerId}
@@ -789,7 +834,9 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         context.capabilities,
         agentId,
         client,
+        latestUserMessageId,
         pendingClientMessageIds,
+        renderPeerNoteBody,
         resolvedServerId,
         sendMarkers,
       ],

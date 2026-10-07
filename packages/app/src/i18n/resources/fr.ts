@@ -456,6 +456,10 @@ export const fr: TranslationResources = {
       sentBy: "Envoyé par {{title}}",
       sentByAgent: "Envoyé par un agent",
     },
+    peerNote: {
+      from: "Note de {{name}}",
+      openSession: "Ouvrir la session",
+    },
     diagram: {
       diagram: "Diagramme",
       zoomIn: "Zoomer",
@@ -2259,6 +2263,16 @@ export const fr: TranslationResources = {
         one: "a tenté d'envoyer {{count}} prompt à {{agents}}",
         other: "a tenté d'envoyer {{count}} prompts à {{agents}}",
       },
+      sentNotes: {
+        one: "a envoyé {{count}} note à {{agents}}",
+        other: "a envoyé {{count}} notes à {{agents}}",
+      },
+      sentNotesFailed: {
+        one: "a tenté d'envoyer {{count}} note à {{agents}}",
+        other: "a tenté d'envoyer {{count}} notes à {{agents}}",
+      },
+      sentNoteTo: "a envoyé une note à {{title}}",
+      sentNoteToFailed: "a tenté d'envoyer une note à {{title}}",
       waitedForAgents: {
         one: "a attendu {{count}} agent",
         other: "a attendu {{count}} agents",

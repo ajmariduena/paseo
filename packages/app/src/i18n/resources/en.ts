@@ -446,6 +446,10 @@ export const en = {
       sentBy: "Sent by {{title}}",
       sentByAgent: "Sent by an agent",
     },
+    peerNote: {
+      from: "Note from {{name}}",
+      openSession: "Open session",
+    },
     diagram: {
       diagram: "Diagram",
       zoomIn: "Zoom in",
@@ -2228,6 +2232,16 @@ export const en = {
         one: "tried to send {{count}} prompt to {{agents}}",
         other: "tried to send {{count}} prompts to {{agents}}",
       },
+      sentNotes: {
+        one: "sent {{count}} note to {{agents}}",
+        other: "sent {{count}} notes to {{agents}}",
+      },
+      sentNotesFailed: {
+        one: "tried to send {{count}} note to {{agents}}",
+        other: "tried to send {{count}} notes to {{agents}}",
+      },
+      sentNoteTo: "sent a note to {{title}}",
+      sentNoteToFailed: "tried to send a note to {{title}}",
       waitedForAgents: {
         one: "waited for {{count}} agent",
         other: "waited for {{count}} agents",

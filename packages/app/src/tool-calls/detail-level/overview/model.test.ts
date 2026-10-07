@@ -126,6 +126,45 @@ describe("Paseo orchestration summaries", () => {
     ]);
   });
 
+  it("counts a prompt delivered to a peer as a note, in each MCP result shape", () => {
+    const peerNote = { status: "idle", disposition: "started", deliveredAs: "peer_note" };
+    const { summary } = summarizeOverviewToolCalls([
+      paseoCall("send_agent_prompt", { agentId: "a" }, { output: { structuredContent: peerNote } }),
+      paseoCall(
+        "send_agent_prompt",
+        { agentId: "a" },
+        { output: { content: [{ type: "text", text: JSON.stringify(peerNote) }] } },
+      ),
+      paseoCall(
+        "send_agent_prompt",
+        { agentId: "a" },
+        { output: { output: JSON.stringify(peerNote) } },
+      ),
+      paseoCall("send_agent_prompt", { agentId: "child" }, { output: { structuredContent: {} } }),
+    ]);
+
+    expect(summary.paseoActivities).toEqual([
+      { activity: "sentPrompts", count: 1, agentCount: 1, failedOnly: false },
+      { activity: "sentNotes", count: 3, agentCount: 1, failedOnly: false, soleAgentId: "a" },
+    ]);
+  });
+
+  it("names the recipient of a single note once its title is known", () => {
+    const note = paseoCall(
+      "send_agent_prompt",
+      { agentId: "a", prompt: "Renamed charge" },
+      { output: { structuredContent: { deliveredAs: "peer_note" } } },
+    );
+    const [entry] = summarizeOverviewToolCalls([note]).summary.paseoActivities;
+
+    expect(formatPaseoActivity(i18n.t, entry!, "cents")).toBe("sent a note to cents");
+    expect(formatPaseoActivity(i18n.t, entry!, null)).toBe("sent 1 note to 1 agent");
+    expect(formatPaseoActivity(i18n.t, { ...entry!, failedOnly: true }, "cents")).toBe(
+      "tried to send a note to cents",
+    );
+    expect(phrases([note, { ...note, id: "second" }])).toEqual(["sent 2 notes to 1 agent"]);
+  });
+
   it("reads 'tried to' only when every call of an action failed", () => {
     expect(
       phrases([

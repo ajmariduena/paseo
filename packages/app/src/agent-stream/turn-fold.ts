@@ -8,7 +8,9 @@ import {
   type OverviewSummary,
 } from "@/tool-calls/detail-level/overview/model";
 import { buildLineDiff, parseUnifiedDiff } from "@/utils/tool-call-parsers";
+import { isPeerNote } from "@/peer-notes/model";
 import { getStreamItemMessageId } from "./message-id";
+import { continuesTurn } from "./turn-membership";
 
 export interface TurnFileChange {
   path: string;
@@ -170,6 +172,7 @@ function isPinnedCall(call: ToolCallItem): boolean {
 function isPinnedRow(row: StreamItem, getToolCalls: TurnFoldInput["getToolCalls"]): boolean {
   // An agent can answer and then run a tool, so any message may hold the answer.
   if (row.kind === "assistant_message") return true;
+  if (isPeerNote(row)) return true;
   if (row.kind === "notification") return row.level !== "info" || isSubagentNotification(row);
   if (row.kind !== "tool_call") return false;
   return getToolCalls(row).some(isPinnedCall);
@@ -212,7 +215,8 @@ function arePaseoActivitiesEqual(
         entry.activity === other.activity &&
         entry.count === other.count &&
         entry.agentCount === other.agentCount &&
-        entry.failedOnly === other.failedOnly
+        entry.failedOnly === other.failedOnly &&
+        entry.soleAgentId === other.soleAgentId
       );
     })
   );
@@ -276,6 +280,15 @@ function isSameAnchor(item: ToolCallItem, anchor: RowAnchor): boolean {
     item.timelineCursor?.epoch === anchor.timelineCursor?.epoch &&
     item.timelineCursor?.seq === anchor.timelineCursor?.seq
   );
+}
+
+/**
+ * A peer note steered into a running turn belongs to the prompt that started it; only a note
+ * that starts its own turn opens a fold, the way a prompt does.
+ */
+function startsFoldSegment(item: StreamItem, previous: StreamItem | null): boolean {
+  if (item.kind !== "user_message") return false;
+  return !isPeerNote(item) || !continuesTurn(previous, item);
 }
 
 /** The block rows of the last assistant message, when the response ends with it. */
@@ -428,7 +441,7 @@ export function createTurnFolding() {
 
     const userIndices: number[] = [];
     for (const [index, item] of input.tail.entries()) {
-      if (item.kind === "user_message") userIndices.push(index);
+      if (startsFoldSegment(item, input.tail[index - 1] ?? null)) userIndices.push(index);
     }
 
     let output: StreamItem[] | null = null;

@@ -449,6 +449,10 @@ export const ar: TranslationResources = {
       sentBy: "أرسلها {{title}}",
       sentByAgent: "أرسلها وكيل",
     },
+    peerNote: {
+      from: "ملاحظة من {{name}}",
+      openSession: "فتح الجلسة",
+    },
     diagram: {
       diagram: "مخطط",
       zoomIn: "تكبير",
@@ -2201,6 +2205,16 @@ export const ar: TranslationResources = {
         one: "حاول إرسال {{count}} موجّه إلى {{agents}}",
         other: "حاول إرسال {{count}} موجّهات إلى {{agents}}",
       },
+      sentNotes: {
+        one: "أرسل {{count}} ملاحظة إلى {{agents}}",
+        other: "أرسل {{count}} ملاحظات إلى {{agents}}",
+      },
+      sentNotesFailed: {
+        one: "حاول إرسال {{count}} ملاحظة إلى {{agents}}",
+        other: "حاول إرسال {{count}} ملاحظات إلى {{agents}}",
+      },
+      sentNoteTo: "أرسل ملاحظة إلى {{title}}",
+      sentNoteToFailed: "حاول إرسال ملاحظة إلى {{title}}",
       waitedForAgents: {
         one: "انتظر {{count}} وكيل",
         other: "انتظر {{count}} وكلاء",

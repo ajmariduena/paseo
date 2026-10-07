@@ -453,6 +453,10 @@ export const ptBR: TranslationResources = {
       sentBy: "Enviado por {{title}}",
       sentByAgent: "Enviado por um agente",
     },
+    peerNote: {
+      from: "Nota de {{name}}",
+      openSession: "Abrir sessão",
+    },
     diagram: {
       diagram: "Diagrama",
       zoomIn: "Aproximar",
@@ -2236,6 +2240,16 @@ export const ptBR: TranslationResources = {
         one: "tentou enviar {{count}} prompt para {{agents}}",
         other: "tentou enviar {{count}} prompts para {{agents}}",
       },
+      sentNotes: {
+        one: "enviou {{count}} nota para {{agents}}",
+        other: "enviou {{count}} notas para {{agents}}",
+      },
+      sentNotesFailed: {
+        one: "tentou enviar {{count}} nota para {{agents}}",
+        other: "tentou enviar {{count}} notas para {{agents}}",
+      },
+      sentNoteTo: "enviou uma nota para {{title}}",
+      sentNoteToFailed: "tentou enviar uma nota para {{title}}",
       waitedForAgents: {
         one: "esperou {{count}} agente",
         other: "esperou {{count}} agentes",

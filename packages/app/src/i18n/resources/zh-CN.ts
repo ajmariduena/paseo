@@ -449,6 +449,10 @@ export const zhCN: TranslationResources = {
       sentBy: "由 {{title}} 发送",
       sentByAgent: "由 agent 发送",
     },
+    peerNote: {
+      from: "来自 {{name}} 的便笺",
+      openSession: "打开会话",
+    },
     diagram: {
       diagram: "图表",
       zoomIn: "放大",
@@ -2179,6 +2183,16 @@ export const zhCN: TranslationResources = {
         one: "尝试向 {{agents}}发送 {{count}} 条 prompt",
         other: "尝试向 {{agents}}发送 {{count}} 条 prompt",
       },
+      sentNotes: {
+        one: "向 {{agents}}发送了 {{count}} 条便笺",
+        other: "向 {{agents}}发送了 {{count}} 条便笺",
+      },
+      sentNotesFailed: {
+        one: "尝试向 {{agents}}发送 {{count}} 条便笺",
+        other: "尝试向 {{agents}}发送 {{count}} 条便笺",
+      },
+      sentNoteTo: "向 {{title}} 发送了便笺",
+      sentNoteToFailed: "尝试向 {{title}} 发送便笺",
       waitedForAgents: {
         one: "等待了 {{count}} 个 agent",
         other: "等待了 {{count}} 个 agent",
