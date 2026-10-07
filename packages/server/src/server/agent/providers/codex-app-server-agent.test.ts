@@ -24,11 +24,26 @@ import {
   codexAppServerTurnInputFromPrompt,
   listCodexSkills,
   mapCodexPatchNotificationToToolCall,
+  mcpToolResultImagesToTimeline,
   mapCodexPlanUpdateToTodo,
   mapCodexPlanToToolCall,
   normalizeCodexOutputSchema,
   toAgentUsage,
 } from "./codex-app-server-agent.js";
+
+test("Codex keeps preview screenshots out of timeline while retaining other tool images", () => {
+  const item = {
+    type: "mcpToolCall",
+    tool: "html_preview",
+    server: "paseo",
+    result: { content: [{ type: "image", data: ONE_BY_ONE_PNG_BASE64, mimeType: "image/png" }] },
+  };
+  expect(mcpToolResultImagesToTimeline(item)).toEqual([]);
+  const otherImages = mcpToolResultImagesToTimeline({ ...item, tool: "browser_screenshot" });
+  expect(otherImages).toHaveLength(1);
+  if (otherImages[0]?.type === "assistant_message")
+    rmSync(markdownImageSource(otherImages[0].text), { force: true });
+});
 
 describe("mapCodexPlanUpdateToTodo", () => {
   test("preserves checklist progress without creating a plan card", () => {

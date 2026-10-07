@@ -98,6 +98,7 @@ import {
   renderProviderImageOutputAsAssistantMarkdown,
   type ProviderImageOutput,
 } from "./provider-image-output.js";
+import { isHtmlPreviewToolName } from "./preview-image-visibility.js";
 import { normalizeProviderReplayTimestamp } from "../provider-history-timestamps.js";
 import {
   formatProviderDiagnostic,
@@ -2036,7 +2037,7 @@ export function threadItemToTimeline(
   }
 }
 
-function mcpToolResultImagesToTimeline(item: unknown): AgentTimelineItem[] {
+export function mcpToolResultImagesToTimeline(item: unknown): AgentTimelineItem[] {
   const itemRecord = toObjectRecord(item);
   if (!itemRecord) {
     return [];
@@ -2047,6 +2048,8 @@ function mcpToolResultImagesToTimeline(item: unknown): AgentTimelineItem[] {
   if (normalizedType !== "mcpToolCall") {
     return [];
   }
+
+  if (isHtmlPreviewToolName(String(itemRecord.tool ?? ""))) return [];
 
   const { images } = splitCodexMcpToolResultImages(itemRecord.result);
   return images

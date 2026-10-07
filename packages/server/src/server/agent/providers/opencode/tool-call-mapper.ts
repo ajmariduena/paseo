@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import type { ToolCallTimelineItem } from "../../agent-sdk-types.js";
 import { normalizeToolCallStatus } from "../tool-call-mapper-utils.js";
+import { isHtmlPreviewToolName } from "../preview-image-visibility.js";
 import { deriveOpencodeToolDetail } from "./tool-call-detail-parser.js";
 
 interface OpencodeToolCallParams {
@@ -26,6 +27,27 @@ const OpencodeRawToolCallSchema = z
   })
   .passthrough();
 
+function previewTimelineOutput(value: unknown): unknown {
+  if (typeof value === "string") {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      if (parsed && typeof parsed === "object") return previewTimelineOutput(parsed);
+    } catch {
+      return value;
+    }
+    return value;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const result = value as Record<string, unknown>;
+  if (!Array.isArray(result.content)) return value;
+  return {
+    ...result,
+    content: result.content.filter(
+      (part) => !part || typeof part !== "object" || (part as { type?: unknown }).type !== "image",
+    ),
+  };
+}
+
 export function mapOpencodeToolCall(params: OpencodeToolCallParams): ToolCallTimelineItem | null {
   const parsed = OpencodeRawToolCallSchema.safeParse(params);
   if (!parsed.success) {
@@ -39,7 +61,9 @@ export function mapOpencodeToolCall(params: OpencodeToolCallParams): ToolCallTim
   }
   const name = raw.toolName.trim();
   const input = raw.input ?? null;
-  const output = raw.output ?? null;
+  const output = isHtmlPreviewToolName(name)
+    ? previewTimelineOutput(raw.output ?? null)
+    : (raw.output ?? null);
   const error = raw.error ?? null;
   const rawStatus = typeof raw.status === "string" ? raw.status : undefined;
   const status = normalizeToolCallStatus(rawStatus, error, output);

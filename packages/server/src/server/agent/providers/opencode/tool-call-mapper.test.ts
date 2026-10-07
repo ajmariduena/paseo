@@ -20,6 +20,46 @@ it("keeps an HTML render JSON result on a completed OpenCode call", () => {
   });
 });
 
+it("keeps html_preview image bytes out of the OpenCode timeline detail", () => {
+  const output = {
+    content: [
+      { type: "text", text: '{"width":390}' },
+      { type: "image", mimeType: "image/png", data: "secret-base64" },
+    ],
+    structuredContent: { width: 390 },
+  };
+  expect(
+    mapOpencodeToolCall({
+      toolName: "paseo_html_preview",
+      callId: "preview",
+      status: "completed",
+      output,
+    }),
+  ).toMatchObject({
+    detail: { type: "unknown", output: { content: [{ type: "text", text: '{"width":390}' }] } },
+  });
+  expect(
+    JSON.stringify(
+      mapOpencodeToolCall({
+        toolName: "paseo_html_preview",
+        callId: "preview",
+        status: "completed",
+        output,
+      }),
+    ),
+  ).not.toContain("secret-base64");
+  expect(
+    JSON.stringify(
+      mapOpencodeToolCall({
+        toolName: "paseo_browser_screenshot",
+        callId: "shot",
+        status: "completed",
+        output,
+      }),
+    ),
+  ).toContain("secret-base64");
+});
+
 function expectMapped<T>(item: T | null): T {
   expect(item).toBeTruthy();
   if (!item) {
