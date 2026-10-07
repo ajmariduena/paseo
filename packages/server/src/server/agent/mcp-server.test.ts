@@ -16,6 +16,7 @@ import { HtmlRenderStore } from "./html-render/store.js";
 import { PASEO_READ_ONLY_TOOL_NAMES } from "./tools/read-only-tools.js";
 import { DelegationService } from "../delegation/delegation-service.js";
 import { DelegationStore } from "../delegation/delegation-store.js";
+import { AgentRunStoppedError, AgentStop } from "./stop.js";
 import { AgentManager, type ManagedAgent } from "./agent-manager.js";
 import { AgentStorage, type StoredAgentRecord } from "./agent-storage.js";
 import { createTestAgentClients } from "../test-utils/fake-agent-client.js";
@@ -269,6 +270,7 @@ function buildAgentManagerSpies() {
     emitLiveTimelineItem: vi.fn().mockResolvedValue(undefined),
     hasInFlightRun: vi.fn().mockReturnValue(false),
     getActiveRun: vi.fn().mockReturnValue(null),
+    messageQueue: { isHeldForUserStop: () => false, releaseUserStop: () => undefined },
     waitForRunToSettle: vi.fn().mockResolvedValue(undefined),
     tryRunOutOfBand: vi.fn().mockReturnValue(false),
     subscribe: vi.fn().mockReturnValue(() => {}),
@@ -5281,6 +5283,59 @@ describe("cancel_agent delegation", () => {
       expect(parent.startPrompts).toEqual(["parent work"]);
     } finally {
       delegations.close();
+      await host.cleanup();
+    }
+  });
+});
+
+describe("tools called by a run the user stopped", () => {
+  it("refuses create_agent and watch_pull_request with a stopped-run error", async () => {
+    const host = createControlledHost();
+    try {
+      const agentId = await host.createAgent({ steerable: false });
+      await host.startTurn(agentId, "work");
+      const agentStop = new AgentStop({
+        agentManager: host.agentManager,
+        agentStorage: host.agentStorage,
+        delegations: null,
+        pullRequestWatches: null,
+        logger: host.logger,
+      });
+      const watched: unknown[] = [];
+      const server = await createAgentMcpServer({
+        agentManager: host.agentManager,
+        agentStorage: host.agentStorage,
+        providerSnapshotManager: createOpenCodeManager().manager,
+        callerAgentId: agentId,
+        agentStop,
+        pullRequestWatches: {
+          async watch(target) {
+            watched.push(target);
+            throw new Error("not reached");
+          },
+          async unwatch() {
+            throw new Error("not reached");
+          },
+        },
+        logger: host.logger,
+      });
+
+      await agentStop.stop(agentId);
+
+      await expect(
+        invokeToolWithParsedInput(registeredTool(server, "create_agent"), {
+          title: "More work",
+          provider: "claude/sonnet",
+          initialPrompt: "more work",
+        }),
+      ).rejects.toThrow(AgentRunStoppedError);
+      await expect(
+        invokeToolWithParsedInput(registeredTool(server, "watch_pull_request"), { number: 7 }),
+      ).rejects.toThrow(
+        `The user stopped agent ${agentId}, so watch_pull_request is refused for the run they stopped.`,
+      );
+      expect(watched).toEqual([]);
+    } finally {
       await host.cleanup();
     }
   });

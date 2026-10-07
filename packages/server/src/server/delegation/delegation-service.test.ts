@@ -291,7 +291,7 @@ test("user Stop of the spawning turn stops its cohort", async () => {
   const current = await startDelegation({ parentSteerable: false, children: 1 });
   const { host, trace, store, service, parentId, childIds } = current;
 
-  await service.stopActiveTurn(parentId);
+  await service.stopAll(parentId);
   await host.agentManager.cancelAgentRun(parentId);
   host.session(childIds[0]).completeTurn("result A");
   await trace.waitFor("delegation.finalized");
@@ -302,6 +302,39 @@ test("user Stop of the spawning turn stops its cohort", async () => {
   ]);
   expect(await deliveryStates(current)).toEqual(["disposed"]);
   expect(host.session(parentId).startPrompts).toEqual(["parent work"]);
+});
+
+test("user Stop of an idle parent stops the cohorts of its earlier runs", async () => {
+  const current = await startDelegation({ parentSteerable: false, children: 2 });
+  const { host, trace, store, service, parentId, childIds } = current;
+  const parent = host.session(parentId);
+  parent.completeTurn("waiting on children");
+  await vi.waitFor(() => expect(host.agentManager.getAgent(parentId)?.lifecycle).toBe("idle"));
+
+  await service.stopAll(parentId);
+  host.session(childIds[0]).completeTurn("result A");
+  host.session(childIds[1]).completeTurn("result B");
+  await trace.waitFor("delegation.finalized", 2);
+
+  const file = await store.get(parentId);
+  expect(Object.values(file?.cohorts ?? {})).toEqual([
+    { disposition: "stopped", nextGeneration: 1, delivery: null },
+  ]);
+  expect(await deliveryStates(current)).toEqual(["disposed", "disposed"]);
+  expect(parent.startPrompts).toEqual(["parent work"]);
+});
+
+test("user Stop withdraws a wake already waiting in the parent's queue", async () => {
+  const current = await startDelegation({ parentSteerable: false, children: 1 });
+  const { host, trace, service, parentId, childIds } = current;
+  host.session(childIds[0]).completeTurn("result A");
+  await trace.waitFor("agent.dispatch.wait_for_turn");
+  expect(host.agentManager.messageQueue.entries(parentId)).toHaveLength(1);
+
+  await service.stopAll(parentId);
+
+  expect(host.agentManager.messageQueue.entries(parentId)).toEqual([]);
+  expect(await deliveryStates(current)).toEqual(["disposed"]);
 });
 
 test("reading a finished result cancels the still-queued wake", async () => {

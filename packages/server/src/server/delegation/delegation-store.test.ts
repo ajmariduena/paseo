@@ -230,7 +230,7 @@ test("disposal is final and repeatable", async () => {
   const store = createStore();
   await createFinishedTask(store, "a");
 
-  await store.stopCohortsOfRun("parent", "run-1", NOW);
+  await store.stopAll("parent", NOW);
   await store.disposeAll("parent", NOW);
   await store.disposeAll("parent", NOW);
 

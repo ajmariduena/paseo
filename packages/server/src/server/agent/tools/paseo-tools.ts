@@ -102,6 +102,7 @@ import {
 import type { DelegationService } from "../../delegation/delegation-service.js";
 import type { PullRequestWatcher } from "../../pull-request-watch/watcher.js";
 import { respondToAgentPermission } from "../permission-response.js";
+import { AgentStop } from "../stop.js";
 import {
   archiveAgentCommand,
   cancelAgentRunCommand,
@@ -185,8 +186,11 @@ export interface PaseoToolHostDependencies {
     | "beginWait"
     | "endWait"
     | "waitForChildResult"
+    | "stopAll"
   >;
   pullRequestWatches?: Pick<PullRequestWatcher, "watch" | "unwatch">;
+  /** Shared with Stop in the session, so a run the user stopped cannot start more work. */
+  agentStop?: Pick<AgentStop, "stop" | "assertRunNotStopped">;
   transport?: PaseoToolRuntimeContext["transport"];
   /**
    * ID of the agent that is using this tool catalog.
@@ -770,6 +774,15 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     logger,
   } = options;
   const childLogger = logger.child({ module: "agent", component: "paseo-tool-catalog" });
+  const agentStop =
+    options.agentStop ??
+    new AgentStop({
+      agentManager,
+      agentStorage,
+      delegations: options.delegations ?? null,
+      pullRequestWatches: null,
+      logger: childLogger,
+    });
   const callerContext = callerAgentId ? (resolveCallerContext?.(callerAgentId) ?? null) : null;
 
   const parseToolInput = async (tool: PaseoToolDefinition, input: unknown): Promise<unknown> => {
@@ -1866,6 +1879,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       },
     },
     async (args: unknown) => {
+      if (callerAgentId) agentStop.assertRunNotStopped(callerAgentId, "create_agent");
       const clientRequestId = clientRequestIdSchema.parse(
         (args as { clientRequestId?: unknown }).clientRequestId,
       );
@@ -2804,12 +2818,15 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           conflicting: z.boolean(),
         },
       },
-      async (input: { number?: number; url?: string }) => ({
-        content: [],
-        structuredContent: ensureValidJson(
-          await pullRequestWatches.watch(await resolveCallerTarget(input)),
-        ),
-      }),
+      async (input: { number?: number; url?: string }) => {
+        if (callerAgentId) agentStop.assertRunNotStopped(callerAgentId, "watch_pull_request");
+        return {
+          content: [],
+          structuredContent: ensureValidJson(
+            await pullRequestWatches.watch(await resolveCallerTarget(input)),
+          ),
+        };
+      },
     );
 
     registerTool(
