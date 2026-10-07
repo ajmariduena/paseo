@@ -816,6 +816,7 @@ function StatusWorkspaceRowInnerContent({
       didLongPressRef.current = false;
       return;
     }
+    setIsPressed(false);
     onPress();
   }, [didLongPressRef, onPress]);
   const handlePressIn = useCallback(

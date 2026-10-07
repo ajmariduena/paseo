@@ -253,6 +253,7 @@ function WorkspaceRowBody({
       interaction.didLongPressRef.current = false;
       return;
     }
+    setIsPressed(false);
     onPress();
   }, [interaction.didLongPressRef, onPress]);
   const handleWorkspacePressIn = useCallback(
