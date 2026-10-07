@@ -1,6 +1,9 @@
 import { useCallback, useMemo, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Text, View } from "react-native";
 import { Maximize2 } from "lucide-react-native";
+import { Button } from "@/components/ui/button";
+import { useIsCompactFormFactor } from "@/constants/layout";
+import { isNative } from "@/constants/platform";
 import { useFetchQuery } from "@/data/query";
 import { withUnistyles } from "react-native-unistyles";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
@@ -18,8 +21,14 @@ interface CardProps {
   theme?: RenderTheme;
 }
 
+const hoverTargetStyle = { position: "relative" as const };
+
 function HtmlRenderCardImpl({ client, serverId, agentId, render, theme }: CardProps) {
   const [expanded, setExpanded] = useState(false);
+  const [isHovered, setIsHovered] = useState(false);
+  const [isFocused, setIsFocused] = useState(false);
+  const isCompact = useIsCompactFormFactor();
+  const showControls = isHovered || isFocused || isNative || isCompact;
   const activeTheme = theme!;
   const fetched = useFetchQuery({
     queryKey: ["html-render", serverId, agentId, render.renderId],
@@ -52,16 +61,14 @@ function HtmlRenderCardImpl({ client, serverId, agentId, render, theme }: CardPr
     () => ({ color: activeTheme.variables["--muted-foreground"], paddingVertical: 12 }),
     [activeTheme],
   );
-  const retryStyle = useMemo(() => ({ color: activeTheme.variables["--accent"] }), [activeTheme]);
-  const expandStyle = useMemo(
+  const controlsStyle = useMemo(
     () => ({
-      position: "absolute" as const,
-      right: 0,
-      top: 0,
-      padding: 8,
-      backgroundColor: activeTheme.variables["--background"],
+      height: 30,
+      width: "100%" as const,
+      alignItems: "flex-end" as const,
+      opacity: showControls ? 1 : 0,
     }),
-    [activeTheme],
+    [showControls],
   );
   const { refetch } = fetched;
   const retry = useCallback(() => {
@@ -69,47 +76,63 @@ function HtmlRenderCardImpl({ client, serverId, agentId, render, theme }: CardPr
   }, [refetch]);
   const open = useCallback(() => setExpanded(true), []);
   const close = useCallback(() => setExpanded(false), []);
+  const handlePointerEnter = useCallback(() => setIsHovered(true), []);
+  const handlePointerLeave = useCallback(() => setIsHovered(false), []);
+  const handleFocus = useCallback(() => setIsFocused(true), []);
+  const handleBlur = useCallback(() => setIsFocused(false), []);
   return (
-    <View style={cardStyle}>
-      {message ? <Text style={hintStyle}>{message}</Text> : null}
-      {fetched.error && client ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Retry loading HTML page"
-          onPress={retry}
-        >
-          <Text style={retryStyle}>Retry</Text>
-        </Pressable>
-      ) : null}
-      {fetched.data ? (
-        <HtmlRenderFrame
-          html={fetched.data.html}
-          renderId={render.renderId}
-          title={render.title}
-          height={render.height}
-          theme={activeTheme}
-        />
-      ) : null}
-      {fetched.data ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Expand HTML page"
-          onPress={open}
-          style={expandStyle}
-        >
-          <Maximize2 size={16} color={activeTheme.variables["--muted-foreground"]} />
-        </Pressable>
-      ) : null}
-      {expanded && fetched.data ? (
-        <HtmlRenderViewer
-          html={fetched.data.html}
-          renderId={render.renderId}
-          title={render.title}
-          height={render.height}
-          theme={activeTheme}
-          onClose={close}
-        />
-      ) : null}
+    <View
+      style={hoverTargetStyle}
+      onPointerEnter={handlePointerEnter}
+      onPointerLeave={handlePointerLeave}
+      onFocus={handleFocus}
+      onBlur={handleBlur}
+    >
+      <View style={cardStyle}>
+        {message ? <Text style={hintStyle}>{message}</Text> : null}
+        {fetched.error && client ? (
+          <Button
+            variant="ghost"
+            size="xs"
+            accessibilityLabel="Retry loading HTML page"
+            onPress={retry}
+          >
+            Retry
+          </Button>
+        ) : null}
+        {fetched.data ? (
+          <HtmlRenderFrame
+            html={fetched.data.html}
+            renderId={render.renderId}
+            title={render.title}
+            height={render.height}
+            theme={activeTheme}
+          />
+        ) : null}
+        {fetched.data ? (
+          <View style={controlsStyle} pointerEvents={showControls ? "auto" : "none"}>
+            <Button
+              variant="ghost"
+              size="xs"
+              leftIcon={Maximize2}
+              accessibilityLabel="Expand HTML page"
+              onPress={open}
+            >
+              Expand
+            </Button>
+          </View>
+        ) : null}
+        {expanded && fetched.data ? (
+          <HtmlRenderViewer
+            html={fetched.data.html}
+            renderId={render.renderId}
+            title={render.title}
+            height={render.height}
+            theme={activeTheme}
+            onClose={close}
+          />
+        ) : null}
+      </View>
     </View>
   );
 }

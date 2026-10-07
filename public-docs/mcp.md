@@ -194,7 +194,7 @@ Omit absent optional settings. If no profile fits, use provider discovery to cho
 | ------------- | -------------------------------------------------------------------------------------------- |
 | `html_render` | Publish a self-contained HTML page inline in the agent's conversation above its final reply. |
 
-The page follows the app's light or dark theme through CSS variables, and can include local images from the agent's working directory or OS temp directory. The page stays available in archived conversations and is removed when the agent is permanently deleted. A preview/screenshot tool is planned for a later phase.
+The page follows the app's light or dark theme through CSS variables, and can include local images from the agent's working directory or OS temp directory. HTTPS scripts, styles, images, fonts, and media can load from any host; these requests can send data in the page to that host. The page contains only what the agent wrote, and the agent already has that data and network access. `connect-src 'none'` blocks fetch, XHR, and WebSocket, not all network access. The page stays available in archived conversations and is removed when the agent is permanently deleted. A preview/screenshot tool is planned for a later phase.
 
 ### Browser
 

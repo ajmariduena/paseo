@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WebView } from "react-native-webview";
 import type { WebViewMessageEvent } from "react-native-webview";
 import { openExternalUrl } from "@/utils/open-external-url";
+import { isHttpUrl } from "@/utils/http-url";
 import {
   clampRenderHeight,
   prepareRenderDocument,
@@ -23,7 +24,14 @@ export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
   const nonce = useMemo(() => `${Date.now()}-${Math.random()}`, []);
   const initialTheme = useRef(props.theme).current;
   const document = useMemo(
-    () => prepareRenderDocument(props.html, initialTheme, nonce, props.renderId),
+    () =>
+      prepareRenderDocument({
+        html: props.html,
+        theme: initialTheme,
+        nonce,
+        renderId: props.renderId,
+        linkMode: "native",
+      }),
     [props.html, initialTheme, nonce, props.renderId],
   );
   const source = useMemo(() => ({ html: document, baseUrl: "about:blank" }), [document]);
@@ -51,13 +59,6 @@ export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
       if (!message) return;
       if (message.method === "ui/notifications/size-changed" && "height" in message.params)
         setContentHeight(message.params.height);
-      if (message.method === "ui/open-link" && "url" in message.params) {
-        void openExternalUrl(message.params.url);
-        const reply = JSON.stringify({ jsonrpc: "2.0", id: message.id, result: {} });
-        webviewRef.current?.injectJavaScript(
-          `window.dispatchEvent(new MessageEvent("message", {data: ${reply}})); true;`,
-        );
-      }
     },
     [nonce, props.renderId],
   );
@@ -79,6 +80,11 @@ export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
   useEffect(() => {
     sendTheme();
   }, [sendTheme]);
+  const onOpenWindow = useCallback((event: { nativeEvent: { targetUrl: string } }) => {
+    const url = event.nativeEvent.targetUrl;
+    if (isHttpUrl(url)) void openExternalUrl(url);
+  }, []);
+  const overflows = contentHeight !== null && contentHeight > frameHeight;
 
   return (
     <WebView
@@ -89,9 +95,11 @@ export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
       onShouldStartLoadWithRequest={allowOnlyDocument}
       onMessage={onMessage}
       onLoad={sendTheme}
-      scrollEnabled={props.fullscreen || (contentHeight !== null && contentHeight > frameHeight)}
-      setSupportMultipleWindows={false}
+      scrollEnabled={props.fullscreen || overflows}
+      nestedScrollEnabled={!props.fullscreen && overflows}
+      setSupportMultipleWindows
       javaScriptCanOpenWindowsAutomatically={false}
+      onOpenWindow={onOpenWindow}
       domStorageEnabled={false}
       thirdPartyCookiesEnabled={false}
       cacheEnabled={false}

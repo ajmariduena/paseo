@@ -22,7 +22,14 @@ export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
   const nonce = useMemo(() => crypto.randomUUID(), []);
   const initialTheme = useRef(props.theme).current;
   const preparedDocument = useMemo(
-    () => prepareRenderDocument(props.html, initialTheme, nonce, props.renderId),
+    () =>
+      prepareRenderDocument({
+        html: props.html,
+        theme: initialTheme,
+        nonce,
+        renderId: props.renderId,
+        linkMode: "web",
+      }),
     [props.html, initialTheme, nonce, props.renderId],
   );
   const [contentHeight, setContentHeight] = useState<number | null>(null);

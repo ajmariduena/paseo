@@ -21,8 +21,14 @@ export interface RenderTheme {
   variables: Record<string, string>;
 }
 
+const CHART_COLORS = {
+  light: ["#2563eb", "#d97706", "#9333ea", "#e11d48", "#0891b2"],
+  dark: ["#60a5fa", "#fbbf24", "#c084fc", "#fb7185", "#22d3ee"],
+} as const;
+
 export function mapRenderTheme(theme: Theme): RenderTheme {
   const colors = theme.colors;
+  const charts = CHART_COLORS[theme.colorScheme];
   return {
     appearance: theme.colorScheme,
     variables: {
@@ -58,11 +64,11 @@ export function mapRenderTheme(theme: Theme): RenderTheme {
       "--code-background": colors.surface1,
       "--code-foreground": colors.foreground,
       "--chart-1": colors.accent,
-      "--chart-2": colors.palette.blue[500],
-      "--chart-3": colors.success,
-      "--chart-4": colors.statusWarning,
-      "--chart-5": colors.destructive,
-      "--chart-6": colors.accentBright,
+      "--chart-2": charts[0],
+      "--chart-3": charts[1],
+      "--chart-4": charts[2],
+      "--chart-5": charts[3],
+      "--chart-6": charts[4],
       "--radius": "10px",
       "--font-sans": theme.fontFamily.ui,
       "--font-mono": theme.fontFamily.mono,
@@ -134,40 +140,21 @@ function themeCss(theme: RenderTheme): string {
   return `:root{color-scheme:${theme.appearance};${declarations}}${BASE_CSS}`;
 }
 
-function blankNonMarkup(html: string): string {
-  const scan = html.replace(
-    /<!--[\s\S]*?(?:-->|$)|<(script|style|textarea|title|xmp|iframe|noembed|noframes|noscript)\b[\s\S]*?(?:<\/\1\s*>|$)|<plaintext\b[\s\S]*$/gi,
-    (match) => " ".repeat(match.length),
-  );
-  const parts: string[] = [];
-  let depth = 0;
-  let start = 0;
-  let at = 0;
-  for (const match of scan.matchAll(/<(\/?)template(?:\s[^>]*)?\/?>/gi)) {
-    if (!match[1]) {
-      if (depth++ === 0) start = match.index;
-    } else if (depth > 0 && --depth === 0) {
-      const end = match.index + match[0].length;
-      parts.push(scan.slice(at, start), " ".repeat(end - start));
-      at = end;
-    }
-  }
-  if (depth > 0) {
-    parts.push(scan.slice(at, start), " ".repeat(scan.length - start));
-    at = scan.length;
-  }
-  parts.push(scan.slice(at));
-  return parts.join("");
+export interface PrepareRenderDocumentInput {
+  html: string;
+  theme: RenderTheme;
+  nonce: string;
+  renderId: string;
+  linkMode: "web" | "native";
 }
 
-export function prepareRenderDocument(
-  html: string,
-  theme: RenderTheme,
-  nonce: string,
-  renderId: string,
-): string {
-  const scan = blankNonMarkup(html);
+export function prepareRenderDocument(input: PrepareRenderDocumentInput): string {
+  const { html, theme, nonce, renderId, linkMode } = input;
   const payload = JSON.stringify({ nonce, renderId }).replace(/</g, "\\u003c");
+  const linkAction =
+    linkMode === "native"
+      ? 'a.setAttribute("target","_blank");a.setAttribute("rel","noopener");'
+      : 'e.preventDefault();send("ui/open-link",{url:u.href},"paseo-link-"+(++n));';
   const script = `(function(){
     var p=${payload},s=document.getElementById("paseo-render-theme"),n=0;
     function apply(t){
@@ -193,8 +180,7 @@ export function prepareRenderDocument(
       try{
         var u=new URL(a.href);
         if(!/^https?:$/.test(u.protocol))return;
-        e.preventDefault();
-        send("ui/open-link",{url:u.href},"paseo-link-"+(++n));
+        ${linkAction}
       }catch(x){}
     },true);
     var h=0;
@@ -209,20 +195,5 @@ export function prepareRenderDocument(
     window.addEventListener("load",size);
   })();`;
   const markup = `<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style id="paseo-render-theme">${themeCss(theme)}</style><script>${script}</script>`;
-  const head = /<head(?:\s[^>]*)?>/i.exec(scan);
-  let injected: string;
-  if (head) {
-    const at = head.index + head[0].length;
-    injected = html.slice(0, at) + markup + html.slice(at);
-  } else {
-    const htmlOpen = /<html(?:\s[^>]*)?>/i.exec(scan);
-    if (htmlOpen) {
-      const at = htmlOpen.index + htmlOpen[0].length;
-      injected = `${html.slice(0, at)}<head>${markup}</head>${html.slice(at)}`;
-    } else {
-      injected = `<head>${markup}</head>${html}`;
-    }
-  }
-  // The parser creates a real head for this meta before it can see hostile source markup.
-  return `<!doctype html><meta http-equiv="Content-Security-Policy" content="${RENDER_CSP}">${injected.replace(/^\uFEFF/, "")}`;
+  return `<!doctype html><head><meta http-equiv="Content-Security-Policy" content="${RENDER_CSP}">${markup}</head>${html.replace(/^\uFEFF/, "")}`;
 }
