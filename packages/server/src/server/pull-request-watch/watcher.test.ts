@@ -1,6 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
+import pino from "pino";
 import { afterEach, expect, test, vi } from "vitest";
 
 import type {
@@ -141,6 +142,8 @@ interface Scenario {
   watcher: PullRequestWatcher;
   clock: { now: number };
   agentId: string;
+  /** The watcher's info log lines, parsed. */
+  logs: Record<string, unknown>[];
 }
 
 let scenario: Scenario | null = null;
@@ -156,6 +159,11 @@ async function startWatching(options: { busy?: boolean } = {}): Promise<Scenario
   const forge = createFakeForge();
   const store = new PullRequestWatchStore(join(host.root, "pull-request-watches.json"));
   const clock = { now: Date.parse("2026-10-04T12:00:00Z") };
+  const logs: Record<string, unknown>[] = [];
+  const logger = pino(
+    { level: "info" },
+    { write: (line: string) => logs.push(JSON.parse(line) as Record<string, unknown>) },
+  );
   const watcher = new PullRequestWatcher({
     store,
     agentManager: host.agentManager,
@@ -163,11 +171,11 @@ async function startWatching(options: { busy?: boolean } = {}): Promise<Scenario
     resolveForge: async () => ({ service: forge.service }),
     readWorkspacePullRequestNumber: async () => 42,
     now: () => clock.now,
-    logger: host.logger,
+    logger,
   });
   const agentId = await host.createAgent({ steerable: false });
   if (options.busy) await host.startTurn(agentId, "agent work");
-  scenario = { host, forge, store, watcher, clock, agentId };
+  scenario = { host, forge, store, watcher, clock, agentId, logs };
   return scenario;
 }
 
@@ -581,6 +589,45 @@ test("a watch survives a new watcher on the same store", async () => {
   await restarted.idle();
 
   expect(prompts(current)).toEqual([expect.stringContaining("  - test https://ci.example/test")]);
+});
+
+test("an ended watch logs one line with how long it lived and stayed quiet", async () => {
+  const current = await startWatching();
+  await watch(current);
+  await sweep(current);
+  current.clock.now += 6 * 60 * 60_000 - PULL_REQUEST_WATCH_QUIET_INTERVAL_MS * 2;
+  current.forge.headSha = "bbb222";
+  await sweep(current);
+  current.clock.now += 2 * 60 * 60_000 - PULL_REQUEST_WATCH_QUIET_INTERVAL_MS;
+  await sweep(current);
+  await current.watcher.unwatch({ agentId: current.agentId, cwd: current.host.root });
+  await sweep(current);
+
+  expect(current.logs.filter((line) => line.msg === "pull_request_watch.ended")).toEqual([
+    expect.objectContaining({
+      agentId: current.agentId,
+      pullRequest: PR_URL,
+      reason: "unwatched",
+      minutes: 480,
+      quietMinutes: 120,
+      longestQuietMinutes: 360,
+      wakes: 0,
+      reads: 3,
+      partial: false,
+    }),
+  ]);
+});
+
+test("a watch ended by a merge logs why", async () => {
+  const current = await startWatching();
+  await watch(current);
+
+  current.forge.state = "MERGED";
+  await sweep(current);
+
+  expect(current.logs.filter((line) => line.msg === "pull_request_watch.ended")).toEqual([
+    expect.objectContaining({ reason: "merged", reads: 0, wakes: 0 }),
+  ]);
 });
 
 test("watching a closed pull request fails", async () => {

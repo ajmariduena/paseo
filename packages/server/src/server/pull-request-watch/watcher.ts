@@ -16,6 +16,7 @@ import {
   renderUnreadableWake,
   type PullRequestObservation,
 } from "./watch-report.js";
+import { WatchLifetimes } from "./lifetimes.js";
 import type { PullRequestWatch, PullRequestWatchStore, WatchProgress } from "./watch-store.js";
 
 /** One pass a minute; a pull request is read on it only while a check runs or the read is due. */
@@ -81,7 +82,7 @@ interface OpenReading {
   observation: PullRequestObservation;
 }
 
-type Reading = OpenReading | { kind: "ended" };
+type Reading = OpenReading | { kind: "ended"; reason: "merged" | "closed" };
 
 /** The last successful read of a pull request, kept in memory: a restart reads each once. */
 interface LastRead {
@@ -108,6 +109,10 @@ function isOpenState(state: string): boolean {
   return state.toLowerCase().startsWith("open");
 }
 
+function ended(state: string): Reading {
+  return { kind: "ended", reason: state.toLowerCase() === "merged" ? "merged" : "closed" };
+}
+
 /** The number in a pull request or merge request URL, or null when the URL has none. */
 export function parsePullRequestNumber(url: string): number | null {
   const match = /\/(?:pull|pulls|merge_requests)\/(\d+)(?:[/?#]|$)/.exec(url);
@@ -130,12 +135,14 @@ export class PullRequestWatcher {
   private readonly readFailures = new Map<string, number>();
   private readonly lastReads = new Map<string, LastRead>();
   private readonly viewers = new Map<string, string>();
+  private readonly lifetimes: WatchLifetimes;
   private timer: NodeJS.Timeout | null = null;
   private sweeping: Promise<void> | null = null;
 
   constructor(private readonly options: PullRequestWatcherOptions) {
     this.now = options.now ?? Date.now;
     this.logger = options.logger.child({ module: "pull-request-watch" });
+    this.lifetimes = new WatchLifetimes(this.now, this.logger);
   }
 
   start(): void {
@@ -222,12 +229,14 @@ export class PullRequestWatcher {
     if (!watch) {
       return { number, url: null, watching: false, wasWatching: false };
     }
-    await this.options.store.remove(watch.id);
+    if (await this.options.store.remove(watch.id)) this.lifetimes.ended(watch, "unwatched");
     return { number, url: watch.url, watching: false, wasWatching: true };
   }
 
   async disposeForAgent(agentId: string): Promise<void> {
-    await this.options.store.removeForAgent(agentId);
+    for (const watch of await this.options.store.removeForAgent(agentId)) {
+      this.lifetimes.ended(watch, "archived");
+    }
   }
 
   /** One pass over every watched pull request. Overlapping calls share the running pass. */
@@ -252,6 +261,7 @@ export class PullRequestWatcher {
       this.logger.error({ err: error }, "pull_request_watch.list_failed");
       return;
     }
+    this.lifetimes.endMissing(watches);
     const groups = new Map<string, PullRequestWatch[]>();
     for (const watch of watches) {
       if (this.wakesInFlight.has(watch.id)) continue;
@@ -281,10 +291,17 @@ export class PullRequestWatcher {
   /** Ends the watch, without a read, when its agent is gone or is a subagent. */
   private async keep(watch: PullRequestWatch): Promise<boolean> {
     const record = await this.options.agentStorage.get(watch.agentId);
-    const ended =
-      !record || Boolean(record.archivedAt) || getParentAgentIdFromLabels(record.labels) !== null;
-    if (ended) await this.options.store.remove(watch.id);
-    return !ended;
+    if (!record || record.archivedAt) {
+      await this.options.store.remove(watch.id);
+      this.lifetimes.ended(watch, "archived");
+      return false;
+    }
+    if (getParentAgentIdFromLabels(record.labels) !== null) {
+      await this.options.store.remove(watch.id);
+      this.lifetimes.ended(watch, "subagent");
+      return false;
+    }
+    return true;
   }
 
   private isDue(key: string, group: PullRequestWatch[], passStartedAt: number): boolean {
@@ -319,10 +336,14 @@ export class PullRequestWatcher {
     this.readFailures.delete(key);
     if (reading.kind === "ended") {
       this.lastReads.delete(key);
-      for (const watch of group) await this.options.store.remove(watch.id);
+      for (const watch of group) {
+        await this.options.store.remove(watch.id);
+        this.lifetimes.ended(watch, reading.reason);
+      }
       return "read";
     }
     const { observation } = reading;
+    for (const watch of group) this.lifetimes.read(watch, observation.headSha);
     this.lastReads.set(key, {
       passStartedAt,
       inFlight:
@@ -359,6 +380,7 @@ export class PullRequestWatcher {
     if (report.exhausted) {
       await this.options.store.remove(watch.id);
       this.wake(watch, message, { kind: "final" });
+      this.lifetimes.ended(watch, "comment-limit");
       return;
     }
     this.wake(watch, message, { kind: "progress", next: report.next });
@@ -387,6 +409,7 @@ export class PullRequestWatcher {
         }),
         { kind: "final" },
       );
+      this.lifetimes.ended(watch, "unreadable");
     }
   }
 
@@ -398,6 +421,7 @@ export class PullRequestWatcher {
   }
 
   private wake(watch: PullRequestWatch, message: SystemMessage, outcome: WakeOutcome): void {
+    this.lifetimes.woke(watch);
     const delivery = this.deliverWake(watch, message, outcome)
       .catch((error: unknown) => {
         this.logger.warn({ err: error, watchId: watch.id }, "pull_request_watch.wake_failed");
@@ -437,7 +461,9 @@ export class PullRequestWatcher {
     });
     this.logger.trace({ watchId: watch.id, disposition }, "pull_request_watch.woke");
     if (disposition === "skipped_archived") {
-      await store.removeForAgent(watch.agentId);
+      for (const removed of await store.removeForAgent(watch.agentId)) {
+        this.lifetimes.ended(removed, "archived");
+      }
     } else if (outcome.kind === "progress") {
       await store.recordProgress(watch, outcome.next);
     }
@@ -454,10 +480,11 @@ export class PullRequestWatcher {
       (status.number === number || (status.number === undefined && status.url === watch.url));
     if (!matches) {
       const summary = await service.getPullRequest({ cwd, number });
-      if (!isOpenState(summary.state)) return { kind: "ended" };
+      if (!isOpenState(summary.state)) return ended(summary.state);
       throw new Error(`No status for pull request #${number} on ${watch.headRefName}`);
     }
-    if (status.isMerged || !isOpenState(status.state)) return { kind: "ended" };
+    if (status.isMerged) return { kind: "ended", reason: "merged" };
+    if (!isOpenState(status.state)) return ended(status.state);
     const [requiredCheckNames, viewer] = await Promise.all([
       this.readRequiredCheckNames(service, cwd, number),
       this.readViewer(service, cwd),
