@@ -1362,6 +1362,9 @@ export const ar: TranslationResources = {
         serviceRunning: "الخدمة {{name}} قيد التشغيل",
         serviceUnhealthy: "الخدمة {{name}} غير سليمة",
         creating: "جارٍ الإنشاء...",
+        creationFailed: "تعذر إنشاء مساحة العمل",
+        creationUnconfirmed: "تعذر تأكيد إنشاء مساحة العمل",
+        backToDraft: "العودة إلى المسودة",
       },
       checks: {
         passed: "ناجحة: {{count}}",

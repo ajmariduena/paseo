@@ -11,6 +11,11 @@ import {
 import { useHasHydratedWorkspaces, useWorkspaceExists } from "@/stores/session-store-hooks";
 import type { WorkspaceTabTarget } from "@/workspace-tabs/model";
 import { WorkspaceScreen } from "@/screens/workspace/workspace-screen";
+import { PendingWorkspaceScreen } from "@/screens/workspace/pending-workspace-screen";
+import {
+  pendingWorkspaceCreationKey,
+  usePendingWorkspaceCreationStore,
+} from "@/stores/pending-workspace-creation";
 import { useWorkspaceLayoutStoreHydrated } from "@/stores/workspace-layout-store";
 import {
   areRetainedWorkspaceSelectionListsEqual,
@@ -114,6 +119,10 @@ function HostWorkspaceRouteContent() {
   const openValue = getParamValue(globalParams.open);
   const hasHydratedWorkspaces = useHasHydratedWorkspaces(serverId);
   const workspaceExists = useWorkspaceExists(serverId, workspaceId);
+  const pendingCreation = usePendingWorkspaceCreationStore(
+    (state) => state.byKey[pendingWorkspaceCreationKey(serverId, workspaceId)] ?? null,
+  );
+  const pendingCreationsHydrated = usePendingWorkspaceCreationStore((state) => state.hydrated);
   const openIntent = useMemo(() => parseWorkspaceOpenIntent(openValue), [openValue]);
   const isAgentOpenIntent = openIntent?.kind === "agent";
   const isOpenIntentWaitingForWorkspace = Boolean(
@@ -190,6 +199,10 @@ function HostWorkspaceRouteContent() {
     return null;
   }
 
+  if (!workspaceExists && pendingCreation) {
+    return <PendingWorkspaceScreen creation={pendingCreation} />;
+  }
+  if (!workspaceExists && !pendingCreationsHydrated) return null;
   return <WorkspaceDeck recoveryRequested={isAgentOpenIntent} />;
 }
 

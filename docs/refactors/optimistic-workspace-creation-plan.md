@@ -1,0 +1,57 @@
+# Creación optimista de workspaces — plan de implementación
+
+**Estado:** flujo de chat implementado localmente el 2026-10-07. Pendiente de QA manual en iOS, Android y Electron; sin merge ni despliegue.
+
+## Resultado buscado
+
+Al enviar el primer prompt de un workspace nuevo, la app muestra inmediatamente una fila bajo su proyecto, abre la URL final del workspace y presenta un tab provisional con el prompt. La fila y el tab dicen **«Creando…»** hasta que el daemon confirme que existe el directorio. El usuario puede ir a otro workspace; la creación sigue y no le roba el foco cuando termina. Si falla, la fila y la vista muestran el error y conservan el prompt.
+
+El prompt visible antes de `prompt_started` es una **vista local pendiente**, no un mensaje entregado al agente. No se habilitan terminal, archivos, Git ni nuevos envíos antes de `workspace_ready`. Cerrar la vista no cancela la creación.
+
+## Hechos verificados y límites
+
+- El flujo actual navega solo cuando un `CreationSnapshot` trae el descriptor en `workspace_ready`; entonces usa un tab `draft` y muestra el prompt mientras arranca el agente (`packages/app/src/screens/new-workspace-screen.tsx:1182`, `:1303`; `packages/server/src/server/creation/index.ts:147`).
+- El snapshot ya distingue `accepted`, `workspace_ready`, `agent_ready`, `prompt_started`, `completed` y `failed`, e incluye `workspaceId`, `agentId`, `revision`, `failedStage` y `outcomeUnknown` (`packages/protocol/src/messages.ts:5328`). La creación tiene un journal persistido y se puede observar por `idempotencyKey` (`packages/server/src/server/session.ts:4584`; `docs/architecture.md`, sección «Creation ownership»).
+- La solicitud moderna acepta IDs elegidos por el cliente (`packages/protocol/src/messages.ts:2857`). El cliente legado los rechaza (`packages/client/src/creation/index.ts:61`): la UX nueva se activa una vez con `server_info.features.creationLifecycle`; hosts viejos conservan el flujo actual.
+- `worktree.setup` ya corre en segundo plano porque el workflow usa `runSetup: false` (`packages/server/src/server/worktree-session.ts:608`). La ventana que se busca cubrir es principalmente el trabajo anterior a `workspace_ready`. No se midió su duración real ni se asigna una cifra a Git o a la red.
+- `create-flow-store` y `workspace-draft-submission-store` son volátiles y hoy se llenan después de `workspace_ready` (`packages/app/src/stores/create-flow-store.ts:51`; `packages/app/src/stores/workspace-draft-submission-store.ts:68`). El borrador sí se persiste (`packages/app/src/stores/draft-store/index.ts:257`). Salir de `/new` antes del evento deja que el daemon termine, pero la app pierde la presentación de esa creación hasta que aparezca el workspace real (`packages/app/src/screens/new-workspace-screen.tsx:1189`, `:1240`).
+- `WorkspaceScreen`, el deck y la navegación recordada esperan un descriptor real (`packages/app/src/screens/workspace/workspace-route-state.ts:30`; `packages/app/src/app/h/[serverId]/workspace/[workspaceId]/index.tsx:290`; `packages/app/src/stores/navigation-active-workspace-store/navigation.ts:85`). No se debe insertar uno inventado en la réplica.
+
+## Decisión de diseño
+
+Usar desde el tap la **ruta final** `/h/[serverId]/workspace/[workspaceId]` con un `workspaceId` reservado por la app. Esa URL muestra una vista provisional **antes** de montar `WorkspaceDeck`/`WorkspaceScreen`; cuando llega `workspace_ready`, acepta el descriptor en la réplica y monta el workspace real en la misma URL. Un tab provisional de chat ocupa visualmente el lugar del futuro tab `draft`; su prompt local pasa al mecanismo de creación existente con el mismo `clientMessageId`, sin duplicar burbujas ni reenviar el mensaje.
+
+Esta ruta evita una segunda transición de navegación y mantiene estable la clave de la fila y del layout. La vista provisional es una entidad de creación, no un workspace persistido. Mientras esté provisional, no se guarda como «último workspace» restaurable. Si el usuario cambia de pantalla, la creación continúa fuera del componente; al terminar no se navega de vuelta automáticamente.
+
+La fila optimista entra en la **proyección del sidebar** bajo el proyecto y host seleccionados, con una variante explícita `pending`, no en la réplica de workspaces. Comparte la clave `serverId:workspaceId` con la futura fila real; se elimina al aparecer el descriptor real para no mostrar dos filas. El proyecto «No project», filtros, secciones colapsadas y estado agregado también deben contemplarla. El título inicial es provisional; el nombre generado por el daemon puede reemplazarlo después.
+
+## Contrato de estado y recuperación
+
+1. **Al tocar Enviar:** capturar texto, adjuntos, configuración del agente, host, proyecto, aislamiento, `draftId`/`idempotencyKey` y `clientMessageId`; generar IDs válidos de workspace y agente. Pintar inmediatamente la fila y la vista provisional. Guardar la identidad, el proyecto y el prompt con schema validado **antes de enviar el RPC**. La escritura puede ocurrir después del primer render, pero un fallo de persistencia impide emitir la solicitud y deja el borrador recuperable.
+2. **Owner fuera de `/new`:** la operación en curso sobrevive al desmontaje de la pantalla; la reobservación tras reiniciar la app vive en un reconciliador global. El store persistido contiene identidad, proyecto, prompt, fase, revisión y error. La configuración, los adjuntos y las Promises siguen en el flujo y borrador existentes; las imágenes codificadas en base64 y los handles de suscripción quedan solo en memoria. En `workspace_ready` se entrega el control al tab `draft`.
+3. **Fases:** `accepted` confirma la reserva; `workspace_ready` acepta el descriptor y habilita el tab real; `agent_ready` enlaza el agente; `prompt_started`/`completed` reconcilian la burbuja pendiente con la timeline autoritativa. Aplicar revisiones monótonas e ignorar eventos viejos. Si la creación termina mientras se mira otro workspace, actualizar sidebar y dejar el foco donde está.
+4. **Reconexión y reinicio de la app:** el cliente ya reobserva operaciones vivas al reconectar (`packages/client/src/creation/index.ts:202`), pero no rehidrata operaciones después de cerrar la app. La observación pública de creación usa `creation.subscribe.request`; al hidratar el store y reconectar el host, consulta cada intención no terminal por su clave. Si el journal responde, reconcilia con ese snapshot. Si no existe, muestra «No se pudo confirmar» y ofrece volver al borrador con un **nuevo intento explícito**. No reconstruye ni reenvía automáticamente una solicitud cuyos adjuntos o checkout no quedaron persistidos en la intención.
+5. **Fallos:** un `failed` conserva fila y prompt. Volver al borrador crea una nueva clave de idempotencia y permite editar antes del siguiente envío. Si el agente falla **después** de `workspace_ready` sin resultado incierto, el tab puede iniciar otro agente con una clave nueva dentro del workspace real. Con `outcomeUnknown`, no repetir automáticamente ni borrar la fila al volver al borrador. Descartar la fila provisional nunca borra un recurso cuya existencia sea incierta.
+6. **Ciclo de vida visual:** mientras la ruta tenga una intención sin descriptor, renderizar `PendingWorkspaceScreen` desde el boundary de la ruta, sin montar `WorkspaceScreen`, paneles ni RPCs que requieren `cwd`. Esperar hidratación del store para evitar un flash de «no encontrado». La selección recordada se actualiza solo al llegar el descriptor. Una URL provisional reabierta directamente muestra su estado si la intención existe; si no, usa el comportamiento normal de workspace inexistente.
+
+## Pasos de implementación
+
+1. **Observabilidad y owner.** Registrar tiempos sin texto ni adjuntos: tap → request, request → accepted, accepted → workspace_ready, workspace_ready → prompt_started, por tipo de fuente/base. Crear store persistido y reducer de fases, retención de adjuntos y coordinador fuera de la pantalla. Añadir el método de observación pública en `packages/client`. Reutilizar el journal existente; no añadir mensajes de protocolo salvo que una prueba demuestre un vacío.
+2. **Entrega inmediata.** En `new-workspace-screen.tsx`, la rama de chat para hosts con `creationLifecycle` captura la intención, pinta provisional y navega usando el ID reservado. La rama legacy sigue como está. Agregar el gate de ruta y el tab visual provisional, reutilizando estilos y componentes presentacionales sin disparar el submit del tab `draft` antes de `workspace_ready`.
+3. **Sidebar y transición.** Inyectar filas pendientes en `SidebarModelProvider`/proyección con tipo diferenciado y dedupe por ID. Al recibir `workspace_ready`, aceptar el descriptor antes de retirar la vista provisional; preparar el tab `draft` existente y el enlace al agente sin crear otro. Mantener el mismo título/rail y no enfocar la ruta si el usuario ya salió.
+4. **Recuperación.** Rehidratar, reobservar y reconciliar tras reconnect/reload; probar fallo antes y después de `workspace_ready`, `outcomeUnknown`, intento duplicado, adjunto faltante y host que se desconecta. Resolver el retry con fingerprint idéntico antes de habilitarlo en UI.
+5. **QA.** Extender los tests existentes del flujo de creación, cliente, sidebar, ruta y deck. Un E2E con daemon real y una demora controlada antes de `workspace_ready` debe demostrar: fila/tab/prompt visibles primero, posibilidad de irse y volver, una sola creación/mensaje, transición sin salto, recuperación tras reload y error accionable. Verificar iOS, Android, web y Electron según `docs/qa.md`; medir latencia percibida y real. Ejecutar los checks del repo y CI antes de entrega.
+
+## Alcance y criterios de aceptación
+
+- Primera entrega: **workspace nuevo con primer prompt de chat**. Workspace vacío y lanzamiento de terminal conservan su flujo actual; no se crean tabs provisionales para ellos.
+- Hosts con `creationLifecycle`: sidebar y vista cambian en el mismo gesto de envío, antes de `accepted`; el prompt está marcado como pendiente; cambiar de workspace no cancela ni roba el foco; cada intento produce como máximo un workspace, un agente y un primer mensaje.
+- Fallo o cierre/reapertura de app no pierden el borrador ni producen reenvío ambiguo; los errores quedan visibles donde el usuario vuelve a la creación.
+- Hosts anteriores mantienen el comportamiento actual. No hay descriptor falso, porcentaje de progreso inventado, terminal/archivos activos antes de `workspace_ready`, ni reinicio del daemon principal para validar.
+
+## Validación y trabajo restante
+
+- Pasaron `npm run typecheck`, `npm run lint`, los tests unitarios de creación y sidebar, y los E2E web con daemon aislado para UI antes del RPC, cambio de foco, reinicio sin journal, reinicio con journal, tab `draft` y grupo de estado.
+- Falta comprobar visualmente iOS, Android y Electron. Las pruebas web no demuestran que los gestos o el layout nativo sean correctos.
+- Falta medir tiempos reales de tap, `accepted`, `workspace_ready` y `prompt_started` en distintos proyectos y hosts. La mejora perceptiva está probada en E2E, no cuantificada en producción.
+- No se reinició el daemon principal del puerto 6767, ni se hizo merge o despliegue.

@@ -18,6 +18,10 @@ import { useSessionStore } from "@/stores/session-store";
 import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import { stripHostWorkspaceRouteEchoSearchFromBrowserUrlAfterCommit } from "@/utils/host-route-browser";
 import { navigateToHostWorkspaceRoute } from "@/navigation/workspace-route-navigation";
+import {
+  pendingWorkspaceCreationKey,
+  usePendingWorkspaceCreationStore,
+} from "@/stores/pending-workspace-creation";
 
 export type { ActiveWorkspaceSelection } from "@/stores/last-workspace-selection";
 export type { NavigateToWorkspaceInput } from "./navigation";
@@ -39,7 +43,13 @@ function navigateDeps(): NavigateToWorkspaceDeps {
       useSessionStore.getState().sessions[serverId]?.agents.values() ?? [],
     isWorkspaceLayoutHydrated: () => useWorkspaceLayoutStore.persist.hasHydrated(),
     openTab: (input) => useWorkspaceLayoutStore.getState().openTab(input),
-    rememberLastWorkspace: (selection) => lastWorkspaceSelectionStore.remember(selection),
+    rememberLastWorkspace: (selection) => {
+      const pendingKey = pendingWorkspaceCreationKey(selection.serverId, selection.workspaceId);
+      const phase = usePendingWorkspaceCreationStore.getState().byKey[pendingKey]?.phase;
+      if (!phase || phase === "workspace_ready") {
+        lastWorkspaceSelectionStore.remember(selection);
+      }
+    },
     navigateToRoute: (route) => {
       navigateToHostWorkspaceRoute(route);
       stripHostWorkspaceRouteEchoSearchFromBrowserUrlAfterCommit();
@@ -78,12 +88,19 @@ export function useActiveWorkspaceSelection(): ActiveWorkspaceSelection | null {
   const selection = parseActiveWorkspaceSelection({ pathname: usePathname(), params });
   const serverId = selection?.serverId ?? null;
   const workspaceId = selection?.workspaceId ?? null;
+  const pendingPhase = usePendingWorkspaceCreationStore((state) =>
+    serverId && workspaceId
+      ? (state.byKey[pendingWorkspaceCreationKey(serverId, workspaceId)]?.phase ?? null)
+      : null,
+  );
+  const pendingHydrated = usePendingWorkspaceCreationStore((state) => state.hydrated);
   useEffect(() => {
-    if (!serverId || !workspaceId) {
+    if (!serverId || !workspaceId || !pendingHydrated) {
       return;
     }
+    if (pendingPhase && pendingPhase !== "workspace_ready") return;
     lastWorkspaceSelectionStore.remember({ serverId, workspaceId });
-  }, [serverId, workspaceId]);
+  }, [serverId, workspaceId, pendingPhase, pendingHydrated]);
   return selection;
 }
 

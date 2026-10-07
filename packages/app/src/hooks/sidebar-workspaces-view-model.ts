@@ -4,6 +4,7 @@ import { selectPrHintFromStatus } from "@/git/pr-hint";
 import { type HostProjectListItem } from "@/projects/host-project-model";
 import type { PendingCreateAttempt } from "@/stores/create-flow-store";
 import type { WorkspaceDescriptor } from "@/stores/session-store";
+import type { PendingWorkspaceCreation } from "@/stores/pending-workspace-creation";
 import type {
   WorkspaceStructureHostPlacement,
   WorkspaceStructureProject,
@@ -40,6 +41,8 @@ export interface SidebarStatusWorkspacePlacement extends SidebarWorkspacePlaceme
 }
 
 export interface SidebarWorkspaceEntry extends SidebarStatusWorkspacePlacement {
+  pendingCreation?: "creating" | "failed";
+  pendingOutcomeUnknown?: boolean;
   waitingOnSubagentsCount?: number;
   workspaceDirectory: string;
   workspaceDirectoryLabel: string;
@@ -58,6 +61,39 @@ export interface SidebarWorkspaceEntry extends SidebarStatusWorkspacePlacement {
   scripts: WorkspaceDescriptor["scripts"];
   hasRunningScripts: boolean;
   backgroundTasks: readonly AgentBackgroundTask[];
+}
+
+export function createPendingSidebarWorkspaceEntry(
+  creation: PendingWorkspaceCreation,
+): SidebarWorkspaceEntry {
+  const failed = creation.phase === "failed";
+  return {
+    workspaceKey: `${creation.serverId}:${creation.workspaceId}`,
+    serverId: creation.serverId,
+    workspaceId: creation.workspaceId,
+    projectViewKey: creation.projectViewKey,
+    projectName: creation.projectName,
+    projectRootPath: creation.sourceDirectory,
+    workspaceDirectory: creation.sourceDirectory,
+    workspaceDirectoryLabel: "",
+    projectKind: creation.projectKind,
+    workspaceKind: "checkout",
+    name: creation.prompt.trim().split("\n")[0] || creation.projectName,
+    title: null,
+    currentBranch: null,
+    statusBucket: failed ? "failed" : "running",
+    statusEnteredAt: new Date(creation.createdAt),
+    archivingAt: null,
+    diffStat: null,
+    prHint: null,
+    archiveHasUncommittedChanges: null,
+    archiveUnpushedCommitCount: null,
+    scripts: [],
+    hasRunningScripts: false,
+    backgroundTasks: [],
+    pendingCreation: failed ? "failed" : "creating",
+    pendingOutcomeUnknown: creation.outcomeUnknown,
+  };
 }
 
 export interface SidebarProjectEntry {
@@ -263,6 +299,7 @@ export function deriveProjectStatusBucket(input: {
   workspaces: readonly SidebarWorkspacePlacement[];
   sessions: Record<string, ProjectStatusSession | undefined>;
   pendingCreateAttempts?: Record<string, PendingCreateAttempt>;
+  pendingWorkspaceCreations?: Record<string, PendingWorkspaceCreation>;
 }): SidebarStateBucket {
   const workspaceIdsByServer = new Map<string, string[]>();
   for (const placement of input.workspaces) {
@@ -277,8 +314,13 @@ export function deriveProjectStatusBucket(input: {
   const buckets: SidebarStateBucket[] = [];
   for (const [serverId, workspaceIds] of workspaceIdsByServer) {
     const session = input.sessions[serverId];
-    if (!session) continue;
     for (const workspaceId of workspaceIds) {
+      const pending = input.pendingWorkspaceCreations?.[`${serverId}:${workspaceId}`];
+      if (pending && !session?.workspaces.has(workspaceId)) {
+        buckets.push(pending.phase === "failed" ? "failed" : "running");
+        continue;
+      }
+      if (!session) continue;
       const workspaceKey = resolveWorkspaceMapKeyByIdentity({
         workspaces: session.workspaces,
         workspaceId,

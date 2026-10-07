@@ -1376,6 +1376,9 @@ export const ja: TranslationResources = {
         serviceRunning: "サービス {{name}} 実行中",
         serviceUnhealthy: "サービス {{name}} 異常",
         creating: "作成中...",
+        creationFailed: "ワークスペースを作成できませんでした",
+        creationUnconfirmed: "作成を確認できませんでした",
+        backToDraft: "下書きに戻る",
       },
       checks: {
         passed: "成功: {{count}}",

@@ -1352,6 +1352,9 @@ export const zhCN: TranslationResources = {
         serviceRunning: "服务 {{name}} 运行中",
         serviceUnhealthy: "服务 {{name}} 异常",
         creating: "正在创建...",
+        creationFailed: "工作区创建失败",
+        creationUnconfirmed: "无法确认工作区是否已创建",
+        backToDraft: "返回草稿",
       },
       checks: {
         passed: "成功: {{count}}",

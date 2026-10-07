@@ -8,6 +8,7 @@ import {
   type Ref,
 } from "react";
 import { useTranslation } from "react-i18next";
+import { PendingSidebarWorkspaceRow } from "@/components/sidebar/pending-workspace-row";
 import {
   View,
   Text,
@@ -540,6 +541,16 @@ const StatusWorkspaceRow = memo(function StatusWorkspaceRow({
     onWorkspacePress?.();
     navigateToWorkspace({ serverId: workspace.serverId, workspaceId: workspace.workspaceId });
   }, [onWorkspacePress, workspace.serverId, workspace.workspaceId]);
+
+  if (workspace.pendingCreation) {
+    return (
+      <PendingSidebarWorkspaceRow
+        workspace={workspace}
+        selected={selected}
+        onWorkspacePress={onWorkspacePress}
+      />
+    );
+  }
 
   return (
     <StatusWorkspaceRowWithMenu

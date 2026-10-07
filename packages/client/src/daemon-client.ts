@@ -5110,6 +5110,15 @@ export class DaemonClient {
     };
   }
 
+  observeCreation(
+    kind: CreationSnapshot["kind"],
+    idempotencyKey: string,
+    next: (snapshot: CreationSnapshot | null) => void,
+    error: (error: unknown) => void,
+  ): () => void {
+    return this.creations.observeCreation(kind, idempotencyKey, next, error);
+  }
+
   private async createLegacyWorkspace(
     input: CreateWorkspaceRequestOptions,
     requestId?: string,

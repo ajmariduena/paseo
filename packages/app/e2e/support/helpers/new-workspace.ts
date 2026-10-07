@@ -559,6 +559,50 @@ export interface AgentCreatedDelayControl {
   expectSingleWorkspaceIntent(): void;
 }
 
+export async function delayBrowserWorkspaceCreateRequest(page: Page): Promise<{
+  release: () => void;
+  waitForCreateRequest: () => Promise<string>;
+  getRequestCount: () => number;
+}> {
+  const frames = await loadSessionMessageReaders();
+  let releaseRequested = false;
+  const delayedForwards: Array<() => void> = [];
+  let resolveRequest!: (workspaceId: string) => void;
+  const requestSeen = new Promise<string>((resolve) => {
+    resolveRequest = resolve;
+  });
+  let requestCount = 0;
+
+  await page.routeWebSocket(daemonWsRoutePattern(), (ws) => {
+    const server = ws.connectToServer();
+    ws.onMessage((message) => {
+      const sessionMessage = frames.client(message);
+      if (sessionMessage?.type === "workspace.create.request") {
+        requestCount += 1;
+        if (!sessionMessage.workspaceId) {
+          throw new Error("Optimistic creation must reserve a workspace ID");
+        }
+        resolveRequest(sessionMessage.workspaceId);
+        if (!releaseRequested) {
+          delayedForwards.push(() => server.send(message));
+          return;
+        }
+      }
+      server.send(message);
+    });
+    server.onMessage((message) => ws.send(message));
+  });
+
+  return {
+    release() {
+      releaseRequested = true;
+      for (const forward of delayedForwards.splice(0)) forward();
+    },
+    waitForCreateRequest: () => requestSeen,
+    getRequestCount: () => requestCount,
+  };
+}
+
 export async function delayBrowserAgentCreatedStatus(
   page: Page,
 ): Promise<AgentCreatedDelayControl> {

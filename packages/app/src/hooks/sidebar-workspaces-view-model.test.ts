@@ -10,6 +10,7 @@ import {
   buildSidebarProjectsFromStructure,
   computeSidebarOrderUpdates,
   createSidebarWorkspaceEntry,
+  createPendingSidebarWorkspaceEntry,
   deriveProjectStatusBucket,
   deriveSidebarToggleAttentionBucket,
   deriveSidebarLoadingState,
@@ -20,6 +21,47 @@ import {
   type SidebarProjectEntry,
   type SidebarWorkspacePlacement,
 } from "./sidebar-workspaces-view-model";
+
+it("projects a creation without a workspace descriptor into running and failed status", () => {
+  const creation = {
+    serverId: "host",
+    workspaceId: "wks_0123456789abcdef",
+    agentId: "00000000-0000-4000-8000-000000000001",
+    draftId: "draft-1",
+    clientMessageId: "message-1",
+    projectViewKey: "project",
+    projectId: "project-id",
+    projectName: "Project",
+    projectKind: "git" as const,
+    sourceDirectory: "/repo",
+    prompt: "Start here",
+    createdAt: 100,
+    phase: "preparing" as const,
+    revision: 0,
+    error: null,
+    outcomeUnknown: false,
+  };
+  const entry = createPendingSidebarWorkspaceEntry(creation);
+  expect(entry).toMatchObject({
+    workspaceKey: "host:wks_0123456789abcdef",
+    name: "Start here",
+    statusBucket: "running",
+    pendingCreation: "creating",
+  });
+  expect(
+    deriveProjectStatusBucket({
+      workspaces: [entry],
+      sessions: {},
+      pendingWorkspaceCreations: { [entry.workspaceKey]: creation },
+    }),
+  ).toBe("running");
+  const failed = { ...creation, phase: "failed" as const, outcomeUnknown: true };
+  expect(createPendingSidebarWorkspaceEntry(failed)).toMatchObject({
+    statusBucket: "failed",
+    pendingCreation: "failed",
+    pendingOutcomeUnknown: true,
+  });
+});
 
 function workspaceWithForge(forge: string | undefined, prUrl: string): WorkspaceDescriptor {
   return {

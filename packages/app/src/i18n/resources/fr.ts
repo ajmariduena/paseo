@@ -1400,6 +1400,9 @@ export const fr: TranslationResources = {
         serviceRunning: "Service {{name}} en cours",
         serviceUnhealthy: "Service {{name}} en échec",
         creating: "Création...",
+        creationFailed: "Échec de la création de l’espace de travail",
+        creationUnconfirmed: "Création de l’espace de travail non confirmée",
+        backToDraft: "Revenir au brouillon",
       },
       checks: {
         passed: "Réussis : {{count}}",

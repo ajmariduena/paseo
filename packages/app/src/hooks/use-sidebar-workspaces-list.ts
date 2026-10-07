@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { useStoreWithEqualityFn } from "zustand/traditional";
 import { useCreateFlowStore } from "@/stores/create-flow-store";
+import { usePendingWorkspaceCreationStore } from "@/stores/pending-workspace-creation";
 import { useSessionStore } from "@/stores/session-store";
 import { useWorkspaceDirectoryServerIds } from "@/stores/session-store-hooks";
 import { workspaceEqualityFns } from "@/stores/session-store-hooks/selectors";
@@ -70,6 +71,7 @@ export function useSidebarProjectStatusBucket(input: {
     (state) => state.pendingByDraftId,
     workspaceEqualityFns.deep,
   );
+  const pendingWorkspaceCreations = usePendingWorkspaceCreationStore((state) => state.byKey);
 
   const selector = useCallback(
     (state: { sessions: Record<string, ProjectStatusSession | undefined> }) => {
@@ -78,9 +80,10 @@ export function useSidebarProjectStatusBucket(input: {
         workspaces,
         sessions: state.sessions,
         pendingCreateAttempts,
+        pendingWorkspaceCreations,
       });
     },
-    [enabled, pendingCreateAttempts, workspaces],
+    [enabled, pendingCreateAttempts, pendingWorkspaceCreations, workspaces],
   );
 
   return useStoreWithEqualityFn(useSessionStore, selector, Object.is);

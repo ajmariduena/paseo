@@ -1369,6 +1369,9 @@ export const ko: TranslationResources = {
         serviceRunning: "서비스 {{name}} 실행 중",
         serviceUnhealthy: "서비스 {{name}} 비정상",
         creating: "생성하는 중...",
+        creationFailed: "워크스페이스를 만들지 못했습니다",
+        creationUnconfirmed: "생성 여부를 확인하지 못했습니다",
+        backToDraft: "초안으로 돌아가기",
       },
       checks: {
         passed: "통과: {{count}}개",

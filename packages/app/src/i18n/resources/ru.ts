@@ -1380,6 +1380,9 @@ export const ru: TranslationResources = {
         serviceRunning: "Сервис {{name}} запущен",
         serviceUnhealthy: "Сервис {{name}} работает некорректно",
         creating: "Создание...",
+        creationFailed: "Не удалось создать рабочую область",
+        creationUnconfirmed: "Не удалось подтвердить создание",
+        backToDraft: "Вернуться к черновику",
       },
       checks: {
         passed: "Успешные: {{count}}",

@@ -1388,6 +1388,9 @@ export const ptBR: TranslationResources = {
         serviceRunning: "Serviço {{name}} em execução",
         serviceUnhealthy: "Serviço {{name}} com falha",
         creating: "Criando...",
+        creationFailed: "Falha ao criar o workspace",
+        creationUnconfirmed: "Não foi possível confirmar a criação",
+        backToDraft: "Voltar ao rascunho",
       },
       checks: {
         passed: "Aprovados: {{count}}",

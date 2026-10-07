@@ -1370,6 +1370,9 @@ export const en = {
         serviceRunning: "Service {{name}} running",
         serviceUnhealthy: "Service {{name}} unhealthy",
         creating: "Creating...",
+        creationFailed: "Workspace creation failed",
+        creationUnconfirmed: "Could not confirm workspace creation",
+        backToDraft: "Back to draft",
       },
       checks: {
         passed: "Passed: {{count}}",
