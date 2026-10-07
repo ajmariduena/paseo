@@ -196,6 +196,8 @@ Omit absent optional settings. If no profile fits, use provider discovery to cho
 
 The page follows the app's light or dark theme through CSS variables, and can include local images from the agent's working directory or OS temp directory. HTTPS scripts, styles, images, fonts, and media can load from any host; these requests can send data in the page to that host. The page contains only what the agent wrote, and the agent already has that data and network access. `connect-src 'none'` blocks fetch, XHR, and WebSocket, not all network access. The page stays available in archived conversations and is removed when the agent is permanently deleted. A preview/screenshot tool is planned for a later phase.
 
+Codex agents can also use their bundled `visualize` workflow. Its file references display inline without an `html_render` call; use one route for each visual. The source file must remain in the agent's workspace or its own Codex visualization directory for archived history to display it. Paseo restores that visual's saved widget state when it is opened again.
+
 ### Browser
 
 Browser automation is opt-in and adds tools for opening tabs, reading pages, clicking, typing, and taking screenshots. See the [Browser tools reference](/docs/browser-tools).

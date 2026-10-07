@@ -75,6 +75,11 @@ import { HighlightedCodeBlock } from "@/components/highlighted-code-block";
 import { MarkdownFenceBlock } from "@/components/markdown/fence";
 import type { MarkdownPhase } from "@/components/markdown/fence/types";
 import { splitMarkdownBlocks } from "@/utils/split-markdown-blocks";
+import { CodexVisualizeCard } from "@/html-render/codex-visualize-card";
+import {
+  splitCodexVisualizeDirectives,
+  type CodexVisualizePart,
+} from "@/html-render/visualize-directive";
 import { useRevealedText } from "@/hooks/use-revealed-text";
 import { colorMarkdownLinkChildren } from "@/components/markdown/link-children";
 import { createAssistantMarkdownParser } from "@/utils/assistant-markdown-parser";
@@ -764,6 +769,10 @@ interface AssistantMessageProps {
   client?: DaemonClient | null;
   spacing?: "default" | "compactTop" | "compactBottom" | "compactBoth";
   phase: MarkdownPhase;
+  codexVisualizationAgentId?: string;
+  codexVisualizationAvailable?: boolean;
+  clientGeneration?: number;
+  wideVisualization?: boolean;
 }
 
 export const assistantMessageStylesheet = StyleSheet.create((theme) => ({
@@ -776,6 +785,10 @@ export const assistantMessageStylesheet = StyleSheet.create((theme) => ({
   },
   containerCompactBottom: {
     paddingBottom: 0,
+  },
+  visualizationProseWidth: {
+    width: "100%",
+    maxWidth: theme.contentMaxWidth,
   },
   cappedNotice: {
     marginTop: theme.spacing[3],
@@ -1391,6 +1404,29 @@ interface AssistantMessageBlockContainerProps {
   children: ReactNode;
 }
 
+const visualizationBlockSpacing = { marginBottom: 12 };
+
+function splitAssistantVisualBlocks(
+  text: string,
+  enabled: boolean,
+  complete: boolean,
+): CodexVisualizePart[] {
+  const parts: CodexVisualizePart[] = enabled
+    ? splitCodexVisualizeDirectives(text, { complete })
+    : [{ kind: "markdown", text }];
+  const blocks: CodexVisualizePart[] = [];
+  for (const part of parts) {
+    if (part.kind === "visual") {
+      blocks.push(part);
+      continue;
+    }
+    for (const markdown of splitMarkdownBlocks(part.text)) {
+      blocks.push({ kind: "markdown", text: markdown });
+    }
+  }
+  return blocks;
+}
+
 // A paragraph's UITextView that grew while streaming can keep the frame it was first measured at and
 // stay clipped to its opening characters, so the live block gets a fresh native view once it settles.
 function isRemountedWhenSettled(phase: MarkdownPhase, index: number, blockCount: number): boolean {
@@ -1530,6 +1566,10 @@ export const AssistantMessage = memo(function AssistantMessage({
   client,
   spacing = "default",
   phase,
+  codexVisualizationAgentId,
+  codexVisualizationAvailable = false,
+  clientGeneration = 0,
+  wideVisualization = false,
 }: AssistantMessageProps) {
   const { t } = useTranslation();
   const markdownParser = useMemo(createAssistantMarkdownParser, []);
@@ -2014,15 +2054,21 @@ export const AssistantMessage = memo(function AssistantMessage({
     };
   }, [client, fileLinkActions, markdownParser, occurrenceKey, phase, serverId, workspaceRoot]);
 
-  const blocks = useMemo(() => splitMarkdownBlocks(revealedMessage), [revealedMessage]);
+  const blocks = useMemo(() => {
+    return splitAssistantVisualBlocks(
+      revealedMessage,
+      Boolean(codexVisualizationAgentId),
+      phase === "complete" && revealedMessage === renderedMessage.text,
+    );
+  }, [codexVisualizationAgentId, phase, renderedMessage.text, revealedMessage]);
   const keyedBlocks = useMemo(
     () =>
-      blocks.map((block, index) => ({
-        key: isRemountedWhenSettled(phase, index, blocks.length)
-          ? `block:${index}:live`
-          : `block:${index}`,
-        block,
-      })),
+      blocks.map((block, index) => {
+        let key = `block:${index}`;
+        if (block.kind === "visual") key = `visual:${block.reference.occurrenceId}`;
+        else if (isRemountedWhenSettled(phase, index, blocks.length)) key += ":live";
+        return { key, block };
+      }),
     [blocks, phase],
   );
 
@@ -2050,14 +2096,29 @@ export const AssistantMessage = memo(function AssistantMessage({
 
   return (
     <View testID="assistant-message" dataSet={revealDataSet} style={assistantContainerStyle}>
-      {keyedBlocks.map(({ key, block }, index) => (
-        <AssistantMessageBlockContainer
-          key={key}
-          block={block}
-          marginBottom={index < keyedBlocks.length - 1 ? 12 : 0}
-        >
+      {keyedBlocks.map(({ key, block }, index) => {
+        if (block.kind === "visual") {
+          if (!codexVisualizationAgentId || !serverId) return null;
+          return (
+            <View
+              key={key}
+              style={index < keyedBlocks.length - 1 ? visualizationBlockSpacing : undefined}
+            >
+              <CodexVisualizeCard
+                client={client ?? null}
+                clientGeneration={clientGeneration}
+                serverId={serverId}
+                agentId={codexVisualizationAgentId}
+                reference={block.reference}
+                messageKey={occurrenceKey}
+                featureAvailable={codexVisualizationAvailable}
+              />
+            </View>
+          );
+        }
+        const markdownBlock = (
           <MemoizedMarkdownBlock
-            text={block}
+            text={block.text}
             rules={markdownRules}
             parser={
               phase === "streaming" && index === keyedBlocks.length - 1
@@ -2066,8 +2127,23 @@ export const AssistantMessage = memo(function AssistantMessage({
             }
             onLinkPress={handleMarkdownLinkPress}
           />
-        </AssistantMessageBlockContainer>
-      ))}
+        );
+        return (
+          <AssistantMessageBlockContainer
+            key={key}
+            block={block.text}
+            marginBottom={index < keyedBlocks.length - 1 ? 12 : 0}
+          >
+            {wideVisualization ? (
+              <View style={assistantMessageStylesheet.visualizationProseWidth}>
+                {markdownBlock}
+              </View>
+            ) : (
+              markdownBlock
+            )}
+          </AssistantMessageBlockContainer>
+        );
+      })}
       {fullMessageByteLength !== null ? (
         <Text
           testID="assistant-message-capped-notice"

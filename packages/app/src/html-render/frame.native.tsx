@@ -10,6 +10,17 @@ import {
   renderThemeMessage,
   type RenderTheme,
 } from "./document";
+import {
+  isHttpsUrl,
+  prepareVisualizationDocument,
+  readNativeFollowUpUrl,
+  readVisualizationBridgeMessage,
+  VISUALIZATION_MAX_HEIGHT,
+  VISUALIZATION_MIN_HEIGHT,
+  visualizationReply,
+  visualizationThemeMessage,
+  type VisualizationFrameOptions,
+} from "./visualize-bridge";
 
 export interface HtmlRenderFrameProps {
   html: string;
@@ -18,27 +29,54 @@ export interface HtmlRenderFrameProps {
   height: number;
   theme: RenderTheme;
   fullscreen?: boolean;
+  visualization?: VisualizationFrameOptions;
 }
 
 export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
   const nonce = useMemo(() => `${Date.now()}-${Math.random()}`, []);
   const initialTheme = useRef(props.theme).current;
-  const document = useMemo(
-    () =>
-      prepareRenderDocument({
-        html: props.html,
+  const initialVisualizationState = useRef(props.visualization?.state).current;
+  const visualIdentity = props.visualization?.canonicalPath;
+  const visualMode = props.visualization?.mode;
+  const document = useMemo(() => {
+    if (visualIdentity) {
+      return prepareVisualizationDocument({
+        fragment: props.html,
         theme: initialTheme,
         nonce,
-        renderId: props.renderId,
+        identity: visualIdentity,
+        state: initialVisualizationState,
+        mode: props.fullscreen ? "fullscreen" : (visualMode ?? "inline"),
         linkMode: "native",
-      }),
-    [props.html, initialTheme, nonce, props.renderId],
-  );
+      });
+    }
+    return prepareRenderDocument({
+      html: props.html,
+      theme: initialTheme,
+      nonce,
+      renderId: props.renderId,
+      linkMode: "native",
+    });
+  }, [
+    props.html,
+    visualIdentity,
+    initialVisualizationState,
+    visualMode,
+    props.fullscreen,
+    initialTheme,
+    nonce,
+    props.renderId,
+  ]);
   const source = useMemo(() => ({ html: document, baseUrl: "about:blank" }), [document]);
   const webviewRef = useRef<WebView>(null);
   const loadedRef = useRef<string | null>(null);
   const [contentHeight, setContentHeight] = useState<number | null>(null);
-  const frameHeight = clampRenderHeight(Math.min(props.height, contentHeight ?? props.height));
+  const frameHeight = props.visualization
+    ? Math.max(
+        1,
+        Math.min(VISUALIZATION_MAX_HEIGHT, Math.ceil(contentHeight ?? VISUALIZATION_MIN_HEIGHT)),
+      )
+    : clampRenderHeight(Math.min(props.height, contentHeight ?? props.height));
   const frameStyle = useMemo(
     () =>
       props.fullscreen
@@ -46,13 +84,42 @@ export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
         : { height: frameHeight, backgroundColor: props.theme.variables["--background"] },
     [frameHeight, props.fullscreen, props.theme],
   );
+  const sendVisualizationReply = useCallback(
+    (id: string, result: unknown, error: string | null) => {
+      if (!props.visualization) return;
+      const reply = visualizationReply(nonce, props.visualization.canonicalPath, id, result, error);
+      webviewRef.current?.injectJavaScript(
+        `window.dispatchEvent(new MessageEvent("message", {data: ${JSON.stringify(reply)}})); true;`,
+      );
+    },
+    [nonce, props.visualization],
+  );
   const onMessage = useCallback(
     (event: WebViewMessageEvent) => {
-      if (event.nativeEvent.data.length > 4096) return;
+      if (event.nativeEvent.data.length > (props.visualization ? 20_000 : 4096)) return;
       let payload: unknown;
       try {
         payload = JSON.parse(event.nativeEvent.data);
       } catch {
+        return;
+      }
+      const visual = props.visualization;
+      if (visual) {
+        const message = readVisualizationBridgeMessage(payload, nonce, visual.canonicalPath);
+        if (!message) return;
+        if (message.method === "visualization/size") {
+          setContentHeight(message.params.height as number);
+          return;
+        }
+        if (message.method === "visualization/set-state") {
+          void visual.onSetState(message.params.state).then(
+            (state) => sendVisualizationReply(message.id!, { state }, null),
+            (error: unknown) => {
+              visual.onError(error instanceof Error ? error.message : "State was not saved");
+              sendVisualizationReply(message.id!, null, "State was not saved");
+            },
+          );
+        }
         return;
       }
       const message = readRenderBridgeMessage(payload, nonce, props.renderId);
@@ -60,7 +127,7 @@ export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
       if (message.method === "ui/notifications/size-changed" && "height" in message.params)
         setContentHeight(message.params.height);
     },
-    [nonce, props.renderId],
+    [nonce, props.renderId, props.visualization, sendVisualizationReply],
   );
   const allowOnlyDocument = useCallback(
     ({ url }: { url: string }) => {
@@ -71,7 +138,11 @@ export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
     },
     [document],
   );
-  const themeUpdate = JSON.stringify(renderThemeMessage(props.theme));
+  const themeUpdate = JSON.stringify(
+    props.visualization
+      ? visualizationThemeMessage(props.theme, nonce, props.visualization.canonicalPath)
+      : renderThemeMessage(props.theme),
+  );
   const sendTheme = useCallback(() => {
     webviewRef.current?.injectJavaScript(
       `window.dispatchEvent(new MessageEvent("message", {data: ${themeUpdate}})); true;`,
@@ -80,10 +151,40 @@ export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
   useEffect(() => {
     sendTheme();
   }, [sendTheme]);
-  const onOpenWindow = useCallback((event: { nativeEvent: { targetUrl: string } }) => {
-    const url = event.nativeEvent.targetUrl;
-    if (isHttpUrl(url)) void openExternalUrl(url);
-  }, []);
+  const followUpPending = useRef(false);
+  const onOpenWindow = useCallback(
+    (event: { nativeEvent: { targetUrl: string } }) => {
+      const url = event.nativeEvent.targetUrl;
+      const visual = props.visualization;
+      if (visual) {
+        const followUp = readNativeFollowUpUrl(url, nonce, visual.canonicalPath);
+        if (followUp) {
+          if (followUpPending.current) {
+            sendVisualizationReply(followUp.id, null, "Follow-up already pending");
+            return;
+          }
+          followUpPending.current = true;
+          void visual
+            .onFollowUp(followUp.prompt, followUp.title)
+            .then(
+              (sent) => sendVisualizationReply(followUp.id, { sent }, null),
+              (error: unknown) => {
+                visual.onError(error instanceof Error ? error.message : "Follow-up failed");
+                sendVisualizationReply(followUp.id, null, "Follow-up failed");
+              },
+            )
+            .finally(() => {
+              followUpPending.current = false;
+            });
+          return;
+        }
+        if (isHttpsUrl(url)) void openExternalUrl(url);
+        return;
+      }
+      if (isHttpUrl(url)) void openExternalUrl(url);
+    },
+    [nonce, props.visualization, sendVisualizationReply],
+  );
   const overflows = contentHeight !== null && contentHeight > frameHeight;
 
   return (

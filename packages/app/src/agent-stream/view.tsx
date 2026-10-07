@@ -46,6 +46,7 @@ import {
 import { PlanCard } from "@/components/plan-card";
 import { HtmlRenderCard } from "@/html-render/card";
 import { htmlRenderFromToolCall } from "@/html-render/reference";
+import { hasWideCodexVisualization } from "@/html-render/visualize-directive";
 import type { StreamItem } from "@/types/stream";
 import type { PendingMessageSubmission } from "@/composer/submission/model";
 import type { TurnPresentation } from "@/timeline/turn-liveness";
@@ -175,6 +176,7 @@ function renderStreamItemWithTurnFooter(input: {
   strategy: TurnContentStrategy;
   supportsTimelineCursor: boolean;
   onForkAssistantTurn?: AssistantTurnForkHandler;
+  wideVisualization?: boolean;
 }): ReactNode {
   if (!input.content) {
     return null;
@@ -192,7 +194,11 @@ function renderStreamItemWithTurnFooter(input: {
     />
   ) : null;
   const content = (
-    <StreamItemWrapper itemId={input.layoutItem.item.id} gapBelow={input.layoutItem.gapBelow}>
+    <StreamItemWrapper
+      itemId={input.layoutItem.item.id}
+      gapBelow={input.layoutItem.gapBelow}
+      wide={input.wideVisualization}
+    >
       {input.content}
     </StreamItemWrapper>
   );
@@ -412,9 +418,17 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     );
 
     const client = useSessionStore((state) => state.sessions[resolvedServerId]?.client ?? null);
+    const clientGeneration = useSessionStore(
+      (state) => state.sessions[resolvedServerId]?.clientGeneration ?? 0,
+    );
     // COMPAT(htmlRender): added in v0.11.x, remove after 2027-04-06 once daemon floor supports renders.
     const supportsHtmlRender = useSessionStore(
       (state) => state.sessions[resolvedServerId]?.serverInfo?.features?.htmlRender === true,
+    );
+    // COMPAT(codexVisualization): added in v0.11.x, remove after 2027-04-07 once daemon floor supports visualizations.
+    const supportsCodexVisualization = useSessionStore(
+      (state) =>
+        state.sessions[resolvedServerId]?.serverInfo?.features?.codexVisualization === true,
     );
     const sessionStreamHead = useSessionStore((state) =>
       state.sessions[resolvedServerId]?.agentStreamHead?.get(agentId),
@@ -803,13 +817,30 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
                   client={client}
                   spacing={layoutItem.assistantSpacing}
                   phase={layoutItem.phase}
+                  codexVisualizationAgentId={context.provider === "codex" ? agentId : undefined}
+                  codexVisualizationAvailable={supportsCodexVisualization}
+                  clientGeneration={clientGeneration}
+                  wideVisualization={
+                    context.provider === "codex" &&
+                    hasWideCodexVisualization(item.text, layoutItem.phase === "complete")
+                  }
                 />
               )}
             </ChatFindExpansion>
           </AssistantFileLinkResolverProvider>
         );
       },
-      [agentId, client, handleInlinePathPress, resolvedServerId, toast, workspaceRoot],
+      [
+        agentId,
+        client,
+        clientGeneration,
+        context.provider,
+        handleInlinePathPress,
+        resolvedServerId,
+        supportsCodexVisualization,
+        toast,
+        workspaceRoot,
+      ],
     );
 
     const renderThoughtItem = useCallback(
@@ -1084,6 +1115,10 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           strategy: streamRenderStrategy,
           supportsTimelineCursor: supportsAgentForkContextCursor,
           onForkAssistantTurn: readOnly ? undefined : handleForkAssistantTurn,
+          wideVisualization:
+            context.provider === "codex" &&
+            layoutItem.item.kind === "assistant_message" &&
+            hasWideCodexVisualization(layoutItem.item.text, layoutItem.phase === "complete"),
         });
       },
       [
@@ -1091,6 +1126,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         readOnly,
         renderStreamItemContent,
         streamRenderStrategy,
+        context.provider,
         supportsAgentForkContextCursor,
       ],
     );
@@ -1842,6 +1878,9 @@ const stylesheet = StyleSheet.create((theme) => ({
     alignSelf: "center",
     paddingHorizontal: theme.spacing[2],
   },
+  streamItemWrapperWide: {
+    maxWidth: 1024,
+  },
   emptyState: {
     flex: 1,
     alignItems: "center",
@@ -1970,12 +2009,17 @@ interface StreamItemWrapperProps {
   itemId: string;
   gapBelow: number;
   children: ReactNode;
+  wide?: boolean;
 }
 
-function StreamItemWrapper({ gapBelow, children }: StreamItemWrapperProps) {
+function StreamItemWrapper({ gapBelow, children, wide }: StreamItemWrapperProps) {
   const wrapperStyle = useMemo(
-    () => [stylesheet.streamItemWrapper, { marginBottom: gapBelow }],
-    [gapBelow],
+    () => [
+      stylesheet.streamItemWrapper,
+      wide && stylesheet.streamItemWrapperWide,
+      { marginBottom: gapBelow },
+    ],
+    [gapBelow, wide],
   );
   return <View style={wrapperStyle}>{children}</View>;
 }

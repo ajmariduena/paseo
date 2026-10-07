@@ -72,6 +72,7 @@ export function mapRenderTheme(theme: Theme): RenderTheme {
       "--radius": "10px",
       "--font-sans": theme.fontFamily.ui,
       "--font-mono": theme.fontFamily.mono,
+      "--font-size-base": `${theme.fontSize.base}px`,
     },
   };
 }

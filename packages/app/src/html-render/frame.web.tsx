@@ -7,6 +7,15 @@ import {
   renderThemeMessage,
   type RenderTheme,
 } from "./document";
+import {
+  prepareVisualizationDocument,
+  readVisualizationBridgeMessage,
+  VISUALIZATION_MAX_HEIGHT,
+  VISUALIZATION_MIN_HEIGHT,
+  visualizationReply,
+  visualizationThemeMessage,
+  type VisualizationFrameOptions,
+} from "./visualize-bridge";
 
 export interface HtmlRenderFrameProps {
   html: string;
@@ -15,27 +24,115 @@ export interface HtmlRenderFrameProps {
   height: number;
   theme: RenderTheme;
   fullscreen?: boolean;
+  visualization?: VisualizationFrameOptions;
+}
+
+function handleVisualizationFrameMessage(input: {
+  value: unknown;
+  frame: HTMLIFrameElement;
+  visual: VisualizationFrameOptions;
+  nonce: string;
+  followUpPending: { current: boolean };
+  setContentHeight: (height: number) => void;
+}) {
+  const { value, frame, visual, nonce, followUpPending, setContentHeight } = input;
+  const message = readVisualizationBridgeMessage(value, nonce, visual.canonicalPath);
+  if (!message) return;
+  if (message.method === "visualization/size") {
+    setContentHeight(message.params.height as number);
+    return;
+  }
+  const reply = (result: unknown, error: string | null) => {
+    frame.contentWindow?.postMessage(
+      visualizationReply(nonce, visual.canonicalPath, message.id!, result, error),
+      "*",
+    );
+  };
+  if (message.method === "visualization/set-state") {
+    void visual.onSetState(message.params.state).then(
+      (state) => reply({ state }, null),
+      (error: unknown) => {
+        visual.onError(error instanceof Error ? error.message : "State was not saved");
+        reply(null, "State was not saved");
+      },
+    );
+    return;
+  }
+  if (document.activeElement !== frame || !navigator.userActivation?.isActive) {
+    reply(null, "User gesture required");
+    return;
+  }
+  if (message.method === "visualization/open-external") {
+    void openExternalUrl(message.params.url as string).then(
+      () => reply({}, null),
+      () => reply(null, "Could not open link"),
+    );
+    return;
+  }
+  if (followUpPending.current) {
+    reply(null, "Follow-up already pending");
+    return;
+  }
+  followUpPending.current = true;
+  void visual
+    .onFollowUp(message.params.prompt as string, message.params.title as string | undefined)
+    .then(
+      (sent) => reply({ sent }, null),
+      (error: unknown) => {
+        visual.onError(error instanceof Error ? error.message : "Follow-up failed");
+        reply(null, "Follow-up failed");
+      },
+    )
+    .finally(() => {
+      followUpPending.current = false;
+    });
 }
 
 export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
   const frameRef = useRef<HTMLIFrameElement>(null);
   const nonce = useMemo(() => crypto.randomUUID(), []);
   const initialTheme = useRef(props.theme).current;
-  const preparedDocument = useMemo(
-    () =>
-      prepareRenderDocument({
-        html: props.html,
+  const initialVisualizationState = useRef(props.visualization?.state).current;
+  const visualIdentity = props.visualization?.canonicalPath;
+  const visualMode = props.visualization?.mode;
+  const preparedDocument = useMemo(() => {
+    if (visualIdentity) {
+      return prepareVisualizationDocument({
+        fragment: props.html,
         theme: initialTheme,
         nonce,
-        renderId: props.renderId,
+        identity: visualIdentity,
+        state: initialVisualizationState,
+        mode: props.fullscreen ? "fullscreen" : (visualMode ?? "inline"),
         linkMode: "web",
-      }),
-    [props.html, initialTheme, nonce, props.renderId],
-  );
+      });
+    }
+    return prepareRenderDocument({
+      html: props.html,
+      theme: initialTheme,
+      nonce,
+      renderId: props.renderId,
+      linkMode: "web",
+    });
+  }, [
+    props.html,
+    visualIdentity,
+    initialVisualizationState,
+    visualMode,
+    props.fullscreen,
+    initialTheme,
+    nonce,
+    props.renderId,
+  ]);
   const [contentHeight, setContentHeight] = useState<number | null>(null);
-  const frameHeight = props.fullscreen
-    ? "100%"
-    : clampRenderHeight(Math.min(props.height, contentHeight ?? props.height));
+  let frameHeight: string | number;
+  if (props.fullscreen) frameHeight = "100%";
+  else if (visualIdentity)
+    frameHeight = Math.max(
+      1,
+      Math.min(VISUALIZATION_MAX_HEIGHT, Math.ceil(contentHeight ?? VISUALIZATION_MIN_HEIGHT)),
+    );
+  else frameHeight = clampRenderHeight(Math.min(props.height, contentHeight ?? props.height));
   const frameStyle = useMemo(
     () => ({
       display: "block" as const,
@@ -47,13 +144,32 @@ export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
     [frameHeight, props.theme],
   );
   const onLoad = useCallback(() => {
-    frameRef.current?.contentWindow?.postMessage(renderThemeMessage(props.theme), "*");
-  }, [props.theme]);
+    frameRef.current?.contentWindow?.postMessage(
+      props.visualization
+        ? visualizationThemeMessage(props.theme, nonce, props.visualization.canonicalPath)
+        : renderThemeMessage(props.theme),
+      "*",
+    );
+  }, [nonce, props.theme, props.visualization]);
+
+  const followUpPending = useRef(false);
 
   useEffect(() => {
     function receive(event: MessageEvent) {
       const frame = frameRef.current;
       if (!frame || event.source !== frame.contentWindow) return;
+      const visual = props.visualization;
+      if (visual) {
+        handleVisualizationFrameMessage({
+          value: event.data,
+          frame,
+          visual,
+          nonce,
+          followUpPending,
+          setContentHeight,
+        });
+        return;
+      }
       const message = readRenderBridgeMessage(event.data, nonce, props.renderId);
       if (!message) return;
       if (message.method === "ui/notifications/size-changed" && "height" in message.params) {
@@ -68,11 +184,11 @@ export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
     }
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);
-  }, [nonce, props.renderId]);
+  }, [nonce, props.renderId, props.visualization]);
 
   useEffect(() => {
-    frameRef.current?.contentWindow?.postMessage(renderThemeMessage(props.theme), "*");
-  }, [props.theme]);
+    onLoad();
+  }, [onLoad]);
 
   return (
     <iframe

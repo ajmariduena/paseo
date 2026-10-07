@@ -168,6 +168,18 @@ describe("estimateStreamItemHeight", () => {
     ).toBe(40);
   });
 
+  it("reserves space for a Codex visualization reference", () => {
+    const item: StreamItem = {
+      kind: "assistant_message",
+      id: "codex-visual",
+      text: '\uE200visualize\uE202{"path":"/work/fruit-chart.html"}\uE201',
+      timestamp: createTimestamp(2),
+    };
+    expect(
+      estimateStreamItemHeight({ item, contentMaxWidth: DEFAULT_CONTENT_MAX_WIDTH }),
+    ).toBeGreaterThanOrEqual(270);
+  });
+
   it("uses a larger estimate for user messages with image attachments", () => {
     const item: StreamItem = {
       kind: "user_message",

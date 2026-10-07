@@ -5,6 +5,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { isNative } from "@/constants/platform";
 import { HtmlRenderFrame } from "./frame";
 import type { RenderTheme } from "./document";
+import type { VisualizationFrameOptions } from "./visualize-bridge";
 
 interface HtmlRenderViewerProps {
   html: string;
@@ -13,6 +14,7 @@ interface HtmlRenderViewerProps {
   height: number;
   theme: RenderTheme;
   onClose: () => void;
+  visualization?: VisualizationFrameOptions;
 }
 
 export function HtmlRenderViewer(props: HtmlRenderViewerProps) {
@@ -33,7 +35,7 @@ export function HtmlRenderViewer(props: HtmlRenderViewerProps) {
       <View style={rootStyle}>
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Close HTML page"
+          accessibilityLabel={props.visualization ? "Close visualization" : "Close HTML page"}
           onPress={props.onClose}
           style={closeStyle}
         >

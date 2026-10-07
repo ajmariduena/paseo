@@ -90,6 +90,8 @@ An agent can publish a page into its conversation with `html_render`. The daemon
 
 Page scripts can take focus inside their own frame. The CSP does not stop a page navigating itself with script or meta refresh; on web and Electron that can make an outbound request with the page's own data and the reader's IP address. On Android, the navigation latch can allow a page-initiated navigation if WebView times out after 250 ms waiting for the JavaScript decision. A render has no access to the Paseo document, its cookies or storage.
 
+Codex `visualize` references use a separate fragment host. The daemon reads a bounded UTF-8 file only from the saved Codex agent's cwd, workspace, or its own thread visualization directory, and rejects symlinked paths below those trusted roots. The web frame has the same opaque origin and sandbox; its CSP permits resource loads only from seven named CDN and font hosts, with `connect-src` limited to `blob:` and `data:`. A fragment can still send its own data through allowed resource URLs or a self-navigation. The page contains what the agent wrote; the agent already has that data and network access. State writes are agent- and path-scoped. Follow-ups require a user gesture and a host confirmation before Paseo sends a message to the owning agent; opening external links requires HTTPS and a user gesture. The Android navigation timing residual above also applies to fragments.
+
 ## Agent authentication
 
 Paseo wraps agent CLIs (Claude Code, Codex, OpenCode) but does not manage their authentication. Each agent provider handles its own credentials. Paseo never stores or transmits provider API keys. Agents run in your user context with your existing credentials.

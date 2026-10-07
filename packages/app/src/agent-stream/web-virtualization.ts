@@ -2,6 +2,7 @@ import type { AssistantImageContext } from "@/utils/assistant-image-metadata";
 import type { StreamItem } from "@/types/stream";
 import { estimateAssistantMessageHeightFromCache } from "@/utils/assistant-message-height-estimate";
 import { htmlRenderFromToolCall } from "@/html-render/reference";
+import { splitCodexVisualizeDirectives } from "@/html-render/visualize-directive";
 import {
   DEFAULT_MOUNTED_RECENT_STREAM_ITEMS,
   findMountedWindowStart,
@@ -59,14 +60,30 @@ export function estimateStreamItemHeight({
   switch (item.kind) {
     case "user_message":
       return item.images && item.images.length > 0 ? 220 : 96;
-    case "assistant_message":
+    case "assistant_message": {
+      if (!item.text.includes("\uE200visualize") && !item.text.includes("::visualize")) {
+        return (
+          estimateAssistantMessageHeightFromCache({
+            markdown: item.text,
+            contentMaxWidth,
+            imageContext,
+          }) ?? 220
+        );
+      }
+      const parts = splitCodexVisualizeDirectives(item.text, { complete: true });
+      const visuals = parts.filter((part) => part.kind === "visual").length;
+      const markdown = visuals
+        ? parts
+            .filter((part) => part.kind === "markdown")
+            .map((part) => part.text)
+            .join("")
+        : item.text;
       return (
-        estimateAssistantMessageHeightFromCache({
-          markdown: item.text,
-          contentMaxWidth,
-          imageContext,
-        }) ?? 220
+        (estimateAssistantMessageHeightFromCache({ markdown, contentMaxWidth, imageContext }) ??
+          (markdown.trim() ? 220 : 0)) +
+        visuals * 270
       );
+    }
     case "tool_call":
       return htmlRenderFromToolCall(item)?.height ?? COLLAPSED_TOOL_SEQUENCE_ROW_HEIGHT_ESTIMATE;
     case "thought":
