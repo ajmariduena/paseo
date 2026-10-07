@@ -1,5 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import { afterEach, expect, test, vi } from "vitest";
 
 import type {
@@ -17,7 +18,9 @@ import {
 import { PULL_REQUEST_WATCH_WAKE_LIMIT } from "./watch-report.js";
 import { PullRequestWatchStore } from "./watch-store.js";
 import {
-  PULL_REQUEST_UNREADABLE_LIMIT_MS,
+  PULL_REQUEST_READ_FAILURE_LIMIT,
+  PULL_REQUEST_WATCH_INTERVAL_MS,
+  PULL_REQUEST_WATCH_QUIET_INTERVAL_MS,
   PullRequestWatcher,
   type PullRequestWatchForgeService,
 } from "./watcher.js";
@@ -34,7 +37,12 @@ interface FakeForge {
   mergeable: PullRequestMergeable;
   remarks: PullRequestTimelineItem[];
   unreadable: boolean;
+  rateLimited: boolean;
+  /** Pull request status reads, one per forge read of the pull request. */
+  reads: number;
 }
+
+class FakeRateLimitError extends Error {}
 
 /** An in-memory forge for one open pull request, #42 on branch `feature`. */
 function createFakeForge(): FakeForge {
@@ -46,6 +54,8 @@ function createFakeForge(): FakeForge {
     mergeable: "MERGEABLE",
     remarks: [],
     unreadable: false,
+    rateLimited: false,
+    reads: 0,
     service: {
       async getPullRequest({ number }): Promise<PullRequestSummary> {
         if (forge.unreadable) throw new Error("gh: HTTP 502");
@@ -62,6 +72,8 @@ function createFakeForge(): FakeForge {
         };
       },
       async getCurrentPullRequestStatus(): Promise<CurrentPullRequestStatus | null> {
+        forge.reads += 1;
+        if (forge.rateLimited) throw new FakeRateLimitError("API rate limit exceeded");
         if (forge.unreadable) throw new Error("gh: HTTP 502");
         const merged = forge.state === "MERGED";
         return {
@@ -96,6 +108,9 @@ function createFakeForge(): FakeForge {
       },
       async getRequiredCheckNames() {
         return forge.requiredCheckNames;
+      },
+      isRateLimitError(error) {
+        return error instanceof FakeRateLimitError;
       },
     },
   };
@@ -160,8 +175,12 @@ async function watch(current: Scenario) {
   return await current.watcher.watch({ agentId: current.agentId, cwd: current.host.root });
 }
 
-async function sweep(current: Scenario): Promise<void> {
-  current.clock.now += 60_000;
+/** Runs the pass a quiet pull request is next read on. */
+async function sweep(
+  current: Scenario,
+  afterMs: number = PULL_REQUEST_WATCH_QUIET_INTERVAL_MS,
+): Promise<void> {
+  current.clock.now += afterMs;
   await current.watcher.sweep();
   await current.watcher.idle();
 }
@@ -416,23 +435,97 @@ test("merging ends the watch without a wake", async () => {
   expect(prompts(current)).toEqual([]);
 });
 
-test("a pull request unreadable for 15 minutes ends the watch with a wake saying so", async () => {
+test("failing to read a pull request 8 times in a row ends the watch with a wake saying so", async () => {
   const current = await startWatching();
   await watch(current);
 
   current.forge.unreadable = true;
-  await sweep(current);
-  current.clock.now += PULL_REQUEST_UNREADABLE_LIMIT_MS - 120_000;
-  await sweep(current);
+  for (let pass = 1; pass < PULL_REQUEST_READ_FAILURE_LIMIT; pass += 1) {
+    await sweep(current, PULL_REQUEST_WATCH_INTERVAL_MS);
+  }
   expect(await current.store.list()).toHaveLength(1);
-  await sweep(current);
+  await sweep(current, PULL_REQUEST_WATCH_INTERVAL_MS);
 
   expect(await current.store.list()).toEqual([]);
   expect(prompts(current)).toEqual([
     expect.stringContaining(
-      "Paseo stopped watching pull request #42 (https://github.com/acme/app/pull/42) because it could not read it from the forge for 15 minutes.",
+      "Paseo stopped watching pull request #42 (https://github.com/acme/app/pull/42) because it failed to read it from the forge 8 times in a row.",
     ),
   ]);
+});
+
+test("a rate limit skips the pass without ending the watch or counting as a failure", async () => {
+  const current = await startWatching();
+  await watch(current);
+
+  current.forge.unreadable = true;
+  for (let pass = 1; pass < PULL_REQUEST_READ_FAILURE_LIMIT; pass += 1) await sweep(current);
+  current.forge.rateLimited = true;
+  for (let pass = 0; pass < 20; pass += 1) await sweep(current);
+  current.forge.rateLimited = false;
+  current.forge.unreadable = false;
+  current.forge.checks = [check("test", "failure")];
+  await sweep(current);
+
+  expect(await current.store.list()).toHaveLength(1);
+  expect(prompts(current)).toEqual([expect.stringContaining("  - test https://ci.example/test")]);
+});
+
+test("agents watching the same pull request share one read per pass", async () => {
+  const current = await startWatching();
+  const sibling = await current.host.createAgent({ steerable: false });
+  await watch(current);
+  await current.watcher.watch({ agentId: sibling, cwd: current.host.root });
+  current.forge.reads = 0;
+
+  current.forge.checks = [check("test", "failure")];
+  await sweep(current);
+
+  expect(current.forge.reads).toBe(1);
+  expect(prompts(current)).toEqual([expect.stringContaining("- Checks failed:")]);
+  expect(current.host.session(sibling).startPrompts.map(String)).toEqual([
+    expect.stringContaining("- Checks failed:"),
+  ]);
+});
+
+test("a quiet pull request is read every two minutes, and every minute while checks run", async () => {
+  const current = await startWatching();
+  await watch(current);
+  await sweep(current);
+  current.forge.reads = 0;
+
+  await sweep(current, PULL_REQUEST_WATCH_INTERVAL_MS);
+  expect(current.forge.reads).toBe(0);
+  current.forge.checks = [check("test", "pending")];
+  await sweep(current, PULL_REQUEST_WATCH_INTERVAL_MS);
+  expect(current.forge.reads).toBe(1);
+  current.forge.checks = [check("test", "failure")];
+  await sweep(current, PULL_REQUEST_WATCH_INTERVAL_MS);
+
+  expect(current.forge.reads).toBe(2);
+  expect(prompts(current)).toEqual([expect.stringContaining("- Checks failed:")]);
+});
+
+test("a subagent cannot watch, and a watch left on one ends on the next pass", async () => {
+  const current = await startWatching();
+  const child = await current.host.createAgent({
+    steerable: false,
+    labels: { [PARENT_AGENT_ID_LABEL]: current.agentId },
+  });
+
+  await expect(current.watcher.watch({ agentId: child, cwd: current.host.root })).rejects.toThrow(
+    "You are a subagent, so you cannot watch pull requests.",
+  );
+
+  const watched = await watch(current);
+  const [kept] = await current.store.list();
+  await current.store.add({ ...kept!, id: "left-on-child", agentId: child });
+  current.forge.checks = [check("test", "failure")];
+  await sweep(current);
+
+  expect(watched.watching).toBe(true);
+  expect((await current.store.list()).map((entry) => entry.agentId)).toEqual([current.agentId]);
+  expect(current.host.session(child).startPrompts).toEqual([]);
 });
 
 test("comment-only wakes stop the watch after the limit", async () => {

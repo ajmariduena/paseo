@@ -247,11 +247,11 @@ export function renderPullRequestWake(input: PullRequestWakeInput): SystemMessag
 export function renderUnreadableWake(input: {
   number: number;
   url: string;
-  minutes: number;
+  failures: number;
 }): SystemMessage {
   return {
     prompt: formatSystemNotificationPrompt(
-      `Paseo stopped watching pull request #${input.number} (${input.url}) because it could not read it from the forge for ${input.minutes} minutes. Check it yourself, and call watch_pull_request to watch it again.`,
+      `Paseo stopped watching pull request #${input.number} (${input.url}) because it failed to read it from the forge ${input.failures} times in a row. Check it yourself, and call watch_pull_request to watch it again.`,
     ),
     notification: {
       level: "warning",

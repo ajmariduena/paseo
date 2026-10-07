@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
 import type { Logger } from "pino";
 
 import type {
@@ -17,8 +18,15 @@ import {
 } from "./watch-report.js";
 import type { PullRequestWatch, PullRequestWatchStore, WatchProgress } from "./watch-store.js";
 
+/** One pass a minute; a pull request is read on it only while a check runs or the read is due. */
 export const PULL_REQUEST_WATCH_INTERVAL_MS = 60_000;
-export const PULL_REQUEST_UNREADABLE_LIMIT_MS = 15 * 60_000;
+/**
+ * How often a pull request with nothing in flight is read. Every watch on one forge account
+ * shares its rate limit, so reading quiet pull requests faster mostly spends it.
+ */
+export const PULL_REQUEST_WATCH_QUIET_INTERVAL_MS = 2 * 60_000;
+/** Reads in a row that failed for a reason other than a rate limit before the watch ends. */
+export const PULL_REQUEST_READ_FAILURE_LIMIT = 8;
 
 export type PullRequestWatchForgeService = Pick<
   ForgeService,
@@ -27,6 +35,7 @@ export type PullRequestWatchForgeService = Pick<
   | "getPullRequestTimeline"
   | "getViewerLogin"
   | "getRequiredCheckNames"
+  | "isRateLimitError"
 >;
 
 export interface PullRequestWatcherOptions {
@@ -66,9 +75,34 @@ export interface UnwatchPullRequestResult {
 
 type WakeOutcome = { kind: "final" } | { kind: "progress"; next: WatchProgress };
 
-type Reading =
-  | { kind: "open"; status: CurrentPullRequestStatus; observation: PullRequestObservation }
-  | { kind: "ended" };
+interface OpenReading {
+  kind: "open";
+  status: CurrentPullRequestStatus;
+  observation: PullRequestObservation;
+}
+
+type Reading = OpenReading | { kind: "ended" };
+
+/** The last successful read of a pull request, kept in memory: a restart reads each once. */
+interface LastRead {
+  /** Start of the pass that read it, so passes a fixed interval apart compare exactly. */
+  passStartedAt: number;
+  /** A check was running, mergeability unknown, or remarks unread, so the next pass reads it. */
+  inFlight: boolean;
+  /** The watches it was read for; a watch added since takes its first look on the next pass. */
+  watchIds: Set<string>;
+}
+
+type GroupOutcome = "read" | "rate-limited";
+
+class SubagentWatchError extends Error {
+  constructor() {
+    super(
+      "You are a subagent, so you cannot watch pull requests. Your parent agent owns the pull request: finish your task and report back instead.",
+    );
+    this.name = "SubagentWatchError";
+  }
+}
 
 function isOpenState(state: string): boolean {
   return state.toLowerCase().startsWith("open");
@@ -81,18 +115,20 @@ export function parsePullRequestNumber(url: string): number | null {
 }
 
 /**
- * Watches pull requests for agents (`watch_pull_request`). One pass a minute reads each watched
- * pull request through the forge layer and wakes the agent, without interrupting it, when a
- * check fails, the required checks pass, someone else comments or reviews, or the branch starts
- * to conflict. Progress is recorded only once the wake was delivered, so a wake lost to a
- * restart is found again on the next pass.
+ * Watches pull requests for agents (`watch_pull_request`). Each pass reads a watched pull request
+ * once for every agent watching it, every minute while something is in flight and every two
+ * minutes otherwise, and wakes each agent, without interrupting it, when a check fails, the
+ * required checks pass, someone else comments or reviews, or the branch starts to conflict.
+ * Progress is recorded only once the wake was delivered, so a wake lost to a restart is found
+ * again on the next pass. A rate limit skips the pass and never ends a watch.
  */
 export class PullRequestWatcher {
   private readonly now: () => number;
   private readonly logger: Logger;
   private readonly wakesInFlight = new Map<string, Promise<void>>();
-  // Kept in memory: a restart only delays giving up.
-  private readonly unreadableSince = new Map<string, number>();
+  // Per pull request URL. Kept in memory: a restart only delays giving up.
+  private readonly readFailures = new Map<string, number>();
+  private readonly lastReads = new Map<string, LastRead>();
   private readonly viewers = new Map<string, string>();
   private timer: NodeJS.Timeout | null = null;
   private sweeping: Promise<void> | null = null;
@@ -114,6 +150,7 @@ export class PullRequestWatcher {
   }
 
   async watch(target: PullRequestTarget): Promise<WatchPullRequestResult> {
+    if (await this.isSubagent(target.agentId)) throw new SubagentWatchError();
     const service = await this.requireForge(target.cwd);
     const number = await this.resolveNumber(target);
     const summary = await service.getPullRequest({ cwd: target.cwd, number });
@@ -186,14 +223,11 @@ export class PullRequestWatcher {
       return { number, url: null, watching: false, wasWatching: false };
     }
     await this.options.store.remove(watch.id);
-    this.unreadableSince.delete(watch.id);
     return { number, url: watch.url, watching: false, wasWatching: true };
   }
 
   async disposeForAgent(agentId: string): Promise<void> {
-    for (const watch of await this.options.store.removeForAgent(agentId)) {
-      this.unreadableSince.delete(watch.id);
-    }
+    await this.options.store.removeForAgent(agentId);
   }
 
   /** One pass over every watched pull request. Overlapping calls share the running pass. */
@@ -210,6 +244,7 @@ export class PullRequestWatcher {
   }
 
   private async runSweep(): Promise<void> {
+    const passStartedAt = this.now();
     let watches: PullRequestWatch[];
     try {
       watches = await this.options.store.list();
@@ -217,34 +252,97 @@ export class PullRequestWatcher {
       this.logger.error({ err: error }, "pull_request_watch.list_failed");
       return;
     }
+    const groups = new Map<string, PullRequestWatch[]>();
     for (const watch of watches) {
       if (this.wakesInFlight.has(watch.id)) continue;
       try {
-        await this.check(watch);
+        if (!(await this.keep(watch))) continue;
       } catch (error) {
         this.logger.warn({ err: error, watchId: watch.id }, "pull_request_watch.check_failed");
+        continue;
+      }
+      const key = stripUrl(watch.url);
+      groups.set(key, [...(groups.get(key) ?? []), watch]);
+    }
+    for (const cache of [this.readFailures, this.lastReads]) {
+      for (const key of cache.keys()) if (!groups.has(key)) cache.delete(key);
+    }
+    for (const [key, group] of groups) {
+      if (!this.isDue(key, group, passStartedAt)) continue;
+      try {
+        // Every other read this pass would be refused too, so the pass ends here.
+        if ((await this.checkGroup(key, group, passStartedAt)) === "rate-limited") return;
+      } catch (error) {
+        this.logger.warn({ err: error, pullRequest: key }, "pull_request_watch.check_failed");
       }
     }
   }
 
-  private async check(watch: PullRequestWatch): Promise<void> {
+  /** Ends the watch, without a read, when its agent is gone or is a subagent. */
+  private async keep(watch: PullRequestWatch): Promise<boolean> {
     const record = await this.options.agentStorage.get(watch.agentId);
-    if (!record || record.archivedAt) {
-      await this.options.store.remove(watch.id);
-      return;
-    }
+    const ended =
+      !record || Boolean(record.archivedAt) || getParentAgentIdFromLabels(record.labels) !== null;
+    if (ended) await this.options.store.remove(watch.id);
+    return !ended;
+  }
+
+  private isDue(key: string, group: PullRequestWatch[], passStartedAt: number): boolean {
+    const last = this.lastReads.get(key);
+    if (!last || last.inFlight) return true;
+    if (group.some((watch) => !last.watchIds.has(watch.id))) return true;
+    return passStartedAt - last.passStartedAt >= PULL_REQUEST_WATCH_QUIET_INTERVAL_MS;
+  }
+
+  /** Reads one pull request once and evaluates it for every watch on it. */
+  private async checkGroup(
+    key: string,
+    group: PullRequestWatch[],
+    passStartedAt: number,
+  ): Promise<GroupOutcome> {
+    const [first] = group;
+    if (!first) return "read";
+    let service: PullRequestWatchForgeService | null = null;
     let reading: Reading;
     try {
-      reading = await this.read(watch, await this.requireForge(watch.cwd));
+      service = await this.requireForge(first.cwd);
+      reading = await this.read(first, service);
     } catch (error) {
-      await this.noteUnreadable(watch, error);
-      return;
+      this.lastReads.delete(key);
+      if (service?.isRateLimitError?.(error)) {
+        this.logger.debug({ err: error, pullRequest: key }, "pull_request_watch.rate_limited");
+        return "rate-limited";
+      }
+      await this.noteUnreadable(key, group, error);
+      return "read";
     }
-    this.unreadableSince.delete(watch.id);
+    this.readFailures.delete(key);
     if (reading.kind === "ended") {
-      await this.options.store.remove(watch.id);
-      return;
+      this.lastReads.delete(key);
+      for (const watch of group) await this.options.store.remove(watch.id);
+      return "read";
     }
+    const { observation } = reading;
+    this.lastReads.set(key, {
+      passStartedAt,
+      inFlight:
+        observation.mergeable === "UNKNOWN" ||
+        observation.remarks === null ||
+        observation.checks.some((check) => check.status === "pending"),
+      watchIds: new Set(group.map((watch) => watch.id)),
+    });
+    for (const watch of group) {
+      try {
+        await this.evaluate(watch, reading);
+      } catch (error) {
+        this.lastReads.delete(key);
+        this.logger.warn({ err: error, watchId: watch.id }, "pull_request_watch.check_failed");
+      }
+    }
+    return "read";
+  }
+
+  private async evaluate(watch: PullRequestWatch, reading: OpenReading): Promise<void> {
     const report = evaluatePullRequestWatch(watch.progress, reading.observation);
     if (report.changes.length === 0) {
       if (!sameProgress(report.next, watch.progress)) {
@@ -266,22 +364,37 @@ export class PullRequestWatcher {
     this.wake(watch, message, { kind: "progress", next: report.next });
   }
 
-  private async noteUnreadable(watch: PullRequestWatch, error: unknown): Promise<void> {
-    const since = this.unreadableSince.get(watch.id) ?? this.now();
-    this.unreadableSince.set(watch.id, since);
-    this.logger.debug({ err: error, watchId: watch.id }, "pull_request_watch.read_failed");
-    if (this.now() - since < PULL_REQUEST_UNREADABLE_LIMIT_MS) return;
-    this.unreadableSince.delete(watch.id);
-    await this.options.store.remove(watch.id);
-    this.wake(
-      watch,
-      renderUnreadableWake({
-        number: watch.number,
-        url: watch.url,
-        minutes: PULL_REQUEST_UNREADABLE_LIMIT_MS / 60_000,
-      }),
-      { kind: "final" },
-    );
+  private async noteUnreadable(
+    key: string,
+    group: PullRequestWatch[],
+    error: unknown,
+  ): Promise<void> {
+    const failures = (this.readFailures.get(key) ?? 0) + 1;
+    this.logger.debug({ err: error, pullRequest: key, failures }, "pull_request_watch.read_failed");
+    if (failures < PULL_REQUEST_READ_FAILURE_LIMIT) {
+      this.readFailures.set(key, failures);
+      return;
+    }
+    this.readFailures.delete(key);
+    for (const watch of group) {
+      await this.options.store.remove(watch.id);
+      this.wake(
+        watch,
+        renderUnreadableWake({
+          number: watch.number,
+          url: watch.url,
+          failures: PULL_REQUEST_READ_FAILURE_LIMIT,
+        }),
+        { kind: "final" },
+      );
+    }
+  }
+
+  private async isSubagent(agentId: string): Promise<boolean> {
+    const labels =
+      this.options.agentManager.getAgent(agentId)?.labels ??
+      (await this.options.agentStorage.get(agentId))?.labels;
+    return getParentAgentIdFromLabels(labels) !== null;
   }
 
   private wake(watch: PullRequestWatch, message: SystemMessage, outcome: WakeOutcome): void {
@@ -372,6 +485,7 @@ export class PullRequestWatcher {
     try {
       return (await service.getRequiredCheckNames?.({ cwd, number })) ?? [];
     } catch (error) {
+      if (service.isRateLimitError?.(error)) throw error;
       this.logger.debug({ err: error, cwd, number }, "pull_request_watch.required_checks_failed");
       return [];
     }
@@ -388,6 +502,7 @@ export class PullRequestWatcher {
       if (viewer) this.viewers.set(cwd, viewer);
       return viewer;
     } catch (error) {
+      if (service.isRateLimitError?.(error)) throw error;
       this.logger.debug({ err: error, cwd }, "pull_request_watch.viewer_failed");
       return null;
     }

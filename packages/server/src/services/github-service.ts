@@ -2288,6 +2288,10 @@ export function createGitHubService(options: CreateGitHubServiceOptions = {}): G
       });
     },
 
+    isRateLimitError(error) {
+      return error instanceof GitHubGraphqlPollPausedError || isGitHubRateLimitError(error);
+    },
+
     getRequiredCheckNames(input) {
       return cached({
         cwd: input.cwd,
