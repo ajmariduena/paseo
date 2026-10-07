@@ -16,6 +16,7 @@ import {
   type AgentManagerOptions,
   type ManagedAgent,
 } from "./agent-manager.js";
+import { headlessShellPlatform } from "./html-render/browser-install.js";
 import { buildPaseoOrchestrationInstructions } from "./orchestration-instructions.js";
 import { PASEO_MCP_TOOL_TIMEOUT_MS } from "./runtime-mcp-config.js";
 import { PASEO_READ_ONLY_TOOL_NAMES } from "./tools/read-only-tools.js";
@@ -2362,8 +2363,6 @@ describe("orchestration instructions in the daemon append system prompt", () => 
     return launched;
   }
 
-  const fullText = buildPaseoOrchestrationInstructions(undefined);
-
   test.each(["codex", "claude", "pi", "opencode", "cursor"])(
     "%s gets the block ahead of the user's append prompt when the Paseo MCP server is attached",
     async (provider) => {
@@ -2372,6 +2371,11 @@ describe("orchestration instructions in the daemon append system prompt", () => 
         managerOptions: { mcpBaseUrl: MCP_BASE_URL },
       });
 
+      const fullText = buildPaseoOrchestrationInstructions(
+        undefined,
+        provider,
+        headlessShellPlatform() !== null,
+      );
       expect(config.daemonAppendSystemPrompt).toBe(`${fullText}\n\nDaemon instructions.`);
       expect(Object.keys(config.mcpServers ?? {})).toEqual(["paseo"]);
     },
@@ -2391,6 +2395,11 @@ describe("orchestration instructions in the daemon append system prompt", () => 
       },
     });
 
+    const fullText = buildPaseoOrchestrationInstructions(
+      undefined,
+      "codex",
+      headlessShellPlatform() !== null,
+    );
     expect(config.daemonAppendSystemPrompt).toBe(`${fullText}\n\nDaemon instructions.`);
   });
 
