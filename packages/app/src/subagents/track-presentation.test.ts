@@ -27,6 +27,7 @@ function row(
         ? { phase: "open", turnId: null, startedAt: null, cancellationRequestId: null }
         : { phase: "idle", cancellationRequestId: null }),
     requiresAttention: overrides.requiresAttention ?? false,
+    lastTurnOutcome: overrides.lastTurnOutcome,
     createdAt: overrides.createdAt ?? new Date("2026-04-20T00:00:00.000Z"),
     model: overrides.model ?? null,
     thinkingOptionId: overrides.thinkingOptionId ?? null,
@@ -200,6 +201,12 @@ describe("buildSubagentRowPresentationData", () => {
 
   it("maps an idle row to the done status bucket so callers render the static provider icon", () => {
     expect(present(row({ id: "a", status: "idle" })).statusBucket).toBe("done");
+  });
+
+  it("gives a stopped child the neutral done bucket, as a stopped provider subagent gets", () => {
+    expect(
+      present(row({ id: "a", status: "idle", lastTurnOutcome: "canceled" })).statusBucket,
+    ).toBe("done");
   });
 
   it("ignores requiresAttention on the source row when computing the bucket", () => {

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   AgentStatusSchema,
+  AgentTurnOutcomeSchema,
   AgentTimelineItemPayloadSchema,
   MessageOriginSchema,
   NotificationSourceSchema,
@@ -248,6 +249,7 @@ const StoredAgentSnapshotSchema = z.strictObject({
   pendingPermissions: z.array(z.never()).max(0),
   persistence: z.null(),
   lastError: z.string().optional(),
+  lastTurnOutcome: AgentTurnOutcomeSchema.optional(),
   title: z.string().nullable(),
   labels: z.record(z.string(), z.string()),
   requiresAttention: z.boolean().optional(),
@@ -659,6 +661,7 @@ function serializeAgent(agent: Agent): StoredAgent {
     pendingPermissions: [],
     persistence: null,
     ...(agent.lastError ? { lastError: agent.lastError } : {}),
+    lastTurnOutcome: agent.lastTurnOutcome,
     title: agent.title,
     labels: agent.labels,
     requiresAttention: agent.requiresAttention ?? false,

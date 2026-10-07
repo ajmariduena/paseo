@@ -32,6 +32,7 @@ export type SpawnedAgentSnapshot = Pick<
   | "pendingPermissions"
   | "requiresAttention"
   | "attentionReason"
+  | "lastTurnOutcome"
   | "archivedAt"
   | "model"
   | "thinkingOptionId"
@@ -79,6 +80,7 @@ function resolvePaseoRow(
           pendingPermissionCount: agent.pendingPermissions.length,
           requiresAttention: agent.requiresAttention === true,
           attentionReason: agent.attentionReason ?? null,
+          lastTurnOutcome: agent.lastTurnOutcome ?? null,
           isArchived: Boolean(agent.archivedAt),
         }
       : null,

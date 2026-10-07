@@ -58,6 +58,7 @@ function toChildRow(row: SubagentRow): LineageRow {
           pendingPermissionCount: 0,
           requiresAttention: row.requiresAttention === true,
           attentionReason: null,
+          lastTurnOutcome: row.lastTurnOutcome ?? null,
           isArchived: false,
         })
       : resolveProviderSubagentStatus(row.status);

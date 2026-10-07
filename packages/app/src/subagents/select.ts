@@ -18,6 +18,7 @@ export interface PaseoSubagentRow {
   status: Agent["status"];
   turn: Agent["turn"];
   requiresAttention: Agent["requiresAttention"];
+  lastTurnOutcome: Agent["lastTurnOutcome"];
   createdAt: Agent["createdAt"];
   model: string | null;
   thinkingOptionId: string | null;
@@ -67,6 +68,7 @@ function toSubagentRow(agent: Agent): SubagentRow {
     status: agent.status,
     turn: agent.turn,
     requiresAttention: agent.requiresAttention,
+    lastTurnOutcome: agent.lastTurnOutcome,
     createdAt: agent.createdAt,
     model: extractAgentModel(agent),
     thinkingOptionId: agent.runtimeInfo?.thinkingOptionId ?? agent.thinkingOptionId ?? null,

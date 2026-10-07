@@ -66,6 +66,7 @@ function useLineageParent(serverId: string, agentId: string): LineageParent | nu
         pendingPermissionCount: agent.pendingPermissions.length,
         requiresAttention: agent.requiresAttention === true,
         attentionReason: agent.attentionReason ?? null,
+        lastTurnOutcome: agent.parentAgentId ? (agent.lastTurnOutcome ?? null) : null,
         isArchived: Boolean(agent.archivedAt),
       }),
       modelLabel: joinAgentModelLabel(
