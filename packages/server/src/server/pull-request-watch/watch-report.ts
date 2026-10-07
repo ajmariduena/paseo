@@ -51,6 +51,11 @@ function isFailedCheck(check: PullRequestCheck): boolean {
   );
 }
 
+/** An edit counts as new activity, so a bot that rewrites one summary comment still wakes. */
+function activeAt(remark: PullRequestTimelineItem): number {
+  return remark.editedAt ?? remark.createdAt;
+}
+
 type CheckProgress = Pick<WatchProgress, "failedChecks" | "passed" | "passedChecks">;
 
 interface CheckEvaluation {
@@ -114,15 +119,16 @@ export function evaluatePullRequestWatch(
   const fresh =
     own === undefined
       ? []
-      : (observation.remarks ?? []).filter(
-          (remark) =>
-            (remark.createdAt > remarksThrough ||
-              (remark.createdAt === remarksThrough && !remarkIds.includes(remark.id))) &&
-            remark.author.toLowerCase() !== own,
-        );
+      : (observation.remarks ?? []).filter((remark) => {
+          const at = activeAt(remark);
+          return (
+            (at > remarksThrough || (at === remarksThrough && !remarkIds.includes(remark.id))) &&
+            remark.author.toLowerCase() !== own
+          );
+        });
   if (fresh.length > 0) changes.push({ kind: "remarks", remarks: fresh });
-  const latest = Math.max(remarksThrough, ...fresh.map((remark) => remark.createdAt));
-  const atLatest = fresh.filter((remark) => remark.createdAt === latest).map((r) => r.id);
+  const latest = Math.max(remarksThrough, ...fresh.map(activeAt));
+  const atLatest = fresh.filter((remark) => activeAt(remark) === latest).map((r) => r.id);
   const nextRemarkIds = latest === remarksThrough ? [...remarkIds, ...atLatest] : atLatest;
 
   if (observation.mergeable === "CONFLICTING" && !progress.conflicting) {

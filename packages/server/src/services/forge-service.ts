@@ -146,6 +146,8 @@ interface PullRequestTimelineItemBase {
   avatarUrl: string | null;
   body: string;
   createdAt: number;
+  /** When the body was last edited, on forges that report it. */
+  editedAt?: number;
   url: string;
 }
 

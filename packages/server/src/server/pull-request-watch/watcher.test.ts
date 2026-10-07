@@ -350,6 +350,27 @@ test("a watch saved before head and passed-check tracking adopts them without a 
   });
 });
 
+test("someone else editing a comment wakes the agent, and the edit is reported once", async () => {
+  const current = await startWatching();
+  const before = current.clock.now - 5_000;
+  current.forge.remarks = [comment("c0", "review-bot", before, "1 issue found")];
+  await watch(current);
+
+  current.forge.remarks = [
+    {
+      ...comment("c0", "review-bot", before, "2 issues found"),
+      editedAt: current.clock.now + 10_000,
+    },
+  ];
+  await sweep(current);
+  current.host.session(current.agentId).completeTurn("fixed");
+  await sweep(current);
+
+  expect(prompts(current)).toEqual([
+    expect.stringContaining(`- 1 new comment:\n  - review-bot: "2 issues found" ${PR_URL}#c0\n`),
+  ]);
+});
+
 test("a new merge conflict wakes the agent once", async () => {
   const current = await startWatching();
   await watch(current);

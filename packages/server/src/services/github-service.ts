@@ -371,6 +371,7 @@ const PullRequestTimelineReviewNodeSchema = z.object({
   bodyHTML: z.string().nullable().catch(null),
   url: z.string().catch(""),
   submittedAt: z.string().nullable().catch(null),
+  lastEditedAt: z.string().nullable().optional().catch(null),
   author: TimelineAuthorSchema,
 });
 
@@ -380,6 +381,7 @@ const PullRequestTimelineCommentNodeSchema = z.object({
   bodyHTML: z.string().nullable().catch(null),
   url: z.string().catch(""),
   createdAt: z.string().nullable().catch(null),
+  lastEditedAt: z.string().nullable().optional().catch(null),
   author: TimelineAuthorSchema,
 });
 
@@ -569,6 +571,7 @@ query PullRequestTimeline($owner: String!, $name: String!, $number: Int!) {
           bodyHTML
           url
           submittedAt
+          lastEditedAt
           author {
             login
             url
@@ -586,6 +589,7 @@ query PullRequestTimeline($owner: String!, $name: String!, $number: Int!) {
           bodyHTML
           url
           createdAt
+          lastEditedAt
           author {
             login
             url
@@ -611,6 +615,7 @@ query PullRequestTimeline($owner: String!, $name: String!, $number: Int!) {
               bodyHTML
               url
               createdAt
+              lastEditedAt
               author {
                 login
                 url
@@ -3692,6 +3697,7 @@ function toPullRequestTimelineReviewItem(
       avatarUrl: review.author?.avatarUrl ?? null,
       body: normalizeGitHubTimelineBody(review.body ?? "", review.bodyHTML ?? ""),
       createdAt: parseOptionalTime(review.submittedAt ?? null),
+      ...(review.lastEditedAt ? { editedAt: parseOptionalTime(review.lastEditedAt) } : {}),
       url: review.url,
       reviewState,
     },
@@ -3709,6 +3715,7 @@ function toPullRequestTimelineCommentItem(
     avatarUrl: comment.author?.avatarUrl ?? null,
     body: normalizeGitHubTimelineBody(comment.body ?? "", comment.bodyHTML ?? ""),
     createdAt: parseOptionalTime(comment.createdAt ?? null),
+    ...(comment.lastEditedAt ? { editedAt: parseOptionalTime(comment.lastEditedAt) } : {}),
     url: comment.url,
   };
 }
