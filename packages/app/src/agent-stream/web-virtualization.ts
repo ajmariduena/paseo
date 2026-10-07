@@ -1,6 +1,7 @@
 import type { AssistantImageContext } from "@/utils/assistant-image-metadata";
 import type { StreamItem } from "@/types/stream";
 import { estimateAssistantMessageHeightFromCache } from "@/utils/assistant-message-height-estimate";
+import { htmlRenderFromToolCall } from "@/html-render/reference";
 import {
   DEFAULT_MOUNTED_RECENT_STREAM_ITEMS,
   findMountedWindowStart,
@@ -67,7 +68,7 @@ export function estimateStreamItemHeight({
         }) ?? 220
       );
     case "tool_call":
-      return COLLAPSED_TOOL_SEQUENCE_ROW_HEIGHT_ESTIMATE;
+      return htmlRenderFromToolCall(item)?.height ?? COLLAPSED_TOOL_SEQUENCE_ROW_HEIGHT_ESTIMATE;
     case "thought":
       return COLLAPSED_TOOL_SEQUENCE_ROW_HEIGHT_ESTIMATE;
     case "todo_list":

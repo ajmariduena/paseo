@@ -188,6 +188,14 @@ Omit absent optional settings. If no profile fits, use provider discovery to cho
 | `list_pending_permissions` | Return pending permission requests across agents. |
 | `respond_to_permission`    | Approve or deny a pending permission request.     |
 
+### Visuals
+
+| Tool          | Function                                                                                     |
+| ------------- | -------------------------------------------------------------------------------------------- |
+| `html_render` | Publish a self-contained HTML page inline in the agent's conversation above its final reply. |
+
+The page follows the app's light or dark theme through CSS variables, and can include local images from the agent's working directory or OS temp directory. The page stays available in archived conversations and is removed when the agent is permanently deleted. A preview/screenshot tool is planned for a later phase.
+
 ### Browser
 
 Browser automation is opt-in and adds tools for opening tabs, reading pages, clicking, typing, and taking screenshots. See the [Browser tools reference](/docs/browser-tools).

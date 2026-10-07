@@ -122,6 +122,37 @@ describe("splitWebVirtualizedHistory", () => {
 });
 
 describe("estimateStreamItemHeight", () => {
+  it("reserves the declared height for a completed HTML render", () => {
+    const item: StreamItem = {
+      kind: "tool_call",
+      id: "render",
+      timestamp: createTimestamp(1),
+      payload: {
+        source: "agent",
+        data: {
+          provider: "codex",
+          callId: "render",
+          name: "paseo.html_render",
+          status: "completed",
+          error: null,
+          detail: {
+            type: "unknown",
+            input: {},
+            output: {
+              htmlRender: {
+                renderId: "550e8400-e29b-41d4-a716-446655440000",
+                title: "Chart",
+                height: 360,
+              },
+            },
+          },
+        },
+      },
+    };
+    expect(estimateStreamItemHeight({ item, contentMaxWidth: DEFAULT_CONTENT_MAX_WIDTH })).toBe(
+      360,
+    );
+  });
   it("uses compact estimates for collapsed tool sequence rows", () => {
     expect(
       estimateStreamItemHeight({

@@ -84,6 +84,12 @@ Native builds narrow this gap rather than closing it outright. The WebView refus
 
 If you don't trust a page, read it in `Source`, which executes nothing. Source is available as an editable view on supported web hosts and a read-only view everywhere else.
 
+## Inline HTML renders
+
+An agent can publish a page into its conversation with `html_render`. The daemon stores it under that agent, limits its size and local image inputs, and delivers it over the authenticated session. The web and Electron viewer use an opaque-origin `srcDoc` iframe with `sandbox="allow-scripts"`; native uses an incognito WebView with an inert `about:blank` base and a navigation latch. The CSP allows inline scripts and public HTTPS scripts, styles, images, fonts, and media, while blocking fetch, XHR, WebSocket, forms, and nested frames. The host accepts only validated size and HTTP(S) link messages from its own frame. Web opens a link only while that frame is focused and the browser reports user activation.
+
+Page scripts can take focus inside their own frame. The CSP does not stop a page navigating itself with script or meta refresh; on web and Electron that can make an outbound request with the page's own data and the reader's IP address. Native's navigation latch narrows this route, subject to the WebView timing limit described above. A render has no access to the Paseo document, its cookies or storage.
+
 ## Agent authentication
 
 Paseo wraps agent CLIs (Claude Code, Codex, OpenCode) but does not manage their authentication. Each agent provider handles its own credentials. Paseo never stores or transmits provider API keys. Agents run in your user context with your existing credentials.

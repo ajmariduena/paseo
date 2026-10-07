@@ -685,6 +685,34 @@ describe("turn folding", () => {
   });
 
   it.each(["detailed", "overview"] as const)(
+    "keeps a completed HTML render at its tool position in %s mode",
+    (level) => {
+      const render = workCall(
+        "render",
+        6,
+        {
+          type: "unknown",
+          input: {},
+          output: {
+            htmlRender: {
+              renderId: "550e8400-e29b-41d4-a716-446655440000",
+              title: "Chart",
+              height: 400,
+            },
+          },
+        },
+        { name: "mcp__paseo__html_render" },
+      );
+      const result = present({ tail: [prompt, ...work, render, answer], level });
+      expect(ids(result.tail)).toContain("render");
+      expect(ids(result.tail).indexOf("render")).toBeLessThan(
+        ids(result.tail).indexOf("answer:block:0"),
+      );
+      expect(result.turnFolds.rowsById.get("prompt:turn-fold")?.fold.state).toBe("complete");
+    },
+  );
+
+  it.each(["detailed", "overview"] as const)(
     "shows exactly the unfolded %s rows once expanded",
     (level) => {
       const expanded = present({ tail: turn, level, expanded: new Set(["prompt"]) });

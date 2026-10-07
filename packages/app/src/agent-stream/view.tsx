@@ -44,6 +44,8 @@ import {
   type InlinePathTarget,
 } from "@/components/message";
 import { PlanCard } from "@/components/plan-card";
+import { HtmlRenderCard } from "@/html-render/card";
+import { htmlRenderFromToolCall } from "@/html-render/reference";
 import type { StreamItem } from "@/types/stream";
 import type { PendingMessageSubmission } from "@/composer/submission/model";
 import type { TurnPresentation } from "@/timeline/turn-liveness";
@@ -410,6 +412,10 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     );
 
     const client = useSessionStore((state) => state.sessions[resolvedServerId]?.client ?? null);
+    // COMPAT(htmlRender): added in v0.11.x, remove after 2027-04-06 once daemon floor supports renders.
+    const supportsHtmlRender = useSessionStore(
+      (state) => state.sessions[resolvedServerId]?.serverInfo?.features?.htmlRender === true,
+    );
     const sessionStreamHead = useSessionStore((state) =>
       state.sessions[resolvedServerId]?.agentStreamHead?.get(agentId),
     );
@@ -829,6 +835,18 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         maxDetailHeight?: number,
       ) => {
         const { payload } = item;
+        const render = supportsHtmlRender ? htmlRenderFromToolCall(item) : null;
+        if (render) {
+          return (
+            <HtmlRenderCard
+              key={render.renderId}
+              client={client}
+              serverId={resolvedServerId}
+              agentId={agentId}
+              render={render}
+            />
+          );
+        }
 
         if (isSubagentSpawnCall(item)) {
           return <SubagentSpawnRow call={item} />;
@@ -880,7 +898,15 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           />
         );
       },
-      [context.cwd, setInlineDetailsExpanded, handleToolCallOpenFile],
+      [
+        agentId,
+        client,
+        context.cwd,
+        handleToolCallOpenFile,
+        resolvedServerId,
+        setInlineDetailsExpanded,
+        supportsHtmlRender,
+      ],
     );
 
     // Read through a stable event so live group updates do not change the renderer identity
