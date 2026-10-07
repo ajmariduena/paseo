@@ -4,7 +4,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { realpathSync } from "node:fs";
-import { access, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve as resolvePath } from "node:path";
 import { tmpdir } from "node:os";
 import { z } from "zod";
@@ -867,6 +867,45 @@ function createPaseoWorktreeForMcpTest(options: {
 }
 
 describe("html_render tool", () => {
+  it.skipIf(process.platform === "win32")(
+    "returns sandbox setup guidance when the preview browser exits during launch",
+    async () => {
+      const paseoHome = await mkdtemp(join(tmpdir(), "paseo-html-preview-failed-launch-"));
+      const fakeBrowser = join(paseoHome, "chrome-headless-shell");
+      await writeFile(fakeBrowser, "#!/bin/sh\necho 'No usable sandbox!' >&2\nexit 133\n");
+      await chmod(fakeBrowser, 0o755);
+      const options = {
+        agentManager: new BoundaryAgentManagerFake() as AgentManager,
+        agentStorage: new BoundaryAgentStorageFake() as AgentStorage,
+        providerSnapshotManager:
+          new BoundaryProviderSnapshotManagerFake() as unknown as ProviderSnapshotManager,
+        callerAgentId: "agent-1",
+        paseoHome,
+        previewBrowserExecutable: fakeBrowser,
+        logger: createTestLogger(),
+      };
+      const server = await createAgentMcpServer(options);
+      const client = await connectInMemoryMcpClient(server);
+      try {
+        const input = { html: "<html><body>Preview</body></html>", width: 390 };
+        const result = await client.callTool({ name: "html_preview", arguments: input });
+        expect(result.isError).toBe(true);
+        expect(result.content).toEqual([
+          { type: "text", text: expect.stringContaining("docs/docker.md#html-preview-browser") },
+        ]);
+        expect(result.content.map((block) => block.type)).toEqual(["text"]);
+        const native = createPaseoToolCatalog({ ...options, transport: "native" });
+        const nativeResult = await native.executeTool("html_preview", input);
+        expect(nativeResult.isError).toBe(true);
+        expect(nativeResult.content[0]?.text).toContain("docs/docker.md#html-preview-browser");
+      } finally {
+        await client.close();
+        await server.close();
+        await rm(paseoHome, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("hides preview from legacy native OpenCode while keeping it for image-capable native catalogs", () => {
     const base = {
       agentStorage: new BoundaryAgentStorageFake() as AgentStorage,

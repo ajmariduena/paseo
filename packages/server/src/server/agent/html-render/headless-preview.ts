@@ -1,8 +1,10 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { prepareRenderDocument, type RenderTheme } from "@getpaseo/protocol/html-render";
 import { startPublicPreviewProxy } from "./public-proxy.js";
@@ -44,8 +46,14 @@ class CdpPipe {
   private failure: Error | null = null;
 
   constructor(private readonly child: ChildProcess) {
+    child.on("error", (error) => this.fail(error));
+    child.on("exit", () => this.fail(new Error("Preview browser exited")));
+    child.on("close", () => this.fail(new Error("Preview browser exited")));
+    child.stderr?.on("error", (error) => this.fail(error));
     const reader = child.stdio[4];
-    if (!reader || !("on" in reader)) throw new Error("Preview browser CDP pipe is unavailable");
+    const writer = child.stdio[3];
+    if (!reader || !("on" in reader) || !writer || !("on" in writer))
+      throw new Error("Preview browser CDP pipe is unavailable");
     reader.on("data", (chunk: Buffer) => {
       try {
         for (const raw of this.frames.push(chunk)) {
@@ -57,8 +65,8 @@ class CdpPipe {
     });
     reader.on("error", (error) => this.fail(error));
     reader.on("close", () => this.fail(new Error("Preview browser exited")));
-    child.on("error", (error) => this.fail(error));
-    child.on("exit", () => this.fail(new Error("Preview browser exited")));
+    writer.on("error", (error) => this.fail(error));
+    writer.on("close", () => this.fail(new Error("Preview browser exited")));
   }
 
   private receive(message: CdpMessage): void {
@@ -96,15 +104,16 @@ class CdpPipe {
       return Promise.reject(new Error("Preview browser CDP pipe is unavailable"));
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      writer.write(
-        `${JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })}\0`,
-        (error: Error | null | undefined) => {
-          if (error) {
-            this.pending.delete(id);
-            reject(error);
-          }
-        },
-      );
+      try {
+        writer.write(
+          `${JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })}\0`,
+          (error: Error | null | undefined) => {
+            if (error) this.fail(error);
+          },
+        );
+      } catch (error) {
+        this.fail(error instanceof Error ? error : new Error("Preview browser CDP write failed"));
+      }
     });
   }
 
@@ -166,6 +175,36 @@ async function acquireBrowser(waitMs: number, signal?: AbortSignal): Promise<() 
   };
 }
 
+async function waitForLaunchExit(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const controller = new AbortController();
+  try {
+    await Promise.race([
+      once(child, "exit", { signal: controller.signal }).catch(() => undefined),
+      delay(150, undefined, { signal: controller.signal }).catch(() => undefined),
+    ]);
+  } finally {
+    controller.abort();
+  }
+}
+
+async function launchDiagnostic(
+  executable: string,
+  child: ChildProcess | null,
+  stderr: string,
+  handshakeCompleted: boolean,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  if (!child?.pid || handshakeCompleted || signal?.aborted) return null;
+  await waitForLaunchExit(child);
+  if (child.exitCode === null && child.signalCode === null && !stderr) return null;
+  return previewBrowserHostDiagnostic(executable, {
+    stderr,
+    exitCode: child.exitCode,
+    sandboxEnabled: process.env.PASEO_PREVIEW_BROWSER_SANDBOX !== "0",
+  });
+}
+
 async function withBrowser<T>(
   executable: string,
   task: (cdp: CdpPipe) => Promise<T>,
@@ -180,6 +219,7 @@ async function withBrowser<T>(
   let timer: NodeJS.Timeout | null = null;
   let stderrTail = "";
   let onAbort: (() => void) | null = null;
+  let handshakeCompleted = false;
   try {
     scratch = await mkdtemp(path.join(tmpdir(), "paseo-html-preview-"));
     proxy = await startPublicPreviewProxy();
@@ -225,12 +265,21 @@ async function withBrowser<T>(
       if (signal?.aborted) onAbort();
     });
     return await Promise.race([
-      cdp.send("Browser.setDownloadBehavior", { behavior: "deny" }).then(() => task(cdp)),
+      cdp.send("Browser.setDownloadBehavior", { behavior: "deny" }).then(() => {
+        handshakeCompleted = true;
+        return task(cdp);
+      }),
       timeout,
       cancellation,
     ]);
   } catch (error) {
-    const diagnostic = await previewBrowserHostDiagnostic(executable, stderrTail);
+    const diagnostic = await launchDiagnostic(
+      executable,
+      child,
+      stderrTail,
+      handshakeCompleted,
+      signal,
+    );
     if (diagnostic) throw new Error(diagnostic, { cause: error });
     throw error;
   } finally {

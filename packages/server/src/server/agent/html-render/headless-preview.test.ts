@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { RENDER_WIDTHS } from "@getpaseo/protocol/html-render";
@@ -9,9 +9,70 @@ import {
   measureHtmlRenderHeights,
 } from "./headless-preview.js";
 import { STOCK_RENDER_THEMES } from "./stock-theme.js";
+import { previewBrowserHostDiagnostic } from "./browser-host.js";
 
 const executable = process.env.PASEO_TEST_HEADLESS_SHELL;
 const live = test.skipIf(!executable);
+
+test("maps only a failed sandbox launch to Linux setup guidance", async () => {
+  const shell = process.platform === "win32" ? process.execPath : "/bin/sh";
+  await expect(
+    previewBrowserHostDiagnostic(shell, { platform: "linux", stderr: "No usable sandbox!" }),
+  ).resolves.toContain("docs/docker.md#html-preview-browser");
+  await expect(
+    previewBrowserHostDiagnostic(shell, { platform: "linux", exitCode: 133 }),
+  ).resolves.toContain("docs/docker.md#html-preview-browser");
+  await expect(
+    previewBrowserHostDiagnostic(shell, { platform: "linux", stderr: "ENOENT", exitCode: null }),
+  ).resolves.toBeNull();
+  await expect(
+    previewBrowserHostDiagnostic(shell, {
+      platform: "linux",
+      stderr: "No usable sandbox!",
+      exitCode: 133,
+      sandboxEnabled: false,
+    }),
+  ).resolves.toBeNull();
+});
+
+test.skipIf(process.platform === "win32")(
+  "handles a browser exiting during the CDP handshake without an unhandled pipe error",
+  async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "paseo-preview-failed-launch-"));
+    const fakeBrowser = path.join(directory, "chrome-headless-shell");
+    const unhandled: unknown[] = [];
+    const collect = (error: unknown) => unhandled.push(error);
+    process.on("uncaughtException", collect);
+    process.on("unhandledRejection", collect);
+    try {
+      await writeFile(fakeBrowser, "#!/bin/sh\necho 'No usable sandbox!' >&2\nexit 133\n");
+      await chmod(fakeBrowser, 0o755);
+      await expect(
+        captureHtmlPreview({
+          executable: fakeBrowser,
+          width: 390,
+          theme: STOCK_RENDER_THEMES.dark,
+          html: "<html><body>preview</body></html>",
+        }),
+      ).rejects.toThrow(/docs\/docker\.md#html-preview-browser/);
+      await writeFile(fakeBrowser, "#!/bin/sh\nexit 1\n");
+      await expect(
+        captureHtmlPreview({
+          executable: fakeBrowser,
+          width: 390,
+          theme: STOCK_RENDER_THEMES.dark,
+          html: "<html><body>preview</body></html>",
+        }),
+      ).rejects.not.toThrow(/docs\/docker\.md#html-preview-browser/);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("uncaughtException", collect);
+      process.off("unhandledRejection", collect);
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
 
 test("decodes a CDP frame split inside a UTF-8 character", () => {
   const decoder = new CdpFrameDecoder();
