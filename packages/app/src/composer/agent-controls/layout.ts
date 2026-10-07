@@ -266,28 +266,28 @@ export function resolveComposerLayoutMode(input: {
 export interface QuickPromptPresentation {
   /** False moves the picker into the attachment menu and the feedback above the input. */
   showTrigger: boolean;
-  showDefaultLabel: boolean;
+  showShortcutLabel: boolean;
   width: number;
   density: ComposerControlDensity;
-  /** The lean tablet row: one bookmark that sends the default on tap and opens on a long press. */
-  tapSendsDefault: boolean;
+  /** The lean tablet row keeps its bookmark during send feedback above the input. */
+  leanShortcut: boolean;
 }
 
 const PHONE_QUICK_PROMPT_PRESENTATION: QuickPromptPresentation = {
   showTrigger: false,
-  showDefaultLabel: false,
+  showShortcutLabel: false,
   width: 0,
   density: "icons",
-  tapSendsDefault: false,
+  leanShortcut: false,
 };
 
 function leanQuickPromptPresentation(target: number): QuickPromptPresentation {
   return {
     showTrigger: true,
-    showDefaultLabel: false,
+    showShortcutLabel: false,
     width: target + 2,
     density: "icons",
-    tapSendsDefault: true,
+    leanShortcut: true,
   };
 }
 
@@ -307,7 +307,7 @@ export function estimateComposerFixedWidth(touch: boolean): number {
 // title that fits the budget never ellipsizes in the real control.
 const QUICK_PROMPT_CHAR_WIDTH = 9;
 
-/** The default prompt's pill at its full title; the toolbar drops the label rather than truncate it. */
+/** The shortcut's pill at its full title; the toolbar drops the label rather than truncate it. */
 export function estimateQuickPromptPillWidth(label: string, fontScale: number): number {
   const { controlSize, iconLabelGap, labelPadding } = COMPOSER_TOOLBAR_GEOMETRY;
   const chars = Array.from(label).length;
@@ -320,7 +320,7 @@ export function estimateQuickPromptPillWidth(label: string, fontScale: number): 
 }
 
 /**
- * Resolve the joint budget: model/effort/mode labels disappear first, then the default prompt
+ * Resolve the joint budget: model/effort/mode labels disappear first, then the shortcut
  * label, and last the icon-only trigger itself. Both clusters consume this same decision, so a
  * prompt cannot keep the model at a density whose labels would overflow the remaining space.
  * Compact layouts are the phone row outright.
@@ -332,7 +332,7 @@ export function resolveQuickPromptPresentation(input: {
   /** The lean touch row on a tablet; compact wins when both are set. */
   lean?: boolean;
   touch: boolean;
-  defaultLabel: string | null;
+  shortcutLabel: string | null;
   controls: ComposerControlPresence;
   current?: QuickPromptPresentation;
 }): QuickPromptPresentation {
@@ -343,9 +343,9 @@ export function resolveQuickPromptPresentation(input: {
   const target = input.touch ? 44 : 28;
   if (input.lean) return leanQuickPromptPresentation(target);
   const splitWidth =
-    input.defaultLabel === null
+    input.shortcutLabel === null
       ? 0
-      : estimateQuickPromptPillWidth(input.defaultLabel, input.controls.fontScale) + target + 2;
+      : estimateQuickPromptPillWidth(input.shortcutLabel, input.controls.fontScale) + target + 2;
   const controlsWidth = (density: ComposerControlDensity) =>
     estimateComposerControlsWidth(input.controls, density, gap);
   const fits = (floor: number, wasVisible: boolean) => {
@@ -358,16 +358,16 @@ export function resolveQuickPromptPresentation(input: {
     input.current?.showTrigger ?? true,
   );
   if (!showTrigger) return PHONE_QUICK_PROMPT_PRESENTATION;
-  const showDefaultLabel =
-    input.defaultLabel !== null &&
-    fits(controlsWidth("tight") + gap + splitWidth, input.current?.showDefaultLabel ?? false);
-  const width = showDefaultLabel ? splitWidth : target + 2;
+  const showShortcutLabel =
+    input.shortcutLabel !== null &&
+    fits(controlsWidth("tight") + gap + splitWidth, input.current?.showShortcutLabel ?? false);
+  const width = showShortcutLabel ? splitWidth : target + 2;
   const density = resolveDensityWithHysteresis(
     input.availableWidth - width - gap,
     input.current?.density,
     controlsWidth,
   );
-  return { showTrigger, showDefaultLabel, width, density, tapSendsDefault: false };
+  return { showTrigger, showShortcutLabel, width, density, leanShortcut: false };
 }
 
 /** Inline feedback can wrap vertically but never grows beyond the toolbar's remaining width. */

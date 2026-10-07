@@ -294,24 +294,24 @@ describe("quick prompt capacity", () => {
   const base = {
     compact: false,
     touch: true,
-    defaultLabel: "Summary",
+    shortcutLabel: "Summary",
     controls: CLAUDE_CONTROLS,
   };
-  it("drops the default label to the glyph when it cannot fit", () => {
+  it("drops the shortcut label to the glyph when it cannot fit", () => {
     expect(resolveQuickPromptPresentation({ ...base, availableWidth: 400 })).toMatchObject({
-      showDefaultLabel: true,
+      showShortcutLabel: true,
     });
     expect(resolveQuickPromptPresentation({ ...base, availableWidth: 200 })).toMatchObject({
       showTrigger: true,
-      showDefaultLabel: false,
+      showShortcutLabel: false,
     });
   });
-  it("reserves the default label until the model pill has collapsed to its glyph", () => {
+  it("reserves the shortcut label until the model pill has collapsed to its glyph", () => {
     const result = resolveQuickPromptPresentation({ ...base, availableWidth: 260 });
-    expect(result).toMatchObject({ showDefaultLabel: true, density: "tight" });
+    expect(result).toMatchObject({ showShortcutLabel: true, density: "tight" });
     expect(resolveComposerControlPresentation(result.density).showModelLabel).toBe(false);
     const narrower = resolveQuickPromptPresentation({ ...base, availableWidth: 200 });
-    expect(narrower.showDefaultLabel).toBe(false);
+    expect(narrower.showShortcutLabel).toBe(false);
   });
 
   it("drops the icon-only trigger into the attachment menu as the last stage", () => {
@@ -323,10 +323,10 @@ describe("quick prompt capacity", () => {
     const phoneRow = resolveQuickPromptPresentation({ ...base, availableWidth: floor - 1 });
     expect(phoneRow).toEqual({
       showTrigger: false,
-      showDefaultLabel: false,
+      showShortcutLabel: false,
       width: 0,
       density: "icons",
-      tapSendsDefault: false,
+      leanShortcut: false,
     });
     expect(
       resolveQuickPromptPresentation({ ...base, availableWidth: floor + 11, current: phoneRow })
@@ -347,20 +347,20 @@ describe("quick prompt capacity", () => {
       resolveQuickPromptPresentation({ ...base, compact: true, availableWidth: 1000 }),
     ).toEqual({
       showTrigger: false,
-      showDefaultLabel: false,
+      showShortcutLabel: false,
       width: 0,
       density: "icons",
-      tapSendsDefault: false,
+      leanShortcut: false,
     });
   });
 
   it("gives the lean tablet row one bookmark that sends on tap", () => {
     expect(resolveQuickPromptPresentation({ ...base, lean: true, availableWidth: 1000 })).toEqual({
       showTrigger: true,
-      showDefaultLabel: false,
+      showShortcutLabel: false,
       width: 46,
       density: "icons",
-      tapSendsDefault: true,
+      leanShortcut: true,
     });
     expect(
       resolveQuickPromptPresentation({ ...base, compact: true, lean: true, availableWidth: 1000 })
@@ -378,27 +378,27 @@ describe("quick prompt capacity", () => {
       44 +
       2;
     const wide = resolveQuickPromptPresentation({ ...base, availableWidth: floor + 6 });
-    expect(wide.showDefaultLabel).toBe(true);
+    expect(wide.showShortcutLabel).toBe(true);
     const jitter = resolveQuickPromptPresentation({
       ...base,
       availableWidth: floor - 1,
       current: wide,
     });
-    expect(jitter.showDefaultLabel).toBe(true);
+    expect(jitter.showShortcutLabel).toBe(true);
     expect(jitter.density).toBe(wide.density);
     const narrow = resolveQuickPromptPresentation({
       ...base,
       availableWidth: floor - 13,
       current: jitter,
     });
-    expect(narrow.showDefaultLabel).toBe(false);
+    expect(narrow.showShortcutLabel).toBe(false);
     expect(
       resolveQuickPromptPresentation({ ...base, availableWidth: floor + 11, current: narrow })
-        .showDefaultLabel,
+        .showShortcutLabel,
     ).toBe(false);
     expect(
       resolveQuickPromptPresentation({ ...base, availableWidth: floor + 13, current: narrow })
-        .showDefaultLabel,
+        .showShortcutLabel,
     ).toBe(true);
   });
 
@@ -417,14 +417,14 @@ describe("quick prompt capacity", () => {
     ).toBeLessThanOrEqual(368);
   });
 
-  it("compact and absent default always open picker; larger text consumes capacity", () => {
+  it("compact and absent shortcut always open picker; larger text consumes capacity", () => {
     expect(
       resolveQuickPromptPresentation({ ...base, compact: true, availableWidth: 400 })
-        .showDefaultLabel,
+        .showShortcutLabel,
     ).toBe(false);
     expect(
-      resolveQuickPromptPresentation({ ...base, defaultLabel: null, availableWidth: 400 })
-        .showDefaultLabel,
+      resolveQuickPromptPresentation({ ...base, shortcutLabel: null, availableWidth: 400 })
+        .showShortcutLabel,
     ).toBe(false);
     expect(
       resolveQuickPromptPresentation({
@@ -432,7 +432,7 @@ describe("quick prompt capacity", () => {
         availableWidth: 250,
         controls: { ...base.controls, fontScale: 2 },
       }),
-    ).toMatchObject({ showTrigger: true, showDefaultLabel: false });
+    ).toMatchObject({ showTrigger: true, showShortcutLabel: false });
   });
 
   it.each([true, false])(
@@ -469,7 +469,7 @@ describe("quick prompt capacity", () => {
       const result = resolveQuickPromptPresentation({
         ...base,
         controls,
-        defaultLabel: "Resumen corto",
+        shortcutLabel: "Resumen corto",
         availableWidth: interior - fixed,
       });
       const gap = COMPOSER_TOOLBAR_GEOMETRY.touchControlGap;

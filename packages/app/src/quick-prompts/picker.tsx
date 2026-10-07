@@ -14,6 +14,7 @@ import { useQuickPrompts } from "./use-quick-prompts";
 import { useQuickPromptCapacity } from "./capacity";
 import {
   selectQuickPrompt,
+  resolveQuickPromptShortcut,
   isQuickPromptActionDisabled,
   updateQuickPrompt,
   type QuickPromptPickerAction,
@@ -43,6 +44,7 @@ export interface QuickPromptPicker {
   undoMs: number;
   state: QuickPromptSendState;
   defaultPrompt: QuickPrompt | undefined;
+  shortcutPrompt: QuickPrompt | undefined;
   pinCount: number;
   writePending: boolean;
   writeError: string;
@@ -73,6 +75,7 @@ export function useQuickPromptPicker(binding: QuickPromptToolbarBinding): QuickP
   const [write, setWrite] = useState({ pending: false, error: "" });
   const writing = useRef(false);
   const defaultPrompt = catalog.prompts.find((prompt) => prompt.isDefault);
+  const shortcutPrompt = resolveQuickPromptShortcut(catalog.prompts);
   const ready = isQuickPromptReady(catalog, binding.available, blocked);
   const select = useCallback(
     (prompt: QuickPrompt, action: QuickPromptPickerAction) => {
@@ -163,6 +166,7 @@ export function useQuickPromptPicker(binding: QuickPromptToolbarBinding): QuickP
       undoMs,
       state,
       defaultPrompt,
+      shortcutPrompt,
       pinCount,
       writePending: write.pending,
       writeError: write.error,
@@ -181,6 +185,7 @@ export function useQuickPromptPicker(binding: QuickPromptToolbarBinding): QuickP
       add,
       binding,
       defaultPrompt,
+      shortcutPrompt,
       draftEmpty,
       editDisabled,
       editor,

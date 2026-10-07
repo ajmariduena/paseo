@@ -81,41 +81,46 @@ function BookmarkGlyph({ ready = false }: { ready?: boolean }): ReactElement {
 const ThemedBookmark = withUnistyles(Bookmark);
 
 /**
- * The lean tablet row's one bookmark: with a default prompt a tap sends it and a long press opens
- * the picker; without one a tap opens the picker. A bare glyph like the mic beside it; green
- * says a tap will send.
+ * The tablet and icon-only desktop row's one bookmark. Green means a tap activates the shortcut;
+ * a long press opens the picker. Without an available shortcut, a tap opens the picker.
  */
-function LeanBookmarkTrigger({
-  defaultPrompt,
-  disabled,
+function ShortcutBookmarkTrigger({
+  shortcutPrompt,
+  sendDisabled,
   onSend,
 }: {
-  defaultPrompt: QuickPrompt | undefined;
-  disabled: boolean;
+  shortcutPrompt: QuickPrompt | undefined;
+  sendDisabled: boolean;
   onSend: (prompt: QuickPrompt) => void;
 }): ReactElement {
   const { t } = useTranslation();
   const { hitSlop } = useComposerControlLayout();
-  const ready = defaultPrompt !== undefined;
+  const ready = shortcutPrompt !== undefined && !sendDisabled;
   const send = useCallback(() => {
-    if (defaultPrompt) onSend(defaultPrompt);
-  }, [defaultPrompt, onSend]);
+    if (ready && shortcutPrompt) onSend(shortcutPrompt);
+  }, [ready, shortcutPrompt, onSend]);
   const triggerStyle = useMemo(() => [styles.trigger, styles.leanTrigger], []);
-  const label = defaultPrompt
-    ? t("quickPrompts.sendNamed", { title: defaultPrompt.title })
-    : t("quickPrompts.open");
+  let label = t("quickPrompts.open");
+  if (shortcutPrompt && ready) {
+    const key =
+      shortcutPrompt.mode === "insert" ? "quickPrompts.insertNamed" : "quickPrompts.sendNamed";
+    label = t(key, { title: shortcutPrompt.title });
+  }
+  let testID = "quick-prompts-picker-trigger";
+  if (shortcutPrompt && ready) {
+    testID = shortcutPrompt.isDefault ? "quick-prompt-default" : "quick-prompt-shortcut";
+  }
   return (
     <MenuTrigger
       style={triggerStyle}
       hitSlop={hitSlop}
-      disabled={disabled}
       activation={ready ? "longPress" : "press"}
       onPress={ready ? send : undefined}
       delayLongPress={LONG_PRESS_MS}
       accessibilityRole="button"
       accessibilityLabel={label}
       accessibilityHint={ready ? t("quickPrompts.longPressOpens") : undefined}
-      testID={ready ? "quick-prompt-default" : "quick-prompts-picker-trigger"}
+      testID={testID}
     >
       <BookmarkGlyph ready={ready} />
     </MenuTrigger>
@@ -130,12 +135,9 @@ function LeanBookmarkTrigger({
  */
 export function QuickPromptToolbar({ picker }: { picker: QuickPromptPicker }) {
   const { t } = useTranslation();
-  const { binding, state, defaultPrompt } = picker;
+  const { binding, state, shortcutPrompt } = picker;
   const touch = useControlDensity() === "touch";
   const [open, setOpen] = useState(false);
-  const [hovered, setHovered] = useState(false);
-  const handlePointerEnter = useCallback(() => setHovered(true), []);
-  const handlePointerLeave = useCallback(() => setHovered(false), []);
   const { presentation, feedbackWidth } = useQuickPromptPresentation(picker);
   const hasFeedback = state.status !== "idle";
   const setMenuOpen = useCallback(
@@ -150,15 +152,17 @@ export function QuickPromptToolbar({ picker }: { picker: QuickPromptPicker }) {
   );
   const openPicker = useCallback(() => setMenuOpen(true), [setMenuOpen]);
   if (!presentation || !presentation.showTrigger) return null;
-  const showDefault = presentation.showDefaultLabel && defaultPrompt !== undefined;
-  if (presentation.tapSendsDefault) {
+  const showShortcutLabel = presentation.showShortcutLabel && shortcutPrompt !== undefined;
+  if (presentation.leanShortcut) {
     return (
       <View style={[styles.cluster, touch && styles.clusterTouch]} testID="quick-prompts-toolbar">
         <MenuRoot open={open} onOpenChange={setMenuOpen} compactMode="sheet">
           <TouchTarget slotSize={COMPOSER_TOOLBAR_GEOMETRY.controlSize}>
-            <LeanBookmarkTrigger
-              defaultPrompt={defaultPrompt}
-              disabled={defaultPrompt ? isQuickPromptSendDisabled(picker, defaultPrompt) : false}
+            <ShortcutBookmarkTrigger
+              shortcutPrompt={shortcutPrompt}
+              sendDisabled={
+                shortcutPrompt ? isQuickPromptSendDisabled(picker, shortcutPrompt) : false
+              }
               onSend={picker.activate}
             />
           </TouchTarget>
@@ -173,11 +177,7 @@ export function QuickPromptToolbar({ picker }: { picker: QuickPromptPicker }) {
     <View style={[styles.cluster, touch && styles.clusterTouch]} testID="quick-prompts-toolbar">
       <MenuRoot open={open} onOpenChange={setMenuOpen} compactMode="sheet">
         <TouchTarget slotSize={COMPOSER_TOOLBAR_GEOMETRY.controlSize}>
-          <View
-            style={[styles.split, !hasFeedback && (hovered || open) && styles.splitActive]}
-            onPointerEnter={handlePointerEnter}
-            onPointerLeave={handlePointerLeave}
-          >
+          <View style={[styles.split, !hasFeedback && open && styles.splitActive]}>
             {hasFeedback ? (
               <QuickPromptFeedback
                 variant="toolbar"
@@ -191,15 +191,23 @@ export function QuickPromptToolbar({ picker }: { picker: QuickPromptPicker }) {
               />
             ) : (
               <>
-                {showDefault ? (
+                {showShortcutLabel ? (
                   <PromptPill
-                    prompt={defaultPrompt}
-                    disabled={isQuickPromptSendDisabled(picker, defaultPrompt)}
+                    prompt={shortcutPrompt}
+                    disabled={isQuickPromptSendDisabled(picker, shortcutPrompt)}
                     onActivate={picker.activate}
                     onOpen={openPicker}
                   />
                 ) : null}
-                <QuickPromptMenuTrigger labeled={showDefault} />
+                {shortcutPrompt && !showShortcutLabel ? (
+                  <ShortcutBookmarkTrigger
+                    shortcutPrompt={shortcutPrompt}
+                    sendDisabled={isQuickPromptSendDisabled(picker, shortcutPrompt)}
+                    onSend={picker.activate}
+                  />
+                ) : (
+                  <QuickPromptMenuTrigger labeled={showShortcutLabel} />
+                )}
               </>
             )}
           </View>
@@ -221,7 +229,7 @@ function useQuickPromptPresentation(picker: QuickPromptPicker): {
   presentation: QuickPromptPresentation | null;
   feedbackWidth: number;
 } {
-  const { binding, state, defaultPrompt, supported, loaded } = picker;
+  const { binding, state, shortcutPrompt, supported, loaded } = picker;
   const compact = useIsCompactFormFactor();
   const lean = useComposerLayoutMode(compact) === "lean";
   const touch = useControlDensity() === "touch";
@@ -236,7 +244,7 @@ function useQuickPromptPresentation(picker: QuickPromptPicker): {
         compact,
         lean,
         touch,
-        defaultLabel: defaultPrompt?.title ?? null,
+        shortcutLabel: shortcutPrompt?.title ?? null,
         controls,
       })
     : null;
@@ -245,7 +253,7 @@ function useQuickPromptPresentation(picker: QuickPromptPicker): {
   });
   // The lean bookmark keeps its glyph while a send waits; the bar above the input is its feedback.
   const hostsFeedback =
-    Boolean(presentation?.showTrigger) && !presentation?.tapSendsDefault && state.status !== "idle";
+    Boolean(presentation?.showTrigger) && !presentation?.leanShortcut && state.status !== "idle";
   const density = resolvePublishedDensity({ supported, hostsFeedback, presentation });
   usePublishQuickPromptDensity(density);
   const presentationKey = resolvePresentationKey({
@@ -284,7 +292,7 @@ function resolvePresentationKey(input: {
 }): string {
   const { presentation } = input;
   if (!presentation) return "unmeasured";
-  return `${input.compact}:${input.touch}:${input.fontScale}:${presentation.density}:${presentation.showTrigger}:${presentation.showDefaultLabel}`;
+  return `${input.compact}:${input.touch}:${input.fontScale}:${presentation.density}:${presentation.showTrigger}:${presentation.showShortcutLabel}`;
 }
 
 /** A named prompt, drawn exactly like the mode control: glyph, label, 28pt tall. */
@@ -309,6 +317,7 @@ function PromptPill({
     <View style={styles.pillBounds}>
       <AgentControlTrigger
         icon={Bookmark}
+        iconTint="accent"
         surface="toolbar"
         label={prompt.title}
         disabled={disabled}
@@ -316,7 +325,7 @@ function PromptPill({
         onLongPress={onOpen}
         delayLongPress={LONG_PRESS_MS}
         accessibilityLabel={label}
-        testID={prompt.isDefault ? "quick-prompt-default" : `quick-prompt-pill-${prompt.id}`}
+        testID={prompt.isDefault ? "quick-prompt-default" : "quick-prompt-shortcut"}
       />
     </View>
   );
@@ -336,8 +345,7 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     borderRadius: theme.borderRadius["2xl"],
   },
-  // One chip for both targets: the title's own hover would otherwise stop short of the caret.
-  splitActive: { backgroundColor: theme.colors.surface2 },
+  splitActive: { backgroundColor: theme.colors.interactionHighlight },
   pillBounds: { flexShrink: 0 },
   // Pulled into the pill's padding so the caret sits as close to the title as the model pill's.
   caretTrigger: {
