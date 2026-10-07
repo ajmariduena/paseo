@@ -53,11 +53,6 @@ export const GAUGE_TIER_COLOR = {
   top: "statusMerged",
 } as const satisfies Record<EffortTier, string>;
 
-/** Where a tap on the toolbar trigger lands: the slider, or straight into Advanced without one. */
-export function resolveIntelligenceOpeningPage(hasEffort: boolean): "quick" | "advanced" {
-  return hasEffort ? "quick" : "advanced";
-}
-
 /** The trigger's spoken value: model, level, and the speed only while it is on. */
 export function describeIntelligence(input: {
   modelLabel: string;

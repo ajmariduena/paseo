@@ -37,6 +37,7 @@ import {
   type ProviderSelectorProvider,
 } from "@/provider-selection/provider-selection";
 import { filterSelectableModels } from "@/provider-selection/model-catalog";
+import { resolveLockedRailProviders } from "@/components/model-browser-view";
 import { useSessionStore } from "@/stores/session-store";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { resolveProviderDefinition } from "@/utils/provider-definitions";
@@ -1107,6 +1108,14 @@ export const AgentControls = memo(function AgentControls({
       modelsByProvider: agentProviderModels,
     });
   }, [agentProviderDefinitions, agentProviderModels, snapshotSelectedEntry]);
+  const agentRailProviders = useMemo(
+    () =>
+      resolveLockedRailProviders({
+        own: agentModelSelectorProviders,
+        all: buildSelectableProviderSelectorProviders(snapshotEntries),
+      }),
+    [agentModelSelectorProviders, snapshotEntries],
+  );
 
   const modelSelection = resolveAgentModelSelection({
     models,
@@ -1319,7 +1328,7 @@ export const AgentControls = memo(function AgentControls({
       {profileEditor.element}
       <ControlledAgentControls
         provider={agent.provider}
-        modelSelectorProviders={agentModelSelectorProviders}
+        modelSelectorProviders={agentRailProviders}
         modelOptions={modelOptions}
         selectedModelId={modelSelection.activeModelId ?? undefined}
         onSelectModel={handleSelectModel}

@@ -329,6 +329,12 @@ export const ru: TranslationResources = {
       model: "Модель",
       reset: "Сбросить к значениям по умолчанию",
     },
+    quick: {
+      change: "Сменить",
+      changeModel: "Сменить модель",
+      fast: "Быстро",
+      context: "Контекст {{size}}",
+    },
     speed: {
       title: "Скорость",
       standard: "Стандартная",
@@ -1793,6 +1799,14 @@ export const ru: TranslationResources = {
     searchAllPlaceholder: "Поиск по всем моделям...",
     searchPlaceholder: "Поиск моделей...",
     openProviderSettings: "Открыть настройки {{provider}}",
+    favorites: "Избранное",
+    favorite: "Добавить в избранное",
+    unfavorite: "Убрать из избранного",
+    favoritesEmpty: "Отметьте модель звездой, чтобы она была здесь",
+    providerLocked: "{{provider}} недоступен в этом чате",
+    providerLockedNote:
+      "Этот чат начат с {{provider}}. Чтобы использовать другого провайдера, начните новый чат.",
+    manageModels: "Управление моделями",
   },
   providerCatalog: {
     title: "Добавить провайдера",
@@ -2825,6 +2839,7 @@ export const ru: TranslationResources = {
         cycleTheme: "Переключить тему",
         focusMessageInput: "Перейти к полю ввода сообщения",
         cycleAgentMode: "Переключить режим агента",
+        openModelPicker: "Сменить модель",
         startStopDictation: "Начать/остановить диктовку",
         interruptAgent: "Прервать агента",
         sendMessage: "Отправить сообщение",
