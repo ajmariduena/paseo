@@ -25,6 +25,7 @@ import {
   type WorktreeStorageContext,
 } from "./worktree-storage.js";
 import { homedir } from "node:os";
+import { HtmlRenderStore } from "./agent/html-render/store.js";
 import { resolvePaseoWorktreesBaseRoot } from "../utils/worktree.js";
 import { CLIENT_CAPS, type ClientCapability } from "@getpaseo/protocol/client-capabilities";
 import { formatPluginSourceReference } from "@getpaseo/protocol/plugin-source-reference";
@@ -3028,6 +3029,8 @@ export class Session {
         return this.handleProviderSubagentListRequest(msg);
       case "agent.provider_subagents.timeline.get.request":
         return this.handleProviderSubagentTimelineRequest(msg, source);
+      case "agent.html_render.get.request":
+        return this.handleHtmlRenderGetRequest(msg, source);
       case "session.events.set_subscription.request": {
         const owner = this.delivery.begin("events", undefined, async (id) => {
           this.eventSubscriptions.delete(id);
@@ -3077,6 +3080,46 @@ export class Session {
         return this.handleAgentQueueRequest(msg);
       default:
         return undefined;
+    }
+  }
+
+  private async handleHtmlRenderGetRequest(
+    msg: Extract<SessionInboundMessage, { type: "agent.html_render.get.request" }>,
+    source?: object,
+  ): Promise<void> {
+    try {
+      const agent =
+        this.agentManager.getAgent(msg.agentId) ?? (await this.agentStorage.get(msg.agentId));
+      if (!agent || agent.internal) throw new Error("Render not found");
+      const render = await new HtmlRenderStore(this.paseoHome).get(msg.agentId, msg.renderId);
+      this.emitForSource(
+        {
+          type: "agent.html_render.get.response",
+          payload: {
+            requestId: msg.requestId,
+            agentId: msg.agentId,
+            renderId: msg.renderId,
+            ...render,
+            error: null,
+          },
+        },
+        source,
+      );
+    } catch {
+      this.emitForSource(
+        {
+          type: "agent.html_render.get.response",
+          payload: {
+            requestId: msg.requestId,
+            agentId: msg.agentId,
+            renderId: msg.renderId,
+            html: null,
+            title: null,
+            error: "Render not found",
+          },
+        },
+        source,
+      );
     }
   }
 

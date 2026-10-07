@@ -3,6 +3,17 @@ import { describe, expect, it } from "vitest";
 import { buildToolCallDisplayModel } from "./tool-call-display.js";
 
 describe("shared tool-call display mapping", () => {
+  it("labels running and failed HTML render calls", () => {
+    for (const status of ["running", "failed"] as const) {
+      const display = buildToolCallDisplayModel({
+        name: "mcp__paseo__html_render",
+        status,
+        error: status === "failed" ? "bad HTML" : null,
+        detail: { type: "unknown", input: {}, output: null },
+      });
+      expect(display.displayName).toBe("Render an HTML page");
+    }
+  });
   it("builds summary from canonical detail", () => {
     const display = buildToolCallDisplayModel({
       name: "read_file",

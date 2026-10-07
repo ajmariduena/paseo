@@ -789,6 +789,16 @@ test("maps tool_result content shapes into deterministic string output", async (
         }),
       );
     }
+    const render = {
+      htmlRender: { renderId: "550e8400-e29b-41d4-a716-446655440000", title: "Chart", height: 400 },
+    };
+    expect(
+      internal.buildToolOutput(
+        [{ type: "text", text: JSON.stringify(render) }],
+        { type: "tool_result", tool_name: "html_render", is_error: false },
+        { id: "render", name: "html_render", server: "paseo", started: true, input: {} },
+      ),
+    ).toMatchObject({ output: render });
   } finally {
     await session.close();
   }

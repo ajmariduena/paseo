@@ -23,6 +23,7 @@ import {
   type FileTransferFrame,
 } from "@getpaseo/protocol/binary-frames/index";
 import { Session } from "./session.js";
+import { HtmlRenderStore } from "./agent/html-render/store.js";
 import { OWNER_PERMISSIONS, type DaemonPermission } from "./authorization/index.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
 import { StructuredAgentFallbackError } from "./agent/agent-response-loop.js";
@@ -1410,6 +1411,53 @@ function createStoredAgentRecord(
     archivedAt: overrides.archivedAt ?? null,
   };
 }
+
+describe("HTML render RPC", () => {
+  test("reads only a render owned by the requested agent", async () => {
+    const paseoHome = mkdtempSync(join(tmpdir(), "paseo-render-rpc-"));
+    try {
+      const store = new HtmlRenderStore(paseoHome);
+      const render = await store.publish({
+        agentId: "agent_a",
+        cwd: paseoHome,
+        html: "<p>Hi</p>",
+        title: "Hi",
+        height: 300,
+      });
+      const messages: SessionOutboundMessage[] = [];
+      const session = createSessionForTest({
+        paseoHome,
+        messages,
+        agentManager: { getAgent: vi.fn().mockReturnValue(null) },
+        agentStorage: { get: vi.fn(async (agentId: string) => ({ id: agentId, internal: false })) },
+      });
+      await session.handleMessage({
+        type: "agent.html_render.get.request",
+        requestId: "own",
+        agentId: "agent_a",
+        renderId: render.renderId,
+      });
+      await session.handleMessage({
+        type: "agent.html_render.get.request",
+        requestId: "other",
+        agentId: "agent_b",
+        renderId: render.renderId,
+      });
+      expect(findByType(messages, "agent.html_render.get.response")).toMatchObject({
+        payload: { requestId: "own", html: "<p>Hi</p>", title: "Hi", error: null },
+      });
+      expect(
+        messages.find(
+          (message) =>
+            message.type === "agent.html_render.get.response" &&
+            message.payload.requestId === "other",
+        ),
+      ).toMatchObject({ payload: { html: null, error: "Render not found" } });
+    } finally {
+      rmSync(paseoHome, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("plugin timeline append RPC", () => {
   test("stamps the plugin identity and returns the timeline position", async () => {

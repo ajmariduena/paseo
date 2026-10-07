@@ -3585,6 +3585,30 @@ export class DaemonClient {
     return payload;
   }
 
+  async getHtmlRender(agentId: string, renderId: string): Promise<{ html: string; title: string }> {
+    const requestId = this.createRequestId();
+    const message = SessionInboundMessageSchema.parse({
+      type: "agent.html_render.get.request",
+      requestId,
+      agentId,
+      renderId,
+    });
+    const payload = await this.sendRequest({
+      requestId,
+      message,
+      options: { skipQueue: true },
+      select: (response) =>
+        response.type === "agent.html_render.get.response" &&
+        response.payload.requestId === requestId
+          ? response.payload
+          : null,
+    });
+    if (payload.error || payload.html === null || payload.title === null) {
+      throw new Error(payload.error ?? "Render not found");
+    }
+    return { html: payload.html, title: payload.title };
+  }
+
   async appendAgentTimelineItem(
     agentId: string,
     item: Omit<import("@getpaseo/protocol/agent-types").PluginTimelineItem, "pluginId">,

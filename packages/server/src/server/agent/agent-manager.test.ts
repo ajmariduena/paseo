@@ -20,6 +20,7 @@ import { PASEO_MCP_TOOL_TIMEOUT_MS } from "./runtime-mcp-config.js";
 import { PASEO_READ_ONLY_TOOL_NAMES } from "./tools/read-only-tools.js";
 import { PromptAnnotationStore } from "./prompt-annotations.js";
 import { AgentStorage } from "./agent-storage.js";
+import { HtmlRenderStore } from "./html-render/store.js";
 import { InMemoryAgentTimelineStore } from "./agent-timeline-store.js";
 import { toAgentPayload } from "./agent-projections.js";
 import { projectTimelineRows } from "./timeline-projection.js";
@@ -12457,5 +12458,24 @@ test("failed startup history closes the session without registering an agent", a
     expect({ agents: manager.listAgents(), closed }).toEqual({ agents: [], closed: true });
   } finally {
     for (const agent of manager.listAgents()) await manager.closeAgent(agent.id);
+  }
+});
+
+test("deleting agent state removes its HTML renders", async () => {
+  const paseoHome = mkdtempSync(join(tmpdir(), "paseo-agent-render-delete-"));
+  const manager = new AgentManager({ paseoHome, logger });
+  const store = new HtmlRenderStore(paseoHome);
+  try {
+    const render = await store.publish({
+      agentId: "agent_a",
+      cwd: paseoHome,
+      html: "<p>Hi</p>",
+      title: "Hi",
+      height: 200,
+    });
+    await manager.deleteAgentState("agent_a");
+    await expect(store.get("agent_a", render.renderId)).rejects.toThrow();
+  } finally {
+    rmSync(paseoHome, { recursive: true, force: true });
   }
 });

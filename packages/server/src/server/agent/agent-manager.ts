@@ -91,6 +91,7 @@ import { resolveCreateAgentTitles } from "./create-agent-title.js";
 import type { PaseoToolCatalogFactory } from "./tools/types.js";
 import { isPaseoToolPolicyEnabled } from "./paseo-tool-policy.js";
 import { buildPaseoOrchestrationInstructions } from "./orchestration-instructions.js";
+import { HtmlRenderStore } from "./html-render/store.js";
 import { composeSystemPromptParts } from "./system-prompt.js";
 import {
   PromptAnnotationStore,
@@ -128,6 +129,10 @@ type TimeoutResult = "completed" | "timed_out";
 
 function resolvePromptAnnotations(options: AgentManagerOptions): PromptAnnotationStore {
   return options.promptAnnotations ?? new PromptAnnotationStore(null);
+}
+
+function resolveHtmlRenderStore(options: AgentManagerOptions): HtmlRenderStore | null {
+  return options.paseoHome ? new HtmlRenderStore(options.paseoHome) : null;
 }
 
 function toNotificationItem(
@@ -401,6 +406,7 @@ export interface CreateAgentOptions {
 }
 
 export interface AgentManagerOptions {
+  paseoHome?: string;
   pluginLifecycle?: PluginLifecycle;
   clients?: ProviderClientMap;
   providerDefinitions?: ProviderEnabledMap;
@@ -868,6 +874,7 @@ export class AgentManager {
   private paseoToolsEnabled = true;
   private paseoToolCatalogFactory: PaseoToolCatalogFactory | null = null;
   private readonly paseoToolPolicies = new Map<string, ProviderPaseoToolsPolicy | undefined>();
+  private readonly htmlRenderStore: HtmlRenderStore | null;
   private readonly resolvePaseoToolPolicy: (
     provider: AgentProvider,
   ) => ProviderPaseoToolsPolicy | undefined;
@@ -881,6 +888,7 @@ export class AgentManager {
   private acceptingAgentRegistrations = true;
 
   constructor(options: AgentManagerOptions) {
+    this.htmlRenderStore = resolveHtmlRenderStore(options);
     this.pluginLifecycle = options.pluginLifecycle;
     this.idFactory = options?.idFactory ?? (() => randomUUID());
     this.registry = options?.registry;
@@ -3626,6 +3634,7 @@ export class AgentManager {
     this.discardRetainedAgentState(agentId);
     await this.deleteCommittedTimeline(agentId);
     await this.promptAnnotations.delete(agentId);
+    await this.htmlRenderStore?.deleteAgent(agentId);
   }
 
   /**

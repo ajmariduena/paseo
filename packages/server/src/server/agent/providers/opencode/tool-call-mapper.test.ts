@@ -2,6 +2,24 @@ import { describe, expect, it } from "vitest";
 
 import { mapOpencodeToolCall } from "./tool-call-mapper.js";
 
+it("keeps an HTML render JSON result on a completed OpenCode call", () => {
+  const output =
+    '{"htmlRender":{"renderId":"550e8400-e29b-41d4-a716-446655440000","title":"Chart","height":400}}';
+  expect(
+    mapOpencodeToolCall({
+      toolName: "html_render",
+      callId: "render",
+      status: "completed",
+      input: {},
+      output,
+    }),
+  ).toMatchObject({
+    name: "html_render",
+    status: "completed",
+    detail: { type: "unknown", output },
+  });
+});
+
 function expectMapped<T>(item: T | null): T {
   expect(item).toBeTruthy();
   if (!item) {

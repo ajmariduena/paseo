@@ -11,6 +11,8 @@ import { z } from "zod";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import { createAgentMcpServer } from "./mcp-server.js";
+import { createPaseoToolCatalog } from "./tools/paseo-tools.js";
+import { HtmlRenderStore } from "./html-render/store.js";
 import { PASEO_READ_ONLY_TOOL_NAMES } from "./tools/read-only-tools.js";
 import { DelegationService } from "../delegation/delegation-service.js";
 import { DelegationStore } from "../delegation/delegation-store.js";
@@ -863,6 +865,45 @@ function createPaseoWorktreeForMcpTest(options: {
     return result;
   };
 }
+
+describe("html_render tool", () => {
+  it("returns the same reference in MCP structured and JSON text content", async () => {
+    const paseoHome = await mkdtemp(join(tmpdir(), "paseo-html-mcp-"));
+    const options = {
+      agentManager: new BoundaryAgentManagerFake() as AgentManager,
+      agentStorage: new BoundaryAgentStorageFake() as AgentStorage,
+      providerSnapshotManager:
+        new BoundaryProviderSnapshotManagerFake() as unknown as ProviderSnapshotManager,
+      callerAgentId: "agent-1",
+      paseoHome,
+      logger: createTestLogger(),
+    };
+    const server = await createAgentMcpServer(options);
+    const client = await connectInMemoryMcpClient(server);
+    try {
+      const response = await client.callTool({
+        name: "html_render",
+        arguments: { html: "<h1>Chart</h1>", title: "Chart", height: 240 },
+      });
+      const structured = z
+        .object({
+          htmlRender: z.object({ renderId: z.string(), title: z.string(), height: z.number() }),
+          message: z.string(),
+        })
+        .parse(response.structuredContent);
+      expect(JSON.parse(expectSingleTextContent(response))).toEqual(structured);
+      expect(
+        await new HtmlRenderStore(paseoHome).get("agent-1", structured.htmlRender.renderId),
+      ).toEqual({ html: "<h1>Chart</h1>", title: "Chart" });
+      const native = createPaseoToolCatalog({ ...options, transport: "native" });
+      expect(native.getTool("html_render")).toBeDefined();
+    } finally {
+      await client.close();
+      await server.close();
+      await rm(paseoHome, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("Paseo tool annotations", () => {
   it("marks exactly the pre-approved read-only tools readOnlyHint", async () => {

@@ -1996,6 +1996,13 @@ export const ProviderSubagentTimelineRequestMessageSchema = z.object({
   limit: z.number().int().nonnegative().optional(),
 });
 
+export const AgentHtmlRenderGetRequestMessageSchema = z.object({
+  type: z.literal("agent.html_render.get.request"),
+  requestId: z.string(),
+  agentId: z.string(),
+  renderId: z.string(),
+});
+
 export const SetAgentTimelineSubscriptionRequestMessageSchema = z.object({
   type: z.literal("agent.timeline.set_subscription.request"),
   agentIds: z.array(z.string()),
@@ -3567,6 +3574,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   AgentTimelineListPromptsRequestMessageSchema,
   ProviderSubagentListRequestMessageSchema,
   ProviderSubagentTimelineRequestMessageSchema,
+  AgentHtmlRenderGetRequestMessageSchema,
   SetAgentTimelineSubscriptionRequestMessageSchema,
   AgentForkContextRequestMessageSchema,
   AgentQueueListRequestMessageSchema,
@@ -3904,6 +3912,8 @@ export const ServerInfoStatusPayloadSchema = z
         creationLifecycle: z.boolean().optional(),
         // COMPAT(hubAgentRpc): added in v0.8.0; remove gate after 2027-03-05.
         hubAgentRpc: z.boolean().optional(),
+        // COMPAT(htmlRender): added in v0.11.x, remove after 2027-04-06 once daemon floor supports renders.
+        htmlRender: z.boolean().optional(),
         providersSnapshot: z.boolean().optional(),
         usageSources: z.boolean().optional(),
         // COMPAT(providersSnapshotCwd): added in v0.3.2, remove gate after 2027-02-10.
@@ -7417,7 +7427,20 @@ export const AgentSkillsImportLegacySelectionResponseSchema = z.object({
   }),
 });
 
+export const AgentHtmlRenderGetResponseMessageSchema = z.object({
+  type: z.literal("agent.html_render.get.response"),
+  payload: z.object({
+    requestId: z.string(),
+    agentId: z.string(),
+    renderId: z.string(),
+    html: z.string().nullable(),
+    title: z.string().nullable(),
+    error: z.string().nullable(),
+  }),
+});
+
 export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
+  AgentHtmlRenderGetResponseMessageSchema,
   BrowserHostRegisterResponseSchema,
   SubscriptionReleaseResponseSchema,
   SessionEventsSetSubscriptionResponseSchema,

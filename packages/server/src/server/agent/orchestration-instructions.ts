@@ -20,9 +20,10 @@ export function buildPaseoOrchestrationInstructions(
     return body ? `### ${title}\n\n${body}` : "";
   }
 
-  if (!has("create_agent")) {
-    return undefined;
-  }
+  const visuals = has("html_render")
+    ? "### Showing visuals\n\nWhen a chart, table, diagram, image collage, or mockup would say more than prose, build a self-contained HTML page and publish it with `html_render` before your final reply. The reader sees the page above that reply, so add only what it does not say."
+    : "";
+  if (!has("create_agent")) return visuals || undefined;
 
   const startingTools = codeList(["create_agent", "send_agent_prompt"]).join(" and ");
   const pollingTools = codeList(["get_agent_status", "get_agent_activity", "list_agents"]);
@@ -63,6 +64,7 @@ export function buildPaseoOrchestrationInstructions(
     section("Tool names", [
       "Tool names may carry a harness prefix, such as `mcp__paseo__create_agent` or `paseo_create_agent`; the semantics are the same. Some harnesses load MCP tools lazily: if a tool-catalog scan doesn't show the Paseo tools, make one direct attempt with the known name (in Claude Code, find it with tool search) before concluding they are unavailable.",
     ]),
+    visuals,
   ]
     .filter((block) => block.length > 0)
     .join("\n\n");

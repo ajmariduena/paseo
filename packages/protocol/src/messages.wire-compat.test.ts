@@ -5,6 +5,7 @@ import {
   AgentTimelineItemPayloadSchema,
   ServerInfoStatusPayloadSchema,
   SessionOutboundMessageSchema,
+  SessionInboundMessageSchema,
   WSHelloMessageSchema,
   WorkspaceSetupSnapshotSchema,
   WorkspaceSetupProgressMessageSchema,
@@ -70,6 +71,39 @@ const LegacyAgentSnapshotPayloadSchema = AgentSnapshotPayloadSchema.extend({
 });
 
 describe("wire schema compatibility", () => {
+  test("HTML render RPC is correlated and the server feature stays optional", () => {
+    expect(
+      ServerInfoStatusPayloadSchema.parse({ status: "server_info", serverId: "old" }).features,
+    ).toBeUndefined();
+    expect(
+      ServerInfoStatusPayloadSchema.parse({
+        status: "server_info",
+        serverId: "new",
+        features: { htmlRender: true },
+      }).features?.htmlRender,
+    ).toBe(true);
+    expect(
+      SessionInboundMessageSchema.parse({
+        type: "agent.html_render.get.request",
+        requestId: "r",
+        agentId: "a",
+        renderId: "id",
+      }),
+    ).toMatchObject({ requestId: "r", agentId: "a", renderId: "id" });
+    expect(
+      SessionOutboundMessageSchema.parse({
+        type: "agent.html_render.get.response",
+        payload: {
+          requestId: "r",
+          agentId: "a",
+          renderId: "id",
+          html: "<p>Hi</p>",
+          title: "Hi",
+          error: null,
+        },
+      }),
+    ).toMatchObject({ payload: { requestId: "r", html: "<p>Hi</p>" } });
+  });
   test("hello parses with and without the project update capability", () => {
     const legacy = WSHelloMessageSchema.parse({
       type: "hello",

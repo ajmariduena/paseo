@@ -8,6 +8,33 @@ function expectMapped<T>(item: T | null): T {
 }
 
 describe("codex tool-call mapper", () => {
+  it("keeps an HTML render structured result on a completed MCP call", () => {
+    const result = {
+      structuredContent: {
+        htmlRender: {
+          renderId: "550e8400-e29b-41d4-a716-446655440000",
+          title: "Chart",
+          height: 400,
+        },
+      },
+    };
+    const item = expectMapped(
+      mapCodexToolCallFromThreadItem({
+        type: "mcpToolCall",
+        id: "render",
+        server: "paseo",
+        tool: "html_render",
+        status: "completed",
+        arguments: {},
+        result,
+      }),
+    );
+    expect(item).toMatchObject({
+      name: "paseo.html_render",
+      status: "completed",
+      detail: { type: "unknown", output: result },
+    });
+  });
   it("maps commandExecution start into running canonical call", () => {
     const item = expectMapped(
       mapCodexToolCallFromThreadItem({

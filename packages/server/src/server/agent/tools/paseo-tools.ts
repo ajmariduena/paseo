@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { HtmlRenderStore, MAX_HTML_CHARS } from "../html-render/store.js";
 import { stat } from "node:fs/promises";
 import { z } from "zod";
 import { ensureValidJson } from "../../json-utils.js";
@@ -812,6 +813,50 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       return tool.handler(await parseToolInput(tool, input), context);
     },
   });
+
+  if (callerAgentId && options.paseoHome && !options.voiceOnly) {
+    registerTool(
+      "html_render",
+      {
+        title: "Render an HTML page",
+        description:
+          "Show a finished self-contained HTML page (chart, dashboard, table, diagram, collage, mockup) inline above your final reply. Call before the reply; add only what the page does not say. Supply one document with inline style and script, a short title, and a height of 80–2000 CSS pixels. The frame is borderless and aligned with reply text. Use fluid width, no outer card or banner, and avoid viewport heights. Absolute local image paths under this agent's cwd or the OS temp directory are inlined. Public HTTPS chart libraries can load, but fetch, XHR, WebSocket, forms and nested frames are blocked. Use CSS variables --background, --foreground, --muted, --muted-foreground, --card, --card-foreground, --popover, --popover-foreground, --secondary, --secondary-foreground, --border, --input, --ring, --primary, --primary-foreground, --accent, --accent-foreground, --accent-surface, --accent-surface-foreground, --destructive, --destructive-foreground, --destructive-surface, --warning, --warning-foreground, --warning-surface, --success, --success-foreground, --info, --info-foreground, --code-background, --code-foreground, --chart-1 through --chart-6, --radius, --font-sans and --font-mono. They follow the reader's theme live.",
+        inputSchema: {
+          html: z
+            .string()
+            .min(1)
+            .max(MAX_HTML_CHARS)
+            .describe("Complete self-contained HTML document"),
+          title: z.string().trim().min(1).max(200).describe("Short name for the page"),
+          height: z.number().int().describe("Initial frame height in CSS pixels, 80–2000"),
+        },
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: false,
+          openWorldHint: true,
+        },
+      },
+      async (input: { html: string; title: string; height: number }) => {
+        const agent = resolveCallerAgent();
+        if (!agent) throw new Error("html_render requires an agent caller");
+        const htmlRender = await new HtmlRenderStore(options.paseoHome!).publish({
+          agentId: agent.id,
+          cwd: agent.cwd,
+          ...input,
+        });
+        const result = {
+          htmlRender,
+          message:
+            "Shown to the reader above your reply. Reply with only what the page does not already say.",
+        };
+        return {
+          structuredContent: result,
+          content: [{ type: "text", text: JSON.stringify(result) }],
+        };
+      },
+    );
+  }
 
   const buildCronScheduleCadence = (input: {
     cron: string | undefined;
