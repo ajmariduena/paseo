@@ -5,6 +5,7 @@ import type {
 } from "../messages.js";
 import type { SerializableAgentConfig, StoredAgentRecord } from "./agent-storage.js";
 import type {
+  AgentBackgroundTask,
   AgentCapabilityFlags,
   AgentFeature,
   AgentMetadata,
@@ -164,6 +165,17 @@ export function toAgentPayload(
     payload.attentionTimestamp = null;
   }
 
+  return payload;
+}
+
+/** Appends daemon-owned background tasks after the provider's own. */
+export function withDaemonBackgroundTasks(
+  payload: AgentSnapshotPayload,
+  tasks: readonly AgentBackgroundTask[],
+): AgentSnapshotPayload {
+  if (tasks.length === 0) return payload;
+  const daemonTasks = tasks.map((task) => ({ ...task }));
+  payload.backgroundTasks = [...(payload.backgroundTasks ?? []), ...daemonTasks];
   return payload;
 }
 

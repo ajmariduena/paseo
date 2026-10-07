@@ -6303,6 +6303,100 @@ test("defers parent finished attention until its delegated child finishes", asyn
   }
 });
 
+test("a daemon wake that ends while daemon background work runs waits for it to end before finished attention", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-background-attention-"));
+  class HeldSession extends TestAgentSession {
+    private turn = 0;
+
+    override async startTurn(): Promise<{ turnId: string }> {
+      return { turnId: `held-turn-${++this.turn}` };
+    }
+
+    complete(): void {
+      this.pushEvent({
+        type: "turn_completed",
+        provider: this.provider,
+        turnId: `held-turn-${this.turn}`,
+      });
+    }
+  }
+  const sessions: HeldSession[] = [];
+  const client = new (class extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      const session = new HeldSession(config);
+      sessions.push(session);
+      return session;
+    }
+  })();
+  const notifications: string[] = [];
+  const manager = new AgentManager({
+    clients: { codex: client },
+    logger,
+    onAgentAttention: ({ agentId }) => notifications.push(agentId),
+  });
+  const task = {
+    id: "pull-request-watch:w1",
+    taskType: "pull_request_watch",
+    description: "Watching PR #9",
+    startedAt: "2026-10-07T12:00:00.000Z",
+  };
+  async function wake(agentId: string, messageId: string): Promise<void> {
+    await manager.annotatePrompt(agentId, {
+      messageId,
+      prompt: "pull request news",
+      annotation: { kind: "notification", level: "info", message: "PR #9: checks passed" },
+    });
+    const stream = manager.streamAgent(agentId, "pull request news", {
+      clientMessageId: messageId,
+    });
+    expect((await stream.next()).value).toMatchObject({ type: "turn_started" });
+    sessions[0].complete();
+    await drainAsyncGenerator(stream);
+  }
+
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: "workspace",
+    });
+    manager.setDaemonBackgroundTasks({ agentId: agent.id, source: "watch", tasks: [task] });
+    expect(manager.listDaemonBackgroundTasks(agent.id)).toEqual([task]);
+
+    const userTurn = manager.streamAgent(agent.id, "open the PR and watch it");
+    expect((await userTurn.next()).value).toMatchObject({ type: "turn_started" });
+    sessions[0].complete();
+    await drainAsyncGenerator(userTurn);
+    expect(manager.getAgent(agent.id)?.attention.attentionReason).toBe("finished");
+    await manager.clearAgentAttention(agent.id);
+
+    await wake(agent.id, "wake-1");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(manager.getAgent(agent.id)?.attention.requiresAttention).toBe(false);
+    expect(notifications).toEqual([agent.id]);
+
+    manager.setDaemonBackgroundTasks({ agentId: agent.id, source: "watch", tasks: [] });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(manager.getAgent(agent.id)?.attention.attentionReason).toBe("finished");
+    expect(notifications).toEqual([agent.id, agent.id]);
+  } finally {
+    manager.prepareForShutdown();
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("stopping a daemon background task goes to the stopper registered for its id prefix", async () => {
+  const manager = new AgentManager({ clients: { codex: new TestAgentClient() }, logger });
+  const stopped: string[] = [];
+  const unregister = manager.registerBackgroundTaskStopper("watch:", async (agentId, taskId) => {
+    stopped.push(`${agentId}/${taskId}`);
+  });
+
+  await manager.stopBackgroundTask("agent-not-loaded", "watch:w1");
+  unregister();
+
+  expect(stopped).toEqual(["agent-not-loaded/watch:w1"]);
+  await expect(manager.stopBackgroundTask("agent-not-loaded", "watch:w2")).rejects.toThrow();
+});
+
 test("archiveSnapshot clears persisted attention and normalizes running status", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-archive-attention-"));
   const storagePath = join(workdir, "agents");

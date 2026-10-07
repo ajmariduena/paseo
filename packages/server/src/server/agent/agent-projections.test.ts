@@ -6,6 +6,7 @@ import {
   toAgentPayload,
   toRecentProviderSessionDescriptorPayload,
   toStoredAgentRecord,
+  withDaemonBackgroundTasks,
   type ManagedAgent,
 } from "./agent-projections.js";
 import type { AgentSession } from "./agent-sdk-types.js";
@@ -91,6 +92,7 @@ function createManagedAgent(overrides: ManagedAgentOverrides = {}): ManagedAgent
     },
     persistence: { ...basePersistence },
     lastUsage: undefined,
+    backgroundTasks: [],
     lastError: lastErrorValue,
     historyPrimed: true,
     lastUserMessageAt: now,
@@ -470,6 +472,36 @@ describe("toAgentPayload", () => {
     const payload = toAgentPayload(agent);
 
     expect(payload.features).toEqual(features);
+  });
+});
+
+describe("withDaemonBackgroundTasks", () => {
+  const shell = {
+    id: "shell-1",
+    taskType: "local_bash",
+    description: "npm run dev",
+    startedAt: "2025-01-01T00:00:00.000Z",
+  };
+  const watch = {
+    id: "pull-request-watch:w1",
+    taskType: "pull_request_watch",
+    description: "Watching PR #9 · 2 checks running",
+    startedAt: "2025-01-01T00:01:00.000Z",
+  };
+
+  it("lists daemon tasks after the provider's own", () => {
+    const payload = toAgentPayload(createManagedAgent({ backgroundTasks: [shell] }));
+
+    expect(withDaemonBackgroundTasks(payload, [watch]).backgroundTasks).toEqual([shell, watch]);
+  });
+
+  it("gives an agent without provider tasks the daemon's, and leaves it alone without any", () => {
+    expect(
+      withDaemonBackgroundTasks(toAgentPayload(createManagedAgent()), [watch]).backgroundTasks,
+    ).toEqual([watch]);
+    expect(
+      withDaemonBackgroundTasks(toAgentPayload(createManagedAgent()), []).backgroundTasks,
+    ).toBeUndefined();
   });
 });
 

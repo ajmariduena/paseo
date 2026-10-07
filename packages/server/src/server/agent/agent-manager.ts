@@ -450,6 +450,21 @@ export interface ActiveRun {
   started: boolean;
 }
 
+export type BackgroundTaskStopper = (agentId: string, taskId: string) => Promise<void>;
+
+export interface DaemonBackgroundTasksUpdate {
+  agentId: string;
+  source: string;
+  tasks: AgentBackgroundTask[];
+}
+
+function sameBackgroundTasks(
+  previous: readonly AgentBackgroundTask[],
+  next: readonly AgentBackgroundTask[],
+): boolean {
+  return JSON.stringify(previous) === JSON.stringify(next);
+}
+
 export type SteerOnlyResult = SteerResult | { status: "inactive" };
 
 export type ActiveTurnSteerDispatchResult =
@@ -859,6 +874,11 @@ export class AgentManager {
   private readonly deferredFinishedAttention = new Set<string>();
   private readonly pendingFinishedAttentionChecks = new Set<string>();
   private finishedAttentionBarrier: ((parentId: string) => boolean) | null = null;
+  /** Agents whose current or last turn a daemon message started, with no user prompt since. */
+  private readonly systemTurnAgents = new Set<string>();
+  /** Background work the daemon runs for an agent, by agent then source; outlives the runtime. */
+  private readonly daemonBackgroundTasks = new Map<string, Map<string, AgentBackgroundTask[]>>();
+  private readonly backgroundTaskStoppers = new Map<string, BackgroundTaskStopper>();
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly agentRegistrationTasks = new Set<Promise<void>>();
   private readonly inFlightAgentCloses = new Map<string, Promise<void>>();
@@ -2296,7 +2316,51 @@ export class AgentManager {
     this.emitState(agent);
   }
 
+  /**
+   * Replaces one source's daemon-owned background tasks for an agent. They show next to the
+   * provider's on the snapshot, and while any is held a turn a daemon message started ends
+   * without finished attention; it is raised once they are all gone.
+   */
+  setDaemonBackgroundTasks(input: DaemonBackgroundTasksUpdate): void {
+    const { agentId, source, tasks } = input;
+    const bySource = this.daemonBackgroundTasks.get(agentId) ?? new Map();
+    if (sameBackgroundTasks(bySource.get(source) ?? [], tasks)) return;
+    if (tasks.length > 0) {
+      bySource.set(source, tasks);
+    } else {
+      bySource.delete(source);
+    }
+    if (bySource.size > 0) {
+      this.daemonBackgroundTasks.set(agentId, bySource);
+    } else {
+      this.daemonBackgroundTasks.delete(agentId);
+    }
+    void this.publishAgentState(agentId).catch((error: unknown) => {
+      this.logger.warn({ err: error, agentId }, "Failed to publish agent background tasks");
+    });
+  }
+
+  listDaemonBackgroundTasks(agentId: string): AgentBackgroundTask[] {
+    return [...(this.daemonBackgroundTasks.get(agentId)?.values() ?? [])].flat();
+  }
+
+  /** Routes `stopBackgroundTask` for task ids starting with `prefix`; returns the unregister. */
+  registerBackgroundTaskStopper(prefix: string, stop: BackgroundTaskStopper): () => void {
+    this.backgroundTaskStoppers.set(prefix, stop);
+    return () => {
+      if (this.backgroundTaskStoppers.get(prefix) === stop) {
+        this.backgroundTaskStoppers.delete(prefix);
+      }
+    };
+  }
+
   async stopBackgroundTask(agentId: string, taskId: string): Promise<void> {
+    for (const [prefix, stop] of this.backgroundTaskStoppers) {
+      if (taskId.startsWith(prefix)) {
+        await stop(agentId, taskId);
+        return;
+      }
+    }
     const agent = this.requireAgent(agentId);
     if (!agent.session.stopBackgroundTask) {
       throw new Error("Agent session does not support stopping background tasks");
@@ -2876,6 +2940,7 @@ export class AgentManager {
       pendingRun.start = { status: "started", turnId };
       agent.activeForegroundTurnId = turnId;
       this.openActiveTurn(agent, turnId, turnStartedAt);
+      this.trackTurnOrigin(agentId, options);
       agent.lifecycle = "running";
       this.touchUpdatedAt(agent);
       // AgentManager owns the accepted-turn boundary. Publish liveness before the canonical
@@ -3280,6 +3345,12 @@ export class AgentManager {
     clientMessageId: string | undefined,
     expectedTurnId: string,
   ): Promise<void> {
+    if (
+      !clientMessageId ||
+      this.promptAnnotations.forMessage(agent.id, clientMessageId)?.kind !== "notification"
+    ) {
+      this.systemTurnAgents.delete(agent.id);
+    }
     if (!clientMessageId) {
       return;
     }
@@ -4206,6 +4277,7 @@ export class AgentManager {
     this.agents.delete(agent.id);
     this.previousStatuses.delete(agent.id);
     this.deferredFinishedAttention.delete(agent.id);
+    this.systemTurnAgents.delete(agent.id);
     this.scheduleDeferredFinishedAttentionChecks();
     if (agent.unsubscribeSession) {
       agent.unsubscribeSession();
@@ -5409,7 +5481,10 @@ export class AgentManager {
 
     // Check if agent transitioned from running to idle (finished)
     if (previousStatus === "running" && currentStatus === "idle") {
-      if (this.hasRunningDelegatedDescendant(agent.id)) {
+      if (
+        this.hasRunningDelegatedDescendant(agent.id) ||
+        this.isHeldByDaemonBackgroundWork(agent.id)
+      ) {
         this.deferredFinishedAttention.add(agent.id);
         return;
       }
@@ -5431,6 +5506,22 @@ export class AgentManager {
       };
       this.broadcastAgentAttention(agent, "error");
       return;
+    }
+  }
+
+  private isHeldByDaemonBackgroundWork(agentId: string): boolean {
+    return this.systemTurnAgents.has(agentId) && this.daemonBackgroundTasks.has(agentId);
+  }
+
+  private trackTurnOrigin(agentId: string, options: AgentRunOptions | undefined): void {
+    const clientMessageId = options?.clientMessageId;
+    const annotation = clientMessageId
+      ? this.promptAnnotations.forMessage(agentId, clientMessageId)
+      : null;
+    if (annotation?.kind === "notification") {
+      this.systemTurnAgents.add(agentId);
+    } else {
+      this.systemTurnAgents.delete(agentId);
     }
   }
 
@@ -5462,6 +5553,7 @@ export class AgentManager {
           return;
         }
         if (this.hasRunningDelegatedDescendant(parentId)) return;
+        if (this.isHeldByDaemonBackgroundWork(parentId)) return;
         if (this.finishedAttentionBarrier?.(parentId)) return;
         this.deferredFinishedAttention.delete(parentId);
         if (parent.attention.requiresAttention) return;

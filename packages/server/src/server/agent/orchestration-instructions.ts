@@ -57,6 +57,8 @@ export function buildPaseoOrchestrationInstructions(
         "- When this turn can't continue without the result, call `wait_for_agent`. `timeoutMs` (default 10 minutes, at most `limits.maxWaitMs`) only bounds your wait: `timedOut: true` doesn't stop the agent, and you are still notified when it finishes. A result you read through `wait_for_agent` is not delivered again.",
       has("watch_pull_request") &&
         "- To follow a pull request's checks and reviews, call `watch_pull_request` and end your turn: Paseo wakes you when a check fails, the required checks pass, someone else comments, or the branch conflicts. Don't poll the forge or run `gh pr checks --watch`.",
+      has("unwatch_pull_request") &&
+        "- Call `unwatch_pull_request` when you hand the work back: the pull request merged or was abandoned, or the user takes over. Until then the user sees you as working in the background.",
     ]),
     section("Recurring work", [
       has("create_heartbeat") &&
