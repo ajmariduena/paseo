@@ -872,6 +872,7 @@ function AppWithSidebar({ children }: { children: ReactNode }) {
       pathname === "/new" ||
       pathname === "/sessions" ||
       pathname === "/schedules" ||
+      pathname === "/notes" ||
       pathname === "/usage" ||
       routeHasKnownHost);
 
