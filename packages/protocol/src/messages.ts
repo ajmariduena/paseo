@@ -2003,6 +2003,21 @@ export const AgentHtmlRenderGetRequestMessageSchema = z.object({
   renderId: z.string(),
 });
 
+export const AgentVisualizationGetRequestMessageSchema = z.object({
+  type: z.literal("agent.visualization.get.request"),
+  requestId: z.string(),
+  agentId: z.string(),
+  path: z.string(),
+});
+
+export const AgentVisualizationSetStateRequestMessageSchema = z.object({
+  type: z.literal("agent.visualization.set_state.request"),
+  requestId: z.string(),
+  agentId: z.string(),
+  path: z.string(),
+  state: z.unknown(),
+});
+
 export const SetAgentTimelineSubscriptionRequestMessageSchema = z.object({
   type: z.literal("agent.timeline.set_subscription.request"),
   agentIds: z.array(z.string()),
@@ -3575,6 +3590,8 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ProviderSubagentListRequestMessageSchema,
   ProviderSubagentTimelineRequestMessageSchema,
   AgentHtmlRenderGetRequestMessageSchema,
+  AgentVisualizationGetRequestMessageSchema,
+  AgentVisualizationSetStateRequestMessageSchema,
   SetAgentTimelineSubscriptionRequestMessageSchema,
   AgentForkContextRequestMessageSchema,
   AgentQueueListRequestMessageSchema,
@@ -3914,6 +3931,8 @@ export const ServerInfoStatusPayloadSchema = z
         hubAgentRpc: z.boolean().optional(),
         // COMPAT(htmlRender): added in v0.11.x, remove after 2027-04-06 once daemon floor supports renders.
         htmlRender: z.boolean().optional(),
+        // COMPAT(codexVisualization): added in v0.11.x, remove after 2027-04-07 once daemon floor supports visualizations.
+        codexVisualization: z.boolean().optional(),
         providersSnapshot: z.boolean().optional(),
         usageSources: z.boolean().optional(),
         // COMPAT(providersSnapshotCwd): added in v0.3.2, remove gate after 2027-02-10.
@@ -7439,8 +7458,35 @@ export const AgentHtmlRenderGetResponseMessageSchema = z.object({
   }),
 });
 
+export const AgentVisualizationGetResponseMessageSchema = z.object({
+  type: z.literal("agent.visualization.get.response"),
+  payload: z.object({
+    requestId: z.string(),
+    agentId: z.string(),
+    path: z.string(),
+    canonicalPath: z.string().nullable(),
+    revision: z.string().nullable(),
+    html: z.string().nullable(),
+    state: z.unknown().nullable(),
+    error: z.string().nullable(),
+  }),
+});
+
+export const AgentVisualizationSetStateResponseMessageSchema = z.object({
+  type: z.literal("agent.visualization.set_state.response"),
+  payload: z.object({
+    requestId: z.string(),
+    agentId: z.string(),
+    path: z.string(),
+    state: z.unknown().nullable(),
+    error: z.string().nullable(),
+  }),
+});
+
 export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   AgentHtmlRenderGetResponseMessageSchema,
+  AgentVisualizationGetResponseMessageSchema,
+  AgentVisualizationSetStateResponseMessageSchema,
   BrowserHostRegisterResponseSchema,
   SubscriptionReleaseResponseSchema,
   SessionEventsSetSubscriptionResponseSchema,

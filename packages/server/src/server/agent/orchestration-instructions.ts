@@ -8,6 +8,7 @@ import { isPaseoToolEnabled } from "./paseo-tool-policy.js";
  */
 export function buildPaseoOrchestrationInstructions(
   policy: ProviderPaseoToolsPolicy | undefined,
+  provider?: string,
 ): string | undefined {
   function has(tool: string): boolean {
     return isPaseoToolEnabled(policy, tool);
@@ -20,9 +21,13 @@ export function buildPaseoOrchestrationInstructions(
     return body ? `### ${title}\n\n${body}` : "";
   }
 
-  const visuals = has("html_render")
-    ? "### Showing visuals\n\nWhen a chart, table, diagram, image collage, or mockup would say more than prose, build a self-contained HTML page and publish it with `html_render` before your final reply. The reader sees the page above that reply, so add only what it does not say."
-    : "";
+  let visuals = "";
+  if (has("html_render")) {
+    visuals =
+      provider === "codex"
+        ? "### Showing visuals\n\nVisuals made with Codex `visualize` file references display inline in Paseo. `html_render` is also available for complete self-contained HTML pages. Use one route per visual, never both; add only what the visual does not say."
+        : "### Showing visuals\n\nWhen a chart, table, diagram, image collage, or mockup would say more than prose, build a self-contained HTML page and publish it with `html_render` before your final reply. The reader sees the page above that reply, so add only what it does not say.";
+  }
   if (!has("create_agent")) return visuals || undefined;
 
   const startingTools = codeList(["create_agent", "send_agent_prompt"]).join(" and ");

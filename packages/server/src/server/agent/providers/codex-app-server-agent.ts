@@ -4288,6 +4288,7 @@ export class CodexAppServerAgentSession implements AgentSession {
       {
         turnId,
         threadId: this.currentThreadId,
+        codexHome: this.codexHome,
         model: this.config.model ?? null,
         modeId: this.currentMode ?? null,
         effort: thinkingOptionId ?? null,

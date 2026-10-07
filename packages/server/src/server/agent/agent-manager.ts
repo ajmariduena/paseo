@@ -92,6 +92,7 @@ import type { PaseoToolCatalogFactory } from "./tools/types.js";
 import { isPaseoToolPolicyEnabled } from "./paseo-tool-policy.js";
 import { buildPaseoOrchestrationInstructions } from "./orchestration-instructions.js";
 import { HtmlRenderStore } from "./html-render/store.js";
+import { CodexVisualizationStore } from "./visualization/resolve.js";
 import { composeSystemPromptParts } from "./system-prompt.js";
 import {
   PromptAnnotationStore,
@@ -133,6 +134,10 @@ function resolvePromptAnnotations(options: AgentManagerOptions): PromptAnnotatio
 
 function resolveHtmlRenderStore(options: AgentManagerOptions): HtmlRenderStore | null {
   return options.paseoHome ? new HtmlRenderStore(options.paseoHome) : null;
+}
+
+function resolveVisualizationStore(options: AgentManagerOptions): CodexVisualizationStore | null {
+  return options.paseoHome ? new CodexVisualizationStore(options.paseoHome) : null;
 }
 
 function toNotificationItem(
@@ -875,6 +880,7 @@ export class AgentManager {
   private paseoToolCatalogFactory: PaseoToolCatalogFactory | null = null;
   private readonly paseoToolPolicies = new Map<string, ProviderPaseoToolsPolicy | undefined>();
   private readonly htmlRenderStore: HtmlRenderStore | null;
+  private readonly visualizationStore: CodexVisualizationStore | null;
   private readonly resolvePaseoToolPolicy: (
     provider: AgentProvider,
   ) => ProviderPaseoToolsPolicy | undefined;
@@ -889,6 +895,7 @@ export class AgentManager {
 
   constructor(options: AgentManagerOptions) {
     this.htmlRenderStore = resolveHtmlRenderStore(options);
+    this.visualizationStore = resolveVisualizationStore(options);
     this.pluginLifecycle = options.pluginLifecycle;
     this.idFactory = options?.idFactory ?? (() => randomUUID());
     this.registry = options?.registry;
@@ -3635,6 +3642,7 @@ export class AgentManager {
     await this.deleteCommittedTimeline(agentId);
     await this.promptAnnotations.delete(agentId);
     await this.htmlRenderStore?.deleteAgent(agentId);
+    await this.visualizationStore?.deleteAgent(agentId);
   }
 
   /**
@@ -5753,7 +5761,7 @@ export class AgentManager {
   ): AgentSessionConfig {
     const orchestration =
       tools.toolsAttached && !config.internal
-        ? buildPaseoOrchestrationInstructions(tools.paseoToolPolicy)
+        ? buildPaseoOrchestrationInstructions(tools.paseoToolPolicy, config.provider)
         : undefined;
     const daemonAppendSystemPrompt = composeSystemPromptParts(
       orchestration,

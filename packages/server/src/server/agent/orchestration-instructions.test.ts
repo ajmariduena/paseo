@@ -2,6 +2,13 @@ import { describe, expect, test } from "vitest";
 
 import { buildPaseoOrchestrationInstructions } from "./orchestration-instructions.js";
 
+test("Codex visuals allow one of its file reference or Paseo's complete document tool", () => {
+  const text = buildPaseoOrchestrationInstructions(undefined, "codex") ?? "";
+  expect(text).toContain("Codex `visualize` file references display inline");
+  expect(text).toContain("`html_render` is also available");
+  expect(text).toContain("Use one route per visual, never both");
+});
+
 describe("buildPaseoOrchestrationInstructions", () => {
   test("full text with every orchestration tool", () => {
     expect(buildPaseoOrchestrationInstructions(undefined)).toMatchInlineSnapshot(`
@@ -37,7 +44,11 @@ describe("buildPaseoOrchestrationInstructions", () => {
 
       ### Tool names
 
-      Tool names may carry a harness prefix, such as \`mcp__paseo__create_agent\` or \`paseo_create_agent\`; the semantics are the same. Some harnesses load MCP tools lazily: if a tool-catalog scan doesn't show the Paseo tools, make one direct attempt with the known name (in Claude Code, find it with tool search) before concluding they are unavailable."
+      Tool names may carry a harness prefix, such as \`mcp__paseo__create_agent\` or \`paseo_create_agent\`; the semantics are the same. Some harnesses load MCP tools lazily: if a tool-catalog scan doesn't show the Paseo tools, make one direct attempt with the known name (in Claude Code, find it with tool search) before concluding they are unavailable.
+
+      ### Showing visuals
+
+      When a chart, table, diagram, image collage, or mockup would say more than prose, build a self-contained HTML page and publish it with \`html_render\` before your final reply. The reader sees the page above that reply, so add only what it does not say."
     `);
   });
 
@@ -61,9 +72,9 @@ describe("buildPaseoOrchestrationInstructions", () => {
     expect(text).not.toContain("### Managing agents");
   });
 
-  test("is absent when the agent can't create agents", () => {
-    expect(buildPaseoOrchestrationInstructions({ disabledTools: ["create_agent"] })).toBe(
-      undefined,
+  test("keeps visual guidance when delegation is disabled", () => {
+    expect(buildPaseoOrchestrationInstructions({ disabledTools: ["create_agent"] })).toContain(
+      "### Showing visuals",
     );
     expect(buildPaseoOrchestrationInstructions({ enabled: false })).toBe(undefined);
   });

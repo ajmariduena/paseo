@@ -104,6 +104,63 @@ describe("wire schema compatibility", () => {
       }),
     ).toMatchObject({ payload: { requestId: "r", html: "<p>Hi</p>" } });
   });
+
+  test("Codex visualization RPCs preserve optional feature flags and correlation", () => {
+    expect(
+      ServerInfoStatusPayloadSchema.parse({ status: "server_info", serverId: "old" }).features,
+    ).toBeUndefined();
+    expect(
+      ServerInfoStatusPayloadSchema.parse({
+        status: "server_info",
+        serverId: "new",
+        features: { codexVisualization: true },
+      }).features?.codexVisualization,
+    ).toBe(true);
+    expect(
+      SessionInboundMessageSchema.parse({
+        type: "agent.visualization.get.request",
+        requestId: "read",
+        agentId: "agent",
+        path: "/work/visual.html",
+      }),
+    ).toMatchObject({ requestId: "read", agentId: "agent" });
+    expect(
+      SessionInboundMessageSchema.parse({
+        type: "agent.visualization.set_state.request",
+        requestId: "write",
+        agentId: "agent",
+        path: "/work/visual.html",
+        state: { modelContent: { selected: "a" } },
+      }),
+    ).toMatchObject({ requestId: "write", state: { modelContent: { selected: "a" } } });
+    expect(
+      SessionOutboundMessageSchema.parse({
+        type: "agent.visualization.get.response",
+        payload: {
+          requestId: "read",
+          agentId: "agent",
+          path: "/work/visual.html",
+          canonicalPath: "/work/visual.html",
+          revision: "sha256",
+          html: "<p>Visual</p>",
+          state: null,
+          error: null,
+        },
+      }),
+    ).toMatchObject({ payload: { requestId: "read", html: "<p>Visual</p>" } });
+    expect(
+      SessionOutboundMessageSchema.parse({
+        type: "agent.visualization.set_state.response",
+        payload: {
+          requestId: "write",
+          agentId: "agent",
+          path: "/work/visual.html",
+          state: { modelContent: { selected: "a" }, privateContent: null },
+          error: null,
+        },
+      }),
+    ).toMatchObject({ payload: { requestId: "write" } });
+  });
   test("hello parses with and without the project update capability", () => {
     const legacy = WSHelloMessageSchema.parse({
       type: "hello",

@@ -26,6 +26,7 @@ import {
 } from "./worktree-storage.js";
 import { homedir } from "node:os";
 import { HtmlRenderStore } from "./agent/html-render/store.js";
+import { CodexVisualizationStore } from "./agent/visualization/resolve.js";
 import { resolvePaseoWorktreesBaseRoot } from "../utils/worktree.js";
 import { CLIENT_CAPS, type ClientCapability } from "@getpaseo/protocol/client-capabilities";
 import { formatPluginSourceReference } from "@getpaseo/protocol/plugin-source-reference";
@@ -3031,6 +3032,10 @@ export class Session {
         return this.handleProviderSubagentTimelineRequest(msg, source);
       case "agent.html_render.get.request":
         return this.handleHtmlRenderGetRequest(msg, source);
+      case "agent.visualization.get.request":
+        return this.handleVisualizationGetRequest(msg, source);
+      case "agent.visualization.set_state.request":
+        return this.handleVisualizationSetStateRequest(msg, source);
       case "session.events.set_subscription.request": {
         const owner = this.delivery.begin("events", undefined, async (id) => {
           this.eventSubscriptions.delete(id);
@@ -3116,6 +3121,98 @@ export class Session {
             html: null,
             title: null,
             error: "Render not found",
+          },
+        },
+        source,
+      );
+    }
+  }
+
+  private async visualizationAgent(agentId: string) {
+    const agent = this.agentManager.getAgent(agentId) ?? (await this.agentStorage.get(agentId));
+    if (!agent || agent.provider !== "codex" || agent.internal) {
+      throw new Error("Visualization unavailable");
+    }
+    const workspace = agent.workspaceId
+      ? await this.workspaceRegistry.get(agent.workspaceId)
+      : null;
+    return { ...agent, workspaceCwd: workspace?.cwd ?? null };
+  }
+
+  private async handleVisualizationGetRequest(
+    msg: Extract<SessionInboundMessage, { type: "agent.visualization.get.request" }>,
+    source?: object,
+  ): Promise<void> {
+    try {
+      const agent = await this.visualizationAgent(msg.agentId);
+      const visual = await new CodexVisualizationStore(this.paseoHome).get(agent, msg.path);
+      this.emitForSource(
+        {
+          type: "agent.visualization.get.response",
+          payload: {
+            requestId: msg.requestId,
+            agentId: msg.agentId,
+            path: msg.path,
+            ...visual,
+            error: null,
+          },
+        },
+        source,
+      );
+    } catch {
+      this.emitForSource(
+        {
+          type: "agent.visualization.get.response",
+          payload: {
+            requestId: msg.requestId,
+            agentId: msg.agentId,
+            path: msg.path,
+            canonicalPath: null,
+            revision: null,
+            html: null,
+            state: null,
+            error: "Visualization unavailable",
+          },
+        },
+        source,
+      );
+    }
+  }
+
+  private async handleVisualizationSetStateRequest(
+    msg: Extract<SessionInboundMessage, { type: "agent.visualization.set_state.request" }>,
+    source?: object,
+  ): Promise<void> {
+    try {
+      const agent = await this.visualizationAgent(msg.agentId);
+      const state = await new CodexVisualizationStore(this.paseoHome).setState(
+        agent,
+        msg.path,
+        msg.state,
+      );
+      this.emitForSource(
+        {
+          type: "agent.visualization.set_state.response",
+          payload: {
+            requestId: msg.requestId,
+            agentId: msg.agentId,
+            path: msg.path,
+            state,
+            error: null,
+          },
+        },
+        source,
+      );
+    } catch {
+      this.emitForSource(
+        {
+          type: "agent.visualization.set_state.response",
+          payload: {
+            requestId: msg.requestId,
+            agentId: msg.agentId,
+            path: msg.path,
+            state: null,
+            error: "Visualization state was not saved",
           },
         },
         source,
