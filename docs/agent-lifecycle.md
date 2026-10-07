@@ -41,13 +41,18 @@ permission grant. Neither signal is sent at process start, and older CLIs never 
 fresh process stays resident until its first turn ends. Stateful MCP servers restart on resume;
 nothing detects state they held.
 
-Live background work is visible while the runtime holds it. Claude's `background_tasks_changed`
-replaces the agent's `backgroundTasks` on the snapshot, minus task and workflow children, which
-already show as provider subagents. The app shows them as a pill above the composer with a per-task
-stop (`agent.background_task.stop.request`). The sidebar files an idle agent holding them under
-its own "In background" status group, apart from Working, and every row names its workspace's live
-tasks on the meta line. The lifecycle stays `idle`: the turn is over, and prompts and finish notifications follow
-the turn. A runtime restart clears the set, because the CLI never re-announces it.
+Live background work is visible while it runs. Claude's `background_tasks_changed` replaces the
+provider's part of the agent's `backgroundTasks` on the snapshot, minus task and workflow children,
+which already show as provider subagents; a runtime restart clears that part, because the CLI never
+re-announces it. The daemon appends its own work after it, with ids prefixed by their source: each
+active pull request watch is a `pull_request_watch` task (`pull-request-watch:<watchId>`) whose
+description says what the last read showed, such as `Watching PR #9 · 2 checks running`. Daemon
+tasks live outside the runtime, so a closed agent still shows them. The app shows all of them as a
+pill above the composer with a per-task stop (`agent.background_task.stop.request`); stopping a
+watch task is `unwatch_pull_request` for that watch. The sidebar files an idle agent holding them
+under its own "In background" status group, apart from Working, and every row names its
+workspace's live tasks on the meta line. The lifecycle stays `idle`: the turn is over, and prompts
+and finish notifications follow the turn.
 
 A provider runtime can still die on its own — crash, OOM kill, host suspend. Work the agent parked
 inside that process dies with it: Claude Code's background Bash shells, `Monitor` watches, and
@@ -112,7 +117,7 @@ Each notified prompt is a durable delegated task (see [data-model.md](data-model
 
 Permission requests are checkpoints. The parent hears each request as it happens, through the same never-interrupt delivery, with the normalized request plus the child and request IDs so it can respond without fetching agent status. A request resolved before the parent hears it is dropped.
 
-`watch_pull_request` uses the same never-interrupt delivery for pull request news. The daemon reads each watched pull request once per pass for every agent watching it, every minute while a check runs, mergeability is unknown, or the remarks could not be read, and every two minutes otherwise; every watch on one forge account shares its rate limit. It wakes the watching agent only when a check newly fails, the required checks newly pass (every check when the forge marks none required) or a required check appears already passed, an account other than the one the agent's forge CLI acts as comments, reviews, or edits one, or the branch newly conflicts. A push starts the check news over for the new head commit. The watch result reports the current checks, so the state at watch time never wakes the agent. A wake lost to a restart is sent again on the next pass ([data-model.md](data-model.md#pull-request-watch-store)), and one still queued when the agent unwatches is dropped. Watching ends without a wake when the pull request merges or closes, on `unwatch_pull_request`, or when the agent is archived, and with a final wake after 10 comment-only wakes in a row or 8 failed reads in a row. A forge rate limit skips the pass and never counts as a failed read.
+`watch_pull_request` uses the same never-interrupt delivery for pull request news. The daemon reads each watched pull request once per pass for every agent watching it, every minute while a check runs, mergeability is unknown, or the remarks could not be read, and every two minutes otherwise; every watch on one forge account shares its rate limit. It wakes the watching agent only when a check newly fails, the required checks newly pass (every check when the forge marks none required) or a required check appears already passed, an account other than the one the agent's forge CLI acts as comments, reviews, or edits one, or the branch newly conflicts. A push starts the check news over for the new head commit. The watch result reports the current checks, so the state at watch time never wakes the agent. A wake lost to a restart is sent again on the next pass ([data-model.md](data-model.md#pull-request-watch-store)), and one still queued when the agent unwatches is dropped. Watching ends without a wake when the pull request merges or closes, on `unwatch_pull_request` or stopping the watch's background task, or when the agent is archived, and with a final wake after 10 comment-only wakes in a row or 8 failed reads in a row. A forge rate limit skips the pass and never counts as a failed read. Agents are told to unwatch when they hand the work back, because the watch keeps them in the background (see [Workspace activity](#workspace-activity)).
 
 ## Archive
 
@@ -196,7 +201,7 @@ A finished workspace can be marked unread after it has been reviewed. The daemon
 `finished` attention on its newest eligible workspace-root agent without sending a new completion
 notification. Opening the workspace clears that attention through the normal focus flow.
 
-Finished attention and its notification wait while a parent has running delegated descendants. If the parent starts another turn, that turn owns its next finished attention. Attention is set by the agent finishing or failing and cleared by the client's
+Finished attention and its notification wait while a parent has running delegated descendants. They also wait when a turn that a daemon message started (a pull request wake, a child's result) ends while the agent holds daemon background work, so a watching agent stays In background instead of asking for review on every wake; they are raised once that work is gone. A turn the user prompted, permissions, and errors ask for attention as usual. If the parent starts another turn, that turn owns its next finished attention. The wait is in memory: a daemon restart or an idle runtime release drops it. Attention is set by the agent finishing or failing and cleared by the client's
 `workspace.clear_attention`, which fires when the user reads the chat. Loading an agent's runtime is
 neither, so resuming carries the stored attention and the stored last-activity time through
 untouched. Forging either makes a background resume look like the user read a workspace and like the
