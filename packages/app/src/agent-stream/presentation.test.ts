@@ -2,6 +2,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import type { AgentStreamEventPayload } from "@getpaseo/protocol/messages";
 import type { ToolCallDetail } from "@getpaseo/protocol/agent-types";
+import { formatPeerMessage } from "@getpaseo/protocol/peer-message";
 import { runPluginClientBundle, type PluginClientRuntime } from "@/plugins/evaluate";
 import type { InstalledPlugin } from "@/plugins/types";
 import {
@@ -813,6 +814,62 @@ describe("turn folding", () => {
       "wake",
       "answer:block:0",
       "prompt:turn-files",
+    ]);
+  });
+
+  function peerNote(id: string, seed: number, turnId: string): UserMessageItem {
+    return {
+      ...userMessage(id, seed),
+      turnId,
+      text: formatPeerMessage({
+        sender: { agentId: "agt_peer", workspaceTitle: "cents" },
+        body: "Renamed charge to createCharge",
+      }),
+      origin: { kind: "agent", agentId: "agt_peer", relation: "peer" },
+    };
+  }
+  const inTurn = <T extends StreamItem>(item: T, turnId: string): T => ({ ...item, turnId });
+
+  it("keeps a peer note steered into a turn inside the prompt's fold", () => {
+    const tail = [
+      ...[prompt, ...work].map((item) => inTurn(item, "t1")),
+      peerNote("peer", 6, "t1"),
+      inTurn(workCall("after", 7, { type: "shell", command: "npm test" }), "t1"),
+      inTurn(answer, "t1"),
+    ];
+
+    const result = present({ tail });
+
+    expect(ids(result.tail)).toEqual([
+      "prompt",
+      "prompt:turn-fold",
+      "note:block:0",
+      "peer",
+      "answer:block:0",
+      "prompt:turn-files",
+    ]);
+    expect(result.turnFolds.folds.map((fold) => fold.key)).toEqual(["prompt"]);
+  });
+
+  it("folds the turn a peer note starts under the note, not under the earlier prompt", () => {
+    const tail = [
+      ...turn.map((item) => inTurn(item, "t1")),
+      peerNote("peer", 50, "t2"),
+      inTurn(workCall("reread", 51, { type: "read", filePath: "/repo/src/b.ts" }), "t2"),
+      inTurn(assistantMessage("reply", 52), "t2"),
+    ];
+
+    const result = present({ tail });
+
+    expect(ids(result.tail)).toEqual([
+      "prompt",
+      "prompt:turn-fold",
+      "note:block:0",
+      "answer:block:0",
+      "prompt:turn-files",
+      "peer",
+      "peer:turn-fold",
+      "reply:block:0",
     ]);
   });
 

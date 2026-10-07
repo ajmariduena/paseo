@@ -454,6 +454,10 @@ export const ja: TranslationResources = {
       sentBy: "{{title}} から送信",
       sentByAgent: "エージェントから送信",
     },
+    peerNote: {
+      from: "{{name}}からのメモ",
+      openSession: "セッションを開く",
+    },
     diagram: {
       diagram: "図",
       zoomIn: "拡大",
@@ -2298,6 +2302,16 @@ export const ja: TranslationResources = {
         one: "{{agents}}へのプロンプト{{count}}件の送信を試行",
         other: "{{agents}}へのプロンプト{{count}}件の送信を試行",
       },
+      sentNotes: {
+        one: "{{agents}}にメモを{{count}}件送信",
+        other: "{{agents}}にメモを{{count}}件送信",
+      },
+      sentNotesFailed: {
+        one: "{{agents}}へのメモ{{count}}件の送信を試行",
+        other: "{{agents}}へのメモ{{count}}件の送信を試行",
+      },
+      sentNoteTo: "{{title}}にメモを送信",
+      sentNoteToFailed: "{{title}}へのメモの送信を試行",
       waitedForAgents: {
         one: "エージェント{{count}}件を待機",
         other: "エージェント{{count}}件を待機",

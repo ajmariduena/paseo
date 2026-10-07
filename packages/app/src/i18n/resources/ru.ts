@@ -453,6 +453,10 @@ export const ru: TranslationResources = {
       sentBy: "Отправил {{title}}",
       sentByAgent: "Отправил агент",
     },
+    peerNote: {
+      from: "Заметка от {{name}}",
+      openSession: "Открыть сессию",
+    },
     diagram: {
       diagram: "Диаграмма",
       zoomIn: "Увеличить масштаб",
@@ -2311,6 +2315,16 @@ export const ru: TranslationResources = {
         one: "не удалось отправить {{count}} промпт: {{agents}}",
         other: "не удалось отправить промпты ({{count}}): {{agents}}",
       },
+      sentNotes: {
+        one: "отправлена {{count}} заметка: {{agents}}",
+        other: "отправлены заметки ({{count}}): {{agents}}",
+      },
+      sentNotesFailed: {
+        one: "не удалось отправить {{count}} заметку: {{agents}}",
+        other: "не удалось отправить заметки ({{count}}): {{agents}}",
+      },
+      sentNoteTo: "отправлена заметка: {{title}}",
+      sentNoteToFailed: "не удалось отправить заметку: {{title}}",
       waitedForAgents: {
         one: "ожидание {{count}} агента",
         other: "ожидание агентов ({{count}})",

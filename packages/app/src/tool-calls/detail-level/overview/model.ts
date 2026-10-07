@@ -4,11 +4,13 @@ import type { ToolCallItem } from "@/types/stream";
 import { describeToolCall, type ToolCallRun } from "../grouping";
 
 const DIRECT_PASEO_TOOL_PREFIX = "paseo_";
+const UNNAMED_AGENT_PREFIX = "call:";
 const DIRECT_SEARCH_TOOL_SUFFIX_PATTERN = /(?:^|[_.:/])(?:web_search|llm_context)$/;
 
 /** Orchestration work an overview names in its own words instead of "called Paseo N times". */
 export type PaseoActivity =
   | "sentPrompts"
+  | "sentNotes"
   | "waitedForAgents"
   | "checkedAgents"
   | "listedAgents"
@@ -39,6 +41,7 @@ const PASEO_ACTIVITY_BY_LEAF: Readonly<Record<string, PaseoActivity>> = {
 
 const PASEO_ACTIVITY_ORDER: readonly PaseoActivity[] = [
   "sentPrompts",
+  "sentNotes",
   "waitedForAgents",
   "checkedAgents",
   "listedAgents",
@@ -67,6 +70,8 @@ export interface PaseoActivityCount {
   agentCount: number;
   /** Every call failed, so the phrase reads "tried to …". */
   failedOnly: boolean;
+  /** The one agent every call named, so a note can read "to {title}". */
+  soleAgentId?: string;
 }
 
 export interface OverviewSummary {
@@ -115,6 +120,49 @@ function readAgentIds(input: unknown): string[] {
   return agentIds.filter((id): id is string => typeof id === "string" && id.length > 0);
 }
 
+function parseJsonText(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return value;
+  }
+}
+
+/** The tool's own result, out of the MCP envelope each provider reports it in. */
+function unwrapMcpResult(output: unknown): unknown {
+  if (typeof output !== "object" || output === null) return parseJsonText(output);
+  const structured: unknown = Reflect.get(output, "structuredContent");
+  if (structured !== undefined) return structured;
+  const content: unknown = Reflect.get(output, "content");
+  if (Array.isArray(content) && content.length === 1) {
+    const block: unknown = content[0];
+    if (typeof block === "object" && block !== null && Reflect.get(block, "type") === "text") {
+      return parseJsonText(Reflect.get(block, "text"));
+    }
+  }
+  const claudeOutput: unknown = Reflect.get(output, "output");
+  return claudeOutput === undefined ? output : parseJsonText(claudeOutput);
+}
+
+/** `send_agent_prompt` to an agent that is not the caller's child went as a peer note. */
+function isDeliveredAsPeerNote(output: unknown): boolean {
+  const result = unwrapMcpResult(output);
+  return (
+    typeof result === "object" &&
+    result !== null &&
+    Reflect.get(result, "deliveredAs") === "peer_note"
+  );
+}
+
+function resolvePaseoActivity(leaf: string | null, call: ToolCallItem): PaseoActivity | undefined {
+  const activity = leaf ? PASEO_ACTIVITY_BY_LEAF[leaf] : undefined;
+  if (activity !== "sentPrompts") return activity;
+  const descriptor = describeToolCall(call);
+  const output = descriptor.detail.type === "unknown" ? descriptor.detail.output : null;
+  return isDeliveredAsPeerNote(output) ? "sentNotes" : activity;
+}
+
 function tallyPaseoActivity(
   tallies: Map<PaseoActivity, PaseoActivityTally>,
   activity: PaseoActivity,
@@ -127,7 +175,7 @@ function tallyPaseoActivity(
   const input = descriptor.detail.type === "unknown" ? descriptor.detail.input : null;
   const agentIds = readAgentIds(input);
   // A call that names no agent still counts once, so it is never silently dropped.
-  for (const agentId of agentIds.length > 0 ? agentIds : [`call:${call.id}`]) {
+  for (const agentId of agentIds.length > 0 ? agentIds : [`${UNNAMED_AGENT_PREFIX}${call.id}`]) {
     tally.agents.add(agentId);
   }
   tallies.set(activity, tally);
@@ -140,12 +188,16 @@ function toActivityCounts(
     const tally = tallies.get(activity);
     if (!tally) return [];
     const agentCount = tally.agents.size;
+    const [soleAgentId] = tally.agents;
+    const hasSoleAgent =
+      agentCount === 1 && soleAgentId && !soleAgentId.startsWith(UNNAMED_AGENT_PREFIX);
     return [
       {
         activity,
         count: COUNTS_AGENTS.has(activity) ? agentCount : tally.calls,
         agentCount,
         failedOnly: tally.failedCalls === tally.calls,
+        ...(activity === "sentNotes" && hasSoleAgent ? { soleAgentId } : {}),
       },
     ];
   });
@@ -177,7 +229,7 @@ export function summarizeOverviewToolCalls(calls: readonly ToolCallItem[]): {
         normalizedName === "html_preview" || normalizedName === "html_render"
           ? normalizedName
           : getPaseoCallLeafName(descriptor.name);
-      const activity = leaf ? PASEO_ACTIVITY_BY_LEAF[leaf] : undefined;
+      const activity = resolvePaseoActivity(leaf, call);
       if (activity) tallyPaseoActivity(paseoTallies, activity, call);
       else paseoCallCount += 1;
     } else if (descriptor.detail.type === "edit" || descriptor.detail.type === "write") {

@@ -731,7 +731,12 @@ const ToolCallTimelineItemPayloadSchema: z.ZodType<ToolCallTimelineItem, unknown
 
 export const MessageOriginSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("user") }),
-  z.object({ kind: z.literal("agent"), agentId: z.string() }),
+  z.object({
+    kind: z.literal("agent"),
+    agentId: z.string(),
+    // COMPAT(peerMessages): added in v0.11.0, keep optional; older daemons never send it.
+    relation: z.literal("peer").optional(),
+  }),
 ]);
 
 export const NotificationSourceSchema = z.discriminatedUnion("kind", [

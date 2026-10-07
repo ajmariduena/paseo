@@ -450,6 +450,10 @@ export const ko: TranslationResources = {
       sentBy: "{{title}}에서 보냄",
       sentByAgent: "에이전트가 보냄",
     },
+    peerNote: {
+      from: "{{name}}의 메모",
+      openSession: "세션 열기",
+    },
     diagram: {
       diagram: "다이어그램",
       zoomIn: "확대",
@@ -2286,6 +2290,16 @@ export const ko: TranslationResources = {
         one: "{{agents}}에 프롬프트 {{count}}개 보내기 시도함",
         other: "{{agents}}에 프롬프트 {{count}}개 보내기 시도함",
       },
+      sentNotes: {
+        one: "{{agents}}에 메모 {{count}}개 보냄",
+        other: "{{agents}}에 메모 {{count}}개 보냄",
+      },
+      sentNotesFailed: {
+        one: "{{agents}}에 메모 {{count}}개 보내기 시도함",
+        other: "{{agents}}에 메모 {{count}}개 보내기 시도함",
+      },
+      sentNoteTo: "{{title}}에 메모 보냄",
+      sentNoteToFailed: "{{title}}에 메모 보내기 시도함",
       waitedForAgents: {
         one: "에이전트 {{count}}개를 기다림",
         other: "에이전트 {{count}}개를 기다림",

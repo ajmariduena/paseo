@@ -412,6 +412,8 @@ export interface AgentMessageOrigin {
   kind: "agent";
   /** The agent that sent the prompt, through its Paseo tools. */
   agentId: string;
+  /** `peer`: the sender is not the receiver's parent, so the prompt is a note between sessions. */
+  relation?: "peer";
 }
 
 /** Who wrote a user message. Absent means the user. */

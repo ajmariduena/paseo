@@ -1,6 +1,7 @@
 import type { FetchRecentProviderSessionEntry } from "@getpaseo/client/internal/daemon-client";
 import type { AgentProvider } from "@getpaseo/protocol/agent-types";
 import { i18n } from "@/i18n/i18next";
+import { formatPromptPreview } from "@/peer-notes/model";
 
 export const PER_PROVIDER_LIMIT = 15;
 export const ALL_FILTER_VALUE = "__all__";
@@ -230,17 +231,14 @@ export function getSessionTitle(entry: FetchRecentProviderSessionEntry): string 
   }
   const firstPromptPreview = entry.firstPromptPreview?.trim();
   if (firstPromptPreview) {
-    return firstPromptPreview;
+    return formatPromptPreview(i18n.t, firstPromptPreview);
   }
   return i18n.t("importSession.preview.untitledSession");
 }
 
 export function getPromptPreview(entry: FetchRecentProviderSessionEntry): string {
-  return (
-    entry.lastPromptPreview?.trim() ||
-    entry.firstPromptPreview?.trim() ||
-    i18n.t("importSession.preview.noPrompt")
-  );
+  const preview = entry.lastPromptPreview?.trim() || entry.firstPromptPreview?.trim();
+  return preview ? formatPromptPreview(i18n.t, preview) : i18n.t("importSession.preview.noPrompt");
 }
 
 export interface EmptyStateInputs {

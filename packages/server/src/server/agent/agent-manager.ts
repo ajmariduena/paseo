@@ -1,4 +1,5 @@
 import { projectTimelineRows } from "./timeline-projection.js";
+import { isPeerMessage } from "@getpaseo/protocol/peer-message";
 import type { PluginLifecycle } from "../plugins/lifecycle/index.js";
 import { describeHookAgent, publishAgentStream } from "../plugins/lifecycle/index.js";
 import type { PluginSessionOpenRequest } from "@getpaseo/plugin/server";
@@ -3783,7 +3784,8 @@ export class AgentManager {
       if (
         request === null &&
         item.type === "user_message" &&
-        !isSystemInjectedEnvelope(item.text)
+        !isSystemInjectedEnvelope(item.text) &&
+        !isPeerMessage(item.text)
       ) {
         request = item.text;
       }

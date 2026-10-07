@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { formatPeerMessage } from "@getpaseo/protocol/peer-message";
+import { SPACING } from "@/styles/theme";
 import type { StreamItem } from "@/types/stream";
-import { getAssistantBlockSpacing, isSameAssistantBlockGroup } from "./spacing";
+import {
+  getAssistantBlockSpacing,
+  getGapBetweenStreamItems,
+  isSameAssistantBlockGroup,
+} from "./spacing";
 
 function assistantBlock(params: {
   id: string;
@@ -131,5 +137,23 @@ describe("getAssistantBlockSpacing", () => {
     expect(
       getAssistantBlockSpacing({ item: headBlock, aboveItem: tailBlock, belowItem: null }),
     ).toBe("compactTop");
+  });
+});
+
+describe("getGapBetweenStreamItems", () => {
+  const timestamp = new Date("2026-05-01T00:00:00.000Z");
+  const prompt: StreamItem = { kind: "user_message", id: "prompt", text: "Fix it", timestamp };
+  const note: StreamItem = {
+    kind: "user_message",
+    id: "note",
+    text: formatPeerMessage({ sender: { agentId: "agt_peer" }, body: "Heads up" }),
+    timestamp,
+  };
+
+  it("keeps a peer note in the tool-call rhythm instead of the user bubble group", () => {
+    expect(getGapBetweenStreamItems(toolCallBlock("tc"), note)).toBe(0);
+    expect(getGapBetweenStreamItems(note, toolCallBlock("tc"))).toBe(0);
+    expect(getGapBetweenStreamItems(prompt, note)).toBe(SPACING[4]);
+    expect(getGapBetweenStreamItems(prompt, { ...prompt, id: "next" })).toBe(SPACING[1]);
   });
 });

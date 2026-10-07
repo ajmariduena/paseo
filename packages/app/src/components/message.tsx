@@ -1199,6 +1199,13 @@ const expandableBadgeStylesheet = StyleSheet.create((theme) => ({
   secondaryLabelActive: {
     color: theme.colors.foreground,
   },
+  trailingLabel: {
+    flexShrink: 0,
+    marginLeft: "auto",
+    paddingLeft: theme.spacing[2],
+    color: theme.colors.foregroundMuted,
+    fontSize: STREAM_METADATA_FONT_SIZE,
+  },
   shimmerText: {
     color: "transparent",
     fontSize: theme.fontSize.base,
@@ -2456,6 +2463,8 @@ export const TodoListCard = memo(function TodoListCard({
 interface ExpandableBadgeProps {
   label: string;
   secondaryLabel?: string;
+  /** Muted metadata pinned to the row's end, such as a time. */
+  trailingLabel?: string;
   icon?: ComponentType<{ size?: number; color?: string }>;
   isExpanded: boolean;
   style?: StyleProp<ViewStyle>;
@@ -2539,6 +2548,7 @@ interface ExpandableBadgeLabelRowProps {
   label: string;
   labelStyle: StyleProp<TextStyle>;
   secondaryLabel?: string;
+  trailingLabel?: string;
   secondaryLabelStyle: StyleProp<TextStyle>;
   shouldMeasureWebShimmer: boolean;
   shouldMeasureNativeShimmer: boolean;
@@ -2565,6 +2575,7 @@ function ExpandableBadgeLabelRow({
   label,
   labelStyle,
   secondaryLabel,
+  trailingLabel,
   secondaryLabelStyle,
   shouldMeasureWebShimmer,
   shouldMeasureNativeShimmer,
@@ -2621,6 +2632,11 @@ function ExpandableBadgeLabelRow({
             uniProps={isOpenFileHovered ? foregroundColorMapping : foregroundMutedColorMapping}
           />
         </Pressable>
+      ) : null}
+      {trailingLabel ? (
+        <Text style={expandableBadgeStylesheet.trailingLabel} numberOfLines={1}>
+          {trailingLabel}
+        </Text>
       ) : null}
       {isWebShimmer ? (
         <ExpandableBadgeWebShimmerOverlay
@@ -2820,6 +2836,7 @@ export const ExpandableBadge = memo(function ExpandableBadge({
   label,
   style,
   secondaryLabel,
+  trailingLabel,
   icon,
   isExpanded,
   onToggle,
@@ -3105,6 +3122,7 @@ export const ExpandableBadge = memo(function ExpandableBadge({
             labelStyle={labelStyle}
             secondaryLabel={secondaryLabel}
             secondaryLabelStyle={secondaryLabelStyle}
+            trailingLabel={trailingLabel}
             shouldMeasureWebShimmer={shouldMeasureWebShimmer}
             shouldMeasureNativeShimmer={shouldMeasureNativeShimmer}
             isWebShimmer={isWebShimmer}
@@ -3144,6 +3162,7 @@ export const ExpandableBadge = memo(function ExpandableBadge({
 function areExpandableBadgePropsEqual(previous: ExpandableBadgeProps, next: ExpandableBadgeProps) {
   if (previous.label !== next.label) return false;
   if (previous.secondaryLabel !== next.secondaryLabel) return false;
+  if (previous.trailingLabel !== next.trailingLabel) return false;
   if (previous.icon !== next.icon) return false;
   if (previous.isExpanded !== next.isExpanded) return false;
   if (previous.style !== next.style) return false;

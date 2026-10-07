@@ -33,6 +33,7 @@ import {
 } from "../../messages.js";
 import type { AgentListItemPayload, AgentSnapshotPayload } from "../../messages.js";
 import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
+import { formatPeerMessage, type PeerMessageSender } from "@getpaseo/protocol/peer-message";
 import {
   buildStoredAgentPayload,
   toAgentListItemPayload,
@@ -236,6 +237,31 @@ interface ProviderSummary {
   modes: AgentMode[];
   status: string;
   error?: string;
+}
+
+const AgentDirectoryItemSchema = AgentListItemPayloadSchema.extend({
+  workspaceId: z.string().optional(),
+  workspaceTitle: z.string().optional(),
+  branch: z.string().nullable().optional(),
+  currentRequest: z.string().optional(),
+  currentStep: z.string().optional(),
+  relation: z.enum(["you", "parent", "child", "peer"]).optional(),
+});
+type AgentDirectoryItem = z.infer<typeof AgentDirectoryItemSchema>;
+
+function resolveAgentRelation(
+  agent: AgentListItemPayload,
+  callerAgentId: string,
+  callerParentId: string | null,
+): NonNullable<AgentDirectoryItem["relation"]> {
+  if (agent.id === callerAgentId) return "you";
+  if (agent.id === callerParentId) return "parent";
+  if (getParentAgentIdFromLabels(agent.labels) === callerAgentId) return "child";
+  return "peer";
+}
+
+function truncateText(text: string, maxChars: number): string {
+  return text.length > maxChars ? `${text.slice(0, maxChars - 1)}…` : text;
 }
 
 const WorkspaceAutomationSummarySchema = z.object({
@@ -1544,9 +1570,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     notifyOnFinish: z
       .boolean()
       .optional()
-      .default(true)
       .describe(
-        "Get notified when the prompted agent finishes, errors, or needs permission. Set false only for truly fire-and-forget prompts.",
+        "Get notified when the prompted agent finishes, errors, or needs permission. Defaults to true for your subagents and false for other agents, where the prompt is a note between sessions.",
       ),
   };
   const topLevelSendAgentPromptInputSchema = {
@@ -2388,12 +2413,15 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         lastMessage: z.string().nullable().optional(),
         permission: AgentPermissionRequestPayloadSchema.nullable().optional(),
         guidance: z.string().optional(),
+        deliveredAs: z.literal("peer_note").optional(),
       },
     },
     async (args: SendAgentPromptArgs) => {
-      const { agentId, prompt } = args;
+      const { agentId } = args;
+      const peer = await resolvePeerSender(agentId);
+      const prompt = peer ? formatPeerMessage({ sender: peer, body: args.prompt }) : args.prompt;
       const background = args.background ?? Boolean(callerAgentId);
-      const notifyOnFinish = args.notifyOnFinish ?? Boolean(callerAgentId);
+      const notifyOnFinish = args.notifyOnFinish ?? (Boolean(callerAgentId) && !peer);
 
       async function laterResultGuidance(
         disposition: SendDisposition,
@@ -2422,7 +2450,11 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         ? deriveClientMessageId(callerAgentId, args.clientRequestId)
         : `mcp:${randomUUID()}`;
       if (args.clientRequestId && isMessageAlreadyDispatched(agentManager, agentId, messageId)) {
-        return sendPromptResponse({ status: currentStatus(agentId), disposition: "duplicate" });
+        return sendPromptResponse({
+          status: currentStatus(agentId),
+          disposition: "duplicate",
+          peer: Boolean(peer),
+        });
       }
 
       const dispatch = await dispatchPrompt({
@@ -2430,6 +2462,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         prompt,
         messageId,
         delivery: args.delivery ?? (callerAgentId ? "auto" : "restart"),
+        peer: Boolean(peer),
       });
       const disposition = toSendDisposition(dispatch.disposition);
       callerContext?.onAgentPrompted?.(agentId);
@@ -2439,7 +2472,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         // The wait ran out while the agent keeps working, so its result arrives later
         // instead of in this response.
         const guidance = result.stillWorking ? await laterResultGuidance(disposition) : undefined;
-        return sendPromptResponse({ ...result, disposition, guidance });
+        return sendPromptResponse({ ...result, disposition, guidance, peer: Boolean(peer) });
       }
 
       // Awaiting the delegation first would let a fast turn end before the start wait begins.
@@ -2455,9 +2488,31 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       } finally {
         guidance = await delegated;
       }
-      return sendPromptResponse({ status: currentStatus(agentId), disposition, guidance });
+      return sendPromptResponse({
+        status: currentStatus(agentId),
+        disposition,
+        guidance,
+        peer: Boolean(peer),
+      });
     },
   );
+
+  /** A prompt from an agent that is not the receiver's parent is a note between sessions. */
+  async function resolvePeerSender(targetAgentId: string): Promise<PeerMessageSender | null> {
+    if (!callerAgentId || callerAgentId === targetAgentId) return null;
+    const target = agentManager.getAgent(targetAgentId) ?? (await agentStorage.get(targetAgentId));
+    if (getParentAgentIdFromLabels(target?.labels) === callerAgentId) return null;
+    const caller = await agentStorage.get(callerAgentId);
+    const workspace = caller?.workspaceId
+      ? await options.workspaceRegistry?.get(caller.workspaceId)
+      : null;
+    return {
+      agentId: callerAgentId,
+      title: caller?.title ?? null,
+      workspaceTitle: workspace ? (workspace.title ?? workspace.displayName) : null,
+      branch: workspace?.branch ?? null,
+    };
+  }
 
   function currentStatus(agentId: string): z.infer<typeof AgentStatusEnum> {
     return agentManager.getAgent(agentId)?.lifecycle ?? "idle";
@@ -2469,6 +2524,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     lastMessage?: string | null;
     permission?: AgentPermissionRequest | null;
     guidance?: string;
+    peer?: boolean;
   }) {
     return {
       content: [],
@@ -2479,6 +2535,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         lastMessage: data.lastMessage ?? null,
         permission: sanitizePermissionRequest(data.permission),
         ...(data.guidance ? { guidance: data.guidance } : {}),
+        ...(data.peer ? { deliveredAs: "peer_note" as const } : {}),
       }),
     };
   }
@@ -2489,6 +2546,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     prompt: string;
     messageId: string;
     delivery: DispatchIntent;
+    peer: boolean;
   }): Promise<BackgroundDispatch> {
     let dispatch: BackgroundDispatch;
     try {
@@ -2501,7 +2559,15 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           intent: input.delivery,
           prompt: input.prompt,
           steerUnavailable: "fail",
-          ...(callerAgentId ? { origin: { kind: "agent" as const, agentId: callerAgentId } } : {}),
+          ...(callerAgentId
+            ? {
+                origin: {
+                  kind: "agent" as const,
+                  agentId: callerAgentId,
+                  ...(input.peer ? { relation: "peer" as const } : {}),
+                },
+              }
+            : {}),
         },
         logger: childLogger,
       });
@@ -2860,7 +2926,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       annotations: READ_ONLY_TOOL_ANNOTATIONS,
       title: "List agents",
       description:
-        "List recent agents as compact metadata. By default, agents under your working directory; scope widens or narrows that.",
+        "List recent agents with their workspace, branch, status and, for running agents, what they are working on now. By default, every agent in your project, so you can see which other sessions are working beside you; scope widens or narrows that.",
       inputSchema: {
         includeArchived: z.boolean().optional().default(false),
         cwd: z.string().optional(),
@@ -2877,7 +2943,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           .enum(["cwd", "children", "workspace", "project", "all"])
           .optional()
           .describe(
-            "cwd (default): under your working directory. children: your subagents, in any workspace. workspace: in your workspace. project: in any workspace of your project. all: every agent.",
+            "project (default): in any workspace of your project, including other sessions working beside you. cwd: under your working directory. children: your subagents, in any workspace. workspace: in your workspace. all: every agent.",
           ),
         parentAgentId: z
           .string()
@@ -2892,7 +2958,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           .describe("Case-insensitive title filter."),
       },
       outputSchema: {
-        agents: z.array(AgentListItemPayloadSchema),
+        agents: z.array(AgentDirectoryItemSchema),
       },
     },
     async (args: ListAgentsArgs) => {
@@ -2918,14 +2984,15 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
             includeArchived || isStoredAgentProviderAvailable(record, registeredProviderIds),
         )
         .map((record) => buildStoredAgentPayload(record, registeredProviderIds));
-      const agents = [...liveAgents, ...storedAgents]
+      const listed = [...liveAgents, ...storedAgents]
         .filter(inScope)
-        .map(toAgentListItemPayload)
-        .filter((agent) => !titleNeedle || agent.title?.toLowerCase().includes(titleNeedle))
-        .filter((agent) => !statusFilter || statusFilter.has(agent.status))
-        .filter((agent) => !agent.archivedAt || resolveAgentListActivityTime(agent) >= sinceMs)
-        .sort(compareAgentListItems)
+        .map((agent) => ({ item: toAgentListItemPayload(agent), workspaceId: agent.workspaceId }))
+        .filter(({ item }) => !titleNeedle || item.title?.toLowerCase().includes(titleNeedle))
+        .filter(({ item }) => !statusFilter || statusFilter.has(item.status))
+        .filter(({ item }) => !item.archivedAt || resolveAgentListActivityTime(item) >= sinceMs)
+        .sort((a, b) => compareAgentListItems(a.item, b.item))
         .slice(0, limit);
+      const agents = await toAgentDirectoryItems(listed);
 
       return {
         content: [],
@@ -2934,11 +3001,45 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     },
   );
 
+  /** Adds what another agent needs to decide whether its work overlaps: where and what now. */
+  async function toAgentDirectoryItems(
+    listed: Array<{ item: AgentListItemPayload; workspaceId: string | undefined }>,
+  ): Promise<AgentDirectoryItem[]> {
+    const workspaces = new Map(
+      ((await options.workspaceRegistry?.list()) ?? []).map((workspace) => [
+        workspace.workspaceId,
+        workspace,
+      ]),
+    );
+    const callerParentId = callerAgentId
+      ? getParentAgentIdFromLabels(agentManager.getAgent(callerAgentId)?.labels)
+      : null;
+    return listed.map(({ item, workspaceId }) => {
+      const workspace = workspaceId ? workspaces.get(workspaceId) : undefined;
+      const live = item.status === "running" ? agentManager.getLiveWorkSummary(item.id) : null;
+      return {
+        ...item,
+        ...(workspaceId ? { workspaceId } : {}),
+        ...(workspace
+          ? {
+              workspaceTitle: workspace.title ?? workspace.displayName,
+              branch: workspace.branch ?? null,
+            }
+          : {}),
+        ...(live?.request ? { currentRequest: truncateText(live.request, 280) } : {}),
+        ...(live?.currentStep ? { currentStep: live.currentStep } : {}),
+        ...(callerAgentId
+          ? { relation: resolveAgentRelation(item, callerAgentId, callerParentId) }
+          : {}),
+      };
+    });
+  }
+
   async function resolveAgentListScope(
     args: ListAgentsArgs,
   ): Promise<(agent: AgentSnapshotPayload) => boolean> {
     const caller = callerAgentId ? resolveCallerAgent() : null;
-    const scope = args.scope ?? (args.parentAgentId ? "all" : "cwd");
+    const scope = args.scope ?? defaultAgentListScope(args, caller?.workspaceId);
     const explicitCwd = args.cwd?.trim() ? expandUserPath(args.cwd) : undefined;
     const cwdFilter = explicitCwd ?? (scope === "cwd" ? caller?.cwd : undefined);
     const parentFilter = args.parentAgentId ?? (scope === "children" ? callerAgentId : undefined);
@@ -2950,6 +3051,14 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       (!cwdFilter || isSameOrDescendantPath(cwdFilter, agent.cwd)) &&
       (!parentFilter || getParentAgentIdFromLabels(agent.labels) === parentFilter) &&
       (!workspaceIds || (agent.workspaceId !== undefined && workspaceIds.has(agent.workspaceId)));
+  }
+
+  function defaultAgentListScope(
+    args: ListAgentsArgs,
+    callerWorkspaceId: string | undefined,
+  ): NonNullable<ListAgentsArgs["scope"]> {
+    if (args.parentAgentId) return "all";
+    return callerWorkspaceId && options.workspaceRegistry ? "project" : "cwd";
   }
 
   async function resolveScopeWorkspaceIds(

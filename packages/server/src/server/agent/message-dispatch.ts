@@ -1,4 +1,5 @@
 import type { Logger } from "pino";
+import { isPeerMessage } from "@getpaseo/protocol/peer-message";
 
 import {
   ActiveTurnChangedError,
@@ -425,7 +426,17 @@ export function createRestoredEntryDeliverer(
         intent: "queue",
         prompt,
         steerUnavailable: sender ? "fail" : "replace",
-        ...(sender ? { origin: { kind: "agent", agentId: sender } } : {}),
+        ...(sender
+          ? {
+              origin: {
+                kind: "agent",
+                agentId: sender,
+                ...(typeof prompt === "string" && isPeerMessage(prompt)
+                  ? { relation: "peer" as const }
+                  : {}),
+              },
+            }
+          : {}),
         clearPendingPermissions: sender === null,
       },
     };
