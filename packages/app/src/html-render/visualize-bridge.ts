@@ -33,6 +33,7 @@ export const VISUALIZATION_CSP = [
 export const VISUALIZATION_MIN_HEIGHT = 240;
 export const VISUALIZATION_MAX_HEIGHT = 10_000;
 export const NATIVE_FOLLOW_UP_PREFIX = "paseo-visualization-follow-up://";
+export const NATIVE_EXTERNAL_PREFIX = "paseo-visualization-external://";
 
 export interface VisualizationFrameOptions {
   canonicalPath: string;
@@ -154,6 +155,33 @@ export function readNativeFollowUpUrl(
   }
 }
 
+export function readNativeExternalUrl(
+  url: string,
+  nonce: string,
+  identity: string,
+): { id: string; url: string } | null {
+  if (!url.startsWith(NATIVE_EXTERNAL_PREFIX) || url.length > 8_000) return null;
+  try {
+    const value: unknown = JSON.parse(decodeURIComponent(url.slice(NATIVE_EXTERNAL_PREFIX.length)));
+    if (typeof value !== "object" || value === null) return null;
+    const fields = value as Record<string, unknown>;
+    if (
+      fields.nonce !== nonce ||
+      fields.identity !== identity ||
+      typeof fields.id !== "string" ||
+      fields.id.length === 0 ||
+      fields.id.length > 128 ||
+      typeof fields.url !== "string" ||
+      fields.url.length > 2048 ||
+      !isHttpsUrl(fields.url)
+    )
+      return null;
+    return { id: fields.id, url: fields.url };
+  } catch {
+    return null;
+  }
+}
+
 export function visualizationThemeMessage(theme: RenderTheme, nonce: string, identity: string) {
   return {
     jsonrpc: "2.0",
@@ -194,6 +222,7 @@ export function prepareVisualizationDocument(input: {
     maxHeight: VISUALIZATION_MAX_HEIGHT,
     native: input.linkMode === "native",
     nativeFollowUpPrefix: NATIVE_FOLLOW_UP_PREFIX,
+    nativeExternalPrefix: NATIVE_EXTERNAL_PREFIX,
   }).replace(/</g, "\\u003c");
   const script = `(function(){
     var p=${payload},seq=0,pending={},state=p.state==null?null:p.state,style=document.getElementById("paseo-viz-theme");
@@ -212,7 +241,7 @@ export function prepareVisualizationDocument(input: {
       sendFollowUpMessage:function(input){if(!input||typeof input.prompt!=="string"||!input.prompt.trim()||input.prompt.length>4000||typeof input.title!=="undefined"&&(typeof input.title!=="string"||input.title.length>250))return Promise.reject(new Error("Invalid follow-up"));
         if(p.native){return new Promise(function(resolve,reject){var id="v"+(++seq);pending[id]={resolve:resolve,reject:reject};window.open(p.nativeFollowUpPrefix+encodeURIComponent(JSON.stringify({nonce:p.nonce,identity:p.identity,id:id,prompt:input.prompt,title:input.title})),"_blank");setTimeout(function(){if(pending[id]){delete pending[id];reject(new Error("Follow-up was not opened"));}},30000);});}
         return request("visualization/follow-up",{prompt:input.prompt,title:input.title});},
-      openExternal:function(url){if(typeof url!=="string"||!/^https:\\/\\//i.test(url))return Promise.reject(new Error("HTTPS URL required"));if(p.native){window.open(url,"_blank","noopener");return Promise.resolve();}return request("visualization/open-external",{url:url});}
+      openExternal:function(url){if(typeof url!=="string"||!/^https:\\/\\//i.test(url))return Promise.reject(new Error("HTTPS URL required"));if(p.native){return new Promise(function(resolve,reject){var id="v"+(++seq);pending[id]={resolve:resolve,reject:reject};window.open(p.nativeExternalPrefix+encodeURIComponent(JSON.stringify({nonce:p.nonce,identity:p.identity,id:id,url:url})),"_blank");setTimeout(function(){if(pending[id]){delete pending[id];reject(new Error("Link was not opened"));}},30000);});}return request("visualization/open-external",{url:url});}
     };
     Object.defineProperties(api,{widgetState:{get:function(){return state;}},theme:{get:function(){return p.theme;}},visualizationTheme:{get:function(){return p.theme;}},visualizationStyleVariables:{get:function(){return p.variables;}},displayMode:{get:function(){return p.mode;}},maxWidth:{get:function(){return Math.min(p.maxWidth,innerWidth);}},maxHeight:{get:function(){return p.maxHeight;}},statePersistence:{value:"daemon"},stateModelContext:{value:"none"}});
     window.openai=api;
@@ -226,6 +255,24 @@ export function prepareVisualizationDocument(input: {
     document.addEventListener("keydown",function(e){var tab=e.target.closest&&e.target.closest('.nav[role="tablist"] [role="tab"]');if(!tab||!["ArrowLeft","ArrowRight","Home","End"].includes(e.key))return;var tabs=Array.from(tab.closest('[role="tablist"]').querySelectorAll('[role="tab"]')).filter(function(item){return !item.disabled&&item.getAttribute("aria-disabled")!=="true";});var at=tabs.indexOf(tab),next=e.key==="Home"?0:e.key==="End"?tabs.length-1:(at+(e.key==="ArrowRight"?1:-1)+tabs.length)%tabs.length;e.preventDefault();tabs[next].focus();tabs[next].click();});
     var tip=null;function hide(){if(tip){tip.remove();tip=null;}}function show(target){hide();var label=target.getAttribute("data-tooltip");if(!label)return;tip=document.createElement("div");tip.className="paseo-viz-tooltip";tip.setAttribute("role","tooltip");tip.textContent=label;document.body.appendChild(tip);var r=target.getBoundingClientRect();tip.style.left=Math.max(4,Math.min(r.left,innerWidth-tip.offsetWidth-4))+"px";tip.style.top=Math.max(4,r.top-tip.offsetHeight-6)+"px";}
     document.addEventListener("pointerover",function(e){var target=e.target.closest&&e.target.closest("[data-tooltip]");if(target)show(target);});document.addEventListener("pointerout",function(e){if(e.target.closest&&e.target.closest("[data-tooltip]"))hide();});document.addEventListener("focusin",function(e){var target=e.target.closest&&e.target.closest("[data-tooltip]");if(target)show(target);});document.addEventListener("focusout",hide);
+    function setupCarousel(root){
+      var slides=Array.from(root.children).filter(function(child){return child.hasAttribute("data-variant");});if(slides.length<2)return;
+      var controls=document.createElement("div");controls.className="viz-carousel-controls";
+      var previous=document.createElement("button");previous.type="button";previous.className="btn btn-ghost";previous.setAttribute("aria-label","Previous design");previous.textContent="‹";
+      var count=document.createElement("span");count.className="viz-carousel-count tabular-nums";
+      var picker=document.createElement("select");picker.className="form-select viz-carousel-picker";picker.setAttribute("aria-label","Choose design");
+      slides.forEach(function(slide,index){var option=document.createElement("option");option.value=String(index);option.textContent=slide.getAttribute("data-variant")||"Design "+(index+1);picker.appendChild(option);});
+      var next=document.createElement("button");next.type="button";next.className="btn btn-ghost";next.setAttribute("aria-label","Next design");next.textContent="›";
+      controls.append(previous,count,picker,next);root.appendChild(controls);
+      var selected=Math.max(0,slides.findIndex(function(slide){return !slide.hidden;}));
+      function show(index){selected=(index+slides.length)%slides.length;slides.forEach(function(slide,at){slide.hidden=at!==selected;});count.textContent=(selected+1)+" / "+slides.length;picker.value=String(selected);}
+      previous.addEventListener("click",function(){show(selected-1);});next.addEventListener("click",function(){show(selected+1);});picker.addEventListener("change",function(){show(Number(picker.value));});show(selected);
+    }
+    function initialize(){document.querySelectorAll(".viz-carousel").forEach(setupCarousel);if(window.lucide&&typeof window.lucide.createIcons==="function")window.lucide.createIcons({attrs:{width:16,height:16}});}
+    if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",initialize,{once:true});else initialize();
   })();`;
-  return `<!doctype html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="${VISUALIZATION_CSP}"><style id="paseo-viz-theme">${visualizationThemeCss(input.theme)}</style><style>${VISUALIZATION_BASE_CSS}</style><script>${script}</script><script>${runtime}</script></head><body>${input.fragment}</body>`;
+  const icons = /\blucide\b/.test(input.fragment)
+    ? '<script src="https://unpkg.com/lucide@1.17.0/dist/umd/lucide.js"></script>'
+    : "";
+  return `<!doctype html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="${VISUALIZATION_CSP}"><style id="paseo-viz-theme">${visualizationThemeCss(input.theme)}</style><style>${VISUALIZATION_BASE_CSS}</style>${icons}<script>${script}</script><script>${runtime}</script></head><body>${input.fragment}</body>`;
 }

@@ -1,5 +1,11 @@
 import { validFollowUpParams } from "./visualize-bridge";
 
+export function followUpConfirmationMessage(prompt: string, title?: string): string {
+  return title
+    ? `From the visualization: ${title.replace(/[\r\n\t]+/g, " ")}\n\n${prompt}`
+    : prompt;
+}
+
 export async function performVisualizationFollowUp(input: {
   prompt: string;
   title?: string;

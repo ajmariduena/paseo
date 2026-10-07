@@ -81,6 +81,16 @@ export function clampRenderHeight(height: number): number {
   return Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, Math.ceil(height)));
 }
 
+export function renderFrameHeight(
+  providedHeight: number,
+  contentHeight: number | null,
+  frameWidth: number,
+): number {
+  const width = Number.isFinite(frameWidth) && frameWidth > 0 ? frameWidth : 728;
+  const cap = Math.min(MAX_HEIGHT, Math.round(providedHeight * (width < 728 ? 728 / width : 1)));
+  return clampRenderHeight(Math.min(cap, contentHeight ?? cap));
+}
+
 export interface RenderBridgeMessage {
   jsonrpc: "2.0";
   nonce: string;

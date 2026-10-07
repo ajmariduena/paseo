@@ -66,6 +66,10 @@ a{color:var(--primary)}hr{border:0;border-top:1px solid var(--border);margin:1re
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 .viz-dotted-background{background-image:radial-gradient(var(--border) 1px,transparent 1px);background-size:16px 16px}
 .viz-carousel [data-variant][hidden],[role=tabpanel][hidden]{display:none!important}
+.viz-carousel-controls{display:flex;align-items:center;justify-content:center;gap:.5rem;margin-top:.75rem}
+.viz-carousel-controls .btn{min-width:32px;padding:.2rem .45rem;font-size:1.2em}
+.viz-carousel-count{color:var(--muted-foreground);font-size:.85em}
+.viz-carousel-picker{width:auto;max-width:min(60%,240px);min-height:32px}
 .paseo-viz-tooltip{position:fixed;z-index:10;max-width:260px;padding:.3rem .5rem;border-radius:var(--radius);background:var(--foreground);color:var(--background);font-size:12px;pointer-events:none}
 @media(max-width:480px){.viz-grid{grid-template-columns:1fr}.table th,.table td{white-space:normal}.btn,.nav-link{min-height:44px}.form-control,.form-select{min-height:44px;font-size:16px}}
 `;

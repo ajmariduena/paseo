@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Text, View, type StyleProp, type TextStyle, type ViewStyle } from "react-native";
-import { Maximize2 } from "lucide-react-native";
 import { withUnistyles } from "react-native-unistyles";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { Button } from "@/components/ui/button";
@@ -10,9 +9,10 @@ import { useFetchQuery } from "@/data/query";
 import type { Theme } from "@/styles/theme";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { mapRenderTheme, type RenderTheme } from "./document";
+import { RenderExpandControl } from "./card";
 import { HtmlRenderFrame } from "./frame";
 import { HtmlRenderViewer } from "./viewer";
-import { performVisualizationFollowUp } from "./follow-up";
+import { followUpConfirmationMessage, performVisualizationFollowUp } from "./follow-up";
 import type { CodexVisualizeReference } from "./visualize-directive";
 import { VISUALIZATION_MIN_HEIGHT, type VisualizationFrameOptions } from "./visualize-bridge";
 
@@ -45,15 +45,18 @@ function CodexVisualizeCardContent(props: {
   actionPending: boolean;
   reloadToken: number;
   controlsVisible: boolean;
+  compact: boolean;
+  inlineHeight: number;
+  onHeightChange: (height: number) => void;
   cardStyle: StyleProp<ViewStyle>;
   hintStyle: StyleProp<TextStyle>;
-  controlsStyle: StyleProp<ViewStyle>;
   retryFetch: () => void;
   retryAction: () => void;
   open: () => void;
   close: () => void;
 }) {
   const { data, visualization } = props;
+  const placeholderStyle = useMemo(() => ({ height: props.inlineHeight }), [props.inlineHeight]);
   return (
     <View style={props.cardStyle}>
       {!data ? <Text style={props.hintStyle}>{props.loadingMessage}</Text> : null}
@@ -62,7 +65,7 @@ function CodexVisualizeCardContent(props: {
           Retry
         </Button>
       ) : null}
-      {data && visualization ? (
+      {data && visualization && !props.expanded ? (
         <HtmlRenderFrame
           key={`${data.revision}:${props.reloadToken}`}
           html={data.html}
@@ -71,8 +74,10 @@ function CodexVisualizeCardContent(props: {
           height={VISUALIZATION_MIN_HEIGHT}
           theme={props.theme}
           visualization={visualization}
+          onHeightChange={props.onHeightChange}
         />
       ) : null}
+      {data && props.expanded ? <View style={placeholderStyle} /> : null}
       {props.actionError ? (
         <View>
           <Text style={props.hintStyle}>{props.actionError}</Text>
@@ -89,17 +94,12 @@ function CodexVisualizeCardContent(props: {
         </View>
       ) : null}
       {data && visualization ? (
-        <View style={props.controlsStyle} pointerEvents={props.controlsVisible ? "auto" : "none"}>
-          <Button
-            variant="ghost"
-            size="xs"
-            leftIcon={Maximize2}
-            onPress={props.open}
-            accessibilityLabel="Expand visualization"
-          >
-            Expand
-          </Button>
-        </View>
+        <RenderExpandControl
+          visible={props.controlsVisible}
+          compact={props.compact}
+          label="Expand visualization"
+          onPress={props.open}
+        />
       ) : null}
       {props.expanded && data && visualization ? (
         <HtmlRenderViewer
@@ -177,8 +177,8 @@ function useVisualizationActions(input: {
           title,
           confirm: (message, heading) =>
             confirmDialog({
-              title: heading || "Send follow-up to agent?",
-              message,
+              title: "Send follow-up to agent?",
+              message: followUpConfirmationMessage(message, heading),
               confirmLabel: "Send",
             }),
           send: (message) => client.sendAgentMessage(agentId, message),
@@ -237,6 +237,7 @@ function CodexVisualizeCardImpl({
   const activeTheme = theme!;
   const isCompact = useIsCompactFormFactor();
   const [expanded, setExpanded] = useState(false);
+  const [inlineHeight, setInlineHeight] = useState(VISUALIZATION_MIN_HEIGHT);
   const [isHovered, setIsHovered] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
   const fetched = useFetchQuery({
@@ -298,15 +299,6 @@ function CodexVisualizeCardImpl({
     ],
   );
   const controlsVisible = isHovered || isFocused || isNative || isCompact;
-  const controlsStyle = useMemo(
-    () => ({
-      height: 30,
-      width: "100%" as const,
-      alignItems: "flex-end" as const,
-      opacity: controlsVisible ? 1 : 0,
-    }),
-    [controlsVisible],
-  );
   const cardStyle = useMemo(
     () => ({
       width: "100%" as const,
@@ -356,9 +348,11 @@ function CodexVisualizeCardImpl({
         actionPending={actions.saving || actions.sending}
         reloadToken={actions.reloadToken}
         controlsVisible={controlsVisible}
+        compact={isCompact}
+        inlineHeight={inlineHeight}
+        onHeightChange={setInlineHeight}
         cardStyle={cardStyle}
         hintStyle={hintStyle}
-        controlsStyle={controlsStyle}
         retryFetch={retryFetch}
         retryAction={actions.retryAction}
         open={open}

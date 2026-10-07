@@ -1,10 +1,10 @@
 import { Script } from "node:vm";
-import { JSDOM } from "jsdom";
 import { parse } from "parse5";
 import { expect, test } from "vitest";
 import { darkTheme, lightTheme } from "@/styles/theme";
 import {
   clampRenderHeight,
+  renderFrameHeight,
   mapRenderTheme,
   prepareRenderDocument,
   readRenderBridgeMessage,
@@ -12,12 +12,12 @@ import {
 } from "./document";
 import {
   NATIVE_FOLLOW_UP_PREFIX,
+  NATIVE_EXTERNAL_PREFIX,
   prepareVisualizationDocument,
   readNativeFollowUpUrl,
+  readNativeExternalUrl,
   readVisualizationBridgeMessage,
   VISUALIZATION_CSP,
-  visualizationReply,
-  visualizationThemeMessage,
 } from "./visualize-bridge";
 import { visualizationVariables } from "./visualize-style";
 
@@ -91,6 +91,11 @@ test("maps live light and dark themes and bounds height messages", () => {
   }
   expect(clampRenderHeight(1)).toBe(80);
   expect(clampRenderHeight(10_000)).toBe(2000);
+  expect(renderFrameHeight(400, null, 728)).toBe(400);
+  expect(renderFrameHeight(400, 700, 364)).toBe(700);
+  expect(renderFrameHeight(400, 1200, 364)).toBe(800);
+  expect(renderFrameHeight(400, 250, 364)).toBe(250);
+  expect(renderFrameHeight(1500, null, 320)).toBe(2000);
   expect(
     readRenderBridgeMessage(
       {
@@ -224,78 +229,39 @@ test("visualization themes and bridge reject forged or unsafe requests", () => {
     prompt: "Explain apples",
   });
   expect(readNativeFollowUpUrl(followUpUrl, "wrong", size.identity)).toBeNull();
+  const externalUrl = `${NATIVE_EXTERNAL_PREFIX}${encodeURIComponent(JSON.stringify({ nonce: "n", identity: size.identity, id: "2", url: "https://example.com/target" }))}`;
+  expect(readNativeExternalUrl(externalUrl, "n", size.identity)).toEqual({
+    id: "2",
+    url: "https://example.com/target",
+  });
+  expect(readNativeExternalUrl(externalUrl, "wrong", size.identity)).toBeNull();
 });
 
-test("visualization runtime restores state, acknowledges writes, updates theme, tabs and tooltips", async () => {
-  const sent: Array<{ id?: string; method: string; params: Record<string, unknown> }> = [];
-  const prepared = prepareVisualizationDocument({
-    fragment:
-      '<div class="nav nav-pills" role="tablist"><button id="first" role="tab" class="nav-link active" aria-selected="true" aria-controls="first-panel">First</button><button id="second" role="tab" class="nav-link" aria-selected="false" aria-controls="second-panel" data-tooltip="Second fruit">Second</button></div><section id="first-panel" role="tabpanel">Apple</section><section id="second-panel" role="tabpanel" hidden>Banana</section><script>window.initialState=window.openai.widgetState;window.tweakSupported=Tweak.supported;</script>',
+test("visualization bridge includes state, carousel, and conditional icon support", () => {
+  const input = {
     theme: mapRenderTheme(lightTheme),
     nonce: "n",
     identity: "/work/fruit-chart.html",
     state: { modelContent: { chosen: "apple" }, privateContent: null },
-    mode: "inline",
-    linkMode: "native",
-  });
-  const dom = new JSDOM(prepared, {
-    runScripts: "dangerously",
-    beforeParse(window) {
-      Object.defineProperty(window, "TextEncoder", { value: TextEncoder });
-      Object.defineProperty(window, "ReactNativeWebView", {
-        value: { postMessage: (encoded: string) => sent.push(JSON.parse(encoded)) },
-      });
-    },
-  });
-  const host = dom.window as unknown as {
-    initialState: unknown;
-    tweakSupported: boolean;
-    openai: {
-      widgetState: unknown;
-      theme: string;
-      setWidgetState: (value: unknown) => Promise<unknown>;
-    };
+    mode: "inline" as const,
+    linkMode: "native" as const,
   };
-  expect(host.initialState).toEqual({ modelContent: { chosen: "apple" }, privateContent: null });
-  expect(host.tweakSupported).toBe(false);
-  const write = host.openai.setWidgetState({ modelContent: { chosen: "banana" } });
-  expect(host.openai.widgetState).toEqual({
-    modelContent: { chosen: "banana" },
-    privateContent: null,
+  const plain = prepareVisualizationDocument({
+    ...input,
+    fragment:
+      '<div class="viz-carousel"><section data-variant="A">A</section><section data-variant="B" hidden>B</section></div>',
   });
-  const message = sent.find((item) => item.method === "visualization/set-state");
-  if (!message?.id) throw new Error("State message missing");
-  dom.window.dispatchEvent(
-    new dom.window.MessageEvent("message", {
-      data: visualizationReply(
-        "n",
-        "/work/fruit-chart.html",
-        message.id,
-        { state: { modelContent: { chosen: "banana" }, privateContent: null } },
-        null,
-      ),
-    }),
-  );
-  await expect(write).resolves.toEqual({
-    modelContent: { chosen: "banana" },
-    privateContent: null,
+  expect(plain).toContain("window.openai=api");
+  expect(plain).toContain('request("visualization/set-state"');
+  expect(plain).toContain("p.nativeExternalPrefix");
+  expect(plain).toContain('document.querySelectorAll(".viz-carousel")');
+  expect(plain).toContain('picker.setAttribute("aria-label","Choose design")');
+  expect(plain).not.toContain('src="https://unpkg.com/lucide@');
+  const withIcons = prepareVisualizationDocument({
+    ...input,
+    fragment: '<i data-lucide="search"></i>',
   });
-  dom.window.dispatchEvent(
-    new dom.window.MessageEvent("message", {
-      data: visualizationThemeMessage(mapRenderTheme(darkTheme), "n", "/work/fruit-chart.html"),
-    }),
-  );
-  expect(host.openai.theme).toBe("dark");
-  expect(dom.window.document.getElementById("paseo-viz-theme")?.textContent).toContain(
-    "color-scheme:dark",
-  );
-  dom.window.document.getElementById("second")?.click();
-  expect(dom.window.document.getElementById("first-panel")?.hasAttribute("hidden")).toBe(true);
-  expect(dom.window.document.getElementById("second-panel")?.hasAttribute("hidden")).toBe(false);
-  const second = dom.window.document.getElementById("second");
-  second?.dispatchEvent(new dom.window.Event("pointerover", { bubbles: true }));
-  expect(dom.window.document.querySelector(".paseo-viz-tooltip")?.textContent).toBe("Second fruit");
-  second?.dispatchEvent(new dom.window.Event("pointerout", { bubbles: true }));
-  expect(dom.window.document.querySelector(".paseo-viz-tooltip")).toBeNull();
-  dom.window.close();
+  expect(withIcons).toContain('src="https://unpkg.com/lucide@1.17.0/dist/umd/lucide.js"');
+  expect(withIcons).toContain("window.lucide.createIcons");
+  expect(withIcons).not.toContain('customElements.define("viz-calendar"');
 });

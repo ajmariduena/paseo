@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { openExternalUrl } from "@/utils/open-external-url";
 import {
-  clampRenderHeight,
+  renderFrameHeight,
   prepareRenderDocument,
   readRenderBridgeMessage,
   renderThemeMessage,
@@ -24,6 +24,7 @@ export interface HtmlRenderFrameProps {
   height: number;
   theme: RenderTheme;
   fullscreen?: boolean;
+  onHeightChange?: (height: number) => void;
   visualization?: VisualizationFrameOptions;
 }
 
@@ -63,7 +64,7 @@ function handleVisualizationFrameMessage(input: {
     return;
   }
   if (message.method === "visualization/open-external") {
-    void openExternalUrl(message.params.url as string).then(
+    void openExternalUrl(message.params.url as string, true).then(
       () => reply({}, null),
       () => reply(null, "Could not open link"),
     );
@@ -125,6 +126,16 @@ export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
     props.renderId,
   ]);
   const [contentHeight, setContentHeight] = useState<number | null>(null);
+  const [frameWidth, setFrameWidth] = useState(728);
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (!frame) return;
+    const measure = () => setFrameWidth(frame.getBoundingClientRect().width || 728);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(frame);
+    return () => observer.disconnect();
+  }, []);
   let frameHeight: string | number;
   if (props.fullscreen) frameHeight = "100%";
   else if (visualIdentity)
@@ -132,7 +143,11 @@ export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
       1,
       Math.min(VISUALIZATION_MAX_HEIGHT, Math.ceil(contentHeight ?? VISUALIZATION_MIN_HEIGHT)),
     );
-  else frameHeight = clampRenderHeight(Math.min(props.height, contentHeight ?? props.height));
+  else frameHeight = renderFrameHeight(props.height, contentHeight, frameWidth);
+  const { fullscreen, onHeightChange } = props;
+  useEffect(() => {
+    if (!fullscreen && typeof frameHeight === "number") onHeightChange?.(frameHeight);
+  }, [frameHeight, fullscreen, onHeightChange]);
   const frameStyle = useMemo(
     () => ({
       display: "block" as const,

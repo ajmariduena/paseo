@@ -1,5 +1,11 @@
 import { expect, test } from "vitest";
-import { performVisualizationFollowUp } from "./follow-up";
+import { followUpConfirmationMessage, performVisualizationFollowUp } from "./follow-up";
+
+test("labels a page-supplied title while preserving the exact follow-up prompt", () => {
+  expect(followUpConfirmationMessage("Explain apples\nprecisely", "Fruit\nchart")).toBe(
+    "From the visualization: Fruit chart\n\nExplain apples\nprecisely",
+  );
+});
 
 test("cancelled follow-up sends no agent message", async () => {
   const sent: string[] = [];

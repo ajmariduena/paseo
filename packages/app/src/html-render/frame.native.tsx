@@ -2,9 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WebView } from "react-native-webview";
 import type { WebViewMessageEvent } from "react-native-webview";
 import { openExternalUrl } from "@/utils/open-external-url";
+import { confirmDialog } from "@/utils/confirm-dialog";
 import { isHttpUrl } from "@/utils/http-url";
 import {
-  clampRenderHeight,
+  renderFrameHeight,
   prepareRenderDocument,
   readRenderBridgeMessage,
   renderThemeMessage,
@@ -13,6 +14,7 @@ import {
 import {
   isHttpsUrl,
   prepareVisualizationDocument,
+  readNativeExternalUrl,
   readNativeFollowUpUrl,
   readVisualizationBridgeMessage,
   VISUALIZATION_MAX_HEIGHT,
@@ -21,6 +23,7 @@ import {
   visualizationThemeMessage,
   type VisualizationFrameOptions,
 } from "./visualize-bridge";
+import { confirmNativeExternalLink } from "./native-link";
 
 export interface HtmlRenderFrameProps {
   html: string;
@@ -29,6 +32,7 @@ export interface HtmlRenderFrameProps {
   height: number;
   theme: RenderTheme;
   fullscreen?: boolean;
+  onHeightChange?: (height: number) => void;
   visualization?: VisualizationFrameOptions;
 }
 
@@ -71,12 +75,22 @@ export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
   const webviewRef = useRef<WebView>(null);
   const loadedRef = useRef<string | null>(null);
   const [contentHeight, setContentHeight] = useState<number | null>(null);
+  const [frameWidth, setFrameWidth] = useState(728);
   const frameHeight = props.visualization
     ? Math.max(
         1,
         Math.min(VISUALIZATION_MAX_HEIGHT, Math.ceil(contentHeight ?? VISUALIZATION_MIN_HEIGHT)),
       )
-    : clampRenderHeight(Math.min(props.height, contentHeight ?? props.height));
+    : renderFrameHeight(props.height, contentHeight, frameWidth);
+  const { fullscreen, onHeightChange } = props;
+  useEffect(() => {
+    if (!fullscreen) onHeightChange?.(frameHeight);
+  }, [frameHeight, fullscreen, onHeightChange]);
+  const onLayout = useCallback(
+    (event: { nativeEvent: { layout: { width: number } } }) =>
+      setFrameWidth(event.nativeEvent.layout.width || 728),
+    [],
+  );
   const frameStyle = useMemo(
     () =>
       props.fullscreen
@@ -152,11 +166,33 @@ export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
     sendTheme();
   }, [sendTheme]);
   const followUpPending = useRef(false);
+  const linkPending = useRef(false);
+  const openConfirmedLink = useCallback(async (url: string): Promise<void> => {
+    if (linkPending.current) throw new Error("Link confirmation already pending");
+    linkPending.current = true;
+    try {
+      await confirmNativeExternalLink(url, confirmDialog, openExternalUrl);
+    } finally {
+      linkPending.current = false;
+    }
+  }, []);
   const onOpenWindow = useCallback(
     (event: { nativeEvent: { targetUrl: string } }) => {
       const url = event.nativeEvent.targetUrl;
       const visual = props.visualization;
       if (visual) {
+        const external = readNativeExternalUrl(url, nonce, visual.canonicalPath);
+        if (external) {
+          void openConfirmedLink(external.url).then(
+            () => sendVisualizationReply(external.id, {}, null),
+            (error: unknown) => {
+              const message = error instanceof Error ? error.message : "Could not open link";
+              visual.onError(message);
+              sendVisualizationReply(external.id, null, message);
+            },
+          );
+          return;
+        }
         const followUp = readNativeFollowUpUrl(url, nonce, visual.canonicalPath);
         if (followUp) {
           if (followUpPending.current) {
@@ -178,12 +214,18 @@ export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
             });
           return;
         }
-        if (isHttpsUrl(url)) void openExternalUrl(url);
+        if (isHttpsUrl(url)) {
+          void openConfirmedLink(url).catch((error: unknown) => {
+            if (error instanceof Error && error.message !== "Link opening cancelled") {
+              visual.onError(error.message);
+            }
+          });
+        }
         return;
       }
-      if (isHttpUrl(url)) void openExternalUrl(url);
+      if (isHttpUrl(url)) void openConfirmedLink(url).catch(() => undefined);
     },
-    [nonce, props.visualization, sendVisualizationReply],
+    [nonce, openConfirmedLink, props.visualization, sendVisualizationReply],
   );
   const overflows = contentHeight !== null && contentHeight > frameHeight;
 
@@ -192,6 +234,7 @@ export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
       ref={webviewRef}
       source={source}
       style={frameStyle}
+      onLayout={onLayout}
       originWhitelist={ORIGIN_WHITELIST}
       onShouldStartLoadWithRequest={allowOnlyDocument}
       onMessage={onMessage}

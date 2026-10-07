@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import { Text, View } from "react-native";
+import { Text, View, type ViewStyle } from "react-native";
 import { Maximize2 } from "lucide-react-native";
 import { Button } from "@/components/ui/button";
 import { useIsCompactFormFactor } from "@/constants/layout";
@@ -22,9 +22,45 @@ interface CardProps {
 }
 
 const hoverTargetStyle = { position: "relative" as const };
+const expandRowStyle = { height: 30, alignItems: "flex-end" as const };
+const expandOverlayStyle = {
+  position: "absolute" as const,
+  top: 0,
+  right: 0,
+  zIndex: 1,
+  width: 30,
+  height: 30,
+  opacity: 1,
+};
+const hiddenExpandOverlayStyle = { ...expandOverlayStyle, opacity: 0 };
+
+export function RenderExpandControl(props: {
+  visible: boolean;
+  compact: boolean;
+  label: string;
+  onPress: () => void;
+}) {
+  const row = isNative || props.compact;
+  let controlStyle: ViewStyle = expandRowStyle;
+  if (!row) controlStyle = props.visible ? expandOverlayStyle : hiddenExpandOverlayStyle;
+  return (
+    <View style={controlStyle} pointerEvents={props.visible ? "auto" : "none"}>
+      <Button
+        variant="ghost"
+        size="xs"
+        leftIcon={Maximize2}
+        accessibilityLabel={props.label}
+        onPress={props.onPress}
+      >
+        {row ? "Expand" : undefined}
+      </Button>
+    </View>
+  );
+}
 
 function HtmlRenderCardImpl({ client, serverId, agentId, render, theme }: CardProps) {
   const [expanded, setExpanded] = useState(false);
+  const [inlineHeight, setInlineHeight] = useState(render.height);
   const [isHovered, setIsHovered] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
   const isCompact = useIsCompactFormFactor();
@@ -61,15 +97,7 @@ function HtmlRenderCardImpl({ client, serverId, agentId, render, theme }: CardPr
     () => ({ color: activeTheme.variables["--muted-foreground"], paddingVertical: 12 }),
     [activeTheme],
   );
-  const controlsStyle = useMemo(
-    () => ({
-      height: 30,
-      width: "100%" as const,
-      alignItems: "flex-end" as const,
-      opacity: showControls ? 1 : 0,
-    }),
-    [showControls],
-  );
+  const placeholderStyle = useMemo(() => ({ height: inlineHeight }), [inlineHeight]);
   const { refetch } = fetched;
   const retry = useCallback(() => {
     void refetch();
@@ -100,27 +128,24 @@ function HtmlRenderCardImpl({ client, serverId, agentId, render, theme }: CardPr
             Retry
           </Button>
         ) : null}
-        {fetched.data ? (
+        {fetched.data && !expanded ? (
           <HtmlRenderFrame
             html={fetched.data.html}
             renderId={render.renderId}
             title={render.title}
             height={render.height}
             theme={activeTheme}
+            onHeightChange={setInlineHeight}
           />
         ) : null}
+        {fetched.data && expanded ? <View style={placeholderStyle} /> : null}
         {fetched.data ? (
-          <View style={controlsStyle} pointerEvents={showControls ? "auto" : "none"}>
-            <Button
-              variant="ghost"
-              size="xs"
-              leftIcon={Maximize2}
-              accessibilityLabel="Expand HTML page"
-              onPress={open}
-            >
-              Expand
-            </Button>
-          </View>
+          <RenderExpandControl
+            visible={showControls}
+            compact={isCompact}
+            label="Expand HTML page"
+            onPress={open}
+          />
         ) : null}
         {expanded && fetched.data ? (
           <HtmlRenderViewer
