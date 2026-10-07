@@ -10,6 +10,7 @@ import { createTestLogger } from "../../test-utils/test-logger.js";
 import {
   AgentManager,
   AgentManagerShuttingDownError,
+  AgentRunCancellationError,
   commandMayHaveChangedExternalState,
   type AgentManagerEvent,
   type AgentManagerOptions,
@@ -3405,7 +3406,18 @@ test.each(["hang", "reject"])(
   },
 );
 
-test("cancelAgentRun preserves running state when the provider interrupt hangs", async () => {
+function recordStreamEventTypes(manager: AgentManager, agentId: string): string[] {
+  const types: string[] = [];
+  manager.subscribe(
+    (event) => {
+      if (event.type === "agent_stream") types.push(event.event.type);
+    },
+    { agentId, replayState: false },
+  );
+  return types;
+}
+
+test("Stop settles a run whose provider interrupt hangs and ignores its late result", async () => {
   const fixture = await createControlledInterruptFixture({
     name: "interrupt-timeout",
     agentId: "00000000-0000-4000-8000-000000000303",
@@ -3421,18 +3433,45 @@ test("cancelAgentRun preserves running state when the provider interrupt hangs",
       turnId: "hanging-interrupt-turn",
     });
     await running;
+    fixture.session.pushEvent({
+      type: "timeline",
+      provider: "codex",
+      turnId: "hanging-interrupt-turn",
+      item: { type: "assistant_message", text: "partial answer" },
+    });
+    await fixture.manager.flush();
+    const streamed = recordStreamEventTypes(fixture.manager, fixture.agentId);
 
     await expect(fixture.manager.cancelAgentRun(fixture.agentId)).resolves.toEqual({
-      status: "refused",
+      status: "settled",
     });
     expect(fixture.session.interruptCalled).toBe(true);
-    expect(fixture.manager.getAgent(fixture.agentId)?.lifecycle).toBe("running");
+    expect(streamed).toEqual(["turn_canceled"]);
+    expect(fixture.manager.getAgent(fixture.agentId)?.lifecycle).toBe("idle");
+
+    fixture.session.pushEvent({
+      type: "turn_failed",
+      provider: "codex",
+      turnId: "hanging-interrupt-turn",
+      error: "late provider failure",
+    });
+    await fixture.manager.flush();
+    expect(fixture.manager.getAgent(fixture.agentId)).toMatchObject({
+      lifecycle: "idle",
+      lastError: undefined,
+    });
+    expect(streamed).toEqual(["turn_canceled"]);
+    expect(
+      fixture.manager
+        .getTimeline(fixture.agentId)
+        .filter((item) => item.type === "assistant_message"),
+    ).toEqual([{ type: "assistant_message", text: "partial answer" }]);
   } finally {
     await fixture.cleanup();
   }
 });
 
-test("cancelAgentRun preserves the active turn when the provider rejects the interrupt", async () => {
+test("Stop settles a foreground run whose provider rejects the interrupt", async () => {
   const fixture = await createControlledInterruptFixture({
     name: "interrupt-rejected",
     agentId: "00000000-0000-4000-8000-000000000304",
@@ -3446,17 +3485,57 @@ test("cancelAgentRun preserves the active turn when the provider rejects the int
     await fixture.startForegroundRun();
 
     await expect(fixture.manager.cancelAgentRun(fixture.agentId)).resolves.toEqual({
-      status: "refused",
+      status: "settled",
     });
     expect(fixture.manager.getAgent(fixture.agentId)).toMatchObject({
+      lifecycle: "idle",
+      activeForegroundTurnId: null,
+    });
+    expect(fixture.manager.getActiveRun(fixture.agentId)).toBeNull();
+
+    fixture.session.pushEvent({
+      type: "turn_started",
+      provider: "codex",
+      turnId: "provider-still-active-turn",
+    });
+    fixture.session.pushEvent({
+      type: "turn_completed",
+      provider: "codex",
+      turnId: "provider-still-active-turn",
+    });
+    await fixture.manager.flush();
+    expect(fixture.manager.getAgent(fixture.agentId)?.lifecycle).toBe("idle");
+    expect(fixture.manager.getActiveRun(fixture.agentId)).toBeNull();
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("replacing a run still refuses when the provider rejects the interrupt", async () => {
+  const fixture = await createControlledInterruptFixture({
+    name: "interrupt-rejected-replace",
+    agentId: "00000000-0000-4000-8000-000000000306",
+    turnId: "provider-owned-turn",
+    interrupt: async () => {
+      throw new Error("A foreground turn is already active");
+    },
+  });
+
+  try {
+    await fixture.startForegroundRun();
+
+    await expect(fixture.manager.replaceAgentRun(fixture.agentId, "replacement")).rejects.toThrow(
+      AgentRunCancellationError,
+    );
+    expect(fixture.manager.getAgent(fixture.agentId)).toMatchObject({
       lifecycle: "running",
-      activeForegroundTurnId: "provider-still-active-turn",
+      activeForegroundTurnId: "provider-owned-turn",
     });
 
     fixture.session.pushEvent({
       type: "turn_completed",
       provider: "codex",
-      turnId: "provider-still-active-turn",
+      turnId: "provider-owned-turn",
     });
   } finally {
     await fixture.cleanup();

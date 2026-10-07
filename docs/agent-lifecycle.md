@@ -68,8 +68,10 @@ into that contract; lifecycle callers do not interpret provider-specific errors.
 After an acknowledged interrupt, the manager settles the captured run even when no terminal event
 arrives or the run was still waiting for its provider turn id. The captured run token prevents an
 older cancellation from settling a newer turn. If interruption is rejected or times out, the agent
-keeps its active foreground turn and replacement, reload, rewind, and Stop report the failure.
-Accepting new work after an ambiguous interruption would create a split-brain session.
+keeps its active foreground turn and replacement, reload, and rewind report the failure: starting
+their work after an ambiguous interruption would create a split-brain session. Stop does not refuse.
+It settles the run locally (`turn_canceled`, pending permissions resolved, output so far kept) and
+abandons the turn, so a late provider event for that turn cannot revive or fail the stopped agent.
 
 ## Relationships
 
