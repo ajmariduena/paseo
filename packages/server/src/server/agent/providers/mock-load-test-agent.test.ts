@@ -109,6 +109,45 @@ describe("MockLoadTestAgentClient", () => {
     expect(events.at(-1)).toMatchObject({ type: "turn_completed", provider: "mock" });
   });
 
+  test("emits one configured completed tool call for browser fixtures", async () => {
+    vi.useFakeTimers();
+    const client = new MockLoadTestAgentClient();
+    const session = await client.createSession({
+      provider: "mock",
+      cwd: process.cwd(),
+      featureValues: {
+        mockCompletedToolCall: {
+          name: "html_render",
+          output: '{"htmlRender":{"renderId":"fixture"}}',
+        },
+      },
+    });
+    const events: AgentStreamEvent[] = [];
+    session.subscribe((event) => events.push(event));
+    const result = session.run("Show the fixture.");
+    await vi.runAllTimersAsync();
+    await expect(result).resolves.toMatchObject({ canceled: false });
+    expect(
+      events
+        .filter(
+          (event): event is Extract<AgentStreamEvent, { type: "timeline" }> =>
+            event.type === "timeline",
+        )
+        .map((event) => event.item)
+        .filter((item) => item.type === "tool_call"),
+    ).toEqual([
+      expect.objectContaining({
+        name: "html_render",
+        status: "completed",
+        detail: {
+          type: "unknown",
+          input: {},
+          output: '{"htmlRender":{"renderId":"fixture"}}',
+        },
+      }),
+    ]);
+  });
+
   test("can withhold the provider user-message echo until an immediate interrupt", async () => {
     vi.useFakeTimers();
     const client = new MockLoadTestAgentClient();
