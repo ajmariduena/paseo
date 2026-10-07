@@ -163,9 +163,9 @@ export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
       border: 0,
       width: "100%",
       height: frameHeight,
-      backgroundColor: props.theme.variables["--background"],
+      backgroundColor: visualIdentity ? "transparent" : props.theme.variables["--background"],
     }),
-    [frameHeight, props.theme],
+    [frameHeight, props.theme, visualIdentity],
   );
   const onLoad = useCallback(() => {
     frameRef.current?.contentWindow?.postMessage(

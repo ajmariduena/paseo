@@ -40,8 +40,8 @@ export function visualizationThemeCss(theme: RenderTheme): string {
 
 export const VISUALIZATION_BASE_CSS = `
 *,*::before,*::after{box-sizing:border-box}
-html{background:transparent;color:var(--foreground);font:var(--font-size-base,14px)/1.5 var(--font-sans,system-ui);-webkit-font-smoothing:antialiased}
-body{margin:0;min-width:0;background:transparent}button,input,select,textarea{font:inherit}button{cursor:pointer}
+html{background:var(--background);color:var(--foreground);font:var(--font-size-base,14px)/1.5 var(--font-sans,system-ui);-webkit-font-smoothing:antialiased}
+body{margin:0;min-width:0;background:var(--background)}button,input,select,textarea{font:inherit}button{cursor:pointer}
 :focus-visible{outline:2px solid var(--ring);outline-offset:2px}
 a{color:var(--primary)}hr{border:0;border-top:1px solid var(--border);margin:1rem 0}
 .card,.widget{background:var(--card);color:var(--card-foreground);border:1px solid var(--border);border-radius:var(--radius);padding:1rem}

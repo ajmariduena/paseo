@@ -21,7 +21,7 @@ import {
   readVisualizationBridgeMessage,
   VISUALIZATION_CSP,
 } from "./visualize-bridge";
-import { visualizationVariables } from "./visualize-style";
+import { VISUALIZATION_BASE_CSS, visualizationVariables } from "./visualize-style";
 
 test("places CSP before source and bootstrap in the real head", () => {
   for (const html of [
@@ -83,6 +83,8 @@ test("maps live light and dark themes and bounds height messages", () => {
   const dark = mapRenderTheme(darkTheme);
   const light = mapRenderTheme(lightTheme);
   expect(dark.variables["--background"]).toBe(darkTheme.colors.background);
+  expect(dark.variables["--card"]).toBe(darkTheme.colors.surface1);
+  expect(dark.variables["--background"]).not.toBe(dark.variables["--card"]);
   expect(light.variables["--background"]).toBe(lightTheme.colors.background);
   expect(light.variables["--background"]).not.toBe(dark.variables["--background"]);
   for (const mapped of [dark, light]) {
@@ -292,6 +294,12 @@ test("visualization bridge includes state, carousel, and conditional icon suppor
   expect(plain).toContain('request("visualization/set-state"');
   expect(plain).toContain("p.nativeExternalPrefix");
   expect(plain).toContain('document.querySelectorAll(".viz-carousel")');
+  expect(plain).toContain("document.fonts.ready.then(size)");
+  expect(plain).toContain("trailing.bottom+offset");
+  expect(VISUALIZATION_BASE_CSS).toContain("html{background:var(--background)");
+  expect(VISUALIZATION_BASE_CSS).toContain(
+    "body{margin:0;min-width:0;background:var(--background)",
+  );
   expect(plain).toContain('picker.setAttribute("aria-label","Choose design")');
   expect(plain).not.toContain('src="https://unpkg.com/lucide@');
   const withIcons = prepareVisualizationDocument({

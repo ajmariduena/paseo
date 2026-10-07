@@ -98,9 +98,15 @@ export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
   const frameStyle = useMemo(
     () =>
       props.fullscreen
-        ? { flex: 1, backgroundColor: props.theme.variables["--background"] }
-        : { height: frameHeight, backgroundColor: props.theme.variables["--background"] },
-    [frameHeight, props.fullscreen, props.theme],
+        ? {
+            flex: 1,
+            backgroundColor: visualIdentity ? "transparent" : props.theme.variables["--background"],
+          }
+        : {
+            height: frameHeight,
+            backgroundColor: visualIdentity ? "transparent" : props.theme.variables["--background"],
+          },
+    [frameHeight, props.fullscreen, props.theme, visualIdentity],
   );
   const sendVisualizationReply = useCallback(
     (id: string, result: unknown, error: string | null) => {
