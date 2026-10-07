@@ -4,14 +4,24 @@ import { buildPaseoOrchestrationInstructions } from "./orchestration-instruction
 
 test("Codex visuals allow one of its file reference or Paseo's complete document tool", () => {
   const text = buildPaseoOrchestrationInstructions(undefined, "codex") ?? "";
-  expect(text).toContain("Codex `visualize` file references display inline");
-  expect(text).toContain("`html_render` is also available");
+  expect(text).toContain("build a Codex `visualize` file reference");
+  expect(text).toContain("show it with `html_render`");
   expect(text).toContain("Use one route per visual, never both");
+  expect(text).not.toContain("tool search: `select:");
+});
+
+test("visuals come first, ask for unprompted use, and tell Claude Code how to load the tool", () => {
+  const text = buildPaseoOrchestrationInstructions(undefined, "claude", true) ?? "";
+  expect(text.startsWith("## Showing visuals")).toBe(true);
+  expect(text).toContain("Don't wait to be asked");
+  expect(text).toContain("uploads and shares nothing");
+  expect(text).not.toContain("publish");
+  expect(text).toContain("`select:mcp__paseo__html_render,mcp__paseo__html_preview`");
 });
 
 test("preview guidance appears only when the preview tool is attached", () => {
   expect(buildPaseoOrchestrationInstructions(undefined, "claude", true)).toContain(
-    "check it with `html_preview`, then publish it",
+    "check it with `html_preview`, and show it with `html_render`",
   );
   expect(
     buildPaseoOrchestrationInstructions({ disabledTools: ["html_preview"] }, "claude", true),
@@ -24,7 +34,14 @@ test("preview guidance appears only when the preview tool is attached", () => {
 describe("buildPaseoOrchestrationInstructions", () => {
   test("full text with every orchestration tool", () => {
     expect(buildPaseoOrchestrationInstructions(undefined)).toMatchInlineSnapshot(`
-      "## Paseo orchestration
+      "## Showing visuals
+
+      Your replies appear in the Paseo app, which shows visuals inline. Don't wait to be asked: whenever the answer has a shape (numbers to compare, a chart or trend, a table longer than a few rows, a timeline, a flow or architecture, a UI mockup, a before and after), build a self-contained HTML page and show it with \`html_render\` before your final reply. Do this instead of a markdown table, an ASCII diagram, or a file opened in a browser.
+
+      - The page stays in this conversation on the user's machine. Showing it uploads and shares nothing.
+      - The reader sees the visual above your reply, so don't announce or restate it; add only what it doesn't say.
+
+      ## Paseo orchestration
 
       Paseo's tools let you delegate to other agents. Agents you create are your subagents: the user sees them in the Paseo app under you, and they are archived with you.
 
@@ -70,11 +87,7 @@ describe("buildPaseoOrchestrationInstructions", () => {
 
       ### Tool names
 
-      Tool names may carry a harness prefix, such as \`mcp__paseo__create_agent\` or \`paseo_create_agent\`; the semantics are the same. Some harnesses load MCP tools lazily: if a tool-catalog scan doesn't show the Paseo tools, make one direct attempt with the known name (in Claude Code, find it with tool search) before concluding they are unavailable.
-
-      ### Showing visuals
-
-      When a chart, table, diagram, image collage, or mockup would say more than prose, build a self-contained HTML page and publish it with \`html_render\` before your final reply. The reader sees the page above that reply, so add only what it does not say."
+      Tool names may carry a harness prefix, such as \`mcp__paseo__create_agent\` or \`paseo_create_agent\`; the semantics are the same. Some harnesses load MCP tools lazily: if a tool-catalog scan doesn't show the Paseo tools, make one direct attempt with the known name (in Claude Code, find it with tool search) before concluding they are unavailable."
     `);
   });
 
@@ -103,7 +116,7 @@ describe("buildPaseoOrchestrationInstructions", () => {
 
   test("keeps visual guidance when delegation is disabled", () => {
     expect(buildPaseoOrchestrationInstructions({ disabledTools: ["create_agent"] })).toContain(
-      "### Showing visuals",
+      "## Showing visuals",
     );
     expect(buildPaseoOrchestrationInstructions({ enabled: false })).toBe(undefined);
   });

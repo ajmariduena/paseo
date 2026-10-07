@@ -22,14 +22,9 @@ export function buildPaseoOrchestrationInstructions(
     return body ? `### ${title}\n\n${body}` : "";
   }
 
-  let visuals = "";
-  if (has("html_render")) {
-    const preview = previewAvailable && has("html_preview");
-    visuals =
-      provider === "codex"
-        ? `### Showing visuals\n\nVisuals made with Codex \`visualize\` file references display inline in Paseo. \`html_render\` is also available for complete self-contained HTML pages.${preview ? " Check the page with `html_preview` before publishing it." : ""} Use one route per visual, never both; add only what the visual does not say.`
-        : `### Showing visuals\n\nWhen a chart, table, diagram, image collage, or mockup would say more than prose, build a self-contained HTML page${preview ? ", check it with `html_preview`, then publish it" : " and publish it"} with \`html_render\` before your final reply. ${preview ? "The reader sees the page above that reply, so don't announce or restate it; add only what it doesn't say." : "The reader sees the page above that reply, so add only what it does not say."}`;
-  }
+  const visuals = has("html_render")
+    ? buildVisualsInstructions(provider, previewAvailable && has("html_preview"))
+    : "";
   if (!has("create_agent")) return visuals || undefined;
 
   const startingTools = codeList(["create_agent", "send_agent_prompt"]).join(" and ");
@@ -37,6 +32,7 @@ export function buildPaseoOrchestrationInstructions(
   const dontPoll = pollingTools.length > 0 ? `: don't loop on ${orList(pollingTools)},` : ",";
 
   return [
+    visuals,
     "## Paseo orchestration",
     "Paseo's tools let you delegate to other agents. Agents you create are your subagents: the user sees them in the Paseo app under you, and they are archived with you.",
     section("When to delegate", [
@@ -88,10 +84,33 @@ export function buildPaseoOrchestrationInstructions(
     section("Tool names", [
       "Tool names may carry a harness prefix, such as `mcp__paseo__create_agent` or `paseo_create_agent`; the semantics are the same. Some harnesses load MCP tools lazily: if a tool-catalog scan doesn't show the Paseo tools, make one direct attempt with the known name (in Claude Code, find it with tool search) before concluding they are unavailable.",
     ]),
-    visuals,
   ]
     .filter((block): block is string => typeof block === "string" && block.length > 0)
     .join("\n\n");
+}
+
+function buildVisualsInstructions(provider: string | undefined, preview: boolean): string {
+  const page = preview
+    ? "a self-contained HTML page, check it with `html_preview`, and show it with `html_render`"
+    : "a self-contained HTML page and show it with `html_render`";
+  const route =
+    provider === "codex"
+      ? `show it inline: build a Codex \`visualize\` file reference, or build ${page}. Use one route per visual, never both.`
+      : `build ${page} before your final reply. Do this instead of a markdown table, an ASCII diagram, or a file opened in a browser.`;
+  const notes = [
+    "- The page stays in this conversation on the user's machine. Showing it uploads and shares nothing.",
+    "- The reader sees the visual above your reply, so don't announce or restate it; add only what it doesn't say.",
+  ];
+  if (provider === "claude") {
+    notes.push(
+      `- Claude Code loads Paseo tools lazily. Fetch them with tool search: \`select:mcp__paseo__html_render${preview ? ",mcp__paseo__html_preview" : ""}\`.`,
+    );
+  }
+  return [
+    "## Showing visuals",
+    `Your replies appear in the Paseo app, which shows visuals inline. Don't wait to be asked: whenever the answer has a shape (numbers to compare, a chart or trend, a table longer than a few rows, a timeline, a flow or architecture, a UI mockup, a before and after), ${route}`,
+    notes.join("\n"),
+  ].join("\n\n");
 }
 
 function orList(items: string[]): string {

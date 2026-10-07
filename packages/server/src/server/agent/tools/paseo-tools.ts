@@ -961,7 +961,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       {
         title: "Render an HTML page",
         description:
-          "Show a finished self-contained HTML page (chart, dashboard, table, diagram, collage, mockup) inline above your final reply. Call before the reply; add only what the page does not say. " +
+          "Show a finished self-contained HTML page (chart, dashboard, table, diagram, collage, mockup) inline above your final reply, in the user's Paseo app. Use it without being asked whenever data or structure reads better as a visual than as a markdown table or prose. The page uploads and shares nothing. Call before the reply; add only what the page does not say. " +
           (previewSupported && isPaseoToolEnabled(options.paseoToolPolicy, "html_preview")
             ? "Check the page with html_preview first. "
             : "") +
