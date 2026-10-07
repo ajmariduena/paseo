@@ -1,18 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import {
-  lstat,
-  mkdir,
-  open,
-  readFile,
-  readdir,
-  realpath,
-  rename,
-  rm,
-  stat,
-  unlink,
-  writeFile,
-} from "node:fs/promises";
+import { lstat, mkdir, open, readdir, realpath, rename, rm, stat, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -191,7 +179,10 @@ export async function inlineLocalImages(html: string, cwd: string): Promise<stri
 }
 
 export class HtmlRenderStore {
-  constructor(private readonly paseoHome: string) {}
+  constructor(
+    private readonly paseoHome: string,
+    private readonly afterValidation?: () => Promise<void>,
+  ) {}
 
   private rootDirectory(): string {
     return path.join(this.paseoHome, "html-renders");
@@ -222,6 +213,96 @@ export class HtmlRenderStore {
       throw new Error("HTML render agent path escapes render root");
     }
     return directory;
+  }
+
+  private async verifyAgentDirectory(directory: string): Promise<() => Promise<void>> {
+    const root = await this.checkedRoot(false);
+    const expected = path.join(root, path.basename(directory));
+    const info = await lstat(directory);
+    if (!info.isDirectory() || (await realpath(directory)) !== expected) {
+      throw new Error("Render is unavailable");
+    }
+    const handle = await open(directory, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const opened = await handle.stat();
+      if (!opened.isDirectory() || opened.dev !== info.dev || opened.ino !== info.ino) {
+        throw new Error("Render is unavailable");
+      }
+      return async () => {
+        const current = await lstat(directory);
+        if (
+          !current.isDirectory() ||
+          current.dev !== opened.dev ||
+          current.ino !== opened.ino ||
+          (await realpath(directory)) !== expected
+        ) {
+          throw new Error("Render is unavailable");
+        }
+      };
+    } finally {
+      await handle.close();
+    }
+  }
+
+  private async readVerifiedFile(filename: string, limit: number): Promise<Buffer> {
+    const info = await lstat(filename);
+    if (!info.isFile() || info.size > limit) throw new Error("Render is unavailable");
+    await this.afterValidation?.();
+    const handle = await open(filename, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const opened = await handle.stat();
+      if (
+        !opened.isFile() ||
+        opened.dev !== info.dev ||
+        opened.ino !== info.ino ||
+        opened.size > limit
+      ) {
+        throw new Error("Render is unavailable");
+      }
+      const chunks: Buffer[] = [];
+      let total = 0;
+      for await (const chunk of handle.createReadStream({
+        start: 0,
+        end: limit,
+        autoClose: false,
+      })) {
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        total += bytes.length;
+        if (total > limit) throw new Error("Render is unavailable");
+        chunks.push(bytes);
+      }
+      return Buffer.concat(chunks, total);
+    } finally {
+      await handle.close();
+    }
+  }
+
+  private async writeNewFile(
+    filename: string,
+    bytes: string,
+    verifyDirectory: () => Promise<void>,
+  ): Promise<void> {
+    const handle = await open(
+      filename,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
+      0o600,
+    );
+    try {
+      const opened = await handle.stat();
+      const linked = await lstat(filename);
+      if (
+        !opened.isFile() ||
+        !linked.isFile() ||
+        opened.dev !== linked.dev ||
+        opened.ino !== linked.ino
+      ) {
+        throw new Error("Render is unavailable");
+      }
+      await verifyDirectory();
+      await handle.writeFile(bytes);
+    } finally {
+      await handle.close();
+    }
   }
 
   async initialize(): Promise<void> {
@@ -255,14 +336,16 @@ export class HtmlRenderStore {
     }
     const renderId = randomUUID();
     const directory = await this.agentDirectory(input.agentId, true);
+    const verifyDirectory = await this.verifyAgentDirectory(directory);
     const destination = path.join(directory, `${renderId}.html`);
     const temporary = path.join(directory, `.${renderId}.${randomUUID()}.tmp`);
     const metadata = path.join(directory, `${renderId}.json`);
     const title = input.title.trim().slice(0, 200);
     try {
-      await writeFile(temporary, html, { flag: "wx", mode: 0o600 });
-      await writeFile(metadata, JSON.stringify({ title }), { flag: "wx", mode: 0o600 });
+      await this.writeNewFile(temporary, html, verifyDirectory);
+      await this.writeNewFile(metadata, JSON.stringify({ title }), verifyDirectory);
       await rename(temporary, destination);
+      await verifyDirectory();
     } catch (error) {
       await rm(metadata, { force: true });
       throw error;
@@ -281,14 +364,16 @@ export class HtmlRenderStore {
       throw new Error("Invalid render ID");
     }
     const directory = await this.agentDirectory(agentId, false);
+    const verifyDirectory = await this.verifyAgentDirectory(directory);
     const filename = path.join(directory, `${renderId}.html`);
-    const info = await lstat(filename);
-    if (!info.isFile() || info.size > MAX_RENDER_BYTES) throw new Error("Render is unavailable");
     const metadataPath = path.join(directory, `${renderId}.json`);
-    const metadataInfo = await lstat(metadataPath);
-    if (!metadataInfo.isFile() || metadataInfo.size > 1024)
-      throw new Error("Render is unavailable");
-    const metadata: unknown = JSON.parse(await readFile(metadataPath, "utf8"));
+    const html = await this.readVerifiedFile(filename, MAX_RENDER_BYTES);
+    await verifyDirectory();
+    const metadataBytes = await this.readVerifiedFile(metadataPath, 1024);
+    await verifyDirectory();
+    const metadata: unknown = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(metadataBytes),
+    );
     if (
       typeof metadata !== "object" ||
       metadata === null ||
@@ -297,7 +382,7 @@ export class HtmlRenderStore {
     ) {
       throw new Error("Render metadata is invalid");
     }
-    return { html: await readFile(filename, "utf8"), title: metadata.title };
+    return { html: new TextDecoder("utf-8", { fatal: true }).decode(html), title: metadata.title };
   }
 
   async deleteAgent(agentId: string): Promise<void> {

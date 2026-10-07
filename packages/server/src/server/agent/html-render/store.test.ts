@@ -147,6 +147,51 @@ test("rejects symlinked render files and a symlinked render root", async () => {
   ).rejects.toThrow();
 });
 
+test("rejects a render file swapped to a symlink after validation", async () => {
+  const home = await tempDirectory();
+  const ordinary = new HtmlRenderStore(home);
+  const render = await ordinary.publish({
+    agentId: "agent_a",
+    cwd: home,
+    html: "<p>Original</p>",
+    title: "Original",
+    height: 100,
+  });
+  const filename = path.join(home, "html-renders", "agent_a", `${render.renderId}.html`);
+  const target = path.join(home, "elsewhere.html");
+  await writeFile(target, "<p>Other agent</p>");
+  let swapped = false;
+  const store = new HtmlRenderStore(home, async () => {
+    if (swapped) return;
+    swapped = true;
+    await rm(filename);
+    await symlink(target, filename);
+  });
+  await expect(store.get("agent_a", render.renderId)).rejects.toThrow();
+});
+
+test("rejects an agent directory swapped after validation", async () => {
+  const home = await tempDirectory();
+  const ordinary = new HtmlRenderStore(home);
+  const render = await ordinary.publish({
+    agentId: "agent_a",
+    cwd: home,
+    html: "<p>Original</p>",
+    title: "Original",
+    height: 100,
+  });
+  const directory = path.join(home, "html-renders", "agent_a");
+  const moved = path.join(home, "html-renders", "moved");
+  let swapped = false;
+  const store = new HtmlRenderStore(home, async () => {
+    if (swapped) return;
+    swapped = true;
+    await rename(directory, moved);
+    await symlink(moved, directory, "dir");
+  });
+  await expect(store.get("agent_a", render.renderId)).rejects.toThrow();
+});
+
 test("startup sweep removes only temp files older than an hour", async () => {
   const home = await tempDirectory();
   const store = new HtmlRenderStore(home);
