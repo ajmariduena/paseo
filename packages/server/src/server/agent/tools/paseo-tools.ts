@@ -105,7 +105,6 @@ import { respondToAgentPermission } from "../permission-response.js";
 import { AgentStop } from "../stop.js";
 import {
   archiveAgentCommand,
-  cancelAgentRunCommand,
   closeAgentCommand,
   setAgentModeCommand,
   updateAgentCommand,
@@ -2976,7 +2975,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     {
       title: "Cancel agent run",
       description:
-        "Abort the agent's current run but keep the agent alive for future tasks. Your pending notification for its result is dropped.",
+        "Abort the agent's current run, and the runs of every agent it created, but keep them alive for future tasks. Your pending notification for its result is dropped, and their queued messages and pull request watches stop.",
       inputSchema: {
         agentId: z.string(),
       },
@@ -2992,10 +2991,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           childAgentId: agentId,
         });
       }
-      const { cancelled } = await cancelAgentRunCommand(
-        { agentManager, logger: childLogger },
-        agentId,
-      );
+      const { cancelled } = await agentStop.stop(agentId);
       return {
         content: [],
         structuredContent: ensureValidJson({

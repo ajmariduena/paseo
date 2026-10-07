@@ -5286,6 +5286,41 @@ describe("cancel_agent delegation", () => {
       await host.cleanup();
     }
   });
+
+  it("cancels the running agents a finished child created", async () => {
+    const host = createControlledHost();
+    try {
+      const parentId = await host.createAgent({ steerable: false });
+      const childId = await host.createAgent({
+        steerable: false,
+        labels: { [PARENT_AGENT_ID_LABEL]: parentId },
+      });
+      const grandchildId = await host.createAgent({
+        steerable: false,
+        labels: { [PARENT_AGENT_ID_LABEL]: childId },
+      });
+      await host.startTurn(parentId, "parent work");
+      await host.startTurn(grandchildId, "grandchild work");
+
+      const server = await createAgentMcpServer({
+        agentManager: host.agentManager,
+        agentStorage: host.agentStorage,
+        providerSnapshotManager: createOpenCodeManager().manager,
+        callerAgentId: parentId,
+        logger: host.logger,
+      });
+      const cancelled = await invokeToolWithParsedInput(registeredTool(server, "cancel_agent"), {
+        agentId: childId,
+      });
+
+      expect(cancelled.structuredContent).toEqual({ success: false, status: "not_running" });
+      expect(host.session(grandchildId).interruptCount).toBe(1);
+      expect(host.agentManager.getAgent(grandchildId)?.lifecycle).toBe("idle");
+      expect(host.session(parentId).interruptCount).toBe(0);
+    } finally {
+      await host.cleanup();
+    }
+  });
 });
 
 describe("tools called by a run the user stopped", () => {
