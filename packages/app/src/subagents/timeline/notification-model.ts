@@ -5,7 +5,11 @@ import type {
   SubagentNotificationReason,
 } from "@getpaseo/protocol/agent-types";
 import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
-import { formatAgentModelLabel, joinAgentModelLabel } from "../presentation/model-label";
+import {
+  formatAgentModelLabel,
+  joinAgentModelLabel,
+  resolveAgentModelLabelInput,
+} from "../presentation/model-label";
 import { resolveRowLabel } from "../track-presentation";
 import type { SpawnedAgentSnapshot, SubagentOpenTarget } from "./model";
 
@@ -54,10 +58,7 @@ export function resolveSubagentNotificationRows(input: {
     const agent = input.agents[index] ?? null;
     const modelLabel = agent
       ? joinAgentModelLabel(
-          formatAgentModelLabel(
-            { provider: agent.provider, model: agent.runtimeInfo?.model ?? agent.model },
-            input.providerEntries,
-          ),
+          formatAgentModelLabel(resolveAgentModelLabelInput(agent), input.providerEntries),
         )
       : null;
     return {

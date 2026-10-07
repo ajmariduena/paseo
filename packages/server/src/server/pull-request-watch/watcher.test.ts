@@ -8,6 +8,7 @@ import type {
   CurrentPullRequestStatus,
   PullRequestCheck,
   PullRequestMergeable,
+  PullRequestReviewDecision,
   PullRequestSummary,
   PullRequestTimeline,
   PullRequestTimelineItem,
@@ -36,6 +37,7 @@ interface FakeForge {
   checks: PullRequestCheck[];
   requiredCheckNames: string[];
   mergeable: PullRequestMergeable;
+  reviewDecision: PullRequestReviewDecision;
   remarks: PullRequestTimelineItem[];
   unreadable: boolean;
   rateLimited: boolean;
@@ -53,6 +55,7 @@ function createFakeForge(): FakeForge {
     checks: [],
     requiredCheckNames: [],
     mergeable: "MERGEABLE",
+    reviewDecision: null,
     remarks: [],
     unreadable: false,
     rateLimited: false,
@@ -91,7 +94,7 @@ function createFakeForge(): FakeForge {
           mergeable: forge.mergeable,
           checks: forge.checks,
           checksStatus: "pending",
-          reviewDecision: null,
+          reviewDecision: forge.reviewDecision,
         };
       },
       async getPullRequestTimeline(): Promise<PullRequestTimeline> {
@@ -623,6 +626,80 @@ test("a watch ended by a merge logs why", async () => {
   expect(current.logs.filter((line) => line.msg === "pull_request_watch.ended")).toEqual([
     expect.objectContaining({ reason: "merged", reads: 0, wakes: 0 }),
   ]);
+});
+
+function tasks(current: Scenario) {
+  return current.host.agentManager.listDaemonBackgroundTasks(current.agentId);
+}
+
+async function settleTurn(current: Scenario, text: string): Promise<void> {
+  current.host.session(current.agentId).completeTurn(text);
+  await vi.waitFor(() =>
+    expect(current.host.agentManager.getAgent(current.agentId)?.lifecycle).toBe("idle"),
+  );
+}
+
+test("an active watch is a background task of its agent that says what it waits for", async () => {
+  const current = await startWatching();
+  current.forge.checks = [check("lint", "pending"), check("test", "pending")];
+  await watch(current);
+  const [watched] = await current.store.list();
+
+  expect(tasks(current)).toEqual([
+    {
+      id: `pull-request-watch:${watched?.id}`,
+      taskType: "pull_request_watch",
+      description: "Watching PR #42 · 2 checks running",
+      startedAt: watched?.startedAt,
+    },
+  ]);
+
+  current.forge.checks = [check("lint", "success"), check("test", "success")];
+  current.forge.reviewDecision = "pending";
+  await sweep(current);
+  expect(tasks(current)).toEqual([
+    expect.objectContaining({ description: "Watching PR #42 · checks passed, waiting for review" }),
+  ]);
+
+  await settleTurn(current, "noted");
+  current.forge.state = "MERGED";
+  await sweep(current);
+  expect(tasks(current)).toEqual([]);
+});
+
+test("stopping the watch's background task unwatches the pull request", async () => {
+  const current = await startWatching();
+  current.watcher.start();
+  await watch(current);
+  const [task] = tasks(current);
+
+  await current.host.agentManager.stopBackgroundTask(current.agentId, task?.id ?? "");
+  current.forge.checks = [check("test", "failure")];
+  await sweep(current);
+
+  expect(await current.store.list()).toEqual([]);
+  expect(tasks(current)).toEqual([]);
+  expect(prompts(current)).toEqual([]);
+});
+
+test("a wake turn that ends while still watching does not ask for attention", async () => {
+  const current = await startWatching();
+  const { agentManager } = current.host;
+  await watch(current);
+
+  current.forge.checks = [check("test", "failure")];
+  await sweep(current);
+  await settleTurn(current, "fixed the test");
+  expect(agentManager.getAgent(current.agentId)?.attention.requiresAttention).toBe(false);
+
+  current.forge.state = "MERGED";
+  await sweep(current);
+  await vi.waitFor(() =>
+    expect(agentManager.getAgent(current.agentId)?.attention).toMatchObject({
+      requiresAttention: true,
+      attentionReason: "finished",
+    }),
+  );
 });
 
 test("watching a closed pull request fails", async () => {

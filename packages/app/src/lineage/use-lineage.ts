@@ -4,7 +4,11 @@ import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import { useFetchQuery } from "@/data/query";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { useSessionStore } from "@/stores/session-store";
-import { formatAgentModelLabel, joinAgentModelLabel } from "@/subagents/presentation/model-label";
+import {
+  formatAgentModelLabel,
+  joinAgentModelLabel,
+  resolveAgentModelLabelInput,
+} from "@/subagents/presentation/model-label";
 import { resolvePaseoSubagentStatus } from "@/subagents/presentation/status";
 import { useSubagentsForParent } from "@/subagents/select";
 import { resolveRowLabel } from "@/subagents/track-presentation";
@@ -62,13 +66,11 @@ function useLineageParent(serverId: string, agentId: string): LineageParent | nu
         pendingPermissionCount: agent.pendingPermissions.length,
         requiresAttention: agent.requiresAttention === true,
         attentionReason: agent.attentionReason ?? null,
+        lastTurnOutcome: agent.parentAgentId ? (agent.lastTurnOutcome ?? null) : null,
         isArchived: Boolean(agent.archivedAt),
       }),
       modelLabel: joinAgentModelLabel(
-        formatAgentModelLabel(
-          { provider: agent.provider, model: agent.runtimeInfo?.model ?? agent.model },
-          entries,
-        ),
+        formatAgentModelLabel(resolveAgentModelLabelInput(agent), entries),
       ),
     };
   }, [entries, parent]);

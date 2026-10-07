@@ -57,12 +57,20 @@ export function buildPaseoOrchestrationInstructions(
         "- When this turn can't continue without the result, call `wait_for_agent`. `timeoutMs` (default 10 minutes, at most `limits.maxWaitMs`) only bounds your wait: `timedOut: true` doesn't stop the agent, and you are still notified when it finishes. A result you read through `wait_for_agent` is not delivered again.",
       has("watch_pull_request") &&
         "- To follow a pull request's checks and reviews, call `watch_pull_request` and end your turn: Paseo wakes you when a check fails, the required checks pass, someone else comments, or the branch conflicts. Don't poll the forge or run `gh pr checks --watch`.",
+      has("unwatch_pull_request") &&
+        "- Call `unwatch_pull_request` when you hand the work back: the pull request merged or was abandoned, or the user takes over. Until then the user sees you as working in the background.",
+    ]),
+    section("Recurring work", [
+      has("create_heartbeat") &&
+        "- `create_heartbeat` sends you a prompt in this conversation on a cron cadence. On each one, delegate the new work or skip what is already covered; don't start a duplicate of a subagent that is still running.",
+      has("create_schedule") &&
+        "- `create_schedule` starts a new agent on each run instead. Use it when every run should start fresh rather than come back to you.",
     ]),
     section("Managing agents", [
       has("send_agent_prompt") &&
         '- `send_agent_prompt` steers or extends work an agent is still doing. `delivery: "auto"` (default) steers into a running turn when the provider can and otherwise runs after it; `"queue"` runs after the running turn; `"steer"` fails if the provider can\'t steer; `"restart"` interrupts the turn and starts over with your message. An idle agent starts right away.',
       has("cancel_agent") &&
-        "- `cancel_agent` stops an agent's current run and keeps the agent. Its pending notification is dropped.",
+        "- `cancel_agent` stops an agent's current run and the runs of every agent under it, and keeps the agents. Its pending notification is dropped.",
       has("get_agent_activity") &&
         "- `get_agent_activity` returns a summary of an agent's recent work. To read all of it, pass `view: \"messages\"` and `afterPosition: 0`, then each returned `nextPosition` until `hasMore` is false. Reading your subagent's final message whole counts as receiving its result.",
       has("list_agents") &&

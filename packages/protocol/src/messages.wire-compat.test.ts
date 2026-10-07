@@ -528,6 +528,44 @@ describe("wire schema compatibility", () => {
     expect(LegacySnapshotSchema.parse({ ...snapshot, queue })).not.toHaveProperty("queue");
   });
 
+  test("agent snapshots carry how the last turn ended, and old clients still parse them", () => {
+    const snapshot = {
+      id: "agent-1",
+      provider: "claude",
+      cwd: "/tmp/project",
+      model: null,
+      createdAt: "2026-10-07T00:00:00.000Z",
+      updatedAt: "2026-10-07T00:00:00.000Z",
+      lastUserMessageAt: null,
+      status: "idle",
+      capabilities: {
+        supportsStreaming: true,
+        supportsSessionPersistence: true,
+        supportsDynamicModes: true,
+        supportsMcpServers: true,
+        supportsReasoningStream: true,
+        supportsToolInvocations: true,
+      },
+      currentModeId: null,
+      availableModes: [],
+      pendingPermissions: [],
+      persistence: null,
+      title: null,
+      labels: {},
+    };
+    expect(
+      AgentSnapshotPayloadSchema.parse({ ...snapshot, lastTurnOutcome: "canceled" })
+        .lastTurnOutcome,
+    ).toBe("canceled");
+    expect(AgentSnapshotPayloadSchema.parse(snapshot).lastTurnOutcome).toBeUndefined();
+
+    // Copied from v0.11.0-beta.3, before agent snapshots had a last turn outcome.
+    const LegacySnapshotSchema = AgentSnapshotPayloadSchema.omit({ lastTurnOutcome: true });
+    expect(
+      LegacySnapshotSchema.parse({ ...snapshot, lastTurnOutcome: "canceled" }),
+    ).not.toHaveProperty("lastTurnOutcome");
+  });
+
   test("send responses carry the disposition, and old clients still parse them", () => {
     const response = {
       type: "send_agent_message_response",

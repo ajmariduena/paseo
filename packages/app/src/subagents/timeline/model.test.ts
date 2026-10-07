@@ -62,6 +62,7 @@ function agent(overrides: Partial<SpawnedAgentSnapshot> = {}): SpawnedAgentSnaps
     attentionReason: null,
     archivedAt: null,
     model: "gpt-6.1-sol",
+    thinkingOptionId: null,
     runtimeInfo: undefined,
     ...overrides,
   };
@@ -187,6 +188,32 @@ describe("resolveSpawnRow", () => {
       modelLabel: "gpt-6.1-sol",
       target: { kind: "agent", agentId: "agt_child" },
     });
+  });
+
+  it("says stopped for a Paseo child whose turn the user stopped", () => {
+    const row = resolveSpawnRow({
+      spawn: spawnOf(createAgentCall("1", { agentId: "agt_child" })),
+      agent: agent({ lastTurnOutcome: "canceled" }),
+      descriptor: null,
+      providerEntries: undefined,
+    });
+    expect(row).toMatchObject({
+      status: { word: "stopped", bucket: "done", isLive: false },
+      liveSince: null,
+    });
+  });
+
+  it("labels a Paseo child with the effort its runtime reports", () => {
+    const row = resolveSpawnRow({
+      spawn: spawnOf(createAgentCall("1", { agentId: "agt_child" })),
+      agent: agent({
+        thinkingOptionId: "medium",
+        runtimeInfo: { provider: "codex", sessionId: null, thinkingOptionId: "high" },
+      }),
+      descriptor: null,
+      providerEntries: undefined,
+    });
+    expect(row.modelLabel).toBe("gpt-6.1-sol High");
   });
 
   it("falls back to the call's own title and reads archived once the child is gone", () => {

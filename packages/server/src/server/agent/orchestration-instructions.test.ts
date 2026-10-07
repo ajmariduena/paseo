@@ -46,11 +46,17 @@ describe("buildPaseoOrchestrationInstructions", () => {
       - \`create_agent\` and \`send_agent_prompt\` return immediately. When the agent finishes, fails, or needs a permission, a notification wakes you in this conversation. End your turn, or keep doing independent work, instead of polling: don't loop on \`get_agent_status\`, \`get_agent_activity\`, or \`list_agents\`, and don't write shell loops or sleeps that watch agents.
       - When this turn can't continue without the result, call \`wait_for_agent\`. \`timeoutMs\` (default 10 minutes, at most \`limits.maxWaitMs\`) only bounds your wait: \`timedOut: true\` doesn't stop the agent, and you are still notified when it finishes. A result you read through \`wait_for_agent\` is not delivered again.
       - To follow a pull request's checks and reviews, call \`watch_pull_request\` and end your turn: Paseo wakes you when a check fails, the required checks pass, someone else comments, or the branch conflicts. Don't poll the forge or run \`gh pr checks --watch\`.
+      - Call \`unwatch_pull_request\` when you hand the work back: the pull request merged or was abandoned, or the user takes over. Until then the user sees you as working in the background.
+
+      ### Recurring work
+
+      - \`create_heartbeat\` sends you a prompt in this conversation on a cron cadence. On each one, delegate the new work or skip what is already covered; don't start a duplicate of a subagent that is still running.
+      - \`create_schedule\` starts a new agent on each run instead. Use it when every run should start fresh rather than come back to you.
 
       ### Managing agents
 
       - \`send_agent_prompt\` steers or extends work an agent is still doing. \`delivery: "auto"\` (default) steers into a running turn when the provider can and otherwise runs after it; \`"queue"\` runs after the running turn; \`"steer"\` fails if the provider can't steer; \`"restart"\` interrupts the turn and starts over with your message. An idle agent starts right away.
-      - \`cancel_agent\` stops an agent's current run and keeps the agent. Its pending notification is dropped.
+      - \`cancel_agent\` stops an agent's current run and the runs of every agent under it, and keeps the agents. Its pending notification is dropped.
       - \`get_agent_activity\` returns a summary of an agent's recent work. To read all of it, pass \`view: "messages"\` and \`afterPosition: 0\`, then each returned \`nextPosition\` until \`hasMore\` is false. Reading your subagent's final message whole counts as receiving its result.
       - \`list_agents\` defaults to agents under your working directory. \`scope: "children"\` lists your subagents in any workspace; \`"workspace"\`, \`"project"\`, and \`"all"\` widen the search.
 
@@ -73,6 +79,8 @@ describe("buildPaseoOrchestrationInstructions", () => {
       "get_agent_activity",
       "cancel_agent",
       "list_agents",
+      "create_heartbeat",
+      "create_schedule",
     ];
 
     const text = buildPaseoOrchestrationInstructions({ disabledTools }) ?? "";
@@ -82,6 +90,7 @@ describe("buildPaseoOrchestrationInstructions", () => {
       expect(text).not.toContain(tool);
     }
     expect(text).not.toContain("### Managing agents");
+    expect(text).not.toContain("### Recurring work");
   });
 
   test("keeps visual guidance when delegation is disabled", () => {

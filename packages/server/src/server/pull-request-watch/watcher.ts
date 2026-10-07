@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { AgentBackgroundTask } from "@getpaseo/protocol/agent-types";
 import type { Logger } from "pino";
 
 import type {
@@ -15,7 +16,13 @@ import {
   renderUnreadableWake,
   type PullRequestObservation,
 } from "./watch-report.js";
-import { WatchLifetimes } from "./lifetimes.js";
+import {
+  PULL_REQUEST_WATCH_TASK_PREFIX,
+  PULL_REQUEST_WATCH_TASK_SOURCE,
+  toPullRequestWatchTask,
+  type WatchedPullRequestState,
+} from "./background-task.js";
+import { WatchLifetimes, type WatchEndReason } from "./lifetimes.js";
 import type { PullRequestWatch, PullRequestWatchStore, WatchProgress } from "./watch-store.js";
 
 /** One pass a minute; a pull request is read on it only while a check runs or the read is due. */
@@ -126,6 +133,12 @@ export class PullRequestWatcher {
   private readonly lastReads = new Map<string, LastRead>();
   private readonly viewers = new Map<string, string>();
   private readonly lifetimes: WatchLifetimes;
+  // Per watch id. Kept in memory: after a restart a watch shows no state until its next read.
+  private readonly states = new Map<string, WatchedPullRequestState>();
+  private agentsWithTasks = new Set<string>();
+  // Publishes run one at a time, so an older read of the store never lands last.
+  private publishing: Promise<void> = Promise.resolve();
+  private unregisterStopper: (() => void) | null = null;
   private timer: NodeJS.Timeout | null = null;
   private sweeping: Promise<void> | null = null;
 
@@ -137,6 +150,11 @@ export class PullRequestWatcher {
 
   start(): void {
     if (this.timer) return;
+    this.unregisterStopper = this.options.agentManager.registerBackgroundTaskStopper(
+      PULL_REQUEST_WATCH_TASK_PREFIX,
+      (agentId, taskId) => this.stopTask(agentId, taskId),
+    );
+    void this.publishTasks();
     this.timer = setInterval(() => void this.sweep(), PULL_REQUEST_WATCH_INTERVAL_MS);
     this.timer.unref?.();
   }
@@ -144,6 +162,8 @@ export class PullRequestWatcher {
   close(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    this.unregisterStopper?.();
+    this.unregisterStopper = null;
   }
 
   async watch(target: PullRequestTarget): Promise<WatchPullRequestResult> {
@@ -190,6 +210,8 @@ export class PullRequestWatcher {
       ...draft,
       progress: { ...baseline, wakes: 0 },
     });
+    this.states.set(watch.id, watchedState(baseline, reading));
+    await this.publishTasks();
     const checks = reading.observation.checks;
     return {
       number,
@@ -218,7 +240,8 @@ export class PullRequestWatcher {
     if (!watch) {
       return { number, url: null, watching: false, wasWatching: false };
     }
-    if (await this.options.store.remove(watch.id)) this.lifetimes.ended(watch, "unwatched");
+    await this.end(watch, "unwatched");
+    await this.publishTasks();
     return { number, url: watch.url, watching: false, wasWatching: true };
   }
 
@@ -226,6 +249,59 @@ export class PullRequestWatcher {
     for (const watch of await this.options.store.removeForAgent(agentId)) {
       this.lifetimes.ended(watch, "archived");
     }
+    await this.publishTasks();
+  }
+
+  /** Stopping the watch's background task is `unwatch_pull_request` for that watch. */
+  private async stopTask(agentId: string, taskId: string): Promise<void> {
+    const watchId = taskId.slice(PULL_REQUEST_WATCH_TASK_PREFIX.length);
+    const watch = await this.options.store.get(watchId);
+    if (watch?.agentId === agentId) await this.end(watch, "unwatched");
+    await this.publishTasks();
+  }
+
+  private async end(watch: PullRequestWatch, reason: WatchEndReason): Promise<void> {
+    if (await this.options.store.remove(watch.id)) this.lifetimes.ended(watch, reason);
+  }
+
+  /** Shows every watch as a background task of its agent, with what the last read saw. */
+  private publishTasks(): Promise<void> {
+    this.publishing = this.publishing.then(() => this.publishTasksNow());
+    return this.publishing;
+  }
+
+  private async publishTasksNow(): Promise<void> {
+    let watches: PullRequestWatch[];
+    try {
+      watches = await this.options.store.list();
+    } catch (error) {
+      this.logger.warn({ err: error }, "pull_request_watch.publish_failed");
+      return;
+    }
+    const watchIds = new Set(watches.map((watch) => watch.id));
+    for (const id of this.states.keys()) if (!watchIds.has(id)) this.states.delete(id);
+    const tasksByAgent = new Map<string, AgentBackgroundTask[]>();
+    for (const watch of watches) {
+      const task = toPullRequestWatchTask(watch, this.states.get(watch.id) ?? null);
+      tasksByAgent.set(watch.agentId, [...(tasksByAgent.get(watch.agentId) ?? []), task]);
+    }
+    const { agentManager } = this.options;
+    for (const agentId of this.agentsWithTasks) {
+      if (tasksByAgent.has(agentId)) continue;
+      agentManager.setDaemonBackgroundTasks({
+        agentId,
+        source: PULL_REQUEST_WATCH_TASK_SOURCE,
+        tasks: [],
+      });
+    }
+    for (const [agentId, tasks] of tasksByAgent) {
+      agentManager.setDaemonBackgroundTasks({
+        agentId,
+        source: PULL_REQUEST_WATCH_TASK_SOURCE,
+        tasks,
+      });
+    }
+    this.agentsWithTasks = new Set(tasksByAgent.keys());
   }
 
   /** One pass over every watched pull request. Overlapping calls share the running pass. */
@@ -242,6 +318,14 @@ export class PullRequestWatcher {
   }
 
   private async runSweep(): Promise<void> {
+    try {
+      await this.sweepWatches();
+    } finally {
+      await this.publishTasks();
+    }
+  }
+
+  private async sweepWatches(): Promise<void> {
     const passStartedAt = this.now();
     let watches: PullRequestWatch[];
     try {
@@ -349,6 +433,7 @@ export class PullRequestWatcher {
 
   private async evaluate(watch: PullRequestWatch, reading: OpenReading): Promise<void> {
     const report = evaluatePullRequestWatch(watch.progress, reading.observation);
+    this.states.set(watch.id, watchedState(report.next, reading));
     if (report.changes.length === 0) {
       if (!sameProgress(report.next, watch.progress)) {
         await this.options.store.recordProgress(watch, report.next);
@@ -562,6 +647,16 @@ function sameRepository(url: string, canonicalUrl: string): boolean {
   const candidate = stripUrl(url);
   const canonical = stripUrl(canonicalUrl);
   return candidate === canonical || candidate.startsWith(`${canonical}/`);
+}
+
+function watchedState(progress: WatchProgress, reading: OpenReading): WatchedPullRequestState {
+  const pendingChecks = reading.observation.checks.filter((check) => check.status === "pending");
+  return {
+    pendingChecks: pendingChecks.length,
+    failedChecks: progress.failedChecks.length,
+    passed: progress.passed,
+    reviewDecision: reading.status.reviewDecision,
+  };
 }
 
 function sameProgress(left: WatchProgress, right: WatchProgress): boolean {

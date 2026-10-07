@@ -105,6 +105,45 @@ describe("workspace agent activity index", () => {
     expect(result.get("workspace-quiet")?.backgroundTasks).toEqual([]);
   });
 
+  it("files an idle agent watching a pull request under background until it asks for attention", () => {
+    const backgroundTasks = [
+      {
+        id: "pull-request-watch:w1",
+        taskType: "pull_request_watch",
+        description: "Watching PR #9 · 2 checks running",
+        startedAt: "2026-01-01T00:00:00.000Z",
+      },
+    ];
+    const result = buildWorkspaceAgentActivityIndex(
+      new Map([
+        [
+          "watching",
+          agent({
+            id: "watching",
+            workspaceId: "workspace-watching",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            backgroundTasks,
+          }),
+        ],
+        [
+          "handed-back",
+          agent({
+            id: "handed-back",
+            workspaceId: "workspace-handed-back",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            requiresAttention: true,
+            attentionReason: "finished",
+            attentionTimestamp: "2026-01-01T00:01:00.000Z",
+            backgroundTasks,
+          }),
+        ],
+      ]),
+    );
+
+    expect(result.get("workspace-watching")?.status).toBe("background");
+    expect(result.get("workspace-handed-back")?.status).toBe("attention");
+  });
+
   it("keeps working and unread agents in their own bucket while carrying their tasks", () => {
     const backgroundTasks = [
       {

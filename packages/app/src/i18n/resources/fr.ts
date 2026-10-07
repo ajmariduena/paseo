@@ -2151,6 +2151,8 @@ export const fr: TranslationResources = {
     subagentOf: "Sous-agent de {{title}}",
     parentFallback: "un autre agent",
     empty: "Aucun agent lié",
+    stopAction: "Arrêter {{label}}",
+    stopTooltip: "Arrêter le sous-agent",
   },
   panels: {
     draft: {

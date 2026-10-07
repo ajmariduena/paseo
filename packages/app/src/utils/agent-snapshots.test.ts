@@ -18,6 +18,7 @@ function createSnapshot(
     lastUserMessageAt: input.lastUserMessageAt ?? null,
     status: input.status ?? "idle",
     activeTurn: input.activeTurn,
+    ...(input.lastTurnOutcome ? { lastTurnOutcome: input.lastTurnOutcome } : {}),
     capabilities: input.capabilities ?? {
       supportsStreaming: true,
       supportsSessionPersistence: true,
@@ -76,6 +77,16 @@ describe("normalizeAgentSnapshot", () => {
       startedAt: new Date(startedAt),
       cancellationRequestId: null,
     });
+  });
+
+  it("carries how the last turn ended, and leaves it absent for daemons that never send it", () => {
+    const stopped = normalizeAgentSnapshot(createSnapshot({ lastTurnOutcome: "canceled" }), "s1");
+    expect(stopped.lastTurnOutcome).toBe("canceled");
+    expect(projectAgentSnapshot(stopped).lastTurnOutcome).toBe("canceled");
+
+    const legacy = normalizeAgentSnapshot(createSnapshot(), "s1");
+    expect(legacy.lastTurnOutcome).toBeUndefined();
+    expect(projectAgentSnapshot(legacy)).not.toHaveProperty("lastTurnOutcome");
   });
 
   it("derives parentAgentId from the parent label while preserving labels", () => {

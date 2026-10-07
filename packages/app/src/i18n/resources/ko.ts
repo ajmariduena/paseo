@@ -2105,6 +2105,8 @@ export const ko: TranslationResources = {
     subagentOf: "{{title}}의 하위 에이전트",
     parentFallback: "다른 에이전트",
     empty: "관련 에이전트 없음",
+    stopAction: "{{label}} 중지",
+    stopTooltip: "하위 에이전트 중지",
   },
   panels: {
     draft: {

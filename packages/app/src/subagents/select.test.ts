@@ -294,6 +294,7 @@ describe("selectSubagentsForParent", () => {
         requiresAttention: true,
         createdAt,
         model: "gpt-5.4",
+        thinkingOptionId: "high",
         cwd: "/private/project",
       }),
     ]);
@@ -320,6 +321,7 @@ describe("selectSubagentsForParent", () => {
         requiresAttention: true,
         createdAt,
         model: "gpt-5.4",
+        thinkingOptionId: "high",
       },
     ]);
     expect(Object.keys(rows[0] ?? {}).sort()).toEqual([
@@ -332,6 +334,7 @@ describe("selectSubagentsForParent", () => {
       "requiresAttention",
       "status",
       "subtitle",
+      "thinkingOptionId",
       "title",
       "turn",
     ]);

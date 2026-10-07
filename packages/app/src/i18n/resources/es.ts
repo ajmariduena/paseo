@@ -2146,6 +2146,8 @@ export const es: TranslationResources = {
     subagentOf: "Subagente de {{title}}",
     parentFallback: "otro agente",
     empty: "No hay agentes relacionados",
+    stopAction: "Detener {{label}}",
+    stopTooltip: "Detener subagente",
   },
   panels: {
     draft: {

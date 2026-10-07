@@ -3415,6 +3415,80 @@ describe("Codex app-server provider", () => {
     });
   });
 
+  test("subtitles a native subagent with the model and effort its spawn requested", () => {
+    const session = createSession();
+    const request = vi.fn(async () => {
+      throw new Error("Unexpected request");
+    });
+    session.client = createStub<CodexClientLike>({ request });
+    const events: AgentStreamEvent[] = [];
+    session.subscribe((event) => events.push(event));
+
+    asInternals(session).handleNotification("item/completed", {
+      threadId: "test-thread",
+      item: {
+        type: "collabAgentToolCall",
+        id: "call-sub-agent-model",
+        tool: "spawnAgent",
+        status: "completed",
+        prompt: "Explore the repo.",
+        receiverThreadIds: ["child-thread-model"],
+        model: "gpt-5.4-mini",
+        reasoningEffort: "medium",
+        agentsStates: {},
+      },
+    });
+
+    const upserts = events.flatMap((event) =>
+      event.type === "provider_subagent" && event.event.type === "upsert" ? [event.event] : [],
+    );
+    expect(upserts).toContainEqual(
+      expect.objectContaining({ id: "child-thread-model", subtitle: "GPT-5.4-mini Medium" }),
+    );
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  test("reads the model Codex reports for a native subagent its spawn did not name", async () => {
+    const session = createSession();
+    const request = vi.fn(async (method: string, params: unknown) => {
+      if (method === "thread/read") {
+        return {
+          thread: { id: "child-thread-read", model: "gpt-5.4", reasoningEffort: "xhigh" },
+        };
+      }
+      throw new Error(`Unexpected request: ${method} ${JSON.stringify(params)}`);
+    });
+    session.client = createStub<CodexClientLike>({ request });
+    const events: AgentStreamEvent[] = [];
+    session.subscribe((event) => events.push(event));
+
+    asInternals(session).handleNotification("item/completed", {
+      threadId: "test-thread",
+      item: {
+        type: "collabAgentToolCall",
+        id: "call-sub-agent-read",
+        tool: "spawnAgent",
+        status: "completed",
+        prompt: "Explore the repo.",
+        receiverThreadIds: ["child-thread-read"],
+        model: null,
+        agentsStates: {},
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.at(-1)).toEqual({
+        type: "provider_subagent",
+        provider: "codex",
+        turnId: "test-turn",
+        event: { type: "upsert", id: "child-thread-read", subtitle: "GPT-5.4 Extra high" },
+      });
+    });
+    expect(request.mock.calls).toEqual([
+      ["thread/read", { threadId: "child-thread-read", includeTurns: false }, 5_000],
+    ]);
+  });
+
   test("keeps a settled child completed until Codex starts another child turn", async () => {
     const appServer = createFakeCodexAppServer();
     const session = new CodexAppServerAgentSession(

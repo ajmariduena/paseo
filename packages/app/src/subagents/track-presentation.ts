@@ -35,7 +35,10 @@ function resolveRowSubtitle(
     return resolveRowLabel(row.subtitle) ?? (row.description ? resolveRowLabel(row.title) : null);
   }
   return joinAgentModelLabel(
-    formatAgentModelLabel({ provider: row.provider, model: row.model }, providerEntries),
+    formatAgentModelLabel(
+      { provider: row.provider, model: row.model, thinkingOptionId: row.thinkingOptionId },
+      providerEntries,
+    ),
   );
 }
 

@@ -1,5 +1,5 @@
 import type { TFunction } from "i18next";
-import type { AgentLifecycleStatus } from "@getpaseo/protocol/agent-lifecycle";
+import type { AgentLifecycleStatus, AgentTurnOutcome } from "@getpaseo/protocol/agent-lifecycle";
 import type { ProviderSubagentDescriptorPayload } from "@getpaseo/protocol/messages";
 import type { TurnLiveness } from "@/timeline/turn-liveness";
 import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
@@ -26,6 +26,8 @@ export interface PaseoSubagentStatusInput {
   pendingPermissionCount: number;
   requiresAttention: boolean;
   attentionReason: "finished" | "error" | "permission" | null;
+  /** Null for daemons that predate it. */
+  lastTurnOutcome: AgentTurnOutcome | null;
   isArchived: boolean;
 }
 
@@ -52,6 +54,7 @@ export function resolvePaseoSubagentStatus(input: PaseoSubagentStatusInput | nul
   if (input.turn.phase === "open" || input.status === "running") {
     return status("working", "running");
   }
+  if (input.lastTurnOutcome === "canceled") return status("stopped", "done");
   return status("done", input.requiresAttention ? "attention" : "done");
 }
 

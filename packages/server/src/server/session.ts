@@ -132,7 +132,11 @@ import {
   setAgentModeCommand,
   updateAgentCommand,
 } from "./agent/lifecycle-command.js";
-import { buildStoredAgentPayload, toAgentPayload } from "./agent/agent-projections.js";
+import {
+  buildStoredAgentPayload,
+  toAgentPayload,
+  withDaemonBackgroundTasks,
+} from "./agent/agent-projections.js";
 import {
   appendTimelineItemIfAgentKnown,
   emitLiveTimelineItemIfAgentKnown,
@@ -2163,15 +2167,19 @@ export class Session {
     const storedRecord = await this.agentStorage.get(payload.id);
     payload.title = storedRecord?.title ?? null;
     payload.archivedAt = storedRecord?.archivedAt ?? null;
-    return this.withQueue(payload);
+    return this.withDaemonState(payload);
   }
 
-  private withQueue(payload: AgentSnapshotPayload): AgentSnapshotPayload {
+  /** What the daemon holds for the agent outside its runtime, live or stored. */
+  private withDaemonState(payload: AgentSnapshotPayload): AgentSnapshotPayload {
     const queue = this.agentManager.messageQueue.snapshot(payload.id);
     if (queue) {
       payload.queue = queue;
     }
-    return payload;
+    return withDaemonBackgroundTasks(
+      payload,
+      this.agentManager.listDaemonBackgroundTasks(payload.id),
+    );
   }
 
   private buildAgentPayload(agent: ManagedAgent): Promise<AgentSnapshotPayload> {
@@ -2182,7 +2190,7 @@ export class Session {
     record: StoredAgentRecord,
     registeredProviderIds = new Set(this.providerSnapshotManager.listRegisteredProviderIds()),
   ): AgentSnapshotPayload {
-    return this.withQueue(buildStoredAgentPayload(record, registeredProviderIds));
+    return this.withDaemonState(buildStoredAgentPayload(record, registeredProviderIds));
   }
 
   private isProviderVisibleToClient(provider: string): boolean {

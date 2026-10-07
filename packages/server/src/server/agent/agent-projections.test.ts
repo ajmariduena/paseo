@@ -6,6 +6,7 @@ import {
   toAgentPayload,
   toRecentProviderSessionDescriptorPayload,
   toStoredAgentRecord,
+  withDaemonBackgroundTasks,
   type ManagedAgent,
 } from "./agent-projections.js";
 import type { AgentSession } from "./agent-sdk-types.js";
@@ -91,6 +92,7 @@ function createManagedAgent(overrides: ManagedAgentOverrides = {}): ManagedAgent
     },
     persistence: { ...basePersistence },
     lastUsage: undefined,
+    backgroundTasks: [],
     lastError: lastErrorValue,
     historyPrimed: true,
     lastUserMessageAt: now,
@@ -111,6 +113,19 @@ it("projects the daemon-owned active turn identity", () => {
     turnId: "test-turn-id",
     startedAt: "2025-01-01T00:00:01.000Z",
   });
+});
+
+it("carries how the last turn ended through the stored record into both snapshots", () => {
+  const agent = createManagedAgent({ provider: "codex", lastTurnOutcome: "canceled" });
+  const record = toStoredAgentRecord(agent);
+
+  expect(record.lastTurnOutcome).toBe("canceled");
+  expect(toAgentPayload(agent).lastTurnOutcome).toBe("canceled");
+  expect(buildStoredAgentPayload(record, ["codex"]).lastTurnOutcome).toBe("canceled");
+
+  const { lastTurnOutcome: _omitted, ...olderRecord } = record;
+  expect(buildStoredAgentPayload(olderRecord, ["codex"])).not.toHaveProperty("lastTurnOutcome");
+  expect(toAgentPayload(createManagedAgent())).not.toHaveProperty("lastTurnOutcome");
 });
 
 function createPermission(overrides: Partial<AgentPermissionRequest> = {}): AgentPermissionRequest {
@@ -470,6 +485,36 @@ describe("toAgentPayload", () => {
     const payload = toAgentPayload(agent);
 
     expect(payload.features).toEqual(features);
+  });
+});
+
+describe("withDaemonBackgroundTasks", () => {
+  const shell = {
+    id: "shell-1",
+    taskType: "local_bash",
+    description: "npm run dev",
+    startedAt: "2025-01-01T00:00:00.000Z",
+  };
+  const watch = {
+    id: "pull-request-watch:w1",
+    taskType: "pull_request_watch",
+    description: "Watching PR #9 · 2 checks running",
+    startedAt: "2025-01-01T00:01:00.000Z",
+  };
+
+  it("lists daemon tasks after the provider's own", () => {
+    const payload = toAgentPayload(createManagedAgent({ backgroundTasks: [shell] }));
+
+    expect(withDaemonBackgroundTasks(payload, [watch]).backgroundTasks).toEqual([shell, watch]);
+  });
+
+  it("gives an agent without provider tasks the daemon's, and leaves it alone without any", () => {
+    expect(
+      withDaemonBackgroundTasks(toAgentPayload(createManagedAgent()), [watch]).backgroundTasks,
+    ).toEqual([watch]);
+    expect(
+      withDaemonBackgroundTasks(toAgentPayload(createManagedAgent()), []).backgroundTasks,
+    ).toBeUndefined();
   });
 });
 

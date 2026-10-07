@@ -16,6 +16,7 @@ import {
   type AgentManagerOptions,
   type ManagedAgent,
 } from "./agent-manager.js";
+import { headlessShellPlatform } from "./html-render/browser-install.js";
 import { buildPaseoOrchestrationInstructions } from "./orchestration-instructions.js";
 import { PASEO_MCP_TOOL_TIMEOUT_MS } from "./runtime-mcp-config.js";
 import { PASEO_READ_ONLY_TOOL_NAMES } from "./tools/read-only-tools.js";
@@ -2362,8 +2363,6 @@ describe("orchestration instructions in the daemon append system prompt", () => 
     return launched;
   }
 
-  const fullText = buildPaseoOrchestrationInstructions(undefined);
-
   test.each(["codex", "claude", "pi", "opencode", "cursor"])(
     "%s gets the block ahead of the user's append prompt when the Paseo MCP server is attached",
     async (provider) => {
@@ -2372,6 +2371,11 @@ describe("orchestration instructions in the daemon append system prompt", () => 
         managerOptions: { mcpBaseUrl: MCP_BASE_URL },
       });
 
+      const fullText = buildPaseoOrchestrationInstructions(
+        undefined,
+        provider,
+        headlessShellPlatform() !== null,
+      );
       expect(config.daemonAppendSystemPrompt).toBe(`${fullText}\n\nDaemon instructions.`);
       expect(Object.keys(config.mcpServers ?? {})).toEqual(["paseo"]);
     },
@@ -2391,6 +2395,11 @@ describe("orchestration instructions in the daemon append system prompt", () => 
       },
     });
 
+    const fullText = buildPaseoOrchestrationInstructions(
+      undefined,
+      "codex",
+      headlessShellPlatform() !== null,
+    );
     expect(config.daemonAppendSystemPrompt).toBe(`${fullText}\n\nDaemon instructions.`);
   });
 
@@ -3447,7 +3456,10 @@ test("Stop settles a run whose provider interrupt hangs and ignores its late res
     });
     expect(fixture.session.interruptCalled).toBe(true);
     expect(streamed).toEqual(["turn_canceled"]);
-    expect(fixture.manager.getAgent(fixture.agentId)?.lifecycle).toBe("idle");
+    expect(fixture.manager.getAgent(fixture.agentId)).toMatchObject({
+      lifecycle: "idle",
+      lastTurnOutcome: "canceled",
+    });
 
     fixture.session.pushEvent({
       type: "turn_failed",
@@ -3490,6 +3502,7 @@ test("Stop settles a foreground run whose provider rejects the interrupt", async
     expect(fixture.manager.getAgent(fixture.agentId)).toMatchObject({
       lifecycle: "idle",
       activeForegroundTurnId: null,
+      lastTurnOutcome: "canceled",
     });
     expect(fixture.manager.getActiveRun(fixture.agentId)).toBeNull();
 
@@ -6292,6 +6305,179 @@ test("defers parent finished attention until its delegated child finishes", asyn
     manager.prepareForShutdown();
     rmSync(workdir, { recursive: true, force: true });
   }
+});
+
+test("a stopped child records a canceled turn, skips finished attention, and keeps it on disk", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-stopped-child-"));
+  class InterruptibleSession extends TestAgentSession {
+    private turn = 0;
+
+    override async startTurn(): Promise<{ turnId: string }> {
+      const turnId = `stoppable-turn-${++this.turn}`;
+      setTimeout(() => {
+        this.pushEvent({ type: "turn_started", provider: this.provider, turnId });
+      }, 0);
+      return { turnId };
+    }
+
+    override async interrupt(): Promise<void> {
+      const turnId = `stoppable-turn-${this.turn}`;
+      setTimeout(() => {
+        this.pushEvent({
+          type: "turn_canceled",
+          provider: this.provider,
+          reason: "interrupted",
+          turnId,
+        });
+      }, 0);
+    }
+
+    complete(): void {
+      const turnId = `stoppable-turn-${this.turn}`;
+      setTimeout(() => {
+        this.pushEvent({ type: "turn_completed", provider: this.provider, turnId });
+      }, 0);
+    }
+  }
+  const sessions: InterruptibleSession[] = [];
+  const client = new (class extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      const session = new InterruptibleSession(config);
+      sessions.push(session);
+      return session;
+    }
+  })();
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+
+  try {
+    const child = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: "child-workspace",
+      labels: { [PARENT_AGENT_ID_LABEL]: "parent-agent" },
+    });
+    const firstRun = drainAsyncGenerator(manager.streamAgent(child.id, "work"));
+    await manager.waitForAgentRunStart(child.id);
+
+    await expect(manager.cancelAgentRun(child.id)).resolves.toEqual({ status: "settled" });
+    await firstRun;
+    await manager.flush();
+
+    const stopped = manager.getAgent(child.id);
+    expect(stopped).toMatchObject({ lifecycle: "idle", lastTurnOutcome: "canceled" });
+    expect(stopped?.attention.requiresAttention).toBe(false);
+    expect(toAgentPayload(stopped!).lastTurnOutcome).toBe("canceled");
+    expect((await storage.get(child.id))?.lastTurnOutcome).toBe("canceled");
+
+    const resumed = drainAsyncGenerator(manager.streamAgent(child.id, "more work"));
+    await manager.waitForAgentRunStart(child.id);
+    sessions[0].complete();
+    await resumed;
+    await manager.flush();
+
+    expect(manager.getAgent(child.id)).toMatchObject({
+      lifecycle: "idle",
+      lastTurnOutcome: "completed",
+      attention: { attentionReason: "finished" },
+    });
+    expect((await storage.get(child.id))?.lastTurnOutcome).toBe("completed");
+  } finally {
+    manager.prepareForShutdown();
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("a daemon wake that ends while daemon background work runs waits for it to end before finished attention", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-background-attention-"));
+  class HeldSession extends TestAgentSession {
+    private turn = 0;
+
+    override async startTurn(): Promise<{ turnId: string }> {
+      return { turnId: `held-turn-${++this.turn}` };
+    }
+
+    complete(): void {
+      this.pushEvent({
+        type: "turn_completed",
+        provider: this.provider,
+        turnId: `held-turn-${this.turn}`,
+      });
+    }
+  }
+  const sessions: HeldSession[] = [];
+  const client = new (class extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      const session = new HeldSession(config);
+      sessions.push(session);
+      return session;
+    }
+  })();
+  const notifications: string[] = [];
+  const manager = new AgentManager({
+    clients: { codex: client },
+    logger,
+    onAgentAttention: ({ agentId }) => notifications.push(agentId),
+  });
+  const task = {
+    id: "pull-request-watch:w1",
+    taskType: "pull_request_watch",
+    description: "Watching PR #9",
+    startedAt: "2026-10-07T12:00:00.000Z",
+  };
+  async function wake(agentId: string, messageId: string): Promise<void> {
+    await manager.annotatePrompt(agentId, {
+      messageId,
+      prompt: "pull request news",
+      annotation: { kind: "notification", level: "info", message: "PR #9: checks passed" },
+    });
+    const stream = manager.streamAgent(agentId, "pull request news", {
+      clientMessageId: messageId,
+    });
+    expect((await stream.next()).value).toMatchObject({ type: "turn_started" });
+    sessions[0].complete();
+    await drainAsyncGenerator(stream);
+  }
+
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: "workspace",
+    });
+    manager.setDaemonBackgroundTasks({ agentId: agent.id, source: "watch", tasks: [task] });
+    expect(manager.listDaemonBackgroundTasks(agent.id)).toEqual([task]);
+
+    const userTurn = manager.streamAgent(agent.id, "open the PR and watch it");
+    expect((await userTurn.next()).value).toMatchObject({ type: "turn_started" });
+    sessions[0].complete();
+    await drainAsyncGenerator(userTurn);
+    expect(manager.getAgent(agent.id)?.attention.attentionReason).toBe("finished");
+    await manager.clearAgentAttention(agent.id);
+
+    await wake(agent.id, "wake-1");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(manager.getAgent(agent.id)?.attention.requiresAttention).toBe(false);
+    expect(notifications).toEqual([agent.id]);
+
+    manager.setDaemonBackgroundTasks({ agentId: agent.id, source: "watch", tasks: [] });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(manager.getAgent(agent.id)?.attention.attentionReason).toBe("finished");
+    expect(notifications).toEqual([agent.id, agent.id]);
+  } finally {
+    manager.prepareForShutdown();
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("stopping a daemon background task goes to the stopper registered for its id prefix", async () => {
+  const manager = new AgentManager({ clients: { codex: new TestAgentClient() }, logger });
+  const stopped: string[] = [];
+  const unregister = manager.registerBackgroundTaskStopper("watch:", async (agentId, taskId) => {
+    stopped.push(`${agentId}/${taskId}`);
+  });
+
+  await manager.stopBackgroundTask("agent-not-loaded", "watch:w1");
+  unregister();
+
+  expect(stopped).toEqual(["agent-not-loaded/watch:w1"]);
+  await expect(manager.stopBackgroundTask("agent-not-loaded", "watch:w2")).rejects.toThrow();
 });
 
 test("archiveSnapshot clears persisted attention and normalizes running status", async () => {
@@ -10047,6 +10233,7 @@ test("turn_failed emits a system error assistant timeline message and keeps erro
   const snapshot = manager.getAgent(agent.id);
   expect(snapshot?.lifecycle).toBe("error");
   expect(snapshot?.lastError).toBe("invalid model id");
+  expect(snapshot?.lastTurnOutcome).toBe("failed");
 
   const systemErrors = manager
     .getTimeline(agent.id)
