@@ -2094,6 +2094,8 @@ export const ar: TranslationResources = {
     subagentOf: "وكيل فرعي لـ {{title}}",
     parentFallback: "وكيل آخر",
     empty: "لا يوجد وكلاء مرتبطون",
+    stopAction: "إيقاف {{label}}",
+    stopTooltip: "إيقاف الوكيل الفرعي",
   },
   panels: {
     draft: {

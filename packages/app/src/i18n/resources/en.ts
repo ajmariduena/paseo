@@ -2121,6 +2121,8 @@ export const en = {
     subagentOf: "Subagent of {{title}}",
     parentFallback: "another agent",
     empty: "No related agents",
+    stopAction: "Stop {{label}}",
+    stopTooltip: "Stop subagent",
   },
   panels: {
     draft: {

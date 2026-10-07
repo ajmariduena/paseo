@@ -2129,6 +2129,8 @@ export const ptBR: TranslationResources = {
     subagentOf: "Subagente de {{title}}",
     parentFallback: "outro agente",
     empty: "Nenhum agente relacionado",
+    stopAction: "Parar {{label}}",
+    stopTooltip: "Parar subagente",
   },
   panels: {
     draft: {

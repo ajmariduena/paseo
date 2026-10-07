@@ -2072,6 +2072,8 @@ export const zhCN: TranslationResources = {
     subagentOf: "{{title}} 的 subagent",
     parentFallback: "另一个 agent",
     empty: "没有相关的 agent",
+    stopAction: "停止 {{label}}",
+    stopTooltip: "停止子 agent",
   },
   panels: {
     draft: {

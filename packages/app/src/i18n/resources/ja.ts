@@ -2116,6 +2116,8 @@ export const ja: TranslationResources = {
     subagentOf: "{{title}} のサブエージェント",
     parentFallback: "別のエージェント",
     empty: "関連するエージェントはありません",
+    stopAction: "{{label}}を停止",
+    stopTooltip: "サブエージェントを停止",
   },
   panels: {
     draft: {

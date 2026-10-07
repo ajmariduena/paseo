@@ -75,6 +75,37 @@ describe("buildLineageSections", () => {
     expect(sections.runningCount).toBe(2);
   });
 
+  it("lets only running Paseo-owned children be stopped", () => {
+    const sections = buildLineageSections({
+      parent: null,
+      children: [
+        paseo("working", "2026-10-04T10:00:00.000Z", { status: "running", turn: OPEN_TURN }),
+        paseo("unread", "2026-10-04T10:01:00.000Z", { requiresAttention: true }),
+        provider("native", "2026-10-04T10:02:00.000Z", "running"),
+      ],
+      archived: [
+        {
+          id: "gone",
+          provider: "codex",
+          title: "Gone",
+          createdAt: "2026-10-04T09:00:00.000Z",
+          archivedAt: "2026-10-04T09:30:00.000Z",
+        },
+      ],
+    });
+
+    const stoppable = [...sections.subagents, ...sections.previous].map((row) => [
+      row.key,
+      row.canStop,
+    ]);
+    expect(stoppable).toEqual([
+      ["provider:native", false],
+      ["paseo:unread", false],
+      ["paseo:working", true],
+      ["paseo:gone", false],
+    ]);
+  });
+
   it("does not move a child when it starts working again, and restarts its timer", () => {
     const children = [
       paseo("a", "2026-10-04T10:00:00.000Z", { requiresAttention: true }),
