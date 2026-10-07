@@ -849,6 +849,26 @@ export type WorkspaceLabelDeleteInspectPayload = Extract<
   SessionOutboundMessage,
   { type: "workspace.label.delete.inspect.response" }
 >["payload"];
+export type NoteListPayload = Extract<
+  SessionOutboundMessage,
+  { type: "note.list.response" }
+>["payload"];
+export type NoteResultPayload = Extract<
+  SessionOutboundMessage,
+  { type: "note.create.response" }
+>["payload"];
+export type NoteDeletePayload = Extract<
+  SessionOutboundMessage,
+  { type: "note.delete.response" }
+>["payload"];
+type NoteCreateRequest = Extract<SessionInboundMessage, { type: "note.create.request" }>;
+type NoteUpdateRequest = Extract<SessionInboundMessage, { type: "note.update.request" }>;
+export type CreateNoteOptions = Omit<NoteCreateRequest, "type" | "requestId"> & {
+  requestId?: string;
+};
+export type UpdateNoteOptions = Omit<NoteUpdateRequest, "type" | "requestId"> & {
+  requestId?: string;
+};
 export type ProjectListPayload = Extract<
   SessionOutboundMessage,
   { type: "project.list.response" }
@@ -2809,6 +2829,67 @@ export class DaemonClient {
       message: {
         type: "workspace.label.delete.inspect.request",
         name: options.name,
+      },
+    });
+  }
+
+  listNotes(options?: { includeArchived?: boolean; requestId?: string }): Promise<NoteListPayload> {
+    return this.sendNamespacedCorrelatedSessionRequest<"note.list.response">({
+      requestId: options?.requestId,
+      message: {
+        type: "note.list.request",
+        ...(options?.includeArchived === undefined
+          ? {}
+          : { includeArchived: options.includeArchived }),
+      },
+    });
+  }
+
+  createNote(options: CreateNoteOptions): Promise<NoteResultPayload> {
+    const { requestId, ...fields } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"note.create.response">({
+      requestId,
+      message: { type: "note.create.request", ...fields },
+    });
+  }
+
+  updateNote(options: UpdateNoteOptions): Promise<NoteResultPayload> {
+    const { requestId, ...fields } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"note.update.response">({
+      requestId,
+      message: { type: "note.update.request", ...fields },
+    });
+  }
+
+  archiveNote(options: {
+    noteId: string;
+    archived: boolean;
+    requestId?: string;
+  }): Promise<NoteResultPayload> {
+    return this.sendNamespacedCorrelatedSessionRequest<"note.archive.response">({
+      requestId: options.requestId,
+      message: { type: "note.archive.request", noteId: options.noteId, archived: options.archived },
+    });
+  }
+
+  deleteNote(options: { noteId: string; requestId?: string }): Promise<NoteDeletePayload> {
+    return this.sendNamespacedCorrelatedSessionRequest<"note.delete.response">({
+      requestId: options.requestId,
+      message: { type: "note.delete.request", noteId: options.noteId },
+    });
+  }
+
+  linkNoteAgent(options: {
+    noteId: string;
+    agentId: string;
+    requestId?: string;
+  }): Promise<NoteResultPayload> {
+    return this.sendNamespacedCorrelatedSessionRequest<"note.link_agent.response">({
+      requestId: options.requestId,
+      message: {
+        type: "note.link_agent.request",
+        noteId: options.noteId,
+        agentId: options.agentId,
       },
     });
   }

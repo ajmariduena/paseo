@@ -1,6 +1,6 @@
 ---
 name: paseo
-description: Paseo reference for managing projects, workspaces, workspace scripts, agents, schedules, and heartbeats.
+description: Paseo reference for managing projects, workspaces, workspace scripts, agents, schedules, heartbeats, and notes.
 ---
 
 Paseo is a remote daemon that manages coding agents, terminals. Control it through MCP tools or the CLI.
@@ -113,6 +113,30 @@ Only set feature IDs returned by `inspect_provider`. For Codex fast mode, look f
 **`delete_heartbeat`** stops it. MCP intentionally exposes no heartbeat update tool; delete and recreate when its task or cadence changes.
 
 Schedules have the full list/inspect/update/pause/resume/run-once/log/delete surface. Heartbeats deliberately do not.
+
+## Notes
+
+A note is Markdown the user keeps on the daemon and sees on every device. A note with `todoState` `open` or `done` is a todo; a todo is not a separate kind of object.
+
+**`list_notes`** — newest first. Optional: `todosOnly` (hides done todos unless `includeDone`), `includeDone`, `includeArchived`, `projectId`.
+
+**`get_note`** — `{ id }`. Returns the full body. A note the user hands you arrives in your prompt; read it with `get_note` when you need the current version.
+
+**`create_note`** — required: `title`. Optional: `body` (Markdown), `todo`, `projectId` (defaults to your workspace's project; pass `null` for none). Paseo records you as the author. Use it for follow-ups you found but should not do now — an unrelated bug, a cleanup, a question for the user — so they are not lost in the chat. Put enough context in `body` for someone to act on it later.
+
+**`update_note`** — `{ id, title?, body?, todoState? }`. Set `todoState: "done"` on a todo only after the work is verified. `null` turns a todo back into a plain note.
+
+**`archive_note`** — `{ id }`. Agents archive; there is no delete tool. The user can restore it, or delete it from the app or CLI.
+
+```bash
+paseo note ls [--todos] [--done] [--archived] [--project <id>]
+paseo note add "<title>" [--body <markdown> | --body-file <path|->] [--todo] [--project <id>]
+paseo note show <id>
+paseo note edit <id> [--title <title>] [--body <markdown> | --body-file <path|->]
+paseo note done <id>      # reopen <id> to undo
+paseo note archive <id>   # restore <id> to undo
+paseo note rm <id> --yes  # permanent; the user's call
+```
 
 ## Waiting
 

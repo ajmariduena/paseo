@@ -69,11 +69,12 @@ async function buildShareAttachments(input: {
       return { kind: "image", metadata };
     }),
   );
+  const readyAttachments = input.share.attachments ?? [];
   if (!client) {
-    return imageAttachments;
+    return [...readyAttachments, ...imageAttachments];
   }
   const fileAttachments = await uploadFileAttachments({ client, files: selectedFiles });
-  return [...imageAttachments, ...fileAttachments];
+  return [...readyAttachments, ...imageAttachments, ...fileAttachments];
 }
 
 interface ComposerDestination {

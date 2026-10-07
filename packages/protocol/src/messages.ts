@@ -65,6 +65,20 @@ import {
   ScheduleUpdateResponseSchema,
 } from "./schedule/rpc-schemas.js";
 import {
+  NoteListRequestSchema,
+  NoteCreateRequestSchema,
+  NoteUpdateRequestSchema,
+  NoteArchiveRequestSchema,
+  NoteDeleteRequestSchema,
+  NoteLinkAgentRequestSchema,
+  NoteListResponseSchema,
+  NoteCreateResponseSchema,
+  NoteUpdateResponseSchema,
+  NoteArchiveResponseSchema,
+  NoteDeleteResponseSchema,
+  NoteLinkAgentResponseSchema,
+} from "./notes/rpc-schemas.js";
+import {
   LoopRunRequestSchema,
   LoopListRequestSchema,
   LoopInspectRequestSchema,
@@ -3726,6 +3740,12 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ChatPostRequestSchema,
   ChatReadRequestSchema,
   ChatWaitRequestSchema,
+  NoteListRequestSchema,
+  NoteCreateRequestSchema,
+  NoteUpdateRequestSchema,
+  NoteArchiveRequestSchema,
+  NoteDeleteRequestSchema,
+  NoteLinkAgentRequestSchema,
   ScheduleCreateRequestSchema,
   ScheduleListRequestSchema,
   ScheduleInspectRequestSchema,
@@ -3958,6 +3978,8 @@ export const ServerInfoStatusPayloadSchema = z
         waitingOnSubagents: z.boolean().optional(),
         // COMPAT(workspaceLabels): added in v0.5.0, remove after 2027-08-14.
         workspaceLabels: z.boolean().optional(),
+        // COMPAT(notes): added in v0.11.0, remove gate after 2027-10-07.
+        notes: z.boolean().optional(),
         // COMPAT(workspaceSetupRun): added in v0.8.0, remove gate after 2027-09-02.
         workspaceSetupRun: z.boolean().optional(),
         // COMPAT(workspaceTerminals): added in v0.8.0, remove gate after 2027-09-05.
@@ -7770,6 +7792,12 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   ChatPostResponseSchema,
   ChatReadResponseSchema,
   ChatWaitResponseSchema,
+  NoteListResponseSchema,
+  NoteCreateResponseSchema,
+  NoteUpdateResponseSchema,
+  NoteArchiveResponseSchema,
+  NoteDeleteResponseSchema,
+  NoteLinkAgentResponseSchema,
   ScheduleCreateResponseSchema,
   ScheduleListResponseSchema,
   ScheduleInspectResponseSchema,

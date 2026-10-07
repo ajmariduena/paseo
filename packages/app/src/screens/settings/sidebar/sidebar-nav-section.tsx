@@ -9,6 +9,7 @@ import {
   CalendarClock,
   Gauge,
   History,
+  NotebookPen,
   Plus,
   Search,
   type LucideIcon,
@@ -44,6 +45,7 @@ const BUILTIN_ICONS: Record<BuiltinSidebarItemId, LucideIcon> = {
   history: History,
   search: Search,
   schedules: CalendarClock,
+  notes: NotebookPen,
   usage: Gauge,
 };
 

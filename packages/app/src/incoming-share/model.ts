@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { UserComposerAttachment } from "@/attachments/types";
 import { resolveRasterImageMimeType } from "@/attachments/file-types";
 import { getFileNameFromPath } from "@/attachments/utils";
 
@@ -18,6 +19,10 @@ export interface IncomingShare {
   text: string;
   files: IncomingShareFile[];
   droppedFileCount: number;
+  /** Ready-made composer attachments, such as a note sent from the Notes screen. */
+  attachments?: UserComposerAttachment[];
+  /** Restricts the destination to one host, for content that only exists there. */
+  serverId?: string;
 }
 
 const NativeShareFileSchema = z.object({

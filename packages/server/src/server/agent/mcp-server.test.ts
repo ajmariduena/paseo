@@ -56,6 +56,7 @@ import type {
   UpdateScheduleInput,
 } from "@getpaseo/protocol/schedule/types";
 import type { ScheduleService } from "../schedule/service.js";
+import { NoteStore } from "../notes/store.js";
 import type { WorkspaceGitService } from "../workspace-git-service.js";
 import {
   createPaseoWorktree as createPaseoWorktreeService,
@@ -1047,6 +1048,7 @@ describe("Paseo tool annotations", () => {
       providerSnapshotManager:
         new BoundaryProviderSnapshotManagerFake() as unknown as ProviderSnapshotManager,
       callerAgentId: "agent-1",
+      noteStore: new NoteStore(join(tmpdir(), "paseo-unused-notes"), createTestLogger()),
       logger: createTestLogger(),
     });
     const client = await connectInMemoryMcpClient(server);
@@ -6421,6 +6423,134 @@ describe("schedule_logs MCP tool", () => {
     await expect(tool.handler({ id: "schedule-1" })).rejects.toThrow(
       "Schedule service is not configured",
     );
+  });
+});
+
+describe("note MCP tools", () => {
+  const logger = createTestLogger();
+  let notesDir: string | null = null;
+
+  afterEach(async () => {
+    if (notesDir) await removeTempDir(notesDir);
+    notesDir = null;
+  });
+
+  async function createNoteServer(options: { callerAgentId?: string } = {}) {
+    notesDir = await mkdtemp(join(tmpdir(), "mcp-notes-"));
+    const noteStore = new NoteStore(notesDir, logger);
+    const { agentManager, agentStorage, spies } = createTestDeps();
+    spies.agentManager.getAgent.mockImplementation((agentId: string) =>
+      agentId === "agent-1" ? createManagedAgent({ id: "agent-1", workspaceId: "ws-1" }) : null,
+    );
+    const workspace = createPersistedWorkspaceRecord({
+      workspaceId: "ws-1",
+      projectId: "project-1",
+      cwd: "/tmp/project-1",
+      kind: "directory",
+      displayName: "project-1",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      noteStore,
+      callerAgentId: options.callerAgentId,
+      workspaceRegistry: {
+        get: async (workspaceId) => (workspaceId === workspace.workspaceId ? workspace : null),
+        list: async () => [workspace],
+        upsert: async () => {},
+      },
+      logger,
+    });
+    return { server, noteStore };
+  }
+
+  it("create_note by an agent records the agent as author and its workspace and project", async () => {
+    const { server, noteStore } = await createNoteServer({ callerAgentId: "agent-1" });
+
+    const result = await invokeToolWithParsedInput(registeredTool(server, "create_note"), {
+      title: "Retry path ignores 429",
+      body: "Seen while fixing the upload flow.",
+      todo: true,
+    });
+
+    expect(result.structuredContent).toMatchObject({
+      title: "Retry path ignores 429",
+      todoState: "open",
+      author: { type: "agent", agentId: "agent-1" },
+      workspaceId: "ws-1",
+      projectId: "project-1",
+    });
+    expect(await noteStore.list()).toEqual([result.structuredContent]);
+  });
+
+  it("create_note keeps an explicit null projectId", async () => {
+    const { server } = await createNoteServer({ callerAgentId: "agent-1" });
+
+    const result = await invokeToolWithParsedInput(registeredTool(server, "create_note"), {
+      title: "Global note",
+      projectId: null,
+    });
+
+    expect(result.structuredContent).toMatchObject({ projectId: null, workspaceId: "ws-1" });
+  });
+
+  it("list_notes with todosOnly hides plain notes and done todos unless includeDone", async () => {
+    const { server, noteStore } = await createNoteServer();
+    const author = { type: "user" as const };
+    await noteStore.create({ title: "Plain", author });
+    const open = await noteStore.create({ title: "Open todo", todo: true, author });
+    const done = await noteStore.create({ title: "Done todo", todo: true, author });
+    await noteStore.update(done.id, { todoState: "done" });
+    const listNotes = registeredTool(server, "list_notes");
+
+    const openOnly = await invokeToolWithParsedInput(listNotes, { todosOnly: true });
+    const withDone = await invokeToolWithParsedInput(listNotes, {
+      todosOnly: true,
+      includeDone: true,
+    });
+
+    expect(z.array(z.object({ id: z.string() })).parse(openOnly.structuredContent.notes)).toEqual([
+      expect.objectContaining({ id: open.id }),
+    ]);
+    expect(
+      z
+        .array(z.object({ title: z.string() }))
+        .parse(withDone.structuredContent.notes)
+        .map((note) => note.title)
+        .sort(),
+    ).toEqual(["Done todo", "Open todo"]);
+  });
+
+  it("archive_note removes the note from list_notes until includeArchived", async () => {
+    const { server, noteStore } = await createNoteServer();
+    const note = await noteStore.create({ title: "Stale", author: { type: "user" } });
+
+    const archived = await invokeToolWithParsedInput(registeredTool(server, "archive_note"), {
+      id: note.id,
+    });
+    const listNotes = registeredTool(server, "list_notes");
+
+    expect(archived.structuredContent.archivedAt).toEqual(expect.any(String));
+    expect((await invokeToolWithParsedInput(listNotes, {})).structuredContent.notes).toEqual([]);
+    expect(
+      (await invokeToolWithParsedInput(listNotes, { includeArchived: true })).structuredContent
+        .notes,
+    ).toEqual([archived.structuredContent]);
+  });
+
+  it("does not register note tools without a note store", async () => {
+    const { agentManager, agentStorage } = createTestDeps();
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      logger,
+    });
+
+    expect(lookupTool(server, "create_note")).toBeUndefined();
   });
 });
 

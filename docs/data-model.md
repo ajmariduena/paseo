@@ -55,6 +55,8 @@ $PASEO_HOME/
 │       └── {agentId}.json               # One file per agent
 ├── schedules/
 │   └── {scheduleId}.json                # One file per schedule
+├── notes/
+│   └── {noteId}.json                    # One file per note or todo
 ├── delegations/
 │   ├── {parentAgentId}.json             # Delegated tasks and wake cohorts of one parent
 │   └── by-child.json                    # childAgentId → parentAgentIds
@@ -595,6 +597,14 @@ These small files are not validated as full Zod schemas but are persisted under 
 | `paseo.pid`           | JSON `{ pid, startedAt, ... }`                                 | PID lock; prevents two daemons sharing one `$PASEO_HOME`.                         |
 | `local-credential`    | 32 random bytes encoded as base64url text                      | Rotated before each listen and deleted on shutdown; mode `0600`.                  |
 | `daemon.log`          | Pino log output                                                | Default location; path/rotation configurable via `log.file` in `config.json`.     |
+
+---
+
+## Note Store
+
+**Path:** `$PASEO_HOME/notes/{id}.json`
+
+One file per note, so concurrent edits from devices and agents never rewrite each other's notes. ID is 12 hex characters. `todoState` is `null` for a plain note and `open` or `done` for a todo; "Todos" in the app and `--todos` in the CLI are filters over the same files. `NoteStore` serializes mutations per note and bumps `revision` on every change; an update that carries `expectedRevision` fails with `note_revision_conflict` when the note moved on. `workspaceId` records where the note was captured and survives archiving that workspace. Archive sets `archivedAt`; only `note.delete` (the app and `paseo note rm`, never an agent tool) removes the file. Files that fail to parse are logged and skipped. Schema: `packages/protocol/src/notes/types.ts`.
 
 ---
 

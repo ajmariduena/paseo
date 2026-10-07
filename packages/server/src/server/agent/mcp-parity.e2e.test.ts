@@ -815,6 +815,36 @@ describe("Suite C: Schedule Tools", () => {
   });
 });
 
+describe("Suite C2: Note Tools", () => {
+  test("agent-scoped create_note, list_notes todosOnly, and archive_note", async () => {
+    const created = await callToolStructured(agentScopedClient, "create_note", {
+      title: "Parity follow-up",
+      body: "Found while testing parity.",
+      todo: true,
+    });
+    const noteId = str(created.id);
+    expect(created).toMatchObject({
+      todoState: "open",
+      author: { type: "agent", agentId: parentAgentId },
+      workspaceId: expect.any(String),
+      projectId: expect.any(String),
+    });
+
+    await callToolStructured(topLevelClient, "create_note", { title: "Parity plain note" });
+    const todos = recordArr(
+      (await callToolStructured(topLevelClient, "list_notes", { todosOnly: true })).notes,
+    );
+    expect(todos.map((note) => note.id)).toEqual([noteId]);
+
+    const archived = await callToolStructured(agentScopedClient, "archive_note", { id: noteId });
+    expect(archived.archivedAt).toEqual(expect.any(String));
+    const afterArchive = recordArr(
+      (await callToolStructured(topLevelClient, "list_notes", { todosOnly: true })).notes,
+    );
+    expect(afterArchive).toEqual([]);
+  });
+});
+
 describe("Suite D: Provider Tools", () => {
   test("list_providers returns providers", async () => {
     const payload = await callToolStructured(topLevelClient, "list_providers");

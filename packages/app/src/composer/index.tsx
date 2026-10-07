@@ -172,6 +172,9 @@ import { resolveFirstQueuedMessageId } from "./queue/model";
 import { readClipboardImage } from "./clipboard-image";
 import { normalizeNativePastedImages, type NativePastedFile } from "./native-pasted-image";
 import { PluginResourceAttachmentPill, usePluginAttachmentPicker } from "@/plugins";
+import { noteAttachmentKey } from "@/notes/attachment";
+import { useNoteAttachmentPicker } from "@/notes/attachment-picker";
+import { NoteAttachmentPill } from "@/notes/attachment-pill";
 import { resolveClientSlashCommand, type ClientSlashCommand } from "@/client-slash-commands";
 import {
   appendWorkspaceFileAttachment,
@@ -503,6 +506,17 @@ function renderComposerAttachmentPill(args: RenderComposerAttachmentPillArgs): R
       onOpen,
       onRemove,
     });
+  }
+  if (attachment.kind === "note") {
+    return (
+      <NoteAttachmentPill
+        key={noteAttachmentKey(attachment)}
+        attachment={attachment}
+        index={index}
+        disabled={disabled}
+        onRemove={onRemove}
+      />
+    );
   }
   if (attachment.kind === "plugin_resource") {
     return (
@@ -1349,6 +1363,12 @@ function ComposerContentImpl({
     serverId,
     client,
     connected: isConnected,
+    attachments,
+    onChangeAttachments: setSelectedAttachments,
+    anchorRef: attachButtonRef,
+  });
+  const noteAttachments = useNoteAttachmentPicker({
+    serverId,
     attachments,
     onChangeAttachments: setSelectedAttachments,
     anchorRef: attachButtonRef,
@@ -2312,6 +2332,7 @@ function ComposerContentImpl({
           setIsGithubPickerOpen(true);
         },
       },
+      ...noteAttachments.menuItems,
       ...pluginAttachments.menuItems,
       {
         id: "file",
@@ -2328,6 +2349,7 @@ function ComposerContentImpl({
     handlePasteImage,
     handlePickFile,
     handlePickImage,
+    noteAttachments.menuItems,
     pluginAttachments.menuItems,
     t,
   ]);
@@ -2641,6 +2663,7 @@ function ComposerContentImpl({
                 emptyText={githubEmptyText}
                 renderOption={renderGithubPickerOption}
               />
+              {noteAttachments.picker}
               {pluginAttachments.picker}
             </View>
           </View>

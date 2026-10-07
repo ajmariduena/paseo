@@ -1,6 +1,6 @@
 ---
 title: MCP reference
-description: Reference for the Paseo tools agents use to manage agents, workspaces, scripts, terminals, and schedules.
+description: Reference for the Paseo tools agents use to manage agents, workspaces, scripts, terminals, schedules, and notes.
 nav: MCP reference
 order: 34
 category: Orchestration
@@ -152,6 +152,18 @@ Both use the same cron engine, but they have deliberately different interfaces.
 | `delete_heartbeat`  | Delete one of the current agent's heartbeats.                                |
 
 MCP heartbeats are ephemeral: create or delete them. To change one, delete it and create a replacement. Pause, resume, update, inspect, logs, and run-once apply to new-agent schedules only.
+
+### Notes
+
+Notes are the user's Markdown notes on the daemon. A note with a `todoState` of `open` or `done` is a todo.
+
+| Tool           | Function                                                                                                    |
+| -------------- | ----------------------------------------------------------------------------------------------------------- |
+| `list_notes`   | List notes and todos, newest first. Filter with `todosOnly`, `includeDone`, `includeArchived`, `projectId`. |
+| `get_note`     | Read one note, including its full body.                                                                     |
+| `create_note`  | Write a note or todo. It records the calling agent as author and defaults to that agent's project.          |
+| `update_note`  | Change a note's title or body, or set `todoState` to `done`, `open`, or `null`.                             |
+| `archive_note` | Archive a note. MCP has no delete tool; the user deletes notes from the app or `paseo note rm`.             |
 
 ### Agent profiles
 

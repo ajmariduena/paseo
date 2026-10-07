@@ -125,6 +125,7 @@ export async function fanOutReconciledWorkspaceUpdates(input: {
 import { VoiceAssistantWebSocketServer } from "./websocket-server.js";
 import { WorkspaceSetupRuntime } from "./workspace-setup-runtime.js";
 import { createWorkspaceLabelService } from "./workspace-labels/index.js";
+import { createNoteStore } from "./notes/store.js";
 import { createGitHubService } from "../services/github-service.js";
 import { createPaseoWorktree as createRegisteredPaseoWorktree } from "./paseo-worktree-service.js";
 import { createWorkspaceProvisioningService } from "./session/workspace-provisioning/workspace-provisioning-service.js";
@@ -1534,6 +1535,7 @@ export async function createPaseoDaemon(
       },
     );
   };
+  const noteStore = createNoteStore(config.paseoHome, logger);
   const scheduleService = new ScheduleService({
     paseoHome: config.paseoHome,
     logger,
@@ -1582,6 +1584,7 @@ export async function createPaseoDaemon(
     terminalManager,
     getDaemonTcpPort: () => (boundListenTarget?.type === "tcp" ? boundListenTarget.port : null),
     scheduleService,
+    noteStore,
     providerSnapshotManager,
     daemonConfigStore,
     github,
@@ -1959,6 +1962,7 @@ export async function createPaseoDaemon(
               voiceOrchestrator,
               delegations,
               agentStop,
+              noteStore,
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();
