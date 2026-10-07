@@ -5,10 +5,12 @@ import {
   mkdir,
   open,
   readFile,
+  readdir,
   realpath,
   rename,
   rm,
   stat,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,6 +19,8 @@ import path from "node:path";
 export const MAX_HTML_CHARS = 512_000;
 export const MAX_RENDER_BYTES = 6 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const TEMP_FILE_MAX_AGE_MS = 60 * 60 * 1000;
+const TEMP_FILE_PATTERN = /^\.[0-9a-f-]{36}\.[0-9a-f-]{36}\.tmp$/i;
 
 const MIME_TYPES: Record<string, string> = {
   png: "image/png",
@@ -131,9 +135,13 @@ async function imageDataUri(reference: string, cwd: string): Promise<string> {
   if (!info.isFile() || info.size > MAX_IMAGE_BYTES) {
     throw new Error(`Local image is not a regular file of at most 10 MiB: ${reference}`);
   }
-  const handle = await open(canonical, constants.O_RDONLY);
+  const handle = await open(canonical, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   let bytes: Buffer;
   try {
+    const opened = await handle.stat();
+    if (!opened.isFile() || opened.dev !== info.dev || opened.ino !== info.ino) {
+      throw new Error(`Local image changed while opening: ${reference}`);
+    }
     const chunks: Buffer[] = [];
     let total = 0;
     for await (const chunk of handle.createReadStream({ start: 0, end: MAX_IMAGE_BYTES })) {
@@ -185,9 +193,52 @@ export async function inlineLocalImages(html: string, cwd: string): Promise<stri
 export class HtmlRenderStore {
   constructor(private readonly paseoHome: string) {}
 
-  private agentDirectory(agentId: string): string {
+  private rootDirectory(): string {
+    return path.join(this.paseoHome, "html-renders");
+  }
+
+  private agentPath(agentId: string): string {
     if (!/^[a-zA-Z0-9_-]+$/.test(agentId)) throw new Error("Invalid agent ID");
-    return path.join(this.paseoHome, "html-renders", agentId);
+    return path.join(this.rootDirectory(), agentId);
+  }
+
+  private async checkedRoot(create: boolean): Promise<string> {
+    const root = this.rootDirectory();
+    if (create) await mkdir(root, { recursive: true, mode: 0o700 });
+    if (!(await lstat(root)).isDirectory())
+      throw new Error("HTML render root is not a real directory");
+    return realpath(root);
+  }
+
+  private async agentDirectory(agentId: string, create: boolean): Promise<string> {
+    const root = await this.checkedRoot(create);
+    const directory = this.agentPath(agentId);
+    if (create) await mkdir(directory, { recursive: true, mode: 0o700 });
+    if (!(await lstat(directory)).isDirectory()) {
+      throw new Error("HTML render agent path is not a real directory");
+    }
+    const canonical = await realpath(directory);
+    if (!inside(root, canonical) || canonical === root) {
+      throw new Error("HTML render agent path escapes render root");
+    }
+    return directory;
+  }
+
+  async initialize(): Promise<void> {
+    const root = await this.checkedRoot(true);
+    const now = Date.now();
+    for (const entry of await readdir(root, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !/^[a-zA-Z0-9_-]+$/.test(entry.name)) continue;
+      const directory = await this.agentDirectory(entry.name, false);
+      for (const file of await readdir(directory, { withFileTypes: true })) {
+        if (!file.isFile() || !TEMP_FILE_PATTERN.test(file.name)) continue;
+        const filename = path.join(directory, file.name);
+        const info = await lstat(filename);
+        if (info.isFile() && now - info.mtimeMs > TEMP_FILE_MAX_AGE_MS) {
+          await unlink(filename);
+        }
+      }
+    }
   }
 
   async publish(input: {
@@ -203,8 +254,7 @@ export class HtmlRenderStore {
       throw new Error("Prepared HTML exceeds 6 MiB");
     }
     const renderId = randomUUID();
-    const directory = this.agentDirectory(input.agentId);
-    await mkdir(directory, { recursive: true });
+    const directory = await this.agentDirectory(input.agentId, true);
     const destination = path.join(directory, `${renderId}.html`);
     const temporary = path.join(directory, `.${renderId}.${randomUUID()}.tmp`);
     const metadata = path.join(directory, `${renderId}.json`);
@@ -230,10 +280,11 @@ export class HtmlRenderStore {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(renderId)) {
       throw new Error("Invalid render ID");
     }
-    const filename = path.join(this.agentDirectory(agentId), `${renderId}.html`);
+    const directory = await this.agentDirectory(agentId, false);
+    const filename = path.join(directory, `${renderId}.html`);
     const info = await lstat(filename);
     if (!info.isFile() || info.size > MAX_RENDER_BYTES) throw new Error("Render is unavailable");
-    const metadataPath = path.join(this.agentDirectory(agentId), `${renderId}.json`);
+    const metadataPath = path.join(directory, `${renderId}.json`);
     const metadataInfo = await lstat(metadataPath);
     if (!metadataInfo.isFile() || metadataInfo.size > 1024)
       throw new Error("Render is unavailable");
@@ -250,6 +301,6 @@ export class HtmlRenderStore {
   }
 
   async deleteAgent(agentId: string): Promise<void> {
-    await rm(this.agentDirectory(agentId), { recursive: true, force: true });
+    await rm(this.agentPath(agentId), { recursive: true, force: true });
   }
 }

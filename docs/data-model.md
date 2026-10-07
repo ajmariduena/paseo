@@ -652,7 +652,7 @@ The timeline is rebuilt from provider history on load, and provider history keep
 
 **Path:** `$PASEO_HOME/html-renders/{agentId}/{renderId}.html` with a small title sidecar.
 
-`html_render` writes each page atomically under its caller agent. The tool result carries the random render ID, title, and initial height; provider history replays that completed call, so the inline card returns at the same timeline position after restart. The app fetches the HTML through the agent-scoped `agent.html_render.get` RPC and keeps it in memory only. Archiving keeps the page; hard deletion and agent ID replacement remove the agent's render directory.
+`html_render` writes each page atomically under its caller agent. The tool result carries the random render ID, title, and initial height; provider history replays that completed call, so the inline card returns at the same timeline position after restart. The app fetches the HTML through the agent-scoped `agent.html_render.get` RPC and keeps it in memory only. On startup, the daemon removes temporary render files older than one hour. Complete pages remain even when no tool call references them; archiving keeps them, and hard deletion or agent ID replacement removes the agent's render directory.
 
 ---
 
