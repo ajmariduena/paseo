@@ -2,7 +2,11 @@ import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
 import type { ProviderSubagentDescriptorPayload } from "@getpaseo/protocol/messages";
 import type { Agent } from "@/stores/session-store";
 import type { ToolCallItem } from "@/types/stream";
-import { formatAgentModelLabel, joinAgentModelLabel } from "../presentation/model-label";
+import {
+  formatAgentModelLabel,
+  joinAgentModelLabel,
+  resolveAgentModelLabelInput,
+} from "../presentation/model-label";
 import {
   resolvePaseoSubagentStatus,
   resolveProviderSubagentStatus,
@@ -30,6 +34,7 @@ export type SpawnedAgentSnapshot = Pick<
   | "attentionReason"
   | "archivedAt"
   | "model"
+  | "thinkingOptionId"
   | "runtimeInfo"
 >;
 
@@ -84,10 +89,7 @@ function resolvePaseoRow(
   }
   const modelLabel = agent
     ? joinAgentModelLabel(
-        formatAgentModelLabel(
-          { provider: agent.provider, model: agent.runtimeInfo?.model ?? agent.model },
-          providerEntries,
-        ),
+        formatAgentModelLabel(resolveAgentModelLabelInput(agent), providerEntries),
       )
     : null;
   return {

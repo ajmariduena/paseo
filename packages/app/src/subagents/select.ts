@@ -20,6 +20,7 @@ export interface PaseoSubagentRow {
   requiresAttention: Agent["requiresAttention"];
   createdAt: Agent["createdAt"];
   model: string | null;
+  thinkingOptionId: string | null;
 }
 
 export interface ProviderSubagentRow {
@@ -68,6 +69,7 @@ function toSubagentRow(agent: Agent): SubagentRow {
     requiresAttention: agent.requiresAttention,
     createdAt: agent.createdAt,
     model: extractAgentModel(agent),
+    thinkingOptionId: agent.runtimeInfo?.thinkingOptionId ?? agent.thinkingOptionId ?? null,
   };
 }
 

@@ -19,6 +19,7 @@ function paseo(
     requiresAttention: false,
     createdAt: new Date(createdAt),
     model: null,
+    thinkingOptionId: null,
     ...overrides,
   };
 }

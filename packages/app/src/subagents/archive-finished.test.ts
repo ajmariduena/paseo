@@ -18,6 +18,7 @@ function paseo(id: string, status: PaseoSubagentRow["status"] = "idle"): PaseoSu
     requiresAttention: false,
     createdAt: new Date(),
     model: null,
+    thinkingOptionId: null,
   };
 }
 

@@ -29,6 +29,7 @@ function row(
     requiresAttention: overrides.requiresAttention ?? false,
     createdAt: overrides.createdAt ?? new Date("2026-04-20T00:00:00.000Z"),
     model: overrides.model ?? null,
+    thinkingOptionId: overrides.thinkingOptionId ?? null,
   };
 }
 
@@ -269,6 +270,40 @@ describe("buildSubagentRowPresentationData for provider rows", () => {
       present(row({ id: "a", provider: "claude-personal", model: "claude-opus-5-1" }), entries)
         .subtitle,
     ).toBe("Opus 5.1 · Claude personal");
+  });
+
+  it("puts a managed subagent's effort between its model and account", () => {
+    const entries: ProviderSnapshotEntry[] = [
+      {
+        provider: "claude-personal",
+        status: "ready",
+        enabled: true,
+        source: "custom",
+        label: "Claude personal",
+        models: [
+          {
+            provider: "claude-personal",
+            id: "claude-opus-5-1",
+            label: "Opus 5.1",
+            thinkingOptions: [
+              { id: "high", label: "High" },
+              { id: "max", label: "Max" },
+            ],
+          },
+        ],
+      },
+    ];
+    expect(
+      present(
+        row({
+          id: "a",
+          provider: "claude-personal",
+          model: "claude-opus-5-1",
+          thinkingOptionId: "max",
+        }),
+        entries,
+      ).subtitle,
+    ).toBe("Opus 5.1 Max · Claude personal");
   });
 });
 
