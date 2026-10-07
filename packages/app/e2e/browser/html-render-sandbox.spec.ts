@@ -1,9 +1,36 @@
 import { expect, test } from "@playwright/test";
-import { lightTheme } from "../../src/styles/theme";
-import { mapRenderTheme, prepareRenderDocument } from "../../src/html-render/document";
+import { prepareRenderDocument, type RenderTheme } from "../../src/html-render/document";
 import { prepareVisualizationDocument } from "../../src/html-render/visualize-bridge";
 
-const theme = mapRenderTheme(lightTheme);
+const theme: RenderTheme = {
+  appearance: "light",
+  variables: {
+    "--background": "#ffffff",
+    "--foreground": "#111827",
+    "--muted": "#f3f4f6",
+    "--muted-foreground": "#6b7280",
+    "--card": "#ffffff",
+    "--card-foreground": "#111827",
+    "--secondary": "#f3f4f6",
+    "--secondary-foreground": "#111827",
+    "--border": "#d1d5db",
+    "--input": "#d1d5db",
+    "--ring": "#2563eb",
+    "--primary": "#2563eb",
+    "--primary-foreground": "#ffffff",
+    "--destructive": "#dc2626",
+    "--chart-1": "#16a34a",
+    "--chart-2": "#2563eb",
+    "--chart-3": "#d97706",
+    "--chart-4": "#9333ea",
+    "--chart-5": "#e11d48",
+    "--chart-6": "#0891b2",
+    "--radius": "10px",
+    "--font-sans": "system-ui",
+    "--font-mono": "monospace",
+    "--font-size-base": "14px",
+  },
+};
 
 test("visualization tabs and height updates work while remote fetch stays blocked", async ({
   page,
