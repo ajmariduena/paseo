@@ -9,6 +9,7 @@ import { isPaseoToolEnabled } from "./paseo-tool-policy.js";
 export function buildPaseoOrchestrationInstructions(
   policy: ProviderPaseoToolsPolicy | undefined,
   provider?: string,
+  previewAvailable = false,
 ): string | undefined {
   function has(tool: string): boolean {
     return isPaseoToolEnabled(policy, tool);
@@ -23,10 +24,11 @@ export function buildPaseoOrchestrationInstructions(
 
   let visuals = "";
   if (has("html_render")) {
+    const preview = previewAvailable && has("html_preview");
     visuals =
       provider === "codex"
-        ? "### Showing visuals\n\nVisuals made with Codex `visualize` file references display inline in Paseo. `html_render` is also available for complete self-contained HTML pages. Use one route per visual, never both; add only what the visual does not say."
-        : "### Showing visuals\n\nWhen a chart, table, diagram, image collage, or mockup would say more than prose, build a self-contained HTML page and publish it with `html_render` before your final reply. The reader sees the page above that reply, so add only what it does not say.";
+        ? `### Showing visuals\n\nVisuals made with Codex \`visualize\` file references display inline in Paseo. \`html_render\` is also available for complete self-contained HTML pages.${preview ? " Check the page with `html_preview` before publishing it." : ""} Use one route per visual, never both; add only what the visual does not say.`
+        : `### Showing visuals\n\nWhen a chart, table, diagram, image collage, or mockup would say more than prose, build a self-contained HTML page${preview ? ", check it with `html_preview`, then publish it" : " and publish it"} with \`html_render\` before your final reply. ${preview ? "The reader sees the page above that reply, so don't announce or restate it; add only what it doesn't say." : "The reader sees the page above that reply, so add only what it does not say."}`;
   }
   if (!has("create_agent")) return visuals || undefined;
 

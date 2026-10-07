@@ -867,6 +867,92 @@ function createPaseoWorktreeForMcpTest(options: {
 }
 
 describe("html_render tool", () => {
+  it("hides preview from legacy native OpenCode while keeping it for image-capable native catalogs", () => {
+    const base = {
+      agentStorage: new BoundaryAgentStorageFake() as AgentStorage,
+      providerSnapshotManager:
+        new BoundaryProviderSnapshotManagerFake() as unknown as ProviderSnapshotManager,
+      callerAgentId: "agent-1",
+      paseoHome: "/tmp/paseo-preview-catalog-test",
+      transport: "native" as const,
+      logger: createTestLogger(),
+    };
+    const manager = (images: boolean) =>
+      ({
+        getAgent: () =>
+          createManagedAgent({
+            provider: "opencode",
+            capabilities: {
+              ...createManagedAgent().capabilities,
+              supportsToolResultImages: images,
+            },
+          }),
+      }) as AgentManager;
+    expect(
+      createPaseoToolCatalog({ ...base, agentManager: manager(false) }).getTool("html_preview"),
+    ).toBeUndefined();
+    expect(
+      createPaseoToolCatalog({ ...base, agentManager: manager(true) }).getTool("html_preview"),
+    ).toBeDefined();
+  });
+  it.skipIf(!process.env.PASEO_TEST_HEADLESS_SHELL)(
+    "delivers preview PNG as an MCP and native image block without embedding it in metadata",
+    async () => {
+      const paseoHome = await mkdtemp(join(tmpdir(), "paseo-html-preview-mcp-"));
+      const options = {
+        agentManager: new BoundaryAgentManagerFake() as AgentManager,
+        agentStorage: new BoundaryAgentStorageFake() as AgentStorage,
+        providerSnapshotManager:
+          new BoundaryProviderSnapshotManagerFake() as unknown as ProviderSnapshotManager,
+        callerAgentId: "agent-1",
+        paseoHome,
+        previewBrowserExecutable: process.env.PASEO_TEST_HEADLESS_SHELL,
+        logger: createTestLogger(),
+      };
+      const server = await createAgentMcpServer(options);
+      const client = await connectInMemoryMcpClient(server);
+      try {
+        const input = { html: "<html><body><p>Preview</p></body></html>", width: 390 };
+        const response = await client.callTool({ name: "html_preview", arguments: input });
+        expect(response.isError).not.toBe(true);
+        expect(response.content.map((block) => block.type)).toEqual(["text", "image"]);
+        const metadata = z
+          .object({
+            width: z.number(),
+            screenshot: z.object({
+              mimeType: z.literal("image/png"),
+              width: z.number(),
+              height: z.number(),
+            }),
+          })
+          .parse(response.structuredContent);
+        expect(metadata.width).toBe(390);
+        expect(JSON.stringify(response.structuredContent)).not.toContain("data");
+        const native = createPaseoToolCatalog({ ...options, transport: "native" });
+        const nativeResult = await native.executeTool("html_preview", input);
+        expect(nativeResult.content.map((block) => block.type)).toEqual(["text", "image"]);
+        expect(nativeResult.structuredContent).not.toHaveProperty("screenshot.data");
+        const published = await native.executeTool("html_render", {
+          html: '<html><body><script>document.body.innerHTML = `<div style="height:${innerWidth < 728 ? 1500 : 900}px"></div>`</script></body></html>',
+          title: "Responsive",
+          height: 900,
+        });
+        const table = z
+          .object({ htmlRender: z.object({ heights: z.array(z.tuple([z.number(), z.number()])) }) })
+          .parse(published.structuredContent).htmlRender.heights;
+        expect(table.map(([width]) => width)).toEqual([
+          320, 375, 430, 520, 640, 728, 860, 1000, 1144,
+        ]);
+        expect(table[0]![1]).toBeGreaterThan(table[5]![1]);
+      } finally {
+        await client.close();
+        await server.close();
+        await rm(paseoHome, { recursive: true, force: true });
+      }
+    },
+    60_000,
+  );
+
   it("returns the same reference in MCP structured and JSON text content", async () => {
     const paseoHome = await mkdtemp(join(tmpdir(), "paseo-html-mcp-"));
     const options = {

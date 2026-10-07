@@ -26,6 +26,10 @@ import {
 } from "./worktree-storage.js";
 import { homedir } from "node:os";
 import { HtmlRenderStore } from "./agent/html-render/store.js";
+import { ensureHeadlessShell, headlessShellStatus } from "./agent/html-render/browser-install.js";
+import { previewBrowserHostDiagnostic } from "./agent/html-render/browser-host.js";
+import { captureHtmlPreview } from "./agent/html-render/headless-preview.js";
+import { STOCK_RENDER_THEMES } from "./agent/html-render/stock-theme.js";
 import { CodexVisualizationStore } from "./agent/visualization/resolve.js";
 import { resolvePaseoWorktreesBaseRoot } from "../utils/worktree.js";
 import { CLIENT_CAPS, type ClientCapability } from "@getpaseo/protocol/client-capabilities";
@@ -2580,7 +2584,7 @@ export class Session {
       this.dispatchVoiceAndControlMessage(msg) ??
       this.dispatchAgentRewindMessage(msg, source) ??
       this.dispatchAgentRelationshipMessage(msg) ??
-      this.dispatchAgentTimelineMessage(msg, source) ??
+      this.dispatchTimelineOrBrowserMessage(msg, source) ??
       this.dispatchHubExecutionMessage(msg) ??
       this.dispatchCreationMessage(msg, source) ??
       this.dispatchAgentLifecycleMessage(msg) ??
@@ -3013,6 +3017,16 @@ export class Session {
     }
   }
 
+  private dispatchTimelineOrBrowserMessage(
+    msg: SessionInboundMessage,
+    source?: object,
+  ): Promise<void> | undefined {
+    return (
+      this.dispatchDaemonBrowserMessage(msg, source) ??
+      this.dispatchAgentTimelineMessage(msg, source)
+    );
+  }
+
   private dispatchAgentTimelineMessage(
     msg: SessionInboundMessage,
     source?: object,
@@ -3086,6 +3100,62 @@ export class Session {
       default:
         return undefined;
     }
+  }
+
+  private dispatchDaemonBrowserMessage(
+    msg: SessionInboundMessage,
+    source?: object,
+  ): Promise<void> | undefined {
+    if (
+      msg.type !== "daemon.browser.get_status.request" &&
+      msg.type !== "daemon.browser.setup.request"
+    )
+      return undefined;
+    return (async () => {
+      try {
+        const executable =
+          msg.type === "daemon.browser.setup.request"
+            ? await ensureHeadlessShell(this.paseoHome, -1)
+            : null;
+        let status = await headlessShellStatus(this.paseoHome);
+        if (status.executable) {
+          const diagnostic = await previewBrowserHostDiagnostic(status.executable);
+          if (diagnostic) status = { ...status, state: "failed", message: diagnostic };
+          else if (executable) {
+            await captureHtmlPreview({
+              executable,
+              html: "<html><body>ready</body></html>",
+              width: 320,
+              theme: STOCK_RENDER_THEMES.dark,
+            });
+          }
+        }
+        this.emitForSource(
+          {
+            type:
+              msg.type === "daemon.browser.setup.request"
+                ? "daemon.browser.setup.response"
+                : "daemon.browser.get_status.response",
+            payload: { requestId: msg.requestId, status },
+          },
+          source,
+        );
+      } catch (error) {
+        this.emitForSource(
+          {
+            type:
+              msg.type === "daemon.browser.setup.request"
+                ? "daemon.browser.setup.response"
+                : "daemon.browser.get_status.response",
+            payload: {
+              requestId: msg.requestId,
+              error: error instanceof Error ? error.message.slice(0, 500) : "Browser setup failed",
+            },
+          },
+          source,
+        );
+      }
+    })();
   }
 
   private async handleHtmlRenderGetRequest(

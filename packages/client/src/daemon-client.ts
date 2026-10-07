@@ -3609,6 +3609,45 @@ export class DaemonClient {
     return { html: payload.html, title: payload.title };
   }
 
+  async getPreviewBrowserStatus() {
+    const requestId = this.createRequestId();
+    const payload = await this.sendRequest({
+      requestId,
+      message: SessionInboundMessageSchema.parse({
+        type: "daemon.browser.get_status.request",
+        requestId,
+      }),
+      select: (response) =>
+        response.type === "daemon.browser.get_status.response" &&
+        response.payload.requestId === requestId
+          ? response.payload
+          : null,
+    });
+    if (!payload.status || payload.error)
+      throw new Error(payload.error ?? "Preview browser status unavailable");
+    return payload.status;
+  }
+
+  async setupPreviewBrowser() {
+    const requestId = this.createRequestId();
+    const payload = await this.sendRequest({
+      requestId,
+      message: SessionInboundMessageSchema.parse({
+        type: "daemon.browser.setup.request",
+        requestId,
+      }),
+      timeout: 20 * 60_000,
+      select: (response) =>
+        response.type === "daemon.browser.setup.response" &&
+        response.payload.requestId === requestId
+          ? response.payload
+          : null,
+    });
+    if (!payload.status || payload.error)
+      throw new Error(payload.error ?? "Preview browser setup failed");
+    return payload.status;
+  }
+
   async getVisualization(
     agentId: string,
     path: string,

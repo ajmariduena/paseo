@@ -89,7 +89,8 @@ import { isStaleProviderSessionError } from "./stale-provider-session-error.js";
 import { stripInternalPaseoMcpServer, withRuntimePaseoMcpServer } from "./runtime-mcp-config.js";
 import { resolveCreateAgentTitles } from "./create-agent-title.js";
 import type { PaseoToolCatalogFactory } from "./tools/types.js";
-import { isPaseoToolPolicyEnabled } from "./paseo-tool-policy.js";
+import { isPaseoToolEnabled, isPaseoToolPolicyEnabled } from "./paseo-tool-policy.js";
+import { headlessShellPlatform } from "./html-render/browser-install.js";
 import { buildPaseoOrchestrationInstructions } from "./orchestration-instructions.js";
 import { HtmlRenderStore } from "./html-render/store.js";
 import { CodexVisualizationStore } from "./visualization/resolve.js";
@@ -259,6 +260,7 @@ interface NotificationPrompt {
 interface AttachedPaseoTools {
   toolsAttached: boolean;
   paseoToolPolicy: ProviderPaseoToolsPolicy | undefined;
+  previewAvailable: boolean;
 }
 
 interface PreparedSessionConfig {
@@ -5745,6 +5747,14 @@ export class AgentManager {
           toolsEnabled &&
           (this.mcpBaseUrl !== null || this.hasNativePaseoTools(storedConfig.provider)),
         paseoToolPolicy,
+        previewAvailable:
+          headlessShellPlatform() !== null &&
+          isPaseoToolEnabled(paseoToolPolicy, "html_preview") &&
+          !(
+            storedConfig.provider === "opencode" &&
+            this.hasNativePaseoTools(storedConfig.provider) &&
+            this.clients.get(storedConfig.provider)?.capabilities.supportsToolResultImages !== true
+          ),
       },
     );
     return { storedConfig, launchConfig, paseoToolPolicy };
@@ -5761,7 +5771,11 @@ export class AgentManager {
   ): AgentSessionConfig {
     const orchestration =
       tools.toolsAttached && !config.internal
-        ? buildPaseoOrchestrationInstructions(tools.paseoToolPolicy, config.provider)
+        ? buildPaseoOrchestrationInstructions(
+            tools.paseoToolPolicy,
+            config.provider,
+            tools.previewAvailable,
+          )
         : undefined;
     const daemonAppendSystemPrompt = composeSystemPromptParts(
       orchestration,

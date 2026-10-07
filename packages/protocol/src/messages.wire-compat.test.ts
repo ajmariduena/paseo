@@ -71,6 +71,31 @@ const LegacyAgentSnapshotPayloadSchema = AgentSnapshotPayloadSchema.extend({
 });
 
 describe("wire schema compatibility", () => {
+  test("preview browser setup and status RPCs accept optional response fields", () => {
+    for (const operation of ["get_status", "setup"] as const) {
+      expect(
+        SessionInboundMessageSchema.parse({
+          type: `daemon.browser.${operation}.request`,
+          requestId: "browser",
+        }),
+      ).toMatchObject({ requestId: "browser" });
+      expect(
+        SessionOutboundMessageSchema.parse({
+          type: `daemon.browser.${operation}.response`,
+          payload: { requestId: "browser" },
+        }),
+      ).toMatchObject({ payload: { requestId: "browser" } });
+      expect(
+        SessionOutboundMessageSchema.parse({
+          type: `daemon.browser.${operation}.response`,
+          payload: {
+            requestId: "browser",
+            status: { state: "installed", version: "155", platform: "mac-arm64" },
+          },
+        }),
+      ).toMatchObject({ payload: { status: { state: "installed" } } });
+    }
+  });
   test("HTML render RPC is correlated and the server feature stays optional", () => {
     expect(
       ServerInfoStatusPayloadSchema.parse({ status: "server_info", serverId: "old" }).features,

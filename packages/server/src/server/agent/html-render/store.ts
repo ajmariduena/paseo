@@ -149,17 +149,26 @@ async function imageDataUri(reference: string, cwd: string): Promise<string> {
   return `data:${MIME_TYPES[extension]};base64,${bytes.toString("base64")}`;
 }
 
-export async function inlineLocalImages(html: string, cwd: string): Promise<string> {
+async function prepareLocalImages(
+  html: string,
+  cwd: string,
+  tolerant: boolean,
+): Promise<{ html: string; missingImages: string[] }> {
   const references = [...html.matchAll(IMAGE_PATTERN)].flatMap((match) => {
     const span = match.indices?.[2] ?? match.indices?.[3];
     return span ? [{ path: html.slice(span[0], span[1]), start: span[0], end: span[1] }] : [];
   });
   const uniquePaths = [...new Set(references.map((reference) => reference.path))];
   const uris = new Map<string, string>();
+  const missingImages: string[] = [];
   for (const imagePath of uniquePaths) {
     try {
       uris.set(imagePath, await imageDataUri(imagePath, cwd));
     } catch (error) {
+      if (tolerant) {
+        missingImages.push(imagePath);
+        continue;
+      }
       const reason = error instanceof Error ? error.message : String(error);
       throw new Error(`Cannot inline local image ${imagePath}: ${reason}`, { cause: error });
     }
@@ -168,14 +177,30 @@ export async function inlineLocalImages(html: string, cwd: string): Promise<stri
   let cursor = 0;
   let estimatedBytes = Buffer.byteLength(html);
   for (const reference of references) {
-    const uri = uris.get(reference.path)!;
+    const uri = uris.get(reference.path);
+    if (!uri) continue;
     estimatedBytes += uri.length - Buffer.byteLength(reference.path);
     if (estimatedBytes > MAX_RENDER_BYTES) throw new Error("Prepared HTML exceeds 6 MiB");
     parts.push(html.slice(cursor, reference.start), uri);
     cursor = reference.end;
   }
   parts.push(html.slice(cursor));
-  return parts.join("");
+  const prepared = parts.join("");
+  if (Buffer.byteLength(prepared) + 8192 > MAX_RENDER_BYTES)
+    throw new Error("Prepared HTML exceeds 6 MiB");
+  return { html: prepared, missingImages };
+}
+
+export async function inlineLocalImages(html: string, cwd: string): Promise<string> {
+  return (await prepareLocalImages(html, cwd, false)).html;
+}
+
+export async function prepareHtmlPreview(
+  html: string,
+  cwd: string,
+): Promise<{ html: string; missingImages: string[] }> {
+  if (html.length > MAX_HTML_CHARS) throw new Error("HTML exceeds 512,000 characters");
+  return prepareLocalImages(html, cwd, true);
 }
 
 export class HtmlRenderStore {

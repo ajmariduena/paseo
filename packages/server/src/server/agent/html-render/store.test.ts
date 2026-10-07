@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rename, rm, symlink, utimes, writeFile } from "node:
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, test } from "vitest";
-import { HtmlRenderStore, inlineLocalImages, MAX_HTML_CHARS } from "./store.js";
+import { HtmlRenderStore, inlineLocalImages, prepareHtmlPreview, MAX_HTML_CHARS } from "./store.js";
 
 const directories: string[] = [];
 
@@ -225,4 +225,12 @@ test("local image symlinks are rejected before reading", async () => {
   await writeFile(image, Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1]));
   await symlink(image, linked);
   await expect(inlineLocalImages(`<img src="${linked}">`, home)).rejects.toThrow(/regular file/);
+});
+
+test("preview keeps refused images as diagnostics while publish remains fail closed", async () => {
+  const home = await tempDirectory();
+  const missing = path.join(home, "missing.png");
+  const html = `<img src="${missing}"><p>Content</p>`;
+  expect(await prepareHtmlPreview(html, home)).toEqual({ html, missingImages: [missing] });
+  await expect(inlineLocalImages(html, home)).rejects.toThrow(/Cannot inline local image/);
 });

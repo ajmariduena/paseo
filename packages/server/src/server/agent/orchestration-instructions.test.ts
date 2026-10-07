@@ -9,6 +9,18 @@ test("Codex visuals allow one of its file reference or Paseo's complete document
   expect(text).toContain("Use one route per visual, never both");
 });
 
+test("preview guidance appears only when the preview tool is attached", () => {
+  expect(buildPaseoOrchestrationInstructions(undefined, "claude", true)).toContain(
+    "check it with `html_preview`, then publish it",
+  );
+  expect(
+    buildPaseoOrchestrationInstructions({ disabledTools: ["html_preview"] }, "claude", true),
+  ).not.toContain("html_preview");
+  expect(buildPaseoOrchestrationInstructions(undefined, "codex", true)).toContain(
+    "Use one route per visual",
+  );
+});
+
 describe("buildPaseoOrchestrationInstructions", () => {
   test("full text with every orchestration tool", () => {
     expect(buildPaseoOrchestrationInstructions(undefined)).toMatchInlineSnapshot(`

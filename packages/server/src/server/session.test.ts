@@ -1421,6 +1421,23 @@ function createStoredAgentRecord(
 }
 
 describe("HTML render RPC", () => {
+  test("reports the preview browser state for the daemon's own home", async () => {
+    const paseoHome = mkdtempSync(join(tmpdir(), "paseo-browser-status-rpc-"));
+    try {
+      const messages: SessionOutboundMessage[] = [];
+      const session = createSessionForTest({ paseoHome, messages });
+      await session.handleMessage({
+        type: "daemon.browser.get_status.request",
+        requestId: "browser",
+      });
+      expect(findByType(messages, "daemon.browser.get_status.response")).toMatchObject({
+        payload: { requestId: "browser", status: { state: "missing" } },
+      });
+    } finally {
+      rmSync(paseoHome, { recursive: true, force: true });
+    }
+  });
+
   test("reads only a render owned by the requested agent", async () => {
     const paseoHome = mkdtempSync(join(tmpdir(), "paseo-render-rpc-"));
     try {

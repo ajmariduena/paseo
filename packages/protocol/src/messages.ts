@@ -2003,6 +2003,17 @@ export const AgentHtmlRenderGetRequestMessageSchema = z.object({
   renderId: z.string(),
 });
 
+// COMPAT(preview-browser): added in v0.11.0-beta.3, remove after 2027-04-07 when daemon floor includes browser RPCs.
+export const DaemonBrowserStatusRequestMessageSchema = z.object({
+  type: z.literal("daemon.browser.get_status.request"),
+  requestId: z.string(),
+});
+
+export const DaemonBrowserSetupRequestMessageSchema = z.object({
+  type: z.literal("daemon.browser.setup.request"),
+  requestId: z.string(),
+});
+
 export const AgentVisualizationGetRequestMessageSchema = z.object({
   type: z.literal("agent.visualization.get.request"),
   requestId: z.string(),
@@ -3590,6 +3601,8 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ProviderSubagentListRequestMessageSchema,
   ProviderSubagentTimelineRequestMessageSchema,
   AgentHtmlRenderGetRequestMessageSchema,
+  DaemonBrowserStatusRequestMessageSchema,
+  DaemonBrowserSetupRequestMessageSchema,
   AgentVisualizationGetRequestMessageSchema,
   AgentVisualizationSetStateRequestMessageSchema,
   SetAgentTimelineSubscriptionRequestMessageSchema,
@@ -7458,6 +7471,33 @@ export const AgentHtmlRenderGetResponseMessageSchema = z.object({
   }),
 });
 
+const DaemonBrowserStatusSchema = z.object({
+  state: z.enum(["unsupported", "missing", "installing", "installed", "failed"]),
+  version: z.string(),
+  platform: z.string().nullable(),
+  executable: z.string().optional(),
+  message: z.string().optional(),
+});
+
+// COMPAT(preview-browser-response): added in v0.11.0-beta.3, remove after 2027-04-07 when daemon floor includes browser RPCs.
+export const DaemonBrowserStatusResponseMessageSchema = z.object({
+  type: z.literal("daemon.browser.get_status.response"),
+  payload: z.object({
+    requestId: z.string(),
+    status: DaemonBrowserStatusSchema.optional(),
+    error: z.string().optional(),
+  }),
+});
+
+export const DaemonBrowserSetupResponseMessageSchema = z.object({
+  type: z.literal("daemon.browser.setup.response"),
+  payload: z.object({
+    requestId: z.string(),
+    status: DaemonBrowserStatusSchema.optional(),
+    error: z.string().optional(),
+  }),
+});
+
 export const AgentVisualizationGetResponseMessageSchema = z.object({
   type: z.literal("agent.visualization.get.response"),
   payload: z.object({
@@ -7485,6 +7525,8 @@ export const AgentVisualizationSetStateResponseMessageSchema = z.object({
 
 export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   AgentHtmlRenderGetResponseMessageSchema,
+  DaemonBrowserStatusResponseMessageSchema,
+  DaemonBrowserSetupResponseMessageSchema,
   AgentVisualizationGetResponseMessageSchema,
   AgentVisualizationSetStateResponseMessageSchema,
   BrowserHostRegisterResponseSchema,
