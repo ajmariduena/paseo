@@ -628,7 +628,7 @@ The prompt file is written before the queue file references it and deleted after
 
 **Path:** `$PASEO_HOME/pull-request-watches.json`
 
-Every `watch_pull_request` watch in one file; each `PullRequestWatchStore` method is one atomic write. A watch names the agent, its `cwd`, the pull request (`number`, canonical `url`, `headRefName`), and `progress`: what the agent was last told (failed check names, whether the gate passed, the remark watermark, whether the branch conflicts, and comment-only wakes in a row). `progress` is written only after the wake was delivered, so a wake lost to a restart is found again on the next pass; the 15-minute unreadable timer is in memory. Schema: `packages/server/src/server/pull-request-watch/watch-store.ts`.
+Every `watch_pull_request` watch in one file; each `PullRequestWatchStore` method is one atomic write. A watch names the agent, its `cwd`, the pull request (`number`, canonical `url`, `headRefName`), and `progress`: what the agent was last told (the head commit, failed check names, whether the gate passed and which checks were in it, the remark watermark, whether the branch conflicts, and comment-only wakes in a row). `headSha` and `passedChecks` are absent from watches saved before they existed; such a watch adopts the current head and passed checks without a wake. `progress` is written only after the wake was delivered, so a wake lost to a restart is found again on the next pass; the failed-read count and the last read of each pull request are in memory. Schema: `packages/server/src/server/pull-request-watch/watch-store.ts`.
 
 ---
 

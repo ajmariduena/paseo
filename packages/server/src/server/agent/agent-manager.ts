@@ -82,6 +82,7 @@ import {
   AgentRunState,
   type ForegroundTurnWaiter,
   type PendingForegroundRun,
+  type TrackedAgentRun,
 } from "./agent-run-state.js";
 import { invokeRewindCapability, type RewindMode } from "./rewind/rewind.js";
 import { isSystemInjectedEnvelope } from "./agent-prompt.js";
@@ -2783,6 +2784,7 @@ export class AgentManager {
     try {
       const result = await agent.session.startTurn(prompt, options);
       if (pendingRun.settled) {
+        this.runs.abandonTurn(agentId, result.turnId);
         throw new Error(`Agent ${agentId} run was canceled before its turn started`);
       }
       return result.turnId;
@@ -3440,11 +3442,16 @@ export class AgentManager {
     }
   }
 
-  /** Someone asked the agent to stop; a restart that cuts the run must not continue it. */
+  /**
+   * Someone asked the agent to stop; a restart that cuts the run must not continue it. A provider
+   * that does not acknowledge the interrupt cannot keep the run alive: Stop settles it locally.
+   */
   async cancelAgentRun(agentId: string): Promise<AgentRunCancellationResult> {
     this.stopRequests.add(agentId);
     try {
-      return await this.runForegroundMutation(agentId, () => this.cancelAgentRunNow(agentId));
+      return await this.runForegroundMutation(agentId, () =>
+        this.cancelAgentRunNow(agentId, { unacknowledged: "settle" }),
+      );
     } finally {
       this.stopRequests.delete(agentId);
     }
@@ -3458,7 +3465,10 @@ export class AgentManager {
     return this.inFlightOutOfBand.has(agentId);
   }
 
-  private async cancelAgentRunNow(agentId: string): Promise<AgentRunCancellationResult> {
+  private async cancelAgentRunNow(
+    agentId: string,
+    options: { unacknowledged: "refuse" | "settle" },
+  ): Promise<AgentRunCancellationResult> {
     const agent = this.requireSessionAgent(agentId);
     const run =
       this.runs.getRun(agentId) ??
@@ -3475,44 +3485,14 @@ export class AgentManager {
         : this.rescueTimeouts.interruptSessionMs,
     });
 
-    if (!interruptAcknowledged) {
-      return { status: settlement === "completed" ? "settled" : "refused" };
+    if (!interruptAcknowledged && settlement === "completed") {
+      return { status: "settled" };
     }
-
-    const runTurnId = this.runs.getTurnId(agentId);
-    if (settlement === "timed_out" && runTurnId) {
-      this.logger.warn(
-        { agentId, turnId: runTurnId, kind: run.kind },
-        "cancelAgentRun: acknowledged turn still active after timeout, force-canceling",
-      );
-      await this.dispatchSessionEvent(agent, {
-        type: "turn_canceled",
-        provider: agent.provider,
-        reason: "interrupted",
-        turnId: runTurnId,
-      });
-      await run.settledPromise;
-    } else if (settlement === "timed_out" && run.kind === "foreground") {
-      this.logger.warn(
-        { agentId, kind: run.kind },
-        "cancelAgentRun: acknowledged pending turn still active after timeout, clearing it",
-      );
-      this.runs.settleForegroundRun(agentId, run.token);
-      if (!agent.pendingReplacement) {
-        agent.lifecycle = "idle";
-        this.touchUpdatedAt(agent);
-        this.emitState(agent);
-      }
-    } else if (settlement === "timed_out" && run.kind === "autonomous") {
-      this.logger.warn(
-        { agentId, kind: run.kind },
-        "cancelAgentRun: acknowledged turn still active after timeout, force-canceling",
-      );
-      await this.dispatchSessionEvent(agent, {
-        type: "turn_canceled",
-        provider: agent.provider,
-        reason: "interrupted",
-      });
+    if (!interruptAcknowledged && options.unacknowledged === "refuse") {
+      return { status: "refused" };
+    }
+    if (settlement === "timed_out") {
+      await this.settleRunLocally(agent, run, { interruptAcknowledged });
     }
 
     if (agent.pendingPermissions.size > 0) {
@@ -3523,11 +3503,53 @@ export class AgentManager {
     return { status: "settled" };
   }
 
+  /**
+   * Ends a run the provider did not settle after an interrupt. Its turn is abandoned, so a late
+   * provider result cannot revive or fail the agent after it was stopped.
+   */
+  private async settleRunLocally(
+    agent: ActiveManagedAgent,
+    run: TrackedAgentRun,
+    context: { interruptAcknowledged: boolean },
+  ): Promise<void> {
+    const agentId = agent.id;
+    const runTurnId = this.runs.getTurnId(agentId);
+    this.logger.warn(
+      { agentId, turnId: runTurnId, kind: run.kind, ...context },
+      "cancelAgentRun: run still active after interrupt, settling it locally",
+    );
+    if (runTurnId) {
+      await this.dispatchSessionEvent(agent, {
+        type: "turn_canceled",
+        provider: agent.provider,
+        reason: "interrupted",
+        turnId: runTurnId,
+      });
+      this.runs.abandonTurn(agentId, runTurnId);
+      await run.settledPromise;
+    } else if (run.kind === "foreground") {
+      this.runs.settleForegroundRun(agentId, run.token);
+      if (!agent.pendingReplacement) {
+        agent.lifecycle = "idle";
+        this.touchUpdatedAt(agent);
+        this.emitState(agent);
+      }
+    } else {
+      await this.dispatchSessionEvent(agent, {
+        type: "turn_canceled",
+        provider: agent.provider,
+        reason: "interrupted",
+      });
+    }
+  }
+
   private async cancelAgentRunBefore(
     agentId: string,
     action: "reload" | "replace" | "rewind",
   ): Promise<void> {
-    const result = await this.runForegroundMutation(agentId, () => this.cancelAgentRunNow(agentId));
+    const result = await this.runForegroundMutation(agentId, () =>
+      this.cancelAgentRunNow(agentId, { unacknowledged: "refuse" }),
+    );
     if (result.status === "refused") {
       throw new AgentRunCancellationError(agentId, action);
     }
@@ -4196,6 +4218,7 @@ export class AgentManager {
       turnId,
     }));
     this.runs.clearAgentRun(agent.id);
+    this.runs.forgetAbandonedTurns(agent.id);
     this.inFlightOutOfBand.delete(agent.id);
     return {
       ...agent,
@@ -4666,6 +4689,9 @@ export class AgentManager {
       isTurnTerminalEvent(event) &&
       this.runs.hasFinalizedTurn(agent, eventTurnId)
     ) {
+      return false;
+    }
+    if (eventTurnId && !options?.fromHistory && this.runs.isAbandonedTurn(agent.id, eventTurnId)) {
       return false;
     }
 

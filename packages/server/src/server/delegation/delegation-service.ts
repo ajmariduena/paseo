@@ -234,13 +234,10 @@ export class DelegationService {
     if (this.runningChildren.has(childAgentId)) this.scheduleChildCheck(childAgentId);
   }
 
-  /** User Stop: results of children the stopped turn spawned or was waking for are dropped. */
-  async stopActiveTurn(agentId: string): Promise<void> {
-    const run = this.agentManager.getActiveRun(agentId);
-    if (run) {
-      await this.store.stopCohortsOfRun(agentId, run.key, new Date().toISOString());
-      await this.pruneQueuedWakes(agentId);
-    }
+  /** User Stop: no child result, from this run or an earlier one, wakes the agent again. */
+  async stopAll(agentId: string): Promise<void> {
+    await this.store.stopAll(agentId, new Date().toISOString());
+    await this.pruneQueuedWakes(agentId);
   }
 
   /** Removes queued wakes whose delivery was acknowledged, disposed, or replaced. */

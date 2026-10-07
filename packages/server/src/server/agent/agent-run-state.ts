@@ -40,8 +40,12 @@ export interface ForegroundRunAgentState {
   finalizedForegroundTurnIds: Set<string>;
 }
 
+const ABANDONED_TURNS_PER_AGENT = 50;
+
 export class AgentRunState {
   private readonly runs = new Map<string, TrackedAgentRun>();
+  /** Turns settled locally after a Stop the provider never acknowledged. */
+  private readonly abandonedTurns = new Map<string, Set<string>>();
 
   createPendingRun(agentId: string): PendingForegroundRun {
     const pendingRun = createPendingForegroundRun();
@@ -209,6 +213,24 @@ export class AgentRunState {
 
   hasFinalizedTurn(agent: ForegroundRunAgentState, turnId: string): boolean {
     return agent.finalizedForegroundTurnIds.has(turnId);
+  }
+
+  abandonTurn(agentId: string, turnId: string): void {
+    const turnIds = this.abandonedTurns.get(agentId) ?? new Set<string>();
+    this.abandonedTurns.set(agentId, turnIds);
+    turnIds.add(turnId);
+    if (turnIds.size > ABANDONED_TURNS_PER_AGENT) {
+      const oldest = turnIds.values().next().value;
+      if (oldest) turnIds.delete(oldest);
+    }
+  }
+
+  isAbandonedTurn(agentId: string, turnId: string): boolean {
+    return this.abandonedTurns.get(agentId)?.has(turnId) ?? false;
+  }
+
+  forgetAbandonedTurns(agentId: string): void {
+    this.abandonedTurns.delete(agentId);
   }
 
   private clearRun(agentId: string, run: TrackedAgentRun): void {

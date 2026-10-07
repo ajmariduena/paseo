@@ -166,6 +166,7 @@ import { DelegationService } from "./delegation/delegation-service.js";
 import { DelegationStore } from "./delegation/delegation-store.js";
 import { PullRequestWatchStore } from "./pull-request-watch/watch-store.js";
 import { PullRequestWatcher } from "./pull-request-watch/watcher.js";
+import { AgentStop } from "./agent/stop.js";
 import { PromptAnnotationStore } from "./agent/prompt-annotations.js";
 import { AgentQueueStore } from "./agent-queue/store.js";
 import { createRestoredEntryDeliverer } from "./agent/message-dispatch.js";
@@ -1073,6 +1074,13 @@ export async function createPaseoDaemon(
       (await workspaceGitService.getSnapshot(cwd)).forge.pullRequest?.number ?? null,
     logger,
   });
+  const agentStop = new AgentStop({
+    agentManager,
+    agentStorage,
+    delegations,
+    pullRequestWatches,
+    logger,
+  });
   const restartRecovery = new RestartRecovery({
     intents: RestartIntentStore.at(config.paseoHome),
     receipts: new MessageReceipts(path.join(config.paseoHome, "agent-requests")),
@@ -1626,6 +1634,7 @@ export async function createPaseoDaemon(
     worktreesRoot: config.worktreesRoot,
     delegations,
     pullRequestWatches,
+    agentStop,
     callerAgentId: runtime.callerAgentId,
     transport: runtime.transport,
     enableVoiceTools: runtime.enableVoiceTools,
@@ -1949,6 +1958,7 @@ export async function createPaseoDaemon(
               readAloudService,
               voiceOrchestrator,
               delegations,
+              agentStop,
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();

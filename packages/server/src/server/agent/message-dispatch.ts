@@ -70,7 +70,8 @@ export type SystemQueueEntry =
 /**
  * `system` messages (notifications, wakes) never interrupt or replace a turn: they steer into
  * a running turn when `maySteer` and the provider can steer, otherwise they wait in the queue
- * for the turn to settle. Their text is prepared right before each steer or start, so a
+ * for the turn to settle. An agent the user stopped takes none until it is resumed or the user
+ * writes to it. Their text is prepared right before each steer or start, so a
  * message that went stale while waiting is dropped instead of delivered.
  */
 export type DispatchPolicy =
@@ -162,6 +163,13 @@ export async function dispatchAgentMessage(
       return "skipped_archived";
     }
     await loadAgent(params);
+    const queue = params.agentManager.messageQueue;
+    if (params.policy.kind === "system" && queue.isHeldForUserStop(params.agentId)) {
+      return await enqueue(params);
+    }
+    if (params.policy.kind === "intent" && params.policy.origin?.kind !== "agent") {
+      queue.releaseUserStop(params.agentId);
+    }
     const mode = resolveMode(params);
     switch (mode.kind) {
       case "steer":

@@ -127,7 +127,6 @@ import { createAgentCommand } from "./agent/create-agent/create.js";
 import { resolveCreateAgentIntent, type CreateAgentIntent } from "./agent/create-agent/intent.js";
 import {
   archiveAgentCommand,
-  cancelAgentRunCommand,
   closeAgentCommand,
   detachAgentCommand,
   setAgentModeCommand,
@@ -239,6 +238,7 @@ import type { SpeechReadinessSnapshot } from "./speech/speech-runtime.js";
 import type { ReadAloudService } from "./speech/read-aloud/service.js";
 import type { VoiceOrchestrator } from "./voice-orchestrator/orchestrator.js";
 import type { DelegationService } from "./delegation/delegation-service.js";
+import { AgentStop } from "./agent/stop.js";
 import {
   VoiceMessagesSessionHandler,
   isVoiceMessagesRequest,
@@ -545,7 +545,9 @@ export interface SessionOptions {
   workspaceLabelService?: WorkspaceLabelService;
   readAloud?: ReadAloudService;
   voiceOrchestrator?: VoiceOrchestrator | null;
-  delegations?: Pick<DelegationService, "stopActiveTurn" | "disposeQueuedWake"> | null;
+  delegations?: Pick<DelegationService, "stopAll" | "disposeQueuedWake"> | null;
+  /** Shared with the agent tools, which refuse calls from a run the user stopped. */
+  agentStop?: Pick<AgentStop, "stop"> | null;
   filesystem?: SessionFileSystem;
   scheduleService: ScheduleService;
   checkoutDiffManager: CheckoutDiffManager;
@@ -703,6 +705,20 @@ function resolveDirectorySync(service: DirectorySyncService | undefined): Direct
   return service ?? new DirectorySyncService();
 }
 
+/** Without a shared one, Stop still cascades but cannot end pull request watches. */
+function resolveAgentStop(options: SessionOptions, logger: pino.Logger): Pick<AgentStop, "stop"> {
+  return (
+    options.agentStop ??
+    new AgentStop({
+      agentManager: options.agentManager,
+      agentStorage: options.agentStorage,
+      delegations: options.delegations ?? null,
+      pullRequestWatches: null,
+      logger,
+    })
+  );
+}
+
 function describeRegistryTransition(record: ArchivedRecordSnapshot | null): RegistryTransition {
   if (!record) {
     return "created";
@@ -854,9 +870,10 @@ export class Session {
   private readonly readAloud: ReadAloudService | undefined;
   private readonly voiceOrchestrator: VoiceOrchestrator | null | undefined;
   private readonly delegations:
-    | Pick<DelegationService, "stopActiveTurn" | "disposeQueuedWake">
+    | Pick<DelegationService, "stopAll" | "disposeQueuedWake">
     | null
     | undefined;
+  private readonly agentStop: Pick<AgentStop, "stop">;
   private readonly voiceMessages: VoiceMessagesSessionHandler;
   private readonly eventSubscriptions = new Map<
     string,
@@ -999,6 +1016,7 @@ export class Session {
     this.readAloud = readAloud;
     this.voiceOrchestrator = voiceOrchestrator;
     this.delegations = delegations;
+    this.agentStop = resolveAgentStop(options, this.sessionLogger);
     this.voiceMessages = new VoiceMessagesSessionHandler({
       orchestrator: voiceOrchestrator,
       emit: (message) => this.emit(message),
@@ -5265,12 +5283,7 @@ export class Session {
     this.sessionLogger.info({ agentId }, `Cancel request received for agent ${agentId}`);
 
     try {
-      await this.agentManager.messageQueue.hold(agentId, "user_stop");
-      await this.delegations?.stopActiveTurn(agentId);
-      await cancelAgentRunCommand(
-        { agentManager: this.agentManager, logger: this.sessionLogger },
-        agentId,
-      );
+      await this.agentStop.stop(agentId);
       if (requestId) {
         const agent = this.agentManager.getAgent(agentId);
         const payload = agent ? await this.buildAgentPayload(agent) : null;

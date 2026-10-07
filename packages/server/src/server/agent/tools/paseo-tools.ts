@@ -102,9 +102,9 @@ import {
 import type { DelegationService } from "../../delegation/delegation-service.js";
 import type { PullRequestWatcher } from "../../pull-request-watch/watcher.js";
 import { respondToAgentPermission } from "../permission-response.js";
+import { AgentStop } from "../stop.js";
 import {
   archiveAgentCommand,
-  cancelAgentRunCommand,
   closeAgentCommand,
   setAgentModeCommand,
   updateAgentCommand,
@@ -185,8 +185,11 @@ export interface PaseoToolHostDependencies {
     | "beginWait"
     | "endWait"
     | "waitForChildResult"
+    | "stopAll"
   >;
   pullRequestWatches?: Pick<PullRequestWatcher, "watch" | "unwatch">;
+  /** Shared with Stop in the session, so a run the user stopped cannot start more work. */
+  agentStop?: Pick<AgentStop, "stop" | "assertRunNotStopped">;
   transport?: PaseoToolRuntimeContext["transport"];
   /**
    * ID of the agent that is using this tool catalog.
@@ -770,6 +773,15 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     logger,
   } = options;
   const childLogger = logger.child({ module: "agent", component: "paseo-tool-catalog" });
+  const agentStop =
+    options.agentStop ??
+    new AgentStop({
+      agentManager,
+      agentStorage,
+      delegations: options.delegations ?? null,
+      pullRequestWatches: null,
+      logger: childLogger,
+    });
   const callerContext = callerAgentId ? (resolveCallerContext?.(callerAgentId) ?? null) : null;
 
   const parseToolInput = async (tool: PaseoToolDefinition, input: unknown): Promise<unknown> => {
@@ -1866,6 +1878,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       },
     },
     async (args: unknown) => {
+      if (callerAgentId) agentStop.assertRunNotStopped(callerAgentId, "create_agent");
       const clientRequestId = clientRequestIdSchema.parse(
         (args as { clientRequestId?: unknown }).clientRequestId,
       );
@@ -2788,7 +2801,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       {
         title: "Watch pull request",
         description:
-          "Have Paseo watch an open pull request for you. Omit number and url to watch the pull request of your workspace's branch. Paseo checks it every minute and wakes you with a message when a check fails, the required checks pass, someone else comments or reviews, or the branch starts to conflict with its base. Use this to babysit a pull request instead of polling, sleeping, or running a watcher. The result reports the checks as they are now and only later changes wake you, so handle current failures and comments first, then end your turn. A wake is news, not a merge decision. Watching ends when the pull request merges or closes, when Paseo cannot read it for 15 minutes, when you are archived, or when you call unwatch_pull_request.",
+          "Have Paseo watch an open pull request for you. Omit number and url to watch the pull request of your workspace's branch. Paseo checks it every two minutes, or every minute while checks run, and wakes you with a message when a check fails, the required checks pass, someone else comments or reviews, or the branch starts to conflict with its base. Use this to babysit a pull request instead of polling, sleeping, or running a watcher. The result reports the checks as they are now and only later changes wake you, so handle current failures and comments first, then end your turn. A wake is news, not a merge decision. Watching ends when the pull request merges or closes, when Paseo fails to read it 8 times in a row (a forge rate limit only delays it), when you are archived, or when you call unwatch_pull_request.",
         inputSchema: pullRequestTargetSchema,
         outputSchema: {
           number: z.number(),
@@ -2804,12 +2817,15 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           conflicting: z.boolean(),
         },
       },
-      async (input: { number?: number; url?: string }) => ({
-        content: [],
-        structuredContent: ensureValidJson(
-          await pullRequestWatches.watch(await resolveCallerTarget(input)),
-        ),
-      }),
+      async (input: { number?: number; url?: string }) => {
+        if (callerAgentId) agentStop.assertRunNotStopped(callerAgentId, "watch_pull_request");
+        return {
+          content: [],
+          structuredContent: ensureValidJson(
+            await pullRequestWatches.watch(await resolveCallerTarget(input)),
+          ),
+        };
+      },
     );
 
     registerTool(
@@ -2959,7 +2975,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     {
       title: "Cancel agent run",
       description:
-        "Abort the agent's current run but keep the agent alive for future tasks. Your pending notification for its result is dropped.",
+        "Abort the agent's current run, and the runs of every agent it created, but keep them alive for future tasks. Your pending notification for its result is dropped, and their queued messages and pull request watches stop.",
       inputSchema: {
         agentId: z.string(),
       },
@@ -2975,10 +2991,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           childAgentId: agentId,
         });
       }
-      const { cancelled } = await cancelAgentRunCommand(
-        { agentManager, logger: childLogger },
-        agentId,
-      );
+      const { cancelled } = await agentStop.stop(agentId);
       return {
         content: [],
         structuredContent: ensureValidJson({

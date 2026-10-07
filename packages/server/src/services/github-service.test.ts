@@ -1985,6 +1985,60 @@ describe("ForgeService", () => {
     });
   });
 
+  it("reports when a timeline comment or review was last edited", async () => {
+    const runner = createRunner([
+      pullRequestTimelineJson({
+        reviews: {
+          nodes: [
+            {
+              id: "PRR_edited",
+              state: "COMMENTED",
+              body: "Two issues found.",
+              bodyHTML: "",
+              url: "https://github.com/parentOwner/parentRepo/pull/42#pullrequestreview-5",
+              submittedAt: "2026-04-02T13:50:00Z",
+              lastEditedAt: "2026-04-02T14:10:00Z",
+              author: null,
+            },
+          ],
+          pageInfo: { hasNextPage: false },
+        },
+        comments: {
+          nodes: [
+            {
+              id: "IC_edited",
+              body: "Summary, updated.",
+              bodyHTML: "",
+              url: "https://github.com/parentOwner/parentRepo/pull/42#issuecomment-5",
+              createdAt: "2026-04-02T13:56:00Z",
+              lastEditedAt: "2026-04-02T14:20:00Z",
+              author: null,
+            },
+          ],
+          pageInfo: { hasNextPage: false },
+        },
+      }),
+    ]);
+    const service = createGitHubService({
+      runner: runner.runner,
+      resolveGhPath: async () => "/usr/bin/gh",
+      now: () => 100,
+    });
+
+    const timeline = await service.getPullRequestTimeline({
+      cwd: "/repo",
+      prNumber: 42,
+      repoOwner: "parentOwner",
+      repoName: "parentRepo",
+    });
+
+    expect(runner.calls[0]?.args[3]).toContain("lastEditedAt");
+    expect(timeline.items.map((item) => [item.id, item.editedAt])).toEqual([
+      ["PRR_edited", Date.parse("2026-04-02T14:10:00Z")],
+      ["IC_edited", Date.parse("2026-04-02T14:20:00Z")],
+    ]);
+  });
+
   it("rewrites GitHub attachment image URLs in timeline comments", async () => {
     const privateAttachmentUrl =
       "https://private-user-images.githubusercontent.com/123/asset.png?jwt=abc&expires=123";
