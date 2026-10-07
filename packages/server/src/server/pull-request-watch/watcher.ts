@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
 import type { Logger } from "pino";
 
 import type {
@@ -96,15 +95,6 @@ interface LastRead {
 
 type GroupOutcome = "read" | "rate-limited";
 
-class SubagentWatchError extends Error {
-  constructor() {
-    super(
-      "You are a subagent, so you cannot watch pull requests. Your parent agent owns the pull request: finish your task and report back instead.",
-    );
-    this.name = "SubagentWatchError";
-  }
-}
-
 function isOpenState(state: string): boolean {
   return state.toLowerCase().startsWith("open");
 }
@@ -157,7 +147,6 @@ export class PullRequestWatcher {
   }
 
   async watch(target: PullRequestTarget): Promise<WatchPullRequestResult> {
-    if (await this.isSubagent(target.agentId)) throw new SubagentWatchError();
     const service = await this.requireForge(target.cwd);
     const number = await this.resolveNumber(target);
     const summary = await service.getPullRequest({ cwd: target.cwd, number });
@@ -288,17 +277,12 @@ export class PullRequestWatcher {
     }
   }
 
-  /** Ends the watch, without a read, when its agent is gone or is a subagent. */
+  /** Ends the watch, without a read, when its agent is gone. */
   private async keep(watch: PullRequestWatch): Promise<boolean> {
     const record = await this.options.agentStorage.get(watch.agentId);
     if (!record || record.archivedAt) {
       await this.options.store.remove(watch.id);
       this.lifetimes.ended(watch, "archived");
-      return false;
-    }
-    if (getParentAgentIdFromLabels(record.labels) !== null) {
-      await this.options.store.remove(watch.id);
-      this.lifetimes.ended(watch, "subagent");
       return false;
     }
     return true;
@@ -411,13 +395,6 @@ export class PullRequestWatcher {
       );
       this.lifetimes.ended(watch, "unreadable");
     }
-  }
-
-  private async isSubagent(agentId: string): Promise<boolean> {
-    const labels =
-      this.options.agentManager.getAgent(agentId)?.labels ??
-      (await this.options.agentStorage.get(agentId))?.labels;
-    return getParentAgentIdFromLabels(labels) !== null;
   }
 
   private wake(watch: PullRequestWatch, message: SystemMessage, outcome: WakeOutcome): void {

@@ -13,7 +13,6 @@ export type WatchEndReason =
   | "comment-limit"
   | "unwatched"
   | "archived"
-  | "subagent"
   | "stopped";
 
 interface WatchLife {

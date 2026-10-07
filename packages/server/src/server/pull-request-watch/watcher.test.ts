@@ -514,26 +514,21 @@ test("a quiet pull request is read every two minutes, and every minute while che
   expect(prompts(current)).toEqual([expect.stringContaining("- Checks failed:")]);
 });
 
-test("a subagent cannot watch, and a watch left on one ends on the next pass", async () => {
+test("a subagent can watch the pull request it opened", async () => {
   const current = await startWatching();
   const child = await current.host.createAgent({
     steerable: false,
     labels: { [PARENT_AGENT_ID_LABEL]: current.agentId },
   });
 
-  await expect(current.watcher.watch({ agentId: child, cwd: current.host.root })).rejects.toThrow(
-    "You are a subagent, so you cannot watch pull requests.",
-  );
-
-  const watched = await watch(current);
-  const [kept] = await current.store.list();
-  await current.store.add({ ...kept!, id: "left-on-child", agentId: child });
+  const result = await current.watcher.watch({ agentId: child, cwd: current.host.root });
   current.forge.checks = [check("test", "failure")];
   await sweep(current);
 
-  expect(watched.watching).toBe(true);
-  expect((await current.store.list()).map((entry) => entry.agentId)).toEqual([current.agentId]);
-  expect(current.host.session(child).startPrompts).toEqual([]);
+  expect(result.watching).toBe(true);
+  expect(current.host.session(child).startPrompts).toEqual([
+    expect.stringContaining("- Checks failed:"),
+  ]);
 });
 
 test("comment-only wakes stop the watch after the limit", async () => {
