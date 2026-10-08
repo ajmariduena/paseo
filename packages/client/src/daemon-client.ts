@@ -853,6 +853,10 @@ export type WorkspaceLabelDeleteInspectPayload = Extract<
   SessionOutboundMessage,
   { type: "workspace.label.delete.inspect.response" }
 >["payload"];
+export type HostMetricsPayload = Extract<
+  SessionOutboundMessage,
+  { type: "host.metrics.get.response" }
+>["payload"];
 export type NoteListPayload = Extract<
   SessionOutboundMessage,
   { type: "note.list.response" }
@@ -2834,6 +2838,13 @@ export class DaemonClient {
         type: "workspace.label.delete.inspect.request",
         name: options.name,
       },
+    });
+  }
+
+  getHostMetrics(options?: { requestId?: string }): Promise<HostMetricsPayload> {
+    return this.sendNamespacedCorrelatedSessionRequest<"host.metrics.get.response">({
+      requestId: options?.requestId,
+      message: { type: "host.metrics.get.request" },
     });
   }
 

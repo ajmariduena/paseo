@@ -440,6 +440,13 @@ export function buildNotesRoute(options: { serverId?: string; noteId?: string } 
   return query ? (`/notes?${query}` as const) : ("/notes" as const);
 }
 
+export function buildHostHealthRoute(serverId?: string) {
+  const normalized = trimNonEmpty(serverId);
+  return normalized
+    ? (`/host-health?serverId=${encodeSegment(normalized)}` as const)
+    : ("/host-health" as const);
+}
+
 export function buildOpenProjectRoute() {
   return "/open-project" as const;
 }

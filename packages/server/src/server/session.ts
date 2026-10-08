@@ -199,6 +199,11 @@ import {
 import { ScheduleSession } from "./session/schedule/schedule-session.js";
 import { createNoteSession, type NoteSession } from "./session/notes/note-session.js";
 import type { NoteStore } from "./notes/store.js";
+import {
+  createHostMetricsSession,
+  type HostMetricsSession,
+} from "./session/host-metrics/host-metrics-session.js";
+import type { HostMetricsSampler } from "./host-metrics/sampler.js";
 import { noteIdFromAttachment } from "@getpaseo/protocol/notes/types";
 import { ProviderCatalogSession } from "./session/provider/provider-catalog-session.js";
 import { UsageSession } from "./session/usage/usage-session.js";
@@ -560,6 +565,7 @@ export interface SessionOptions {
   filesystem?: SessionFileSystem;
   scheduleService: ScheduleService;
   noteStore?: NoteStore;
+  hostMetricsSampler?: HostMetricsSampler;
   checkoutDiffManager: CheckoutDiffManager;
   github?: ForgeService;
   createAgentMcpTransport?: AgentMcpTransportFactory;
@@ -910,6 +916,7 @@ export class Session {
   private readonly scheduleSession: ScheduleSession;
   private readonly noteSession: NoteSession | null;
   private readonly noteStore: NoteStore | undefined;
+  private readonly hostMetricsSession: HostMetricsSession | null;
   private readonly providerCatalogSession: ProviderCatalogSession;
   private readonly usageSession: UsageSession;
   private readonly workspaceFilesSession: WorkspaceFilesSession;
@@ -953,6 +960,7 @@ export class Session {
       filesystem,
       scheduleService,
       noteStore,
+      hostMetricsSampler,
       checkoutDiffManager,
       github,
       renameCurrentBranch,
@@ -1111,6 +1119,11 @@ export class Session {
     this.noteStore = noteStore;
     this.noteSession = createNoteSession({
       noteStore,
+      emit: (msg) => this.emit(msg),
+      logger: this.sessionLogger,
+    });
+    this.hostMetricsSession = createHostMetricsSession({
+      sampler: hostMetricsSampler,
       emit: (msg) => this.emit(msg),
       logger: this.sessionLogger,
     });
@@ -3697,6 +3710,10 @@ export class Session {
     return this.noteSession ? this.noteSession.dispatch(msg) : undefined;
   }
 
+  private dispatchHostMetricsMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+    return this.hostMetricsSession ? this.hostMetricsSession.dispatch(msg) : undefined;
+  }
+
   private dispatchScheduleMessage(msg: SessionInboundMessage): Promise<void> | undefined {
     switch (msg.type) {
       case "schedule/create":
@@ -3718,7 +3735,7 @@ export class Session {
       case "schedule/update":
         return this.scheduleSession.handleScheduleUpdateRequest(msg);
       default:
-        return this.dispatchNoteMessage(msg);
+        return this.dispatchNoteMessage(msg) ?? this.dispatchHostMetricsMessage(msg);
     }
   }
 

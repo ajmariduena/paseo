@@ -3,6 +3,7 @@ import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import {
+  Activity,
   ArrowDown,
   ArrowUp,
   Blocks,
@@ -46,6 +47,7 @@ const BUILTIN_ICONS: Record<BuiltinSidebarItemId, LucideIcon> = {
   search: Search,
   schedules: CalendarClock,
   notes: NotebookPen,
+  "host-health": Activity,
   usage: Gauge,
 };
 
