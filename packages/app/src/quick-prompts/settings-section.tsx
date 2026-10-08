@@ -4,7 +4,7 @@ import { ArrowUp, ArrowDown, MoreVertical, Pencil, Plus, Trash2 } from "lucide-r
 import { useTranslation } from "react-i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { QuickPrompt } from "@getpaseo/protocol/messages";
-import { SettingsSection, SettingsCard, SettingsRow, SettingsSelect } from "@/components/settings";
+import { SettingsSection, SettingsCard, SettingsRow } from "@/components/settings";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -61,12 +61,6 @@ export function QuickPromptsSection({ serverId }: { serverId: string }) {
     },
     [catalog, mutate],
   );
-  const setUndo = useCallback(
-    (value: string) => {
-      void mutate(() => catalog.setUndoMs(Number(value)));
-    },
-    [catalog, mutate],
-  );
   const add = useCallback(() => setEditing(newQuickPrompt()), []);
   const close = useCallback(() => setEditing(null), []);
   const save = useCallback(
@@ -106,7 +100,6 @@ export function QuickPromptsSection({ serverId }: { serverId: string }) {
             onEdit={setEditing}
             onRemove={remove}
             onMove={reorder}
-            onUndoChange={setUndo}
           />
         ) : (
           <SettingsCard>
@@ -145,32 +138,13 @@ function QuickPromptSettingsList({
   onEdit,
   onRemove,
   onMove,
-  onUndoChange,
 }: RowActions & {
   catalog: Catalog;
   disabled: boolean;
-  onUndoChange: (value: string) => void;
 }) {
   const { t } = useTranslation();
-  const options = useMemo(
-    () => [
-      { value: "0", label: t("quickPrompts.off") },
-      { value: "1000", label: t("quickPrompts.seconds", { count: 1 }) },
-      { value: "2500", label: t("quickPrompts.seconds", { count: 2.5 }) },
-      { value: "5000", label: t("quickPrompts.seconds", { count: 5 }) },
-      { value: "10000", label: t("quickPrompts.seconds", { count: 10 }) },
-    ],
-    [t],
-  );
   return (
     <SettingsCard>
-      <SettingsSelect
-        label={t("quickPrompts.undoWindow")}
-        value={String(catalog.undoMs)}
-        disabled={disabled}
-        onValueChange={onUndoChange}
-        options={options}
-      />
       {catalog.prompts.length === 0 ? <SettingsRow label={t("quickPrompts.empty")} /> : null}
       {catalog.prompts.map((prompt, index) => (
         <QuickPromptSettingsRow

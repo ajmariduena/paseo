@@ -27,21 +27,11 @@ export function useQuickPrompts(serverId: string) {
     },
     [connected, supported, patchConfig, t],
   );
-  const setUndoMs = useCallback(
-    async (delay: number) => {
-      if (!connected || !supported) throw new Error(t("quickPrompts.unavailable"));
-      const result = await patchConfig({ quickPromptUndoMs: delay });
-      if (!result) throw new Error(t("quickPrompts.unavailable"));
-    },
-    [connected, supported, patchConfig, t],
-  );
   return {
     prompts: config?.quickPrompts ?? EMPTY_PROMPTS,
-    undoMs: config?.quickPromptUndoMs ?? 0,
     loaded: config !== null,
     supported,
     connected,
     save,
-    setUndoMs,
   };
 }

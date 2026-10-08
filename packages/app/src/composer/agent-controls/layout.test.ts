@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   resolveQuickPromptPresentation,
-  resolveQuickPromptFeedbackWidth,
   COMPOSER_CONTROL_DENSITIES,
   estimateComposerFixedWidth,
   COMPOSER_TOOLBAR_GEOMETRY,
@@ -400,21 +399,6 @@ describe("quick prompt capacity", () => {
       resolveQuickPromptPresentation({ ...base, availableWidth: floor + 13, current: narrow })
         .showShortcutLabel,
     ).toBe(true);
-  });
-
-  it("budgets inline feedback inside the 368px touch toolbar", () => {
-    const width = resolveQuickPromptFeedbackWidth(368, true, base.controls);
-    expect(width).toBeGreaterThanOrEqual(44);
-    expect(
-      width +
-        estimateComposerFixedWidth(true) +
-        estimateComposerControlsWidth(
-          base.controls,
-          "tight",
-          COMPOSER_TOOLBAR_GEOMETRY.touchControlGap,
-        ) +
-        COMPOSER_TOOLBAR_GEOMETRY.touchControlGap,
-    ).toBeLessThanOrEqual(368);
   });
 
   it("compact and absent shortcut always open picker; larger text consumes capacity", () => {

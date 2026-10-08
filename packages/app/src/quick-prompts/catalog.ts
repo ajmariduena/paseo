@@ -69,7 +69,7 @@ export async function selectQuickPrompt(input: {
 export function isQuickPromptActionDisabled(
   mode: QuickPrompt["mode"],
   writing: boolean,
-  sending: boolean,
+  cannotSend: boolean,
 ): boolean {
-  return writing || (mode === "send" && sending);
+  return writing || (mode === "send" && cannotSend);
 }

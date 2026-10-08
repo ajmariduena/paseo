@@ -369,24 +369,3 @@ export function resolveQuickPromptPresentation(input: {
   );
   return { showTrigger, showShortcutLabel, width, density, leanShortcut: false };
 }
-
-/** Inline feedback can wrap vertically but never grows beyond the toolbar's remaining width. */
-export function resolveQuickPromptFeedbackWidth(
-  interior: number,
-  touch: boolean,
-  controls: ComposerControlPresence,
-): number {
-  const gap = touch
-    ? COMPOSER_TOOLBAR_GEOMETRY.touchControlGap
-    : COMPOSER_TOOLBAR_GEOMETRY.controlGap;
-  return Math.max(
-    touch ? 44 : 28,
-    Math.min(
-      300,
-      interior -
-        estimateComposerFixedWidth(touch) -
-        estimateComposerControlsWidth(controls, "tight", gap) -
-        gap,
-    ),
-  );
-}

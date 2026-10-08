@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
 import { Bookmark, CornerDownLeft, FilePlus, Plus, Send, Star } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
@@ -9,7 +9,6 @@ import { MENU_ITEM_HEIGHT, MenuItem, MenuSeparator, useMenuContext } from "@/com
 import { useTouchHitSlop } from "@/components/ui/touch-target";
 import { useControlDensity } from "@/constants/layout";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
-import type { DeferredQuickPromptSend, QuickPromptSendState } from "./deferred-send";
 import { useQuickPrompts } from "./use-quick-prompts";
 import { useQuickPromptCapacity } from "./capacity";
 import {
@@ -24,8 +23,7 @@ import { QuickPromptEditModal } from "./edit-modal";
 
 export interface QuickPromptToolbarBinding {
   serverId: string;
-  controller: DeferredQuickPromptSend;
-  setSurface: (presentation: string, available: boolean) => void;
+  send: (prompt: QuickPrompt) => void;
   insert: (text: string) => void;
   getDraft: () => string;
   available: boolean;
@@ -41,8 +39,6 @@ export interface QuickPromptPicker {
   prompts: readonly QuickPrompt[];
   supported: boolean;
   loaded: boolean;
-  undoMs: number;
-  state: QuickPromptSendState;
   defaultPrompt: QuickPrompt | undefined;
   shortcutPrompt: QuickPrompt | undefined;
   pinCount: number;
@@ -55,7 +51,6 @@ export interface QuickPromptPicker {
   prepareSelection: (prompt: QuickPrompt, action: QuickPromptPickerAction) => () => void;
   add: () => void;
   saveDraft: () => void;
-  retry: () => void;
   editor: React.ReactElement | null;
 }
 
@@ -70,7 +65,6 @@ function isQuickPromptReady(
 export function useQuickPromptPicker(binding: QuickPromptToolbarBinding): QuickPromptPicker {
   const catalog = useQuickPrompts(binding.serverId);
   const { blocked } = useQuickPromptCapacity();
-  const state = useSyncExternalStore(binding.controller.subscribe, binding.controller.getState);
   const [editing, setEditing] = useState<QuickPrompt | null>(null);
   const [write, setWrite] = useState({ pending: false, error: "" });
   const writing = useRef(false);
@@ -88,13 +82,9 @@ export function useQuickPromptPicker(binding: QuickPromptToolbarBinding): QuickP
         prompts: catalog.prompts,
         ports: {
           send: (entry) => {
-            if (ready) binding.controller.start(entry, catalog.undoMs);
-            else binding.controller.unavailable();
+            if (ready) binding.send(entry);
           },
-          insert: (text) => {
-            binding.controller.cancel();
-            binding.insert(text);
-          },
+          insert: binding.insert,
           save: catalog.save,
         },
       })
@@ -114,34 +104,21 @@ export function useQuickPromptPicker(binding: QuickPromptToolbarBinding): QuickP
   );
   const activate = useCallback((prompt: QuickPrompt) => select(prompt, prompt.mode), [select]);
   const prepareSelection = useCallback(
-    (prompt: QuickPrompt, action: QuickPromptPickerAction) =>
-      action === "send"
-        ? binding.controller.guardSelection(() => select(prompt, action))
-        : () => select(prompt, action),
-    [binding.controller, select],
+    (prompt: QuickPrompt, action: QuickPromptPickerAction) => () => select(prompt, action),
+    [select],
   );
-  const add = useCallback(() => {
-    binding.controller.cancel();
-    setEditing(newQuickPrompt());
-  }, [binding.controller]);
-  const saveDraft = useCallback(() => {
-    binding.controller.cancel();
-    setEditing(newQuickPrompt(binding.getDraft()));
-  }, [binding]);
+  const add = useCallback(() => setEditing(newQuickPrompt()), []);
+  const saveDraft = useCallback(() => setEditing(newQuickPrompt(binding.getDraft())), [binding]);
   const closeEditor = useCallback(() => setEditing(null), []);
   const saveEdit = useCallback(
     (prompt: QuickPrompt) => catalog.save(updateQuickPrompt(catalog.prompts, prompt)),
     [catalog],
   );
-  const retry = useCallback(
-    () => binding.controller.retry(catalog.undoMs),
-    [binding.controller, catalog.undoMs],
-  );
   const pinCount = catalog.prompts.filter((prompt) => prompt.pinned).length;
-  const sendDisabled = state.status === "sending" || write.pending;
+  const sendDisabled = !ready || write.pending;
   const editDisabled = !catalog.loaded || !catalog.connected;
   const draftEmpty = !binding.getDraft().trim();
-  const { prompts, supported, loaded, undoMs } = catalog;
+  const { prompts, supported, loaded } = catalog;
   const editor = useMemo(
     () =>
       editing ? (
@@ -163,8 +140,6 @@ export function useQuickPromptPicker(binding: QuickPromptToolbarBinding): QuickP
       prompts,
       supported,
       loaded,
-      undoMs,
-      state,
       defaultPrompt,
       shortcutPrompt,
       pinCount,
@@ -177,7 +152,6 @@ export function useQuickPromptPicker(binding: QuickPromptToolbarBinding): QuickP
       prepareSelection,
       add,
       saveDraft,
-      retry,
       editor,
     }),
     [
@@ -193,12 +167,9 @@ export function useQuickPromptPicker(binding: QuickPromptToolbarBinding): QuickP
       pinCount,
       prepareSelection,
       prompts,
-      retry,
       saveDraft,
       sendDisabled,
-      state,
       supported,
-      undoMs,
       write.error,
       write.pending,
     ],

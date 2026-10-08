@@ -129,14 +129,11 @@ describe("translation resources", () => {
     expect(countMatchingEnglishStrings(zhCN)).toBeLessThan(maxFallbackStrings);
   });
 
-  it("localizes quick prompt intent, cancellation, retry and settings in every language", () => {
+  it("localizes quick prompts in every language", () => {
     for (const resource of [ar, es, fr, ja, ko, ptBR, ru, zhCN]) {
       expect(Object.keys(resource.quickPrompts).sort()).toEqual(
         Object.keys(en.quickPrompts).sort(),
       );
-      expect(resource.quickPrompts.interrupt).not.toBe(en.quickPrompts.interrupt);
-      expect(resource.quickPrompts.cancelled).not.toBe(en.quickPrompts.cancelled);
-      expect(resource.quickPrompts.failed).not.toBe(en.quickPrompts.failed);
       expect(resource.quickPrompts.insertNamed).toContain("{{title}}");
       expect(resource.quickPrompts.duplicateIds).not.toBe(en.quickPrompts.duplicateIds);
       expect(resource.quickPrompts.multipleDefaults).not.toBe(en.quickPrompts.multipleDefaults);

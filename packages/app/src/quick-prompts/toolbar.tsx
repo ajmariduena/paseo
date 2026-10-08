@@ -19,8 +19,6 @@ import {
   resolveComposerToolbarGlyphStroke,
   resolveQuickPromptPresentation,
   estimateComposerFixedWidth,
-  resolveQuickPromptFeedbackWidth,
-  type ComposerControlDensity,
   type QuickPromptPresentation,
 } from "@/composer/agent-controls/layout";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
@@ -29,7 +27,6 @@ import {
   useQuickPromptCapacity,
   usePublishQuickPromptDensity,
 } from "./capacity";
-import { QuickPromptFeedback } from "./feedback";
 import { QuickPromptPickerList, isQuickPromptSendDisabled, type QuickPromptPicker } from "./picker";
 
 export type { QuickPromptToolbarBinding } from "./picker";
@@ -130,33 +127,25 @@ function ShortcutBookmarkTrigger({
 /**
  * The toolbar's quick-prompt slot. It always owns the capacity decision, but only draws the split
  * or bookmark while the budget keeps a trigger; on the phone row the picker lives in the
- * attachment menu and the feedback above the input. Nothing is drawn before the row is measured,
- * so the first paint never shows a stage the row will not keep.
+ * attachment menu. Nothing is drawn before the row is measured, so the first paint never shows a
+ * stage the row will not keep.
  */
 export function QuickPromptToolbar({ picker }: { picker: QuickPromptPicker }) {
   const { t } = useTranslation();
-  const { binding, state, shortcutPrompt } = picker;
+  const { shortcutPrompt } = picker;
   const touch = useControlDensity() === "touch";
   const [open, setOpen] = useState(false);
-  const { presentation, feedbackWidth } = useQuickPromptPresentation(picker);
-  const hasFeedback = state.status !== "idle";
-  const setMenuOpen = useCallback(
-    (next: boolean) => {
-      if (next) {
-        binding.controller.cancel();
-        binding.controller.dismiss();
-      }
-      setOpen(next);
-    },
-    [binding.controller],
-  );
-  const openPicker = useCallback(() => setMenuOpen(true), [setMenuOpen]);
+  const [hovered, setHovered] = useState(false);
+  const handlePointerEnter = useCallback(() => setHovered(true), []);
+  const handlePointerLeave = useCallback(() => setHovered(false), []);
+  const presentation = useQuickPromptPresentation(picker);
+  const openPicker = useCallback(() => setOpen(true), []);
   if (!presentation || !presentation.showTrigger) return null;
   const showShortcutLabel = presentation.showShortcutLabel && shortcutPrompt !== undefined;
   if (presentation.leanShortcut) {
     return (
       <View style={[styles.cluster, touch && styles.clusterTouch]} testID="quick-prompts-toolbar">
-        <MenuRoot open={open} onOpenChange={setMenuOpen} compactMode="sheet">
+        <MenuRoot open={open} onOpenChange={setOpen} compactMode="sheet">
           <TouchTarget slotSize={COMPOSER_TOOLBAR_GEOMETRY.controlSize}>
             <ShortcutBookmarkTrigger
               shortcutPrompt={shortcutPrompt}
@@ -175,41 +164,34 @@ export function QuickPromptToolbar({ picker }: { picker: QuickPromptPicker }) {
   }
   return (
     <View style={[styles.cluster, touch && styles.clusterTouch]} testID="quick-prompts-toolbar">
-      <MenuRoot open={open} onOpenChange={setMenuOpen} compactMode="sheet">
+      <MenuRoot open={open} onOpenChange={setOpen} compactMode="sheet">
         <TouchTarget slotSize={COMPOSER_TOOLBAR_GEOMETRY.controlSize}>
-          <View style={[styles.split, !hasFeedback && open && styles.splitActive]}>
-            {hasFeedback ? (
-              <QuickPromptFeedback
-                variant="toolbar"
-                state={state}
-                width={feedbackWidth}
-                undoMs={picker.undoMs}
-                undo={binding.controller.cancel}
-                retry={picker.retry}
-                dismiss={binding.controller.dismiss}
-                sendNow={binding.controller.sendNow}
-              />
-            ) : (
-              <>
-                {showShortcutLabel ? (
-                  <PromptPill
-                    prompt={shortcutPrompt}
-                    disabled={isQuickPromptSendDisabled(picker, shortcutPrompt)}
-                    onActivate={picker.activate}
-                    onOpen={openPicker}
-                  />
-                ) : null}
-                {shortcutPrompt && !showShortcutLabel ? (
-                  <ShortcutBookmarkTrigger
-                    shortcutPrompt={shortcutPrompt}
-                    sendDisabled={isQuickPromptSendDisabled(picker, shortcutPrompt)}
-                    onSend={picker.activate}
-                  />
-                ) : (
-                  <QuickPromptMenuTrigger labeled={showShortcutLabel} />
-                )}
-              </>
-            )}
+          <View
+            style={styles.hoverTarget}
+            onPointerEnter={handlePointerEnter}
+            onPointerLeave={handlePointerLeave}
+          >
+            <View
+              style={[styles.split, hovered && styles.splitHovered, open && styles.splitActive]}
+            >
+              {showShortcutLabel ? (
+                <PromptPill
+                  prompt={shortcutPrompt}
+                  disabled={isQuickPromptSendDisabled(picker, shortcutPrompt)}
+                  onActivate={picker.activate}
+                  onOpen={openPicker}
+                />
+              ) : null}
+              {shortcutPrompt && !showShortcutLabel ? (
+                <ShortcutBookmarkTrigger
+                  shortcutPrompt={shortcutPrompt}
+                  sendDisabled={isQuickPromptSendDisabled(picker, shortcutPrompt)}
+                  onSend={picker.activate}
+                />
+              ) : (
+                <QuickPromptMenuTrigger labeled={showShortcutLabel} />
+              )}
+            </View>
           </View>
         </TouchTarget>
         <MenuSurface side="top" align="end" width={380} sheetTitle={t("quickPrompts.section")}>
@@ -221,78 +203,34 @@ export function QuickPromptToolbar({ picker }: { picker: QuickPromptPicker }) {
 }
 
 /**
- * The capacity decision and what it publishes: the density the clusters follow, and the surface
- * key the deferred send watches. `null` until the row has a width, so nothing is drawn or
- * published from an unmeasured frame.
+ * The capacity decision and the density it publishes for the clusters. `null` until the row has
+ * a width, so nothing is drawn or published from an unmeasured frame.
  */
-function useQuickPromptPresentation(picker: QuickPromptPicker): {
-  presentation: QuickPromptPresentation | null;
-  feedbackWidth: number;
-} {
-  const { binding, state, shortcutPrompt, supported, loaded } = picker;
+function useQuickPromptPresentation(picker: QuickPromptPicker): QuickPromptPresentation | null {
+  const { shortcutPrompt, supported } = picker;
   const compact = useIsCompactFormFactor();
   const lean = useComposerLayoutMode(compact) === "lean";
   const touch = useControlDensity() === "touch";
-  const { controls, width, blocked } = useQuickPromptCapacity();
+  const { controls, width } = useQuickPromptCapacity();
   const previousPresentation = useRef<QuickPromptPresentation | undefined>(undefined);
-  const measured = width > 0;
-  const presentation = measured
-    ? resolveQuickPromptPresentation({
-        current: previousPresentation.current,
-        // Attachment, context meter, mic and primary action keep their own space.
-        availableWidth: width - estimateComposerFixedWidth(touch),
-        compact,
-        lean,
-        touch,
-        shortcutLabel: shortcutPrompt?.title ?? null,
-        controls,
-      })
-    : null;
+  const presentation =
+    width > 0
+      ? resolveQuickPromptPresentation({
+          current: previousPresentation.current,
+          // Attachment, context meter, mic and primary action keep their own space.
+          availableWidth: width - estimateComposerFixedWidth(touch),
+          compact,
+          lean,
+          touch,
+          shortcutLabel: shortcutPrompt?.title ?? null,
+          controls,
+        })
+      : null;
   useLayoutEffect(() => {
     if (presentation) previousPresentation.current = presentation;
   });
-  // The lean bookmark keeps its glyph while a send waits; the bar above the input is its feedback.
-  const hostsFeedback =
-    Boolean(presentation?.showTrigger) && !presentation?.leanShortcut && state.status !== "idle";
-  const density = resolvePublishedDensity({ supported, hostsFeedback, presentation });
-  usePublishQuickPromptDensity(density);
-  const presentationKey = resolvePresentationKey({
-    presentation,
-    compact: compact || lean,
-    touch,
-    fontScale: controls.fontScale,
-  });
-  const ready = measured && supported && loaded && binding.available && !blocked;
-  const { setSurface } = binding;
-  useLayoutEffect(() => {
-    setSurface(presentationKey, ready);
-  }, [setSurface, presentationKey, ready]);
-  useLayoutEffect(() => () => setSurface("hidden", false), [setSurface]);
-  return {
-    presentation: supported ? presentation : null,
-    feedbackWidth: resolveQuickPromptFeedbackWidth(width, touch, controls),
-  };
-}
-
-function resolvePublishedDensity(input: {
-  supported: boolean;
-  hostsFeedback: boolean;
-  presentation: QuickPromptPresentation | null;
-}): ComposerControlDensity | null {
-  if (!input.supported || !input.presentation) return null;
-  return input.hostsFeedback ? "tight" : input.presentation.density;
-}
-
-/** Changes to this key cancel a waiting send, so it names everything that moves the control. */
-function resolvePresentationKey(input: {
-  presentation: QuickPromptPresentation | null;
-  compact: boolean;
-  touch: boolean;
-  fontScale: number;
-}): string {
-  const { presentation } = input;
-  if (!presentation) return "unmeasured";
-  return `${input.compact}:${input.touch}:${input.fontScale}:${presentation.density}:${presentation.showTrigger}:${presentation.showShortcutLabel}`;
+  usePublishQuickPromptDensity(supported && presentation ? presentation.density : null);
+  return supported ? presentation : null;
 }
 
 /** A named prompt, drawn exactly like the mode control: glyph, label, 28pt tall. */
@@ -345,6 +283,9 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     borderRadius: theme.borderRadius["2xl"],
   },
+  hoverTarget: { position: "relative" },
+  // The pill paints the same surface on its own hover, so the two layers read as one.
+  splitHovered: { backgroundColor: theme.colors.surface2 },
   splitActive: { backgroundColor: theme.colors.interactionHighlight },
   pillBounds: { flexShrink: 0 },
   // Pulled into the pill's padding so the caret sits as close to the title as the model pill's.

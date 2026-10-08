@@ -2,10 +2,9 @@ import {
   QuickPromptCapacityProvider,
   useQuickPromptControlDensity,
 } from "@/quick-prompts/capacity";
-import { useDeferredQuickPromptSend } from "@/quick-prompts/use-deferred-send";
 import { QuickPromptToolbarSlot, type QuickPromptToolbarBinding } from "@/quick-prompts/toolbar";
 import { useQuickPromptPicker } from "@/quick-prompts/picker";
-import { QuickPromptFeedbackBar } from "@/quick-prompts/feedback";
+import type { QuickPrompt } from "@getpaseo/protocol/messages";
 import { QuickPromptMenuTrigger, buildQuickPromptMenuPage } from "@/quick-prompts/menu-page";
 import type { ComposerTextSource } from "./text-source";
 import { createStore, type StoreApi } from "zustand/vanilla";
@@ -1599,76 +1598,62 @@ function ComposerContentImpl({
   );
   const hasAgent = agentState.status !== null;
 
-  const quickPromptSend = useDeferredQuickPromptSend({
-    readContext: () => {
+  const sendQuickPrompt = useCallback(
+    (prompt: QuickPrompt) => {
+      if (!client) return;
       const session = useSessionStore.getState().sessions[serverId];
-      const target = session?.agents?.get(agentId);
-      const permissions = [...(session?.pendingPermissions?.entries() ?? [])]
-        .filter(([, permission]) => permission.agentId === agentId)
-        .map(([id]) => id)
-        .sort();
-      const running = selectAgentTurnPresentation(session, agentId).isActive;
-      const action = resolveActiveSendBehavior(appSettings.sendBehavior, permissions.length > 0);
-      return {
-        host: serverId,
-        agent: agentId,
-        conversation: `${workspaceId}:${agentId}:${autoFocusKey ?? ""}`,
-        connected:
-          getHostRuntimeStore().getSnapshot(serverId)?.connectionStatus === "online" &&
-          Boolean(client?.isConnected),
-        available:
-          Boolean(target) &&
-          !readOnly &&
-          !isSubmitLoading &&
-          !isProcessing &&
-          !onSubmitMessage &&
-          inputMode === "chat",
-        policy: JSON.stringify([
-          appSettings.sendBehavior,
-          target?.currentModeId,
-          permissions,
-          target?.provider,
-          target?.model,
-        ]),
-        action: running ? action : "send",
-      };
-    },
-    dispatch: async (capture) => {
-      if (!client || capture.context.host !== serverId || capture.context.agent !== agentId) {
-        throw new Error(t("quickPrompts.unavailable"));
-      }
+      const turn = selectAgentTurnPresentation(session, agentId);
+      const hasAgentPermission = [...(session?.pendingPermissions?.values() ?? [])].some(
+        (permission) => permission.agentId === agentId,
+      );
+      const action = turn.isActive
+        ? resolveActiveSendBehavior(appSettings.sendBehavior, hasAgentPermission)
+        : "send";
       const input = {
         client,
-        agentId: capture.context.agent,
-        text: capture.text,
+        agentId,
+        text: prompt.text,
         attachments: buildOutgoingAttachments([]),
         attachmentSubmitFormat: resolveComposerAttachmentSubmitFormat({
           supportsForgeAttachments: supportsForgeSearch,
         }),
         encodeImages,
       };
+      setSendError(null);
       onMessageSent?.();
-      const disposition =
-        capture.action === "queue"
-          ? await enqueueComposerAgentMessage(input)
-          : await dispatchComposerAgentMessage({
+      const sending =
+        action === "queue"
+          ? enqueueComposerAgentMessage(input)
+          : dispatchComposerAgentMessage({
               ...input,
-              submission: createMessageSubmissionWriter(capture.context.host),
-              activeTurnBehavior: capture.action === "send" ? "steer" : capture.action,
-              activeTurnId:
-                selectAgentTurnPresentation(
-                  useSessionStore.getState().sessions[serverId],
-                  capture.context.agent,
-                ).turnId ?? undefined,
+              submission: createMessageSubmissionWriter(serverId),
+              activeTurnBehavior: action === "send" ? "steer" : action,
+              activeTurnId: turn.turnId ?? undefined,
             });
-      onAttentionPromptSend?.();
-      return disposition;
+      void sending.then(
+        () => onAttentionPromptSend?.(),
+        (error: unknown) => {
+          console.error("[AgentInput] Failed to send quick prompt:", error);
+          setSendError(error instanceof Error ? error.message : t("composer.errors.failedToSend"));
+        },
+      );
     },
-  });
+    [
+      agentId,
+      appSettings.sendBehavior,
+      buildOutgoingAttachments,
+      client,
+      onAttentionPromptSend,
+      onMessageSent,
+      serverId,
+      supportsForgeSearch,
+      t,
+    ],
+  );
   const quickPromptBinding = useMemo<QuickPromptToolbarBinding>(
     () => ({
-      ...quickPromptSend,
       serverId,
+      send: sendQuickPrompt,
       available:
         hasAgent &&
         !readOnly &&
@@ -1689,7 +1674,7 @@ function ComposerContentImpl({
       },
     }),
     [
-      quickPromptSend,
+      sendQuickPrompt,
       serverId,
       hasAgent,
       readOnly,
@@ -1748,7 +1733,6 @@ function ComposerContentImpl({
 
   const queueMessage = useCallback(
     (queuedMessage: string, queuedAttachments: ComposerAttachment[]) => {
-      quickPromptSend.controller.cancel();
       const text = queuedMessage.trim();
       if (!text && queuedAttachments.length === 0) return;
       // COMPAT(serverMessageQueue): the client-side queue serves daemons without the server
@@ -1781,7 +1765,6 @@ function ComposerContentImpl({
     },
     [
       agentId,
-      quickPromptSend,
       clearSentAttachments,
       enqueueOnServer,
       queueWriter,
@@ -1852,7 +1835,6 @@ function ComposerContentImpl({
 
   const handleSubmit = useCallback(
     (payload: MessagePayload) => {
-      quickPromptSend.controller.cancel();
       const outgoingAttachments = buildOutgoingAttachments(attachments);
       const clientSlashCommand = resolveClientSlashCommand({
         text: payload.text,
@@ -1880,7 +1862,6 @@ function ComposerContentImpl({
     },
     [
       attachments,
-      quickPromptSend,
       blurOnSubmit,
       buildOutgoingAttachments,
       runClientSlashCommand,
@@ -2126,7 +2107,6 @@ function ComposerContentImpl({
 
   const handleQueue = useCallback(
     (payload: MessagePayload) => {
-      quickPromptSend.controller.cancel();
       const outgoingAttachments = buildOutgoingAttachments(attachments);
       const clientSlashCommand = resolveClientSlashCommand({
         text: payload.text,
@@ -2147,7 +2127,6 @@ function ComposerContentImpl({
       attachments,
       buildOutgoingAttachments,
       pluginClientSlashCommands,
-      quickPromptSend,
       queueMessage,
       runClientSlashCommand,
       runPluginClientSlashCommand,
@@ -2574,7 +2553,6 @@ function ComposerContentImpl({
           <View style={styles.inputAreaContent}>
             {queueList}
             {sendErrorNode}
-            {quickPromptsInMenu ? <QuickPromptFeedbackBar picker={quickPromptPicker} /> : null}
             {quickPromptsEnabled ? quickPromptPicker.editor : null}
 
             <View ref={messageInputContainerRef} style={styles.messageInputContainer}>
