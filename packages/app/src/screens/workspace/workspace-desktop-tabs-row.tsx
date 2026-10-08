@@ -478,7 +478,7 @@ export interface WorkspaceDesktopTabRowItem {
   isClosingTab: boolean;
 }
 
-interface ResolvedWorkspaceDesktopTabRowItem extends WorkspaceDesktopTabRowItem {
+export interface ResolvedWorkspaceDesktopTabRowItem extends WorkspaceDesktopTabRowItem {
   presentation: WorkspaceTabPresentation;
 }
 
@@ -562,7 +562,10 @@ export interface WorkspaceDesktopTabsRowProps {
   onExitFocusMode: () => void;
 }
 
-interface ResolvedWorkspaceDesktopTabsRowProps extends Omit<WorkspaceDesktopTabsRowProps, "tabs"> {
+export interface ResolvedWorkspaceDesktopTabsRowProps extends Omit<
+  WorkspaceDesktopTabsRowProps,
+  "tabs"
+> {
   tabs: ResolvedWorkspaceDesktopTabRowItem[];
 }
 
@@ -1072,7 +1075,7 @@ export function WorkspaceDesktopTabsRow(props: WorkspaceDesktopTabsRowProps) {
   );
 }
 
-function ResolvedWorkspaceDesktopTabsRow({
+export function ResolvedWorkspaceDesktopTabsRow({
   host = "main",
   launchPurpose = "primary",
   paneId,

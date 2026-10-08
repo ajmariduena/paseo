@@ -20,6 +20,16 @@ const PendingCreationSchema = z.object({
   revision: z.number().int().nonnegative(),
   error: z.string().nullable(),
   outcomeUnknown: z.boolean(),
+  agentSetup: z
+    .object({
+      provider: z.string().min(1),
+      cwd: z.string(),
+      modeId: z.string().nullable(),
+      model: z.string().nullable(),
+      thinkingOptionId: z.string().nullable(),
+      featureValues: z.record(z.string(), z.unknown()),
+    })
+    .optional(),
 });
 
 export type PendingWorkspaceCreation = z.infer<typeof PendingCreationSchema>;
