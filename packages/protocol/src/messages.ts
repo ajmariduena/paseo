@@ -79,6 +79,10 @@ import {
   NoteLinkAgentResponseSchema,
 } from "./notes/rpc-schemas.js";
 import {
+  HostMetricsGetRequestSchema,
+  HostMetricsGetResponseSchema,
+} from "./host-metrics/rpc-schemas.js";
+import {
   LoopRunRequestSchema,
   LoopListRequestSchema,
   LoopInspectRequestSchema,
@@ -3751,6 +3755,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   NoteArchiveRequestSchema,
   NoteDeleteRequestSchema,
   NoteLinkAgentRequestSchema,
+  HostMetricsGetRequestSchema,
   ScheduleCreateRequestSchema,
   ScheduleListRequestSchema,
   ScheduleInspectRequestSchema,
@@ -3985,6 +3990,8 @@ export const ServerInfoStatusPayloadSchema = z
         workspaceLabels: z.boolean().optional(),
         // COMPAT(notes): added in v0.11.0, remove gate after 2027-10-07.
         notes: z.boolean().optional(),
+        // COMPAT(hostMetrics): added in v0.11.0, remove gate after 2027-10-08.
+        hostMetrics: z.boolean().optional(),
         // COMPAT(workspaceSetupRun): added in v0.8.0, remove gate after 2027-09-02.
         workspaceSetupRun: z.boolean().optional(),
         // COMPAT(workspaceTerminals): added in v0.8.0, remove gate after 2027-09-05.
@@ -7803,6 +7810,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   NoteArchiveResponseSchema,
   NoteDeleteResponseSchema,
   NoteLinkAgentResponseSchema,
+  HostMetricsGetResponseSchema,
   ScheduleCreateResponseSchema,
   ScheduleListResponseSchema,
   ScheduleInspectResponseSchema,
