@@ -1,42 +1,38 @@
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
-import { ScrollView, Text, View } from "react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
 import { useIsFocused } from "@react-navigation/native";
 import { useTranslation } from "react-i18next";
 import { NotebookPen, Plus } from "lucide-react-native";
-import { StyleSheet } from "react-native-unistyles";
-import { BackHeader } from "@/components/headers/back-header";
+import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { MenuHeader } from "@/components/headers/menu-header";
 import { Button } from "@/components/ui/button";
 import {
   FLOATING_ACTION_BUTTON_CLEARANCE,
   FloatingActionButton,
 } from "@/components/ui/floating-action-button";
+import { mutedIconColorMapping } from "@/components/ui/icon-color";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { SearchField } from "@/components/ui/search-field";
-import { SegmentedControl } from "@/components/ui/segmented-control";
+import { Shortcut } from "@/components/ui/shortcut";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useIsCompactFormFactor } from "@/constants/layout";
-import { useToast } from "@/contexts/toast-api-context";
-import { useProjects } from "@/hooks/use-projects";
+import { useKeyboardActionHandler } from "@/hooks/use-keyboard-action-handler";
+import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
+import type { KeyboardActionId } from "@/keyboard/keyboard-action-dispatcher";
 import { useNoteActions, useNotes, type HostNote, type NotesLoadState } from "@/notes/data";
-import {
-  countOpenTodos,
-  filterNotes,
-  groupNotesByProject,
-  isSelectedNote,
-  type NoteSelection,
-  type NotesFilter,
-} from "@/notes/model";
-import { NoteCaptureSheet, type NoteProjectOption } from "@/notes/note-capture-sheet";
+import { filterNotes, isSelectedNote, type NoteSelection } from "@/notes/model";
 import { NoteDetail } from "@/notes/note-detail";
 import { NoteList } from "@/notes/note-list";
-import { toErrorMessage } from "@/utils/error-messages";
 
 const EMPTY_NOTES: HostNote[] = [];
+// ⌘N means "new workspace" app-wide; while Scratchpad is open it means "new note".
+const NEW_NOTE_ACTIONS: readonly KeyboardActionId[] = ["workspace.new"];
+const ThemedPlus = withUnistyles(Plus);
 
 export function NotesScreen({
   initialSelection,
 }: {
-  initialSelection: NoteSelection | null;
+  initialSelection: { serverId: string; noteId: string } | null;
 }): ReactElement {
   const isFocused = useIsFocused();
   if (!isFocused) {
@@ -45,185 +41,123 @@ export function NotesScreen({
   return <NotesScreenContent initialSelection={initialSelection} />;
 }
 
-function useProjectNames(): {
-  projectName: (serverId: string, projectId: string) => string | null;
-  projectOptions: (serverId: string) => NoteProjectOption[];
-} {
-  const { projects } = useProjects();
-  return useMemo(() => {
-    const names = new Map<string, string>();
-    const byHost = new Map<string, NoteProjectOption[]>();
-    for (const project of projects) {
-      for (const host of project.hosts) {
-        const label = host.projectCustomName || host.projectName;
-        names.set(`${host.serverId}:${host.projectId}`, label);
-        const options = byHost.get(host.serverId) ?? [];
-        options.push({ projectId: host.projectId, label });
-        byHost.set(host.serverId, options);
-      }
-    }
-    return {
-      projectName: (serverId, projectId) => names.get(`${serverId}:${projectId}`) ?? null,
-      projectOptions: (serverId) =>
-        [...(byHost.get(serverId) ?? [])].sort((a, b) => a.label.localeCompare(b.label)),
-    };
-  }, [projects]);
-}
-
 function NotesScreenContent({
   initialSelection,
 }: {
-  initialSelection: NoteSelection | null;
+  initialSelection: { serverId: string; noteId: string } | null;
 }): ReactElement {
   const { t } = useTranslation();
-  const toast = useToast();
   const isCompact = useIsCompactFormFactor();
   const { loadState, refetch } = useNotes({ poll: true });
   const actions = useNoteActions();
-  const { projectName, projectOptions } = useProjectNames();
-  const [filter, setFilter] = useState<NotesFilter>("all");
   const [query, setQuery] = useState("");
-  const [selection, setSelection] = useState<NoteSelection | null>(initialSelection);
-  const [captureOpen, setCaptureOpen] = useState(false);
+  const [selection, setSelection] = useState<NoteSelection | null>(() =>
+    initialSelection ? { kind: "note", ...initialSelection } : null,
+  );
+  // The editor keeps its key when a draft becomes a saved note, so typing is never interrupted.
+  const [editorKey, setEditorKey] = useState(0);
 
   useEffect(() => {
-    if (initialSelection) setSelection(initialSelection);
+    if (!initialSelection) return;
+    setSelection({ kind: "note", ...initialSelection });
+    setEditorKey((key) => key + 1);
   }, [initialSelection]);
 
   const notes = loadState.status === "loaded" ? loadState.notes : EMPTY_NOTES;
-  const visibleNotes = useMemo(() => filterNotes(notes, { filter, query }), [filter, notes, query]);
-  const groups = useMemo(
-    () => groupNotesByProject(visibleNotes, { projectName, noProjectLabel: t("notes.noProject") }),
-    [projectName, t, visibleNotes],
-  );
+  const visibleNotes = useMemo(() => filterNotes(notes, query), [notes, query]);
   const selectedNote = useMemo(
     () => notes.find((note) => isSelectedNote(note, selection)) ?? null,
     [notes, selection],
   );
+  const selectionMissing =
+    selection?.kind === "note" && loadState.status === "loaded" && !selectedNote;
+
+  useEffect(() => {
+    if (selectionMissing) setSelection(null);
+  }, [selectionMissing]);
 
   useEffect(() => {
     if (isCompact || selection || visibleNotes.length === 0) return;
     const first = visibleNotes[0];
-    setSelection({ serverId: first.serverId, noteId: first.id });
+    setSelection({ kind: "note", serverId: first.serverId, noteId: first.id });
+    setEditorKey((key) => key + 1);
   }, [isCompact, selection, visibleNotes]);
 
-  const captureServerId =
-    selectedNote?.serverId ?? notes[0]?.serverId ?? firstSupportedHost(loadState);
-  const filterOptions = useMemo(
-    () => [
-      { value: "all" as const, label: t("notes.filters.all"), testID: "notes-filter-all" },
-      {
-        value: "todos" as const,
-        label: `${t("notes.filters.todos")} · ${countOpenTodos(notes)}`,
-        testID: "notes-filter-todos",
-      },
-      { value: "done" as const, label: t("notes.filters.done"), testID: "notes-filter-done" },
-    ],
-    [notes, t],
-  );
+  const newNoteServerId =
+    selection?.serverId ?? notes[0]?.serverId ?? firstSupportedHost(loadState);
+
+  const openDraft = useCallback(() => {
+    if (!newNoteServerId) return false;
+    setSelection({ kind: "draft", serverId: newNoteServerId });
+    setEditorKey((key) => key + 1);
+    return true;
+  }, [newNoteServerId]);
+  const handleNewNote = useCallback(() => void openDraft(), [openDraft]);
+
+  useKeyboardActionHandler({
+    handlerId: "scratchpad-new-note",
+    actions: NEW_NOTE_ACTIONS,
+    enabled: newNoteServerId !== null,
+    priority: 10,
+    handle: openDraft,
+  });
 
   const handleSelect = useCallback((note: HostNote) => {
-    setSelection({ serverId: note.serverId, noteId: note.id });
+    setSelection({ kind: "note", serverId: note.serverId, noteId: note.id });
+    setEditorKey((key) => key + 1);
   }, []);
-  const handleToggleDone = useCallback(
-    (note: HostNote) => {
-      const todoState = note.todoState === "done" ? "open" : "done";
-      void actions.update(note, { todoState }).catch((error: unknown) => {
-        toast.error(toErrorMessage(error) || t("notes.detail.saveFailed"));
-      });
-    },
-    [actions, t, toast],
-  );
-  const handleClosed = useCallback(() => setSelection(null), []);
-  const openCapture = useCallback(() => setCaptureOpen(true), []);
-  const closeCapture = useCallback(() => setCaptureOpen(false), []);
-  const handleCreated = useCallback(
-    (noteId: string) => {
-      if (captureServerId) setSelection({ serverId: captureServerId, noteId });
-    },
-    [captureServerId],
-  );
+  const handleCreated = useCallback((note: HostNote) => {
+    setSelection({ kind: "note", serverId: note.serverId, noteId: note.id });
+  }, []);
+  const handleClosed = useCallback(() => {
+    setSelection(null);
+    setEditorKey((key) => key + 1);
+  }, []);
 
-  const headerAction = useMemo(
-    () =>
-      isCompact || !captureServerId ? null : (
-        <Button
-          variant="outline"
-          size="sm"
-          leftIcon={Plus}
-          onPress={openCapture}
-          testID="notes-new"
-        >
-          {t("notes.new")}
-        </Button>
-      ),
-    [captureServerId, isCompact, openCapture, t],
-  );
-
-  const captureSheet = captureServerId ? (
-    <NoteCaptureSheet
-      visible={captureOpen}
-      serverId={captureServerId}
-      projectOptions={projectOptions(captureServerId)}
-      defaultProjectId={selectedNote?.projectId ?? null}
-      defaultTodo={filter === "todos"}
-      actions={actions}
-      onClose={closeCapture}
-      onCreated={handleCreated}
-    />
-  ) : null;
-
-  const detail = selectedNote ? (
-    <NoteDetail
-      key={`${selectedNote.serverId}:${selectedNote.id}`}
-      note={selectedNote}
-      projectName={
-        selectedNote.projectId ? projectName(selectedNote.serverId, selectedNote.projectId) : null
-      }
-      actions={actions}
-      onClosed={handleClosed}
-      onRefetch={refetch}
-    />
-  ) : null;
+  const detail =
+    selection && (selection.kind === "draft" || selectedNote) ? (
+      <NoteDetail
+        key={editorKey}
+        note={selection.kind === "draft" ? null : selectedNote}
+        serverId={selection.serverId}
+        actions={actions}
+        compact={isCompact}
+        autoFocus={selection.kind === "draft"}
+        onCreated={handleCreated}
+        onClosed={handleClosed}
+        onRefetch={refetch}
+      />
+    ) : null;
 
   if (isCompact && detail) {
-    return (
-      <View style={styles.container}>
-        <BackHeader title={t("notes.detail.back")} onBack={handleClosed} />
-        {detail}
-      </View>
-    );
+    return <View style={styles.container}>{detail}</View>;
   }
 
   const listPane = (
     <NotesListPane
       loadState={loadState}
-      groups={groups}
+      notes={visibleNotes}
       hasNotes={notes.length > 0}
       selection={isCompact ? null : selection}
-      filter={filter}
-      filterOptions={filterOptions}
       query={query}
       compact={isCompact}
-      onFilterChange={setFilter}
       onQueryChange={setQuery}
       onSelect={handleSelect}
-      onToggleDone={handleToggleDone}
-      onCreate={openCapture}
+      onCreate={handleNewNote}
     />
   );
 
   return (
     <View style={styles.container}>
-      <MenuHeader title={t("notes.title")} rightContent={headerAction} />
+      <MenuHeader title={t("notes.title")} />
       {isCompact ? (
         <View style={styles.body}>
           {listPane}
-          {captureServerId ? (
+          {newNoteServerId ? (
             <FloatingActionButton
               icon={Plus}
               accessibilityLabel={t("notes.new")}
-              onPress={openCapture}
+              onPress={handleNewNote}
               testID="notes-fab"
             />
           ) : null}
@@ -240,7 +174,6 @@ function NotesScreenContent({
           </View>
         </View>
       )}
-      {captureSheet}
     </View>
   );
 }
@@ -250,33 +183,55 @@ function firstSupportedHost(loadState: NotesLoadState): string | null {
   return loadState.notes[0]?.serverId ?? loadState.supportedServerIds[0] ?? null;
 }
 
+function newNoteButtonStyle({ hovered = false, pressed }: { hovered?: boolean; pressed: boolean }) {
+  return [styles.newNoteButton, (hovered || pressed) && styles.newNoteButtonHovered];
+}
+
+function NewNoteIconButton({ onPress }: { onPress: () => void }): ReactElement {
+  const { t } = useTranslation();
+  const shortcutKeys = useShortcutKeys("new-workspace");
+  return (
+    <Tooltip delayDuration={300}>
+      <TooltipTrigger asChild>
+        <Pressable
+          onPress={onPress}
+          style={newNoteButtonStyle}
+          accessibilityRole="button"
+          accessibilityLabel={t("notes.new")}
+          testID="notes-new"
+        >
+          <ThemedPlus size={16} uniProps={mutedIconColorMapping} />
+        </Pressable>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" align="center" offset={8}>
+        <View style={styles.tooltipRow}>
+          <Text style={styles.tooltipText}>{t("notes.new")}</Text>
+          {shortcutKeys ? <Shortcut chord={shortcutKeys} /> : null}
+        </View>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 function NotesListPane({
   loadState,
-  groups,
+  notes,
   hasNotes,
   selection,
-  filter,
-  filterOptions,
   query,
   compact,
-  onFilterChange,
   onQueryChange,
   onSelect,
-  onToggleDone,
   onCreate,
 }: {
   loadState: NotesLoadState;
-  groups: ReturnType<typeof groupNotesByProject>;
+  notes: readonly HostNote[];
   hasNotes: boolean;
   selection: NoteSelection | null;
-  filter: NotesFilter;
-  filterOptions: { value: NotesFilter; label: string; testID: string }[];
   query: string;
   compact: boolean;
-  onFilterChange: (filter: NotesFilter) => void;
   onQueryChange: (query: string) => void;
   onSelect: (note: HostNote) => void;
-  onToggleDone: (note: HostNote) => void;
   onCreate: () => void;
 }): ReactElement {
   const { t } = useTranslation();
@@ -295,7 +250,7 @@ function NotesListPane({
       </View>
     );
   }
-  if (!hasNotes) {
+  if (!hasNotes && selection?.kind !== "draft") {
     return (
       <View style={styles.centered} testID="notes-empty">
         <NotebookPen size={styles.emptyIcon.width} color={styles.emptyIcon.color} />
@@ -313,13 +268,6 @@ function NotesListPane({
   return (
     <View style={styles.body}>
       <View style={styles.controls}>
-        <SegmentedControl
-          size="sm"
-          value={filter}
-          onValueChange={onFilterChange}
-          options={filterOptions}
-          testID="notes-filter"
-        />
         <SearchField
           value={query}
           onChangeText={onQueryChange}
@@ -327,6 +275,7 @@ function NotesListPane({
           clearAccessibilityLabel={t("notes.clearSearch")}
           testID="notes-search"
         />
+        {compact ? null : <NewNoteIconButton onPress={onCreate} />}
       </View>
       <ScrollView
         style={styles.scroll}
@@ -339,16 +288,7 @@ function NotesListPane({
             {t("notes.hostError", { hostName: error.serverName })}
           </Text>
         ))}
-        {groups.length > 0 ? (
-          <NoteList
-            groups={groups}
-            selection={selection}
-            onSelect={onSelect}
-            onToggleDone={onToggleDone}
-          />
-        ) : (
-          <Text style={styles.filterEmpty}>{t("notes.emptyFilter")}</Text>
-        )}
+        <NoteList notes={notes} selection={selection} onSelect={onSelect} />
       </ScrollView>
     </View>
   );
@@ -381,10 +321,32 @@ const styles = StyleSheet.create((theme) => ({
     minWidth: 0,
   },
   controls: {
-    gap: theme.spacing[3],
-    paddingHorizontal: { xs: theme.spacing[3], md: theme.spacing[3] },
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+    paddingHorizontal: theme.spacing[2],
     paddingTop: theme.spacing[3],
     paddingBottom: theme.spacing[2],
+  },
+  // Matches SearchField's height: 20px input + 6px padding and 1px border on each side.
+  newNoteButton: {
+    width: 34,
+    height: 34,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: theme.borderRadius.md,
+  },
+  newNoteButtonHovered: {
+    backgroundColor: theme.colors.surfaceSidebarHover,
+  },
+  tooltipRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+  },
+  tooltipText: {
+    fontSize: theme.fontSize.base,
+    color: theme.colors.popoverForeground,
   },
   scroll: {
     flex: 1,
@@ -417,12 +379,6 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.base,
     textAlign: "center",
-  },
-  filterEmpty: {
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.sm,
-    textAlign: "center",
-    paddingVertical: theme.spacing[6],
   },
   errorText: {
     color: theme.colors.palette.red[300],

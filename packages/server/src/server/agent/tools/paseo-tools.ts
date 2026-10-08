@@ -3688,7 +3688,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         annotations: READ_ONLY_TOOL_ANNOTATIONS,
         title: "List notes",
         description:
-          "List the user's notes and todos, newest first. Notes are things the user (or an agent) wrote down to remember or hand to an agent later; a note with todoState is a todo.",
+          "List the user's scratchpad notes, newest first. Notes are things the user (or an agent) wrote down to remember or hand to an agent later; a note with todoState is a legacy todo.",
         inputSchema: {
           todosOnly: z.boolean().optional().describe("Only return todos (open or done)."),
           includeDone: z
@@ -3729,7 +3729,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       {
         title: "Create note",
         description:
-          "Write a note or todo for the user. Use it for follow-ups you found but should not do now, so they are not lost in the chat. It is attached to your workspace's project unless you pass projectId.",
+          "Write a note to the user's scratchpad. Use it for follow-ups you found but should not do now, so they are not lost in the chat. Put follow-ups as Markdown checklist lines (`- [ ] …`) in `body`; `todo` is kept for compatibility. It is attached to your workspace's project unless you pass projectId.",
         inputSchema: {
           title: z.string().describe("Short title, one line."),
           body: z.string().optional().describe("Markdown body with the context needed later."),
