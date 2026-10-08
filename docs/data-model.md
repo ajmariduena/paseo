@@ -297,9 +297,10 @@ and remove. List order is the display order.
 
 Absent and empty mean different things for terminal profiles — omitting the key falls back to
 `DEFAULT_TERMINAL_PROFILES`, while `[]` means the user removed them all. Agent profiles and quick prompts have no
-default catalog, so both mean none. Quick prompts and their undo window belong to the host,
-including the chosen default. Devices do not keep a fallback catalog. An absent
-`quickPromptUndoMs` means 0: the prompt sends immediately. A positive value adds an undo window.
+default catalog, so both mean none. Quick prompts belong to the host,
+including the chosen default. Devices do not keep a fallback catalog. The app ignores
+`quickPromptUndoMs`: a quick prompt sends on tap. The field stays in the schema so older apps still
+parse the config.
 
 `PersistedConfigSchema` parses strictly, so a daemon that predates a field drops it on write
 rather than storing something it cannot describe. Gate agent profiles and quick prompts on

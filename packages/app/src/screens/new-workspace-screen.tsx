@@ -2467,6 +2467,11 @@ export function NewWorkspaceScreen({
             revision: 0,
             error: null,
             outcomeUnknown: false,
+            agentSetup: buildWorkspaceDraftSetupFromComposer({
+              cwd: selectedSourceDirectory,
+              provider: composerState.selectedProvider,
+              composerState,
+            }),
           });
           setPendingAction("chat");
           navigateToHostWorkspaceRoute(

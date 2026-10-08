@@ -135,6 +135,8 @@ import {
 } from "@/screens/workspace/use-workspace-tab-rename";
 import { MobileTabTrailingAccessory } from "@/screens/workspace/workspace-tab-trailing-accessory";
 import {
+  ResolvedWorkspaceDesktopTabsRow,
+  type ResolvedWorkspaceDesktopTabRowItem,
   WorkspaceDesktopTabsRow,
   type WorkspaceDesktopTabRowItem,
 } from "@/screens/workspace/workspace-desktop-tabs-row";
@@ -983,7 +985,7 @@ interface WorkspaceHeaderTitleBarProps {
   onOpenUrlInBrowserTab: (url: string) => void;
 }
 
-function WorkspaceHeaderTitleBar({
+export function WorkspaceHeaderTitleBar({
   isLoading,
   title,
   subtitle,
@@ -1307,6 +1309,147 @@ function WorkspaceScreenGateFrame({ children }: { children: ReactNode }) {
       <ScreenHeader left={GATED_WORKSPACE_HEADER_LEFT} />
       <View style={styles.centerContent}>{children}</View>
     </>
+  );
+}
+
+const noop = () => undefined;
+const PENDING_NEW_TAB_LAUNCHER: NewTabLauncher = {
+  showChanges: false,
+  showPullRequest: false,
+  showBrowser: false,
+  terminalDisabled: true,
+  launch: noop,
+};
+
+function PendingMobileTabRow({ tab }: { tab: WorkspaceTabPresentation }) {
+  return (
+    <View style={styles.mobileTabsRow} testID="workspace-tabs-row">
+      <View style={styles.switcherTrigger}>
+        <View style={styles.switcherTriggerLeft}>
+          <View style={styles.switcherTriggerIcon}>
+            <WorkspaceTabIcon presentation={tab} active backdrop="surface0" />
+          </View>
+          <Text style={styles.switcherTriggerText} numberOfLines={1}>
+            {tab.label}
+          </Text>
+        </View>
+        <ThemedChevronDown size={14} uniProps={mutedColorMapping} />
+      </View>
+    </View>
+  );
+}
+
+// The real workspace replaces this frame in place once the creation has a descriptor, so it must
+// keep the same header, tab strip and content geometry.
+export function PendingWorkspaceFrame({
+  serverId,
+  workspaceId,
+  title,
+  subtitle,
+  tab,
+  children,
+  testID,
+}: {
+  serverId: string;
+  workspaceId: string;
+  title: string;
+  subtitle: string;
+  tab: WorkspaceTabPresentation;
+  children: ReactNode;
+  testID?: string;
+}) {
+  const isMobile = useIsCompactFormFactor();
+  const tabItems = useMemo<ResolvedWorkspaceDesktopTabRowItem[]>(
+    () => [
+      {
+        tab: {
+          key: tab.key,
+          tabId: tab.key,
+          kind: tab.kind,
+          target: { kind: "draft", draftId: tab.key },
+        },
+        presentation: tab,
+        isActive: true,
+        isCloseHovered: false,
+        isClosingTab: false,
+      },
+    ],
+    [tab],
+  );
+  return (
+    <View style={[styles.container, styles.containerWorkspaceBackground]} testID={testID}>
+      <View style={styles.threePaneRow}>
+        <View style={styles.centerColumn}>
+          <ScreenHeader
+            left={
+              <>
+                <SidebarMenuToggle />
+                <WorkspaceHeaderTitleBar
+                  isLoading={false}
+                  title={title}
+                  subtitle={subtitle}
+                  isSubtitleDistinct={subtitle.length > 0 && subtitle !== title}
+                  currentBranchName={null}
+                  normalizedServerId={serverId}
+                  normalizedWorkspaceId={workspaceId}
+                  workspaceScripts={[]}
+                  liveTerminalIds={[]}
+                  showWorkspaceSetup={false}
+                  showCreateBrowserTab={false}
+                  isMobile={isMobile}
+                  createTerminalDisabled
+                  importAgentDisabled
+                  copyPathDisabled
+                  onCreateDraftTab={noop}
+                  onCreateTerminal={noop}
+                  onCreateTerminalWithProfile={noop}
+                  onCreateBrowser={noop}
+                  onOpenImportSheet={noop}
+                  onCopyWorkspacePath={noop}
+                  onCopyBranchName={noop}
+                  onOpenSetupTab={noop}
+                  onScriptTerminalStarted={noop}
+                  onViewScriptTerminal={noop}
+                  onOpenUrlInBrowserTab={noop}
+                />
+              </>
+            }
+          />
+          {isMobile ? (
+            <PendingMobileTabRow tab={tab} />
+          ) : (
+            <NewTabLauncherProvider value={PENDING_NEW_TAB_LAUNCHER}>
+              <ResolvedWorkspaceDesktopTabsRow
+                isFocused
+                ownsKeyboardShortcuts={false}
+                tabs={tabItems}
+                normalizedServerId={serverId}
+                normalizedWorkspaceId={workspaceId}
+                setHoveredCloseTabKey={noop}
+                onNavigateTab={noop}
+                onCloseTab={noop}
+                onCopyResumeCommand={noop}
+                onCopyAgentId={noop}
+                onCopyTerminalId={noop}
+                onCopyFilePath={noop}
+                onReloadAgent={noop}
+                onRenameTab={noop}
+                onCloseTabsToLeft={noop}
+                onCloseTabsToRight={noop}
+                onCloseOtherTabs={noop}
+                onCreateNewTab={noop}
+                onReorderTabs={noop}
+                focusModeEnabled={false}
+                onExitFocusMode={noop}
+              />
+            </NewTabLauncherProvider>
+          )}
+          <View style={styles.centerContent}>
+            <View style={styles.content}>{children}</View>
+          </View>
+        </View>
+      </View>
+    </View>
   );
 }
 
