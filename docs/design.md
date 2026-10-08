@@ -164,7 +164,7 @@ The touch numbers live in `control-geometry.ts` (`TOUCH_TARGET_SIZE`, `TOUCH_ROW
 
 `hitSlop` alone does not grow a target past its row: iOS and Android hit-test a child only inside its parent's frame unless something in the parent lays out beyond it. `<TouchTarget>` is that something — a 44pt frame with negative margins, so the row keeps its height. `hitSlop` is a no-op on web, so web touch gets the spacing and not the larger target.
 
-The list+detail pattern is canonical and reused across surfaces. The settings shell (`packages/app/src/screens/settings-screen.tsx`) and the projects screen (`packages/app/src/screens/projects-screen.tsx`) implement it identically:
+The list+detail pattern is canonical and reused across surfaces. The settings shell (`packages/app/src/screens/settings-screen.tsx`) and the projects screen (`packages/app/src/screens/projects-screen.tsx`) implement it identically; the Scratchpad (`packages/app/src/screens/notes-screen.tsx`) draws the same 320px list column beside the app sidebar:
 
 - On compact: full-screen list with `<BackHeader>` at the top. Tapping a row pushes a full-screen detail with its own `<BackHeader>` that returns to the list.
 - On desktop: a 320px sidebar on the left holds the list with `surfaceSidebar` background. The content pane on the right holds the selected detail with `<ScreenHeader>`, `<HeaderIconBadge>`, and `<ScreenTitle>`.

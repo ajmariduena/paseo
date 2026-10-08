@@ -16,7 +16,7 @@ export const NoteSchema = z.object({
   id: z.string(),
   title: z.string(),
   body: z.string(),
-  // Null means a plain note; open/done makes it a todo.
+  // COMPAT(notes-todo-state): UI stopped writing this in v0.11; agents may still. Keep optional, remove after 2027-03-31 if no agent tool uses it.
   todoState: NoteTodoStateSchema.nullable(),
   projectId: z.string().nullable(),
   // Where the note was captured. Context only: archiving the workspace keeps the note.
@@ -34,14 +34,24 @@ export type NoteAuthor = z.infer<typeof NoteAuthorSchema>;
 export type NoteLinkedAgent = z.infer<typeof NoteLinkedAgentSchema>;
 export type Note = z.infer<typeof NoteSchema>;
 
+const NOTE_TITLE_MAX_LENGTH = 120;
+
+export function stripNoteLineMarker(line: string): string {
+  return line
+    .replace(/^[#>*\-+\s]+/, "")
+    .replace(/^\[[ xX]\]\s*/, "")
+    .replace(/^\d+\.\s+/, "")
+    .trim();
+}
+
 export function noteDisplayTitle(note: Pick<Note, "title" | "body">): string {
   const title = note.title.trim();
   if (title) return title;
   const firstLine = note.body
     .split("\n")
-    .map((line) => line.replace(/^[#>*\-\s]+/, "").trim())
+    .map(stripNoteLineMarker)
     .find((line) => line.length > 0);
-  return firstLine ?? "";
+  return (firstLine ?? "").slice(0, NOTE_TITLE_MAX_LENGTH);
 }
 
 export function formatNoteForPrompt(note: Pick<Note, "title" | "body" | "todoState">): string {
