@@ -1,4 +1,9 @@
 import { randomUUID } from "node:crypto";
+import {
+  formatSystemNotificationPrompt,
+  prepareAgentMessage,
+  type AgentPromptSource,
+} from "./agent-messages/index.js";
 import type { Logger } from "pino";
 
 import type {
@@ -197,6 +202,11 @@ async function startAgentRunInner(
   return { disposition: "turn_started" };
 }
 
+export {
+  formatSystemNotificationPrompt,
+  isSystemInjectedEnvelope,
+} from "./agent-messages/index.js";
+
 /**
  * Clear the archived flag from a stored agent record.
  * Shared across Session (app/WS), MCP, and CLI so every surface that acts on
@@ -214,27 +224,13 @@ export async function unarchiveAgentState(
   return true;
 }
 
-/**
- * Wrap a body in <paseo-system>…</paseo-system> so the receiving agent
- * recognizes the prompt as system-injected context — not a user turn.
- * Used by chat mentions, schedule fires, and notify-on-finish.
- */
-export function formatSystemNotificationPrompt(reason: string): string {
-  return `<paseo-system>\n${reason}\n</paseo-system>`;
-}
-
-const SYSTEM_ENVELOPE_PATTERN = /^<paseo-system>\n[\s\S]*\n<\/paseo-system>$/;
-
-export function isSystemInjectedEnvelope(text: string): boolean {
-  return SYSTEM_ENVELOPE_PATTERN.test(text);
-}
-
 export interface SendPromptToAgentParams {
   agentManager: AgentManager;
   agentStorage: AgentStorage;
   agentId: string;
   /** Prompt to dispatch to the provider (may include image blocks or wrapped text). */
   prompt: AgentPromptInput;
+  source?: AgentPromptSource;
   messageId?: string;
   /** Defaults to `interrupt`. */
   activeTurnBehavior?: ActiveTurnBehavior;
@@ -252,10 +248,12 @@ export interface SendPromptToAgentParams {
 }
 
 export interface StartCreatedAgentInitialPromptParams {
+  agentStorage: AgentStorage;
   agentManager: AgentManager;
   agentId: string;
   snapshot?: ManagedAgent;
   prompt: AgentPromptInput | null;
+  source?: AgentPromptSource;
   runOptions?: AgentRunOptions;
   logger: Logger;
 }
@@ -300,6 +298,18 @@ export async function waitForAgentRunStartWithTimeout(
   }
 }
 
+async function resolvePromptSource(
+  source: AgentPromptSource | undefined,
+  manager: Pick<AgentManager, "getAgent">,
+  storage: AgentStorage,
+): Promise<AgentPromptSource | undefined> {
+  if (!source) return undefined;
+  const title = (
+    manager.getAgent(source.agentId)?.config.title ?? (await storage.get(source.agentId))?.title
+  )?.trim();
+  return title ? { ...source, title } : source;
+}
+
 /**
  * A prompt from a person: (optional unarchive) → load → (optional mode change) → dispatch.
  * Returns once the prompt steered, started, or got queued behind the running turn.
@@ -313,14 +323,20 @@ export async function sendPromptToAgent(
   if (!(await prepareAgentForPrompt(params))) {
     return { disposition: "skipped_archived", settled: Promise.resolve("skipped_archived") };
   }
+  const source = await resolvePromptSource(params.source, params.agentManager, params.agentStorage);
+  const delivery = prepareAgentMessage(
+    params.prompt,
+    source,
+    params.messageId ?? `send:${randomUUID()}`,
+  );
   return await dispatchAgentMessageInBackground({
     agentManager: params.agentManager,
     agentStorage: params.agentStorage,
     agentId: params.agentId,
-    messageId: params.messageId ?? `send:${randomUUID()}`,
+    messageId: delivery.messageId ?? `send:${randomUUID()}`,
     policy: {
       intent: toDispatchIntent(params.activeTurnBehavior ?? "interrupt"),
-      prompt: params.prompt,
+      prompt: delivery.prompt,
       steerUnavailable: "replace",
       clearPendingPermissions: params.clearPendingPermissions,
     },
@@ -339,18 +355,30 @@ export async function prepareAgentForPrompt(
   >,
 ): Promise<boolean> {
   const record = await params.agentStorage.get(params.agentId);
+  let archivedAtToRestore: string | null = null;
   if (record?.archivedAt) {
     if (!(params.unarchive ?? true)) {
       return false;
     }
-    await unarchiveAgentState(params.agentStorage, params.agentManager, params.agentId);
+    if (await unarchiveAgentState(params.agentStorage, params.agentManager, params.agentId)) {
+      archivedAtToRestore = record.archivedAt;
+    }
   }
 
-  await ensureAgentLoaded(params.agentId, {
-    agentManager: params.agentManager,
-    agentStorage: params.agentStorage,
-    logger: params.logger,
-  });
+  try {
+    await ensureAgentLoaded(params.agentId, {
+      agentManager: params.agentManager,
+      agentStorage: params.agentStorage,
+      logger: params.logger,
+    });
+  } catch (error) {
+    // A send that could not load the agent leaves it where it was: still archived.
+    // Concurrent sends share this load, so none of them holds a live session.
+    if (archivedAtToRestore) {
+      await params.agentManager.archiveSnapshot(params.agentId, archivedAtToRestore);
+    }
+    throw error;
+  }
 
   if (params.sessionMode) {
     await params.agentManager.setAgentMode(params.agentId, params.sessionMode);
@@ -370,14 +398,17 @@ export async function startCreatedAgentInitialPrompt(
     return currentSnapshot;
   }
 
+  const delivery = prepareAgentMessage(
+    params.prompt,
+    await resolvePromptSource(params.source, params.agentManager, params.agentStorage),
+    params.runOptions?.clientMessageId,
+  );
   const dispatchResult = await startAgentRun(
     params.agentManager,
     params.agentId,
-    params.prompt,
+    delivery.prompt,
     params.logger,
-    {
-      runOptions: params.runOptions,
-    },
+    { runOptions: { ...params.runOptions, clientMessageId: delivery.messageId } },
   );
 
   if (dispatchResult.disposition === "turn_started") {

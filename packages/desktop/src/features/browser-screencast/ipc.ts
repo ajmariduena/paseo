@@ -15,7 +15,6 @@ import { adaptWebContents } from "../browser-automation/ipc.js";
 import {
   dispatchTrustedClick,
   dispatchTrustedScroll,
-  dispatchTrustedText,
 } from "../browser-automation/trusted-input.js";
 import type { CdpCommandSender } from "../browser-automation/cdp-session-queue.js";
 import { BrowserScreencastStream, type ScreencastGuest } from "./stream.js";
@@ -161,7 +160,8 @@ async function sendInput(
       await dispatchTrustedScroll(send, { x: input.x, y: input.y }, input.deltaX, input.deltaY);
       return;
     case "text":
-      await dispatchTrustedText(send, input.text);
+      // CDP Input.insertText commits into the focused element of the whole Paseo window.
+      await guest.insertText(input.text);
       return;
     case "key":
       await dispatchNamedKey(send, input.key);

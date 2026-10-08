@@ -440,10 +440,6 @@ export function buildNotesRoute(options: { serverId?: string; noteId?: string } 
   return query ? (`/notes?${query}` as const) : ("/notes" as const);
 }
 
-export function buildUsageRoute() {
-  return "/usage" as const;
-}
-
 export function buildOpenProjectRoute() {
   return "/open-project" as const;
 }

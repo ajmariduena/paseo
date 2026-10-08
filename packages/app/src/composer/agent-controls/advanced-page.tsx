@@ -301,7 +301,7 @@ export function SheetFeatureItem({
         <AgentControlTrigger
           ref={featureAnchorRef}
           icon={FeatureIcon}
-          iconTint={resolveFeatureIconTint(feature.id, feature.value)}
+          iconTint={resolveFeatureIconTint(feature)}
           surface="sheet"
           label={feature.label}
           value={feature.value ? t("agentControls.features.on") : t("agentControls.features.off")}
@@ -334,6 +334,7 @@ export function SheetFeatureItem({
         <AgentControlTrigger
           ref={featureAnchorRef}
           icon={FeatureIcon}
+          iconTint={resolveFeatureIconTint(feature)}
           surface="sheet"
           label={feature.label}
           value={selectedOption?.label ?? feature.label}

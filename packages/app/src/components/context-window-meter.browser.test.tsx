@@ -1,5 +1,6 @@
 import React, { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ContextWindowMeter, type ContextWindowCompaction } from "./context-window-meter";
 
@@ -23,7 +24,8 @@ function mount(node: ReactNode): void {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
-  act(() => root.render(node));
+  const queryClient = new QueryClient();
+  act(() => root.render(<QueryClientProvider client={queryClient}>{node}</QueryClientProvider>));
   mounted.push({ root, container });
 }
 
@@ -52,18 +54,34 @@ function meter(): HTMLElement {
 
 describe("context window meter", () => {
   it("shows the percentage once the window is 75% used", () => {
-    mount(<ContextWindowMeter maxTokens={200_000} usedTokens={164_000} />);
+    mount(
+      <ContextWindowMeter
+        serverId="srv"
+        agentId="agent"
+        maxTokens={200_000}
+        usedTokens={164_000}
+      />,
+    );
     expect(meter().textContent).toBe("82%");
   });
 
   it("stays a bare ring below 75%", () => {
-    mount(<ContextWindowMeter maxTokens={200_000} usedTokens={100_000} />);
+    mount(
+      <ContextWindowMeter
+        serverId="srv"
+        agentId="agent"
+        maxTokens={200_000}
+        usedTokens={100_000}
+      />,
+    );
     expect(meter().textContent).toBe("");
   });
 
   it("opens the context panel and hands the compact press to the caller after closing", () => {
     mount(
       <ContextWindowMeter
+        serverId="srv"
+        agentId="agent"
         maxTokens={200_000}
         usedTokens={164_000}
         totalCostUsd={3.41}
@@ -83,7 +101,14 @@ describe("context window meter", () => {
   });
 
   it("has no panel when the agent cannot compact", () => {
-    mount(<ContextWindowMeter maxTokens={200_000} usedTokens={164_000} />);
+    mount(
+      <ContextWindowMeter
+        serverId="srv"
+        agentId="agent"
+        maxTokens={200_000}
+        usedTokens={164_000}
+      />,
+    );
     click(meter());
     expect(byTestId("context-window-compact")).toBeNull();
   });

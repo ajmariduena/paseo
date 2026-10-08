@@ -1,3 +1,4 @@
+import type { AgentPromptSource } from "../agent-messages/index.js";
 import type { Logger } from "pino";
 
 import type { TerminalManager } from "../../../terminal/terminal-manager.js";
@@ -64,6 +65,7 @@ export interface CreateAgentFromSessionInput {
   workspaceId: string;
   worktreeName?: string;
   initialPrompt?: string;
+  source?: AgentPromptSource;
   clientMessageId?: string;
   outputSchema?: Record<string, unknown>;
   images?: Array<{ data: string; mimeType: string }>;
@@ -169,6 +171,7 @@ interface ResolvedCreateAgent {
   config: AgentSessionConfig;
   createOptions: CreateAgentOptions;
   prompt?: AgentPromptInput;
+  source?: AgentPromptSource;
   runOptions?: AgentRunOptions;
   /** The agent that wrote the initial prompt, when another agent created this one. */
   promptSender?: AgentMessageOrigin;
@@ -314,6 +317,7 @@ async function resolveSessionCreateAgent(
       workspaceId: requireResolvedWorkspaceId(workspaceId),
     },
     prompt: hasPromptContent ? prompt : undefined,
+    source: input.source,
     runOptions,
     setupContinuation,
     background: true,
@@ -503,10 +507,12 @@ async function sendInitialPrompt(
       });
     }
     const liveSnapshot = await startCreatedAgentInitialPrompt({
+      agentStorage: dependencies.agentStorage,
       agentManager: dependencies.agentManager,
       agentId: snapshot.id,
       snapshot,
       prompt,
+      source: resolved.source,
       runOptions: resolved.runOptions,
       logger: resolved.promptLogger ?? dependencies.logger,
     });

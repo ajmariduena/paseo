@@ -1,7 +1,7 @@
-import { useCallback, useMemo, type ReactElement } from "react";
-import { Pressable, Text, View } from "react-native";
+import { useCallback, useMemo, useState, type ReactElement } from "react";
+import { Pressable, Text, View, useWindowDimensions } from "react-native";
 import Svg, { Circle } from "react-native-svg";
-import { StyleSheet, useUnistyles } from "react-native-unistyles";
+import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import {
@@ -9,11 +9,18 @@ import {
   DropdownMenuContent,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { useMenuContext } from "@/components/ui/menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { TouchTarget, useTouchHitSlop } from "@/components/ui/touch-target";
 import type { CompactTiming } from "@/composer/compaction/model";
+import { useIsCompactFormFactor } from "@/constants/layout";
+import { isNative } from "@/constants/platform";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
+import type { Theme } from "@/styles/theme";
+import { AgentUsage, useHostReportsUsage } from "@/usage";
+import { ContextWindowDetails } from "./context-window-details";
+import { ContextWindowSheet } from "./context-window-sheet";
 import {
   formatTokenCount,
   resolveContextWindowMeterRing,
@@ -34,11 +41,13 @@ export interface ContextWindowCompaction {
 }
 
 interface ContextWindowMeterProps {
+  serverId: string;
+  agentId: string;
   maxTokens: number | null;
   usedTokens: number | null;
   totalCostUsd?: number | null;
   showPercentage?: boolean;
-  /** Reserve the meter footprint and show a loading ring while usage is pending. */
+  /** Show a loading label beside the empty ring while usage is pending. */
   pending?: boolean;
   /** Optional glyph envelope for icon-toolbar alignment. */
   glyphSize?: number;
@@ -47,10 +56,8 @@ interface ContextWindowMeterProps {
 }
 
 const COMPACT_SVG_SIZE = 12;
-const COMPACT_CENTER = COMPACT_SVG_SIZE / 2;
 const COMPACT_RADIUS = 5;
 const COMPACT_STROKE_WIDTH = 1.75;
-const COMPACT_CIRCUMFERENCE = 2 * Math.PI * COMPACT_RADIUS;
 const METER_SLOT_SIZE = 28;
 const PANEL_WIDTH = 300;
 
@@ -83,43 +90,42 @@ function formatSessionCost(value: number): string | null {
   return `$${value.toFixed(2)}`;
 }
 
-function getMeterColors(
-  tone: ContextWindowTone,
-  theme: ReturnType<typeof useUnistyles>["theme"],
-): { progress: string; track: string } {
-  const track = theme.colors.surface3;
+function getProgressColor(tone: ContextWindowTone, theme: Theme): string {
   if (tone === "danger") {
-    return { progress: theme.colors.statusDanger, track };
+    return theme.colors.statusDanger;
   }
   if (tone === "warning") {
-    return { progress: theme.colors.statusWarning, track };
+    return theme.colors.statusWarning;
   }
-  return { progress: theme.colors.foregroundMuted, track };
+  return theme.colors.foregroundMuted;
 }
 
 function getMeterGeometry(showPercentage: boolean, glyphSize?: number) {
   if (showPercentage) {
     return {
       svgSize: COMPACT_SVG_SIZE,
-      center: COMPACT_CENTER,
       radius: COMPACT_RADIUS,
       strokeWidth: COMPACT_STROKE_WIDTH,
-      circumference: COMPACT_CIRCUMFERENCE,
       containerStyle: styles.containerWithLabel,
     };
   }
   const ring = resolveContextWindowMeterRing(glyphSize);
   return {
     svgSize: ring.size,
-    center: ring.size / 2,
     radius: (ring.size - ring.strokeWidth) / 2,
     strokeWidth: ring.strokeWidth,
-    circumference: Math.PI * (ring.size - ring.strokeWidth),
     containerStyle: styles.container,
   };
 }
 
 type MeterGeometry = ReturnType<typeof getMeterGeometry>;
+
+interface MeterRingProps {
+  usage: MeterUsage | null;
+  geometry: MeterGeometry;
+  showPercentage: boolean;
+  pending: boolean;
+}
 
 interface MeterUsage {
   usedTokens: number;
@@ -127,11 +133,64 @@ interface MeterUsage {
   percentage: number;
   roundedPercentage: number;
   tone: ContextWindowTone;
-  colors: { progress: string; track: string };
-  sessionCost: string | null;
 }
 
+// Wrap the whole SVG: withUnistyles adds a div on web, which cannot sit inside an SVG.
+const ContextWindowRing = withUnistyles(function ContextWindowRing({
+  size,
+  radius,
+  strokeWidth,
+  percentage,
+  trackColor,
+  progressColor,
+}: {
+  size: number;
+  radius: number;
+  strokeWidth: number;
+  percentage: number | null;
+  trackColor: string;
+  progressColor: string;
+}) {
+  const center = size / 2;
+  const circumference = 2 * Math.PI * radius;
+  return (
+    <Svg
+      width={size}
+      height={size}
+      viewBox={`0 0 ${size} ${size}`}
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+    >
+      <Circle
+        cx={center}
+        cy={center}
+        r={radius}
+        fill="none"
+        stroke={trackColor}
+        strokeWidth={strokeWidth}
+      />
+      {percentage !== null ? (
+        <Circle
+          cx={center}
+          cy={center}
+          r={radius}
+          fill="none"
+          stroke={progressColor}
+          strokeWidth={strokeWidth}
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={circumference - (clampPercentage(percentage) / 100) * circumference}
+          // SVG strokes start at three o'clock; the ring reads clockwise from twelve.
+          transform={`rotate(-90 ${center} ${center})`}
+        />
+      ) : null}
+    </Svg>
+  );
+});
+
 export function ContextWindowMeter({
+  serverId,
+  agentId,
   maxTokens,
   usedTokens,
   totalCostUsd,
@@ -140,119 +199,79 @@ export function ContextWindowMeter({
   glyphSize,
   compaction = null,
 }: ContextWindowMeterProps) {
-  const { theme } = useUnistyles();
   const percentage =
     maxTokens !== null && usedTokens !== null ? getUsagePercentage(maxTokens, usedTokens) : null;
-  const geometry = getMeterGeometry(showPercentage, glyphSize);
+  const geometry = useMemo(
+    () => getMeterGeometry(showPercentage, glyphSize),
+    [showPercentage, glyphSize],
+  );
   const usage = useMemo<MeterUsage | null>(() => {
     if (percentage === null || maxTokens === null || usedTokens === null) return null;
     const clampedPercentage = clampPercentage(percentage);
-    const tone = resolveContextWindowTone(clampedPercentage);
     return {
       usedTokens,
       maxTokens,
       percentage: clampedPercentage,
       roundedPercentage: Math.round(percentage),
-      tone,
-      colors: getMeterColors(tone, theme),
-      sessionCost: typeof totalCostUsd === "number" ? formatSessionCost(totalCostUsd) : null,
+      tone: resolveContextWindowTone(clampedPercentage),
     };
-  }, [maxTokens, percentage, theme, totalCostUsd, usedTokens]);
+  }, [maxTokens, percentage, usedTokens]);
+  const sessionCost = typeof totalCostUsd === "number" ? formatSessionCost(totalCostUsd) : null;
+  const ring = useMemo<MeterRingProps>(
+    () => ({ usage, geometry, showPercentage, pending }),
+    [usage, geometry, showPercentage, pending],
+  );
+  const triggerStyle = resolveTriggerStyle(geometry, usage, showPercentage);
 
-  // No usage yet: reserve the footprint with a track-only ring while a session is
-  // active so the real ring fades in without shifting siblings. Render nothing when
-  // no usage is expected.
-  if (usage === null) {
-    if (!pending) {
-      return null;
-    }
-    return (
-      <View style={geometry.containerStyle}>
-        <Svg
-          width={geometry.svgSize}
-          height={geometry.svgSize}
-          viewBox={`0 0 ${geometry.svgSize} ${geometry.svgSize}`}
-          accessibilityElementsHidden
-          importantForAccessibility="no-hide-descendants"
-        >
-          <Circle
-            cx={geometry.center}
-            cy={geometry.center}
-            r={geometry.radius}
-            fill="none"
-            stroke={theme.colors.surface3}
-            strokeWidth={geometry.strokeWidth}
-          />
-        </Svg>
-        {showPercentage ? <View style={styles.skeletonLabel} /> : null}
-      </View>
-    );
-  }
-
-  if (compaction) {
+  if (usage && compaction) {
     return (
       <CompactableMeter
+        serverId={serverId}
+        agentId={agentId}
         usage={usage}
-        geometry={geometry}
-        showPercentage={showPercentage}
+        sessionCost={sessionCost}
+        triggerStyle={triggerStyle}
+        ring={ring}
         compaction={compaction}
       />
     );
   }
-  return <TooltipMeter usage={usage} geometry={geometry} showPercentage={showPercentage} />;
+  return (
+    <DetailsMeter
+      serverId={serverId}
+      agentId={agentId}
+      usage={usage}
+      sessionCost={sessionCost}
+      triggerStyle={triggerStyle}
+      ring={ring}
+    />
+  );
 }
 
-function MeterRing({
-  usage,
-  geometry,
-  showPercentage,
-}: {
-  usage: MeterUsage;
-  geometry: MeterGeometry;
-  showPercentage: boolean;
-}): ReactElement {
-  const { svgSize, center, radius, strokeWidth, circumference } = geometry;
-  const dashOffset = circumference - (usage.percentage / 100) * circumference;
-  const { colors } = usage;
-  const showLabel = showPercentage || usage.tone !== "normal";
+function MeterRing({ usage, geometry, showPercentage, pending }: MeterRingProps): ReactElement {
+  const tone = usage?.tone ?? "normal";
+  const meterColors = useCallback(
+    (theme: Theme) => ({
+      progressColor: getProgressColor(tone, theme),
+      trackColor: theme.colors.surface3,
+    }),
+    [tone],
+  );
   return (
     <>
-      <Svg
-        width={svgSize}
-        height={svgSize}
-        viewBox={`0 0 ${svgSize} ${svgSize}`}
-        accessibilityElementsHidden
-        importantForAccessibility="no-hide-descendants"
-      >
-        <Circle
-          cx={center}
-          cy={center}
-          r={radius}
-          fill="none"
-          stroke={colors.track}
-          strokeWidth={strokeWidth}
-        />
-        <Circle
-          cx={center}
-          cy={center}
-          r={radius}
-          fill="none"
-          stroke={colors.progress}
-          strokeWidth={strokeWidth}
-          strokeLinecap="round"
-          strokeDasharray={circumference}
-          strokeDashoffset={dashOffset}
-          // SVG strokes start at three o'clock; the ring reads clockwise from twelve.
-          transform={`rotate(-90 ${center} ${center})`}
-        />
-      </Svg>
-      {showLabel ? (
-        <Text
-          style={[styles.percentageLabel, usage.tone !== "normal" && toneTextStyle(usage.tone)]}
-        >
+      <ContextWindowRing
+        size={geometry.svgSize}
+        radius={geometry.radius}
+        strokeWidth={geometry.strokeWidth}
+        percentage={usage?.percentage ?? null}
+        uniProps={meterColors}
+      />
+      {usage && (showPercentage || tone !== "normal") ? (
+        <Text style={[styles.percentageLabel, tone !== "normal" && toneTextStyle(tone)]}>
           {`${usage.roundedPercentage}%`}
         </Text>
       ) : null}
+      {!usage && pending && showPercentage ? <View style={styles.skeletonLabel} /> : null}
     </>
   );
 }
@@ -261,74 +280,177 @@ function toneTextStyle(tone: ContextWindowTone) {
   return tone === "danger" ? styles.percentageLabelDanger : styles.percentageLabelWarning;
 }
 
-function resolveTriggerStyle(geometry: MeterGeometry, usage: MeterUsage, showPercentage: boolean) {
-  if (!showPercentage && usage.tone !== "normal") {
+type TriggerStyle = ReturnType<typeof resolveTriggerStyle>;
+
+function resolveTriggerStyle(
+  geometry: MeterGeometry,
+  usage: MeterUsage | null,
+  showPercentage: boolean,
+) {
+  if (usage && !showPercentage && usage.tone !== "normal") {
     return [styles.container, styles.containerLabeled];
   }
   return geometry.containerStyle;
 }
 
-function TooltipMeter({
+function DetailsMeter({
+  serverId,
+  agentId,
   usage,
-  geometry,
-  showPercentage,
+  sessionCost,
+  triggerStyle,
+  ring,
 }: {
-  usage: MeterUsage;
-  geometry: MeterGeometry;
-  showPercentage: boolean;
+  serverId: string;
+  agentId: string;
+  usage: MeterUsage | null;
+  sessionCost: string | null;
+  triggerStyle: TriggerStyle;
+  ring: MeterRingProps;
 }): ReactElement {
   const { t } = useTranslation();
-  return (
-    <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile>
-      <TooltipTrigger asChild triggerRefProp="ref">
+  const { width } = useWindowDimensions();
+  // Usage cards need a wider popover; without them it keeps the plain tooltip shape.
+  const showsUsage = useHostReportsUsage(serverId);
+  const popoverWidth = Math.min(PANEL_WIDTH, width - 24);
+  // Compact screens open the details in a sheet, which can hold a pressable Refresh.
+  const isCompact = useIsCompactFormFactor();
+  const [isSheetOpen, setIsSheetOpen] = useState(false);
+  const openSheet = useCallback(() => setIsSheetOpen(true), []);
+  const closeSheet = useCallback(() => setIsSheetOpen(false), []);
+  const context = useMemo(
+    () =>
+      usage
+        ? {
+            percentage: usage.roundedPercentage,
+            maxTokens: usage.maxTokens,
+            usedTokens: usage.usedTokens,
+          }
+        : null,
+    [usage],
+  );
+  const accessibilityLabel = context
+    ? t("contextWindow.accessibility", { percentage: context.percentage })
+    : t("contextWindow.accessibilityNoData");
+
+  if (isCompact) {
+    return (
+      <>
         <Pressable
-          style={resolveTriggerStyle(geometry, usage, showPercentage)}
+          style={triggerStyle}
+          testID="context-window-meter"
+          accessibilityRole="button"
+          accessibilityLabel={accessibilityLabel}
+          onPress={openSheet}
+        >
+          <MeterRing {...ring} />
+        </Pressable>
+        <ContextWindowSheet open={isSheetOpen} onClose={closeSheet}>
+          <ContextWindowDetails
+            serverId={serverId}
+            agentId={agentId}
+            context={context}
+            sessionCost={sessionCost}
+            showTitle={false}
+            refreshable
+          />
+        </ContextWindowSheet>
+      </>
+    );
+  }
+
+  const popoverStyle = showsUsage
+    ? [styles.usagePopover, { width: popoverWidth }]
+    : styles.plainPopover;
+
+  // Native wide screens have no hover, so the details open in a tooltip on press. The tooltip
+  // takes no presses, so its usage cards have no Refresh.
+  if (isNative) {
+    return (
+      <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile>
+        <TooltipTrigger asChild triggerRefProp="ref">
+          <Pressable
+            style={triggerStyle}
+            testID="context-window-meter"
+            accessibilityRole="image"
+            accessibilityLabel={accessibilityLabel}
+          >
+            <MeterRing {...ring} />
+          </Pressable>
+        </TooltipTrigger>
+        <TooltipContent
+          side="top"
+          align="center"
+          offset={8}
+          maxWidth={showsUsage ? popoverWidth : undefined}
+          style={popoverStyle}
+          testID="context-window-meter-tooltip"
+        >
+          <ContextWindowDetails
+            serverId={serverId}
+            agentId={agentId}
+            context={context}
+            sessionCost={sessionCost}
+            showTitle
+            refreshable={false}
+          />
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  return (
+    <HoverCard>
+      <HoverCardTrigger focusable accessibilityLabel={accessibilityLabel}>
+        <View
+          style={triggerStyle}
           testID="context-window-meter"
           accessibilityRole="image"
-          accessibilityLabel={t("contextWindow.accessibility", {
-            percentage: usage.roundedPercentage,
-          })}
+          accessibilityLabel={accessibilityLabel}
         >
-          <MeterRing usage={usage} geometry={geometry} showPercentage={showPercentage} />
-        </Pressable>
-      </TooltipTrigger>
-      <TooltipContent side="top" align="center" offset={8} testID="context-window-meter-tooltip">
-        <View style={styles.tooltipContent}>
-          <Text style={styles.tooltipTitle}>{t("contextWindow.title")}</Text>
-          <Text style={styles.tooltipText}>
-            {t("contextWindow.used", { percentage: usage.roundedPercentage })}
-          </Text>
-          <Text style={styles.tooltipDetail}>
-            {t("contextWindow.tokens", {
-              used: formatTokenCount(usage.usedTokens),
-              max: formatTokenCount(usage.maxTokens),
-            })}
-          </Text>
-          {usage.sessionCost ? (
-            <Text style={styles.tooltipDetail}>
-              {t("contextWindow.sessionCost", { cost: usage.sessionCost })}
-            </Text>
-          ) : null}
+          <MeterRing {...ring} />
         </View>
-      </TooltipContent>
-    </Tooltip>
+      </HoverCardTrigger>
+      <HoverCardContent
+        placement="top"
+        offset={8}
+        role="dialog"
+        accessibilityLabel={t("contextWindow.title")}
+        testID="context-window-details"
+        style={popoverStyle}
+      >
+        <ContextWindowDetails
+          serverId={serverId}
+          agentId={agentId}
+          context={context}
+          sessionCost={sessionCost}
+          showTitle
+          refreshable
+        />
+      </HoverCardContent>
+    </HoverCard>
   );
 }
 
 function CompactableMeter({
+  serverId,
+  agentId,
   usage,
-  geometry,
-  showPercentage,
+  sessionCost,
+  triggerStyle: restStyle,
+  ring,
   compaction,
 }: {
+  serverId: string;
+  agentId: string;
   usage: MeterUsage;
-  geometry: MeterGeometry;
-  showPercentage: boolean;
+  sessionCost: string | null;
+  triggerStyle: TriggerStyle;
+  ring: MeterRingProps;
   compaction: ContextWindowCompaction;
 }): ReactElement {
   const { t } = useTranslation();
   const hitSlop = useTouchHitSlop(METER_SLOT_SIZE);
-  const restStyle = resolveTriggerStyle(geometry, usage, showPercentage);
   const triggerStyle = useCallback(
     ({ hovered, pressed, open }: { hovered: boolean; pressed: boolean; open: boolean }) => [
       restStyle,
@@ -348,7 +470,7 @@ function CompactableMeter({
             percentage: usage.roundedPercentage,
           })}
         >
-          <MeterRing usage={usage} geometry={geometry} showPercentage={showPercentage} />
+          <MeterRing {...ring} />
         </DropdownMenuTrigger>
       </TouchTarget>
       <DropdownMenuContent
@@ -359,17 +481,29 @@ function CompactableMeter({
         sheetTitle={t("contextWindow.panel.title")}
         testID="context-window-panel"
       >
-        <ContextWindowPanel usage={usage} compaction={compaction} />
+        <ContextWindowPanel
+          serverId={serverId}
+          agentId={agentId}
+          usage={usage}
+          sessionCost={sessionCost}
+          compaction={compaction}
+        />
       </DropdownMenuContent>
     </DropdownMenu>
   );
 }
 
 function ContextWindowPanel({
+  serverId,
+  agentId,
   usage,
+  sessionCost,
   compaction,
 }: {
+  serverId: string;
+  agentId: string;
   usage: MeterUsage;
+  sessionCost: string | null;
   compaction: ContextWindowCompaction;
 }): ReactElement {
   const { t } = useTranslation();
@@ -403,10 +537,10 @@ function ContextWindowPanel({
             })}
           </Text>
         </View>
-        {usage.sessionCost ? (
+        {sessionCost ? (
           <View style={styles.panelRow}>
             <Text style={styles.panelLabel}>{t("contextWindow.panel.sessionCost")}</Text>
-            <Text style={styles.panelValue}>{usage.sessionCost}</Text>
+            <Text style={styles.panelValue}>{sessionCost}</Text>
           </View>
         ) : null}
       </View>
@@ -416,6 +550,7 @@ function ContextWindowPanel({
           : t("contextWindow.compact.action")}
       </Button>
       <Text style={styles.panelHint}>{t("contextWindow.panel.hint")}</Text>
+      <AgentUsage serverId={serverId} agentId={agentId} refreshable />
     </View>
   );
 }
@@ -469,24 +604,9 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius.full,
     backgroundColor: theme.colors.surface3,
   },
-  tooltipContent: {
-    gap: theme.spacing[1.5],
-    minWidth: 200,
-  },
-  tooltipTitle: {
-    color: theme.colors.foreground,
-    fontSize: theme.fontSize.base,
-  },
-  tooltipText: {
-    color: theme.colors.foreground,
-    fontSize: theme.fontSize.base,
-    lineHeight: theme.fontSize.base * 1.4,
-  },
-  tooltipDetail: {
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.sm,
-    lineHeight: theme.fontSize.sm * 1.4,
-  },
+  // Plain details use a small inset; account usage cards have their own content density.
+  plainPopover: { paddingVertical: theme.spacing[1], paddingHorizontal: theme.spacing[2] },
+  usagePopover: { padding: theme.spacing[3], gap: theme.spacing[3] },
   panel: {
     gap: theme.spacing[3],
     paddingHorizontal: theme.spacing[3],

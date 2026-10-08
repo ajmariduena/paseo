@@ -31,6 +31,7 @@ import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useControlDensity, useIsCompactFormFactor } from "@/constants/layout";
 import { TouchTarget, useTouchHitSlop } from "@/components/ui/touch-target";
 import { COMPOSER_TOOLBAR_GEOMETRY } from "@/composer/agent-controls/layout";
+import { useHasFinePointer } from "@/hooks/use-fine-pointer";
 import { useShallow } from "zustand/shallow";
 import {
   ArrowUp,
@@ -288,19 +289,19 @@ function buildAgentStateSelector(serverId: string, agentId: string) {
 }
 
 function renderContextWindowMeter(input: {
+  serverId: string;
+  agentId: string;
   contextWindowMaxTokens: number | null;
   contextWindowUsedTokens: number | null;
   totalCostUsd: number | null;
   pending: boolean;
   glyphSize: number;
   compaction: ContextWindowCompaction | null;
-}): ReactElement | null {
-  const hasData = input.contextWindowMaxTokens !== null && input.contextWindowUsedTokens !== null;
-  if (!hasData && !input.pending) {
-    return null;
-  }
+}): ReactElement {
   return (
     <ContextWindowMeter
+      serverId={input.serverId}
+      agentId={input.agentId}
       maxTokens={input.contextWindowMaxTokens}
       usedTokens={input.contextWindowUsedTokens}
       totalCostUsd={input.totalCostUsd}
@@ -1285,6 +1286,7 @@ function ComposerContentImpl({
   const isCompactFormFactor = useIsCompactFormFactor();
   const isCompactLayout = resolveCompactLayout(isCompactLayoutOverride, isCompactFormFactor);
   const isDesktopWebBreakpoint = resolveIsDesktopWebBreakpoint(isCompactFormFactor);
+  const hasFinePointer = useHasFinePointer();
   const isDesktopLayout = resolveIsDesktopWebBreakpoint(isCompactLayout);
   const messagePlaceholder = resolveMessagePlaceholder(inputMode, isDesktopLayout, t, placeholder);
   const setUserInput = onChangeText;
@@ -2202,6 +2204,8 @@ function ComposerContentImpl({
   const contextWindowMeter = useMemo(
     () =>
       renderContextWindowMeter({
+        serverId,
+        agentId,
         contextWindowMaxTokens,
         contextWindowUsedTokens,
         totalCostUsd: agentState.totalCostUsd,
@@ -2210,11 +2214,13 @@ function ComposerContentImpl({
         compaction,
       }),
     [
+      serverId,
+      agentId,
       compaction,
       contextWindowMaxTokens,
       contextWindowUsedTokens,
-      agentState.totalCostUsd,
       contextWindowPending,
+      agentState.totalCostUsd,
       contextWindowMeterGlyphSize,
     ],
   );
@@ -2511,7 +2517,8 @@ function ComposerContentImpl({
     { disabled: isSubmitLoadingVisible },
   );
 
-  const messageInputAutoFocus = autoFocus && isDesktopWebBreakpoint;
+  // Focusing the composer on a touch screen raises the on-screen keyboard over the conversation.
+  const messageInputAutoFocus = autoFocus && isDesktopWebBreakpoint && hasFinePointer;
   const submitLoadingPressHandler = isAgentRunning ? handleCancelAgent : undefined;
   const sendErrorNode = useMemo(
     () =>

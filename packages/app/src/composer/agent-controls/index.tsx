@@ -994,7 +994,7 @@ function DesktopFeatureItem({
         <TooltipTrigger asChild triggerRefProp="ref">
           <AgentControlTrigger
             icon={FeatureIcon}
-            iconTint={resolveFeatureIconTint(feature.id, feature.value)}
+            iconTint={resolveFeatureIconTint(feature)}
             surface="toolbar"
             label={feature.label}
             showToolbarLabel={false}
@@ -1025,6 +1025,7 @@ function DesktopFeatureItem({
             <AgentControlTrigger
               ref={featureAnchorRef}
               icon={FeatureIcon}
+              iconTint={resolveFeatureIconTint(feature)}
               surface="toolbar"
               label={feature.label}
               value={selectedOption?.label ?? feature.label}

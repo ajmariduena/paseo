@@ -76,6 +76,9 @@ import {
   type AgentPersistenceHandle,
   type AgentPromptContentBlock,
   type AgentPromptInput,
+  type AgentResumePurpose,
+  type AgentCreateSessionOptions,
+  type AgentResumeSessionOptions,
   type AgentRunOptions,
   type AgentRunResult,
   type AgentRuntimeInfo,
@@ -152,6 +155,18 @@ function rejectOnSpawnError(child: ChildProcess, stderrChunks: string[]): Promis
       reject(new Error(stderr ? `${String(error)}\n${stderr}` : String(error)));
     });
   });
+}
+
+async function isDirectory(target: string): Promise<boolean> {
+  try {
+    return (await fs.stat(target)).isDirectory();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      return false;
+    }
+    throw error;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -307,6 +322,10 @@ export function buildACPClientCapabilities(
 const PROBE_ENV: Record<string, string> = { NO_BROWSER: "true" };
 const ACP_DIAGNOSTIC_PHASE_TIMEOUT_MS = 20_000;
 const ACP_PROBE_CLOSE_TIMEOUT_MS = 2_000;
+// Archive and delete await close(). The ACP SDK does not reject a pending
+// request when the provider never answers, so these calls must be bounded
+// or the provider process is never terminated.
+const ACP_CLOSE_REQUEST_TIMEOUT_MS = 2_000;
 const ACP_IMPORT_HISTORY_LOAD_TIMEOUT_MS = 30_000;
 const ACP_IMPORT_HISTORY_BUDGET_MS = 60_000;
 
@@ -499,6 +518,8 @@ interface ACPAgentSessionOptions {
   capabilities: AgentCapabilityFlags;
   extensionCommandsParser?: ACPExtensionCommandsParser;
   handle?: AgentPersistenceHandle;
+  resumePurpose?: AgentResumePurpose;
+  configuredModelIds?: readonly string[];
   agentId?: string;
   launchEnv?: Record<string, string>;
   waitForInitialCommands?: boolean;
@@ -967,6 +988,7 @@ export class ACPAgentClient implements AgentClient {
   async createSession(
     config: AgentSessionConfig,
     launchContext?: AgentLaunchContext,
+    options?: AgentCreateSessionOptions,
   ): Promise<AgentSession> {
     this.assertProvider(config);
     const providerOptions = ACPProviderOptionsSchema.parse(config.providerOptions ?? {});
@@ -994,6 +1016,7 @@ export class ACPAgentClient implements AgentClient {
           supportsMcpServers:
             providerOptions.supportsMcpServers ?? this.capabilities.supportsMcpServers,
         },
+        configuredModelIds: options?.configuredModelIds,
         agentId: launchContext?.agentId,
         launchEnv: launchContext?.env,
         extensionCommandsParser: this.extensionCommandsParser,
@@ -1009,6 +1032,7 @@ export class ACPAgentClient implements AgentClient {
     handle: AgentPersistenceHandle,
     overrides?: Partial<AgentSessionConfig>,
     launchContext?: AgentLaunchContext,
+    options?: AgentResumeSessionOptions,
   ): Promise<AgentSession> {
     if (handle.provider !== this.provider) {
       throw new Error(`Cannot resume ${handle.provider} handle with ${this.provider} provider`);
@@ -1050,6 +1074,8 @@ export class ACPAgentClient implements AgentClient {
           providerOptions.supportsMcpServers ?? this.capabilities.supportsMcpServers,
       },
       handle,
+      resumePurpose: options?.purpose,
+      configuredModelIds: options?.configuredModelIds,
       agentId: launchContext?.agentId,
       launchEnv: launchContext?.env,
       extensionCommandsParser: this.extensionCommandsParser,
@@ -1678,6 +1704,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     configOptions: SessionConfigOption[],
   ) => SessionConfigOption[];
   private readonly configFeatureOptions: ACPConfigFeatureOption[];
+  private readonly configuredModelIds: ReadonlySet<string>;
   private readonly clientCapabilities?: ACPClientCapabilities;
   private readonly clientCapabilityMeta?: ACPClientCapabilityMeta;
   private readonly modeIdTransformer?: (modeId: string) => string | null;
@@ -1703,6 +1730,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
   private readonly terminalEntries = new Map<string, TerminalEntry>();
   private readonly persistedHistory: AgentTimelineItem[] = [];
   private readonly initialHandle?: AgentPersistenceHandle;
+  private readonly resumePurpose: AgentResumePurpose;
 
   private readonly config: AgentSessionConfig;
   private child: ChildProcessWithoutNullStreams | null = null;
@@ -1747,6 +1775,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     this.sessionResponseTransformer = options.sessionResponseTransformer;
     this.configOptionsTransformer = options.configOptionsTransformer;
     this.configFeatureOptions = options.configFeatureOptions ?? [];
+    this.configuredModelIds = new Set(options.configuredModelIds);
     this.clientCapabilities = options.clientCapabilities;
     this.clientCapabilityMeta = options.clientCapabilityMeta;
     this.modeIdTransformer = options.modeIdTransformer;
@@ -1758,6 +1787,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     this.agentId = options.agentId;
     this.launchEnv = options.launchEnv;
     this.initialHandle = options.handle;
+    this.resumePurpose = options.resumePurpose ?? "interactive";
     this.config = { ...config, provider: options.provider };
     this.currentMode = config.modeId ?? null;
     this.currentModel = config.model ?? null;
@@ -2196,12 +2226,20 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       return;
     }
 
+    await this.setModelWithSelection({ modelId, selection: this.resolveModelSelection(modelId) });
+  }
+
+  private resolveModelSelection(modelId: string): ACPModelSelection {
     const selection = resolveACPModelSelection({
       modelId,
       availableModels: this.availableModels,
       configOptions: this.configOptions,
     });
-    await this.setModelWithSelection({ modelId, selection });
+    if (selection.availableModel || !this.configuredModelIds.has(modelId)) {
+      return selection;
+    }
+    // A model the user added in provider config is applied even when the agent does not advertise it.
+    return { ...selection, availableModel: { modelId, name: modelId } };
   }
 
   private async setModelWithSelection({
@@ -2215,21 +2253,20 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       throw new Error("ACP session not initialized");
     }
 
-    if (selection.hasAvailableModels) {
-      if (!selection.availableModel) {
-        this.warnInvalidSelection(
-          modelId,
-          `is not a valid ${this.provider} model. Available options: ${this.availableModels
-            ?.map((model) => model.modelId)
-            .join(", ")}`,
-        );
-        return;
-      }
+    if (selection.hasAvailableModels && !selection.availableModel) {
+      this.warnInvalidSelection(
+        modelId,
+        `is not a valid ${this.provider} model. Available options: ${this.availableModels
+          ?.map((model) => model.modelId)
+          .join(", ")}`,
+      );
+      return;
+    }
 
-      if (typeof this.connection.unstable_setSessionModel !== "function") {
-        throw new Error(this.modelSelectionUnavailableMessage());
-      }
-
+    if (
+      selection.availableModel &&
+      typeof this.connection.unstable_setSessionModel === "function"
+    ) {
       try {
         await this.connection.unstable_setSessionModel({
           sessionId: this.sessionId,
@@ -2480,10 +2517,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       return;
     }
 
-    for (const pending of this.pendingPermissions.values()) {
-      pending.resolve({ outcome: { outcome: "cancelled" } });
-    }
-    this.pendingPermissions.clear();
+    this.cancelPendingPermissions();
 
     if (this.activeForegroundTurnId) {
       await this.connection.cancel({ sessionId: this.sessionId });
@@ -2499,21 +2533,26 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     this.deliverTranslatedEvents(this.flushPendingUserMessage());
     this.settleCommandsReady();
 
-    for (const pending of this.pendingPermissions.values()) {
-      pending.resolve({ outcome: { outcome: "cancelled" } });
-    }
-    this.pendingPermissions.clear();
+    this.cancelPendingPermissions();
 
     if (this.connection && this.sessionId) {
       try {
         if (this.activeForegroundTurnId) {
-          await this.connection.cancel({ sessionId: this.sessionId });
+          await withTimeout(
+            this.connection.cancel({ sessionId: this.sessionId }),
+            ACP_CLOSE_REQUEST_TIMEOUT_MS,
+            `ACP cancel timed out after ${ACP_CLOSE_REQUEST_TIMEOUT_MS}ms`,
+          );
         }
       } catch {}
 
       try {
         if (this.agentCapabilities?.sessionCapabilities?.close) {
-          await this.connection.unstable_closeSession({ sessionId: this.sessionId });
+          await withTimeout(
+            this.connection.unstable_closeSession({ sessionId: this.sessionId }),
+            ACP_CLOSE_REQUEST_TIMEOUT_MS,
+            `ACP closeSession timed out after ${ACP_CLOSE_REQUEST_TIMEOUT_MS}ms`,
+          );
         }
       } catch (error) {
         this.logger.debug({ err: error }, "ACP closeSession failed during shutdown");
@@ -2789,6 +2828,16 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     return {};
   }
 
+  // Loading an archived agent's history runs nothing in its working directory, which
+  // may have been removed with its worktree. session/load still names the original
+  // directory; only the process starts from the home directory.
+  private async resolveProcessCwd(): Promise<string> {
+    if (this.resumePurpose !== "history" || (await isDirectory(this.config.cwd))) {
+      return this.config.cwd;
+    }
+    return homedir();
+  }
+
   private async spawnProcess(): Promise<SpawnedACPProcess> {
     const prefix = await resolveProviderLaunch({
       commandConfig: this.runtimeSettings?.command,
@@ -2802,7 +2851,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     const command = prefix.command;
     const args = [...prefix.args, ...this.defaultCommand.slice(1)];
     const child = spawnProcess(command, args, {
-      cwd: this.config.cwd,
+      cwd: await this.resolveProcessCwd(),
       ...createProviderEnvSpec({
         runtimeSettings: this.runtimeSettings,
         overlays: [this.launchEnv],
@@ -2912,13 +2961,11 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     const configuredModelId = this.config.model;
     let switchedModel = false;
     if (configuredModelId && configuredModelId !== this.currentModel) {
-      const selection = resolveACPModelSelection({
-        modelId: configuredModelId,
-        availableModels: this.availableModels,
-        configOptions: this.configOptions,
-      });
       try {
-        await this.setModelWithSelection({ modelId: configuredModelId, selection });
+        await this.setModelWithSelection({
+          modelId: configuredModelId,
+          selection: this.resolveModelSelection(configuredModelId),
+        });
         switchedModel = true;
       } catch (error) {
         if (!this.isModelSelectionUnavailableError(error)) {
@@ -3207,8 +3254,29 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     }
   }
 
+  // ACP reports context occupancy out of band from the prompt response, so the
+  // composer's context meter cannot read it from `turn_completed`. Forward it as
+  // the same `usage_updated` snapshot the native adapters emit, preserving the
+  // turn usage this session already recorded. The guards match the meter's own
+  // validity rules, so a provider cannot push a window the meter would reject.
   private handleUsageUpdate(update: UsageUpdate): void {
-    void update;
+    const contextWindowMaxTokens =
+      Number.isFinite(update.size) && update.size > 0 ? update.size : undefined;
+    const contextWindowUsedTokens =
+      Number.isFinite(update.used) && update.used >= 0 ? update.used : undefined;
+    if (contextWindowMaxTokens === undefined || contextWindowUsedTokens === undefined) {
+      return;
+    }
+    this.pushEvent({
+      type: "usage_updated",
+      provider: this.provider,
+      usage: {
+        ...this.currentTurnUsage,
+        contextWindowMaxTokens,
+        contextWindowUsedTokens,
+      },
+      turnId: this.activeForegroundTurnId ?? undefined,
+    });
   }
 
   private handlePromptResponse(response: PromptResponse, turnId: string): void {
@@ -3306,12 +3374,24 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     event: Extract<AgentStreamEvent, { type: "turn_completed" | "turn_failed" | "turn_canceled" }>,
   ): void {
     this.deliverTranslatedEvents(this.flushPendingUserMessage());
+    // A turn that ends without completing leaves no way to answer its open
+    // permission requests, so tell the agent they were cancelled.
+    if (event.type !== "turn_completed") {
+      this.cancelPendingPermissions();
+    }
     this.activeForegroundTurnId = null;
     this.fallbackAssistantMessageId = null;
     if (this.submittedUserMessageTurnId === event.turnId) {
       this.submittedUserMessageTurnId = null;
     }
     this.pushEvent(event);
+  }
+
+  private cancelPendingPermissions(): void {
+    for (const pending of this.pendingPermissions.values()) {
+      pending.resolve({ outcome: { outcome: "cancelled" } });
+    }
+    this.pendingPermissions.clear();
   }
 
   private emitBootstrapThreadEvent(): void {
