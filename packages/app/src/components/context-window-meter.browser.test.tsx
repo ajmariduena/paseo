@@ -1,8 +1,10 @@
 import React, { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ContextWindowMeter, type ContextWindowCompaction } from "./context-window-meter";
+
+// The usage barrel reaches expo-router, which the browser runner cannot pre-bundle.
+vi.mock("@/usage", () => ({ AgentUsage: () => null, useHostReportsUsage: () => false }));
 
 const onCompact = vi.fn();
 const COMPACTION: ContextWindowCompaction = { timing: "now", onCompact };
@@ -24,8 +26,7 @@ function mount(node: ReactNode): void {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
-  const queryClient = new QueryClient();
-  act(() => root.render(<QueryClientProvider client={queryClient}>{node}</QueryClientProvider>));
+  act(() => root.render(node));
   mounted.push({ root, container });
 }
 

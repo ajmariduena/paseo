@@ -308,7 +308,7 @@ describe("OpenCodeBridge", () => {
       ).resolves.toMatchObject({
         content: [
           { type: "text", text: "width 390" },
-          { type: "image", data: "image-bytes" },
+          { type: "file", mime: "image/png", uri: "data:image/png;base64,image-bytes" },
         ],
       });
       await expect(
