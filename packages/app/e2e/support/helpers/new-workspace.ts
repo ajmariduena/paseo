@@ -230,11 +230,45 @@ export async function expectNewWorkspaceControlsEnabled(page: Page): Promise<voi
 }
 
 export async function openNewWorkspaceProjectPickerWithShortcut(page: Page): Promise<void> {
-  await page.keyboard.press("Control+P");
+  await page.keyboard.press(process.platform === "darwin" ? "Meta+P" : "Control+P");
 
   const searchInput = page.getByPlaceholder("Search projects");
   await expect(searchInput).toBeVisible({ timeout: 30_000 });
   await expect(searchInput).toBeFocused();
+}
+
+export const NO_PROJECT_LABEL = "No project";
+
+// The e2e fixture reseeds create-agent preferences on every navigation, so the
+// remembered project only survives navigations that skip that seed.
+export async function rememberNewWorkspaceProjectAndReload(
+  page: Page,
+  project: { serverId: string; projectId: string },
+): Promise<void> {
+  await page.evaluate(
+    ({ remembered, keys }) => {
+      const nonce = localStorage.getItem(keys.seedNonce);
+      if (!nonce) {
+        throw new Error("Expected the e2e seed nonce before remembering a project.");
+      }
+      const raw = localStorage.getItem(keys.preferences);
+      const preferences = raw ? JSON.parse(raw) : {};
+      localStorage.setItem(
+        keys.preferences,
+        JSON.stringify({ ...preferences, lastWorkspaceProject: remembered }),
+      );
+      localStorage.setItem(keys.disableSeedOnce, nonce);
+    },
+    {
+      remembered: { serverId: project.serverId, projectId: project.projectId },
+      keys: {
+        preferences: "@paseo:create-agent-preferences",
+        seedNonce: "@paseo:e2e-seed-nonce",
+        disableSeedOnce: "@paseo:e2e-disable-default-seed-once",
+      },
+    },
+  );
+  await page.reload();
 }
 
 export async function expectNewWorkspaceProjectSelected(
@@ -473,7 +507,7 @@ export async function pasteGithubPrUrl(
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.evaluate((value) => navigator.clipboard.writeText(value), url);
   await composer.focus();
-  await page.keyboard.press("Control+V");
+  await page.keyboard.press(process.platform === "darwin" ? "Meta+V" : "Control+V");
 }
 
 export async function assertNewWorkspaceSidebarAndHeader(

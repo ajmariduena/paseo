@@ -1621,7 +1621,7 @@ function mapSessionConfig(
     cwd: config.cwd,
     env: createProviderEnv({ baseEnv: {}, overlays: [launchContext?.env] }),
     systemPrompt: combineSystemPrompts(config.systemPrompt, config.daemonAppendSystemPrompt),
-    mcpServers: { ...config.mcpServers },
+    mcpServers: toProviderMcpServers(config.mcpServers),
     toolPolicy: config.toolPolicy
       ? { preapproved: config.toolPolicy.preapproved.map((grant) => ({ ...grant })) }
       : undefined,
@@ -1633,6 +1633,19 @@ function mapSessionConfig(
     title: config.title ?? undefined,
     persist,
   };
+}
+
+/** The plugin wire schema is strict, so daemon-only MCP options must not cross it. */
+function toProviderMcpServers(
+  servers: AgentSessionConfig["mcpServers"],
+): ProviderSessionConfig["mcpServers"] {
+  return Object.fromEntries(
+    Object.entries(servers ?? {}).map(([name, server]) => {
+      if (server.type === "stdio") return [name, server];
+      const { toolTimeoutMs: _timeout, preapprovedTools: _preapproved, ...rest } = server;
+      return [name, rest];
+    }),
+  );
 }
 
 function combineSystemPrompts(

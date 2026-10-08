@@ -1420,10 +1420,13 @@ function submitWorkspaceDraft(input: SubmitDraftInput): SubmitOutcome {
     allowEmptyText: true,
     agentCreation: input.agentCreation,
   });
-  clearDraft("sent");
   if (input.navigate === false) {
+    // An optimistic creation finishes after the user may have left and typed a newer draft under
+    // the same key, so it only clears the draft this submission consumed.
+    input.clearConsumedDraft();
     prepareWorkspaceTab({ serverId, workspaceId, target: submission.target });
   } else {
+    clearDraft("sent");
     navigateToWorkspace({ serverId, workspaceId, target: submission.target });
   }
   return "navigated";

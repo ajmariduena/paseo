@@ -9034,12 +9034,8 @@ export class Session {
         disposition = toSendAgentMessageDisposition(dispatch.disposition);
         const startedTurn =
           dispatch.disposition === "started" || dispatch.disposition === "restarted";
-        if (startedTurn && this.agentManager.hasInFlightRun(agentId)) {
-          await waitForAgentRunStartWithTimeout(
-            this.agentManager,
-            agentId,
-            this.delivery.requestSignal,
-          );
+        if (startedTurn) {
+          await this.waitForStartedAgentRun(agentId);
         }
       };
       if (msg.messageId) {
@@ -9082,6 +9078,23 @@ export class Session {
           error: errorToFriendlyMessage(error),
         },
       });
+    }
+  }
+
+  private async waitForStartedAgentRun(agentId: string): Promise<void> {
+    if (this.agentManager.hasInFlightRun(agentId)) {
+      await waitForAgentRunStartWithTimeout(
+        this.agentManager,
+        agentId,
+        this.delivery.requestSignal,
+      );
+      return;
+    }
+    // The queue reports "started" after the run was handed off, so a turn that failed to
+    // start may already be settled by the time we look.
+    const agent = this.agentManager.getAgent(agentId);
+    if (agent?.lifecycle === "error") {
+      throw new Error(agent.lastError ?? `Agent ${agentId} failed to start`);
     }
   }
 

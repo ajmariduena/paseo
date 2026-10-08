@@ -7,7 +7,10 @@ import {
   type SidebarWorkspacesListResult,
 } from "@/hooks/use-sidebar-workspaces-list";
 import { useSidebarWorkspaceEntries } from "@/hooks/use-sidebar-workspace-entries";
-import { createPendingSidebarWorkspaceEntry } from "@/hooks/sidebar-workspaces-view-model";
+import {
+  createPendingSidebarWorkspaceEntry,
+  overlayPendingWorkspaceCreationStatus,
+} from "@/hooks/sidebar-workspaces-view-model";
 import { usePendingWorkspaceCreationStore } from "@/stores/pending-workspace-creation";
 import { PendingWorkspaceCreationReconciler } from "@/runtime/pending-workspace-creations";
 import { usePinnedSidebarKeys, type PinnedSidebarGroups } from "@/hooks/use-sidebar-pins";
@@ -157,8 +160,12 @@ export function SidebarModelProvider({
     active !== false || needsWorkspaceEntries,
   );
   const projectedWorkspaceEntriesByKey = useMemo(
-    () => new Map([...workspaceEntriesByKey, ...pendingProjection.entries]),
-    [pendingProjection.entries, workspaceEntriesByKey],
+    () =>
+      new Map([
+        ...overlayPendingWorkspaceCreationStatus(workspaceEntriesByKey, pendingCreations),
+        ...pendingProjection.entries,
+      ]),
+    [pendingCreations, pendingProjection.entries, workspaceEntriesByKey],
   );
   const filteredWorkspaceEntriesByKey = useMemo(() => {
     const byProject = filterWorkspacesByProjects({

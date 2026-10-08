@@ -15,6 +15,7 @@ import {
   deriveSidebarToggleAttentionBucket,
   deriveSidebarLoadingState,
   omitSidebarWorkspaces,
+  overlayPendingWorkspaceCreationStatus,
   selectDelegatedSidebarWorkspaceKeys,
   shouldShowSidebarHostLabels,
   type ProjectStatusSession,
@@ -61,6 +62,50 @@ it("projects a creation without a workspace descriptor into running and failed s
     pendingCreation: "failed",
     pendingOutcomeUnknown: true,
   });
+});
+
+it("keeps a published workspace running while its pending creation is live", () => {
+  const creation = {
+    serverId: "host",
+    workspaceId: "wks_0123456789abcdef",
+    agentId: "00000000-0000-4000-8000-000000000001",
+    draftId: "draft-1",
+    clientMessageId: "message-1",
+    projectViewKey: "project",
+    projectId: "project-id",
+    projectName: "Project",
+    projectKind: "git" as const,
+    sourceDirectory: "/repo",
+    prompt: "Start here",
+    createdAt: 100,
+    phase: "accepted" as const,
+    revision: 1,
+    error: null,
+    outcomeUnknown: false,
+  };
+  const published = {
+    ...createSidebarWorkspaceEntry({
+      serverId: "host",
+      workspace: {
+        ...workspaceWithForge(undefined, "https://example.com/pr/1"),
+        id: creation.workspaceId,
+      },
+    }),
+  };
+  expect(published.statusBucket).toBe("done");
+  const entries = new Map([[published.workspaceKey, published]]);
+
+  expect(
+    overlayPendingWorkspaceCreationStatus(entries, { [published.workspaceKey]: creation }).get(
+      published.workspaceKey,
+    ),
+  ).toMatchObject({ statusBucket: "running", statusEnteredAt: new Date(100) });
+  expect(
+    overlayPendingWorkspaceCreationStatus(entries, {
+      [published.workspaceKey]: { ...creation, phase: "failed" },
+    }),
+  ).toBe(entries);
+  expect(overlayPendingWorkspaceCreationStatus(entries, {})).toBe(entries);
 });
 
 function workspaceWithForge(forge: string | undefined, prUrl: string): WorkspaceDescriptor {

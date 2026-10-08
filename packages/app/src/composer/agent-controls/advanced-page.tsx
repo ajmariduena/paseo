@@ -14,6 +14,8 @@ import type { EffortOption, EffortSelection } from "@/composer/agent-controls/ef
 
 const SPEED_STANDARD = "standard";
 const SPEED_FAST = "fast";
+/** Level descriptions sit inline beside the label; the 400 px default cuts Codex's off. */
+const EFFORT_OPTIONS_MIN_WIDTH = 440;
 
 export interface AdvancedPageProps {
   modelLabel: string;
@@ -185,6 +187,7 @@ function EffortRow({
           presentation="push"
           searchable={false}
           header={header}
+          desktopMinWidth={EFFORT_OPTIONS_MIN_WIDTH}
         />
       ) : null}
     </>

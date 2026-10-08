@@ -433,6 +433,37 @@ test("createAgent fails when the initial turn cannot start", async () => {
   }
 });
 
+test("sendAgentMessage rejects a prompt whose turn cannot start", async () => {
+  const cwd = tmpCwd();
+  const daemon = await createTestPaseoDaemon({
+    agentClients: {
+      codex: new StubAgentClient({
+        sessionId: "send-start-failure-session",
+        supportsStreaming: false,
+        startError: "Prompt turn failed to start",
+      }),
+    },
+  });
+  const client = new DaemonClient({
+    url: `ws://127.0.0.1:${daemon.port}/ws`,
+    appVersion: "0.1.82",
+  });
+
+  try {
+    await client.connect();
+    await client.fetchAgents({ subscribe: {} });
+    const agent = await client.createAgent({ provider: "codex", cwd });
+
+    await expect(client.sendAgentMessage(agent.id, "Start this turn.")).rejects.toThrow(
+      "Prompt turn failed to start",
+    );
+  } finally {
+    await client.close();
+    await daemon.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 function createUninterruptibleClient(): AgentClient {
   return new StubAgentClient({
     sessionId: "uninterruptible-session",

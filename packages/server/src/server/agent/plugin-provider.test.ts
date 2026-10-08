@@ -316,6 +316,32 @@ describe("PluginAgentClientRegistry", () => {
     await agent.session?.close();
   });
 
+  test("keeps daemon-only MCP options out of the plugin session.open payload", async () => {
+    const logger = createTestLogger();
+    const harness = createProviderHarness();
+    const plugins = new PluginAgentClientRegistry(logger);
+    plugins.replace([harness.registration]);
+    const registry = buildProviderRegistry(logger, { pluginProviders: plugins.definitions() });
+    const client = registry["plugin-direct"].createClient(logger);
+    const session = await client.createSession({
+      provider: "plugin-direct",
+      cwd: "/tmp",
+      mcpServers: {
+        paseo: {
+          type: "http",
+          url: "http://127.0.0.1:1/mcp",
+          toolTimeoutMs: 600_000,
+          preapprovedTools: ["list_agents"],
+        },
+      },
+    });
+    const open = harness.inputs.findLast((input) => input.type === "session.open")!;
+    expect(open.config.mcpServers).toEqual({
+      paseo: { type: "http", url: "http://127.0.0.1:1/mcp" },
+    });
+    await session.close();
+  });
+
   test.each([
     { options: { nested: { base: true, replace: "config" }, list: [1, 2], scalar: "config" } },
     { params: { nested: { base: true, replace: "config" }, list: [1, 2], scalar: "config" } },

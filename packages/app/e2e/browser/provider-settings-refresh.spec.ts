@@ -1,9 +1,36 @@
 import type { Locator } from "@playwright/test";
+import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { expect, test, type Page } from "../support/fixtures";
 import { expectComposerVisible } from "../support/helpers/composer";
+import { connectDaemonClient } from "../support/helpers/daemon-client-loader";
 import { openAgentRoute, seedMockAgentWorkspace } from "../support/helpers/mock-agent";
+import { openAdvancedModelSettings } from "../support/helpers/model-control";
 
 const MOBILE_VIEWPORT = { width: 390, height: 844 };
+
+/** The worker's daemon fetched the mock catalog at startup, which can be minutes before this test. */
+async function refreshMockCatalog(): Promise<void> {
+  const client = await connectDaemonClient<
+    Pick<DaemonClient, "refreshProvidersSnapshot" | "getProvidersSnapshot" | "close" | "connect">
+  >({ clientIdPrefix: "provider-relative-time" });
+  try {
+    const startedAt = Date.now();
+    await client.refreshProvidersSnapshot({ providers: ["mock"] });
+    await expect
+      .poll(
+        async () => {
+          const entry = (await client.getProvidersSnapshot()).entries.find(
+            (candidate) => candidate.provider === "mock",
+          );
+          return Date.parse(entry?.fetchedAt ?? "") >= startedAt;
+        },
+        { timeout: 30_000 },
+      )
+      .toBe(true);
+  } finally {
+    await client.close();
+  }
+}
 
 async function openMockAgentAtMobileBreakpoint(page: Page) {
   await page.setViewportSize(MOBILE_VIEWPORT);
@@ -20,11 +47,7 @@ async function openMockAgentAtMobileBreakpoint(page: Page) {
 }
 
 async function openProviderSettingsFromModelSelector(page: Page) {
-  await page.getByTestId("combined-model-selector").click();
-  const configuration = page.getByTestId("agent-effort-card");
-  await expect(configuration).toBeVisible({ timeout: 10_000 });
-  await page.getByTestId("agent-effort-advanced").click();
-  await expect(page.getByTestId("agent-advanced-page")).toBeVisible({ timeout: 10_000 });
+  await openAdvancedModelSettings(page);
   await page.getByTestId("agent-effort-model").click();
 
   const modelBrowser = page.getByTestId("agent-model-browser");
@@ -127,6 +150,7 @@ test.describe("provider settings overlay stack", () => {
       title: "Provider relative time",
     });
     try {
+      await refreshMockCatalog();
       await page.clock.install({ time: Date.now() });
       await page.setViewportSize(MOBILE_VIEWPORT);
       await openAgentRoute(page, session);
@@ -228,6 +252,7 @@ test.describe("provider settings overlay stack", () => {
         timeout: 10_000,
       });
       await expect(page.getByTestId("agent-effort-card")).not.toBeVisible();
+      await expect(page.getByTestId("agent-intelligence-overlay")).not.toBeVisible();
     } finally {
       await session.cleanup();
     }

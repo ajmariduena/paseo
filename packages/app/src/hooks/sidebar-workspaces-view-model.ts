@@ -96,6 +96,28 @@ export function createPendingSidebarWorkspaceEntry(
   };
 }
 
+// The daemon can publish a new workspace (status done, no agent yet) before the creation that
+// reserved it reaches workspace_ready; until then the row keeps the pending creation's running.
+export function overlayPendingWorkspaceCreationStatus(
+  entries: ReadonlyMap<string, SidebarWorkspaceEntry>,
+  creations: Record<string, PendingWorkspaceCreation>,
+): ReadonlyMap<string, SidebarWorkspaceEntry> {
+  let overlaid: Map<string, SidebarWorkspaceEntry> | null = null;
+  for (const creation of Object.values(creations)) {
+    if (creation.phase === "failed") continue;
+    const key = `${creation.serverId}:${creation.workspaceId}`;
+    const entry = entries.get(key);
+    if (!entry || entry.statusBucket !== "done") continue;
+    overlaid ??= new Map(entries);
+    overlaid.set(key, {
+      ...entry,
+      statusBucket: "running",
+      statusEnteredAt: new Date(creation.createdAt),
+    });
+  }
+  return overlaid ?? entries;
+}
+
 export interface SidebarProjectEntry {
   viewKey: string;
   projectName: string;

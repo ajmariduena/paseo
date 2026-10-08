@@ -4,6 +4,7 @@ import { seedWorkspace } from "../support/helpers/seed-client";
 import { openAgentRoute } from "../support/helpers/mock-agent";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { connectDaemonClient } from "../support/helpers/daemon-client-loader";
+import { composerModelControl, openAdvancedModelSettings } from "../support/helpers/model-control";
 
 // This fixture catalog advertises Ultrafast on Sol; another model offers Fast only.
 // The real daemon discovers both through the same Codex model/list boundary.
@@ -32,15 +33,10 @@ const NORMAL_SPEED_COLOR = "rgb(113, 113, 122)";
 
 async function openSpeedSelector(page: Page): Promise<void> {
   const speed = page.getByRole("button", { name: /^(Select speed|Speed: .+)$/ });
-  const features = page.getByRole("button", { name: "Open agent features", exact: true });
-  const modelSettings = page.getByRole("button", { name: /^Select model \(/ });
-  await expect(speed.or(features).or(modelSettings).filter({ visible: true }).first()).toBeVisible({
+  await expect(speed.or(composerModelControl(page)).filter({ visible: true }).first()).toBeVisible({
     timeout: 30_000,
   });
-  if (!(await speed.isVisible())) {
-    if (await features.isVisible()) await features.click();
-    else await modelSettings.click();
-  }
+  if (!(await speed.isVisible())) await openAdvancedModelSettings(page);
   await expect(speed).toBeVisible({ timeout: 30_000 });
   await speed.click();
   await expect(page.getByText("Normal", { exact: true }).last()).toBeVisible();

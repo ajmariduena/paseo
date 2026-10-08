@@ -13,6 +13,7 @@ import {
 } from "../support/helpers/command-center-agent-controls";
 import { clickNewChat, gotoWorkspace } from "../support/helpers/launcher";
 import { openAgentRoute, seedMockAgentWorkspace } from "../support/helpers/mock-agent";
+import { composerModelControl, openModelControl } from "../support/helpers/model-control";
 import { expectAppRoute } from "../support/helpers/route-assertions";
 import { seedWorkspace } from "../support/helpers/seed-client";
 import { buildSchedulesRoute } from "@/utils/host-routes";
@@ -79,7 +80,9 @@ test.describe("Command Center agent controls", () => {
     }
   });
 
-  test("shows an existing agent's only supported thinking level", async ({ page }) => {
+  test("shows an existing agent's only thinking level as managed by the model", async ({
+    page,
+  }) => {
     const workspace = await seedMockAgentWorkspace({
       repoPrefix: "agent-controls-single-thinking-",
       title: "Single thinking level",
@@ -92,9 +95,12 @@ test.describe("Command Center agent controls", () => {
         agentId: workspace.agentId,
       });
 
-      await expect(
-        page.getByTestId("agent-thinking-selector").filter({ visible: true }),
-      ).toHaveAccessibleName("Select thinking option (Max)");
+      await expect(composerModelControl(page)).toHaveAccessibleName(
+        "Change model and effort (Max-only thinking stream)",
+      );
+      await openModelControl(page);
+      await expect(page.getByTestId("agent-effort-card")).toContainText("Managed by model");
+      await expect(page.getByTestId("agent-effort-slider")).toHaveCount(0);
     } finally {
       await workspace.cleanup();
     }

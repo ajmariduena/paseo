@@ -7,6 +7,12 @@ import { getServerId } from "./server-id";
 import { expectAppRoute } from "./route-assertions";
 import { openSettingsHost } from "./settings";
 
+export {
+  closeModelControl as closeModelPicker,
+  expectComposerModel,
+  openModelPicker,
+} from "./model-control";
+
 // ─── Daemon-side seeding ───────────────────────────────────────────────────
 
 interface AgentProfilesDaemonClient {
@@ -358,26 +364,8 @@ function pickerViewport(page: Page): Locator {
   return page.getByTestId("combobox-desktop-container");
 }
 
-/** The composer opens its quick card first; "Change" on the model row leads to the browser. */
-export async function openModelPicker(page: Page): Promise<void> {
-  await page.getByTestId("combined-model-selector").filter({ visible: true }).first().click();
-  await expect(pickerViewport(page)).toBeVisible({ timeout: 30_000 });
-  const change = pickerViewport(page).getByTestId("agent-quick-change-model");
-  if (await change.isVisible()) {
-    await change.click();
-  }
-  await expect(pickerViewport(page).getByTestId("model-search-all-input")).toBeVisible({
-    timeout: 30_000,
-  });
-}
-
 export async function openProfilesTab(page: Page): Promise<void> {
   await pickerViewport(page).getByTestId("model-tab-profiles").click();
-}
-
-export async function closeModelPicker(page: Page): Promise<void> {
-  await page.keyboard.press("Escape");
-  await expect(pickerViewport(page)).toHaveCount(0, { timeout: 30_000 });
 }
 
 export function profilePickerRow(page: Page, name: string): Locator {
@@ -577,12 +565,6 @@ export async function expectSearchResultsVirtualized(
 }
 
 // ─── Composer agent controls ───────────────────────────────────────────────
-
-export async function expectComposerModel(page: Page, modelLabel: string): Promise<void> {
-  await expect(
-    page.getByRole("button", { name: `Select model (${modelLabel})`, exact: true }),
-  ).toBeVisible({ timeout: 30_000 });
-}
 
 export async function expectComposerMode(page: Page, modeLabel: string): Promise<void> {
   await expect(

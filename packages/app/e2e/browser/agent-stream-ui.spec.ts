@@ -1,4 +1,4 @@
-import { test, expect } from "../support/fixtures";
+import { test, expect, type Page } from "../support/fixtures";
 import {
   awaitAssistantMessage,
   expectAgentIdle,
@@ -16,7 +16,8 @@ import {
   waitForScrollableChat,
 } from "../support/helpers/agent-bottom-anchor";
 import { delayCreatedAgentInitialTailResponse } from "../support/helpers/agent-timeline-gate";
-import { selectModel } from "../support/helpers/app";
+import { selectComposerModel } from "../support/helpers/combined-model-picker";
+import { showDetailedToolCalls } from "../support/helpers/tool-call-detail-level";
 import { clickNewChat } from "../support/helpers/launcher";
 import { expectComposerVisible, startRunningMockAgent } from "../support/helpers/composer";
 import {
@@ -26,6 +27,14 @@ import {
 } from "../support/helpers/mock-agent";
 
 const SCROLL_AWAY_MIN_SCROLLABLE_DISTANCE = 360;
+
+/** A finished turn folds its tool calls behind the "Worked" header until it is expanded. */
+async function expandFinishedTurn(page: Page): Promise<void> {
+  const header = page.getByTestId("turn-fold-header").filter({ visible: true }).first();
+  await header.scrollIntoViewIfNeeded();
+  await header.click();
+  await expect(page.getByTestId("tool-call-badge").first()).toBeAttached();
+}
 
 test.describe("Agent stream UI", () => {
   test("keeps running agent chrome after page refresh", async ({ page }) => {
@@ -195,7 +204,7 @@ test.describe("Agent stream UI", () => {
       timeout: 30_000,
     });
     await expectComposerVisible(page);
-    await selectModel(page, "Five minute stream");
+    await selectComposerModel(page, "five-minute-stream");
 
     const prompt = "Stream for delayed authoritative history scroll-away test.";
     const composer = page.getByRole("textbox", { name: "Message agent..." }).first();
@@ -229,6 +238,7 @@ test.describe("Agent stream UI", () => {
 
   test("keeps tool calls clickable beside the scroll-to-bottom button", async ({ page }) => {
     test.setTimeout(60_000);
+    await showDetailedToolCalls(page);
     const agent = await seedMockAgentWorkspace({
       repoPrefix: "stream-scroll-button-hit-area-",
       title: "Scroll button hit area",
@@ -241,6 +251,7 @@ test.describe("Agent stream UI", () => {
         workspaceId: agent.workspaceId,
         agentId: agent.agentId,
       });
+      await expandFinishedTurn(page);
       await waitForScrollableChat(page, {
         minScrollableDistance: SCROLL_AWAY_MIN_SCROLLABLE_DISTANCE,
         timeout: 30_000,

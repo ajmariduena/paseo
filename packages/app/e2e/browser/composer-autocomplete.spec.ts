@@ -10,7 +10,10 @@ import { daemonWsRoutePattern } from "../support/helpers/daemon-port";
 import { getServerId } from "../support/helpers/server-id";
 import { switchWorkspaceViaSidebar } from "../support/helpers/workspace-ui";
 import { expectMobileAgentSidebarVisible } from "../support/helpers/sidebar";
-import { expectNewWorkspaceProjectSelected } from "../support/helpers/new-workspace";
+import {
+  expectNewWorkspaceProjectSelected,
+  NO_PROJECT_LABEL,
+} from "../support/helpers/new-workspace";
 
 const TEST_COMMANDS = [
   {
@@ -370,20 +373,18 @@ function expectPopoverDoesNotDisappearAfterFirstVisible(frames: PopoverFrame[]):
 }
 
 test.describe("Composer autocomplete", () => {
-  test("keeps New workspace off the running-agent command list before a project is chosen", async ({
-    page,
-  }) => {
+  test("keeps New workspace on No project off the running-agent command list", async ({ page }) => {
     const commandRequestsByAgentId = recordCommandRequestsByAgentId(page);
 
     await page.goto("/new");
-    await expectNewWorkspaceProjectSelected(page, "Choose project");
+    await expectNewWorkspaceProjectSelected(page, NO_PROJECT_LABEL);
     await composerLocator(page).fill("/");
 
     const popover = page
       .getByTestId("composer-autocomplete-popover")
       .filter({ visible: true })
       .first();
-    await expect(popover).toContainText("Choose a project to see commands", { timeout: 30_000 });
+    await expect(popover).toContainText("No commands found", { timeout: 30_000 });
     await expect(popover).not.toContainText("/clear");
     await expect(popover).not.toContainText("/exit");
     expect(commandRequestsByAgentId).toEqual([]);

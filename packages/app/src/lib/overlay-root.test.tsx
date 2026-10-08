@@ -65,6 +65,23 @@ describe("useWebOverlayRegistration", () => {
     unmount();
   });
 
+  it("keeps opener focus when the commit refocuses the closing overlay's element", async () => {
+    const { result, rerender, unmount } = renderHook(
+      ({ active }: { active: boolean }) =>
+        useWebOverlayRegistration({ active, layer: 20, onKeyDown: () => false }),
+      { initialProps: { active: true } },
+    );
+
+    act(() => result.current(scope));
+    input.focus();
+
+    act(() => rerender({ active: false }));
+    await Promise.resolve();
+
+    expect(document.activeElement).toBe(opener);
+    unmount();
+  });
+
   it("restores opener focus when an active overlay unmounts after its scope detaches", () => {
     const { result, unmount } = renderHook(() =>
       useWebOverlayRegistration({ active: true, layer: 20, onKeyDown: () => false }),

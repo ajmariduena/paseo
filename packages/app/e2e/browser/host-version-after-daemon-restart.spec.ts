@@ -70,9 +70,11 @@ test("host page shows the restarted daemon's version without reloading", async (
 async function readHelpHostVersion(page: Page, serverId: string): Promise<string> {
   await page.getByTestId("sidebar-help").click();
   const row = page.getByTestId(`sidebar-help-host-version-${serverId}`);
-  await expect(row).toBeVisible();
+  // The row is attached before the opening menu renders it, and innerText reads only rendered text.
+  await expect(row).toContainText(/v\d+\.\d+\.\d+/, { useInnerText: true });
   const text = await row.innerText();
   await page.keyboard.press("Escape");
+  await expect(page.getByTestId("sidebar-help-menu")).toHaveCount(0);
   return text;
 }
 

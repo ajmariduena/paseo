@@ -3,7 +3,11 @@ import { gotoAppShell } from "../support/helpers/app";
 import { getE2EDaemonPort } from "../support/helpers/daemon-port";
 import {
   expectNewWorkspaceProjectSelected,
+  NO_PROJECT_LABEL,
   openGlobalNewWorkspaceComposer,
+  selectNewWorkspaceProject,
+  selectWorkspaceIsolation,
+  submitNewWorkspaceEmpty,
 } from "../support/helpers/new-workspace";
 import { seedWorkspace, type SeededWorkspace } from "../support/helpers/seed-client";
 import { getServerId } from "../support/helpers/server-id";
@@ -21,10 +25,10 @@ const OFFLINE_SERVER_IDS = [
   "srv_e2e_preselect_offline_3",
 ];
 
-// New Workspace preselection is a form-context decision, not startup routing.
-// Entry points from a workspace should carry the current project context, and a
-// plain /new must not let a stale remembered offline host steal the initial host
-// when there is exactly one online saved host.
+// Without a route project, New workspace starts on the project last used to
+// create a workspace, then on No project; the open workspace's project does not
+// win. A plain /new must not let a stale remembered offline host steal the
+// initial host when exactly one saved host is online.
 
 async function pressNewWorkspaceShortcut(page: import("@playwright/test").Page): Promise<void> {
   const modifier = process.platform === "darwin" ? "Meta" : "Control";
@@ -156,7 +160,7 @@ async function seedOfflineHostsWithStaleSelection(
   );
 }
 
-test.describe("New workspace preselects the open workspace's project", () => {
+test.describe("New workspace project default", () => {
   test.describe.configure({ timeout: 240_000 });
 
   let projectA: SeededWorkspace;
@@ -172,7 +176,9 @@ test.describe("New workspace preselects the open workspace's project", () => {
     await projectB?.cleanup();
   });
 
-  test("Cmd+N preselects the project you are looking at", async ({ page }) => {
+  test("Cmd+N and the New workspace button start on No project, not the project you are looking at", async ({
+    page,
+  }) => {
     await gotoAppShell(page);
     await waitForSidebarHydration(page);
 
@@ -182,39 +188,45 @@ test.describe("New workspace preselects the open workspace's project", () => {
       workspaceId: projectB.workspaceId,
     });
     await pressNewWorkspaceShortcut(page);
-    await expectNewWorkspaceProjectSelected(page, projectB.projectDisplayName);
+    await expectNewWorkspaceProjectSelected(page, NO_PROJECT_LABEL);
 
     await switchWorkspaceViaSidebar({
       page,
       serverId: getServerId(),
       workspaceId: projectA.workspaceId,
     });
-    await pressNewWorkspaceShortcut(page);
-    await expectNewWorkspaceProjectSelected(page, projectA.projectDisplayName);
+    await openGlobalNewWorkspaceComposer(page);
+    await expectNewWorkspaceProjectSelected(page, NO_PROJECT_LABEL);
   });
 
-  test("New workspace button preselects the project you are looking at", async ({ page }) => {
+  test("the project last used to create a workspace wins over No project and the open workspace", async ({
+    page,
+  }) => {
+    const serverId = getServerId();
     await gotoAppShell(page);
     await waitForSidebarHydration(page);
 
-    await switchWorkspaceViaSidebar({
-      page,
-      serverId: getServerId(),
-      workspaceId: projectB.workspaceId,
-    });
+    await switchWorkspaceViaSidebar({ page, serverId, workspaceId: projectA.workspaceId });
     await openGlobalNewWorkspaceComposer(page);
+    await selectNewWorkspaceProject(page, {
+      projectKey: projectB.projectKey,
+      projectDisplayName: projectB.projectDisplayName,
+    });
+    await selectWorkspaceIsolation(page, "local");
+    await submitNewWorkspaceEmpty(page);
+    await expect(page).toHaveURL(/\/workspace\//, { timeout: 60_000 });
+    await expect(page).not.toHaveURL(buildHostWorkspaceRoute(serverId, projectB.workspaceId));
+
+    await switchWorkspaceViaSidebar({ page, serverId, workspaceId: projectA.workspaceId });
+    await pressNewWorkspaceShortcut(page);
     await expectNewWorkspaceProjectSelected(page, projectB.projectDisplayName);
 
-    await switchWorkspaceViaSidebar({
-      page,
-      serverId: getServerId(),
-      workspaceId: projectA.workspaceId,
-    });
+    await switchWorkspaceViaSidebar({ page, serverId, workspaceId: projectA.workspaceId });
     await openGlobalNewWorkspaceComposer(page);
-    await expectNewWorkspaceProjectSelected(page, projectA.projectDisplayName);
+    await expectNewWorkspaceProjectSelected(page, projectB.projectDisplayName);
   });
 
-  test("Cmd+N preselects the connected host project when an offline saved host is first", async ({
+  test("Cmd+N starts on the connected host's No project when an offline saved host is first", async ({
     page,
   }) => {
     await openColdRestoredWorkspaceWithOfflineHostFirst(page, projectB);
@@ -224,10 +236,10 @@ test.describe("New workspace preselects the open workspace's project", () => {
     await expect(page.getByTestId("host-picker-trigger")).toContainText("Connected host", {
       timeout: 8_000,
     });
-    await expectProjectPreselectedWithin(page, projectB.projectDisplayName, 8_000);
+    await expectProjectPreselectedWithin(page, NO_PROJECT_LABEL, 8_000);
   });
 
-  test("New workspace button preselects the connected host project when an offline saved host is first", async ({
+  test("New workspace button starts on the connected host's No project when an offline saved host is first", async ({
     page,
   }) => {
     await openColdRestoredWorkspaceWithOfflineHostFirst(page, projectB);
@@ -237,7 +249,7 @@ test.describe("New workspace preselects the open workspace's project", () => {
     await expect(page.getByTestId("host-picker-trigger")).toContainText("Connected host", {
       timeout: 8_000,
     });
-    await expectProjectPreselectedWithin(page, projectB.projectDisplayName, 8_000);
+    await expectProjectPreselectedWithin(page, NO_PROJECT_LABEL, 8_000);
   });
 
   test("plain /new ignores stale remembered offline hosts when only one saved host is connected", async ({
@@ -268,6 +280,6 @@ test.describe("New workspace preselects the open workspace's project", () => {
     await expect(page.getByTestId("host-picker-trigger")).toContainText("Connected host", {
       timeout: 8_000,
     });
-    await expectProjectPreselectedWithin(page, projectB.projectDisplayName, 8_000);
+    await expectProjectPreselectedWithin(page, NO_PROJECT_LABEL, 8_000);
   });
 });

@@ -41,7 +41,7 @@ test("chooses a metadata model and can return to automatic selection", async ({
   });
 
   await openManualMetadataModelPicker(page);
-  await page.getByText("Mock Load Test", { exact: true }).click();
+  await page.getByRole("tab", { name: "Mock Load Test", exact: true }).click();
   await expect(page.getByText("Ten second stream", { exact: true })).toBeVisible();
   await page.screenshot({
     path: testInfo.outputPath("metadata-model-picker.png"),

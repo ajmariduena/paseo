@@ -238,7 +238,16 @@ function addWebOverlay(entry: WebOverlayEntry): (options?: RemoveWebOverlayOptio
       entry.restoreFocus &&
       document.contains(entry.restoreFocus)
     ) {
-      entry.restoreFocus.focus();
+      const target = entry.restoreFocus;
+      const focusedBeforeRestore = document.activeElement;
+      target.focus();
+      // A restore from a layout-effect cleanup runs mid-commit; React then refocuses the element
+      // that held focus before the commit (still mounted while the overlay animates out).
+      queueMicrotask(() => {
+        if (document.activeElement === focusedBeforeRestore && document.contains(target)) {
+          target.focus();
+        }
+      });
     }
   };
 }
