@@ -45,10 +45,11 @@ describe("resolveSidebarNavItems", () => {
       { key: "search", visible: true },
       { key: "schedules", visible: true },
       { key: "notes", visible: true },
+      { key: "host-health", visible: true },
       { key: kanbanKey, visible: true },
       { key: notesKey, visible: true },
     ]);
-    expect(items[5]).toEqual({ kind: "plugin", key: kanbanKey, group: kanban, visible: true });
+    expect(items[6]).toEqual({ kind: "plugin", key: kanbanKey, group: kanban, visible: true });
     expect(items[0]).toEqual({
       kind: "builtin",
       key: "new-workspace",
@@ -76,6 +77,7 @@ describe("resolveSidebarNavItems", () => {
       { key: "history", visible: true },
       { key: "search", visible: true },
       { key: "notes", visible: true },
+      { key: "host-health", visible: true },
       { key: notesKey, visible: true },
     ]);
   });
@@ -98,6 +100,7 @@ describe("resolveSidebarNavItems", () => {
       "search",
       "schedules",
       "notes",
+      "host-health",
     ]);
   });
 
@@ -118,6 +121,7 @@ describe("resolveSidebarNavItems", () => {
       { key: "search", visible: true },
       { key: "schedules", visible: true },
       { key: "notes", visible: true },
+      { key: "host-health", visible: true },
     ]);
   });
 });
@@ -154,6 +158,7 @@ describe("setSidebarNavItemVisible", () => {
       { key: "search", visible: false },
       { key: "schedules", visible: true },
       { key: "notes", visible: true },
+      { key: "host-health", visible: true },
       { key: kanbanKey, visible: true },
     ]);
   });
@@ -179,6 +184,7 @@ describe("setSidebarNavItemVisible", () => {
       { key: "search", visible: true },
       { key: "schedules", visible: true },
       { key: "notes", visible: true },
+      { key: "host-health", visible: true },
     ]);
   });
 
@@ -206,6 +212,7 @@ describe("setSidebarNavItemVisible", () => {
       { key: "search", visible: true },
       { key: "schedules", visible: true },
       { key: "notes", visible: true },
+      { key: "host-health", visible: true },
     ]);
     expect(
       summarize(
@@ -250,6 +257,7 @@ describe("moveSidebarNavItem", () => {
       "history",
       "schedules",
       "notes",
+      "host-health",
       kanbanKey,
     ]);
   });
@@ -263,6 +271,7 @@ describe("moveSidebarNavItem", () => {
       "search",
       "notes",
       "schedules",
+      "host-health",
       kanbanKey,
     ]);
   });

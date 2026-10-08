@@ -1,4 +1,5 @@
 import type { NoteStore } from "./notes/store.js";
+import type { HostMetricsSampler } from "./host-metrics/sampler.js";
 import { stat } from "node:fs/promises";
 import type { CreationSnapshot } from "@getpaseo/protocol/messages";
 import { CreationService } from "./creation/index.js";
@@ -558,6 +559,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly workspaceRegistry: WorkspaceRegistry;
   private readonly workspaceLabelService: WorkspaceLabelService | null;
   private readonly noteStore: NoteStore | undefined;
+  private readonly hostMetricsSampler: HostMetricsSampler | undefined;
   private readAloudService!: ReadAloudService | null;
   private readonly voiceOrchestrator: VoiceOrchestrator | null | undefined;
   private readonly delegations: DelegationService | null | undefined;
@@ -686,6 +688,7 @@ export class VoiceAssistantWebSocketServer {
     delegations?: DelegationService | null,
     agentStop?: AgentStop | null,
     noteStore?: NoteStore,
+    hostMetricsSampler?: HostMetricsSampler,
   ) {
     this.logger = logger.child({ module: "websocket-server" });
     this.voiceOrchestrator = voiceOrchestrator;
@@ -720,6 +723,7 @@ export class VoiceAssistantWebSocketServer {
     this.workspaceRegistry = workspaceRegistry ?? createNoopWorkspaceRegistry();
     this.workspaceLabelService = workspaceLabelService ?? null;
     this.noteStore = noteStore;
+    this.hostMetricsSampler = hostMetricsSampler;
     const requiredServices = requireWebSocketServices({
       scheduleService,
       checkoutDiffManager,
@@ -1525,6 +1529,7 @@ export class VoiceAssistantWebSocketServer {
       workspaceRegistry: this.workspaceRegistry,
       workspaceLabelService: this.workspaceLabelService ?? undefined,
       noteStore: this.noteStore,
+      hostMetricsSampler: this.hostMetricsSampler,
       readAloud: this.readAloudService ?? undefined,
       voiceOrchestrator: this.voiceOrchestrator,
       delegations: this.delegations,
@@ -1848,6 +1853,8 @@ export class VoiceAssistantWebSocketServer {
         // COMPAT(workspaceLabels): added in v0.5.0, remove after 2027-08-14.
         ...(this.workspaceLabelService ? { workspaceLabels: true } : {}),
         ...(this.noteStore ? { notes: true } : {}),
+        // COMPAT(hostMetrics): added in v0.11.0, remove gate after 2027-10-08.
+        ...(this.hostMetricsSampler ? { hostMetrics: true } : {}),
         // COMPAT(workspaceSetupRun): added in v0.7.3, remove gate after 2027-09-02.
         workspaceSetupRun: true,
         // COMPAT(providersSnapshot): keep optional until all clients rely on snapshot flow.

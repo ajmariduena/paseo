@@ -126,6 +126,7 @@ import { VoiceAssistantWebSocketServer } from "./websocket-server.js";
 import { WorkspaceSetupRuntime } from "./workspace-setup-runtime.js";
 import { createWorkspaceLabelService } from "./workspace-labels/index.js";
 import { createNoteStore } from "./notes/store.js";
+import { HostMetricsSampler } from "./host-metrics/sampler.js";
 import { createGitHubService } from "../services/github-service.js";
 import { createPaseoWorktree as createRegisteredPaseoWorktree } from "./paseo-worktree-service.js";
 import { createWorkspaceProvisioningService } from "./session/workspace-provisioning/workspace-provisioning-service.js";
@@ -1536,6 +1537,7 @@ export async function createPaseoDaemon(
     );
   };
   const noteStore = createNoteStore(config.paseoHome, logger);
+  const hostMetricsSampler = new HostMetricsSampler({ logger });
   const scheduleService = new ScheduleService({
     paseoHome: config.paseoHome,
     logger,
@@ -1963,6 +1965,7 @@ export async function createPaseoDaemon(
               delegations,
               agentStop,
               noteStore,
+              hostMetricsSampler,
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();
@@ -2048,6 +2051,7 @@ export async function createPaseoDaemon(
     worktreeStorageSweeper.dispose();
     workspaceReconciliation.dispose();
     scriptHealthMonitor.stop();
+    hostMetricsSampler.dispose();
     // Freeze both ingress and registration before taking the agent closure snapshot.
     wsServer?.prepareForShutdown();
     agentManager.prepareForShutdown();
