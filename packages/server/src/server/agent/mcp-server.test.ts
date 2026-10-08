@@ -75,7 +75,6 @@ import type { ForgeService } from "../../services/forge-service.js";
 import { areEquivalentPaths } from "../../utils/path.js";
 import type { TerminalManager } from "../../terminal/terminal-manager.js";
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
-import { formatPeerMessage } from "@getpaseo/protocol/peer-message";
 import { MutableDaemonConfigSchema, type AgentProfile } from "@getpaseo/protocol/messages";
 import type { DaemonConfigStore } from "../daemon-config-store.js";
 import type { BrowserToolsBroker, BrowserToolsExecuteInput } from "../browser-tools/broker.js";
@@ -869,6 +868,13 @@ function createPaseoWorktreeForMcpTest(options: {
     }
     return result;
   };
+}
+
+/** What each prompt says once its agent-message envelope, if any, is read. */
+function deliveredTexts(prompts: readonly unknown[]): unknown[] {
+  return prompts.map((prompt) =>
+    typeof prompt === "string" ? (parseAgentMessage(prompt)?.text ?? prompt) : prompt,
+  );
 }
 
 describe("html_render tool", () => {
@@ -3382,6 +3388,7 @@ describe("create_agent MCP tool", () => {
             workspaceId: undefined,
             provider: "claude",
             currentModeId: null,
+            config: {},
           } as unknown as ManagedAgent)
         : null,
     );
@@ -3434,6 +3441,7 @@ describe("create_agent MCP tool", () => {
             workspaceId: undefined,
             provider: "claude",
             currentModeId: null,
+            config: {},
           } as unknown as ManagedAgent)
         : null,
     );
@@ -3570,13 +3578,13 @@ describe("create_agent MCP tool", () => {
     expect(response.structuredContent.guidance).toBe(
       "You will get notified when the created agent finishes, errors, or needs permission. Do not poll for status; continue with other work until the notification arrives.",
     );
-    const [[, , runOptions]] = spies.agentManager.streamAgent.mock.calls as unknown as Array<
-      [string, string, { clientMessageId: string }]
+    const [[, prompt]] = spies.agentManager.streamAgent.mock.calls as unknown as Array<
+      [string, string]
     >;
-    expect(spies.agentManager.annotatePrompt).toHaveBeenCalledWith("child-agent", {
-      messageId: runOptions.clientMessageId,
-      prompt: "Do work",
-      annotation: { kind: "origin", origin: { kind: "agent", agentId: "parent-agent" } },
+    expect(parseAgentMessage(prompt)).toEqual({
+      id: expect.any(String),
+      source: expect.objectContaining({ kind: "agent-message", agentId: "parent-agent" }),
+      text: "Do work",
     });
   });
 
@@ -4263,10 +4271,13 @@ describe("send_agent_prompt MCP tool", () => {
     expect(response.structuredContent.guidance).toBe(
       "You will get notified when the prompted agent finishes, errors, or needs permission. Do not poll for status; continue with other work until the notification arrives.",
     );
-    expect(spies.agentManager.annotatePrompt).toHaveBeenCalledWith("child-agent", {
-      messageId: expect.stringMatching(/^mcp:/),
-      prompt: "Follow up",
-      annotation: { kind: "origin", origin: { kind: "agent", agentId: "parent-agent" } },
+    const [[, prompt]] = spies.agentManager.streamAgent.mock.calls as unknown as Array<
+      [string, string]
+    >;
+    expect(parseAgentMessage(prompt)).toEqual({
+      id: expect.stringMatching(/^mcp:/),
+      source: expect.objectContaining({ kind: "agent-message", agentId: "parent-agent" }),
+      text: "Follow up",
     });
   });
 
@@ -4322,22 +4333,21 @@ describe("send_agent_prompt MCP tool", () => {
       prompt: "Heads up: charge is now createCharge.",
     });
 
-    const expectedPrompt = formatPeerMessage({
-      sender: {
+    const [[, prompt]] = spies.agentManager.streamAgent.mock.calls as unknown as Array<
+      [string, string]
+    >;
+    expect(prompt).toContain('guidance="Note from another agent, not from your user.');
+    expect(parseAgentMessage(prompt)).toEqual({
+      id: expect.stringMatching(/^mcp:/),
+      source: {
+        kind: "agent-message",
         agentId: "sender",
         title: "Rename charge",
         workspaceTitle: "createCharge",
         branch: "peers-create-charge",
+        relation: "peer",
       },
-      body: "Heads up: charge is now createCharge.",
-    });
-    expect(spies.agentManager.annotatePrompt).toHaveBeenCalledWith("peer", {
-      messageId: expect.stringMatching(/^mcp:/),
-      prompt: expectedPrompt,
-      annotation: {
-        kind: "origin",
-        origin: { kind: "agent", agentId: "sender", relation: "peer" },
-      },
+      text: "Heads up: charge is now createCharge.",
     });
     expect(delegate).not.toHaveBeenCalled();
     expect(response.structuredContent.guidance).toBeUndefined();
@@ -4353,6 +4363,7 @@ describe("send_agent_prompt MCP tool", () => {
           cwd: existingCwd,
           provider: "claude",
           currentModeId: null,
+          config: {},
         } as unknown as ManagedAgent;
       }
       if (agentId === "child-agent") {
@@ -4585,11 +4596,14 @@ describe("send_agent_prompt MCP tool", () => {
         disposition: "queued",
       });
       const childSession = childClient.sessions[0]!;
-      expect(childSession.prompts).toEqual(["Run a long command"]);
+      expect(deliveredTexts(childSession.prompts)).toEqual(["Run a long command"]);
 
       childSession.finishTurn();
       await vi.waitFor(() =>
-        expect(childSession.prompts).toEqual(["Run a long command", "Stop and reply instead"]),
+        expect(deliveredTexts(childSession.prompts)).toEqual([
+          "Run a long command",
+          "Stop and reply instead",
+        ]),
       );
       await vi.waitFor(() => expect(agentManager.getAgent(childId)?.lifecycle).toBe("running"));
       childSession.finishTurn();
@@ -4780,8 +4794,8 @@ describe("send_agent_prompt delivery", () => {
     const sent = await sendFrom(parentId, { agentId: childId, prompt: "also check tests" });
 
     expect(sent.disposition).toBe("steered");
-    expect(child.steerPrompts).toEqual(["also check tests"]);
-    expect(child.startPrompts).toEqual(["long task"]);
+    expect(deliveredTexts(child.steerPrompts)).toEqual(["also check tests"]);
+    expect(deliveredTexts(child.startPrompts)).toEqual(["long task"]);
     expect(child.interruptCount).toBe(0);
   });
 
@@ -4791,9 +4805,11 @@ describe("send_agent_prompt delivery", () => {
     const sent = await sendFrom(parentId, { agentId: childId, prompt: "next task" });
 
     expect(sent.disposition).toBe("queued");
-    expect(child.startPrompts).toEqual(["long task"]);
+    expect(deliveredTexts(child.startPrompts)).toEqual(["long task"]);
     child.completeTurn("long task done");
-    await vi.waitFor(() => expect(child.startPrompts).toEqual(["long task", "next task"]));
+    await vi.waitFor(() =>
+      expect(deliveredTexts(child.startPrompts)).toEqual(["long task", "next task"]),
+    );
     expect(child.interruptCount).toBe(0);
   });
 
@@ -4808,7 +4824,7 @@ describe("send_agent_prompt delivery", () => {
 
     expect(sent.disposition).toBe("restarted");
     expect(child.interruptCount).toBe(1);
-    expect(child.startPrompts).toEqual(["long task", "start over"]);
+    expect(deliveredTexts(child.startPrompts)).toEqual(["long task", "start over"]);
   });
 
   it("fails an explicit steer the provider cannot take instead of interrupting", async () => {
@@ -4818,7 +4834,7 @@ describe("send_agent_prompt delivery", () => {
       sendFrom(parentId, { agentId: childId, prompt: "steer this", delivery: "steer" }),
     ).rejects.toThrow("cannot take a steer");
     expect(child.interruptCount).toBe(0);
-    expect(child.startPrompts).toEqual(["long task"]);
+    expect(deliveredTexts(child.startPrompts)).toEqual(["long task"]);
   });
 
   it("keeps interrupting by default for top-level callers", async () => {
@@ -4832,7 +4848,7 @@ describe("send_agent_prompt delivery", () => {
 
     expect(sent.disposition).toBe("restarted");
     expect(child.interruptCount).toBe(1);
-    expect(child.steerPrompts).toEqual([]);
+    expect(deliveredTexts(child.steerPrompts)).toEqual([]);
   });
 
   it("answers a retried send with duplicate instead of running it twice", async () => {
@@ -4842,10 +4858,12 @@ describe("send_agent_prompt delivery", () => {
     expect((await sendFrom(parentId, request)).disposition).toBe("queued");
     expect((await sendFrom(parentId, request)).disposition).toBe("duplicate");
     child.completeTurn("long task done");
-    await vi.waitFor(() => expect(child.startPrompts).toEqual(["long task", "next task"]));
+    await vi.waitFor(() =>
+      expect(deliveredTexts(child.startPrompts)).toEqual(["long task", "next task"]),
+    );
     child.completeTurn("next task done");
     expect((await sendFrom(parentId, request)).disposition).toBe("duplicate");
-    expect(child.startPrompts).toEqual(["long task", "next task"]);
+    expect(deliveredTexts(child.startPrompts)).toEqual(["long task", "next task"]);
   });
 
   it("scopes retry keys to the caller", async () => {
@@ -4857,13 +4875,8 @@ describe("send_agent_prompt delivery", () => {
     expect((await sendFrom(parentId, request)).disposition).toBe("started");
     child.completeTurn("ok");
     expect((await sendFrom(otherCallerId, request)).disposition).toBe("started");
-    expect(child.startPrompts).toEqual([
-      "long task",
-      "status?",
-      expect.stringMatching(
-        /^<paseo-peer-message from_agent=[\s\S]*\nstatus\?\n<\/paseo-peer-message>$/,
-      ),
-    ]);
+    expect(deliveredTexts(child.startPrompts)).toEqual(["long task", "status?", "status?"]);
+    expect(child.startPrompts[2]).toContain('relation="peer"');
   });
 });
 

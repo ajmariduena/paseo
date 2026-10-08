@@ -6,7 +6,11 @@ export const AgentMessageSchema = z.object({
   sender: z.object({
     id: z.string().min(1),
     title: z.string().min(1).optional(),
+    workspaceTitle: z.string().min(1).optional(),
+    branch: z.string().min(1).optional(),
   }),
+  /** A peer is an agent in another session, not the receiver's parent or child. */
+  relation: z.enum(["peer"]).optional(),
   text: z.string(),
 });
 

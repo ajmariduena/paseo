@@ -13,7 +13,6 @@ import type {
 } from "../../worktree-session.js";
 import type { AgentAttachment, FirstAgentContext, GitSetupOptions } from "../../messages.js";
 import type { AgentManager, CreateAgentOptions, ManagedAgent } from "../agent-manager.js";
-import type { AgentMessageOrigin } from "@getpaseo/protocol/agent-types";
 import type { AgentPromptInput, AgentRunOptions, AgentSessionConfig } from "../agent-sdk-types.js";
 import type { AgentStorage } from "../agent-storage.js";
 import type { AgentOwner } from "../agent-owner.js";
@@ -174,7 +173,6 @@ interface ResolvedCreateAgent {
   source?: AgentPromptSource;
   runOptions?: AgentRunOptions;
   /** The agent that wrote the initial prompt, when another agent created this one. */
-  promptSender?: AgentMessageOrigin;
   setupContinuation?: AgentWorktreeSetupContinuation;
   background: boolean;
   promptFailure: CreateAgentPromptFailureMode;
@@ -372,7 +370,6 @@ async function resolveMcpCreateAgent(
   });
 
   const trimmedPrompt = input.initialPrompt?.trim() ?? "";
-  const sender = trimmedPrompt ? agentPromptSender(input.callerAgentId) : {};
   return {
     config: buildMcpSessionConfig({
       input,
@@ -390,24 +387,13 @@ async function resolveMcpCreateAgent(
       env: input.env,
     },
     prompt: trimmedPrompt ? trimmedPrompt : undefined,
-    ...sender,
+    source: input.callerAgentId
+      ? { kind: "agent-message", agentId: input.callerAgentId }
+      : undefined,
     setupContinuation,
     createdWorktree,
     background: input.background,
     promptFailure: input.promptFailure ?? "log",
-  };
-}
-
-/** An agent-sent initial prompt gets a message id so its timeline row can name the sender. */
-function agentPromptSender(
-  callerAgentId: string | undefined,
-): Pick<ResolvedCreateAgent, "runOptions" | "promptSender"> {
-  if (!callerAgentId) {
-    return {};
-  }
-  return {
-    runOptions: { clientMessageId: resolveClientMessageId(undefined) },
-    promptSender: { kind: "agent", agentId: callerAgentId },
   };
 }
 
@@ -497,14 +483,6 @@ async function sendInitialPrompt(
     const prompt = resolved.prompt;
     if (prompt === undefined) {
       return { started: false, liveSnapshot: snapshot };
-    }
-    const messageId = resolved.runOptions?.clientMessageId;
-    if (resolved.promptSender && messageId) {
-      await dependencies.agentManager.annotatePrompt(snapshot.id, {
-        messageId,
-        prompt,
-        annotation: { kind: "origin", origin: resolved.promptSender },
-      });
     }
     const liveSnapshot = await startCreatedAgentInitialPrompt({
       agentStorage: dependencies.agentStorage,

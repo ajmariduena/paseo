@@ -13,6 +13,9 @@ const sourceSchema = z.discriminatedUnion("kind", [
     kind: z.literal("agent-message"),
     agentId: agentIdSchema,
     title: z.string().min(1).optional(),
+    workspaceTitle: z.string().min(1).optional(),
+    branch: z.string().min(1).optional(),
+    relation: z.literal("peer").optional(),
   }),
   z.object({
     kind: z.literal("agent-notification"),
@@ -71,7 +74,22 @@ export function formatAgentMessage(message: AgentMessage): string {
     : 'kind="user-message"';
   const title = source?.title ? ` source-agent-title="${escapeXml(source.title)}"` : "";
   const event = source?.kind === "agent-notification" ? ` event="${source.event}"` : "";
-  return `<paseo-system version="1" ${attributes} message-id="${escapeXml(message.id)}"${title}${event}>\n${escapeXml(message.text)}\n</paseo-system>`;
+  const peer = source?.kind === "agent-message" ? formatPeerAttributes(source) : "";
+  return `<paseo-system version="1" ${attributes} message-id="${escapeXml(message.id)}"${title}${event}${peer}>\n${escapeXml(message.text)}\n</paseo-system>`;
+}
+
+/**
+ * The receiver's model reads these attributes verbatim, so `guidance` tells it the note is from
+ * another session even when it never loaded Paseo's orchestration instructions.
+ */
+function formatPeerAttributes(source: Extract<AgentPromptSource, { kind: "agent-message" }>) {
+  const workspace = source.workspaceTitle
+    ? ` source-workspace-title="${escapeXml(source.workspaceTitle)}"`
+    : "";
+  const branch = source.branch ? ` source-branch="${escapeXml(source.branch)}"` : "";
+  if (source.relation !== "peer") return `${workspace}${branch}`;
+  const guidance = `Note from another agent, not from your user. Weigh it against your own task; reply with send_agent_prompt to ${source.agentId} only if it helps.`;
+  return `${workspace}${branch} relation="peer" guidance="${escapeXml(guidance)}"`;
 }
 
 export function parseAgentMessage(text: string): AgentMessage | null {
@@ -93,11 +111,19 @@ export function parseAgentMessage(text: string): AgentMessage | null {
     if (attributes.has("source-agent-id") || attributes.has("event")) return null;
     return { id, source: null, text: body };
   }
+  const kind = attributes.get("kind");
   const source = sourceSchema.safeParse({
-    kind: attributes.get("kind"),
+    kind,
     agentId: attributes.get("source-agent-id"),
     event: attributes.get("event"),
     title: attributes.get("source-agent-title"),
+    ...(kind === "agent-message"
+      ? {
+          workspaceTitle: attributes.get("source-workspace-title"),
+          branch: attributes.get("source-branch"),
+          relation: attributes.get("relation"),
+        }
+      : {}),
   });
   if (!source.success) return null;
   return { id, source: source.data, text: body };
@@ -144,6 +170,11 @@ export function prepareAgentMessage(
   };
 }
 
+/** The timeline row of a delivered agent message, so a retried delivery can find it. */
+export function agentMessageCallId(messageId: string): string {
+  return `paseo-agent-message:${messageId}`;
+}
+
 /** The same projection owns provider echoes, acceptance, import, and replay. */
 export function projectAgentMessage(item: AgentTimelineItem): AgentTimelineItem | null {
   if (item.type !== "user_message") return item;
@@ -159,10 +190,18 @@ export function projectAgentMessage(item: AgentTimelineItem): AgentTimelineItem 
   }
   return {
     type: "tool_call",
-    callId: `paseo-agent-message:${message.id}`,
+    callId: agentMessageCallId(message.id),
     agentMessage: {
       event: source.kind === "agent-message" ? "message" : source.event,
-      sender: { id: source.agentId, ...(source.title ? { title: source.title } : {}) },
+      sender: {
+        id: source.agentId,
+        ...(source.title ? { title: source.title } : {}),
+        ...(source.kind === "agent-message" && source.workspaceTitle
+          ? { workspaceTitle: source.workspaceTitle }
+          : {}),
+        ...(source.kind === "agent-message" && source.branch ? { branch: source.branch } : {}),
+      },
+      ...(source.kind === "agent-message" && source.relation ? { relation: source.relation } : {}),
       text: message.text,
     },
     // COMPAT(agentMessageToolEnvelope): added in v0.11.1; remove after 2027-04-08

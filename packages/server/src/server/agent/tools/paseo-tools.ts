@@ -16,6 +16,7 @@ import type { Logger } from "pino";
 import type {
   AgentMode,
   AgentPermissionRequest,
+  AgentPromptInput,
   AgentProvider,
   AgentSessionConfig,
   ProviderSnapshotEntry,
@@ -33,7 +34,6 @@ import {
 } from "../../messages.js";
 import type { AgentListItemPayload, AgentSnapshotPayload } from "../../messages.js";
 import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
-import { formatPeerMessage, type PeerMessageSender } from "@getpaseo/protocol/peer-message";
 import {
   buildStoredAgentPayload,
   toAgentListItemPayload,
@@ -93,6 +93,7 @@ import {
   waitForAgentWithTimeout,
 } from "../mcp-shared.js";
 import { prepareAgentForPrompt, waitForAgentRunStartWithTimeout } from "../agent-prompt.js";
+import { prepareAgentMessage, type AgentPromptSource } from "../agent-messages/index.js";
 import {
   dispatchAgentMessageInBackground,
   isMessageAlreadyDispatched,
@@ -2419,7 +2420,6 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     async (args: SendAgentPromptArgs) => {
       const { agentId } = args;
       const peer = await resolvePeerSender(agentId);
-      const prompt = peer ? formatPeerMessage({ sender: peer, body: args.prompt }) : args.prompt;
       const background = args.background ?? Boolean(callerAgentId);
       const notifyOnFinish = args.notifyOnFinish ?? (Boolean(callerAgentId) && !peer);
 
@@ -2433,7 +2433,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           childAgentId: agentId,
           source: "send_agent_prompt",
           title: (await agentStorage.get(agentId))?.title ?? agentId,
-          prompt,
+          prompt: args.prompt,
           requireParentOwnership: false,
         });
         return PROMPTED_AGENT_NOTIFICATION_GUIDANCE;
@@ -2457,12 +2457,16 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         });
       }
 
+      const { prompt } = prepareAgentMessage(
+        args.prompt,
+        peer ?? (await resolveCallerSource()),
+        messageId,
+      );
       const dispatch = await dispatchPrompt({
         agentId,
         prompt,
         messageId,
         delivery: args.delivery ?? (callerAgentId ? "auto" : "restart"),
-        peer: Boolean(peer),
       });
       const disposition = toSendDisposition(dispatch.disposition);
       callerContext?.onAgentPrompted?.(agentId);
@@ -2498,7 +2502,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   );
 
   /** A prompt from an agent that is not the receiver's parent is a note between sessions. */
-  async function resolvePeerSender(targetAgentId: string): Promise<PeerMessageSender | null> {
+  async function resolvePeerSender(targetAgentId: string): Promise<AgentPromptSource | null> {
     if (!callerAgentId || callerAgentId === targetAgentId) return null;
     const target = agentManager.getAgent(targetAgentId) ?? (await agentStorage.get(targetAgentId));
     if (getParentAgentIdFromLabels(target?.labels) === callerAgentId) return null;
@@ -2506,12 +2510,26 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     const workspace = caller?.workspaceId
       ? await options.workspaceRegistry?.get(caller.workspaceId)
       : null;
+    const title = caller?.title?.trim();
+    const workspaceTitle = (workspace?.title ?? workspace?.displayName)?.trim();
+    const branch = workspace?.branch?.trim();
     return {
+      kind: "agent-message",
       agentId: callerAgentId,
-      title: caller?.title ?? null,
-      workspaceTitle: workspace ? (workspace.title ?? workspace.displayName) : null,
-      branch: workspace?.branch ?? null,
+      relation: "peer",
+      ...(title ? { title } : {}),
+      ...(workspaceTitle ? { workspaceTitle } : {}),
+      ...(branch ? { branch } : {}),
     };
+  }
+
+  async function resolveCallerSource(): Promise<AgentPromptSource | undefined> {
+    if (!callerAgentId) return undefined;
+    const title = (
+      agentManager.getAgent(callerAgentId)?.config.title ??
+      (await agentStorage.get(callerAgentId))?.title
+    )?.trim();
+    return { kind: "agent-message", agentId: callerAgentId, ...(title ? { title } : {}) };
   }
 
   function currentStatus(agentId: string): z.infer<typeof AgentStatusEnum> {
@@ -2543,10 +2561,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   /** A queued prompt keeps dispatching after this returns; its failure can only be logged. */
   async function dispatchPrompt(input: {
     agentId: string;
-    prompt: string;
+    prompt: AgentPromptInput;
     messageId: string;
     delivery: DispatchIntent;
-    peer: boolean;
   }): Promise<BackgroundDispatch> {
     let dispatch: BackgroundDispatch;
     try {
@@ -2559,15 +2576,6 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           intent: input.delivery,
           prompt: input.prompt,
           steerUnavailable: "fail",
-          ...(callerAgentId
-            ? {
-                origin: {
-                  kind: "agent" as const,
-                  agentId: callerAgentId,
-                  ...(input.peer ? { relation: "peer" as const } : {}),
-                },
-              }
-            : {}),
         },
         logger: childLogger,
       });

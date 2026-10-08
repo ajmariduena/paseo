@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { formatPeerMessage } from "@getpaseo/protocol/peer-message";
 import { i18n } from "@/i18n/i18next";
-import type { StreamItem, UserMessageItem } from "@/types/stream";
+import type { StreamItem, ToolCallItem, UserMessageItem } from "@/types/stream";
 import {
   excerptPeerNote,
   formatPromptPreview,
@@ -23,6 +23,36 @@ function userMessage(text: string): UserMessageItem {
   return { kind: "user_message", id: "msg", text, timestamp: new Date(0) };
 }
 
+function agentMessageRow(relation?: "peer"): ToolCallItem {
+  return {
+    kind: "tool_call",
+    id: "agent_tool_note",
+    timestamp: new Date(0),
+    payload: {
+      source: "agent",
+      data: {
+        provider: "claude",
+        callId: "paseo-agent-message:note",
+        name: "agent_message",
+        status: "completed",
+        error: null,
+        detail: { type: "plain_text", text: body },
+        agentMessage: {
+          event: "message",
+          sender: {
+            id: sender.agentId,
+            title: sender.title,
+            workspaceTitle: sender.workspaceTitle,
+            branch: sender.branch,
+          },
+          ...(relation ? { relation } : {}),
+          text: body,
+        },
+      },
+    },
+  };
+}
+
 describe("peer notes", () => {
   beforeAll(async () => {
     if (!i18n.isInitialized) {
@@ -36,6 +66,11 @@ describe("peer notes", () => {
 
     expect(note).toEqual({ sender, body });
     expect(note?.body).not.toContain("send_agent_prompt");
+  });
+
+  it("reads a peer note delivered in an agent-message row, but not a parent's message", () => {
+    expect(readPeerNote(agentMessageRow("peer"))).toEqual({ sender, body });
+    expect(isPeerNote(agentMessageRow())).toBe(false);
   });
 
   it("treats a plain prompt, including one another agent sent, as the user's own message", () => {
