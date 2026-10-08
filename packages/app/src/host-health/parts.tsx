@@ -48,7 +48,7 @@ export function HostStatusBadge({ status }: { status: HostStatus }): ReactElemen
 }
 
 export function HostStatusDot({ status }: { status: HostStatus }): ReactElement {
-  return <View style={[styles.dot, DOT_STYLE[status]]} />;
+  return <View style={[styles.dot, dotStyle(status)]} />;
 }
 
 export function lastSeenLabel(
@@ -122,12 +122,9 @@ const styles = StyleSheet.create((theme) => ({
   },
 }));
 
-const DOT_STYLE: Record<HostStatus, object> = {
-  healthy: styles.dotHealthy,
-  pressure: styles.dotPressure,
-  critical: styles.dotCritical,
-  offline: styles.dotIdle,
-  connecting: styles.dotIdle,
-  unsupported: styles.dotIdle,
-  error: styles.dotIdle,
-};
+function dotStyle(status: HostStatus) {
+  if (status === "healthy") return styles.dotHealthy;
+  if (status === "pressure") return styles.dotPressure;
+  if (status === "critical") return styles.dotCritical;
+  return styles.dotIdle;
+}

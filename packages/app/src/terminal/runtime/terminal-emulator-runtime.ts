@@ -441,7 +441,7 @@ export class TerminalEmulatorRuntime {
   }
 
   private handleMacKey(event: KeyboardEvent): boolean {
-    if (!this.options.isMac) return false;
+    if (!this.options.isMac || hasPendingTerminalModifiers(this.pendingModifiers)) return false;
     const action = resolveMacTerminalKeyAction(event, {
       optionAsMeta: this.macOptionAsMeta,
       optionKeyLocations: this.optionKeyLocations,

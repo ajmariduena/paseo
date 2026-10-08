@@ -112,6 +112,18 @@ async function fixture() {
   return { root, homes, env, run, ok, liveStatus, configure, close };
 }
 
+/** Every home starts with the daemon's scratch project, which the user did not create. */
+async function userProjects(
+  f: Awaited<ReturnType<typeof fixture>>,
+  home: string,
+  overrides?: NodeJS.ProcessEnv,
+): Promise<unknown[]> {
+  const rows = (await f.ok(["project", "ls", "--home", home], overrides)) as Array<{
+    path?: string;
+  }>;
+  return rows.filter((row) => row.path !== path.join(home, "scratch"));
+}
+
 test("managed two-home restart retains its supervisor and never routes ordinary commands or stop to the other home", async () => {
   const f = await fixture();
   const [a, b] = f.homes as [string, string];
@@ -143,8 +155,8 @@ test("managed two-home restart retains its supervisor and never routes ordinary 
     const repoB = path.join(f.root, "project-b");
     await mkdir(repoB);
     await f.ok(["project", "create", repoB, "--home", b], poisoned);
-    expect(await f.ok(["project", "ls", "--home", a])).toEqual([]);
-    expect((await f.ok(["project", "ls", "--home", b], poisoned)).length).toBe(1);
+    expect(await userProjects(f, a)).toEqual([]);
+    expect((await userProjects(f, b, poisoned)).length).toBe(1);
     const stream = await f.run(["logs", "missing-agent", "--follow", "--home", b], poisoned);
     expect(stream.stderr).toContain("No agent found matching: missing-agent");
     const restart = await f.ok(["restart", "--home", b, "--timeout", "30"], poisoned);
@@ -166,7 +178,7 @@ test("managed two-home restart retains its supervisor and never routes ordinary 
     const afterA = await f.liveStatus(a);
     expect(afterA.workerPid).toBe(beforeA.workerPid);
     expect(afterA.pid).toBe(beforeA.pid);
-    expect(await f.ok(["project", "ls", "--home", a])).toEqual([]);
+    expect(await userProjects(f, a)).toEqual([]);
   } finally {
     await f.close();
   }
@@ -475,7 +487,7 @@ test("IPv6 publication supports home-selected query and worker restart", async (
     await f.configure(home, endpoint);
     const launch = await f.ok(["start", "--home", home, "--timeout", "30"]);
     expect(launch.listen).toBe(endpoint);
-    expect(await f.ok(["project", "ls", "--home", home])).toEqual([]);
+    expect(await userProjects(f, home)).toEqual([]);
     const restarted = await f.ok(["restart", "--home", home, "--timeout", "30"]);
     expect(restarted.supervisorPid).toBe(launch.pid);
     expect(restarted.workerPid).not.toBe(restarted.previousWorkerPid);

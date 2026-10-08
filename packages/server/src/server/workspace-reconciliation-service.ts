@@ -55,6 +55,14 @@ const systemClock: ReconciliationClock = {
   clearInterval: (timer) => clearInterval(timer as ReturnType<typeof setInterval>),
 };
 
+/**
+ * The scratch parent lives inside PASEO_HOME and never holds a checkout. Watching it would also
+ * lock the directory on Windows, so removing the home fails with EBUSY.
+ */
+function isReconciledProject(project: PersistedProjectRecord): boolean {
+  return project.origin !== "scratch";
+}
+
 const watchProjectRoot: ProjectRootWatch = (rootPath, options, onChange, onError) => {
   const watcher = watchPath(rootPath, options, onChange);
   watcher.on("error", onError);
@@ -309,6 +317,7 @@ export class WorkspaceReconciliationService {
     workspacesByProject: Map<string, PersistedWorkspaceRecord[]>,
     changes: ReconciliationChange[],
   ): Promise<void> {
+    projectsToReconcile = projectsToReconcile.filter(isReconciledProject);
     const checkoutReads: CachedCheckoutRead[] = [];
     const readCheckout = (cwd: string): Promise<ProjectCheckoutLitePayload> => {
       const existing = checkoutReads.find((read) => areEquivalentPaths(read.cwd, cwd));
@@ -420,7 +429,9 @@ export class WorkspaceReconciliationService {
     if (this.disposed) return;
     const projects = await this.projectRegistry.list();
     if (this.disposed) return;
-    const activeProjects = projects.filter((project) => !project.archivedAt);
+    const activeProjects = projects.filter(
+      (project) => !project.archivedAt && isReconciledProject(project),
+    );
 
     for (let index = this.watchers.length - 1; index >= 0; index -= 1) {
       const target = this.watchers[index]!;

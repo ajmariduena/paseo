@@ -11,6 +11,13 @@ export const BottomSheetBackdrop = Stub;
 export const BottomSheetScrollView = PassThrough;
 export const BottomSheetView = PassThrough;
 export const BottomSheetTextInput = Stub;
+export const BottomSheetFlatList = Stub;
+export type BottomSheetBackgroundProps = Record<string, unknown>;
+
+/** Null outside a sheet, which is where browser unit tests always render. */
+export function useBottomSheetModalInternal(_unsafe?: boolean): null {
+  return null;
+}
 
 export function useBottomSheetModal(): never {
   throw new Error("Modal stack interactions require the real Gorhom provider in browser E2E tests");

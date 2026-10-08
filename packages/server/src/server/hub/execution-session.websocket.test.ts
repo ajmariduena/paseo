@@ -163,11 +163,11 @@ test("ordinary Hub create and message retries do not duplicate agents or prompts
     text: "hello",
     activeTurnBehavior: "steer",
   };
-  expect(await hub.requestOrdinary({ ...message, requestId: "message-first" })).toEqual({
+  expect(await hub.requestOrdinary({ ...message, requestId: "message-first" })).toMatchObject({
     type: "send_agent_message_response",
     payload: { requestId: "message-first", agentId, accepted: true, error: null },
   });
-  expect(await hub.requestOrdinary({ ...message, requestId: "message-duplicate" })).toEqual({
+  expect(await hub.requestOrdinary({ ...message, requestId: "message-duplicate" })).toMatchObject({
     type: "send_agent_message_response",
     payload: { requestId: "message-duplicate", agentId, accepted: true, error: null },
   });

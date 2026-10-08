@@ -329,6 +329,7 @@ describe("selectSubagentsForParent", () => {
       "description",
       "id",
       "kind",
+      "lastTurnOutcome",
       "model",
       "provider",
       "requiresAttention",

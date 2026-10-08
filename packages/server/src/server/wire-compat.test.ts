@@ -102,6 +102,7 @@ class InMemoryAgentManager {
       lastUsage: undefined,
       lastError: undefined,
       attention: { requiresAttention: false, attentionReason: null, attentionTimestamp: null },
+      backgroundTasks: [],
       foregroundTurnWaiters: new Set(),
       finalizedForegroundTurnIds: new Set(),
       unsubscribeSession: null,
@@ -111,9 +112,17 @@ class InMemoryAgentManager {
     };
   }
 
+  readonly messageQueue = { snapshot: () => null };
+
   fetchTimeline(_agentId: string, options?: AgentTimelineFetchOptions) {
     return this.timeline.fetch("agent-1", options);
   }
+
+  listDaemonBackgroundTasks() {
+    return [];
+  }
+
+  noteAgentAccess() {}
 
   listAgents() {
     return [];
