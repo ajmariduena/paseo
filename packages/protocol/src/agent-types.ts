@@ -392,8 +392,11 @@ export interface SubagentNotificationSource {
   subagents: SubagentNotificationEntry[];
 }
 
+/** Why a daemon notification reached this agent. Extend with new `kind`s, never reshape one. */
+export type NotificationSource = SubagentNotificationSource;
+
 /** The boundary between two provider segments of one agent; `handoffId` opens "Ver contexto". */
-export interface ProviderSwitchNotificationSource {
+export interface ProviderSwitchNotification {
   kind: "provider_switch";
   segmentId: string;
   fromProvider: string;
@@ -404,7 +407,7 @@ export interface ProviderSwitchNotificationSource {
 }
 
 /** A native session replaced inside one segment, without a provider change. */
-export interface IncarnationNotificationSource {
+export interface IncarnationNotification {
   kind: "incarnation";
   segmentId: string;
   incarnationId: string;
@@ -412,19 +415,21 @@ export interface IncarnationNotificationSource {
 }
 
 /** Retired history the daemon could not show in full. */
-export interface RetiredHistoryNotificationSource {
+export interface RetiredHistoryNotification {
   kind: "retired_history";
   segmentId: string;
   incarnationId: string;
   reason: "dropped" | "unavailable" | "over_cap";
 }
 
-/** Why a daemon notification reached this agent. Extend with new `kind`s, never reshape one. */
-export type NotificationSource =
-  | SubagentNotificationSource
-  | ProviderSwitchNotificationSource
-  | IncarnationNotificationSource
-  | RetiredHistoryNotificationSource;
+/**
+ * Segment context of a notification row. A separate optional field, not a `source` kind, so
+ * clients whose `source` union predates provider switching still parse the row.
+ */
+export type ProviderSegmentNotification =
+  | ProviderSwitchNotification
+  | IncarnationNotification
+  | RetiredHistoryNotification;
 
 export interface NotificationTimelineItem {
   type: "notification";
@@ -433,6 +438,7 @@ export interface NotificationTimelineItem {
   /** The id of the prompt the provider received for this notification, when there was one. */
   messageId?: string;
   source?: NotificationSource;
+  providerSegment?: ProviderSegmentNotification;
 }
 
 export interface UserMessageOrigin {

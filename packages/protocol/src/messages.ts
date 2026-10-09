@@ -725,6 +725,9 @@ export const NotificationSourceSchema = z.discriminatedUnion("kind", [
       }),
     ),
   }),
+]);
+
+export const ProviderSegmentNotificationSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("provider_switch"),
     segmentId: z.string(),
@@ -792,6 +795,8 @@ export const AgentTimelineItemPayloadSchema: z.ZodType<AgentTimelineItem, unknow
     // COMPAT(notificationSource): added in v0.11.0, keep optional; older daemons send neither.
     messageId: z.string().optional(),
     source: NotificationSourceSchema.optional(),
+    // Optional on purpose: older clients ignore it instead of rejecting an unknown source kind.
+    providerSegment: ProviderSegmentNotificationSchema.optional(),
   }),
   z.object({
     type: z.literal("compaction"),
