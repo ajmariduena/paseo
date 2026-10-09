@@ -36,9 +36,12 @@ export type PendingWorkspaceCreation = z.infer<typeof PendingCreationSchema>;
 
 interface PendingCreationState {
   byKey: Record<string, PendingWorkspaceCreation>;
+  // A restored intent has no in-memory draft handoff; the reconciler must prepare it again.
+  presentationReadyByKey: Record<string, true>;
   hydrated: boolean;
   add: (creation: PendingWorkspaceCreation) => Promise<void>;
   update: (key: string, change: Partial<PendingWorkspaceCreation>) => void;
+  markPresentationReady: (key: string) => void;
   remove: (key: string) => void;
 }
 
@@ -71,6 +74,7 @@ function persistCreations(): Promise<void> {
 
 export const usePendingWorkspaceCreationStore = create<PendingCreationState>((set) => ({
   byKey: {},
+  presentationReadyByKey: {},
   hydrated: false,
   add: async (creation) => {
     const key = pendingWorkspaceCreationKey(creation.serverId, creation.workspaceId);
@@ -90,12 +94,18 @@ export const usePendingWorkspaceCreationStore = create<PendingCreationState>((se
       console.error("[PendingWorkspaceCreation] Failed to persist phase", error);
     });
   },
+  markPresentationReady: (key) =>
+    set((state) => ({
+      presentationReadyByKey: { ...state.presentationReadyByKey, [key]: true },
+    })),
   remove: (key) => {
     set((state) => {
       if (!state.byKey[key]) return state;
       const byKey = { ...state.byKey };
       delete byKey[key];
-      return { byKey };
+      const presentationReadyByKey = { ...state.presentationReadyByKey };
+      delete presentationReadyByKey[key];
+      return { byKey, presentationReadyByKey };
     });
     void persistCreations().catch((error) => {
       console.error("[PendingWorkspaceCreation] Failed to remove saved creation", error);

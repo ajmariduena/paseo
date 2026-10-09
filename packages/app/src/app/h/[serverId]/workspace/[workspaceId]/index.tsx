@@ -122,6 +122,10 @@ function HostWorkspaceRouteContent() {
   const pendingCreation = usePendingWorkspaceCreationStore(
     (state) => state.byKey[pendingWorkspaceCreationKey(serverId, workspaceId)] ?? null,
   );
+  const pendingPresentationReady = usePendingWorkspaceCreationStore(
+    (state) =>
+      state.presentationReadyByKey[pendingWorkspaceCreationKey(serverId, workspaceId)] === true,
+  );
   const pendingCreationsHydrated = usePendingWorkspaceCreationStore((state) => state.hydrated);
   const openIntent = useMemo(() => parseWorkspaceOpenIntent(openValue), [openValue]);
   const isAgentOpenIntent = openIntent?.kind === "agent";
@@ -199,10 +203,10 @@ function HostWorkspaceRouteContent() {
     return null;
   }
 
-  if (!workspaceExists && pendingCreation) {
+  if (!pendingCreationsHydrated) return null;
+  if (pendingCreation && (!workspaceExists || !pendingPresentationReady)) {
     return <PendingWorkspaceScreen creation={pendingCreation} />;
   }
-  if (!workspaceExists && !pendingCreationsHydrated) return null;
   return <WorkspaceDeck recoveryRequested={isAgentOpenIntent} />;
 }
 

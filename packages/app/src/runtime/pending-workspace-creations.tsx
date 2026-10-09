@@ -8,6 +8,9 @@ import {
   usePendingWorkspaceCreationStore,
 } from "@/stores/pending-workspace-creation";
 import { normalizeWorkspaceDescriptor } from "@/stores/session-store";
+import { createUserMessage } from "@/types/stream";
+import { normalizeAgentSnapshot } from "@/utils/agent-snapshots";
+import { handoffCreatedAgentMessageSubmission } from "@/composer/submission/writer";
 import { prepareWorkspaceTab } from "@/utils/workspace-navigation";
 
 interface Observation {
@@ -39,11 +42,25 @@ function reconcileSnapshot(key: string, snapshot: CreationSnapshot | null): void
     return;
   }
   if (snapshot.agent && snapshot.agentId) {
+    getHostRuntimeStore().acceptAgentSnapshot(
+      creation.serverId,
+      normalizeAgentSnapshot(snapshot.agent, creation.serverId),
+    );
+    handoffCreatedAgentMessageSubmission(
+      creation.serverId,
+      snapshot.agentId,
+      createUserMessage({
+        clientMessageId: creation.clientMessageId,
+        text: creation.prompt,
+        timestamp: new Date(creation.createdAt),
+      }),
+    );
     prepareWorkspaceTab({
       serverId: creation.serverId,
       workspaceId: creation.workspaceId,
       target: { kind: "agent", agentId: snapshot.agentId },
     });
+    store.markPresentationReady(key);
   }
   if (snapshot.phase === "completed") {
     store.remove(key);
