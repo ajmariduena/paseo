@@ -38,7 +38,6 @@ import { buttonControlHeight } from "@/components/ui/control-geometry";
 import { Shortcut } from "@/components/ui/shortcut";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { HEADER_INNER_HEIGHT, useControlDensity, useIsCompactFormFactor } from "@/constants/layout";
-import { TOUCH_ROW_HEIGHT } from "@/components/ui/control-geometry";
 import { useOpenAddProject } from "@/hooks/use-open-add-project";
 import { useImportSession } from "@/hooks/use-import-session";
 import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
@@ -1003,8 +1002,8 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing[1],
   }),
   footerIconButtonTouch: {
-    width: TOUCH_ROW_HEIGHT,
-    height: TOUCH_ROW_HEIGHT,
+    width: buttonControlHeight.md,
+    height: buttonControlHeight.md,
   },
   tooltipRow: {
     flexDirection: "row",

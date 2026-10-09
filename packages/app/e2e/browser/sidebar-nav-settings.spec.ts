@@ -138,6 +138,8 @@ test.describe("Sidebar items in Appearance settings", () => {
         { key: "schedules", visible: true },
         { key: "history", visible: false },
         { key: "search", visible: true },
+        { key: "notes", visible: true },
+        { key: "host-health", visible: true },
       ]);
 
       await leaveSettings(page);

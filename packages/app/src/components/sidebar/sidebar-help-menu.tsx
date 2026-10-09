@@ -23,7 +23,6 @@ import { useHostRuntimeIsConnected, useHosts } from "@/runtime/host-runtime";
 import { useKeyboardShortcutsStore } from "@/stores/keyboard-shortcuts-store";
 import { useSessionStore } from "@/stores/session-store";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
-import { TOUCH_ROW_HEIGHT } from "@/components/ui/control-geometry";
 import { useControlDensity } from "@/constants/layout";
 import type { HostProfile } from "@/types/host-connection";
 import { formatVersionWithPrefix } from "@/desktop/updates/desktop-updates";
@@ -192,8 +191,8 @@ export function SidebarHelpMenu() {
 
 const styles = StyleSheet.create((theme) => ({
   triggerTouch: {
-    width: TOUCH_ROW_HEIGHT,
-    height: TOUCH_ROW_HEIGHT,
+    width: buttonControlHeight.md,
+    height: buttonControlHeight.md,
   },
   trigger: (isCompact: boolean) => ({
     width: isCompact ? buttonControlHeight.md : buttonControlHeight.xs,
