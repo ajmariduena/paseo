@@ -104,10 +104,14 @@ test.each(["git~1/config", ".g\u200cit/config", ".gi\u034ft/config"])(
   },
 );
 
-test("refuses undecodable filenames instead of silently treating them as deleted", async () => {
-  const bytes = Buffer.concat([Buffer.from(`${source}/`), Buffer.from([0xff])]);
-  await writeFile(bytes, "keep this file");
-  await expect(captureWorkspace({ cwd: source, artifactDirectory })).rejects.toMatchObject({
-    code: "unsupported_workspace",
-  });
-});
+// macOS rejects invalid UTF-8 at file creation. Linux can retain these untracked names.
+test.skipIf(process.platform !== "linux")(
+  "refuses undecodable filenames instead of silently treating them as deleted",
+  async () => {
+    const bytes = Buffer.concat([Buffer.from(`${source}/`), Buffer.from([0xff])]);
+    await writeFile(bytes, "keep this file");
+    await expect(captureWorkspace({ cwd: source, artifactDirectory })).rejects.toMatchObject({
+      code: "unsupported_workspace",
+    });
+  },
+);

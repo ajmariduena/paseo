@@ -86,6 +86,26 @@ test("refuses intent-to-add instead of silently changing the Git index", async (
   ).rejects.toMatchObject({ code: "unsupported_workspace" });
 });
 
+test("refuses undecodable index names even when the host cannot create their working files", async () => {
+  const hash = (await git(source, "rev-parse", "HEAD:tracked.txt")).trim();
+  const entry = Buffer.concat([Buffer.from(`100644 ${hash}\t`), Buffer.from([0xff, 0])]);
+  const update = exec("git", ["update-index", "-z", "--index-info"], { cwd: source });
+  if (!update.child.stdin) throw new Error("Git index fixture needs piped stdin");
+  update.child.stdin.end(entry);
+  await update;
+  const index = await exec("git", ["ls-files", "--stage", "-z"], {
+    cwd: source,
+    encoding: "buffer",
+  });
+  expect(index.stdout.includes(Buffer.from([0x09, 0xff, 0]))).toBe(true);
+  await expect(
+    captureWorkspace({ cwd: source, artifactDirectory: artifact }),
+  ).rejects.toMatchObject({
+    code: "unsupported_workspace",
+    message: "Workspace contains non-UTF-8 Git paths or configuration",
+  });
+});
+
 test.each([
   ["case-file", "CASE-FILE"],
   ["directory/one", "DIRECTORY/two"],
