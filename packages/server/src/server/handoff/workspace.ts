@@ -256,7 +256,8 @@ async function runRestoreGit(cwd: string, args: string[]): Promise<string> {
     cwd,
     envOverlay: {
       GIT_CONFIG_NOSYSTEM: "1",
-      GIT_CONFIG_GLOBAL: os.devNull,
+      // Git for Windows maps /dev/null itself; Node's \\.\nul path is rejected by Git.
+      GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_OPTIONAL_LOCKS: "0",
       GIT_TERMINAL_PROMPT: "0",
     },

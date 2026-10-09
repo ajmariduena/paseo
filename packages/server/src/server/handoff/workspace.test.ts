@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -25,7 +25,7 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
     env: {
       ...process.env,
       GIT_CONFIG_NOSYSTEM: "1",
-      GIT_CONFIG_GLOBAL: os.devNull,
+      GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_AUTHOR_NAME: "Handoff Test",
       GIT_AUTHOR_EMAIL: "handoff@example.com",
       GIT_COMMITTER_NAME: "Handoff Test",
@@ -36,7 +36,7 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
 }
 
 beforeEach(async () => {
-  root = await mkdtemp(path.join(os.tmpdir(), "paseo-handoff-workspace-"));
+  root = await realpath(await mkdtemp(path.join(os.tmpdir(), "paseo-handoff-workspace-")));
   source = path.join(root, "source");
   artifact = path.join(root, "artifact");
   destination = path.join(root, "destination");
@@ -91,9 +91,14 @@ test.each([
   ["directory/one", "DIRECTORY/two"],
   ["é/one", "e\u0301/two"],
 ])("refuses colliding index paths %s and %s even without working files", async (first, second) => {
+  // macOS Git otherwise normalizes argv before these distinct index paths are inserted.
+  await git(source, "config", "core.precomposeUnicode", "false");
   const hash = (await git(source, "rev-parse", "HEAD:tracked.txt")).trim();
   await git(source, "update-index", "--add", "--cacheinfo", `100644,${hash},${first}`);
   await git(source, "update-index", "--add", "--cacheinfo", `100644,${hash},${second}`);
+  const indexPaths = (await git(source, "ls-files", "-z")).split("\0");
+  expect(indexPaths).toContain(first);
+  expect(indexPaths).toContain(second);
   await expect(
     captureWorkspace({ cwd: source, artifactDirectory: artifact }),
   ).rejects.toMatchObject({ code: "unsupported_workspace" });
