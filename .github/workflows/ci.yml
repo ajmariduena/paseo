@@ -239,6 +239,8 @@ jobs:
             packages/server/src/server/workspace-auto-name.test.ts \
             packages/server/src/server/workspace-archive-service.test.ts \
             packages/server/src/server/paseo-worktree-service.test.ts \
+            packages/server/src/server/worktree-session.test.ts \
+            packages/server/src/server/worktree-bootstrap.test.ts \
             packages/server/src/server/auto-archive-on-merge/archive-if-safe.test.ts \
             packages/server/src/server/session.workspaces.test.ts \
             packages/server/src/server/session/workspace-provisioning/workspace-provisioning-service.test.ts \

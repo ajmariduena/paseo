@@ -120,6 +120,12 @@ describe("paseo daemon bootstrap", () => {
         displayName: "Handoff",
         createdAt: now,
         updatedAt: now,
+        untrustedSource: {
+          kind: "change_request",
+          forge: "github",
+          number: 42,
+          headRepository: "contributor/repo",
+        },
       }),
     );
     const ownership = new HandoffOwnership({
@@ -146,6 +152,12 @@ describe("paseo daemon bootstrap", () => {
       );
       expect((await client.fetchAgents()).entries).toEqual([]);
       const error = `Workspace is held by handoff ${transferId} (preparing)`;
+      expect(await client.runWorkspaceSetup("moved-workspace", "handoff-run-setup")).toEqual({
+        requestId: "handoff-run-setup",
+        workspaceId: "moved-workspace",
+        started: false,
+        error,
+      });
       expect(
         await client.createWorkspace({ source: { kind: "directory", path: cwd } }),
       ).toMatchObject({
@@ -185,6 +197,12 @@ describe("paseo daemon bootstrap", () => {
         "moved-workspace",
       ]);
       expect((await persisted.get("moved-workspace"))?.archivedAt).toBe(null);
+      expect((await persisted.get("moved-workspace"))?.untrustedSource).toEqual({
+        kind: "change_request",
+        forge: "github",
+        number: 42,
+        headRepository: "contributor/repo",
+      });
       expect(await client.startWorkspaceScript("moved-workspace", "app", "handoff-script")).toEqual(
         {
           requestId: "handoff-script",

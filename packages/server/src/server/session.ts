@@ -8129,6 +8129,7 @@ export class Session {
   ): Promise<CreatePaseoWorktreeWorkflowResult> {
     return createWorktreeWorkflow(
       {
+        handoffOwnership: this.handoffOwnership,
         paseoHome: this.paseoHome,
         worktreesRoot: this.worktreesRoot,
         createPaseoWorktree: (workflowInput, serviceOptions) =>
@@ -8182,6 +8183,7 @@ export class Session {
   ): Promise<void> {
     return handleWorkspaceSetupRunRequestMessage(
       {
+        handoffOwnership: this.handoffOwnership,
         getWorkspace: (workspaceId) => this.workspaceRegistry.get(workspaceId),
         clearAutomationBlock: (workspaceId) =>
           clearWorkspaceAutomationBlock(this.workspaceRegistry, workspaceId),

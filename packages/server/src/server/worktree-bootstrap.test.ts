@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFileSync } from "child_process";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync, mkdirSync } from "fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync, mkdirSync, existsSync } from "fs";
+import { randomUUID } from "node:crypto";
 import { join } from "path";
 import { tmpdir } from "os";
 
@@ -16,6 +17,8 @@ import {
 } from "../utils/worktree.js";
 import type { TerminalManager } from "../terminal/terminal-manager.js";
 import type { TerminalSession } from "../terminal/terminal.js";
+import { HandoffOwnership } from "./handoff/ownership.js";
+import { readPaseoWorktreeRuntimePort } from "../utils/worktree-metadata.js";
 
 interface CreateAgentWorktreeTestOptions {
   cwd: string;
@@ -91,6 +94,155 @@ describe("runAsyncWorktreeBootstrap", () => {
     await Promise.all(realTerminalManagers.map(cleanupTerminalManager));
     rmSync(tempDir, { recursive: true, force: true });
   });
+
+  it.each(["agent identity", "backing sibling", "source repository"] as const)(
+    "handoff fences agent setup by %s before metadata, commands and automatic terminals",
+    async (scope) => {
+      writeFileSync(
+        join(repoDir, "paseo.json"),
+        JSON.stringify({
+          worktree: {
+            setup: ["node -e \"require('fs').writeFileSync('setup-ran', 'ran')\""],
+            terminals: [{ command: "echo preview" }],
+          },
+        }),
+      );
+      const { worktree } = await createBootstrapWorktreeForTest({
+        cwd: repoDir,
+        branchName: "agent-setup",
+        baseBranch: "main",
+        worktreeSlug: "agent-setup",
+        paseoHome,
+      });
+      const elsewhere = join(tempDir, "elsewhere");
+      mkdirSync(elsewhere);
+      const ownership = new HandoffOwnership({
+        directory: join(tempDir, "ownership"),
+        sourceServerId: "source",
+      });
+      await ownership.initialize();
+      const id = randomUUID();
+      const sibling = join(worktree.worktreePath, "sibling");
+      mkdirSync(sibling);
+      const paths = {
+        "agent identity": elsewhere,
+        "backing sibling": sibling,
+        "source repository": repoDir,
+      };
+      await ownership.prepare({
+        id,
+        cwd: paths[scope],
+        workspaceId: "elsewhere",
+        agentIds: scope === "agent identity" ? ["bootstrap-agent"] : [],
+        destinationServerId: "target",
+        reservationId: randomUUID(),
+      });
+      const persisted: AgentTimelineItem[] = [];
+      const options = {
+        handoffOwnership: ownership,
+        repoRoot: repoDir,
+        agentId: "bootstrap-agent",
+        workspaceId: "bootstrap-workspace",
+        worktree,
+        terminalManager: null,
+        appendTimelineItem: async (item: AgentTimelineItem) => {
+          persisted.push(item);
+          return true;
+        },
+      };
+      await runAsyncWorktreeBootstrap(options);
+      expect(existsSync(join(worktree.worktreePath, "setup-ran"))).toBe(false);
+      expect(readPaseoWorktreeRuntimePort(worktree.worktreePath)).toBe(null);
+      expect(persisted).toHaveLength(1);
+      expect(persisted[0]).toMatchObject({
+        type: "tool_call",
+        name: "paseo_worktree_setup",
+        status: "failed",
+        error: { message: `Workspace is held by handoff ${id} (preparing)` },
+      });
+      await ownership.cancel(id);
+      await runAsyncWorktreeBootstrap(options);
+      expect(existsSync(join(worktree.worktreePath, "setup-ran"))).toBe(true);
+    },
+  );
+
+  it.each(["completed", "failed"] as const)(
+    "handoff drains agent setup until its %s timeline entry is persisted",
+    async (status) => {
+      writeFileSync(
+        join(repoDir, "paseo.json"),
+        JSON.stringify({
+          worktree: {
+            setup: [
+              status === "completed" ? 'node -e "process.exit(0)"' : 'node -e "process.exit(1)"',
+            ],
+          },
+        }),
+      );
+      const { worktree } = await createBootstrapWorktreeForTest({
+        cwd: repoDir,
+        branchName: "agent-drain",
+        baseBranch: "main",
+        worktreeSlug: "agent-drain",
+        paseoHome,
+      });
+      const ownership = new HandoffOwnership({
+        directory: join(tempDir, "ownership"),
+        sourceServerId: "source",
+      });
+      await ownership.initialize();
+      const entered = Promise.withResolvers<void>();
+      const finish = Promise.withResolvers<void>();
+      const persisted: AgentTimelineItem[] = [];
+      const running = runAsyncWorktreeBootstrap({
+        handoffOwnership: ownership,
+        repoRoot: repoDir,
+        agentId: "bootstrap-agent",
+        workspaceId: "bootstrap-workspace",
+        worktree,
+        terminalManager: null,
+        appendTimelineItem: async (item) => {
+          entered.resolve();
+          await finish.promise;
+          persisted.push(item);
+          return true;
+        },
+      });
+      const result = expect(running).resolves.toBeUndefined();
+      const id = randomUUID();
+      try {
+        await Promise.race([
+          entered.promise,
+          result.then(() => {
+            throw new Error("Setup returned before writing its timeline");
+          }),
+        ]);
+        await ownership.prepare({
+          id,
+          cwd: worktree.worktreePath,
+          workspaceId: "bootstrap-workspace",
+          agentIds: ["bootstrap-agent"],
+          destinationServerId: "target",
+          reservationId: randomUUID(),
+        });
+        await expect(ownership.markReady(id, "a".repeat(64))).rejects.toMatchObject({
+          code: "invalid_state",
+        });
+        expect(persisted).toEqual([]);
+      } finally {
+        finish.resolve();
+        await result;
+      }
+      await ownership.drain(id);
+      expect((await ownership.markReady(id, "a".repeat(64))).state).toBe("ready");
+      expect(persisted).toHaveLength(1);
+      expect(persisted[0]).toMatchObject({
+        type: "tool_call",
+        name: "paseo_worktree_setup",
+        status,
+      });
+    },
+  );
 
   it("does not fail setup when live timeline emission throws", async () => {
     writeFileSync(

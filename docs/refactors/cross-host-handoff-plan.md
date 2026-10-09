@@ -159,8 +159,18 @@ Git change and metadata write. Real-worktree tests cover blocked naming, cancell
 failure and shared-checkout subdirectories. Named workspace scripts also take admission before
 port allocation and launch, through terminal/runtime registration. Both their RPC and tool entry
 points use the boot ledger. The real WebSocket boot test proves a fenced service cannot execute
-its port allocator; unit coverage keeps script listing and stopping available. Setup/teardown
-hooks and complete process-tree shutdown still need coordinator integration.
+its port allocator; unit coverage keeps script listing and stopping available. Complete process-tree
+shutdown still needs coordinator integration.
+
+Workspace setup and agent setup continuations take admission before runtime metadata, commands or
+automatic terminals. They retain it through their final workspace or timeline publication, including
+failure. Run setup fences the provenance update and runtime registration too. Agent continuations
+use the shared cancellable setup runtime; multiple runs for one workspace remain in its stop
+inventory. After installing the fence, cancel registered setup runs before waiting for their leases
+to drain; waiting for long-running commands first can prevent preparation from finishing. Tests cover
+shared paths and identities, delayed continuations, cancellation of a real command, final writes in
+flight and persisted provenance through the real RPC. These tests do not prove descendant-process
+quiescence after shell exit; the coordinator still needs that proof.
 
 Workspace provisioning takes admission at its public boundary, through project/workspace writes
 and failed-import rollback. Internal composition keeps that admission if a fence arrives while
@@ -195,7 +205,7 @@ RPCs and project removal. Archive remains best-effort shutdown; its success cann
 quiescence. Plugin callbacks, storage cleanup and shared Git metadata still need integration.
 
 These tests do not establish the complete ownership promise: draft catalog runtimes,
-standalone setup/teardown hooks, background workspace mutations (including storage cleanup),
+standalone teardown hooks, background workspace mutations (including storage cleanup),
 shared Git metadata ownership, runtime termination and destination activation still need
 integration.
 Source history needs a readable path that does not reopen a fenced native runtime. Source release
