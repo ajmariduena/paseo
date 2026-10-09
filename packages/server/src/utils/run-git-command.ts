@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync } from "node:fs";
+import { open, rm } from "node:fs/promises";
 import type { Logger } from "pino";
 import type { ProcessEnvRecord } from "../server/paseo-env.js";
 import {
@@ -275,11 +276,46 @@ export function runGitCommandBytes(
   return executeGitCommand(args, options, (output) => output);
 }
 
+export interface GitCommandFileOptions extends GitCommandOptions {
+  outputPath: string;
+}
+
+/** Uses the same process scheduler and byte ceiling without retaining stdout in memory. */
+export async function runGitCommandToFile(
+  args: string[],
+  options: GitCommandFileOptions,
+): Promise<GitCommandResult<void>> {
+  const file = await open(options.outputPath, "wx", 0o600);
+  let pendingWrite = Promise.resolve();
+  try {
+    const result = await executeGitCommand(
+      args,
+      options,
+      () => undefined,
+      "file-output",
+      (chunk) => {
+        pendingWrite = file.writeFile(chunk);
+        return pendingWrite;
+      },
+    );
+    await pendingWrite;
+    await file.sync();
+    return result;
+  } catch (error) {
+    await pendingWrite.catch(() => undefined);
+    await rm(options.outputPath, { force: true });
+    throw error;
+  } finally {
+    await file.close();
+  }
+}
+
 function executeGitCommand<Output>(
   args: string[],
   options: GitCommandOptions,
   decode: (output: Buffer) => Output,
   provenance?: string,
+  outputSink?: (chunk: Buffer) => Promise<void>,
 ): Promise<GitCommandResult<Output>> {
   const metricsState = submitGitCommandMetric(args, options.cwd);
   const commandTrace = submitGitCommandTrace(args, options.cwd, {
@@ -334,6 +370,7 @@ function executeGitCommand<Output>(
       const stdoutChunks: Buffer[] = [];
       const stderrChunks: Buffer[] = [];
       let timer: NodeJS.Timeout | undefined;
+      let pendingOutput = Promise.resolve();
 
       const settle = (callback: () => void) => {
         if (settled) return;
@@ -419,6 +456,7 @@ function executeGitCommand<Output>(
         rejectSpawnFailure(new Error("Git process did not expose piped stdout and stderr"));
         return;
       }
+      const outputStream = stdout;
 
       timer = setTimeout(() => {
         timeoutError = new Error(`Git command timed out after ${timeout}ms: ${command}`);
@@ -430,7 +468,7 @@ function executeGitCommand<Output>(
       }, timeout);
 
       stdout.on("data", (chunk: Buffer | string) => {
-        if (settled || truncated) return;
+        if (settled || truncated || processError) return;
 
         const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         const remainingBytes = maxOutputBytes - stdoutBytes;
@@ -442,16 +480,36 @@ function executeGitCommand<Output>(
         }
 
         if (buffer.length > remainingBytes) {
-          stdoutChunks.push(buffer.subarray(0, remainingBytes));
+          collectOutput(buffer.subarray(0, remainingBytes));
           stdoutBytes += remainingBytes;
           truncated = true;
           child.kill("SIGKILL");
           return;
         }
 
-        stdoutChunks.push(buffer);
+        collectOutput(buffer);
         stdoutBytes += buffer.length;
       });
+
+      function collectOutput(buffer: Buffer): void {
+        if (!outputSink) {
+          stdoutChunks.push(buffer);
+          return;
+        }
+        outputStream.pause();
+        pendingOutput = outputSink(buffer).then(
+          () => {
+            outputStream.resume();
+            return undefined;
+          },
+          (error: unknown) => {
+            processError = error instanceof Error ? error : new Error(String(error));
+            child.kill("SIGKILL");
+            outputStream.resume();
+            return undefined;
+          },
+        );
+      }
 
       stderr.on("data", (chunk: Buffer | string) => {
         if (settled || stderrBytes >= DEFAULT_STDERR_LIMIT) return;
@@ -498,6 +556,14 @@ function executeGitCommand<Output>(
 
       child.on("close", (exitCode, signal) => {
         markProcessExited(exitCode, signal);
+        if (outputSink) {
+          void pendingOutput.then(() => finishClose(exitCode, signal));
+        } else {
+          finishClose(exitCode, signal);
+        }
+      });
+
+      function finishClose(exitCode: number | null, signal: NodeJS.Signals | null): void {
         const result: GitCommandResult<Output> = {
           stdout: decode(Buffer.concat(stdoutChunks)),
           stderr: Buffer.concat(stderrChunks).toString("utf8"),
@@ -556,7 +622,7 @@ function executeGitCommand<Output>(
         }
 
         settle(() => resolve(result));
-      });
+      }
     });
     return { result: resultPromise, exited };
   };
