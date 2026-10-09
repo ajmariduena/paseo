@@ -116,6 +116,11 @@ export const HandoffSourceSnapshotSchema = z.object({
   source: HandoffSourceStatusSchema,
   manifest: HandoffArchiveManifestSchema.nullable(),
 });
+export const HandoffWorkspaceStateSchema = z.object({
+  transferId: HandoffTransferIdSchema,
+  destinationServerId: z.string().min(1),
+  state: HandoffSourceStatusSchema.shape.state,
+});
 export const HandoffReleaseBindingSchema = z.object({
   version: z.literal(1),
   transferId: HandoffTransferIdSchema,

@@ -3,6 +3,11 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ar: TranslationResources = {
   handoff: {
+    sourceHeld: "مساحة العمل للقراءة فقط أثناء التحضير للنقل إلى {{host}}.",
+    sourceReleased: "تابع على {{host}}. مساحة العمل المصدر للقراءة فقط.",
+    reviewTransfer: "مراجعة النقل",
+    continueDestination: "المتابعة في الوجهة",
+    sourceChanged: "تغيرت حالة النقل. افتحه مجددًا لمراجعة حالته الحالية.",
     dataEstimate: "الحجم التقديري للنقل",
     fileCounts: "الملفات: {{files}} · المجلدات: {{directories}} · الروابط: {{links}}",
     estimateNotice: "هذا تقدير أثناء استمرار العمل؛ قد يختلف حجم النقل النهائي.",

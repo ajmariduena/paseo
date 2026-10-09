@@ -1,4 +1,5 @@
 import { HandoffSheet } from "@/handoff/sheet";
+import { SourceHandoff } from "@/handoff/source";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { WebLinkOpenInAppProvider } from "@/web-links/context";
 import type { JsonValue } from "@getpaseo/protocol/agent-types";
@@ -4314,6 +4315,12 @@ function WorkspaceScreenContent({
         </NewTabLauncherProvider>
       ) : null}
 
+      <SourceHandoff
+        serverId={normalizedServerId}
+        workspaceId={normalizedWorkspaceId}
+        active={isRouteFocused}
+        onReview={openHandoffSheet}
+      />
       <View style={styles.centerContent}>{workspacePanelContent}</View>
     </View>
   );

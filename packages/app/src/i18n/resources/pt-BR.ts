@@ -3,6 +3,12 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ptBR: TranslationResources = {
   handoff: {
+    sourceHeld:
+      "Este workspace fica somente para leitura durante a preparação da transferência para {{host}}.",
+    sourceReleased: "Continue em {{host}}. Este workspace de origem é somente para leitura.",
+    reviewTransfer: "Revisar transferência",
+    continueDestination: "Continuar no destino",
+    sourceChanged: "A transferência mudou. Abra-a novamente para revisar o estado atual.",
     dataEstimate: "Tamanho estimado da transferência",
     fileCounts: "Arquivos: {{files}} · Pastas: {{directories}} · Links: {{links}}",
     estimateNotice: "Estimativa com o trabalho em andamento; o tamanho final pode variar.",

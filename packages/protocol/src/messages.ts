@@ -1,4 +1,5 @@
 import {
+  HandoffWorkspaceStateSchema,
   HandoffGetConversationHistoryRequestSchema,
   HandoffListDestinationRequestSchema,
   HandoffFindSourceRequestSchema,
@@ -4557,6 +4558,7 @@ export const WorkspaceDescriptorPayloadSchema = z
     status: WorkspaceStateBucketSchema,
     // COMPAT(waitingOnSubagents): added in v0.11.0, remove optional parse after 2027-04-05.
     waitingOnSubagents: z.object({ count: z.number().int().positive() }).optional(),
+    handoff: HandoffWorkspaceStateSchema.nullable().optional(),
     // COMPAT(delegatedWorkspaces): added in v0.11.0, remove optional parse after 2027-04-05.
     // Set while every active agent in the workspace belongs to this active parent's subagent tree.
     delegatedByAgentId: z.string().optional(),

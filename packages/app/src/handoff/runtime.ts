@@ -13,6 +13,7 @@ import {
   restoreHandoffRecord,
   restoreReservedHandoffRecord,
   type HandoffRecord,
+  type HandoffOrigin,
 } from "./persistence";
 
 function connectedClient(serverId: string) {
@@ -33,6 +34,34 @@ function connections(record: HandoffRecord) {
     destination: connectedClient(record.destinationServerId),
     transferId: record.transferId,
   };
+}
+
+/** Resolve both hosts afresh before a source banner links to the destination. */
+export async function readSourceHandoffRecord(
+  origin: HandoffOrigin,
+): Promise<HandoffRecord | null> {
+  const found = await connectedClient(origin.sourceServerId).handoffFindSource({
+    workspaceId: origin.workspaceId,
+  });
+  if (found.error) throw new Error(found.error.message);
+  if (!found.result) return null;
+  const source = found.result;
+  const host = getHostRuntimeStore()
+    .getHosts()
+    .find((candidate) => candidate.serverId === source.destinationServerId);
+  if (!host) throw new Error("Reconnect the destination host to recover this handoff");
+  const response = await connectedClient(host.serverId).handoffGetDestinationStatus({
+    transferId: source.id,
+  });
+  if (response.error) throw new Error(response.error.message);
+  if (!response.result) throw new Error("Destination handoff record is missing");
+  const record = restoreHandoffRecord({
+    origin,
+    source,
+    destination: host,
+    snapshot: response.result,
+  });
+  return record;
 }
 
 const persistence = createHandoffPersistence(AsyncStorage);
@@ -75,27 +104,8 @@ export const handoffFormPorts: HandoffFormPorts = {
   async load(origin) {
     const saved = await persistence.load(origin);
     if (saved) return saved;
-    const found = await connectedClient(origin.sourceServerId).handoffFindSource({
-      workspaceId: origin.workspaceId,
-    });
-    if (found.error) throw new Error(found.error.message);
-    if (!found.result) return null;
-    const source = found.result;
-    const host = getHostRuntimeStore()
-      .getHosts()
-      .find((candidate) => candidate.serverId === source.destinationServerId);
-    if (!host) throw new Error("Reconnect the destination host to recover this handoff");
-    const response = await connectedClient(host.serverId).handoffGetDestinationStatus({
-      transferId: source.id,
-    });
-    if (response.error) throw new Error(response.error.message);
-    if (!response.result) throw new Error("Destination handoff record is missing");
-    const record = restoreHandoffRecord({
-      origin,
-      source,
-      destination: host,
-      snapshot: response.result,
-    });
+    const record = await readSourceHandoffRecord(origin);
+    if (!record) return null;
     await persistence.save(record);
     return record;
   },

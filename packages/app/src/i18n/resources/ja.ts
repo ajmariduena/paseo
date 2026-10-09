@@ -3,6 +3,11 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ja: TranslationResources = {
   handoff: {
+    sourceHeld: "{{host}} への移動準備中、このワークスペースは読み取り専用です。",
+    sourceReleased: "{{host}} で続けてください。移動元のワークスペースは読み取り専用です。",
+    reviewTransfer: "移動を確認",
+    continueDestination: "移動先で続ける",
+    sourceChanged: "移動の状態が変わりました。もう一度開いて現在の状態を確認してください。",
     dataEstimate: "転送サイズの見積もり",
     fileCounts: "ファイル {{files}} · フォルダー {{directories}} · リンク {{links}}",
     estimateNotice: "作業中の見積もりです。最終的な転送サイズは変わる場合があります。",

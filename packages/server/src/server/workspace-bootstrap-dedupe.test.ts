@@ -11,6 +11,30 @@ const SNAPSHOT_DONE_10_30: BootstrapUpdateSnapshot = {
 };
 
 describe("shouldEmitPendingBootstrapUpdate", () => {
+  test("retains ownership changes with no newer activity and drops an identical handoff", () => {
+    const ready = {
+      transferId: "transfer",
+      destinationServerId: "destination",
+      state: "ready" as const,
+    };
+    const snapshot = { ...SNAPSHOT_DONE_10_30, handoff: ready };
+    for (const handoff of [
+      null,
+      { ...ready, state: "released" as const },
+      { ...ready, transferId: "different-transfer" },
+      { ...ready, destinationServerId: "different-host" },
+    ]) {
+      expect(shouldEmitPendingBootstrapUpdate({ snapshot, update: { ...snapshot, handoff } })).toBe(
+        true,
+      );
+    }
+    expect(
+      shouldEmitPendingBootstrapUpdate({
+        snapshot,
+        update: { ...snapshot, handoff: { ...ready } },
+      }),
+    ).toBe(false);
+  });
   test("emits when the waiting subagent count changes while wire status stays running", () => {
     expect(
       shouldEmitPendingBootstrapUpdate({

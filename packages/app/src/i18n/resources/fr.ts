@@ -3,6 +3,12 @@ import { pluginSettings } from "./plugin-settings";
 
 export const fr: TranslationResources = {
   handoff: {
+    sourceHeld:
+      "Cet espace est en lecture seule pendant la préparation du transfert vers {{host}}.",
+    sourceReleased: "Continuez sur {{host}}. Cet espace source est en lecture seule.",
+    reviewTransfer: "Voir le transfert",
+    continueDestination: "Continuer à destination",
+    sourceChanged: "Le transfert a changé. Rouvrez-le pour consulter son état actuel.",
     dataEstimate: "Taille estimée du transfert",
     fileCounts: "Fichiers : {{files}} · Dossiers : {{directories}} · Liens : {{links}}",
     estimateNotice: "Estimation pendant le travail en cours ; la taille finale peut varier.",

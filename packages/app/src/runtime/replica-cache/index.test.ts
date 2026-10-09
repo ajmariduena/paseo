@@ -332,6 +332,35 @@ describe("ReplicaCache", () => {
     );
   });
 
+  it("retains source ownership and cancellation beside a current workspace checkpoint", async () => {
+    const storage = new MemoryStorage();
+    const writer = createCache(storage);
+    const checkpoint = { workspaces: { generation: "workspace-generation", afterSeq: 12 } };
+    for (const handoff of [
+      {
+        transferId: "00000000-0000-4000-8000-000000000001",
+        destinationServerId: "destination",
+        state: "released" as const,
+      },
+      null,
+    ]) {
+      const workspace = normalizeWorkspaceDescriptor({ ...workspacePayload(), handoff });
+      writer.commitDirectoryMutations(
+        SERVER_ID,
+        [{ kind: "workspace", type: "upsert", id: workspace.id, value: workspace }],
+        checkpoint,
+      );
+      await writer.flush();
+      const reader = createCache(storage);
+      const restored = await reader.readDirectory(SERVER_ID);
+      expect(restored.checkpoint).toEqual(checkpoint);
+      expect(restored.workspaces.get(workspace.id)?.handoff).toEqual(handoff);
+      expect((await reader.readWorkspace(SERVER_ID, workspace.id))?.workspace.handoff).toEqual(
+        handoff,
+      );
+    }
+  });
+
   it("preserves clearing a timeline across directory baseline replacement", async () => {
     const storage = new MemoryStorage();
     const writer = createCache(storage);

@@ -1,5 +1,10 @@
 export const en = {
   handoff: {
+    sourceHeld: "This workspace is read-only while the move to {{host}} is prepared.",
+    sourceReleased: "Continue on {{host}}. This source workspace is read-only.",
+    reviewTransfer: "Review transfer",
+    continueDestination: "Continue on destination",
+    sourceChanged: "The transfer changed. Reopen the transfer to review its current state.",
     dataEstimate: "Estimated transfer size",
     fileCounts: "Files: {{files}} · Folders: {{directories}} · Links: {{links}}",
     estimateNotice: "Estimated while work is running; the final transfer size may differ.",

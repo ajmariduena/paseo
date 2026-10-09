@@ -62,6 +62,49 @@ async function compileInlineSchema(sourceSchema: string): Promise<GeneratedSchem
 }
 
 describe("WS outbound zod-aot validation", () => {
+  it("retains optional source ownership in workspace updates and rejects destination-only states", () => {
+    const workspace = {
+      id: "workspace",
+      projectId: "project",
+      projectDisplayName: "Project",
+      projectRootPath: "/source",
+      workspaceDirectory: "/source",
+      projectKind: "non_git",
+      workspaceKind: "directory",
+      name: "Original",
+      status: "done",
+      archivingAt: null,
+      statusEnteredAt: null,
+      activityAt: null,
+      scripts: [],
+    };
+    const handoff = {
+      transferId: "00000000-0000-4000-8000-000000000001",
+      destinationServerId: "destination",
+      state: "released",
+    };
+    const envelope = (value: unknown) => ({
+      type: "session",
+      message: { type: "workspace_update", payload: { kind: "upsert", workspace: value } },
+    });
+    for (const value of [workspace, { ...workspace, handoff: null }, { ...workspace, handoff }]) {
+      expect(GeneratedWSOutboundMessageSchema.safeParse(envelope(value))).toMatchObject({
+        success: true,
+        data: envelope(value),
+      });
+    }
+    expect(
+      GeneratedWSOutboundMessageSchema.safeParse(
+        envelope({ ...workspace, handoff: { ...handoff, state: "active" } }),
+      ).success,
+    ).toBe(false);
+    expect(
+      GeneratedWSOutboundMessageSchema.safeParse(
+        envelope({ ...workspace, handoff: { ...handoff, transferId: "invalid" } }),
+      ).success,
+    ).toBe(false);
+  });
+
   it("preserves bounded handoff review data while accepting older source previews", () => {
     const envelope = (result: unknown) => ({
       type: "session",

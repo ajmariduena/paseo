@@ -6426,6 +6426,7 @@ export class Session {
       worktreeSlug,
       projectKind: (resolvedProjectRecord?.kind ?? "directory") === "git" ? "git" : "non_git",
       workspaceKind: workspace.kind,
+      handoff: this.handoffSource ? this.handoffSource.workspaceState(workspace.workspaceId) : null,
       name: resolveWorkspaceDisplayName(workspace),
       title: workspace.title,
       pinnedAt: workspace.pinnedAt,
@@ -6659,6 +6660,7 @@ export class Session {
                 activityAtMs: snapshot.activityAtMs,
                 waitingOnSubagentsCount: snapshot.waitingOnSubagentsCount,
                 delegatedByAgentId: snapshot.delegatedByAgentId,
+                handoff: snapshot.handoff,
               }
             : null,
           update: {
@@ -6667,6 +6669,7 @@ export class Session {
             activityAtMs: Number.isNaN(updateActivityAtMs) ? null : updateActivityAtMs,
             waitingOnSubagentsCount: payload.workspace.waitingOnSubagents?.count,
             delegatedByAgentId: payload.workspace.delegatedByAgentId,
+            handoff: payload.workspace.handoff,
           },
         });
         if (!shouldEmit) {
@@ -7449,6 +7452,7 @@ export class Session {
         activityAtMs: Number.isNaN(parsedActivity) ? null : parsedActivity,
         waitingOnSubagentsCount: entry.waitingOnSubagents?.count,
         delegatedByAgentId: entry.delegatedByAgentId,
+        handoff: entry.handoff,
       });
     }
     return { snapshotByWorkspaceId };

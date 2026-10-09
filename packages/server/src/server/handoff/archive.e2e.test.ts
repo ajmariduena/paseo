@@ -125,6 +125,60 @@ async function expectExportedHistory(
 }
 
 test.skipIf(process.platform === "win32")(
+  "publishes source ownership in workspace snapshots through cancellation, release and restart",
+  async () => {
+    let source = await startHost("source");
+    const cwd = path.join(root, "source-state-workspace");
+    await mkdir(cwd);
+    const created = await source.client.createWorkspace({
+      source: { kind: "directory", path: cwd },
+    });
+    if (!created.workspace) throw new Error("Missing source workspace");
+    expect(created.workspace.handoff).toBeNull();
+    const workspaceId = created.workspace.id;
+    const updates: unknown[] = [];
+    const unsubscribe = source.client.on("workspace_update", ({ payload }) => {
+      if (payload.kind === "upsert" && payload.workspace.id === workspaceId)
+        updates.push(payload.workspace.handoff);
+    });
+    const subscription = source.client.observeWorkspaces();
+    await subscription.ready;
+    const request = {
+      transferId: randomUUID(),
+      workspaceId,
+      agentIds: [],
+      destinationServerId: "destination-host",
+      reservationId: randomUUID(),
+    };
+    expect((await source.client.handoffPrepareSource(request)).error).toBeNull();
+    const preparing = {
+      transferId: request.transferId,
+      destinationServerId: "destination-host",
+      state: "preparing",
+    };
+    const ready = { ...preparing, state: "ready" };
+    await expect.poll(() => updates).toEqual(expect.arrayContaining([preparing, ready]));
+    expect((await source.client.fetchWorkspaces()).entries[0]?.handoff).toEqual(ready);
+    expect((await source.client.handoffCancelSource(request)).error).toBeNull();
+    await expect.poll(() => updates.at(-1)).toBeNull();
+    expect((await source.client.fetchWorkspaces()).entries[0]?.handoff).toBeNull();
+    const next = { ...request, transferId: randomUUID(), reservationId: randomUUID() };
+    expect((await source.client.handoffPrepareSource(next)).error).toBeNull();
+    expect(
+      (await source.client.handoffReleaseSource({ transferId: next.transferId })).error,
+    ).toBeNull();
+    const released = { ...ready, transferId: next.transferId, state: "released" };
+    await expect.poll(() => updates.at(-1)).toEqual(released);
+    unsubscribe();
+    await subscription.release();
+    await stopHost(source);
+    source = await startHost("source");
+    expect((await source.client.fetchWorkspaces()).entries[0]?.handoff).toEqual(released);
+  },
+  30_000,
+);
+
+test.skipIf(process.platform === "win32")(
   "reviews omitted files and nested terminals without stopping work until preparation",
   async () => {
     const source = await startHost("source");

@@ -68,6 +68,7 @@ interface SourceOptions {
   terminals: Pick<TerminalManager, "listDirectories" | "getTerminals" | "killTerminalAndWait">;
   setup: Pick<WorkspaceSetupRuntime, "stop" | "countActive">;
   getProviderRuntimeSettings: ProviderSnapshotManager["getProviderRuntimeSettings"];
+  onWorkspaceChanged?: (workspaceId: string) => Promise<void>;
 }
 interface SourceRequest {
   transferId: string;
@@ -223,6 +224,7 @@ export class HandoffSource {
         destinationServerId: input.destinationServerId,
         reservationId: input.reservationId,
       });
+      await this.publishTransfer(input.transferId);
       if (source.state === "cancelled")
         refuse("invalid_source", "Cancelled source transfer cannot be prepared");
       if (source.state === "ready" || source.state === "released") {
@@ -299,7 +301,7 @@ export class HandoffSource {
       await this.verify(source, prepared);
       source = await this.options.ownership.markReady(source.id, manifest.entrypoint.sha256);
       return { source, manifest };
-    });
+    }).finally(() => this.publishTransfer(input.transferId));
   }
 
   async status(transferId: string) {
@@ -314,9 +316,39 @@ export class HandoffSource {
     return this.options.ownership.forWorkspace(workspaceId);
   }
 
+  workspaceState(workspaceId: string) {
+    const source = this.findWorkspace(workspaceId);
+    return source
+      ? {
+          transferId: source.id,
+          state: source.state,
+          destinationServerId: source.destinationServerId,
+        }
+      : null;
+  }
+
+  private async publishTransfer(transferId: string): Promise<void> {
+    if (!this.options.onWorkspaceChanged) return;
+    try {
+      const source = this.options.ownership.status(transferId);
+      await this.options.onWorkspaceChanged(source.workspaceId);
+    } catch (error) {
+      // Cancellation before preparation has no workspace record to project.
+      if (error instanceof Error && "code" in error && error.code === "not_found") return;
+      // Ownership is authoritative even if a connected client misses the update;
+      // its next workspace snapshot rebuilds the projection from the journal.
+      this.options.logger.warn(
+        { err: error, transferId },
+        "Failed to publish handoff workspace state",
+      );
+    }
+  }
+
   cancel(input: HandoffCancellationInput) {
     // Do not reopen source admission while its preparation is still stopping or capturing writers.
-    return this.serialize(() => this.options.ownership.cancelReservation(input));
+    return this.serialize(() => this.options.ownership.cancelReservation(input)).finally(() =>
+      this.publishTransfer(input.transferId),
+    );
   }
 
   release(transferId: string) {
@@ -335,7 +367,7 @@ export class HandoffSource {
         },
         () => this.verify(source, prepared),
       );
-    });
+    }).finally(() => this.publishTransfer(transferId));
   }
 
   async fetchTimeline(agentId: string, options: AgentTimelineFetchOptions) {

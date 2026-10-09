@@ -8,6 +8,7 @@ import { addScheduleHostAndReload } from "./schedule-host";
 import { seedWorkspace } from "./seed-client";
 import { connectDaemonClient } from "./daemon-client-loader";
 import { gotoAppShell } from "./app";
+import { openHostSection, removeHostFromHostPage } from "./settings";
 
 export async function openHandoff(page: Page) {
   await page.getByTestId("workspace-header-menu-trigger").click();
@@ -114,4 +115,40 @@ export async function savedTransfer(page: Page, sourceServerId: string, workspac
 export async function forgetTransfer(page: Page, sourceServerId: string, workspaceId: string) {
   const key = `paseo:workspace-handoff:${JSON.stringify([sourceServerId, workspaceId])}`;
   await page.evaluate((storageKey) => localStorage.removeItem(storageKey), key);
+}
+
+export async function reconnectSourceDestination(
+  page: Page,
+  host: Awaited<ReturnType<typeof handoffHosts>>,
+  destinationWorkspaceId: string,
+) {
+  const sourceRoute = page.url();
+  await page.goto(`/settings/hosts/${host.destination.serverId}`);
+  await openHostSection(page, host.destination.serverId, "host");
+  await removeHostFromHostPage(page, host.destination.serverId);
+  // Keep the fixture from re-pairing the host on this full page navigation.
+  await page.evaluate(() => {
+    const nonce = localStorage.getItem("@paseo:e2e-seed-nonce");
+    if (!nonce) throw new Error("Expected e2e seed nonce");
+    localStorage.setItem("@paseo:e2e-disable-default-seed-once", nonce);
+  });
+  await page.goto(sourceRoute);
+  await page.getByTestId("handoff-source-open").click();
+  await expect(page.getByTestId("handoff-source-error")).toHaveText(
+    "Reconnect the destination host to recover this handoff",
+  );
+  await expect(page.getByTestId("handoff-source-open")).toBeEnabled();
+  await addScheduleHostAndReload({
+    page,
+    serverId: host.destination.serverId,
+    port: Number(host.destination.endpoint.split(":").at(-1)),
+    label: "Destination VPS",
+  });
+  await page.getByTestId("handoff-source-open").click();
+  await expect(page).toHaveURL(
+    new RegExp(`/h/${host.destination.serverId}/workspace/${destinationWorkspaceId}`),
+  );
+  expect((await host.destinationClient.fetchWorkspaces()).entries.map((entry) => entry.id)).toEqual(
+    [destinationWorkspaceId],
+  );
 }

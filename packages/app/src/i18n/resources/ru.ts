@@ -3,6 +3,11 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ru: TranslationResources = {
   handoff: {
+    sourceHeld: "Рабочая область доступна только для чтения, пока готовится перенос на {{host}}.",
+    sourceReleased: "Продолжите на {{host}}. Исходная рабочая область доступна только для чтения.",
+    reviewTransfer: "Посмотреть перенос",
+    continueDestination: "Продолжить на целевом хосте",
+    sourceChanged: "Перенос изменился. Откройте его снова, чтобы проверить текущее состояние.",
     dataEstimate: "Оценка размера переноса",
     fileCounts: "Файлы: {{files}} · Папки: {{directories}} · Ссылки: {{links}}",
     estimateNotice: "Оценка сделана во время работы; итоговый размер может отличаться.",

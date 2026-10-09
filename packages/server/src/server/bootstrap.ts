@@ -1643,6 +1643,7 @@ export async function createPaseoDaemon(
     agentManager,
     terminals: terminalManager,
     setup: workspaceSetupRuntime,
+    onWorkspaceChanged: (workspaceId) => emitWorkspaceUpdatesExternal([workspaceId]),
     getProviderRuntimeSettings: (provider) =>
       providerSnapshotManager.getProviderRuntimeSettings(provider),
   });

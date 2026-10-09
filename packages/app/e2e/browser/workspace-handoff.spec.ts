@@ -7,6 +7,7 @@ import {
   openHandoff,
   savedTransfer,
   forgetTransfer,
+  reconnectSourceDestination,
 } from "../support/helpers/workspace-handoff";
 
 test.describe("workspace handoff", () => {
@@ -187,6 +188,16 @@ test.describe("workspace handoff", () => {
         (await host.destinationClient.handoffGetDestinationStatus({ transferId })).result?.state,
       ).toBe("released");
       await expect(page.getByTestId("handoff-cancel")).toHaveCount(0);
+      await page
+        .getByTestId("handoff-sheet")
+        .getByRole("button", { name: "Close", exact: true })
+        .click();
+      await expect(page.getByTestId("handoff-source-state")).toContainText(
+        "Continue on Destination VPS",
+      );
+      await page.getByTestId("handoff-source-open").click();
+      await expect(page.getByTestId("handoff-submit")).toHaveText("Resume");
+      await expect(page).toHaveURL(new RegExp(host.route));
       await host.source.close();
       await rmdir(staged.result.destinationCwd);
       await page.getByTestId("handoff-submit").click();
@@ -214,6 +225,51 @@ test.describe("workspace handoff", () => {
         `workspace-deck-entry-${host.destination.serverId}:${active.result.workspaceId}`,
       );
       await expect(destinationWorkspace.getByTestId("workspace-header-title")).toBeVisible();
+    } finally {
+      await host.close();
+    }
+  });
+
+  test("source destination link reports an unpaired host and retries the same workspace", async ({
+    page,
+  }, testInfo) => {
+    test.setTimeout(120_000);
+    const host = await hosts(page);
+    try {
+      await openHandoff(page);
+      await page.getByTestId("handoff-host-trigger").click();
+      await page.getByTestId(`handoff-host-${host.destination.serverId}`).click();
+      await page.getByTestId("handoff-parent").fill(host.destinationParent);
+      await page.getByTestId("handoff-submit").click();
+      await expect(page.getByTestId("handoff-submit")).toHaveText("Prepare transfer");
+      await page.getByTestId("handoff-submit").click();
+      await expect(page.getByTestId("handoff-submit")).toHaveText("Move workspace", {
+        timeout: 30_000,
+      });
+      await page.getByTestId("handoff-submit").click();
+      await expect(page.getByTestId("handoff-submit")).toHaveText("Open destination", {
+        timeout: 30_000,
+      });
+      const transferId = await savedTransfer(
+        page,
+        host.source.serverId,
+        host.workspace.workspaceId,
+      );
+      const destination = await host.destinationClient.handoffGetDestinationStatus({ transferId });
+      if (!destination.result) throw new Error("Missing active destination");
+      await page
+        .getByTestId("handoff-sheet")
+        .getByRole("button", { name: "Close", exact: true })
+        .click();
+      await expect(page.getByTestId("handoff-source-state")).toContainText(
+        "Continue on Destination VPS",
+      );
+      await page.screenshot({ path: testInfo.outputPath("handoff-source-desktop.png") });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await expect(page.getByTestId("handoff-source-open")).toBeInViewport({ ratio: 1 });
+      await page.screenshot({ path: testInfo.outputPath("handoff-source-compact.png") });
+      await page.setViewportSize({ width: 1280, height: 720 });
+      await reconnectSourceDestination(page, host, destination.result.workspaceId);
     } finally {
       await host.close();
     }
@@ -259,7 +315,10 @@ test.describe("workspace handoff", () => {
       );
       await forgetTransfer(page, host.source.serverId, host.workspace.workspaceId);
       await page.reload();
-      await openHandoff(page);
+      await expect(page.getByTestId("handoff-source-state")).toContainText(
+        "read-only while the move to Destination VPS is prepared",
+      );
+      await page.getByTestId("handoff-source-open").click();
       await expect(page.getByText("Continue with exported history", { exact: true })).toBeVisible();
       expect(await savedTransfer(page, host.source.serverId, host.workspace.workspaceId)).toBe(
         transferId,
@@ -274,6 +333,7 @@ test.describe("workspace handoff", () => {
         "Transfer cancelled. The source can be used again.",
       );
       await expect(page.getByTestId("handoff-close-notice")).toHaveCount(0);
+      await expect(page.getByTestId("handoff-source-state")).toHaveCount(0);
       const cancelled = await host.destinationClient.handoffGetDestinationStatus({ transferId });
       expect(cancelled.result?.state).toBe("cancelled");
       expect(await readFile(path.join(host.workspace.repoPath, "prior-work.txt"), "utf8")).toBe(

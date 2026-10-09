@@ -315,6 +315,15 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   destination. Review content scrolls above the pinned actions at compact width.
   The source conversation set is checked again before reservation; a changed set returns the form
   to review.
+  Source workspace snapshots project ownership from the durable journal, including live updates
+  through preparation, cancellation and release. The app keeps ownership beside the cached
+  directory cursor: a reconnect with no newer rows must not reopen source controls. Reconnecting
+  does not depend on local transfer storage. The source banner opens preparation/recovery or checks both hosts before navigating to
+  the original activated destination. Removing the destination host leaves an actionable error.
+  Existing source conversations hide their composer and fork controls while held; cancellation
+  restores them. File, draft and other workspace mutation affordances still need the same treatment;
+  server admission remains authoritative. Source retirement still needs tombstones to replace broad
+  path fences.
   Fourteen form cases cover unavailable modes, inventory changes, lost replies, storage failures,
   duplicate submissions, closing during work, cancellation recovery and host journals advancing
   past local state, including destination lookup and selection failures. Reconstructed records retain
@@ -327,14 +336,18 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   verifies both scope filters and excludes completed cancellation.
   The network suite covers matching/mismatched Claude versions, missing source
   history and workflow artifacts without starting a provider turn during review. The feature
-  gate is checked on both hosts before preparation; only isolated test daemons advertise it. Three
+  gate is checked on both hosts before preparation; only isolated test daemons advertise it. Four
   browser cases use real isolated daemons and a directory workspace: desktop preparation/reload
   verifies bytes and destination navigation after a real activation conflict and source shutdown;
   compact recovery deletes the local transfer record, reloads the same identity and context mode
   from both host journals, then cancels and verifies a fresh form after clearing local state again.
   Destination-only recovery selects one of two reservations, preserves its original mode without
   preparing work until Resume, then reconstructs and finishes an interrupted source cancellation.
-  These recovery fixtures contain no conversations. Two additional real-provider browser cases use
+  The source link case removes the destination host, checks its visible error, reconnects and opens
+  the same activated workspace. These recovery fixtures contain no conversations. The new source
+  conversation UI assertions still need a passing real-provider run: the latest native attempt failed
+  with an invalid Claude OAuth refresh token; context mode timed out waiting for the initial reply.
+  Two additional real-provider browser cases use
   Claude Code 2.1.295, Git workspaces and separate source/destination configuration directories on
   Linux. They review, prepare, activate, navigate and continue through the app. Native continuation
   shows the original message and retains the provider session ID; context export starts a new session
@@ -347,6 +360,7 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   its first run exposed missing pane context across the portal, now covered by the regression.
   See the [history results](../qa-evidence/handoff-history.txt),
   [preflight results](../qa-evidence/handoff-preflight.txt),
+  [source ownership and UI results](../qa-evidence/handoff-source-state.txt),
   [real-provider browser results](../qa-evidence/handoff-app-real.txt),
   [recovery app results](../qa-evidence/handoff-app.txt)
   and [review](../qa-evidence/handoff-review-compact.png), [pending transfers](../qa-evidence/handoff-existing-transfers.png), [desktop](../qa-evidence/handoff-app-desktop.png) / [compact](../qa-evidence/handoff-app-compact.png)
@@ -355,8 +369,8 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   tombstone; automatic discovery of that cancellation intent remains open, as does unfinished cleanup
   after the destination journal already says cancelled. Reopening recovery when the source workspace
   is unavailable, pinned-key client persistence,
-  complete omitted-path access and integration/resource dispositions, source moved state and
-  native-platform evidence remain open. Review does not bind approval to a resource digest or
+  complete omitted-path access and integration/resource dispositions, complete source mutation
+  affordances and native-platform evidence remain open. Review does not bind approval to a resource digest or
   revalidate reviewed exclusions before preparation; final transfer size is not shown separately.
 - Source retirement/tombstones and automation dispositions remain unimplemented.
   The composite archive currently captures Claude conversations;

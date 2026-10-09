@@ -3,6 +3,11 @@ import { pluginSettings } from "./plugin-settings";
 
 export const zhCN: TranslationResources = {
   handoff: {
+    sourceHeld: "正在准备迁移到 {{host}}，此工作区为只读。",
+    sourceReleased: "请在 {{host}} 上继续。源工作区为只读。",
+    reviewTransfer: "查看迁移",
+    continueDestination: "在目标端继续",
+    sourceChanged: "迁移状态已更改。请重新打开以查看当前状态。",
     dataEstimate: "预计传输大小",
     fileCounts: "{{files}} 个文件 · {{directories}} 个文件夹 · {{links}} 个链接",
     estimateNotice: "这是工作仍在进行时的估算，最终传输大小可能有所不同。",

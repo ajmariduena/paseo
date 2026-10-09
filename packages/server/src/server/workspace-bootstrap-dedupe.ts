@@ -1,3 +1,5 @@
+import type { WorkspaceDescriptorPayload } from "@getpaseo/protocol/messages";
+
 /**
  * Pure dedupe decision for the bootstrap flush.
  *
@@ -6,19 +8,8 @@
  * which buffered updates still carry new information and which are
  * redundant with what the client just received in the snapshot.
  *
- * Returns `true` (emit) when ANY of:
- *   - the status changed from the snapshot
- *   - the statusEnteredAt changed from the snapshot (including the
- *     null↔value transition that the unmask case produces)
- *   - the waiting subagent count changed while the compatible wire status stayed `running`
- *   - the delegating parent changed
- *   - the update's activityAtMs is strictly newer than the snapshot's
- *   - the snapshot has no activityAtMs and the update has one (new activity
- *     where there was none)
- *
- * Returns `false` (drop) when the status, waiting count, and entry time are unchanged AND the update
- * is not strictly newer than the snapshot in activity. The both-null
- * activity case falls through to drop — there is genuinely no new info.
+ * Ownership changes do not necessarily advance agent activity. Keep them
+ * alongside status changes when deciding whether a buffered update is new.
  */
 export interface BootstrapUpdateSnapshot {
   status: string;
@@ -26,6 +17,7 @@ export interface BootstrapUpdateSnapshot {
   activityAtMs: number | null;
   waitingOnSubagentsCount?: number;
   delegatedByAgentId?: string;
+  handoff?: WorkspaceDescriptorPayload["handoff"];
 }
 
 export interface BootstrapUpdateCheckInput {
@@ -51,6 +43,8 @@ export function shouldEmitPendingBootstrapUpdate(input: BootstrapUpdateCheckInpu
   if (snapshot.delegatedByAgentId !== update.delegatedByAgentId) {
     return true;
   }
+  // Ownership can change without any agent activity or bucket transition.
+  if (handoffChanged(snapshot.handoff, update.handoff)) return true;
 
   const snapshotEnteredAt = snapshot.statusEnteredAt ?? null;
   const updateEnteredAt = update.statusEnteredAt ?? null;
@@ -66,4 +60,15 @@ export function shouldEmitPendingBootstrapUpdate(input: BootstrapUpdateCheckInpu
     return true;
   }
   return update.activityAtMs > snapshot.activityAtMs;
+}
+
+function handoffChanged(
+  left: BootstrapUpdateSnapshot["handoff"],
+  right: BootstrapUpdateSnapshot["handoff"],
+): boolean {
+  return (
+    left?.transferId !== right?.transferId ||
+    left?.state !== right?.state ||
+    left?.destinationServerId !== right?.destinationServerId
+  );
 }

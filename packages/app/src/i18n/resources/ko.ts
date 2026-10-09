@@ -3,6 +3,11 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ko: TranslationResources = {
   handoff: {
+    sourceHeld: "{{host}}로 이동을 준비하는 동안 이 작업 공간은 읽기 전용입니다.",
+    sourceReleased: "{{host}}에서 계속하세요. 원본 작업 공간은 읽기 전용입니다.",
+    reviewTransfer: "이동 확인",
+    continueDestination: "대상에서 계속",
+    sourceChanged: "이동 상태가 변경되었습니다. 다시 열어 현재 상태를 확인하세요.",
     dataEstimate: "예상 전송 크기",
     fileCounts: "파일 {{files}}개 · 폴더 {{directories}}개 · 링크 {{links}}개",
     estimateNotice: "작업 중인 상태의 예상치이며 최종 전송 크기는 달라질 수 있습니다.",

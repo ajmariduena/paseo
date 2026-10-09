@@ -7,7 +7,12 @@ import { expect, test, type Page } from "../support/fixtures";
 import { closeModelControl, openModelPicker } from "../support/helpers/model-control";
 import { submitMessage } from "../support/helpers/composer";
 import { allowPermission, waitForPermissionPrompt } from "../support/helpers/permissions";
-import { handoffHosts, openHandoff, savedTransfer } from "../support/helpers/workspace-handoff";
+import {
+  handoffHosts,
+  openHandoff,
+  savedTransfer,
+  reconnectSourceDestination,
+} from "../support/helpers/workspace-handoff";
 
 interface HistoryEvidence {
   page: Page;
@@ -37,6 +42,40 @@ async function inspectPreviousConversation(
   await page.screenshot({ path: screenshotPath });
   await sheet.getByRole("button", { name: "Close", exact: true }).click();
   await expect(sheet).not.toBeVisible();
+}
+
+async function inspectSourceConversation({
+  page,
+  host,
+  agentId,
+  token,
+  destinationWorkspaceId,
+  viewport,
+  screenshotPath,
+}: {
+  page: Page;
+  host: Awaited<ReturnType<typeof handoffHosts>>;
+  agentId: string;
+  token: string;
+  destinationWorkspaceId: string;
+  viewport: { width: number; height: number };
+  screenshotPath: string;
+}) {
+  const sourceRoute = `${host.route}?open=${encodeURIComponent(`agent:${agentId}`)}`;
+  await page.goto(sourceRoute);
+  await page.setViewportSize(viewport);
+  await expect(page.getByTestId("handoff-source-state")).toContainText(
+    "Continue on Destination VPS",
+  );
+  await expect(
+    page.getByTestId("user-message").filter({ hasText: token, visible: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Message agent..." })).toHaveCount(0);
+  await page.screenshot({
+    path: screenshotPath,
+  });
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await reconnectSourceDestination(page, host, destinationWorkspaceId);
 }
 
 async function continueConversation(
@@ -267,6 +306,17 @@ test.describe("real conversation handoff through the app", () => {
         await expect(
           host.sourceClient.sendMessage(agent.id, "Must remain stopped after continuation"),
         ).rejects.toThrow("held by handoff");
+        await test.step("read the source history and recover its destination link after removing the host", async () => {
+          await inspectSourceConversation({
+            page,
+            host,
+            agentId: agent.id,
+            token,
+            destinationWorkspaceId: destination.workspaceId,
+            viewport: scenario.historyViewport,
+            screenshotPath: testInfo.outputPath(`handoff-real-${scenario.mode}-source.png`),
+          });
+        });
       } finally {
         try {
           await hosts?.close();
