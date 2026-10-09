@@ -477,6 +477,7 @@ export interface PaseoDaemonConfig {
   voiceLlmThinking?: string | null;
   voiceLive?: GptLiveEngineConfig | null;
   voiceRouter?: FastLlmConfig | null;
+  voiceVocabulary?: string[];
   voiceLanguage?: string | null;
   dictationFinalTimeoutMs?: number;
   downloadTokenTtlMs?: number;
@@ -1814,6 +1815,7 @@ export async function createPaseoDaemon(
     speech: speechService,
     projectRegistry,
     router: config.voiceRouter,
+    vocabulary: config.voiceVocabulary,
     createToolCatalog: async (callerContext) =>
       createAgentToolCatalog({ callerContext, transport: "native" }),
     hostMetrics: () => hostMetricsSampler.getSnapshot(),

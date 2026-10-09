@@ -153,6 +153,8 @@ const FeatureVoiceModeSchema = z
       })
       .strict()
       .optional(),
+    /** Extra names and terms the call should recognize, on top of the built-in vocabulary. */
+    vocabulary: z.array(z.string().trim().min(1).max(48)).max(400).optional(),
     /** The fast model that turns a call's requests into actions; "off" uses the llm agent. */
     router: z
       .object({

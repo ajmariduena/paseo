@@ -134,7 +134,12 @@ export class ElevenLabsSTT implements SpeechToTextProvider {
     };
   }
 
-  public async transcribeClip(clip: SpeechClip, language?: string): Promise<TranscriptionResult> {
+  public async transcribeClip(
+    clip: SpeechClip,
+    language?: string,
+    options?: { keyterms?: readonly string[] },
+  ): Promise<TranscriptionResult> {
+    const keyterms = options?.keyterms ?? [];
     const pcmRate = /^audio\/pcm/i.test(clip.mimeType)
       ? Number(/rate=(\d+)/i.exec(clip.mimeType)?.[1] ?? SAMPLE_RATE)
       : null;
@@ -143,12 +148,14 @@ export class ElevenLabsSTT implements SpeechToTextProvider {
         new Blob([new Uint8Array(pcm16MonoToWav(clip.audio, pcmRate))], { type: "audio/wav" }),
         "clip.wav",
         language,
+        keyterms,
       );
     }
     return this.upload(
       new Blob([new Uint8Array(clip.audio)], { type: clip.mimeType }),
       `clip.${clipExtension(clip.mimeType)}`,
       language,
+      keyterms,
     );
   }
 
@@ -167,6 +174,7 @@ export class ElevenLabsSTT implements SpeechToTextProvider {
     file: Blob,
     filename: string,
     language: string | undefined,
+    keyterms: readonly string[] = [],
   ): Promise<TranscriptionResult> {
     const startedAt = Date.now();
     const form = new FormData();
@@ -175,6 +183,8 @@ export class ElevenLabsSTT implements SpeechToTextProvider {
     if (language) {
       form.set("language_code", language);
     }
+    // Each keyterm is its own form field; Scribe bills 20% more when any are sent.
+    for (const keyterm of keyterms) form.append("keyterms", keyterm);
     form.set("file", file, filename);
 
     const fetchImpl = this.config.fetchImpl ?? fetch;

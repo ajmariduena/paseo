@@ -36,6 +36,7 @@ const ANNOUNCEMENT_SPEECH_TIMEOUT_MS = 20_000;
 // delegates; the plan only runs if the request turns out the same.
 const SPECULATE_AFTER_MS = 350;
 const SPECULATE_MIN_WORDS = 2;
+const SNAPSHOT_RETRY_MS = 1_500;
 
 interface Speculation {
   text: string;
@@ -79,6 +80,9 @@ export class GptLiveCall {
   private speculation: Speculation | null = null;
   private speculateTimer: ReturnType<typeof setTimeout> | null = null;
   private resultAppendedAt: number | null = null;
+  private reflectedChunks = 0;
+  private snapshotRetry: ReturnType<typeof setTimeout> | null = null;
+  private silentReflectedChunks = 0;
   private readonly snapshot: LiveFleetSnapshot;
   private assistantTurn = "";
   private readonly history: string[] = [];
@@ -137,7 +141,7 @@ export class GptLiveCall {
         apiKey: engine.apiKey,
         model: engine.model,
         voice: engine.voice,
-        instructions: buildLiveInstructions(orchestrator.language),
+        instructions: buildLiveInstructions(orchestrator.language, orchestrator.voiceVocabulary()),
         history: previous,
       });
     }
@@ -155,14 +159,13 @@ export class GptLiveCall {
       noteEvent: (text, detail) => this.transcript?.record("status", text, detail),
     });
     this.unregister = orchestrator.registerLiveCall(this);
-    const fleet = await orchestrator.describeFleet().catch(() => []);
     await this.snapshot.sendFull().catch((error: unknown) => {
       this.options.logger.warn({ err: error }, "Failed to send the fleet snapshot");
     });
     const greeting =
       previous.length > 0
         ? buildLiveResume(orchestrator.language)
-        : buildLiveGreeting(fleet, orchestrator.language);
+        : buildLiveGreeting(orchestrator.language);
     if (!this.options.sidebandSessionId) {
       this.connection.append("instructions", greeting, null);
       return;
@@ -181,6 +184,16 @@ export class GptLiveCall {
 
   private async pushFleetSnapshot(): Promise<void> {
     if (this.closed) return;
+    // Context appended while the user talks can make GPT-Live take the turn; it waits.
+    if (this.floor.isUserSpeaking()) {
+      if (!this.snapshotRetry) {
+        this.snapshotRetry = setTimeout(() => {
+          this.snapshotRetry = null;
+          void this.pushFleetSnapshot();
+        }, SNAPSHOT_RETRY_MS);
+      }
+      return;
+    }
     await this.snapshot.sendChanges().catch((error: unknown) => {
       this.options.logger.debug({ err: error }, "Failed to send a fleet update");
     });
@@ -212,9 +225,16 @@ export class GptLiveCall {
     if (this.greetingTimer) clearTimeout(this.greetingTimer);
     if (this.unconfirmedSpeechTimer) clearTimeout(this.unconfirmedSpeechTimer);
     if (this.speculateTimer) clearTimeout(this.speculateTimer);
+    if (this.snapshotRetry) clearTimeout(this.snapshotRetry);
     this.speculation?.abort.abort();
     this.speculation = null;
     this.outbox.close();
+    if (this.reflectedChunks > 0) {
+      this.transcript?.record("status", "reflected_audio", {
+        chunks: this.reflectedChunks,
+        silent: this.silentReflectedChunks,
+      });
+    }
     this.settleAnnouncements(false);
     void this.transcript?.close();
     this.connection.close();
@@ -226,7 +246,13 @@ export class GptLiveCall {
         const audio = Buffer.from((event as { delta: string }).delta, "base64");
         // A sideband only gets reflected copies; the phone already hears it over WebRTC.
         if (this.options.sidebandSessionId) {
-          this.floor.noteAssistantAudio(audio.length / REFLECTED_BYTES_PER_MS);
+          this.reflectedChunks += 1;
+          // Silent frames would keep the floor "taken" and hold every update to its max wait.
+          if (isAudible(audio)) {
+            this.floor.noteAssistantAudio(audio.length / REFLECTED_BYTES_PER_MS);
+          } else {
+            this.silentReflectedChunks += 1;
+          }
           return;
         }
         this.handleOutputAudio(audio);
@@ -510,4 +536,15 @@ export class GptLiveCall {
       this.pendingDelegations = Math.max(0, this.pendingDelegations - 1);
     }
   }
+}
+
+// Mean absolute amplitude of PCM16 below this is silence or comfort noise (about -44 dBFS).
+const AUDIBLE_MEAN_AMPLITUDE = 200;
+
+function isAudible(pcm16: Buffer): boolean {
+  const samples = Math.floor(pcm16.length / 2);
+  if (samples === 0) return false;
+  let total = 0;
+  for (let index = 0; index < samples; index += 1) total += Math.abs(pcm16.readInt16LE(index * 2));
+  return total / samples >= AUDIBLE_MEAN_AMPLITUDE;
 }

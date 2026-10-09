@@ -63,7 +63,11 @@ export interface SpeechToTextProvider {
     prompt?: string;
   }): StreamingTranscriptionSession;
   /** Transcribes a whole recorded clip in any container the provider accepts. */
-  transcribeClip?(clip: SpeechClip, language?: string): Promise<TranscriptionResult>;
+  transcribeClip?(
+    clip: SpeechClip,
+    language?: string,
+    options?: { keyterms?: readonly string[] },
+  ): Promise<TranscriptionResult>;
 }
 
 export interface SpeechStreamResult {
