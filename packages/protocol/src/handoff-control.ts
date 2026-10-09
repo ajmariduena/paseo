@@ -143,6 +143,20 @@ export const HandoffDestinationSnapshotSchema = z.object({
 export type HandoffSourceSnapshot = z.infer<typeof HandoffSourceSnapshotSchema>;
 export type HandoffDestinationSnapshot = z.infer<typeof HandoffDestinationSnapshotSchema>;
 
+export const HandoffFindSourceRequestSchema = z.object({
+  type: z.literal("workspace.handoff.find_source.request"),
+  requestId: z.string(),
+  workspaceId: z.string().min(1),
+});
+export const HandoffFindSourceResponseSchema = z.object({
+  type: z.literal("workspace.handoff.find_source.response"),
+  payload: z.object({
+    requestId: z.string(),
+    result: HandoffSourceStatusSchema.nullable(),
+    error: HandoffErrorSchema.nullable(),
+  }),
+});
+
 export const HandoffInspectSourceRequestSchema = z.object({
   type: z.literal("workspace.handoff.inspect_source.request"),
   requestId: z.string(),

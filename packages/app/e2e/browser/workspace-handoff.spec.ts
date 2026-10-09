@@ -90,6 +90,11 @@ async function savedTransfer(page: Page, sourceServerId: string, workspaceId: st
   }, key);
 }
 
+async function forgetTransfer(page: Page, sourceServerId: string, workspaceId: string) {
+  const key = `paseo:workspace-handoff:${JSON.stringify([sourceServerId, workspaceId])}`;
+  await page.evaluate((storageKey) => localStorage.removeItem(storageKey), key);
+}
+
 test.describe("workspace handoff", () => {
   test.skip(process.platform === "win32", "Ownership release requires POSIX directory durability");
 
@@ -168,7 +173,7 @@ test.describe("workspace handoff", () => {
     }
   });
 
-  test("compact layout preserves explicit context choice and cancels after reopening", async ({
+  test("compact layout recovers explicit context choice after local state loss and cancels", async ({
     page,
   }, testInfo) => {
     test.setTimeout(120_000);
@@ -197,9 +202,13 @@ test.describe("workspace handoff", () => {
         host.source.serverId,
         host.workspace.workspaceId,
       );
+      await forgetTransfer(page, host.source.serverId, host.workspace.workspaceId);
       await page.reload();
       await openHandoff(page);
       await expect(page.getByText("Continue with exported history", { exact: true })).toBeVisible();
+      expect(await savedTransfer(page, host.source.serverId, host.workspace.workspaceId)).toBe(
+        transferId,
+      );
       // Visibility alone also passes while the new sheet is still below the viewport.
       await page.getByTestId("handoff-cancel").click({ trial: true });
       await waitForSettledPosition(page.getByTestId("handoff-cancel"));
@@ -215,6 +224,10 @@ test.describe("workspace handoff", () => {
       expect(await readFile(path.join(host.workspace.repoPath, "prior-work.txt"), "utf8")).toBe(
         "work from the source\n",
       );
+      await forgetTransfer(page, host.source.serverId, host.workspace.workspaceId);
+      await page.reload();
+      await openHandoff(page);
+      await expect(page.getByTestId("handoff-parent")).toBeEditable();
     } finally {
       await host.close();
     }

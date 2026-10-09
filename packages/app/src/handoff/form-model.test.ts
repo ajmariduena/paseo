@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { HandoffDestinationSnapshot } from "@getpaseo/protocol/handoff-control";
+import type {
+  HandoffDestinationSnapshot,
+  HandoffSourceSnapshot,
+} from "@getpaseo/protocol/handoff-control";
 import { handoffFormActions, openHandoffForm, type HandoffFormPorts } from "./form-model";
-import { createHandoffPersistence } from "./persistence";
+import { createHandoffPersistence, restoreHandoffRecord } from "./persistence";
 import { HandoffReviewChangedError } from "@getpaseo/client/internal/workspace-handoff";
 
 const origin = { sourceServerId: "source", workspaceId: "workspace" };
@@ -80,6 +83,52 @@ async function reviewedForm(ports: HandoffFormPorts) {
 }
 
 describe("handoff form recovery", () => {
+  it("restores a released transfer without local state as forward recovery in its reserved mode", async () => {
+    const { ports, persistence, calls } = fixture();
+    const source: HandoffSourceSnapshot["source"] = {
+      id: transferId,
+      workspaceId: origin.workspaceId,
+      cwd: "/old/source",
+      agentIds: [],
+      destinationServerId: "destination",
+      reservationId: destination.reservationId,
+      state: "released",
+      manifestDigest: destination.manifestDigest,
+      publicKey: "source-key",
+    };
+    const record = restoreHandoffRecord({
+      origin,
+      source,
+      destination: { serverId: "destination", label: "VPS" },
+      snapshot: { ...destination, continuationMode: "context" },
+    });
+    expect(record).toMatchObject({ transferId, continuationMode: "context", intent: "activate" });
+    await persistence.save(record);
+    const model = openHandoffForm(origin, ports);
+    await model.load();
+    expect(handoffFormActions(model.getState())).toEqual({ primary: "retry", canCancel: false });
+    await model.cancel();
+    expect(calls).toEqual([]);
+    await model.retry();
+    expect(calls).toEqual([`activate:${transferId}`]);
+    for (const snapshot of [
+      { ...destination, sourceServerId: "another-host" },
+      { ...destination, sourceWorkspaceId: "another-workspace" },
+      { ...destination, reservationId: "00000000-0000-4000-8000-000000000003" },
+      { ...destination, manifestDigest: "b".repeat(64) },
+      { ...destination, sourceAgentIds: ["another-conversation"] },
+    ]) {
+      expect(() =>
+        restoreHandoffRecord({
+          origin,
+          source,
+          destination: { serverId: "destination", label: "VPS" },
+          snapshot,
+        }),
+      ).toThrow("Source and destination handoff records do not match");
+    }
+  });
+
   it("returns to review when the conversation inventory changes before any host mutation", async () => {
     const { ports, persistence, calls } = fixture();
     ports.prepare = async () => {

@@ -296,6 +296,11 @@ export class HandoffSource {
     return { source, manifest };
   }
 
+  findWorkspace(workspaceId: string) {
+    // Discovery must still work after the source checkout has been removed.
+    return this.options.ownership.forWorkspace(workspaceId);
+  }
+
   cancel(input: HandoffCancellationInput) {
     // Do not reopen source admission while its preparation is still stopping or capturing writers.
     return this.serialize(() => this.options.ownership.cancelReservation(input));

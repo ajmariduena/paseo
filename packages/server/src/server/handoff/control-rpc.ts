@@ -3,6 +3,7 @@ import { HandoffDestinationSnapshotSchema } from "@getpaseo/protocol/handoff-con
 import type { HandoffSource } from "./source.js";
 import type { HandoffDestination, DestinationHandoffStatus } from "./destination.js";
 const responseTypes = {
+  "workspace.handoff.find_source.request": "workspace.handoff.find_source.response",
   "workspace.handoff.preview_source.request": "workspace.handoff.preview_source.response",
   "workspace.handoff.preview_destination.request": "workspace.handoff.preview_destination.response",
   "workspace.handoff.cancel_source.request": "workspace.handoff.cancel_source.response",
@@ -34,6 +35,17 @@ function snapshot(record: DestinationHandoffStatus) {
     manifestDigest: record.binding?.manifest.entrypoint.sha256 ?? null,
   });
 }
+function errorResponse(request: ControlRequest, error: unknown): ControlResponse {
+  const code =
+    error instanceof Error && "code" in error && typeof error.code === "string"
+      ? error.code
+      : "operation_failed";
+  const message = error instanceof Error ? error.message : "Handoff operation failed";
+  return {
+    type: responseTypes[request.type],
+    payload: { requestId: request.requestId, result: null, error: { code, message, blob: null } },
+  };
+}
 async function handle(services: Services, request: ControlRequest): Promise<ControlResponse> {
   const payload = { requestId: request.requestId, error: null };
   function source() {
@@ -46,6 +58,11 @@ async function handle(services: Services, request: ControlRequest): Promise<Cont
   }
   try {
     switch (request.type) {
+      case "workspace.handoff.find_source.request":
+        return {
+          type: responseTypes[request.type],
+          payload: { ...payload, result: source().findWorkspace(request.workspaceId) },
+        };
       case "workspace.handoff.preview_source.request":
         return {
           type: responseTypes[request.type],
@@ -121,15 +138,7 @@ async function handle(services: Services, request: ControlRequest): Promise<Cont
         };
     }
   } catch (error) {
-    const code =
-      error instanceof Error && "code" in error && typeof error.code === "string"
-        ? error.code
-        : "operation_failed";
-    const message = error instanceof Error ? error.message : "Handoff operation failed";
-    return {
-      type: responseTypes[request.type],
-      payload: { ...payload, result: null, error: { code, message, blob: null } },
-    };
+    return errorResponse(request, error);
   }
 }
 export function dispatchHandoffControlMessage(
@@ -139,6 +148,7 @@ export function dispatchHandoffControlMessage(
   },
 ): Promise<void> | undefined {
   switch (input.message.type) {
+    case "workspace.handoff.find_source.request":
     case "workspace.handoff.preview_source.request":
     case "workspace.handoff.preview_destination.request":
     case "workspace.handoff.cancel_source.request":

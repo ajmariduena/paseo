@@ -222,7 +222,8 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   workspace. It also restarts the destination after accepting release and activates with the source
   stopped. Activation without a stored receipt and mismatched source identities are refused.
   Invalid release signatures are refused. The app retains the transfer ID and operation
-  intent before sending mutating RPCs; server-side transfer discovery remains open. Cancellation uses the source's durable proof
+  intent before sending mutating RPCs. Source-journal discovery finds the held transfer by workspace
+  even after source-directory removal; its response contains no private signing key. Cancellation uses the source's durable proof
   before discarding destination staging. Tests cover a delayed prepare, lost cancellation replies,
   host restarts, wrong keys and signatures, persistence failures, and both cancel/release orderings.
 - `ownership.ts`, `ownership.test.ts` and `bootstrap.test.ts` cover durable source fences,
@@ -293,18 +294,22 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   and exposes review, prepare, activate, retry, cancel and destination navigation. Review does not
   stop work or reserve a destination. Read-only placement errors leave the form editable. The source
   conversation set is checked again before reservation; a changed set returns the form to review.
-  Twelve form cases cover unavailable modes, inventory changes, lost replies, storage failures,
+  Thirteen form cases cover unavailable modes, inventory changes, lost replies, storage failures,
   duplicate submissions, closing during work, cancellation recovery and host journals advancing
-  past local state. The network suite covers matching/mismatched Claude versions, missing source
+  past local state. Reconstructed records retain the reserved mode and reject mismatched host,
+  workspace, reservation, conversation set or digest; a released source restores forward recovery.
+  The network suite covers matching/mismatched Claude versions, missing source
   history and workflow artifacts without starting a provider turn during review. The feature
   gate is checked on both hosts before preparation; only isolated test daemons advertise it. Two
   browser cases use real isolated daemons and a directory workspace: desktop preparation/reload
   verifies bytes and destination navigation after a real activation conflict and source shutdown;
-  compact context selection/reload/cancellation leaves the source usable.
+  compact recovery deletes the local transfer record, reloads the same identity and context mode
+  from both host journals, then cancels and verifies a fresh form after clearing local state again.
   These workspaces contain no conversations. See the [raw app results](../qa-evidence/handoff-app.txt)
   and [review](../qa-evidence/handoff-review-compact.png), [desktop](../qa-evidence/handoff-app-desktop.png) / [compact](../qa-evidence/handoff-app-compact.png)
-  screenshots. Transfer discovery without
-  local state, reopening recovery when the source workspace is unavailable, pinned-key client persistence,
+  screenshots. Recovery without local state currently requires the source ownership record and both
+  paired hosts online. Destination-only reservations, unfinished cancellation cleanup, reopening
+  recovery when the source workspace is unavailable, pinned-key client persistence,
   resource/omitted-file preflight, source moved state and native-platform evidence remain open.
 - Source retirement/tombstones and automation dispositions remain unimplemented.
   The composite archive currently captures Claude conversations;

@@ -187,6 +187,11 @@ test.skipIf(process.platform === "win32")(
       source: { kind: "directory", path: cwd },
     });
     if (!created.workspace) throw new Error("Workspace creation failed");
+    const workspaceLookup = { workspaceId: created.workspace.id };
+    expect(await source.client.handoffFindSource(workspaceLookup)).toMatchObject({
+      result: null,
+      error: null,
+    });
     const inspected = await source.client.handoffInspectSource({
       workspaceId: created.workspace.id,
     });
@@ -205,6 +210,19 @@ test.skipIf(process.platform === "win32")(
       destination: destination.client,
     });
     expect(staged.state).toBe("staged");
+    const discovered = await source.client.handoffFindSource(workspaceLookup);
+    expect(discovered.error).toBeNull();
+    expect(discovered.result).toEqual(
+      (await source.client.handoffGetSourceStatus({ transferId })).result?.source,
+    );
+    expect(discovered.result).toMatchObject({ id: transferId, state: "ready" });
+    expect(discovered.result).not.toHaveProperty("privateKey");
+    expect(
+      await source.client.handoffFindSource({ workspaceId: "another-workspace" }),
+    ).toMatchObject({
+      result: null,
+      error: null,
+    });
     expect((await destination.client.fetchWorkspaces()).entries).toEqual([]);
     const unreleased = await destination.client.handoffActivateDestination({ transferId });
     expect(unreleased.error?.code).toBe("invalid_state");
@@ -255,6 +273,10 @@ test.skipIf(process.platform === "win32")(
       destination: destination.client,
     });
     expect(resumed).toEqual(staged);
+    expect(await source.client.handoffFindSource(workspaceLookup)).toMatchObject({
+      error: null,
+      result: { ...discovered.result, state: "released" },
+    });
     // A previous client reached release acceptance but stopped before activation.
     await destination.daemon.daemon.handoffDestination.acceptRelease(transferId, release.result);
     const accepted = await prepareWorkspaceHandoff({

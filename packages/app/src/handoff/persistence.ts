@@ -1,5 +1,9 @@
 import { z } from "zod";
 import { HandoffDestinationSnapshotSchema } from "@getpaseo/protocol/handoff-control";
+import type {
+  HandoffDestinationSnapshot,
+  HandoffSourceSnapshot,
+} from "@getpaseo/protocol/handoff-control";
 
 export interface HandoffOrigin {
   sourceServerId: string;
@@ -20,6 +24,45 @@ const HandoffRecordSchema = z.object({
   snapshot: HandoffDestinationSnapshotSchema.nullable(),
 });
 export type HandoffRecord = z.infer<typeof HandoffRecordSchema>;
+
+export function restoreHandoffRecord(input: {
+  origin: HandoffOrigin;
+  source: HandoffSourceSnapshot["source"];
+  destination: { serverId: string; label: string };
+  snapshot: HandoffDestinationSnapshot;
+}): HandoffRecord {
+  const { origin, source, destination, snapshot } = input;
+  const destinationReleased = ["released", "activating", "active"].includes(snapshot.state);
+  if (
+    source.workspaceId !== origin.workspaceId ||
+    source.destinationServerId !== destination.serverId ||
+    destination.serverId === origin.sourceServerId ||
+    snapshot.sourceServerId !== origin.sourceServerId ||
+    snapshot.sourceWorkspaceId !== origin.workspaceId ||
+    snapshot.transferId !== source.id ||
+    snapshot.reservationId !== source.reservationId ||
+    JSON.stringify([...snapshot.sourceAgentIds].sort()) !==
+      JSON.stringify([...source.agentIds].sort()) ||
+    (snapshot.manifestDigest !== null && snapshot.manifestDigest !== source.manifestDigest) ||
+    source.state === "cancelled" ||
+    snapshot.state === "cancelled" ||
+    (destinationReleased && source.state !== "released") ||
+    (source.state === "released" && snapshot.state !== "staged" && !destinationReleased)
+  )
+    throw new Error("Source and destination handoff records do not match");
+  return {
+    version: 1,
+    ...origin,
+    transferId: source.id,
+    destinationServerId: destination.serverId,
+    destinationLabel: destination.label,
+    destinationParent: snapshot.destinationParent,
+    continuationMode: snapshot.continuationMode,
+    reviewedAgentIds: source.agentIds,
+    intent: source.state === "released" ? "activate" : "prepare",
+    snapshot,
+  };
+}
 
 interface Storage {
   getItem(key: string): Promise<string | null>;

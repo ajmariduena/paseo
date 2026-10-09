@@ -8,7 +8,7 @@ import {
 } from "@getpaseo/client/internal/workspace-handoff";
 import { getHostRuntimeStore, isHostRuntimeConnected } from "@/runtime/host-runtime";
 import type { HandoffFormPorts } from "./form-model";
-import { createHandoffPersistence, type HandoffRecord } from "./persistence";
+import { createHandoffPersistence, restoreHandoffRecord, type HandoffRecord } from "./persistence";
 
 function connectedClient(serverId: string) {
   const runtime = getHostRuntimeStore();
@@ -30,8 +30,36 @@ function connections(record: HandoffRecord) {
   };
 }
 
+const persistence = createHandoffPersistence(AsyncStorage);
 export const handoffFormPorts: HandoffFormPorts = {
-  ...createHandoffPersistence(AsyncStorage),
+  ...persistence,
+  async load(origin) {
+    const saved = await persistence.load(origin);
+    if (saved) return saved;
+    const found = await connectedClient(origin.sourceServerId).handoffFindSource({
+      workspaceId: origin.workspaceId,
+    });
+    if (found.error) throw new Error(found.error.message);
+    if (!found.result) return null;
+    const source = found.result;
+    const host = getHostRuntimeStore()
+      .getHosts()
+      .find((candidate) => candidate.serverId === source.destinationServerId);
+    if (!host) throw new Error("Reconnect the destination host to recover this handoff");
+    const response = await connectedClient(host.serverId).handoffGetDestinationStatus({
+      transferId: source.id,
+    });
+    if (response.error) throw new Error(response.error.message);
+    if (!response.result) throw new Error("Destination handoff record is missing");
+    const record = restoreHandoffRecord({
+      origin,
+      source,
+      destination: host,
+      snapshot: response.result,
+    });
+    await persistence.save(record);
+    return record;
+  },
   newTransferId: randomUUID,
   async validate(record) {
     const { source, destination } = connections(record);

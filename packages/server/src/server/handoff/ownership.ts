@@ -410,6 +410,14 @@ export class HandoffOwnership {
     return publicStatus(this.requireRecord(id));
   }
 
+  forWorkspace(workspaceId: string): SourceHandoffStatus | null {
+    this.assertHealthy();
+    const record = [...this.records.values()].find(
+      (candidate) => candidate.state !== "cancelled" && candidate.workspaceId === workspaceId,
+    );
+    return record ? publicStatus(record) : null;
+  }
+
   forAgent(agentId: string): SourceHandoffStatus | null {
     this.assertHealthy();
     const record = [...this.records.values()].find(
