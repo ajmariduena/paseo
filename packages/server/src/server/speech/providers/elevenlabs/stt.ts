@@ -54,6 +54,7 @@ export class ElevenLabsSTT implements SpeechToTextProvider {
     logger: pino.Logger;
     language?: string;
     prompt?: string;
+    keyterms?: readonly string[];
   }): StreamingTranscriptionSession {
     if (this.model === ELEVENLABS_REALTIME_STT_MODEL) {
       return createElevenLabsRealtimeSession({
@@ -61,6 +62,7 @@ export class ElevenLabsSTT implements SpeechToTextProvider {
         baseUrl: this.config.baseUrl,
         model: this.model,
         language: params.language,
+        keyterms: params.keyterms,
         logger: params.logger,
       });
     }

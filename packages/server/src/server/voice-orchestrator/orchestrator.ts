@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from "uuid";
 import { z } from "zod";
 import type pino from "pino";
 import { isDelegatedAgent } from "@getpaseo/protocol/agent-labels";
+import type { Dictionary } from "@getpaseo/protocol/messages";
 import { isPaseoToolName, isSpeakToolName } from "@getpaseo/protocol/tool-name-normalization";
 import type { AgentManager, ManagedAgent } from "../agent/agent-manager.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
@@ -123,8 +124,8 @@ export interface VoiceOrchestratorOptions {
   /** Paseo tools acting for the user with no calling agent. */
   createToolCatalog?: (context: VoiceCallerContext) => Promise<PaseoToolCatalog>;
   hostMetrics?: (() => Promise<HostMetricsSnapshot>) | null;
-  /** Extra names and terms from config, on top of the built-in vocabulary. */
-  vocabulary?: readonly string[];
+  /** The user's dictionary: words to recognize and replacements for what is misheard. */
+  dictionary?: () => Dictionary | undefined;
   logger: pino.Logger;
 }
 
@@ -170,7 +171,7 @@ export class VoiceOrchestrator {
   private lastPhoneSyncAt = 0;
   private permissionsOffered = true;
   private modelNames: string[] = [];
-  private vocabulary: Vocabulary = buildVocabulary({ names: [], extra: [] });
+  private vocabulary: Vocabulary = buildVocabulary({ names: [] });
   private callStartingAt = 0;
   private lastPhoneAppState: string | null = null;
 
@@ -183,7 +184,7 @@ export class VoiceOrchestrator {
     });
     this.webrtc = new LiveWebrtcHub({ orchestrator: this, logger: this.logger });
     this.llm = options.router ? new FastLlmClient(options.router, this.logger) : null;
-    this.vocabulary = buildVocabulary({ names: [], extra: options.vocabulary ?? [] });
+    this.vocabulary = buildVocabulary({ names: [], dictionary: options.dictionary?.() });
     if (options.router) {
       this.logger.info(
         { provider: options.router.provider, model: options.router.model },
@@ -610,7 +611,7 @@ export class VoiceOrchestrator {
     const view = await this.fleetView().catch(() => null);
     this.vocabulary = buildVocabulary({
       names: [...this.modelNames, ...(view?.names() ?? [])],
-      extra: this.options.vocabulary ?? [],
+      dictionary: this.options.dictionary?.(),
     });
   }
 

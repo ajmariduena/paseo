@@ -111,6 +111,26 @@ Paseo uses these paths under the configured OpenAI base URL:
 - voice mode STT: `/v1/audio/transcriptions`
 - voice mode TTS: `/v1/audio/speech`
 
+## Dictionary
+
+Speech recognition mishears names and jargon: product names, people, model names, words borrowed from another language. Teach each host its own words in the host's **Settings → Voice → Dictionary**, or in `features.dictionary`:
+
+```json
+{
+  "features": {
+    "dictionary": {
+      "words": ["Supabase", "Kubernetes"],
+      "replacements": [{ "from": "cube control", "to": "kubectl" }]
+    }
+  }
+}
+```
+
+- **Words** are names to recognize as written. ElevenLabs Scribe receives them as keyterms (realtime dictation takes the first 50 of up to 20 characters; keyterms are billed as an add-on), and OpenAI transcription gets them in its prompt.
+- **Replacements** rewrite what was heard, whole words only and ignoring case, in dictation and in voice calls. They apply to everything on that host, so a replacement for a common word changes that word everywhere.
+
+Voice calls also know a built-in list of model, provider and developer terms, plus the host's own names (hosts, projects, workspaces, agents, models), with no setup.
+
 ## Environment Variables
 
 - `PASEO_VOICE_LLM_PROVIDER`, voice agent provider override

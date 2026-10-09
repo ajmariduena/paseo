@@ -13,6 +13,12 @@ import type {
 } from "../speech/speech-provider.js";
 import { toResolver, type Resolvable } from "../speech/provider-resolver.js";
 import { parsePcmRateFromFormat, pcm16lePeakAbs } from "../speech/audio.js";
+import {
+  applyDictionaryReplacements,
+  describeDictionaryForPrompt,
+  realtimeKeyterms,
+} from "../speech/dictionary.js";
+import type { Dictionary } from "@getpaseo/protocol/messages";
 
 const PCM_CHANNELS = 1;
 const PCM_BITS_PER_SAMPLE = 16;
@@ -72,6 +78,7 @@ interface DictationStreamState {
   sessionId: string;
   inputFormat: string;
   stt: StreamingTranscriptionSession;
+  dictionary: Dictionary | undefined;
   inputRate: number;
   outputRate: number;
   resampler: Pcm16MonoResampler | null;
@@ -135,6 +142,7 @@ export class DictationStreamManager {
   private readonly finalTimeoutMs: number;
   private readonly autoCommitSeconds: number;
   private readonly onIdle: (() => void) | undefined;
+  private readonly dictionary: () => Dictionary | undefined;
   private readonly streams = new Map<string, DictationStreamState>();
 
   constructor(params: {
@@ -146,8 +154,11 @@ export class DictationStreamManager {
     finalTimeoutMs?: number;
     autoCommitSeconds?: number;
     onIdle?: () => void;
+    /** The user's dictionary, read at the start of each dictation. */
+    dictionary?: () => Dictionary | undefined;
   }) {
     this.onIdle = params.onIdle;
+    this.dictionary = params.dictionary ?? (() => undefined);
     this.logger = params.logger.child({ component: "dictation-stream-manager" });
     this.emit = params.emit;
     this.sessionId = params.sessionId;
@@ -185,9 +196,14 @@ export class DictationStreamManager {
       return;
     }
 
-    const transcriptionPrompt =
+    const dictionary = this.dictionary();
+    const transcriptionPrompt = [
       process.env.PASEO_DICTATION_TRANSCRIPTION_PROMPT ??
-      "Transcribe only what the speaker says. Do not add words. Preserve punctuation and casing. If the audio is silence or non-speech noise, return an empty transcript.";
+        "Transcribe only what the speaker says. Do not add words. Preserve punctuation and casing. If the audio is silence or non-speech noise, return an empty transcript.",
+      describeDictionaryForPrompt(dictionary),
+    ]
+      .filter(Boolean)
+      .join(" ");
 
     let stt: ReturnType<SpeechToTextProvider["createSession"]>;
     try {
@@ -195,6 +211,7 @@ export class DictationStreamManager {
         logger: this.logger.child({ dictationId }),
         language: this.language,
         prompt: transcriptionPrompt,
+        keyterms: realtimeKeyterms(dictionary),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -233,6 +250,7 @@ export class DictationStreamManager {
       sessionId: this.sessionId,
       inputFormat: format,
       stt,
+      dictionary,
       inputRate,
       outputRate,
       resampler:
@@ -300,7 +318,10 @@ export class DictationStreamManager {
         .map((id) => state.transcriptsBySegmentId.get(id) ?? "")
         .join(" ")
         .trim();
-      this.emitDictationPartial(dictationId, partialText);
+      this.emitDictationPartial(
+        dictationId,
+        applyDictionaryReplacements(partialText, state.dictionary),
+      );
 
       this.maybeSealDictationStreamFinish(dictationId);
       this.maybeFinalizeDictationStream(dictationId);
@@ -778,10 +799,13 @@ export class DictationStreamManager {
       return;
     }
 
-    const orderedText = orderedSegmentIds
-      .map((segmentId) => state.transcriptsBySegmentId.get(segmentId) ?? "")
-      .join(" ")
-      .trim();
+    const orderedText = applyDictionaryReplacements(
+      orderedSegmentIds
+        .map((segmentId) => state.transcriptsBySegmentId.get(segmentId) ?? "")
+        .join(" ")
+        .trim(),
+      state.dictionary,
+    );
 
     void (async () => {
       const debugRecordingPath = await this.maybePersistDictationStreamAudio(dictationId);

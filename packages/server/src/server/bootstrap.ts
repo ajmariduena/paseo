@@ -1,4 +1,4 @@
-import type { QuickPrompt } from "@getpaseo/protocol/messages";
+import type { Dictionary, QuickPrompt } from "@getpaseo/protocol/messages";
 import type { PluginRegistries } from "@getpaseo/protocol/plugin-registry";
 import { describeHookWorkspace } from "./plugins/lifecycle/index.js";
 import express from "express";
@@ -477,7 +477,7 @@ export interface PaseoDaemonConfig {
   voiceLlmThinking?: string | null;
   voiceLive?: GptLiveEngineConfig | null;
   voiceRouter?: FastLlmConfig | null;
-  voiceVocabulary?: string[];
+  dictionary?: Dictionary;
   voiceLanguage?: string | null;
   dictationFinalTimeoutMs?: number;
   downloadTokenTtlMs?: number;
@@ -620,6 +620,7 @@ function createInitialMutableDaemonConfig(config: PaseoDaemonConfig): MutableDae
   }
 
   initialConfig.quickPrompts = config.quickPrompts;
+  initialConfig.dictionary = config.dictionary;
   initialConfig.quickPromptUndoMs = config.quickPromptUndoMs;
   if (config.agentProfiles !== undefined) {
     initialConfig.agentProfiles = config.agentProfiles;
@@ -1815,7 +1816,7 @@ export async function createPaseoDaemon(
     speech: speechService,
     projectRegistry,
     router: config.voiceRouter,
-    vocabulary: config.voiceVocabulary,
+    dictionary: () => daemonConfigStore.get().dictionary,
     createToolCatalog: async (callerContext) =>
       createAgentToolCatalog({ callerContext, transport: "native" }),
     hostMetrics: () => hostMetricsSampler.getSnapshot(),

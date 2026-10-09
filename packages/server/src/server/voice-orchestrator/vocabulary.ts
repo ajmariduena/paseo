@@ -1,3 +1,6 @@
+import type { Dictionary } from "@getpaseo/protocol/messages";
+import { replacePhrase } from "../speech/dictionary.js";
+
 /**
  * Names and technical words a voice call hears often. Speech recognition trained on everyday
  * speech mishears them, especially English words said in Spanish ("Fable" comes out as
@@ -62,13 +65,10 @@ export const DEFAULT_VOCABULARY: VocabularyTerm[] = [
   { term: "TypeScript", heardAs: ["taipscript", "type script"] },
   { term: "npm", heardAs: ["en pe eme", "n p m"] },
   { term: "Docker", heardAs: ["doker", "dóquer"] },
-  { term: "Fly", heardAs: ["flai", "flay"] },
   { term: "Slack", heardAs: ["eslac", "slac"] },
   { term: "GitHub", heardAs: ["guithub", "gitjab"] },
   { term: "token" },
   { term: "prompt", heardAs: ["promt"] },
-  { term: "Mac mini", heardAs: ["mak mini"] },
-  { term: "MacBook", heardAs: ["mac book", "makbuk"] },
   { term: "VPS", heardAs: ["bps", "be pe ese", "v p s", "vé pe ese"] },
 ];
 
@@ -77,25 +77,34 @@ export interface Vocabulary {
 }
 
 /**
- * The call's vocabulary: the defaults, the host's own names (models, providers, projects,
- * workspaces, agents, hosts) and anything the user added in config.
+ * The call's vocabulary: the defaults, the user's dictionary and the host's own names (models,
+ * providers, projects, workspaces, agents, hosts).
  */
 export function buildVocabulary(params: {
   names: readonly string[];
-  extra: readonly string[];
+  dictionary?: Dictionary;
 }): Vocabulary {
-  const seen = new Set<string>();
-  const terms: VocabularyTerm[] = [];
+  const byKey = new Map<string, VocabularyTerm>();
   const add = (term: VocabularyTerm) => {
-    const key = term.term.trim().toLowerCase();
-    if (!key || key.length > 48 || seen.has(key)) return;
-    seen.add(key);
-    terms.push({ ...term, term: term.term.trim() });
+    const name = term.term.trim();
+    const key = name.toLowerCase();
+    if (!key || key.length > 48) return;
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, { ...term, term: name });
+      return;
+    }
+    if (term.heardAs?.length) {
+      existing.heardAs = [...(existing.heardAs ?? []), ...term.heardAs];
+    }
   };
   for (const term of DEFAULT_VOCABULARY) add(term);
-  for (const term of params.extra) add({ term });
+  for (const word of params.dictionary?.words ?? []) add({ term: word });
+  for (const { from, to } of params.dictionary?.replacements ?? []) {
+    add({ term: to, heardAs: [from] });
+  }
   for (const name of params.names) add({ term: name });
-  return { terms };
+  return { terms: Array.from(byKey.values()) };
 }
 
 /** Rewrites known mishearings to the term ("dile a Faybold" → "dile a Fable"). */
@@ -104,11 +113,7 @@ export function correctTranscript(text: string, vocabulary: Vocabulary): string 
   for (const term of vocabulary.terms) {
     for (const heard of term.heardAs ?? []) {
       if (heard.toLowerCase() === term.term.toLowerCase()) continue;
-      const pattern = new RegExp(
-        `(?<![\\p{L}\\p{N}])${escapeRegExp(heard)}(?![\\p{L}\\p{N}])`,
-        "giu",
-      );
-      result = result.replace(pattern, term.term);
+      result = replacePhrase(result, heard, term.term);
     }
   }
   return result;
@@ -135,8 +140,4 @@ export function vocabularyKeyterms(vocabulary: Vocabulary, limit: number): strin
     .map((term) => term.term.replace(/[<>{}[\]\\]/g, "").trim())
     .filter((term) => term.length > 1 && term.length < 50 && term.split(/\s+/).length <= 5)
     .slice(0, limit);
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

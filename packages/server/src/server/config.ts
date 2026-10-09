@@ -425,8 +425,8 @@ function resolveVoiceLlmConfig(
   };
 }
 
-function resolveVoiceVocabulary(persisted: ReturnType<typeof loadPersistedConfig>): string[] {
-  return persisted.features?.voiceMode?.vocabulary ?? [];
+function resolveDictionary(persisted: ReturnType<typeof loadPersistedConfig>) {
+  return persisted.features?.dictionary;
 }
 
 function resolveVoiceLanguage(persisted: ReturnType<typeof loadPersistedConfig>): string | null {
@@ -747,7 +747,7 @@ export function resolveConfigFromPersisted(
     voiceLlmThinking: voiceLlm.thinking,
     voiceLive: resolveVoiceLiveConfig(env, persisted),
     voiceRouter: resolveVoiceRouterConfig(env, persisted),
-    voiceVocabulary: resolveVoiceVocabulary(persisted),
+    dictionary: resolveDictionary(persisted),
     voiceLanguage: resolveVoiceLanguage(persisted),
     agentProviderSettings: extractAgentProviderSettings(providerOverrides),
     providerCatalogRefreshTimeoutMs: persisted.agents?.catalogRefreshTimeoutMs,

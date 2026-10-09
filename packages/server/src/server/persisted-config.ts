@@ -133,6 +133,14 @@ const FeatureDictationSchema = z
   })
   .strict();
 
+// Entries are checked and trimmed by the daemon config store, so a hand edit never blocks startup.
+const FeatureDictionarySchema = z
+  .object({
+    words: z.array(z.string()).optional(),
+    replacements: z.array(z.object({ from: z.string(), to: z.string() }).strict()).optional(),
+  })
+  .strict();
+
 const FeatureVoiceModeSchema = z
   .object({
     enabled: z.boolean().optional(),
@@ -153,8 +161,6 @@ const FeatureVoiceModeSchema = z
       })
       .strict()
       .optional(),
-    /** Extra names and terms the call should recognize, on top of the built-in vocabulary. */
-    vocabulary: z.array(z.string().trim().min(1).max(48)).max(400).optional(),
     /** The fast model that turns a call's requests into actions; "off" uses the llm agent. */
     router: z
       .object({
@@ -394,6 +400,7 @@ export const PersistedConfigSchema = z
     features: z
       .object({
         dictation: FeatureDictationSchema.optional(),
+        dictionary: FeatureDictionarySchema.optional(),
         voiceMode: FeatureVoiceModeSchema.optional(),
         readAloud: FeatureReadAloudSchema.optional(),
         webUi: FeatureWebUiSchema.optional(),
