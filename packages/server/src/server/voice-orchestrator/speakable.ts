@@ -1,5 +1,6 @@
 const FENCED_CODE = /```[\s\S]*?(```|$)/g;
 const INLINE_CODE = /`([^`\n]{1,60})`|`[^`\n]*`/g;
+const MARKDOWN_IMAGE = /!\[[^\]\n]*\]\([^)\s]*\)/g;
 const MARKDOWN_LINK = /\[([^\]\n]+)\]\((?:[^)\s]+)\)/g;
 const URL = /\bhttps?:\/\/\S+/g;
 const HTML_TAG = /<\/?[a-z][^>\n]*>/gi;
@@ -21,6 +22,7 @@ const EMOJI = /\p{Extended_Pictographic}️?/gu;
 export function toSpeakableText(text: string): string {
   return text
     .replace(FENCED_CODE, " (code) ")
+    .replace(MARKDOWN_IMAGE, " ")
     .replace(MARKDOWN_LINK, "$1")
     .replace(URL, "(link)")
     .replace(HTML_TAG, " ")

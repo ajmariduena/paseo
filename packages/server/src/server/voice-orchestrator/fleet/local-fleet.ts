@@ -14,7 +14,8 @@ import type { AgentManager, ManagedAgent } from "../../agent/agent-manager.js";
 import { summarizeHostHealth } from "./host-health.js";
 import type { AgentStorage } from "../../agent/agent-storage.js";
 import type { ProjectRegistry, WorkspaceRegistry } from "../../workspace-registry.js";
-import { buildAgentDigest } from "../digest/agent-digest.js";
+import { buildAgentDigest, condenseTurn } from "../digest/agent-digest.js";
+import type { AgentTimelineItem } from "../../agent/agent-sdk-types.js";
 import type { DigestSummarizer } from "../digest/digest-summarizer.js";
 import { speakableClip } from "../speakable.js";
 
@@ -141,7 +142,7 @@ export class LocalFleet {
     const base = buildAgentDigest({
       agent: {
         id: agent.id,
-        title: agent.config.title?.trim() || "Untitled agent",
+        title: agent.config.title?.trim() || untitledName(timeline),
         provider: agent.provider,
         workspaceId: agent.workspaceId ?? null,
         workspace:
@@ -220,6 +221,12 @@ export class LocalFleet {
         lastActivityAt: record.lastActivityAt ?? record.updatedAt,
       }));
   }
+}
+
+/** An agent with no title is named by what it was asked, so it can be said and matched. */
+function untitledName(timeline: readonly AgentTimelineItem[]): string {
+  const request = condenseTurn(timeline, 1).request;
+  return request ? speakableClip(request, 48) : "Untitled agent";
 }
 
 function rank(agent: ManagedAgent): number {

@@ -64,3 +64,11 @@ describe("speakableClip", () => {
     expect(speakableClip("abcdefghijklmnopqrst", 8)).toBe("abcdefg…");
   });
 });
+
+describe("toSpeakableText images", () => {
+  it("drops markdown images instead of leaving their alt text glued together", () => {
+    expect(
+      toSpeakableText("![Image](https://x.test/a.png)![Image](https://x.test/b.png) Listo."),
+    ).toBe("Listo.");
+  });
+});
