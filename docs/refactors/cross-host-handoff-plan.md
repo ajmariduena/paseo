@@ -104,10 +104,17 @@ watches require explicit dispositions; no host-scoped IDs or authority transfer 
 Implementation is complete only when all rows have direct evidence in the PR. A passing primitive
 test does not prove a daemon, provider, UI, or cross-platform contract.
 
-The first implemented slice is `packages/server/src/server/handoff/workspace.ts`, exercised by
-`workspace.test.ts` and `workspace.posix.test.ts` beside it. It captures Git-backed checkouts to
-content-addressed artifacts, restores into a new directory, and rechecks source content before
-release. It is not wired into a running daemon or exposed as a feature yet.
+The workspace snapshot implementation lives in `packages/server/src/server/handoff/workspace.ts`.
+Its neighboring tests cover Git-backed checkouts, exact file restoration and source rechecks.
+`archive.ts` provides bounded, checksummed staging with persistent receive offsets. Archive RPCs
+and `packages/client/src/handoff-transfer.ts` now connect two hosts through the ordinary client
+transport, with one chunk in flight. No ownership changes or agent starts occur in this layer.
+
+`archive.e2e.test.ts` runs two isolated daemons and verifies destination restart, a dropped reply
+after a committed write, pause/resume, invalid encoding and corruption recovery. These tests run
+in the existing Linux/Windows server integration job and the macOS server job. Local evidence is
+Linux only until those CI jobs pass. Staging cleanup, host-wide disk quotas and the ownership
+transaction are still pending; the daemon does not advertise the complete handoff capability.
 
 Before the workspace slice is complete, cover directories without Git,
 validate index paths as well as materialized paths,
@@ -118,21 +125,21 @@ Git bundle and patch generation now uses the shared Git scheduler's bounded file
 backpressure while writing and keeps stdout out of daemon memory. The existing real-process Git
 suite covers full binary output, byte ceilings, failed commands, and occupied output paths.
 
-| Requirement                                    | Required evidence                                                                                              | State   |
-| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | ------- |
-| Bounded, resumable, integrity-checked transfer | Real disk round-trip, duplicate/out-of-order chunks, corruption, limits, restart                               | Pending |
-| Workspace fidelity                             | Real Git repos/worktrees; binary, staged/unstaged, rename/delete, untracked, modes, symlinks; source unchanged | Pending |
-| Ownership never overlaps                       | Fault injection at each persistence boundary; cancel/release race; lost replies; daemon restart                | Pending |
-| Every mutation respects the fence              | Prompts, native resume, scripts, terminals, file/Git mutations, queue, automation and delegation tests         | Pending |
-| Native sessions                                | Real provider resume on two isolated homes, history continuity and next turn; incompatible version rejection   | Pending |
-| Explicit context continuation                  | Complete preserved history, visible mode, destination provider/config mapping and next turn                    | Pending |
-| Multi-agent/workspace relationships            | Descendants, cross-workspace children, shared checkout writers, archive and return transfer tests              | Pending |
-| Existing trust boundaries                      | Existing semantic permissions, no transferred credentials/grants, target/manifest-bound release, replay tests  | Pending |
-| Client and app                                 | Capability gate, host picker, preflight, progress, cancel, retry, reconnect, destination navigation            | Pending |
-| Protocol compatibility                         | Pure optional extensions, old/new client parsing and feature negotiation                                       | Pending |
-| Real network                                   | Two isolated daemons via ordinary authenticated WebSockets, dropped connections and duplicate requests         | Pending |
-| Platform coverage                              | Linux and macOS transfer both directions; Windows path behavior; native app and browser UI evidence            | Pending |
-| Delivery                                       | Typecheck, lint, formatting, focused tests, PR with raw evidence, CI results                                   | Pending |
+| Requirement                                    | Required evidence                                                                                               | State   |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------- |
+| Bounded, resumable, integrity-checked transfer | Archive unit + two-daemon tests pass on Linux; CI platforms, aggregate disk quota and lifecycle cleanup pending | Partial |
+| Workspace fidelity                             | Real Git repos/worktrees; binary, staged/unstaged, rename/delete, untracked, modes, symlinks; source unchanged  | Pending |
+| Ownership never overlaps                       | Fault injection at each persistence boundary; cancel/release race; lost replies; daemon restart                 | Pending |
+| Every mutation respects the fence              | Prompts, native resume, scripts, terminals, file/Git mutations, queue, automation and delegation tests          | Pending |
+| Native sessions                                | Real provider resume on two isolated homes, history continuity and next turn; incompatible version rejection    | Pending |
+| Explicit context continuation                  | Complete preserved history, visible mode, destination provider/config mapping and next turn                     | Pending |
+| Multi-agent/workspace relationships            | Descendants, cross-workspace children, shared checkout writers, archive and return transfer tests               | Pending |
+| Existing trust boundaries                      | Existing semantic permissions, no transferred credentials/grants, target/manifest-bound release, replay tests   | Pending |
+| Client and app                                 | Capability gate, host picker, preflight, progress, cancel, retry, reconnect, destination navigation             | Pending |
+| Protocol compatibility                         | Pure optional extensions, old/new client parsing and feature negotiation                                        | Pending |
+| Real network                                   | Archive transport passes two-daemon restart/drop/retry tests on Linux; full cutover still pending               | Partial |
+| Platform coverage                              | Linux and macOS transfer both directions; Windows path behavior; native app and browser UI evidence             | Pending |
+| Delivery                                       | Typecheck, lint, formatting, focused tests, PR with raw evidence, CI results                                    | Pending |
 
 Keep feature code in `server/handoff`, with provider-owned native codecs and a client coordinator.
 Use dotted `workspace.handoff.*.request/response` RPCs. Follow the existing

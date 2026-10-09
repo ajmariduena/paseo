@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
+import { HANDOFF_CHUNK_BASE64_CHARS } from "./handoff.js";
 import {
   AgentSnapshotPayloadSchema,
   AgentTimelineItemPayloadSchema,
@@ -14,6 +15,31 @@ import {
   MutableDaemonConfigSchema,
   validateQuickPrompts,
 } from "./messages.js";
+
+test("handoff chunks reject oversized data, unsafe offsets and path-shaped transfer IDs", () => {
+  const message = {
+    type: "workspace.handoff.write_archive_chunk.request",
+    requestId: "handoff-chunk",
+    transferId: "00000000-0000-4000-8000-000000000001",
+    sha256: "a".repeat(64),
+    offset: 0,
+    data: "YQ==",
+  };
+  expect(SessionInboundMessageSchema.parse(message)).toEqual(message);
+  expect(
+    SessionInboundMessageSchema.safeParse({
+      ...message,
+      data: "a".repeat(HANDOFF_CHUNK_BASE64_CHARS + 1),
+    }).success,
+  ).toBe(false);
+  expect(
+    SessionInboundMessageSchema.safeParse({ ...message, offset: Number.MAX_SAFE_INTEGER + 1 })
+      .success,
+  ).toBe(false);
+  expect(
+    SessionInboundMessageSchema.safeParse({ ...message, transferId: "../../outside" }).success,
+  ).toBe(false);
+});
 
 test("terminal listings accept older rows and retain new per-terminal directories", () => {
   const response = {

@@ -1,3 +1,5 @@
+import type { HandoffArchiveStore } from "./handoff/archive.js";
+import { dispatchHandoffArchiveMessage } from "./handoff/rpc.js";
 import { searchTimeline } from "./agent/chat-search/index.js";
 import type { BrowserToolsBroker } from "./browser-tools/broker.js";
 import type { BrowserScreencastBroker } from "./browser-screencast/stream-broker.js";
@@ -557,6 +559,7 @@ export interface SessionOptions {
   workspaceRegistry: WorkspaceRegistry;
   directorySync?: DirectorySyncService;
   workspaceLabelService?: WorkspaceLabelService;
+  handoffArchiveStore?: HandoffArchiveStore;
   readAloud?: ReadAloudService;
   voiceOrchestrator?: VoiceOrchestrator | null;
   delegations?: Pick<DelegationService, "stopAll" | "disposeQueuedWake"> | null;
@@ -882,6 +885,7 @@ export class Session {
     string,
     WorkspaceUpdatesSubscriptionState
   >();
+  private readonly handoffArchiveStore: HandoffArchiveStore | undefined;
   private readonly workspaceLabelService: WorkspaceLabelService | null;
   private readonly readAloud: ReadAloudService | undefined;
   private readonly voiceOrchestrator: VoiceOrchestrator | null | undefined;
@@ -1034,6 +1038,7 @@ export class Session {
     this.projectRegistry = projectRegistry;
     this.workspaceRegistry = workspaceRegistry;
     this.directorySync = resolveDirectorySync(directorySync);
+    this.handoffArchiveStore = options.handoffArchiveStore;
     this.workspaceLabelService = resolveWorkspaceLabelService(workspaceLabelService);
     this.readAloud = readAloud;
     this.voiceOrchestrator = voiceOrchestrator;
@@ -2662,6 +2667,11 @@ export class Session {
 
   private dispatchWorkspaceLifecycleMessage(msg: SessionInboundMessage): Promise<void> | undefined {
     return (
+      dispatchHandoffArchiveMessage({
+        store: this.handoffArchiveStore,
+        message: msg,
+        emit: (reply) => this.emit(reply),
+      }) ??
       this.dispatchWorkspaceStateMessage(msg) ??
       this.dispatchWorkspaceLabelMessage(msg) ??
       this.dispatchWorkspaceSetupMessage(msg) ??

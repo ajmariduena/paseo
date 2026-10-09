@@ -1,3 +1,17 @@
+import {
+  HandoffArchiveBeginRequestSchema,
+  HandoffArchiveBeginResponseSchema,
+  HandoffArchiveStatusRequestSchema,
+  HandoffArchiveStatusResponseSchema,
+  HandoffArchiveWriteChunkRequestSchema,
+  HandoffArchiveWriteChunkResponseSchema,
+  HandoffArchiveReadChunkRequestSchema,
+  HandoffArchiveReadChunkResponseSchema,
+  HandoffArchiveSealRequestSchema,
+  HandoffArchiveSealResponseSchema,
+  HandoffArchiveResetBlobRequestSchema,
+  HandoffArchiveResetBlobResponseSchema,
+} from "./handoff.js";
 import { QuickPromptSchema } from "./quick-prompt.js";
 export { QuickPromptSchema, validateQuickPrompts, type QuickPrompt } from "./quick-prompt.js";
 import { AgentMessageSchema } from "./agent-message.js";
@@ -3747,6 +3761,12 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   TerminalInputSchema,
   KillTerminalRequestSchema,
   CaptureTerminalRequestSchema,
+  HandoffArchiveBeginRequestSchema,
+  HandoffArchiveStatusRequestSchema,
+  HandoffArchiveWriteChunkRequestSchema,
+  HandoffArchiveReadChunkRequestSchema,
+  HandoffArchiveSealRequestSchema,
+  HandoffArchiveResetBlobRequestSchema,
   ChatCreateRequestSchema,
   ChatListRequestSchema,
   ChatInspectRequestSchema,
@@ -7822,6 +7842,12 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   CaptureTerminalResponseSchema,
   TerminalStreamExitSchema,
   TerminalAttentionRequiredSchema,
+  HandoffArchiveBeginResponseSchema,
+  HandoffArchiveStatusResponseSchema,
+  HandoffArchiveWriteChunkResponseSchema,
+  HandoffArchiveReadChunkResponseSchema,
+  HandoffArchiveSealResponseSchema,
+  HandoffArchiveResetBlobResponseSchema,
   ChatCreateResponseSchema,
   ChatListResponseSchema,
   ChatInspectResponseSchema,

@@ -1,3 +1,4 @@
+import { HandoffArchiveStore } from "./handoff/archive.js";
 import type { NoteStore } from "./notes/store.js";
 import type { HostMetricsSampler } from "./host-metrics/sampler.js";
 import { stat } from "node:fs/promises";
@@ -558,6 +559,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly creationService: CreationService;
   private readonly projectRegistry: ProjectRegistry;
   private readonly workspaceRegistry: WorkspaceRegistry;
+  private readonly handoffArchiveStore: HandoffArchiveStore;
   private readonly workspaceLabelService: WorkspaceLabelService | null;
   private readonly noteStore: NoteStore | undefined;
   private readonly hostMetricsSampler: HostMetricsSampler | undefined;
@@ -722,6 +724,7 @@ export class VoiceAssistantWebSocketServer {
     );
     this.projectRegistry = projectRegistry ?? createNoopProjectRegistry();
     this.workspaceRegistry = workspaceRegistry ?? createNoopWorkspaceRegistry();
+    this.handoffArchiveStore = new HandoffArchiveStore(join(paseoHome, "handoff", "archives"));
     this.workspaceLabelService = workspaceLabelService ?? null;
     this.noteStore = noteStore;
     this.hostMetricsSampler = hostMetricsSampler;
@@ -1536,6 +1539,7 @@ export class VoiceAssistantWebSocketServer {
       projectRegistry: this.projectRegistry,
       workspaceRegistry: this.workspaceRegistry,
       workspaceLabelService: this.workspaceLabelService ?? undefined,
+      handoffArchiveStore: this.handoffArchiveStore,
       noteStore: this.noteStore,
       hostMetricsSampler: this.hostMetricsSampler,
       readAloud: this.readAloudService ?? undefined,

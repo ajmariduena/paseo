@@ -16,6 +16,10 @@ import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import {
+  HandoffBlobSchema as BlobSchema,
+  HandoffDigestSchema as DigestSchema,
+} from "@getpaseo/protocol/handoff";
+import {
   createRunGitCommand,
   runGitCommandBytes,
   runGitCommandToFile,
@@ -23,8 +27,6 @@ import {
 } from "../../utils/run-git-command.js";
 
 const git = createRunGitCommand("handoff-workspace");
-const DigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
-const BlobSchema = z.object({ sha256: DigestSchema, size: z.number().int().nonnegative().safe() });
 const GitNormalizationSchema = z.object({
   autocrlf: z.enum(["true", "false", "input"]),
   eol: z.enum(["lf", "crlf"]),
