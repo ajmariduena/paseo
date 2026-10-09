@@ -278,8 +278,8 @@ class ObservedPlacements {
     await this.clock.advanceBy(elapsedMs);
   }
 
-  dispose(): void {
-    this.service.dispose();
+  dispose() {
+    return this.service.dispose();
   }
 
   watchedRoots(): string[] {
@@ -597,5 +597,34 @@ describe("observed workspace placement", () => {
     expect(reconciliation.workspaceBatches).toEqual([]);
     expect(reconciliation.watchedRoots()).toEqual([]);
     expect(reconciliation.pendingTimers).toBe(0);
+  });
+
+  test("disposal waits for an in-flight reconciliation before its registry files can be removed", async () => {
+    const observed = new ObservedPlacements([
+      { id: "project-one", root: "repo", workspaces: [{ id: "workspace-one", cwd: "repo" }] },
+    ]);
+    await observed.start();
+    observed.makeProjectGit("project-one");
+    const read = observed.holdNextReconciliation();
+    observed.change("repo", ".git");
+    const advancing = observed.advanceBy(DEBOUNCE_MS);
+    await read.started;
+    let stopped = false;
+    const stopping = observed.dispose().then(() => {
+      stopped = true;
+      return undefined;
+    });
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(stopped).toBe(false);
+      expect(observed.watchedRoots()).toEqual([]);
+      expect(observed.pendingTimers).toBe(0);
+    } finally {
+      read.release();
+      await Promise.all([advancing, stopping]);
+    }
+    expect(stopped).toBe(true);
+    expect((await observed.placement("workspace-one"))?.kind).toBe("local_checkout");
+    expect(observed.workspaceBatches).toEqual([]);
   });
 });

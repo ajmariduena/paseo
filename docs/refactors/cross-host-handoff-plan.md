@@ -195,6 +195,11 @@ branch lacks the selected subdirectory. Recovery inspection stays readable under
 WebSocket regression proves the boot ledger reaches reconstruction, including a stale worktree
 registration that must remain untouched when the request is denied.
 
+Daemon shutdown now awaits workspace reconciliation before releasing its state. Stopping watches
+alone leaves admitted Git reads and registry writes in flight; they can recreate files during test
+cleanup or race a subsequent daemon. A held real-registry reconciliation and a daemon shutdown gate
+reproduce the early return. The macOS cleanup failure still needs confirmation from the next CI run.
+
 Workspace archive acquires all target identities and backing/source paths before stopping setup,
 archiving agents or executing teardown. It holds admission through directory removal and final
 updates, including failure. Real-worktree tests cover shared directories, archived-record retries,

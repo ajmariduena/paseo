@@ -2072,7 +2072,7 @@ export async function createPaseoDaemon(
     await hubRelationships.stop();
     unsubscribeWorktreeStorageConfig();
     worktreeStorageSweeper.dispose();
-    workspaceReconciliation.dispose();
+    await workspaceReconciliation.dispose();
     scriptHealthMonitor.stop();
     hostMetricsSampler.dispose();
     // Freeze both ingress and registration before taking the agent closure snapshot.

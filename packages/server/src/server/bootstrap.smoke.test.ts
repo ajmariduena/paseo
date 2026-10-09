@@ -18,6 +18,7 @@ import { createTestPaseoDaemon } from "./test-utils/paseo-daemon.js";
 import { createTestAgentClients } from "./test-utils/fake-agent-client.js";
 import { DaemonClient } from "./test-utils/daemon-client.js";
 import { HandoffOwnership } from "./handoff/ownership.js";
+import { WorkspaceReconciliationService } from "./workspace-reconciliation-service.js";
 import { getOrCreateServerId } from "./server-id.js";
 import {
   createPersistedProjectRecord,
@@ -405,6 +406,40 @@ describe("paseo daemon bootstrap", () => {
       await expect(createPaseoDaemon(daemon.config, pino({ level: "silent" }))).rejects.toThrow();
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("handoff daemon shutdown waits for workspace reconciliation before releasing its state", async () => {
+    const daemon = await createTestPaseoDaemon();
+    const entered = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    const dispose = WorkspaceReconciliationService.prototype.dispose;
+    let drained = false;
+    const disposal = vi
+      .spyOn(WorkspaceReconciliationService.prototype, "dispose")
+      .mockImplementation(async function (this: WorkspaceReconciliationService) {
+        entered.resolve();
+        await finish.promise;
+        await dispose.call(this);
+        drained = true;
+      });
+    const prepare = daemon.daemon.agentManager.prepareForShutdown.bind(daemon.daemon.agentManager);
+    const preparation = vi
+      .spyOn(daemon.daemon.agentManager, "prepareForShutdown")
+      .mockImplementation(() => {
+        expect(drained).toBe(true);
+        prepare();
+      });
+    try {
+      const stopping = expect(daemon.daemon.stop()).resolves.toBeUndefined();
+      await entered.promise;
+      finish.resolve();
+      await stopping;
+    } finally {
+      finish.resolve();
+      disposal.mockRestore();
+      preparation.mockRestore();
+      await daemon.close();
     }
   });
 

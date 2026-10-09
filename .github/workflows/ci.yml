@@ -220,6 +220,7 @@ jobs:
             src/server/watcher-liveness-canary.test.ts \
             src/server/workspace-git-service.observation.test.ts \
             src/server/workspace-git-service.observation.integration.test.ts \
+            src/server/workspace-reconciliation-observation.test.ts \
             --bail=1
 
       - name: Run handoff tests

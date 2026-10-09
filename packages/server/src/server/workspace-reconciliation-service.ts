@@ -139,6 +139,8 @@ export class WorkspaceReconciliationService {
   private rescanTimer: ReconciliationTimer | null = null;
   private debounceTimer: ReconciliationTimer | null = null;
   private disposed = false;
+  private readonly pendingWork = new Set<Promise<unknown>>();
+  private disposePromise: Promise<void> | null = null;
   private started = false;
   private reconciling = false;
   private reconcileQueuedMode: "metadata" | "full" | null = null;
@@ -159,7 +161,12 @@ export class WorkspaceReconciliationService {
     this.debounceMs = options.debounceMs ?? DEFAULT_DEBOUNCE_MS;
   }
 
-  async start(): Promise<void> {
+  start(): Promise<void> {
+    if (this.disposed) return Promise.resolve();
+    return this.track(() => this.startWatching());
+  }
+
+  private async startWatching(): Promise<void> {
     if (this.started) return;
     this.started = true;
     this.unsubscribeRegistry =
@@ -179,6 +186,7 @@ export class WorkspaceReconciliationService {
         }
       }) ?? null;
     await this.syncProjectRootWatches();
+    if (this.disposed) return;
     this.rescanTimer = this.clock.setInterval(
       () => this.reconcileObservedGitMetadata("full"),
       this.rescanIntervalMs,
@@ -186,7 +194,8 @@ export class WorkspaceReconciliationService {
     this.rescanTimer.unref?.();
   }
 
-  dispose(): void {
+  dispose(): Promise<void> {
+    if (this.disposePromise) return this.disposePromise;
     this.disposed = true;
     this.unsubscribeRegistry?.();
     this.unsubscribeRegistry = null;
@@ -194,10 +203,29 @@ export class WorkspaceReconciliationService {
     if (this.debounceTimer) this.clock.clearTimeout(this.debounceTimer);
     for (const { watcher } of this.watchers) watcher.close();
     this.watchers.length = 0;
+    // A registry write may already be awaiting Git or disk. The caller must not
+    // remove or reuse the daemon home until that write and its fanout settle.
+    this.disposePromise = Promise.allSettled(this.pendingWork).then(() => undefined);
+    return this.disposePromise;
+  }
+
+  private track<T>(operation: () => Promise<T>): Promise<T> {
+    const pending = operation();
+    this.pendingWork.add(pending);
+    const finished = () => {
+      this.pendingWork.delete(pending);
+    };
+    void pending.then(finished, finished);
+    return pending;
   }
 
   /** Reconciles mutable Git facts only; never archives missing records. */
-  async reconcileGitMetadata(): Promise<ReconciliationResult> {
+  reconcileGitMetadata(): Promise<ReconciliationResult> {
+    if (this.disposed) return Promise.resolve({ changesApplied: [], durationMs: 0 });
+    return this.track(() => this.reconcileGitMetadataOnce());
+  }
+
+  private async reconcileGitMetadataOnce(): Promise<ReconciliationResult> {
     const start = Date.now();
     const changes: ReconciliationChange[] = [];
     const [projects, workspaces] = await Promise.all([
@@ -222,7 +250,12 @@ export class WorkspaceReconciliationService {
     return { changesApplied: changes, durationMs: Date.now() - start };
   }
 
-  async runOnce(): Promise<ReconciliationResult> {
+  runOnce(): Promise<ReconciliationResult> {
+    if (this.disposed) return Promise.resolve({ changesApplied: [], durationMs: 0 });
+    return this.track(() => this.reconcileOnce());
+  }
+
+  private async reconcileOnce(): Promise<ReconciliationResult> {
     const start = Date.now();
     const changes: ReconciliationChange[] = [];
 
@@ -488,10 +521,12 @@ export class WorkspaceReconciliationService {
     }, this.debounceMs);
   }
 
-  private async reconcileObservedGitMetadata(
-    mode: "metadata" | "full" = "metadata",
-  ): Promise<void> {
-    if (this.disposed) return;
+  private reconcileObservedGitMetadata(mode: "metadata" | "full" = "metadata"): Promise<void> {
+    if (this.disposed) return Promise.resolve();
+    return this.track(() => this.reconcileObserved(mode));
+  }
+
+  private async reconcileObserved(mode: "metadata" | "full"): Promise<void> {
     if (this.reconciling) {
       if (mode === "full" || this.reconcileQueuedMode === null) {
         this.reconcileQueuedMode = mode;
