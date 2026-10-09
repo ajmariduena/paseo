@@ -144,7 +144,16 @@ file write or branch change across preparation, then verify draining and cancell
 requested from a sibling worktree must acquire a lease for the actual target checkout as well as
 the caller's directory. The two-worktree regression verifies that a fenced base stays unchanged.
 
-These tests do not establish the complete ownership promise: draft catalog runtimes, terminals,
+The production terminal worker now shares the boot ledger. Creation holds an admission until the
+worker finishes creating and registering the terminal, even after a caller timeout or an early
+conpty error. A late terminal remains visible to shutdown. Input and resize check a bound canonical
+scope synchronously and hold leases until worker acknowledgement, without filesystem I/O per
+keystroke. Read and stop operations remain available. Tests cover late replies, cancelled fences,
+real terminal input and rejection over the daemon connection. A worker exit cannot certify that
+its child processes stopped; uncertain admissions remain held until coordinator recovery proves
+quiescence. That recovery and complete process-tree shutdown are still pending.
+
+These tests do not establish the complete ownership promise: draft catalog runtimes,
 scripts, background workspace mutations (including auto-naming, archive/recovery and worktree
 creation), shared Git metadata ownership, runtime termination and destination activation still need
 integration.

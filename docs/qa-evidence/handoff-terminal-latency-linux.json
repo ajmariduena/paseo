@@ -1,0 +1,128 @@
+{
+  "commit": "74f85f361",
+  "daemonPid": 133717,
+  "port": 46427,
+  "paseoHome": "/tmp/paseo-bench-home-0IIfT5",
+  "node": "v24.21.0",
+  "platform": "linux x64",
+  "createdAt": "2026-10-09T06:03:44.385Z",
+  "levels": [
+    {
+      "id": "L0",
+      "description": "idle",
+      "echo": {
+        "samples": 100,
+        "hits": 100,
+        "latencyMs": {
+          "count": 100,
+          "min": 1.7,
+          "p50": 3.82,
+          "p95": 23.59,
+          "max": 39.58,
+          "avg": 6.44
+        }
+      },
+      "burst": {
+        "bytesSeen": 2015663,
+        "outputFrames": 19,
+        "snapshotFrames": 0,
+        "restoreFrames": 0,
+        "drainMs": 179.66,
+        "interFrameGapMs": {
+          "count": 15,
+          "min": 4.74,
+          "p50": 7.08,
+          "p95": 16.09,
+          "max": 16.09,
+          "avg": 8.24
+        }
+      },
+      "pingMs": {
+        "count": 136,
+        "min": 0,
+        "p50": 1,
+        "p95": 8,
+        "max": 12,
+        "avg": 2.35
+      }
+    },
+    {
+      "id": "L1",
+      "description": "2 mock agents streaming",
+      "echo": {
+        "samples": 100,
+        "hits": 100,
+        "latencyMs": {
+          "count": 100,
+          "min": 0.92,
+          "p50": 2.43,
+          "p95": 4.12,
+          "max": 34.75,
+          "avg": 2.98
+        }
+      },
+      "burst": {
+        "bytesSeen": 2015663,
+        "outputFrames": 12,
+        "snapshotFrames": 0,
+        "restoreFrames": 0,
+        "drainMs": 81.64,
+        "interFrameGapMs": {
+          "count": 8,
+          "min": 5.2,
+          "p50": 6.65,
+          "p95": 9.36,
+          "max": 9.36,
+          "avg": 6.87
+        }
+      },
+      "pingMs": {
+        "count": 139,
+        "min": 0,
+        "p50": 1,
+        "p95": 1,
+        "max": 7,
+        "avg": 0.96
+      }
+    },
+    {
+      "id": "L2",
+      "description": "4 mock agents + 200KB diff bursts every 2s",
+      "echo": {
+        "samples": 100,
+        "hits": 100,
+        "latencyMs": {
+          "count": 100,
+          "min": 1.16,
+          "p50": 2.39,
+          "p95": 3.24,
+          "max": 8.13,
+          "avg": 2.5
+        }
+      },
+      "burst": {
+        "bytesSeen": 2015663,
+        "outputFrames": 11,
+        "snapshotFrames": 0,
+        "restoreFrames": 0,
+        "drainMs": 69.53,
+        "interFrameGapMs": {
+          "count": 7,
+          "min": 4.26,
+          "p50": 6.68,
+          "p95": 8.71,
+          "max": 8.71,
+          "avg": 6.54
+        }
+      },
+      "pingMs": {
+        "count": 139,
+        "min": 0,
+        "p50": 1,
+        "p95": 1,
+        "max": 2,
+        "avg": 0.89
+      }
+    }
+  ]
+}

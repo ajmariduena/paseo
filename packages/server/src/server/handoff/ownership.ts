@@ -45,6 +45,9 @@ export interface HandoffMutationScope {
   workspaceId?: string;
   agentId?: string;
 }
+export interface HandoffMutationGuard {
+  acquire(): () => void;
+}
 interface Mutation {
   scope: HandoffMutationScope;
   done: Promise<void>;
@@ -219,13 +222,22 @@ export class HandoffOwnership {
   }
 
   async acquireMutation(scope: HandoffMutationScope): Promise<() => void> {
+    return (await this.bindMutation(scope)).acquire();
+  }
+
+  /** Bind a long-lived runtime once; input admission must not stat the filesystem per keystroke. */
+  async bindMutation(scope: HandoffMutationScope): Promise<HandoffMutationGuard> {
     const canonical = { ...scope, cwd: await mutationPath(scope.cwd) };
-    this.assertAllowed(canonical);
+    return { acquire: () => this.acquireCanonicalMutation(canonical) };
+  }
+
+  private acquireCanonicalMutation(scope: HandoffMutationScope): () => void {
+    this.assertAllowed(scope);
     let finish: () => void = () => {};
     const done = new Promise<void>((resolve) => {
       finish = resolve;
     });
-    const mutation = { scope: canonical, done };
+    const mutation = { scope, done };
     this.mutations.add(mutation);
     return () => {
       this.mutations.delete(mutation);

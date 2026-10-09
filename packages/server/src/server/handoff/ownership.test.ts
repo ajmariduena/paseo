@@ -95,6 +95,26 @@ test("releasing an explicit lease twice cannot release another in-flight mutatio
   expect((await ownership.markReady(input.id, "a".repeat(64))).state).toBe("ready");
 });
 
+test("a bound runtime checks current fences synchronously and keeps independent input leases", async () => {
+  const guard = await ownership.bindMutation({ cwd });
+  const first = guard.acquire();
+  const second = guard.acquire();
+  const input = source();
+  await ownership.prepare(input);
+  expect(() => guard.acquire()).toThrow("Workspace is held by handoff");
+  first();
+  first();
+  await expect(ownership.markReady(input.id, "a".repeat(64))).rejects.toMatchObject({
+    code: "invalid_state",
+  });
+  second();
+  await ownership.drain(input.id);
+  expect((await ownership.markReady(input.id, "a".repeat(64))).state).toBe("ready");
+  await ownership.cancel(input.id);
+  const afterCancel = guard.acquire();
+  afterCancel();
+});
+
 test("blocks shared, ancestor and nested checkouts plus moved agent identities", async () => {
   const input = source();
   await mkdir(path.join(cwd, "nested"));

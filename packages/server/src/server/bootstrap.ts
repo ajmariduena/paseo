@@ -777,6 +777,7 @@ export async function createPaseoDaemon(
   let workspaceRegistry: FileBackedWorkspaceRegistry | null = null;
   const terminalManager = createConfiguredTerminalManager({
     getTerminalActivityUrl: () => createTerminalActivityUrl(boundListenTarget),
+    handoffOwnership,
   });
   applyTerminalAgentHookSetting({ store: daemonConfigStore, logger });
 

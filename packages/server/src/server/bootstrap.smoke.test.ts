@@ -107,6 +107,21 @@ describe("paseo daemon bootstrap", () => {
         success: false,
         error: { message: error },
       });
+      const otherCwd = path.join(root, "unrelated-workspace");
+      await mkdir(otherCwd);
+      const other = await client.createWorkspace({ source: { kind: "directory", path: otherCwd } });
+      if (!other.workspace) throw new Error(other.error ?? "Missing unrelated workspace");
+      expect(
+        await client.createTerminal(cwd, "Blocked terminal", "handoff-terminal", {
+          workspaceId: other.workspace.id,
+          command: process.execPath,
+          args: ["-e", 'require("node:fs").writeFileSync("blocked-terminal.txt", "unsafe")'],
+        }),
+      ).toMatchObject({ terminal: null, error, requestId: "handoff-terminal" });
+      expect((await client.listTerminals(cwd)).terminals).toEqual([]);
+      await expect(access(path.join(cwd, "blocked-terminal.txt"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
       expect(await readFile(path.join(cwd, "notes.txt"), "utf8")).toBe("source content");
       await expect(access(path.join(cwd, "blocked.txt"))).rejects.toMatchObject({ code: "ENOENT" });
     } finally {

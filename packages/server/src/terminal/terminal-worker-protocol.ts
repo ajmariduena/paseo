@@ -113,6 +113,10 @@ export type TerminalWorkerResponse =
 
 export type TerminalWorkerEvent =
   | {
+      type: "terminalCreateSettled";
+      terminalId: string;
+    }
+  | {
       type: "terminalCreated";
       terminal: WorkerTerminalInfo;
       state: TerminalState;
