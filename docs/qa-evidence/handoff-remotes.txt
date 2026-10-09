@@ -1,0 +1,233 @@
+Git remotes during workspace handoff
+Date: 2026-10-09
+Baseline: 243b49962 (plan-machine-handoff-macbook-vps)
+Platform: Linux; real Git, temporary files, isolated daemon homes and WebSocket clients.
+
+Behavior proved
+- The baseline lost origin when reconstructing a checkout; the first regression failed with
+  "No such remote 'origin'".
+- Effective fetch/push destinations survive capture and restoration, including source insteadOf
+  and pushInsteadOf rewrites, multiple fetch URLs, distinct SSH push destinations and implicit
+  push following a later fetch-URL change. SSH login names, ports and the exact path remain
+  intact; a regression first reproduced dot segments being normalized during password removal.
+- HTTP userinfo and passwords are absent from the manifest and installed Git configuration.
+  Synthetic credential helpers, SSH commands and source rewrites are not copied or invoked.
+- Worktrees and unborn branches retain remote URLs. Restored origin resolves to the expected
+  forge identity using the existing resolver, without querying that forge.
+- Sanitized destination changes invalidate review or source release; rotating embedded
+  credentials alone does not invalidate review. Installed-URL verification permits a different
+  global authentication rewrite on the destination.
+- Local/file/helper/query/fragment/control-character URLs fail read-only preflight. Incoming
+  credentials/helpers, colliding or nonportable names and oversized URL lists fail before the
+  destination checkout is created. Error text does not expose the synthetic secret markers.
+- A real two-daemon transfer preserves sanitized origin in staging, refuses source release
+  after an origin change, and activates after destination restart once the source matches again.
+
+Execution notes
+- The workspace file passed all 88 cases before the additional name/limit and SSH path cases.
+  The final focused remote run passed all 22 remote cases (71 unrelated cases skipped; 93 total
+  in the file). The full local suite was not run.
+- The first network attempt read the wrong cwd because the public destination snapshot does
+  not expose stagingCwd. The test now reads the private staging path from the isolated daemon.
+  The corrected network case passed. The mistaken operation was a read-only git remote get-url;
+  it made no repository change. The final network run follows the SSH path correction.
+- The helper-signature cleanup initially exposed a TypeScript narrowing error in the URL
+  rejection branch. Returning the never-returning rejection explicitly fixed it; final typecheck
+  and all 22 remote cases pass. Typecheck/lint and formatting output follows. No browser UI, provider turn, external fetch/push
+  or authenticated forge operation was exercised in this slice. No main daemon was restarted.
+
+Limits
+- Branch upstreams, custom refspecs, remote-tracking refs and push policies are not reconstructed.
+  Source SSH alias definitions and credentials are not transferred. Their availability on the
+  destination and authenticated forge behavior need separate evidence/dispositions.
+- Physical MacBook/VPS, native/mobile, Electron and version-drift gates remain open. Windows
+  ownership release/activation remains unavailable pending directory durability.
+- Complete handoff remains unadvertised and PR #30 remains a draft. This closes remote-URL
+  transport coverage, not the complete acceptance plan.
+
+Raw output
+
+
+$ Baseline regression (expected failure)
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/handoff/workspace.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  write to custom object with { processEnv: myObject }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: 🛠️  run anywhere with `dotenvx run -- yourcommand`
+
+ ❯ src/server/handoff/workspace.test.ts (72 tests | 1 failed | 71 skipped) 236ms
+   × preserves effective fetch and push remotes without transferring credentials or host config 234ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/handoff/workspace.test.ts > preserves effective fetch and push remotes without transferring credentials or host config
+Error: Command failed: git remote get-url --all origin
+error: No such remote 'origin'
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 71 skipped (72)
+   Start at  23:14:04
+   Duration  795ms (transform 262ms, setup 67ms, import 330ms, tests 236ms, environment 0ms)
+
+
+
+$ Workspace file before receiver-name/limit and SSH path additions: npx vitest run src/server/handoff/workspace.test.ts --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  88 passed (88)
+   Start at  23:19:15
+   Duration  12.71s (transform 380ms, setup 44ms, import 502ms, tests 12.05s, environment 0ms)
+
+
+
+$ SSH path regression before correction (expected failure): npx vitest run src/server/handoff/workspace.test.ts --bail=1 -t "exact remote SSH path"
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/handoff/workspace.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  load multiple .env files with { path: ['.env.local', '.env'] }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: 🔐 prevent committing .env to code: https://dotenvx.com/precommit
+
+ ❯ src/server/handoff/workspace.test.ts (93 tests | 1 failed | 92 skipped) 272ms
+   × preserves the exact remote SSH path when removing a password 270ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/handoff/workspace.test.ts > preserves the exact remote SSH path when removing a password
+AssertionError: expected 'ssh://git@example.com/repo.git\n' to be 'ssh://git@example.com/link/../repo.gi…' // Object.is equality
+
+- Expected
++ Received
+
+- ssh://git@example.com/link/../repo.git
++ ssh://git@example.com/repo.git
+
+
+ ❯ src/server/handoff/workspace.test.ts:85:65
+     83|   expect(JSON.stringify(manifest)).not.toContain("PRIVATE_PASSWORD");
+     84|   await restoreWorkspace({ artifactDirectory: artifact, destination });
+     85|   expect(await git(destination, "remote", "get-url", "origin")).toBe(
+       |                                                                 ^
+     86|     "ssh://git@example.com/link/../repo.git\n",
+     87|   );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 92 skipped (93)
+   Start at  23:29:07
+   Duration  1.04s (transform 468ms, setup 55ms, import 593ms, tests 272ms, environment 0ms)
+
+
+
+$ Final focused run: npx vitest run src/server/handoff/workspace.test.ts --bail=1 -t remote
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  22 passed | 71 skipped (93)
+   Start at  23:29:32
+   Duration  7.75s (transform 1.06s, setup 127ms, import 1.29s, tests 6.14s, environment 0ms)
+
+
+
+$ Final network case: npx vitest run src/server/handoff/archive.e2e.test.ts --bail=1 -t "retains sanitized Git remotes"
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 24 skipped (25)
+   Start at  23:30:01
+   Duration  17.28s (transform 10.93s, setup 68ms, import 13.61s, tests 3.44s, environment 0ms)
+
+
+
+$ Final: npm run typecheck
+
+> paseo@0.11.1 typecheck
+> npm run typecheck --workspaces --if-present
+
+
+> @getpaseo/builtin-plugins@0.11.1 typecheck
+> tsgo -p tsconfig.json --noEmit
+
+
+> @getpaseo/expo-two-way-audio@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/highlight@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/plugin@0.11.1 typecheck
+> tsgo --noEmit && tsgo -p tsconfig.examples.json --noEmit
+
+
+> @getpaseo/protocol@0.11.1 pretypecheck
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/client@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/server@0.11.1 typecheck
+> tsgo -p tsconfig.server.typecheck.json --noEmit
+
+
+> @getpaseo/app@0.11.0-beta.36 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/relay@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/website@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/desktop@0.11.1 typecheck
+> tsgo --noEmit -p tsconfig.json
+
+
+> @getpaseo/cli@0.11.1 typecheck
+> tsgo --noEmit
+
+
+
+$ Final: npm run lint
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 3.7s on 5028 files with 177 rules using 4 threads.
+
+
+$ npm run format
+
+> paseo@0.11.1 format
+> oxfmt .
+
+Finished in 4073ms on 5373 files using 4 threads.

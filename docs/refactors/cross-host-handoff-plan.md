@@ -86,8 +86,10 @@ inheriting host-wide Git exclusions. Preserve unborn Git branches and their stag
 Shallow/partial clones, sparse checkouts, submodules, LFS, intent-to-add, conflicts, and in-progress
 Git operations need either fidelity tests or a visible preflight refusal with a resolution.
 Ignored files (including `.env` and dependencies) are omitted and listed before moving; tracked
-secrets remain tracked data. Do not copy Git configuration or hooks. Transfer usable remote URLs
-only after removing embedded credentials; validate this separately from file fidelity.
+secrets remain tracked data. Reconstruct remote URLs after removing embedded credentials; do not
+copy Git configuration or hooks wholesale. Resolve source URL rewrites before capture so aliases
+do not depend on the source's configuration. Destination authentication remains host-owned.
+Validate remote and forge behavior separately from file fidelity.
 
 ## Provider evidence
 
@@ -220,6 +222,18 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   receipt. Ordinary working-file content edits remain allowed before capture so editor saves do
   not invalidate review. Capture verification still binds their final bytes. Tests cover Git and
   directory exclusion changes, same-count renames and omissions beyond the visible sample.
+- Git snapshots retain effective fetch/push remote URLs, including distinct push destinations,
+  without HTTP userinfo or passwords. SSH login names remain part of the remote address. Local
+  paths, file URLs, custom helpers, queries/fragments and unsupported remote names require a
+  read-only preflight resolution. Source review and release bind the sanitized destinations;
+  rotating embedded credentials alone does not invalidate review. Destination verification
+  compares installed URLs independently of host authentication rewrites. Focused tests cover
+  worktrees, unborn branches, malformed manifests, forge identity resolution, transport and
+  activation after destination restart; see [remote evidence](../qa-evidence/handoff-remotes.txt).
+  Branch upstreams, custom refspecs, remote-tracking refs and push policies are not reconstructed;
+  their fidelity/dispositions and authenticated forge operations remain open. SSH aliases and
+  credentials must exist on the destination. No remote network request runs during capture or
+  restore. Git owns rewrite resolution through [remote get-url](https://git-scm.com/docs/git-remote).
 - `archive.ts`, `archive.test.ts` and `archive.e2e.test.ts` cover persistent receive offsets,
   checksums, local capture import, and real two-daemon transport. The client coordinator in
   `packages/client/src/handoff-transfer.ts` holds one chunk in flight. The network suite transfers

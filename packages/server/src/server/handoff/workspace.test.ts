@@ -15,7 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import {
   captureWorkspace,
   restoreWorkspace,
@@ -24,8 +24,12 @@ import {
   WORKSPACE_SNAPSHOT_LIMITS,
   previewWorkspace,
   listWorkspaceOmissions,
+  packWorkspaceArchive,
+  verifyWorkspaceArchive,
 } from "./workspace.js";
 import { HandoffArchiveStore } from "./archive.js";
+import { parseGitRemoteLocation } from "@getpaseo/protocol/git-remote";
+import { createForgeResolver } from "../../services/forge-resolver.js";
 
 const exec = promisify(execFile);
 let root: string;
@@ -63,8 +67,257 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await rm(root, { recursive: true, force: true });
 });
+
+test("preserves the exact remote SSH path when removing a password", async () => {
+  await git(
+    source,
+    "remote",
+    "add",
+    "origin",
+    "ssh://git:PRIVATE_PASSWORD@example.com/link/../repo.git",
+  );
+  const manifest = await captureWorkspace({ cwd: source, artifactDirectory: artifact });
+  expect(JSON.stringify(manifest)).not.toContain("PRIVATE_PASSWORD");
+  await restoreWorkspace({ artifactDirectory: artifact, destination });
+  expect(await git(destination, "remote", "get-url", "origin")).toBe(
+    "ssh://git@example.com/link/../repo.git\n",
+  );
+  await verifyCapturedWorkspace({ cwd: destination, artifactDirectory: artifact });
+});
+
+test("verifies installed remotes without overriding destination authentication rewrites", async () => {
+  await git(source, "remote", "add", "origin", "https://github.com/org/repo.git");
+  await captureWorkspace({ cwd: source, artifactDirectory: artifact });
+  const store = new HandoffArchiveStore(path.join(root, "archives"));
+  const transferId = randomUUID();
+  await packWorkspaceArchive({ store, transferId, artifactDirectory: artifact });
+  const config = path.join(root, "destination.gitconfig");
+  await writeFile(config, '[url "ssh://git@github.com/"]\n\tinsteadOf = https://github.com/\n');
+  vi.stubEnv("GIT_CONFIG_GLOBAL", config);
+  await restoreWorkspaceArchive({ store, transferId, destination });
+  expect(
+    (await exec("git", ["remote", "get-url", "origin"], { cwd: destination, env: process.env }))
+      .stdout,
+  ).toBe("ssh://git@github.com/org/repo.git\n");
+  await verifyWorkspaceArchive({ store, transferId, cwd: destination });
+  expect(await git(destination, "config", "--local", "--get", "remote.origin.url")).toBe(
+    "https://github.com/org/repo.git\n",
+  );
+});
+
+test("preserves effective fetch and push remotes without transferring credentials or host config", async () => {
+  await git(source, "remote", "add", "origin", "team:org/repo.git");
+  await git(source, "config", "url.https://PRIVATE_TOKEN@github.com/.insteadOf", "team:");
+  await git(
+    source,
+    "remote",
+    "set-url",
+    "--add",
+    "origin",
+    "https://user:PRIVATE_PASSWORD@backup.example/org/repo.git",
+  );
+  await git(
+    source,
+    "remote",
+    "set-url",
+    "--push",
+    "origin",
+    "ssh://git:PRIVATE_SSH_PASSWORD@github.com:2222/org/repo.git",
+  );
+  await git(source, "remote", "add", "upstream", "git@gitlab.com:org/repo.git");
+  await git(source, "config", "credential.helper", "!PRIVATE_HELPER");
+  await git(source, "config", "core.sshCommand", "PRIVATE_COMMAND");
+  const manifest = await captureWorkspace({ cwd: source, artifactDirectory: artifact });
+  expect(JSON.stringify(manifest)).not.toContain("PRIVATE_");
+  await restoreWorkspace({ artifactDirectory: artifact, destination });
+  expect(await git(destination, "remote", "get-url", "--all", "origin")).toBe(
+    "https://github.com/org/repo.git\nhttps://backup.example/org/repo.git\n",
+  );
+  expect(await git(destination, "remote", "get-url", "--push", "--all", "origin")).toBe(
+    "ssh://git@github.com:2222/org/repo.git\n",
+  );
+  expect(await git(destination, "remote", "get-url", "upstream")).toBe(
+    "git@gitlab.com:org/repo.git\n",
+  );
+  expect(
+    parseGitRemoteLocation(await git(destination, "remote", "get-url", "origin")),
+  ).toMatchObject({
+    host: "github.com",
+    path: "org/repo",
+    transport: "https",
+  });
+  const config = await readFile(path.join(destination, ".git", "config"), "utf8");
+  expect(config).not.toContain("PRIVATE_");
+  expect(config).not.toContain("insteadOf");
+  expect(config).not.toContain("credential");
+  expect(config).not.toContain("sshCommand");
+  const resolver = createForgeResolver({
+    resolveRemoteUrl: (cwd) => git(cwd, "remote", "get-url", "origin"),
+  });
+  await expect(resolver.resolve(destination)).resolves.toMatchObject({
+    forge: "github",
+    host: "github.com",
+  });
+  await verifyCapturedWorkspace({ cwd: source, artifactDirectory: artifact });
+  await verifyCapturedWorkspace({ cwd: destination, artifactDirectory: artifact });
+  await git(destination, "remote", "set-url", "upstream", "git@gitlab.com:other/repo.git");
+  expect(await git(destination, "remote", "get-url", "--push", "upstream")).toBe(
+    "git@gitlab.com:other/repo.git\n",
+  );
+  await expect(
+    verifyCapturedWorkspace({ cwd: destination, artifactDirectory: artifact }),
+  ).rejects.toMatchObject({ code: "source_changed" });
+});
+
+test("retains a pushInsteadOf destination and binds reviewed remote changes without binding credentials", async () => {
+  await git(source, "remote", "add", "origin", "https://FIRST_SECRET@github.com/org/repo.git");
+  const preview = await previewWorkspace({ cwd: source, scratchParent: root });
+  await git(source, "remote", "set-url", "origin", "https://SECOND_SECRET@github.com/org/repo.git");
+  expect((await previewWorkspace({ cwd: source, scratchParent: root })).reviewDigest).toBe(
+    preview.reviewDigest,
+  );
+  await git(
+    source,
+    "config",
+    "url.git@github.com:.pushInsteadOf",
+    "https://SECOND_SECRET@github.com/",
+  );
+  await expect(
+    captureWorkspace({
+      cwd: source,
+      artifactDirectory: artifact,
+      expectedReviewDigest: preview.reviewDigest,
+    }),
+  ).rejects.toMatchObject({ code: "review_changed" });
+  const refreshed = await previewWorkspace({ cwd: source, scratchParent: root });
+  await captureWorkspace({
+    cwd: source,
+    artifactDirectory: artifact,
+    expectedReviewDigest: refreshed.reviewDigest,
+  });
+  await restoreWorkspace({ artifactDirectory: artifact, destination });
+  expect(await git(destination, "remote", "get-url", "origin")).toBe(
+    "https://github.com/org/repo.git\n",
+  );
+  expect(await git(destination, "remote", "get-url", "--push", "origin")).toBe(
+    "git@github.com:org/repo.git\n",
+  );
+  await verifyCapturedWorkspace({ cwd: destination, artifactDirectory: artifact });
+  await git(source, "remote", "set-url", "origin", "https://github.com/other/repo.git");
+  await expect(
+    verifyCapturedWorkspace({ cwd: source, artifactDirectory: artifact }),
+  ).rejects.toMatchObject({ code: "source_changed" });
+});
+
+test.each(["linked", "unborn"])("preserves remote URLs in a %s Git workspace", async (kind) => {
+  let cwd = source;
+  if (kind === "linked") {
+    cwd = path.join(root, "linked");
+    await git(source, "worktree", "add", "-b", "linked", cwd);
+  } else {
+    await rm(path.join(source, ".git"), { recursive: true });
+    await git(source, "init", "--initial-branch=new");
+    await git(source, "add", "tracked.txt");
+  }
+  await git(cwd, "remote", "add", "origin", "ssh://git@[2001:db8::1]:2222/org/repo.git");
+  await captureWorkspace({ cwd, artifactDirectory: artifact });
+  await restoreWorkspace({ artifactDirectory: artifact, destination });
+  expect(await git(destination, "remote", "get-url", "origin")).toBe(
+    "ssh://git@[2001:db8::1]:2222/org/repo.git\n",
+  );
+  await verifyCapturedWorkspace({ cwd: destination, artifactDirectory: artifact });
+});
+
+test.each([
+  "/host/PRIVATE_LOCAL_PATH",
+  "file:///host/PRIVATE_LOCAL_PATH",
+  "C:/PRIVATE_LOCAL_PATH",
+  "ext::PRIVATE_COMMAND",
+  "helper://PRIVATE_TOKEN/repo",
+  "https://github.com/repo?PRIVATE_TOKEN=secret",
+  "https://github.com/repo#PRIVATE_TOKEN",
+  "https://github.com/repo\nPRIVATE_TOKEN",
+  "user:PRIVATE_PASSWORD@host:repo",
+])("refuses a nonportable remote before capture: %s", async (url) => {
+  await git(source, "remote", "add", "origin", url);
+  const error = await previewWorkspace({ cwd: source, scratchParent: root }).then(
+    () => null,
+    (reason: unknown) => reason,
+  );
+  expect(error).toMatchObject({ code: "unsupported_workspace" });
+  expect(String(error)).not.toContain("PRIVATE_");
+  await expect(lstat(artifact)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test.each([["origin", "ORIGIN"], ["../outside"], ["origin\nother"]])(
+  "rejects colliding or nonportable remote names in a manifest: %j",
+  async (...names) => {
+    await captureWorkspace({ cwd: source, artifactDirectory: artifact });
+    const manifestPath = path.join(artifact, "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    manifest.git.remotes = names.map((name) => ({
+      name,
+      fetchUrls: ["https://github.com/org/repo.git"],
+      pushUrls: null,
+    }));
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    await expect(
+      restoreWorkspace({ artifactDirectory: artifact, destination }),
+    ).rejects.toMatchObject({ code: "invalid_artifact" });
+    await expect(lstat(destination)).rejects.toMatchObject({ code: "ENOENT" });
+  },
+);
+
+test("rejects an oversized remote URL list before capture and on receipt", async () => {
+  await captureWorkspace({ cwd: source, artifactDirectory: artifact });
+  for (let index = 0; index < 17; index++)
+    await git(
+      source,
+      "config",
+      "--add",
+      "remote.origin.url",
+      `https://github.com/org/repo${index}.git`,
+    );
+  await expect(previewWorkspace({ cwd: source, scratchParent: root })).rejects.toMatchObject({
+    code: "unsupported_workspace",
+  });
+  const manifestPath = path.join(artifact, "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.git.remotes = [
+    {
+      name: "origin",
+      fetchUrls: Array(17).fill("https://github.com/org/repo.git"),
+      pushUrls: null,
+    },
+  ];
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  await expect(
+    restoreWorkspace({ artifactDirectory: artifact, destination }),
+  ).rejects.toMatchObject({ code: "invalid_artifact" });
+  await expect(lstat(destination)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test.each([
+  "https://PRIVATE_TOKEN@github.com/org/repo.git",
+  "ext::PRIVATE_COMMAND",
+  "file:///PRIVATE_PATH",
+])(
+  "rejects an unsafe remote in an incoming manifest before creating the checkout: %s",
+  async (url) => {
+    await captureWorkspace({ cwd: source, artifactDirectory: artifact });
+    const manifestPath = path.join(artifact, "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    manifest.git.remotes = [{ name: "origin", fetchUrls: [url], pushUrls: null }];
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    await expect(
+      restoreWorkspace({ artifactDirectory: artifact, destination }),
+    ).rejects.toMatchObject({ code: "invalid_artifact" });
+    await expect(lstat(destination)).rejects.toMatchObject({ code: "ENOENT" });
+  },
+);
 
 test.each(["git", "directory"])(
   "pages every reviewed exclusion for a %s workspace and rejects a changed review",

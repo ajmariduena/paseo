@@ -1879,6 +1879,63 @@ for (const continuationMode of ["native", "context"] as const) {
   );
 }
 
+test.skipIf(process.platform === "win32")(
+  "retains sanitized Git remotes through transport, restart and activation",
+  async () => {
+    const source = await startHost("source");
+    let destination = await startHost("destination");
+    const cwd = path.join(root, "remote-workspace");
+    await mkdir(cwd);
+    await exec("git", ["init", "--initial-branch=work"], { cwd });
+    await writeFile(path.join(cwd, "work.txt"), "local work\n");
+    await exec("git", ["add", "work.txt"], { cwd });
+    const url = "https://PRIVATE_REMOTE_TOKEN@github.com/org/repo.git";
+    await exec("git", ["remote", "add", "origin", url], { cwd });
+    const created = await source.client.createWorkspace({
+      source: { kind: "directory", path: cwd },
+    });
+    if (!created.workspace) throw new Error("Missing workspace");
+    const transferId = randomUUID();
+    const staged = await prepareWorkspaceHandoff({
+      transferId,
+      source: source.client,
+      destination: destination.client,
+      workspaceId: created.workspace.id,
+      destinationParent: root,
+      continuationMode: "native",
+    });
+    expect(staged.state).toBe("staged");
+    const stagingCwd = destination.daemon.daemon.handoffDestination.status(transferId).stagingCwd;
+    expect((await exec("git", ["remote", "get-url", "origin"], { cwd: stagingCwd })).stdout).toBe(
+      "https://github.com/org/repo.git\n",
+    );
+    await exec("git", ["remote", "set-url", "origin", "https://github.com/changed/repo.git"], {
+      cwd,
+    });
+    const refused = await source.client.handoffReleaseSource({ transferId });
+    expect(refused.error?.code).toBe("source_changed");
+    expect(source.daemon.daemon.handoffOwnership.status(transferId).state).toBe("ready");
+    await exec("git", ["remote", "set-url", "origin", url], { cwd });
+    await stopHost(destination);
+    destination = await startHost("destination");
+    const activated = await activateWorkspaceHandoff({
+      transferId,
+      sourceServerId: source.daemon.daemon.getServerId(),
+      getSource: () => source.client,
+      destination: destination.client,
+    });
+    expect(activated.state).toBe("active");
+    expect(
+      (await exec("git", ["remote", "get-url", "origin"], { cwd: activated.destinationCwd }))
+        .stdout,
+    ).toBe("https://github.com/org/repo.git\n");
+    expect(
+      await readFile(path.join(activated.destinationCwd, ".git", "config"), "utf8"),
+    ).not.toContain("PRIVATE_REMOTE_TOKEN");
+  },
+  30_000,
+);
+
 for (const outcome of ["activate", "cancel"] as const) {
   test.skipIf(process.platform === "win32")(
     `retains mixed native/context choices through restart and ${outcome}`,
