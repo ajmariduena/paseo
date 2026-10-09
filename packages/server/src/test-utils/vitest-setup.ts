@@ -9,6 +9,8 @@ dotenv.config({ path: path.resolve(serverRoot, "../.env") });
 
 process.env.PASEO_SUPERVISED = "0";
 process.env.GIT_TERMINAL_PROMPT = "0";
+// Git for Windows ships system attributes; fixtures must declare their own rules.
+process.env.GIT_ATTR_NOSYSTEM = "1";
 process.env.GIT_SSH_COMMAND = "ssh -oBatchMode=yes";
 process.env.SSH_ASKPASS = "/usr/bin/false";
 process.env.SSH_ASKPASS_REQUIRE = "force";

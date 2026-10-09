@@ -329,9 +329,16 @@ test.each(["repository info", "global"])(
         : path.join(source, ".git", "info", "attributes");
     await writeFile(attributes, "tracked.txt text eol=crlf\n");
     if (location === "global") await git(source, "config", "core.attributesFile", attributes);
+    const reportedPath =
+      location === "global"
+        ? await git(source, "var", "GIT_ATTR_GLOBAL")
+        : await git(source, "rev-parse", "--git-path", "info/attributes");
     await expect(
       captureWorkspace({ cwd: source, artifactDirectory: artifact }),
-    ).rejects.toMatchObject({ code: "unsupported_workspace" });
+    ).rejects.toMatchObject({
+      code: "unsupported_workspace",
+      message: `Move external Git attributes into the workspace's .gitattributes before handoff: ${reportedPath.trim()}`,
+    });
   },
 );
 
