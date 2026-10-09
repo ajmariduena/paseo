@@ -8109,8 +8109,9 @@ test("waitForAgentRunStart ignores a prior turn error while the next run starts"
     await manager.runAgent(agentId, "fail").catch(() => undefined);
     expect(manager.getAgent(agentId)?.lifecycle).toBe("error");
 
-    const dispatch = await startAgentRun(manager, agentId, "resume", logger);
-    expect(dispatch.disposition).toBe("turn_started");
+    const dispatch = startAgentRun(manager, agentId, "resume", logger);
+    // Dispatch now waits for admission; inspect the pending run before releasing the provider.
+    await retryStartEntered.promise;
     const wait = manager.waitForAgentRunStart(agentId);
     let earlyResult: "pending" | "resolved" | "rejected" = "pending";
     void wait.then(
@@ -8123,11 +8124,11 @@ test("waitForAgentRunStart ignores a prior turn error while the next run starts"
         return earlyResult;
       },
     );
-    await retryStartEntered.promise;
     await Promise.resolve();
 
     expect(earlyResult).toBe("pending");
     releaseRetryStart.resolve();
+    await expect(dispatch).resolves.toEqual({ disposition: "turn_started" });
     await expect(wait).resolves.toBeUndefined();
     await manager.waitForAgentEvent(agentId);
   } finally {
