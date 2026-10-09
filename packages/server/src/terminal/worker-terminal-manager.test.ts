@@ -823,6 +823,78 @@ it("removes worker terminals after killAndWait", async () => {
   expect(manager.listDirectories()).not.toContain(cwd);
 });
 
+it.skipIf(isPlatform("win32"))(
+  "handoff: confirms forced exit of a real terminal process that ignores hangup",
+  async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "worker-terminal-force-stop-"));
+    temporaryDirs.push(cwd);
+    const readyPath = join(cwd, "ready");
+    manager = createWorkerTerminalManager();
+    const session = trackTerminal(
+      await manager.createTerminal({
+        workspaceId: "ws-test",
+        cwd,
+        ...nodeTerminalCommand(`
+      process.on("SIGHUP", () => {});
+      require("node:fs").writeFileSync(${JSON.stringify(readyPath)}, String(process.pid) + "\\n");
+      setInterval(() => {}, 1000);
+    `),
+      }),
+    );
+    await waitForCondition(
+      () => existsSync(readyPath) && readFileSync(readyPath, "utf8").endsWith("\n"),
+      10000,
+    );
+    const pid = Number(readFileSync(readyPath, "utf8").trim());
+    await manager.killTerminalAndWait(session.id, { gracefulTimeoutMs: 25, forceTimeoutMs: 2000 });
+    expect(session.getExitInfo()?.signal).toBe(9);
+    expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
+    expect(manager.getTerminal(session.id)).toBeUndefined();
+  },
+);
+
+it("handoff: keeps worker terminals observable after a failed stop and allows a confirmed retry", async () => {
+  const worker = new FakeTerminalWorker();
+  manager = createWorkerTerminalManager({ forkWorker: () => worker, requestTimeoutMs: 50 });
+  worker.emitWorkerMessage({
+    type: "terminalCreated",
+    terminal: {
+      id: "still-running",
+      name: "Shell",
+      cwd: tmpdir(),
+      workspaceId: "ws-test",
+      activity: null,
+    },
+    state: createTerminalState(),
+  });
+  const stopping = manager.killTerminalAndWait("still-running");
+  const failedRequest = worker.sentMessages.at(-1);
+  if (!failedRequest) throw new Error("Missing stop request");
+  worker.emitWorkerMessage({
+    type: "response",
+    requestId: failedRequest.requestId,
+    ok: false,
+    error: "Terminal process did not exit: still-running",
+  });
+  await expect(stopping).rejects.toThrow("Terminal process did not exit");
+  expect(manager.getTerminal("still-running")?.id).toBe("still-running");
+  expect((await manager.getTerminals(tmpdir())).map((terminal) => terminal.id)).toEqual([
+    "still-running",
+  ]);
+
+  const retry = manager.killTerminalAndWait("still-running");
+  const retryRequest = worker.sentMessages.at(-1);
+  if (!retryRequest) throw new Error("Missing retry request");
+  worker.emitWorkerMessage({
+    type: "terminalExit",
+    terminalId: "still-running",
+    info: { exitCode: 0, signal: null, lastOutputLines: [] },
+  });
+  worker.emitWorkerMessage({ type: "response", requestId: retryRequest.requestId, ok: true });
+  await retry;
+  expect(manager.getTerminal("still-running")).toBeUndefined();
+});
+
 it("produces one terminals-changed snapshot per title change", async () => {
   const worker = new FakeTerminalWorker();
   manager = createWorkerTerminalManager({

@@ -19,6 +19,10 @@ Paseo owns agent processes, terminals, scripts, queues, and automation. It canno
 external editor or an unrelated process. Stop owned writers before capture, detect changes during
 capture, and tell the user that source edits after capture do not synchronize. A timeout while
 stopping is not proof that a writer stopped. Do not activate the destination after that timeout.
+Keep writers in the stop inventory even if a best-effort terminal close removes them from the UI.
+A terminal's synthetic close event and its shell's exit do not prove that all descendants exited.
+Awaited terminal stops now reject missing PTY exit confirmation and retain the session for retry;
+the coordinator still needs process-tree and previously closed terminal coverage.
 
 Credentials, permission grants, absolute launch paths, host MCP configuration, sockets, browser
 sessions, process IDs, installed dependencies, and ignored files do not migrate automatically.
@@ -136,8 +140,8 @@ capturing conversation data; finishing an RPC alone does not prove those writes 
 
 These tests do not establish the complete ownership promise: draft catalog runtimes, terminals,
 scripts, file/Git mutations, runtime termination and destination activation still need integration.
-Source history needs a readable path that does not reopen a
-fenced native runtime. Source release explicitly refuses Windows until durable directory updates
+Source history needs a readable path that does not reopen a fenced native runtime. Source release
+explicitly refuses Windows until durable directory updates
 have an implementation there; archive staging alone does not satisfy that requirement.
 
 Before the workspace slice is complete, cover directories without Git. Directory-entry durability

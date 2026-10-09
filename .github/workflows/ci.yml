@@ -221,7 +221,7 @@ jobs:
             src/server/workspace-git-service.observation.integration.test.ts \
             --bail=1
 
-      - name: Run handoff filesystem and transport tests
+      - name: Run handoff tests
         run: |
           npx vitest run \
             packages/server/src/server/handoff/workspace.test.ts \
@@ -234,6 +234,9 @@ jobs:
           npx vitest run \
             packages/server/src/server/agent/agent-manager.test.ts \
             packages/server/src/server/bootstrap.smoke.test.ts \
+            packages/server/src/terminal/terminal.test.ts \
+            packages/server/src/terminal/terminal-manager.test.ts \
+            packages/server/src/terminal/worker-terminal-manager.test.ts \
             -t handoff --bail=1 --maxWorkers=1
 
   desktop-tests-ubuntu:
