@@ -86,6 +86,7 @@ export const WORKSPACE_SNAPSHOT_LIMITS: WorkspaceSnapshotLimits = {
 type ErrorCode =
   | "invalid_artifact"
   | "unsupported_workspace"
+  | "review_changed"
   | "source_changed"
   | "limit_exceeded"
   | "destination_exists";
@@ -103,6 +104,7 @@ export class HandoffWorkspaceError extends Error {
 interface CaptureInput {
   cwd: string;
   artifactDirectory: string;
+  expectedReviewDigest?: string;
   limits?: WorkspaceSnapshotLimits;
 }
 
@@ -452,7 +454,7 @@ export async function previewWorkspace(input: {
     },
   );
   if (state.kind === "git") await validateGitCapture(cwd, state.paths);
-  const files = await previewWorkspaceFiles(cwd, state, limits);
+  const { entries, ...files } = await previewWorkspaceFiles(cwd, state, limits);
   let gitHistoryBytes = 0;
   if (state.kind === "git" && state.head) {
     const bytes = (await runGit(cwd, ["rev-list", "--disk-usage", "--objects", "HEAD"])).trim();
@@ -466,7 +468,68 @@ export async function previewWorkspace(input: {
     gitHistoryBytes,
     omittedPaths: omittedPaths.slice(0, 50),
     omittedPathCount: omittedPaths.length,
+    reviewDigest: workspaceReviewDigest(cwd, state, entries, omittedPaths),
   };
+}
+
+type ReviewedFile =
+  | Omit<Extract<WorkspaceFile, { kind: "file" }>, "blob">
+  | Exclude<WorkspaceFile, { kind: "file" }>;
+
+// Review binds the transfer boundary. Ordinary edits remain allowed until stopped capture.
+function workspaceReviewDigest(
+  cwd: string,
+  state: WorkspaceState,
+  files: ReviewedFile[],
+  omitted: string[],
+) {
+  const entries = files.map((file) =>
+    file.kind === "file" ? { kind: file.kind, path: file.path, executable: file.executable } : file,
+  );
+  entries.sort((a, b) => {
+    if (a.path < b.path) return -1;
+    if (a.path > b.path) return 1;
+    return 0;
+  });
+  const gitState =
+    state.kind === "git"
+      ? {
+          objectFormat: state.objectFormat,
+          head: state.head,
+          branch: state.branch,
+          index: state.index,
+          normalization: state.normalization,
+        }
+      : null;
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        version: 1,
+        cwd,
+        git: gitState,
+        entries,
+        omitted: [...new Set(omitted)].sort(),
+      }),
+    )
+    .digest("hex");
+}
+
+function assertWorkspaceReview(expected: string, actual: string) {
+  if (expected !== actual)
+    reject(
+      "review_changed",
+      "Workspace files or exclusions changed after review; review the transfer again",
+    );
+}
+
+function assertCapturedWorkspaceReview(
+  expected: string | undefined,
+  cwd: string,
+  state: WorkspaceState,
+  files: ReviewedFile[],
+  omitted: string[],
+) {
+  if (expected) assertWorkspaceReview(expected, workspaceReviewDigest(cwd, state, files, omitted));
 }
 
 async function previewWorkspaceFiles(
@@ -479,6 +542,7 @@ async function previewWorkspaceFiles(
   const directories = new Set<string>();
   const folders = new Set<string>();
   const links = new Map<string, string>();
+  const entries: ReviewedFile[] = [];
   for (const relative of state.paths) {
     const absolute = path.join(cwd, relative);
     let stat;
@@ -497,22 +561,26 @@ async function previewWorkspaceFiles(
       segments.pop();
     }
     if (stat.isFile()) {
+      entries.push({ kind: "file", path: relative, executable: (stat.mode & 0o111) !== 0 });
       fileBytes += stat.size;
       fileCount++;
       if (stat.size > limits.maxFileBytes || fileBytes > limits.maxTotalBytes)
         reject("limit_exceeded", "Workspace exceeds handoff byte limits");
     } else if (stat.isSymbolicLink()) {
-      links.set(portablePathKey(relative), await readlink(absolute));
+      const target = await readlink(absolute);
+      links.set(portablePathKey(relative), target);
+      entries.push({ kind: "symlink", path: relative, target });
     } else if (stat.isDirectory() && state.kind === "directory") {
       directories.add(portablePathKey(relative));
       folders.add(relative);
+      entries.push({ kind: "directory", path: relative });
     } else {
       reject("unsupported_workspace", `Cannot transfer directory or special file: ${relative}`);
     }
   }
   validatePaths(state.paths, "unsupported_workspace", directories);
   for (const [link, target] of links) validateSymlink(link, target, links);
-  return { fileCount, fileBytes, directoryCount: folders.size, symlinkCount: links.size };
+  return { fileCount, fileBytes, directoryCount: folders.size, symlinkCount: links.size, entries };
 }
 
 async function validateGitCapture(cwd: string, paths: string[]): Promise<void> {
@@ -741,8 +809,27 @@ export async function captureWorkspace(input: CaptureInput): Promise<WorkspaceMa
   const parent = await realpath(path.dirname(artifact));
   if (isWithin(cwd, path.join(parent, path.basename(artifact))))
     reject("unsupported_workspace", "Store the handoff artifact outside the source workspace");
-  const before = await getWorkspaceState(cwd, limits, parent);
+  let omittedPaths: string[] = [];
+  const readState = () =>
+    getWorkspaceState(
+      cwd,
+      limits,
+      parent,
+      input.expectedReviewDigest
+        ? (paths) => {
+            omittedPaths = paths;
+          }
+        : undefined,
+    );
+  const before = await readState();
   if (before.kind === "git") await validateGitCapture(cwd, before.paths);
+  if (input.expectedReviewDigest) {
+    const { entries } = await previewWorkspaceFiles(cwd, before, limits);
+    assertWorkspaceReview(
+      input.expectedReviewDigest,
+      workspaceReviewDigest(cwd, before, entries, omittedPaths),
+    );
+  }
   await mkdir(artifact, { mode: 0o700 });
   try {
     const blobs = path.join(artifact, "blobs");
@@ -815,7 +902,7 @@ export async function captureWorkspace(input: CaptureInput): Promise<WorkspaceMa
         reject("unsupported_workspace", `Cannot transfer directory or special file: ${filePath}`);
       }
     }
-    const after = await getWorkspaceState(cwd, limits, parent);
+    const after = await readState();
     if (JSON.stringify(before) !== JSON.stringify(after))
       reject("source_changed", "Workspace state changed during capture");
     const manifest: WorkspaceManifest = {
@@ -824,10 +911,12 @@ export async function captureWorkspace(input: CaptureInput): Promise<WorkspaceMa
       files,
     };
     validateManifest(manifest, limits);
+    assertCapturedWorkspaceReview(input.expectedReviewDigest, cwd, after, files, omittedPaths);
     await verifySourceFiles(cwd, manifest);
-    const finalState = await getWorkspaceState(cwd, limits, parent);
+    const finalState = await readState();
     if (JSON.stringify(before) !== JSON.stringify(finalState))
       reject("source_changed", "Workspace state changed while verifying capture");
+    assertCapturedWorkspaceReview(input.expectedReviewDigest, cwd, finalState, files, omittedPaths);
     const json = JSON.stringify(manifest);
     if (Buffer.byteLength(json) > limits.maxManifestBytes)
       reject("limit_exceeded", "Workspace manifest exceeds handoff limit");
@@ -1155,6 +1244,10 @@ export async function verifyCapturedWorkspace(input: CaptureInput): Promise<void
     limits,
     scratchParent: path.dirname(path.resolve(input.artifactDirectory)),
   });
+  if (input.expectedReviewDigest) {
+    const current = await previewWorkspace({ cwd, limits });
+    assertWorkspaceReview(input.expectedReviewDigest, current.reviewDigest);
+  }
 }
 
 export async function verifyWorkspaceArchive(

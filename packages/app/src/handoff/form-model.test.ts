@@ -29,6 +29,7 @@ const emptyReview = {
     gitHistoryBytes: 0,
     omittedPaths: [],
     omittedPathCount: 0,
+    reviewDigest: "c".repeat(64),
   },
   stoppedWork: { agentIds: [], terminals: [], setupOperations: 0 },
   conversationBytes: 0,
@@ -81,12 +82,20 @@ function fixture() {
     prepare: async (record) => {
       expect(await persistence.load(origin)).toEqual(record);
       calls.push(`prepare:${record.transferId}`);
-      return { ...destination, continuationMode: record.continuationMode };
+      return {
+        ...destination,
+        continuationMode: record.continuationMode,
+        workspaceReviewDigest: record.workspaceReviewDigest,
+      };
     },
     activate: async (record) => {
       expect((await persistence.load(origin))?.intent).toBe("activate");
       calls.push(`activate:${record.transferId}`);
-      return { ...destination, state: "active" };
+      return {
+        ...destination,
+        state: "active",
+        workspaceReviewDigest: record.workspaceReviewDigest,
+      };
     },
     cancel: async (record) => {
       expect((await persistence.load(origin))?.intent).toBe("cancel");
@@ -96,6 +105,7 @@ function fixture() {
         state: "cancelled",
         cleanupComplete: true,
         cancellationAccepted: true,
+        workspaceReviewDigest: record.workspaceReviewDigest,
       };
     },
   };
@@ -117,6 +127,26 @@ async function reviewedForm(ports: HandoffFormPorts) {
 }
 
 describe("handoff form recovery", () => {
+  it("retains the reviewed workspace boundary across reopening and rejects a different saved approval", async () => {
+    const { ports, persistence } = fixture();
+    const model = await reviewedForm(ports);
+    await model.prepare();
+    model.close();
+    const saved = await persistence.load(origin);
+    if (!saved) throw new Error("Missing saved transfer");
+    expect(saved.workspaceReviewDigest).toBe(emptyReview.workspace.reviewDigest);
+    const reopened = openHandoffForm(origin, ports);
+    await reopened.load();
+    expect(reopened.getState()).toMatchObject({
+      kind: "transfer",
+      record: { workspaceReviewDigest: emptyReview.workspace.reviewDigest },
+    });
+    await persistence.save({ ...saved, workspaceReviewDigest: "d".repeat(64) });
+    await expect(persistence.load(origin)).rejects.toThrow(
+      "Saved handoff destination does not match",
+    );
+  });
+
   it("discards only the new local intent when the form closes before editor preparation finishes", async () => {
     const { ports, persistence } = fixture();
     const saving = deferred();
@@ -252,6 +282,7 @@ describe("handoff form recovery", () => {
       { ...destination, sourceWorkspaceId: "another-workspace" },
       { ...destination, reservationId: "00000000-0000-4000-8000-000000000003" },
       { ...destination, manifestDigest: "b".repeat(64) },
+      { ...destination, workspaceReviewDigest: "b".repeat(64) },
       { ...destination, sourceAgentIds: ["another-conversation"] },
     ]) {
       expect(() =>
@@ -316,7 +347,11 @@ describe("handoff form recovery", () => {
 
   it("finishes activation when the host journal has advanced past the saved preparation", async () => {
     const { ports, calls } = fixture();
-    ports.prepare = async () => ({ ...destination, state: "released" });
+    ports.prepare = async (record) => ({
+      ...destination,
+      state: "released",
+      workspaceReviewDigest: record.workspaceReviewDigest,
+    });
     const model = await reviewedForm(ports);
     await model.prepare();
     expect(handoffFormActions(model.getState())).toEqual({ primary: "activate", canCancel: false });
@@ -388,7 +423,11 @@ describe("handoff form recovery", () => {
     await reopened.cancel();
     ports.activate = async (record) => {
       calls.push(`recovered:${record.transferId}`);
-      return { ...destination, state: "active" };
+      return {
+        ...destination,
+        state: "active",
+        workspaceReviewDigest: record.workspaceReviewDigest,
+      };
     };
     await reopened.retry();
     expect(calls).toEqual([

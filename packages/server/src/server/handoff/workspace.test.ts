@@ -6,6 +6,7 @@ import {
   readFile,
   readdir,
   realpath,
+  rename,
   rm,
   writeFile,
   lstat,
@@ -64,6 +65,72 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
+test.each(["git", "directory"])(
+  "binds the reviewed included and omitted paths before capturing a %s workspace",
+  async (kind) => {
+    if (kind === "directory") await rm(path.join(source, ".git"), { recursive: true });
+    await writeFile(path.join(source, ".env"), "PRIVATE_VALUE=do-not-export\n");
+    const reviewed = await previewWorkspace({ cwd: source, scratchParent: root });
+    await writeFile(path.join(source, ".gitignore"), "ignored/\n");
+    await expect(
+      captureWorkspace({
+        cwd: source,
+        artifactDirectory: path.join(root, "capture"),
+        expectedReviewDigest: reviewed.reviewDigest,
+      }),
+    ).rejects.toMatchObject({ code: "review_changed" });
+    await expect(lstat(path.join(root, "capture"))).rejects.toMatchObject({ code: "ENOENT" });
+  },
+);
+
+test("keeps ordinary working edits in the reviewed boundary but detects changed omissions beyond the sample", async () => {
+  await writeFile(path.join(source, ".gitignore"), ".env*\n");
+  for (let index = 0; index < 51; index++)
+    await writeFile(path.join(source, `.env.${String(index).padStart(2, "0")}`), "ignored");
+  const reviewed = await previewWorkspace({ cwd: source, scratchParent: root });
+  await writeFile(path.join(source, "tracked.txt"), "latest saved buffer\n");
+  expect((await previewWorkspace({ cwd: source, scratchParent: root })).reviewDigest).toBe(
+    reviewed.reviewDigest,
+  );
+  await captureWorkspace({
+    cwd: source,
+    artifactDirectory: artifact,
+    expectedReviewDigest: reviewed.reviewDigest,
+  });
+  await restoreWorkspace({ artifactDirectory: artifact, destination });
+  expect(await readFile(path.join(destination, "tracked.txt"), "utf8")).toBe(
+    "latest saved buffer\n",
+  );
+  await rename(path.join(source, ".env.50"), path.join(source, ".env.51"));
+  const changed = await previewWorkspace({ cwd: source, scratchParent: root });
+  expect(changed.omittedPaths).toEqual(reviewed.omittedPaths);
+  expect(changed.omittedPathCount).toBe(reviewed.omittedPathCount);
+  expect(changed.reviewDigest).not.toBe(reviewed.reviewDigest);
+  await expect(
+    verifyCapturedWorkspace({
+      cwd: source,
+      artifactDirectory: artifact,
+      expectedReviewDigest: reviewed.reviewDigest,
+    }),
+  ).rejects.toMatchObject({ code: "review_changed" });
+});
+
+test("rejects a same-count included file rename after review", async () => {
+  await writeFile(path.join(source, "new.txt"), "new");
+  const reviewed = await previewWorkspace({ cwd: source, scratchParent: root });
+  await rename(path.join(source, "new.txt"), path.join(source, "renamed.txt"));
+  const changed = await previewWorkspace({ cwd: source, scratchParent: root });
+  expect(changed.fileCount).toBe(reviewed.fileCount);
+  expect(changed.fileBytes).toBe(reviewed.fileBytes);
+  await expect(
+    captureWorkspace({
+      cwd: source,
+      artifactDirectory: artifact,
+      expectedReviewDigest: reviewed.reviewDigest,
+    }),
+  ).rejects.toMatchObject({ code: "review_changed" });
+});
+
 test("reviews directory bytes and omitted paths without changing the workspace", async () => {
   await rm(path.join(source, ".git"), { recursive: true });
   await mkdir(path.join(source, "empty"));
@@ -80,6 +147,7 @@ test("reviews directory bytes and omitted paths without changing the workspace",
     gitHistoryBytes: 0,
     omittedPaths: [".env", "ignored/"],
     omittedPathCount: 2,
+    reviewDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
   });
   expect(await readdir(source)).toEqual(before);
   await expect(lstat(path.join(source, ".git"))).rejects.toMatchObject({ code: "ENOENT" });

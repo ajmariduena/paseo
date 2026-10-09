@@ -211,6 +211,13 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   total omitted-path count; ignored directories are collapsed. Tracked files matching ignore rules
   remain included. Estimates are advisory while the source is running; the stopped capture still
   determines the archive. Reviewing a directory does not add Git metadata or change its contents.
+  App review binds the source directory, included paths/types/modes/link targets, Git HEAD/index
+  and the complete collapsed omission list to a digest retained by both host journals. Changing
+  that boundary before reservation returns the app to review without stopping work. Source
+  preparation rechecks before fencing and during capture; release rechecks before issuing its
+  receipt. Ordinary working-file content edits remain allowed before capture so editor saves do
+  not invalidate review. Capture verification still binds their final bytes. Tests cover Git and
+  directory exclusion changes, same-count renames and omissions beyond the visible sample.
 - `archive.ts`, `archive.test.ts` and `archive.e2e.test.ts` cover persistent receive offsets,
   checksums, local capture import, and real two-daemon transport. The client coordinator in
   `packages/client/src/handoff-transfer.ts` holds one chunk in flight. The network suite transfers
@@ -350,7 +357,7 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   completed. Other connected clients' buffers, concurrent windows and unsent conversation draft
   transfer remain open. Other workspace mutation surfaces need inventory.
   Source retirement still needs tombstones to replace broad path fences.
-  Eighteen form cases cover unavailable modes, inventory changes, lost replies, storage failures,
+  Nineteen form cases cover unavailable modes, inventory changes, lost replies, storage failures,
   duplicate submissions, closing during work, cancellation recovery and host journals advancing
   past local state, including destination lookup and selection failures. Reconstructed records retain
   the reserved mode and reject mismatched host, workspace, reservation, conversation set or digest;
@@ -368,6 +375,8 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   gate is checked on both hosts before preparation; only isolated test daemons advertise it. Seven
   browser cases use real isolated daemons with directory or Git workspaces: desktop preparation/reload
   verifies bytes and destination navigation after a real activation conflict and source shutdown;
+  changing exclusions after review leaves the terminal running, shows an actionable error and
+  creates no destination reservation or source fence before a fresh review;
   compact recovery deletes the local transfer record, reloads the same identity and context mode
   from both host journals, then cancels and verifies a fresh form after clearing local state again.
   Two destination-only recovery cases select one of two reservations and retain its original mode.
@@ -404,6 +413,7 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   its first run exposed missing pane context across the portal, now covered by the regression.
   See the [history results](../qa-evidence/handoff-history.txt),
   [preflight results](../qa-evidence/handoff-preflight.txt),
+  [workspace review binding results](../qa-evidence/handoff-review-binding.txt),
   [source ownership and UI results](../qa-evidence/handoff-source-state.txt),
   [source launch controls results](../qa-evidence/handoff-source-controls.txt),
   [source file, Git and script results](../qa-evidence/handoff-source-mutations.txt),
@@ -421,8 +431,9 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   is unavailable without that local record, pinned-key client persistence,
   complete omitted-path access and integration/resource dispositions,
   concurrent windows and other connected clients' unsaved buffers and conversation draft transfer,
-  complete source mutation affordances and native-platform evidence remain open. Review does not bind approval to a resource digest or
-  revalidate reviewed exclusions before preparation; final transfer size is not shown separately.
+  complete source mutation affordances and native-platform evidence remain open. Review binding
+  for integrations and stopped resources is still pending; the workspace digest does not cover
+  those inventories. Final transfer size is not shown separately.
 - Source retirement/tombstones and automation dispositions remain unimplemented.
   The composite archive currently captures Claude conversations;
   other provider codecs remain open. Complete handoff is not advertised.

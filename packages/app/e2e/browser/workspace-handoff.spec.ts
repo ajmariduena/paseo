@@ -222,6 +222,31 @@ test.describe("workspace handoff", () => {
           .result,
       ).toBeNull();
       await page.screenshot({ path: testInfo.outputPath("handoff-preflight-desktop.png") });
+      await writeFile(path.join(host.workspace.repoPath, ".gitignore"), "");
+      await page.getByTestId("handoff-submit").click();
+      await expect(page.getByTestId("handoff-error")).toHaveText(
+        "Workspace files or exclusions changed after review; review the transfer again",
+      );
+      expect(
+        (
+          await host.destinationClient.handoffListDestination({
+            sourceServerId: host.source.serverId,
+            sourceWorkspaceId: host.workspace.workspaceId,
+          })
+        ).result?.transfers,
+      ).toEqual([]);
+      expect(
+        (await host.sourceClient.handoffFindSource({ workspaceId: host.workspace.workspaceId }))
+          .result,
+      ).toBeNull();
+      expect(
+        (await host.sourceClient.listTerminals(host.workspace.repoPath)).terminals,
+      ).toHaveLength(1);
+      await page.screenshot({ path: testInfo.outputPath("handoff-review-changed.png") });
+      await writeFile(path.join(host.workspace.repoPath, ".gitignore"), ".env\n");
+      await page.getByTestId("handoff-submit").click();
+      await expect(page.getByTestId("handoff-omissions-review")).toHaveText(".env");
+      await expect(page.getByTestId("handoff-submit")).toHaveText("Prepare transfer");
       await page.getByTestId("handoff-submit").click();
       await expect(page.getByTestId("handoff-submit")).toHaveText("Move workspace", {
         timeout: 30_000,

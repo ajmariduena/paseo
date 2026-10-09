@@ -76,11 +76,17 @@ interface SourceRequest {
   agentIds: string[];
   destinationServerId: string;
   reservationId: string;
+  workspaceReviewDigest?: string;
 }
 
 export class HandoffSourceError extends Error {
   constructor(
-    readonly code: "invalid_source" | "inventory_changed" | "stop_uncertain" | "source_changed",
+    readonly code:
+      | "invalid_source"
+      | "inventory_changed"
+      | "stop_uncertain"
+      | "source_changed"
+      | "review_changed",
     message: string,
   ) {
     super(message);
@@ -218,11 +224,20 @@ export class HandoffSource {
           "inventory_changed",
           "Source conversation set changed after destination reservation",
         );
+      if (input.workspaceReviewDigest) {
+        const current = await previewWorkspace({ cwd: inventory.cwd });
+        if (current.reviewDigest !== input.workspaceReviewDigest)
+          refuse(
+            "review_changed",
+            "Workspace files or exclusions changed after review; cancel this transfer and review again",
+          );
+      }
       let source = await this.options.ownership.prepare({
         id: input.transferId,
         ...inventory,
         destinationServerId: input.destinationServerId,
         reservationId: input.reservationId,
+        workspaceReviewDigest: input.workspaceReviewDigest,
       });
       await this.publishTransfer(input.transferId);
       if (source.state === "cancelled")
@@ -250,7 +265,11 @@ export class HandoffSource {
       await mkdir(directory, { mode: 0o700 });
       await syncDirectory(this.options.directory);
       const workspaceDirectory = path.join(directory, "workspace");
-      await captureWorkspace({ cwd: source.cwd, artifactDirectory: workspaceDirectory });
+      await captureWorkspace({
+        cwd: source.cwd,
+        artifactDirectory: workspaceDirectory,
+        expectedReviewDigest: source.workspaceReviewDigest,
+      });
       const conversations = [];
       for (const [index, agent] of agents.entries()) {
         if (!runtime) refuse("invalid_source", "Source provider configuration is missing");
@@ -468,6 +487,7 @@ export class HandoffSource {
     await verifyCapturedWorkspace({
       cwd: source.cwd,
       artifactDirectory: path.join(directory, "workspace"),
+      expectedReviewDigest: source.workspaceReviewDigest,
     });
     for (const [index, agent] of prepared.agents.entries()) {
       if (!prepared.runtime) refuse("invalid_source", "Source provider configuration is missing");

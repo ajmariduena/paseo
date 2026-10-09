@@ -219,6 +219,7 @@ test.skipIf(process.platform === "win32")(
       gitHistoryBytes: 0,
       omittedPaths: [".env"],
       omittedPathCount: 1,
+      reviewDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
     expect(preview.result?.stoppedWork).toEqual({
       agentIds: [],
@@ -242,6 +243,107 @@ test.skipIf(process.platform === "win32")(
     expect(prepared.result?.source.state).toBe("ready");
     expect(await manager.getTerminals(cwd)).toEqual([]);
     expect(terminals.every((terminal) => terminal.getExitInfo() !== null)).toBe(true);
+  },
+  30_000,
+);
+
+test.skipIf(process.platform === "win32")(
+  "binds reviewed workspace exclusions through reservation, restart and release",
+  async () => {
+    let source = await startHost("source");
+    let destination = await startHost("destination");
+    const cwd = path.join(root, "reviewed-workspace");
+    await mkdir(cwd);
+    await writeFile(path.join(cwd, ".gitignore"), ".env*\n");
+    await writeFile(path.join(cwd, ".env"), "private\n");
+    await writeFile(path.join(cwd, "work.txt"), "reviewed work\n");
+    const created = await source.client.createWorkspace({
+      source: { kind: "directory", path: cwd },
+    });
+    if (!created.workspace) throw new Error("Missing workspace");
+    const workspaceId = created.workspace.id;
+    const preview = await source.client.handoffPreviewSource({ workspaceId });
+    const workspaceReviewDigest = preview.result?.workspace?.reviewDigest;
+    if (!workspaceReviewDigest) throw new Error("Missing workspace review digest");
+    const request = {
+      transferId: randomUUID(),
+      workspaceId,
+      destinationParent: root,
+      continuationMode: "context" as const,
+      workspaceReviewDigest,
+    };
+    await writeFile(path.join(cwd, ".gitignore"), "");
+    await expect(
+      prepareWorkspaceHandoff({
+        ...request,
+        source: source.client,
+        destination: destination.client,
+      }),
+    ).rejects.toThrow("Workspace files or exclusions changed after review");
+    expect((await destination.client.handoffGetDestinationStatus(request)).error?.code).toBe(
+      "not_found",
+    );
+    expect((await source.client.handoffFindSource({ workspaceId })).result).toBeNull();
+    const reserved = await destination.client.handoffReserveDestination({
+      ...request,
+      sourceServerId: source.daemon.daemon.getServerId(),
+      sourceWorkspaceId: workspaceId,
+      sourceAgentIds: [],
+    });
+    if (!reserved.result) throw new Error("Missing reservation");
+    const prepare = {
+      transferId: request.transferId,
+      workspaceId,
+      agentIds: [],
+      workspaceReviewDigest,
+      destinationServerId: destination.daemon.daemon.getServerId(),
+      reservationId: reserved.result.reservationId,
+    };
+    expect((await source.client.handoffPrepareSource(prepare)).error?.code).toBe("review_changed");
+    expect((await source.client.handoffFindSource({ workspaceId })).result).toBeNull();
+    await writeFile(path.join(cwd, ".gitignore"), ".env*\n");
+    await writeFile(path.join(cwd, "work.txt"), "latest saved work\n");
+    const staged = await prepareWorkspaceHandoff({
+      ...request,
+      source: source.client,
+      destination: destination.client,
+    });
+    expect(staged).toMatchObject({ state: "staged", workspaceReviewDigest });
+    await stopHost(source);
+    await stopHost(destination);
+    source = await startHost("source");
+    destination = await startHost("destination");
+    expect(
+      (await source.client.handoffGetSourceStatus(request)).result?.source.workspaceReviewDigest,
+    ).toBe(workspaceReviewDigest);
+    expect(
+      (await destination.client.handoffGetDestinationStatus(request)).result?.workspaceReviewDigest,
+    ).toBe(workspaceReviewDigest);
+    expect(
+      (await source.client.handoffPrepareSource({ ...prepare, workspaceReviewDigest: undefined }))
+        .error?.code,
+    ).toBe("conflict");
+    await writeFile(path.join(cwd, ".env.new"), "new omitted file\n");
+    const activate = () =>
+      activateWorkspaceHandoff({
+        sourceServerId: source.daemon.daemon.getServerId(),
+        getSource: () => source.client,
+        destination: destination.client,
+        transferId: request.transferId,
+      });
+    await expect(activate()).rejects.toThrow("Workspace files or exclusions changed after review");
+    expect((await source.client.handoffGetSourceStatus(request)).result?.source.state).toBe(
+      "ready",
+    );
+    expect((await destination.client.fetchWorkspaces()).entries).toEqual([]);
+    await rm(path.join(cwd, ".env.new"));
+    const active = await activate();
+    expect(await readFile(path.join(active.destinationCwd, "work.txt"), "utf8")).toBe(
+      "latest saved work\n",
+    );
+    await expect(readFile(path.join(active.destinationCwd, ".env"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
   },
   30_000,
 );

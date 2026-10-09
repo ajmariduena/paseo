@@ -49,6 +49,7 @@ export interface PrepareWorkspaceHandoffInput extends HandoffConnections {
   destinationParent: string;
   continuationMode: "native" | "context";
   expectedAgentIds?: string[];
+  workspaceReviewDigest?: string;
   onProgress?: (progress: WorkspaceHandoffProgress) => void;
 }
 export interface ActivateWorkspaceHandoffInput {
@@ -72,6 +73,26 @@ function requireDistinctHosts(input: HandoffConnections) {
   return { sourceServerId, destinationServerId };
 }
 
+async function validateWorkspaceReview(
+  input: PrepareWorkspaceHandoffInput,
+  prior: HandoffDestinationSnapshot | null,
+) {
+  const expected = input.workspaceReviewDigest ?? prior?.workspaceReviewDigest;
+  if (expected && !prior) {
+    const current = handoffResult(
+      await handoffRequest(
+        () => input.source.handoffPreviewSource({ workspaceId: input.workspaceId }),
+        input.signal,
+      ),
+    );
+    if (current.workspace?.reviewDigest !== expected)
+      throw new HandoffReviewChangedError(
+        "Workspace files or exclusions changed after review; review the transfer again",
+      );
+  }
+  return expected;
+}
+
 /** Keep transferId in the caller's durable UI state. Reconnect reuses the hosts' journals. */
 export async function prepareWorkspaceHandoff(
   input: PrepareWorkspaceHandoffInput,
@@ -85,6 +106,7 @@ export async function prepareWorkspaceHandoff(
     signal,
   );
   if (prior.error && prior.error.code !== "not_found") handoffResult(prior);
+  const workspaceReviewDigest = await validateWorkspaceReview(input, prior.result);
   const inventory = prior.result
     ? { agentIds: prior.result.sourceAgentIds }
     : handoffResult(
@@ -104,10 +126,13 @@ export async function prepareWorkspaceHandoff(
           sourceAgentIds: inventory.agentIds,
           destinationParent: input.destinationParent,
           continuationMode: input.continuationMode,
+          workspaceReviewDigest,
         }),
       signal,
     ),
   );
+  if (reserved.workspaceReviewDigest !== workspaceReviewDigest)
+    throw new Error("Destination reservation did not retain the reviewed workspace boundary");
   if (reserved.state === "cancelled")
     throw new Error("This handoff was cancelled; start a new transfer");
   if (reserved.state === "active") {
@@ -135,6 +160,7 @@ export async function prepareWorkspaceHandoff(
             agentIds: reserved.sourceAgentIds,
             destinationServerId,
             reservationId: reserved.reservationId,
+            workspaceReviewDigest: reserved.workspaceReviewDigest,
           }),
         signal,
       ),
@@ -145,7 +171,8 @@ export async function prepareWorkspaceHandoff(
   if (
     prepared.source.destinationServerId !== destinationServerId ||
     prepared.source.reservationId !== reserved.reservationId ||
-    prepared.source.workspaceId !== input.workspaceId
+    prepared.source.workspaceId !== input.workspaceId ||
+    prepared.source.workspaceReviewDigest !== reserved.workspaceReviewDigest
   )
     throw new Error("Source handoff belongs to another destination reservation");
   const manifest = prepared.manifest;
@@ -209,7 +236,8 @@ export async function activateWorkspaceHandoff(
     if (
       prepared.source.destinationServerId !== destinationServerId ||
       prepared.source.reservationId !== target.reservationId ||
-      prepared.source.manifestDigest !== target.manifestDigest
+      prepared.source.manifestDigest !== target.manifestDigest ||
+      prepared.source.workspaceReviewDigest !== target.workspaceReviewDigest
     )
       throw new Error("Handoff ownership and destination content do not match");
     input.onProgress?.({ phase: "releasing" });

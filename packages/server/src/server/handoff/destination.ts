@@ -4,7 +4,11 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
-import { HandoffArchiveManifestSchema, HandoffTransferIdSchema } from "@getpaseo/protocol/handoff";
+import {
+  HandoffArchiveManifestSchema,
+  HandoffTransferIdSchema,
+  HandoffDigestSchema,
+} from "@getpaseo/protocol/handoff";
 import type { HandoffArchiveStore, VerifiedHandoffArchive } from "./archive.js";
 import { readBoundedFile, syncDirectory, writeJournal } from "./artifacts.js";
 import {
@@ -54,6 +58,7 @@ const ReservationSchema = z.object({
   sourceAgentIds: z.array(z.string().min(1)).max(1000),
   destinationParent: z.string().min(1),
   continuationMode: z.enum(["native", "context"]).default("native"),
+  workspaceReviewDigest: HandoffDigestSchema.optional(),
 });
 const BindingSchema = z.object({
   publicKey: z.string().min(1).max(1024),

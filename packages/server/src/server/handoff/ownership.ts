@@ -19,6 +19,7 @@ const SourceSchema = z.object({
   agentIds: z.array(z.string().min(1)).max(1000),
   destinationServerId: z.string().min(1),
   reservationId: HandoffTransferIdSchema,
+  workspaceReviewDigest: HandoffDigestSchema.optional(),
 });
 const RecordSchema = SourceSchema.extend({
   state: z.enum(["preparing", "ready", "released", "cancelled"]),

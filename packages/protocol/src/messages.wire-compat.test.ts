@@ -91,6 +91,12 @@ test("handoff reservation requires an explicit continuation mode", () => {
       ...reserve,
       continuationMode,
     });
+    const reviewed = { ...reserve, continuationMode, workspaceReviewDigest: "a".repeat(64) };
+    expect(SessionInboundMessageSchema.parse(reviewed)).toEqual(reviewed);
+    expect(
+      SessionInboundMessageSchema.safeParse({ ...reviewed, workspaceReviewDigest: "invalid" })
+        .success,
+    ).toBe(false);
   }
 });
 

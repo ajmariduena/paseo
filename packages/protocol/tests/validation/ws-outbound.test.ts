@@ -142,7 +142,11 @@ describe("WS outbound zod-aot validation", () => {
         setupOperations: 1,
       },
     };
-    for (const result of [older, current]) {
+    for (const result of [
+      older,
+      current,
+      { ...current, workspace: { ...workspace, reviewDigest: "a".repeat(64) } },
+    ]) {
       expect(GeneratedWSOutboundMessageSchema.safeParse(envelope(result))).toEqual({
         success: true,
         data: envelope(result),
@@ -150,6 +154,7 @@ describe("WS outbound zod-aot validation", () => {
     }
     for (const result of [
       { ...current, workspace: { ...workspace, fileBytes: -1 } },
+      { ...current, workspace: { ...workspace, reviewDigest: "invalid" } },
       { ...current, workspace: { ...workspace, omittedPaths: Array(51).fill(".env") } },
       { ...current, conversations: [{ ...conversation, artifactBytes: -1 }] },
       { ...current, stoppedWork: { ...current.stoppedWork, setupOperations: "one" } },
@@ -284,6 +289,7 @@ describe("WS outbound zod-aot validation", () => {
         continuationMode,
         cleanupComplete: false,
         cancellationAccepted: false,
+        workspaceReviewDigest: "a".repeat(64),
       });
       expect(GeneratedWSOutboundMessageSchema.safeParse(message)).toEqual({
         success: true,
@@ -296,6 +302,7 @@ describe("WS outbound zod-aot validation", () => {
       { ...result, state: "unknown" },
       { ...result, cleanupComplete: "true" },
       { ...result, cancellationAccepted: "false" },
+      { ...result, workspaceReviewDigest: "invalid" },
     ]) {
       expect(GeneratedWSOutboundMessageSchema.safeParse(envelope(invalid)).success).toBe(false);
     }

@@ -127,7 +127,7 @@ export const handoffFormPorts: HandoffFormPorts = {
     if (inspection.error) throw new Error(inspection.error.message);
     if (!inspection.result) throw new Error("Source preview is missing");
     const { workspace, stoppedWork, conversations } = inspection.result;
-    if (!workspace || !stoppedWork) throw new Error(i18n.t("handoff.updateHosts"));
+    if (!workspace?.reviewDigest || !stoppedWork) throw new Error(i18n.t("handoff.updateHosts"));
     let conversationBytes = 0;
     for (const conversation of conversations) {
       if (conversation.state !== "available") continue;
@@ -176,6 +176,7 @@ export const handoffFormPorts: HandoffFormPorts = {
             destinationParent: record.destinationParent,
             continuationMode: record.continuationMode,
             expectedAgentIds: record.reviewedAgentIds,
+            workspaceReviewDigest: record.workspaceReviewDigest,
           });
         },
       );
