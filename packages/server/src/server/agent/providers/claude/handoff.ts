@@ -419,7 +419,11 @@ async function materializeClaudeSessionArchive(
     provider: "claude",
     sessionId: manifest.sessionId,
     nativeHandle: manifest.sessionId,
-    metadata: { cwd: input.cwd, claudeProjectDirName: projectDirName },
+    metadata: {
+      cwd: input.cwd,
+      claudeProjectDirName: projectDirName,
+      claudeRuntime: { configDir: path.resolve(input.configDir), cliVersion: manifest.cliVersion },
+    },
   };
 }
 

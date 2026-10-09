@@ -305,7 +305,11 @@ describe("Claude native session archives", () => {
       provider: "claude",
       sessionId,
       nativeHandle: sessionId,
-      metadata: { cwd: input.cwd, claudeProjectDirName: `paseo-handoff-${input.importId}` },
+      metadata: {
+        cwd: input.cwd,
+        claudeProjectDirName: `paseo-handoff-${input.importId}`,
+        claudeRuntime: { configDir: input.configDir, cliVersion },
+      },
     });
     const installed = claudeProjectDirSync(input.cwd, {
       configDir: input.configDir,

@@ -91,6 +91,11 @@ import {
   claudeTranscriptPathSync,
   validateClaudeProjectDirName,
 } from "./project-dir.js";
+import {
+  ClaudeSessionRuntimeSchema,
+  readClaudeSessionRuntime,
+  type ClaudeSessionRuntime,
+} from "./session-runtime.js";
 import { THINKING_APPLIES_NEXT_TURN_NOTICE } from "../../provider-notices.js";
 import {
   isProviderImageMarkdown,
@@ -2115,6 +2120,8 @@ class ClaudeAgentSession implements AgentSession {
   private readonly resolveBinary: () => Promise<string>;
   private query: Query | null = null;
   private readonly harnessEnvironment: Record<string, string>;
+  private readonly sessionConfigDir: string;
+  private sessionRuntime: ClaudeSessionRuntime | null;
   private readonly projectDirName: string | undefined;
   private readonly usageSessionKey = randomUUID();
   private childProcess: ChildProcess | null = null;
@@ -2210,6 +2217,8 @@ class ClaudeAgentSession implements AgentSession {
     this.projectDirName =
       projectDirName === undefined ? undefined : validateClaudeProjectDirName(projectDirName);
     this.harnessEnvironment = this.buildSdkEnv();
+    this.sessionConfigDir = claudeConfigDir(this.harnessEnvironment, config.cwd);
+    this.sessionRuntime = readClaudeSessionRuntime(options.handle);
     this.persistSession = options.persistSession;
     this.logger = options.logger.child({ agentId: this.agentId });
     this.queryFactory = options.queryFactory;
@@ -2809,6 +2818,7 @@ class ClaudeAgentSession implements AgentSession {
       metadata: {
         ...persistedConfig,
         ...(this.projectDirName === undefined ? {} : { claudeProjectDirName: this.projectDirName }),
+        ...(this.sessionRuntime === null ? {} : { claudeRuntime: this.sessionRuntime }),
       },
     };
     return this.persistence;
@@ -3431,13 +3441,23 @@ class ClaudeAgentSession implements AgentSession {
       ],
     });
     if (this.projectDirName !== undefined) {
-      env.CLAUDE_CONFIG_DIR = claudeConfigDir(env);
+      // Setting CLAUDE_CONFIG_DIR also changes Claude's macOS keychain identity.
+      // An imported namespace must not implicitly change the host's credential lookup.
       env.CLAUDE_CODE_PROJECT_DIR_NAME = this.projectDirName;
     }
     return env;
   }
 
+  private assertSessionStorage(): void {
+    if (this.sessionRuntime && this.sessionRuntime.configDir !== this.sessionConfigDir) {
+      throw new Error(
+        "Claude session storage changed. Restore this conversation's original Claude configuration before continuing.",
+      );
+    }
+  }
+
   private async buildOptions(permissionMode: PermissionMode): Promise<ClaudeOptions> {
+    this.assertSessionStorage();
     const { thinking, effort, ultracode } = this.resolveThinkingConfig();
     const appendedSystemPrompt = this.buildAppendedSystemPrompt();
     const providerOptions = applyClaudeToolPolicy(
@@ -4853,6 +4873,11 @@ class ClaudeAgentSession implements AgentSession {
       notice = this.createClaudeSessionChangedNotice(existingSessionId, newSessionId);
     }
     this.availableModes = DEFAULT_MODES;
+    const runtime = ClaudeSessionRuntimeSchema.safeParse({
+      configDir: this.sessionConfigDir,
+      cliVersion: msgRecord.claude_code_version,
+    });
+    this.sessionRuntime = runtime.success ? runtime.data : null;
     this.observePermissionMode(message.permissionMode);
     this.persistence = null;
     if (message.model) {
@@ -5337,7 +5362,7 @@ class ClaudeAgentSession implements AgentSession {
     return claudeTranscriptPathSync({
       cwd,
       sessionId,
-      configDir: claudeConfigDir(this.harnessEnvironment),
+      configDir: this.sessionRuntime?.configDir ?? this.sessionConfigDir,
       projectDirName: this.projectDirName,
     });
   }

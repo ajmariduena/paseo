@@ -82,6 +82,40 @@ async function stopHost(host: Host): Promise<void> {
   await host.daemon.close();
 }
 
+async function storedNativeRecord(host: Host, agentId: string) {
+  const record = await host.daemon.daemon.agentStorage.get(agentId);
+  if (!record?.persistence) throw new Error("Missing native record");
+  return { ...record, persistence: record.persistence };
+}
+
+async function expectCapturedRuntimeUnchanged(host: Host, transferId: string, agentId: string) {
+  const captured = await storedNativeRecord(host, agentId);
+  const metadata = captured.persistence.metadata;
+  for (const changed of [
+    {
+      ...metadata,
+      claudeRuntime: { configDir: path.join(root, "changed-home"), cliVersion: "2.1.295" },
+    },
+    { ...metadata, claudeProjectDirName: "another-session-copy" },
+  ]) {
+    await host.daemon.daemon.agentStorage.upsert({
+      ...captured,
+      persistence: { ...captured.persistence, metadata: changed },
+    });
+    expect((await host.client.handoffReleaseSource({ transferId })).error?.code).toBe(
+      "source_changed",
+    );
+  }
+  await host.daemon.daemon.agentStorage.upsert({
+    ...captured,
+    cwd: path.join(root, "changed-cwd"),
+  });
+  expect((await host.client.handoffReleaseSource({ transferId })).error?.code).toBe(
+    "source_changed",
+  );
+  await host.daemon.daemon.agentStorage.upsert(captured);
+}
+
 async function expectExportedHistory(
   client: DaemonClient,
   agentId: string,
@@ -822,7 +856,16 @@ test.skipIf(process.platform === "win32")(
         createdAt: timestamp,
         updatedAt: timestamp,
         lastStatus: "closed",
-        persistence: { provider: "claude", sessionId },
+        persistence: {
+          provider: "claude",
+          sessionId,
+          metadata: {
+            claudeRuntime: {
+              configDir: path.join(root, "source", "claude"),
+              cliVersion: "2.1.295",
+            },
+          },
+        },
       }),
     );
     const preview = await source.client.handoffPreviewSource({ workspaceId: created.workspace.id });
@@ -1036,9 +1079,23 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32").each([
-  { kind: "directory", hasGit: false, subdirEntries: [], prepare: async (_cwd: string) => {} },
+  {
+    kind: "directory",
+    hasGit: false,
+    legacy: false,
+    subdirEntries: [],
+    prepare: async (_cwd: string) => {},
+  },
+  {
+    kind: "legacy directory",
+    hasGit: false,
+    legacy: true,
+    subdirEntries: [],
+    prepare: async (_cwd: string) => {},
+  },
   {
     kind: "git",
+    legacy: false,
     hasGit: true,
     subdirEntries: [".keep"],
     prepare: async (cwd: string) => {
@@ -1062,7 +1119,7 @@ test.skipIf(process.platform === "win32").each([
   },
 ])(
   "transfers native conversation artifacts and activates a $kind workspace across real daemon restarts",
-  async ({ prepare, hasGit, subdirEntries }) => {
+  async ({ prepare, hasGit, legacy, subdirEntries }) => {
     let source = await startHost("source", true);
     let destination = await startHost("destination", true);
     let sourceDaemon = source.daemon.daemon;
@@ -1113,7 +1170,17 @@ test.skipIf(process.platform === "win32").each([
         updatedAt: timestamp,
         title: "Conversation to continue",
         lastStatus: "closed",
-        persistence: { provider: "claude", sessionId, metadata: { cwd } },
+        persistence: {
+          provider: "claude",
+          sessionId,
+          metadata: {
+            cwd,
+            claudeRuntime: {
+              configDir: path.join(root, "source", "claude"),
+              cliVersion: "2.1.295",
+            },
+          },
+        },
       }),
     );
     const sourceRequest = {
@@ -1126,6 +1193,28 @@ test.skipIf(process.platform === "win32").each([
     const prepared = await sourceDaemon.handoffSource.prepare(sourceRequest);
     const manifest = prepared.manifest;
     expect(prepared.source.state).toBe("ready");
+    if (legacy) {
+      // A transfer already captured by an older daemon used one host runtime in its local journal.
+      await writeFile(
+        path.join(source.daemon.paseoHome, "handoff", "source", transferId, "source.json"),
+        JSON.stringify({
+          version: 1,
+          transferId,
+          cwd: await realpath(cwd),
+          manifest,
+          agents: [
+            { id: request.sourceAgentIds[0], cwd, title: "Conversation to continue", sessionId },
+          ],
+          runtime: { configDir: path.join(root, "source", "claude"), cliVersion: "2.1.295" },
+        }),
+      );
+      const record = await sourceDaemon.agentStorage.get(request.sourceAgentIds[0]);
+      if (!record?.persistence) throw new Error("Missing legacy record");
+      await sourceDaemon.agentStorage.upsert({
+        ...record,
+        persistence: { ...record.persistence, metadata: { cwd } },
+      });
+    }
     await stopHost(source);
     source = await startHost("source", true);
     sourceDaemon = source.daemon.daemon;
@@ -1157,6 +1246,7 @@ test.skipIf(process.platform === "win32").each([
         title: "Conversation to continue",
         mode: "native",
         sessionId,
+        runtime: { configDir: path.join(root, "destination", "claude"), cliVersion: "2.1.295" },
       },
     ]);
     expect(await readFile(path.join(staged.stagingCwd, "work.txt"), "utf8")).toBe(
@@ -1284,6 +1374,20 @@ test.skipIf(process.platform === "win32").each([
       [agentId],
     );
     expect(await destination.daemon.daemon.handoffDestination.activate(transferId)).toEqual(active);
+    const returnPreview = await destination.client.handoffPreviewSource({
+      workspaceId: active.workspaceId,
+    });
+    expect(returnPreview.result?.conversations).toEqual([
+      {
+        agentId,
+        title: "Conversation to continue",
+        provider: "claude",
+        state: "available",
+        cliVersion: "2.1.295",
+        hasWorkflows: false,
+        artifactBytes: Buffer.byteLength(transcript),
+      },
+    ]);
   },
   30_000,
 );
@@ -1760,7 +1864,16 @@ for (const continuationMode of ["native", "context"] as const) {
           createdAt: timestamp,
           updatedAt: timestamp,
           lastStatus: "closed",
-          persistence: { provider: "claude", sessionId },
+          persistence: {
+            provider: "claude",
+            sessionId,
+            metadata: {
+              claudeRuntime: {
+                configDir: path.join(root, "source", "claude"),
+                cliVersion: "2.1.295",
+              },
+            },
+          },
         }),
       );
       await source.daemon.daemon.agentManager.annotatePrompt(agentId, {
@@ -1869,7 +1982,16 @@ for (const continuationMode of ["native", "context"] as const) {
         createdAt: timestamp,
         updatedAt: timestamp,
         lastStatus: "closed",
-        persistence: { provider: "claude", sessionId },
+        persistence: {
+          provider: "claude",
+          sessionId,
+          metadata: {
+            claudeRuntime: {
+              configDir: path.join(root, "source", "claude"),
+              cliVersion: "2.1.295",
+            },
+          },
+        },
         config: {
           mcpServers: {
             tracker: {
@@ -2059,14 +2181,18 @@ for (const outcome of ["activate", "cancel"] as const) {
       });
       if (!created.workspace) throw new Error("Missing workspace");
       const workspaceId = created.workspace.id;
-      const project = claudeProjectDirSync(cwd, { configDir: path.join(root, "source", "claude") });
-      await mkdir(project, { recursive: true });
       const choices = ["native", "context"].map((mode) => ({
         mode,
         agentId: randomUUID(),
         sessionId: randomUUID(),
+        runtime: {
+          configDir: path.join(root, `original-${mode}-home`),
+          cliVersion: mode === "native" ? "2.1.295" : "2.1.296",
+        },
       }));
       for (const choice of choices) {
+        const project = claudeProjectDirSync(cwd, { configDir: choice.runtime.configDir });
+        await mkdir(project, { recursive: true });
         const timestamp = new Date().toISOString();
         await source.daemon.daemon.agentStorage.upsert(
           parseStoredAgentRecord({
@@ -2078,7 +2204,11 @@ for (const outcome of ["activate", "cancel"] as const) {
             createdAt: timestamp,
             updatedAt: timestamp,
             lastStatus: "closed",
-            persistence: { provider: "claude", sessionId: choice.sessionId },
+            persistence: {
+              provider: "claude",
+              sessionId: choice.sessionId,
+              metadata: { claudeRuntime: choice.runtime },
+            },
           }),
         );
         await writeFile(
@@ -2107,8 +2237,30 @@ for (const outcome of ["activate", "cancel"] as const) {
         continuationMode: "native" as const,
         conversationModes,
       };
+      const original = await storedNativeRecord(source, choices[0].agentId);
+      await source.daemon.daemon.agentStorage.upsert({
+        ...original,
+        persistence: { ...original.persistence, metadata: {} },
+      });
+      const unknown = await source.client.handoffPreviewSource({ workspaceId });
+      expect(
+        unknown.result?.conversations.find((item) => item.agentId === original.id),
+      ).toMatchObject({
+        state: "blocked",
+        reason:
+          "This conversation has no recorded Claude runtime. Resume it on the source host before transferring it.",
+      });
+      await source.daemon.daemon.agentStorage.upsert(original);
       const review = await source.client.handoffPreviewSource({ workspaceId });
       if (!review.result) throw new Error("Missing source review");
+      for (const choice of choices) {
+        expect(
+          review.result.conversations.find((item) => item.agentId === choice.agentId),
+        ).toMatchObject({
+          state: "available",
+          cliVersion: choice.runtime.cliVersion,
+        });
+      }
       const compatibility = await destination.client.handoffPreviewDestination({
         conversations: review.result.conversations,
       });
@@ -2159,6 +2311,7 @@ for (const outcome of ["activate", "cancel"] as const) {
       destination = await startHost("destination", true);
       const recovered = await destination.client.handoffGetDestinationStatus(request);
       expect(recovered.result?.conversationModes).toEqual(conversationModes);
+      await expectCapturedRuntimeUnchanged(source, request.transferId, choices[0].agentId);
       expect(
         (
           await destination.client.handoffListDestination({
@@ -2212,7 +2365,17 @@ for (const outcome of ["activate", "cancel"] as const) {
       expect(active.state).toBe("active");
       const native = await destination.daemon.daemon.agentStorage.get(nativeId);
       const context = await destination.daemon.daemon.agentStorage.get(contextId);
-      expect(native).toMatchObject({ persistence: { sessionId: choices[0].sessionId } });
+      expect(native).toMatchObject({
+        persistence: {
+          sessionId: choices[0].sessionId,
+          metadata: {
+            claudeRuntime: {
+              configDir: path.join(root, "destination", "claude"),
+              cliVersion: "2.1.295",
+            },
+          },
+        },
+      });
       expect(native).not.toHaveProperty("handoffContext");
       expect(context).toMatchObject({ persistence: null, handoffContext: { pending: true } });
       for (const choice of choices) {

@@ -286,8 +286,8 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   checks the reviewed session inside its lifecycle lock, including when a reload was already queued.
   Readiness and release refuse surviving terminals or setup. These identities bind stop approval;
   they do not establish OS process identity or recover uncertain descendants after daemon restart.
-  Error-reporting barriers for other background event failures, launch-time provider configuration and
-  complete resource dispositions remain open.
+  Error-reporting barriers for other background event failures, durable process ownership, broader
+  launch configuration and complete resource dispositions remain open.
 - `destination.ts`, `ownership.posix.test.ts` and `archive.e2e.test.ts` cover durable destination
   reservations, stable identity mappings, private workspace staging and signed release acceptance.
   Bootstrap owns the destination journal and shares one archive store with WebSocket transport.
@@ -338,6 +338,17 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
 - `agent/providers/claude/handoff.ts` captures bounded raw transcripts and sidechains, detects source
   changes and installs under stable import IDs without a runtime. The existing history suite proves
   inactive retries, corruption/limit refusals, source edits and exact-namespace history loading.
+  Source capture now uses each conversation's observed storage root and producer version, rather
+  than probing the currently configured executable. The [persistence contract](../data-model.md#nested-persistencehandle)
+  keeps this host-local pointer separate from portable context. Source release rechecks it after
+  restart. Conversations without observed provenance require a source turn before a new capture;
+  already prepared journals retain their recorded runtime. Native destination publication records
+  its local installation, allowing review for a return transfer before the first continued turn.
+  Interrupted publication from older journals remains idempotent. Provider and real-daemon tests
+  cover changed configuration, different roots/versions in one workspace, final metadata at close,
+  legacy recovery and credential-environment preservation; see [runtime evidence](../qa-evidence/handoff-runtime.txt).
+  These use synthetic SDK events and transcripts, not a fresh authenticated provider turn. They do
+  not establish process identity, credentials, command-wrapper behavior or uncertain-stop recovery.
   `sdk-behavior.real.e2e.test.ts` proves a real Claude Code 2.1.295 round trip on Linux with two isolated
   configuration directories and three workspace paths: prior-only tokens survive, destination edits
   occur there and the original transcript remains unchanged. A second real test uses two isolated

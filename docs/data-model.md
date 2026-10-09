@@ -153,6 +153,12 @@ Each agent is stored as a separate JSON file, grouped by project directory.
 | `nativeHandle` | `any?`                 | Provider-specific handle (Codex thread ID, Claude resume token, etc.) |
 | `metadata`     | `Record<string, any>?` | Extra metadata                                                        |
 
+Claude handles retain host-local transcript storage and the version reported by the session's
+`system/init`, independently of later provider settings. Keep credentials and launch environment
+out of this provenance. Reading history uses the recorded location; resuming under another
+location requires restoring the original configuration. Native handoff installs destination-local
+provenance. See the [handoff evidence and limits](refactors/cross-host-handoff-plan.md#current-evidence-and-integration-gaps).
+
 ### Nested: AgentFeature (discriminated union on `type`)
 
 **Toggle:**

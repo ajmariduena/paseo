@@ -27,6 +27,9 @@ async function main(): Promise<void> {
       ? { claude: new ClaudeAgentClient({ logger: pino({ level: "warn" }), runtimeSettings }) }
       : createTestAgentClients({
           supportsMcpServers: process.env.E2E_MCP_SERVERS_SUPPORTED === "1",
+          claudeRuntime: providerSettings?.claude?.env?.CLAUDE_CONFIG_DIR
+            ? { configDir: providerSettings.claude.env.CLAUDE_CONFIG_DIR, cliVersion: "2.1.295" }
+            : undefined,
         }),
     corsAllowedOrigins: [`http://localhost:${metroPort}`],
     daemonVersion: process.env.E2E_DAEMON_VERSION ?? "0.0.0",

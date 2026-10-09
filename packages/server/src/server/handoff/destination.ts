@@ -83,6 +83,8 @@ const PreparedConversationSchema = z.discriminatedUnion("mode", [
     title: z.string().max(4096).nullable(),
     mode: z.literal("native").default("native"),
     sessionId: z.string().uuid(),
+    // COMPAT(handoffPublishedRuntime): added in v0.11.1, remove after 2027-02-06 once older activations expire. Omit for old journals to preserve idempotent publication.
+    runtime: ClaudeRuntimeSchema.optional(),
   }),
   z.object({
     sourceAgentId: z.string().min(1),
@@ -446,6 +448,7 @@ export class HandoffDestination {
             title: conversation.title,
             mode: "native",
             sessionId: handle.sessionId,
+            runtime: record.claudeRuntime,
           });
         }
         await syncTree(record.stagingCwd);
@@ -838,6 +841,14 @@ export class HandoffDestination {
 
   private validateConversationRecords(record: DestinationHandoffStatus): void {
     this.validateConversationModes(record, "storage_uncertain");
+    for (const conversation of record.preparedConversations) {
+      if (conversation.mode !== "native" || !conversation.runtime) continue;
+      if (
+        conversation.runtime.configDir !== record.claudeRuntime?.configDir ||
+        conversation.runtime.cliVersion !== record.claudeRuntime?.cliVersion
+      )
+        fail("storage_uncertain", "Prepared runtime differs from the destination installation");
+    }
     const hasNative = record.sourceAgentIds.some(
       (id) => handoffConversationMode(record, id) === "native",
     );

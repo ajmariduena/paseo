@@ -11939,7 +11939,15 @@ test("closing persists provider events emitted during shutdown before the closed
   const client = new (class extends TestAgentClient {
     override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
       return new (class extends TestAgentSession {
+        private observedVersion = "before-close";
+        override describePersistence() {
+          return {
+            ...super.describePersistence(),
+            metadata: { observedVersion: this.observedVersion },
+          };
+        }
         override async close(): Promise<void> {
+          this.observedVersion = "after-close";
           this.pushEvent({
             type: "mode_changed",
             provider: "codex",
@@ -11967,6 +11975,7 @@ test("closing persists provider events emitted during shutdown before the closed
     expect(await storage.get(agent.id)).toMatchObject({
       lastStatus: "closed",
       config: { modeId: "build", thinkingOptionId: "high" },
+      persistence: { metadata: { observedVersion: "after-close" } },
     });
     expect(manager.getAgent(agent.id)).toBeNull();
   } finally {

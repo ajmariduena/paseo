@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, realpathSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 // Verbatim port of the Claude Agent SDK's project-directory encoding so
 // paseo computes the same `~/.claude/projects/<dir>` path the SDK does.
@@ -118,8 +118,10 @@ function hashSuffix(input: string): string {
 }
 
 // Claude Code keeps its settings and transcripts here for a process launched with `env`.
-export function claudeConfigDir(env: NodeJS.ProcessEnv): string {
-  return env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
+export function claudeConfigDir(env: NodeJS.ProcessEnv, cwd = process.cwd()): string {
+  const home = (process.platform === "win32" ? env.USERPROFILE : env.HOME) || homedir();
+  const configDir = env.CLAUDE_CONFIG_DIR ?? join(home, ".claude");
+  return resolve(cwd, configDir.normalize("NFC"));
 }
 
 function resolveConfigDir(options?: ClaudeProjectDirOptions): string {

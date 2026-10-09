@@ -276,7 +276,6 @@ test("source preparation keeps ownership fenced after uncertain cleanup and retr
           await setup.stop(workspace.workspaceId);
         },
       },
-      getProviderRuntimeSettings: () => undefined,
     });
   let source = createSource();
   const request = {
@@ -591,6 +590,7 @@ test.each([
   "before records",
   "partial records",
   "after records",
+  "legacy after records",
   "before active journal",
   "after active journal",
 ])("recovers hidden destination publication after failure %s", async (failurePoint) => {
@@ -630,8 +630,19 @@ test.each([
         failOnce = false;
         throw new Error("interrupted publication");
       }
-      await publication.install(input);
-      if (failOnce && failurePoint === "after records") {
+      const legacy = failurePoint === "legacy after records";
+      const record = legacy
+        ? {
+            ...input.record,
+            preparedConversations: input.record.preparedConversations.map((conversation) => {
+              if (conversation.mode !== "native") return conversation;
+              const { runtime: _runtime, ...oldConversation } = conversation;
+              return oldConversation;
+            }),
+          }
+        : input.record;
+      await publication.install({ ...input, record });
+      if (failOnce && (failurePoint === "after records" || legacy)) {
         failOnce = false;
         throw new Error("interrupted publication");
       }
@@ -652,7 +663,11 @@ test.each([
       failOnce = false;
       throw new Error("interrupted publication");
     }
-    await writeJournal(file, value);
+    const persisted =
+      failurePoint === "legacy after records"
+        ? JSON.parse(JSON.stringify(value, (key, item) => (key === "runtime" ? undefined : item)))
+        : value;
+    await writeJournal(file, persisted);
     if (active && failOnce && failurePoint === "after active journal") {
       failOnce = false;
       throw new Error("interrupted publication");
@@ -723,6 +738,9 @@ test.each([
   ]);
   expect(() => current.assertMutationAllowed({ cwd: reservation.destinationCwd })).not.toThrow();
   const agentId = reservation.agentMappings[0].destinationAgentId;
+  expect((await recoveredAgents.get(agentId))?.persistence?.metadata?.claudeRuntime).toEqual(
+    failurePoint === "legacy after records" ? undefined : active.claudeRuntime,
+  );
   await recoveredAgents.setTitle(agentId, "Renamed after activation");
   await current.activate(transferId);
   expect((await recoveredAgents.get(agentId))?.title).toBe("Renamed after activation");

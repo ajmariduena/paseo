@@ -2132,6 +2132,7 @@ export class AgentManager {
     // native writer, so publishing a resumable closed snapshot would orphan it.
     await agent.session.close();
     await this.drainSessionEvents(agentId);
+    this.refreshSessionPersistence(agent);
     this.cancelRunningProviderSubagents(agentId);
     const closedAgent = this.prepareAgentForClosure(agent, "agent closed");
 

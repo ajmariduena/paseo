@@ -1644,8 +1644,6 @@ export async function createPaseoDaemon(
     terminals: terminalManager,
     setup: workspaceSetupRuntime,
     onWorkspaceChanged: (workspaceId) => emitWorkspaceUpdatesExternal([workspaceId]),
-    getProviderRuntimeSettings: (provider) =>
-      providerSnapshotManager.getProviderRuntimeSettings(provider),
   });
   logger.info({ elapsed: elapsed() }, "Loading persisted agent registry");
   const persistedRecords = await agentStorage.list();

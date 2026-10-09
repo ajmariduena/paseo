@@ -1,10 +1,15 @@
 import type { Query } from "@anthropic-ai/claude-agent-sdk";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, test, vi } from "vitest";
 
 import { createTestLogger } from "../../../../test-utils/test-logger.js";
 import type { AgentLaunchContext } from "../../agent-sdk-types.js";
 import { ClaudeAgentClient } from "./agent.js";
 import type { ClaudeQueryInput } from "./query.js";
+import { claudeConfigDir, claudeProjectDirSync } from "./project-dir.js";
 
 function createQueryMock(events: unknown[]): Query {
   let index = 0;
@@ -29,6 +34,157 @@ function createQueryMock(events: unknown[]): Query {
 }
 
 describe("Claude SDK env", () => {
+  test.each(["2.1.296", undefined, "unknown"])(
+    "refreshes resumed runtime provenance from init version %s without changing credential lookup",
+    async (version) => {
+      const sessionId = randomUUID();
+      const home = mkdtempSync(path.join(tmpdir(), "claude-runtime-resume-"));
+      vi.stubEnv("CLAUDE_CONFIG_DIR", undefined);
+      const env = { HOME: home, USERPROFILE: home };
+      const configDir = claudeConfigDir(env);
+      const project = path.join(configDir, "projects", "paseo-handoff-test");
+      mkdirSync(project, { recursive: true });
+      writeFileSync(path.join(project, `${sessionId}.jsonl`), "");
+      const queryFactory = vi.fn(({ options }: ClaudeQueryInput) => {
+        expect(options.env?.CLAUDE_CONFIG_DIR).toBeUndefined();
+        expect(options.env?.CLAUDE_CODE_PROJECT_DIR_NAME).toBe("paseo-handoff-test");
+        return createQueryMock([
+          {
+            type: "system",
+            subtype: "init",
+            session_id: sessionId,
+            claude_code_version: version,
+            permissionMode: "default",
+            model: "opus",
+          },
+          {
+            type: "result",
+            subtype: "success",
+            usage: { input_tokens: 1, output_tokens: 1 },
+            total_cost_usd: 0,
+          },
+        ]);
+      });
+      const client = new ClaudeAgentClient({
+        logger: createTestLogger(),
+        queryFactory,
+        runtimeSettings: { env },
+        resolveBinary: async () => "/test/claude/bin",
+      });
+      const session = await client.resumeSession({
+        provider: "claude",
+        sessionId,
+        metadata: {
+          cwd: process.cwd(),
+          claudeProjectDirName: "paseo-handoff-test",
+          claudeRuntime: { configDir, cliVersion: "2.1.295" },
+        },
+      });
+      try {
+        await session.run("continue");
+        const handle = session.describePersistence();
+        if (!handle) throw new Error("Missing resumed persistence");
+        expect(handle.sessionId).toBe(sessionId);
+        expect(handle.metadata?.claudeRuntime).toEqual(
+          version === "2.1.296" ? { configDir, cliVersion: version } : undefined,
+        );
+      } finally {
+        await session.close();
+        vi.unstubAllEnvs();
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test("retains the observed session runtime for handoff after provider configuration changes", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "claude-runtime-handoff-"));
+    const originalHome = path.join(root, "original");
+    const changedHome = path.join(root, "changed");
+    const sessionId = randomUUID();
+    const settings = {
+      env: {
+        CLAUDE_CONFIG_DIR: path.join(root, "default"),
+        ANTHROPIC_API_KEY: "PRIVATE_CREDENTIAL",
+      },
+    };
+    const launch = { env: { CLAUDE_CONFIG_DIR: originalHome } };
+    const queryFactory = vi.fn(() =>
+      createQueryMock([
+        {
+          type: "system",
+          subtype: "init",
+          session_id: sessionId,
+          claude_code_version: "2.1.295",
+          permissionMode: "default",
+          model: "opus",
+        },
+        { type: "assistant", message: { content: "done" } },
+        {
+          type: "result",
+          subtype: "success",
+          usage: { input_tokens: 1, output_tokens: 1 },
+          total_cost_usd: 0,
+        },
+      ]),
+    );
+    const client = new ClaudeAgentClient({
+      logger: createTestLogger(),
+      runtimeSettings: settings,
+      queryFactory,
+      resolveBinary: async () => "/test/claude/bin",
+    });
+    const session = await client.createSession({ provider: "claude", cwd: root }, launch);
+    try {
+      settings.env.CLAUDE_CONFIG_DIR = changedHome;
+      launch.env.CLAUDE_CONFIG_DIR = changedHome;
+      await session.run("capture runtime");
+      const handle = session.describePersistence();
+      if (!handle) throw new Error("Missing native persistence");
+      expect(handle.metadata?.claudeRuntime).toEqual({
+        configDir: originalHome,
+        cliVersion: "2.1.295",
+      });
+      expect(JSON.stringify(handle.metadata?.claudeRuntime)).not.toContain("PRIVATE_CREDENTIAL");
+      await session.close();
+      const project = claudeProjectDirSync(root, { configDir: originalHome });
+      mkdirSync(project, { recursive: true });
+      writeFileSync(
+        path.join(project, `${sessionId}.jsonl`),
+        JSON.stringify({
+          type: "user",
+          uuid: randomUUID(),
+          sessionId,
+          message: { role: "user", content: "original home history" },
+        }) + "\n",
+      );
+      const changedFactory = vi.fn(() => {
+        throw new Error("Must not launch in another home");
+      });
+      const changedClient = new ClaudeAgentClient({
+        logger: createTestLogger(),
+        runtimeSettings: { env: { CLAUDE_CONFIG_DIR: changedHome } },
+        queryFactory: changedFactory,
+        resolveBinary: async () => "/test/claude/bin",
+      });
+      const resumed = await changedClient.resumeSession(handle, { cwd: root });
+      try {
+        const events = [];
+        for await (const event of resumed.streamHistory()) events.push(event);
+        expect(JSON.stringify(events)).toContain("original home history");
+        await expect(resumed.run("continue")).rejects.toThrow("Claude session storage changed");
+        expect(changedFactory).not.toHaveBeenCalled();
+        expect(resumed.describePersistence()?.metadata?.claudeRuntime).toEqual(
+          handle.metadata?.claudeRuntime,
+        );
+      } finally {
+        await resumed.close();
+      }
+    } finally {
+      await session.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("forwards launch-context env through Claude process env", async () => {
     let capturedEnv: Record<string, string | undefined> | undefined;
     let capturedPerTaskStopAffordance: boolean | undefined;

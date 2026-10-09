@@ -106,6 +106,7 @@ export function createHandoffPublication(stores: PublicationStores): HandoffPubl
                     metadata: {
                       cwd: record.destinationCwd,
                       claudeProjectDirName: `paseo-handoff-${mapping.destinationAgentId}`,
+                      ...(conversation.runtime ? { claudeRuntime: conversation.runtime } : {}),
                     },
                   }
                 : null,

@@ -23,6 +23,7 @@ import type {
 } from "../agent/agent-sdk-types.js";
 import type { AgentPermissionRequest, AgentPermissionResponse } from "../agent/agent-sdk-types.js";
 import { isLikelyExternalToolName } from "@getpaseo/protocol/tool-name-normalization";
+import type { ClaudeSessionRuntime } from "../agent/providers/claude/session-runtime.js";
 
 const TEST_CAPABILITIES: AgentCapabilityFlags = {
   supportsStreaming: true,
@@ -52,6 +53,7 @@ interface Deferred<T> {
 }
 
 interface FakeAgentSessionOptions {
+  claudeRuntime?: ClaudeSessionRuntime;
   providerName: string;
   config: AgentSessionConfig;
   supportsMcpServers?: boolean;
@@ -62,6 +64,7 @@ interface FakeAgentSessionOptions {
 }
 
 export interface TestAgentClientOptions {
+  claudeRuntime?: ClaudeSessionRuntime;
   beforeCreateSession?: () => Promise<void>;
   closeSession?: () => Promise<void>;
   onStartTurn?: (prompt: AgentPromptInput) => void;
@@ -323,6 +326,7 @@ function buildLargeTimelineItem(input: {
 }
 
 class FakeAgentSession implements AgentSession {
+  private readonly claudeRuntime: ClaudeSessionRuntime | undefined;
   readonly capabilities: AgentCapabilityFlags;
   readonly id: string;
   private readonly providerName: string;
@@ -340,6 +344,7 @@ class FakeAgentSession implements AgentSession {
   private readonly onStartTurn: ((prompt: AgentPromptInput) => void) | undefined;
 
   constructor(options: FakeAgentSessionOptions) {
+    this.claudeRuntime = options.claudeRuntime;
     this.capabilities = {
       ...TEST_CAPABILITIES,
       supportsMcpServers: options.supportsMcpServers === true,
@@ -872,6 +877,7 @@ class FakeAgentSession implements AgentSession {
 
   describePersistence(): AgentPersistenceHandle | null {
     const metadata = {
+      ...(this.claudeRuntime ? { claudeRuntime: this.claudeRuntime } : {}),
       ...(this.memoryMarker ? { marker: this.memoryMarker } : {}),
       ...(this.config.mcpServers ? { mcpServers: this.config.mcpServers } : {}),
     };
@@ -1217,6 +1223,7 @@ class FakeAgentClient implements AgentClient {
     return new FakeAgentSession({
       providerName: this.provider,
       config: { ...config },
+      claudeRuntime: this.provider === "claude" ? this.options.claudeRuntime : undefined,
       supportsMcpServers: this.options.supportsMcpServers,
       closeSession: this.options.closeSession,
       onStartTurn: this.options.onStartTurn,
@@ -1240,6 +1247,7 @@ class FakeAgentClient implements AgentClient {
     return new FakeAgentSession({
       providerName: this.provider,
       config: cfg,
+      claudeRuntime: this.provider === "claude" ? this.options.claudeRuntime : undefined,
       supportsMcpServers: this.options.supportsMcpServers,
       sessionId: handle.sessionId,
       memoryMarker: typeof marker === "string" ? marker : null,

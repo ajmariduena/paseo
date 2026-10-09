@@ -15,10 +15,10 @@ import {
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import type { AgentManager } from "../agent/agent-manager.js";
 import type { AgentStorage, StoredAgentRecord } from "../agent/agent-storage.js";
-import type { ProviderSnapshotManager } from "../agent/provider-snapshot-manager.js";
-import { createProviderEnv } from "../agent/provider-launch-config.js";
-import { resolveClaudeCodeVersion } from "../agent/providers/claude/agent.js";
-import { claudeConfigDir } from "../agent/providers/claude/project-dir.js";
+import {
+  ClaudeSessionRuntimeSchema,
+  readClaudeSessionRuntime,
+} from "../agent/providers/claude/session-runtime.js";
 import {
   captureClaudeSession,
   readCapturedClaudeHistory,
@@ -58,6 +58,8 @@ const AgentSchema = z.object({
   title: z.string().nullable(),
   sessionId: z.string().uuid(),
   projectDirName: z.string().optional(),
+  // COMPAT(handoffCapturedRuntime): added in v0.11.1, remove after 2027-02-06 once older prepared transfers expire.
+  runtime: ClaudeSessionRuntimeSchema.optional(),
 });
 const PreparedSchema = z.object({
   version: z.literal(1),
@@ -82,7 +84,6 @@ interface SourceOptions {
   >;
   terminals: Pick<TerminalManager, "listDirectories" | "getTerminals" | "killTerminalAndWait">;
   setup: Pick<WorkspaceSetupRuntime, "stop" | "activeIds">;
-  getProviderRuntimeSettings: ProviderSnapshotManager["getProviderRuntimeSettings"];
   onWorkspaceChanged?: (workspaceId: string) => Promise<void>;
 }
 interface SourceRequest {
@@ -137,7 +138,6 @@ export class HandoffSource {
     const inventory = await this.inventory(workspaceId);
     const records = new Map(inventory.records.map((record) => [record.id, record]));
     const conversations: HandoffConversationPreview[] = [];
-    let runtime: ReturnType<HandoffSource["nativeRuntime"]> | undefined;
     for (const agentId of inventory.agentIds) {
       const record = records.get(agentId);
       const live = this.options.agentManager.getAgent(agentId);
@@ -151,8 +151,10 @@ export class HandoffSource {
           refuse("invalid_source", "Conversation has not finished saving; retry the review");
         const reason = this.conversationBlockReason(record);
         if (reason) refuse(reason.code, reason.message);
-        const agent = this.nativeAgent(record);
-        runtime ??= this.nativeRuntime();
+        const agent = this.nativeAgent({
+          ...record,
+          persistence: live?.session?.describePersistence() ?? record.persistence,
+        });
         const preview = await previewClaudeSession({
           handle: {
             provider: "claude",
@@ -160,7 +162,7 @@ export class HandoffSource {
             metadata: { claudeProjectDirName: agent.projectDirName },
           },
           cwd: agent.cwd,
-          ...(await runtime),
+          ...agent.runtime,
         });
         conversations.push({ ...identity, provider: "claude", state: "available", ...preview });
       } catch (error) {
@@ -302,7 +304,6 @@ export class HandoffSource {
         records.push(await this.options.agents.checkpointClosedAgent(id));
       this.assertReviewedIntegrations(source.integrationReview, records);
       const agents = records.map((record) => this.nativeAgent(record));
-      const runtime = agents.length > 0 ? await this.nativeRuntime() : null;
       const directory = this.captureDirectory(source.id);
       await mkdir(this.options.directory, { recursive: true, mode: 0o700 });
       await rm(directory, { recursive: true, force: true });
@@ -316,9 +317,8 @@ export class HandoffSource {
       });
       const conversations = [];
       for (const [index, agent] of agents.entries()) {
-        if (!runtime) refuse("invalid_source", "Source provider configuration is missing");
         const artifactDirectory = path.join(directory, `conversation-${index}`);
-        await captureClaudeSession(this.captureInput(agent, runtime, artifactDirectory));
+        await captureClaudeSession(this.captureInput(agent, agent.runtime, artifactDirectory));
         const events = await readCapturedClaudeHistory({
           artifactDirectory,
           cwd: agent.cwd,
@@ -357,7 +357,7 @@ export class HandoffSource {
         transferId: source.id,
         cwd: source.cwd,
         agents,
-        runtime,
+        runtime: null,
         manifest,
       };
       await writeJournal(path.join(directory, "source.json"), prepared);
@@ -594,6 +594,27 @@ export class HandoffSource {
       );
   }
 
+  private async verifyStoppedConversations(source: SourceHandoffStatus, prepared: PreparedSource) {
+    const records = new Map<string, StoredAgentRecord>();
+    for (const id of source.agentIds) {
+      if (this.options.agentManager.getAgent(id))
+        refuse("stop_uncertain", "Source provider runtime is still loaded");
+      const record = await this.options.agents.get(id);
+      const captured = prepared.agents.find((agent) => agent.id === id);
+      if (
+        !record ||
+        !captured ||
+        record.lastStatus !== "closed" ||
+        record.cwd !== captured.cwd ||
+        record.persistence?.sessionId !== captured.sessionId ||
+        record.persistence?.metadata?.claudeProjectDirName !== captured.projectDirName
+      )
+        refuse("source_changed", "Source conversation changed after capture");
+      records.set(id, record);
+    }
+    return records;
+  }
+
   private async verify(source: SourceHandoffStatus, prepared: PreparedSource): Promise<void> {
     const inventory = await this.inspect(source.workspaceId);
     if (!sameIds(inventory.agentIds, source.agentIds))
@@ -607,20 +628,7 @@ export class HandoffSource {
       source.integrationReview,
       await this.options.agents.listByWorkspaceForHandoff(source.workspaceId),
     );
-    const records = new Map<string, StoredAgentRecord>();
-    for (const id of source.agentIds) {
-      if (this.options.agentManager.getAgent(id))
-        refuse("stop_uncertain", "Source provider runtime is still loaded");
-      const record = await this.options.agents.get(id);
-      const captured = prepared.agents.find((agent) => agent.id === id);
-      if (
-        !record ||
-        record.lastStatus !== "closed" ||
-        record.persistence?.sessionId !== captured?.sessionId
-      )
-        refuse("source_changed", "Source conversation changed after capture");
-      records.set(id, record);
-    }
+    const records = await this.verifyStoppedConversations(source, prepared);
     const directory = this.captureDirectory(source.id);
     await verifyCapturedWorkspace({
       cwd: source.cwd,
@@ -628,13 +636,18 @@ export class HandoffSource {
       expectedReviewDigest: source.workspaceReviewDigest,
     });
     for (const [index, agent] of prepared.agents.entries()) {
-      if (!prepared.runtime) refuse("invalid_source", "Source provider configuration is missing");
+      // COMPAT(handoffCapturedRuntime): added in v0.11.1, remove after 2027-02-06 once older prepared transfers expire.
+      const runtime = agent.runtime ?? prepared.runtime;
+      if (!runtime) refuse("invalid_source", "Source provider configuration is missing");
       const record = records.get(agent.id);
       if (!record) refuse("source_changed", "Captured conversation is missing from the source");
+      if (
+        agent.runtime &&
+        !isDeepStrictEqual(agent.runtime, readClaudeSessionRuntime(record.persistence ?? undefined))
+      )
+        refuse("source_changed", "Source conversation runtime changed after capture");
       const artifactDirectory = path.join(directory, `conversation-${index}`);
-      await verifyCapturedClaudeSession(
-        this.captureInput(agent, prepared.runtime, artifactDirectory),
-      );
+      await verifyCapturedClaudeSession(this.captureInput(agent, runtime, artifactDirectory));
       const history = await readHandoffHistory(
         path.join(directory, `history-${index}.json`),
         agent.id,
@@ -660,23 +673,23 @@ export class HandoffSource {
     });
   }
 
-  private nativeAgent(record: StoredAgentRecord): z.infer<typeof AgentSchema> {
+  private nativeAgent(record: StoredAgentRecord) {
     if (record.provider !== "claude" || !record.persistence)
       refuse("invalid_source", "Conversation has no saved session that can be exported");
-    return AgentSchema.parse({
+    const runtime = readClaudeSessionRuntime(record.persistence);
+    if (!runtime)
+      refuse(
+        "invalid_source",
+        "This conversation has no recorded Claude runtime. Resume it on the source host before transferring it.",
+      );
+    const agent = AgentSchema.parse({
       id: record.id,
       cwd: record.cwd,
       title: record.title ?? null,
       sessionId: record.persistence.sessionId,
       projectDirName: record.persistence.metadata?.claudeProjectDirName,
     });
-  }
-  private async nativeRuntime() {
-    const settings = this.options.getProviderRuntimeSettings("claude");
-    return {
-      configDir: path.resolve(claudeConfigDir(createProviderEnv({ runtimeSettings: settings }))),
-      cliVersion: await resolveClaudeCodeVersion(settings),
-    };
+    return { ...agent, runtime };
   }
   private captureInput(
     agent: z.infer<typeof AgentSchema>,
