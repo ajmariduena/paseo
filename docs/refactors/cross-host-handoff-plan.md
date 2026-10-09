@@ -168,7 +168,14 @@ I/O is pending. Tests use real registries and hold both final writes and rollbac
 the source cannot become ready before they finish. Scratch creation checks workspace identity before
 creating directories, and worktree registration checks its source and backing directory. Unarchiving
 records is fenced too. The boot test rejects workspace creation and adoption over the real connection.
-Fresh worktree creation and asynchronous plugin hooks still need their own admission boundaries.
+Asynchronous plugin hooks still need their own admission boundaries.
+
+Fresh worktree creation fences the caller's identity, backing checkout, shared repository and
+destination directory before Git can fetch, create branches or run setup. Admission covers generated
+and collision-suffixed paths and lasts through registration or rollback teardown. If preparation
+arrives before registration takes its own admission, creation fails and drains its cleanup before
+the source can become ready. Real Git/registry tests cover these races, partial admission failure and
+cancel/retry. Both workspace-creation RPCs reject before changing refs in the real boot test.
 
 Archived-worktree recovery fences the selected backing directory and source repository before Git
 can prune or reconstruct anything. Reconstruction runs inside provisioning's unarchive admission,
@@ -188,8 +195,8 @@ RPCs and project removal. Archive remains best-effort shutdown; its success cann
 quiescence. Plugin callbacks, storage cleanup and shared Git metadata still need integration.
 
 These tests do not establish the complete ownership promise: draft catalog runtimes,
-setup/teardown hooks, background workspace mutations (including storage cleanup and worktree
-creation), shared Git metadata ownership, runtime termination and destination activation still need
+standalone setup/teardown hooks, background workspace mutations (including storage cleanup),
+shared Git metadata ownership, runtime termination and destination activation still need
 integration.
 Source history needs a readable path that does not reopen a fenced native runtime. Source release
 explicitly refuses Windows until durable directory updates

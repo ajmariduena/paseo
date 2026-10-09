@@ -30,6 +30,7 @@ import type { FirstAgentContext } from "@getpaseo/protocol/messages";
 import { runWithGitCommandPriority } from "../utils/run-git-command.js";
 import { getPaseoWorktreesRoot } from "../utils/worktree.js";
 import { assertWorktreeNotCleaningUp, withWorktreeProjectLock } from "./worktree-use-lock.js";
+import type { HandoffOwnership } from "./handoff/ownership.js";
 
 export interface CreatePaseoWorktreeInput extends CreateWorktreeCoreInput {
   workspaceId?: string;
@@ -59,6 +60,7 @@ export interface AttemptFirstAgentBranchAutoNameResult {
 }
 
 export interface CreatePaseoWorktreeDeps extends CreateWorktreeCoreDeps {
+  handoffOwnership?: HandoffOwnership;
   workspaceGitService: WorkspaceGitService;
   workspaceProvisioning: Pick<WorkspaceProvisioningService, "createWorkspaceForWorktree">;
 }
@@ -68,17 +70,56 @@ export async function createPaseoWorktree(
   deps: CreatePaseoWorktreeDeps,
 ): Promise<CreatePaseoWorktreeResult> {
   const projectRoot = await getPaseoWorktreesRoot(input.cwd, input.paseoHome, input.worktreesRoot);
-  return withWorktreeProjectLock(projectRoot, () => {
+  return withWorktreeProjectLock(projectRoot, async () => {
     assertWorktreeNotCleaningUp(input.cwd);
-    return runWithGitCommandPriority("high", () => createPaseoWorktreeWithPriority(input, deps));
+    const releases: Array<() => void> = [];
+    try {
+      if (deps.handoffOwnership) {
+        releases.push(
+          await deps.handoffOwnership.acquireMutation({
+            cwd: input.cwd,
+            workspaceId: input.workspaceId,
+          }),
+        );
+      }
+      const workspaceCwdPlan = await planWorkspaceCwdForWorktree(
+        input.cwd,
+        deps.workspaceGitService,
+      );
+      if (deps.handoffOwnership) {
+        // Git can update the shared repository and choose a suffixed/generated
+        // destination. Admit their containing paths before any creation begins.
+        const paths = new Set([
+          workspaceCwdPlan.sourceWorktreePath,
+          workspaceCwdPlan.mainRepoRoot,
+          projectRoot,
+        ]);
+        for (const cwd of paths) {
+          releases.push(await deps.handoffOwnership.acquireMutation({ cwd }));
+        }
+      }
+      // Keep admission through registration and rollback, including teardown.
+      return await runWithGitCommandPriority("high", () =>
+        createPaseoWorktreeWithPriority(input, deps, workspaceCwdPlan),
+      );
+    } finally {
+      for (const release of releases.toReversed()) release();
+    }
   });
+}
+
+interface WorkspaceCwdPlan {
+  inputCwd: string;
+  relativeWorkspaceCwd: string;
+  sourceWorktreePath: string;
+  mainRepoRoot: string;
 }
 
 async function createPaseoWorktreeWithPriority(
   input: CreatePaseoWorktreeInput,
   deps: CreatePaseoWorktreeDeps,
+  workspaceCwdPlan: WorkspaceCwdPlan,
 ): Promise<CreatePaseoWorktreeResult> {
-  const workspaceCwdPlan = await planWorkspaceCwdForWorktree(input.cwd, deps.workspaceGitService);
   const createdWorktree = await createWorktreeCore(input, deps);
   try {
     maybeMarkFirstAgentBranchAutoNameEligible({ createdWorktree });
@@ -157,7 +198,7 @@ async function isDirectory(targetPath: string): Promise<boolean> {
 async function planWorkspaceCwdForWorktree(
   inputCwd: string,
   workspaceGitService: Pick<WorkspaceGitService, "getCheckout">,
-): Promise<{ inputCwd: string; relativeWorkspaceCwd: string }> {
+): Promise<WorkspaceCwdPlan> {
   const normalizedInputCwd = resolve(inputCwd);
   const sourceCheckout = await workspaceGitService.getCheckout(normalizedInputCwd);
   const sourceWorktreePath = sourceCheckout.worktreeRoot ?? normalizedInputCwd;
@@ -165,7 +206,12 @@ async function planWorkspaceCwdForWorktree(
   if (relativeWorkspaceCwd === null) {
     throw new Error(`Workspace cwd is outside its source worktree: ${normalizedInputCwd}`);
   }
-  return { inputCwd: normalizedInputCwd, relativeWorkspaceCwd };
+  return {
+    inputCwd: normalizedInputCwd,
+    relativeWorkspaceCwd,
+    sourceWorktreePath,
+    mainRepoRoot: sourceCheckout.mainRepoRoot ?? sourceWorktreePath,
+  };
 }
 
 export async function attemptFirstAgentBranchAutoName(options: {

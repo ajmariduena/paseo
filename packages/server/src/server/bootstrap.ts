@@ -1340,6 +1340,7 @@ export async function createPaseoDaemon(
           return createRegisteredPaseoWorktree(
             { ...workflowInput, serverId },
             {
+              handoffOwnership,
               github,
               ...(workflowOptions?.resolveDefaultBranch
                 ? {

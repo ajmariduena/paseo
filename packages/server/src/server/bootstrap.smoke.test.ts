@@ -240,7 +240,7 @@ describe("paseo daemon bootstrap", () => {
     }
   });
 
-  test("handoff refuses worktree reconstruction through the real recovery connection", async () => {
+  test("handoff refuses worktree creation and reconstruction through the real connection", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paseo-handoff-recovery-boot-"));
     const paseoHome = path.join(root, ".paseo");
     const cwd = path.join(root, "repo");
@@ -269,6 +269,7 @@ describe("paseo daemon bootstrap", () => {
     });
     await rm(worktree.worktreePath, { recursive: true, force: true });
     const before = git("worktree", "list", "--porcelain");
+    const refs = git("show-ref");
     const logger = pino({ level: "silent" });
     const projects = new FileBackedProjectRegistry(
       path.join(paseoHome, "projects", "projects.json"),
@@ -336,6 +337,23 @@ describe("paseo daemon bootstrap", () => {
     const client = new DaemonClient({ url: `ws://127.0.0.1:${daemon.port}/ws` });
     try {
       await client.connect();
+      expect(
+        await client.createPaseoWorktree({ cwd, worktreeSlug: "blocked-creation" }),
+      ).toMatchObject({
+        workspace: null,
+        error: `Workspace is held by handoff ${transferId} (preparing)`,
+      });
+      expect(git("show-ref")).toBe(refs);
+      expect(
+        await client.createWorkspace({
+          source: { kind: "worktree", cwd, worktreeSlug: "blocked-workspace" },
+        }),
+      ).toMatchObject({
+        workspace: null,
+        error: `Workspace is held by handoff ${transferId} (preparing)`,
+      });
+      expect(git("show-ref")).toBe(refs);
+      expect(git("worktree", "list", "--porcelain")).toBe(before);
       expect(await client.inspectWorkspaceRecovery(archived.workspaceId)).toMatchObject({
         kind: "recoverable",
         action: "restore",

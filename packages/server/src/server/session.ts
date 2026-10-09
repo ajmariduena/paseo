@@ -6726,6 +6726,7 @@ export class Session {
     const result = await createPaseoWorktree(
       { ...input, serverId: this.serverId },
       {
+        handoffOwnership: this.handoffOwnership,
         github: this.github,
         ...(options?.resolveDefaultBranch
           ? { resolveDefaultBranch: options.resolveDefaultBranch }
