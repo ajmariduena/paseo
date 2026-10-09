@@ -15,6 +15,7 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
+import { readBoundedFile } from "./artifacts.js";
 import {
   HandoffBlobSchema as BlobSchema,
   HandoffDigestSchema as DigestSchema,
@@ -138,6 +139,8 @@ function isWithin(parent: string, child: string): boolean {
 function validatePath(value: string): void {
   if (Buffer.byteLength(value) > 4096)
     reject("unsupported_workspace", "Workspace path is too long");
+  if (Buffer.from(value).toString("utf8") !== value)
+    reject("unsupported_workspace", "Workspace path contains invalid Unicode");
   const segments = value.split("/");
   const invalid = segments.some((segment) => {
     return (
@@ -157,28 +160,55 @@ function validatePath(value: string): void {
   if (invalid) reject("unsupported_workspace", `Path is not portable between hosts: ${value}`);
 }
 
-function validateFiles(files: readonly WorkspaceFile[]): void {
+function validatePaths(values: readonly string[], code: ErrorCode): void {
   const paths = new Set<string>();
-  const links = new Map<string, string>();
-  for (const file of files) {
-    validatePath(file.path);
-    const canonical = portablePathKey(file.path);
-    if (paths.has(canonical)) reject("invalid_artifact", `Colliding workspace path: ${file.path}`);
+  const spelling = new Map<string, string>();
+  for (const value of values) {
+    validatePath(value);
+    const canonical = portablePathKey(value);
+    if (paths.has(canonical)) reject(code, `Colliding workspace path: ${value}`);
     paths.add(canonical);
-    if (file.kind === "symlink") {
-      links.set(canonical, file.target);
+    const prefix: string[] = [];
+    for (const segment of value.split("/")) {
+      prefix.push(segment);
+      const original = prefix.join("/");
+      const key = portablePathKey(original);
+      const previous = spelling.get(key);
+      if (previous !== undefined && previous !== original)
+        reject(code, `Colliding workspace path: ${original}`);
+      spelling.set(key, original);
     }
   }
-  for (const file of files) {
-    const segments = portablePathKey(file.path).split("/");
+  for (const value of paths) {
+    const segments = value.split("/");
     segments.pop();
     while (segments.length > 0) {
-      if (paths.has(segments.join("/")))
-        reject("invalid_artifact", `File is also a parent directory: ${file.path}`);
+      if (paths.has(segments.join("/"))) reject(code, `File is also a parent directory: ${value}`);
       segments.pop();
     }
   }
+}
+
+function validateFiles(files: readonly WorkspaceFile[]): void {
+  validatePaths(
+    files.map((file) => file.path),
+    "invalid_artifact",
+  );
+  const links = new Map<string, string>();
+  for (const file of files) {
+    if (file.kind === "symlink") links.set(portablePathKey(file.path), file.target);
+  }
   for (const [link, target] of links) validateSymlink(link, target, links);
+}
+
+function validateIndex(index: string, code: ErrorCode): void {
+  const paths: string[] = [];
+  for (const entry of index.split("\0").filter(Boolean)) {
+    const match = /^(100644|100755|120000) [a-f0-9]+ 0\t(.*)$/s.exec(entry);
+    if (!match) reject(code, "Handoff requires an index of resolved regular files and symlinks");
+    paths.push(match[2]);
+  }
+  validatePaths(paths, code);
 }
 
 function portablePathKey(value: string): string {
@@ -255,6 +285,7 @@ async function getGitState(cwd: string, limits: WorkspaceSnapshotLimits): Promis
   if (index.split("\0").some((entry) => /^[0-9]+ [a-f0-9]+ [123]\t/.test(entry))) {
     reject("unsupported_workspace", "Resolve Git conflicts before moving this workspace");
   }
+  validateIndex(index, "unsupported_workspace");
   const pathsText = await runGit(cwd, [
     "ls-files",
     "--cached",
@@ -294,6 +325,7 @@ async function getGitState(cwd: string, limits: WorkspaceSnapshotLimits): Promis
 }
 
 async function validateGitCapture(cwd: string, paths: string[]): Promise<void> {
+  await validateExternalAttributes(cwd);
   if (paths.length > 0) {
     const attributes = await runGitCommandBytes(["check-attr", "-z", "--stdin", "filter"], {
       cwd,
@@ -372,6 +404,46 @@ async function validateGitCapture(cwd: string, paths: string[]): Promise<void> {
     reject(
       "unsupported_workspace",
       `Finish the in-progress Git operation before moving: ${marker}`,
+    );
+  }
+}
+
+async function validateExternalAttributes(cwd: string): Promise<void> {
+  const locations = [(await runGit(cwd, ["rev-parse", "--git-path", "info/attributes"])).trim()];
+  for (const variable of ["GIT_ATTR_SYSTEM", "GIT_ATTR_GLOBAL"]) {
+    const result = await runGitCommandBytes(["var", variable], {
+      cwd,
+      acceptExitCodes: [0, 1, 129],
+    });
+    if (result.exitCode === 129)
+      reject(
+        "unsupported_workspace",
+        "Update Git to a version that reports attribute locations before moving this workspace",
+      );
+    if (result.exitCode === 0) locations.push(...decodeGitOutput(result).trimEnd().split("\n"));
+  }
+  for (const location of locations) {
+    let stat;
+    try {
+      stat = await lstat(path.resolve(cwd, location));
+    } catch (error) {
+      if (isMissing(error)) continue;
+      throw error;
+    }
+    if (stat.isFile()) {
+      const contents = await readBoundedFile(path.resolve(cwd, location), 1024 * 1024);
+      const hasRules = contents
+        .toString("utf8")
+        .split("\n")
+        .some((line) => {
+          const text = line.trim();
+          return text !== "" && !text.startsWith("#");
+        });
+      if (!hasRules) continue;
+    }
+    reject(
+      "unsupported_workspace",
+      `Move external Git attributes into the workspace's .gitattributes before handoff: ${location}`,
     );
   }
 }
@@ -645,6 +717,7 @@ export async function restoreWorkspace(input: RestoreInput): Promise<WorkspaceMa
       "--template=",
       `--object-format=${manifest.git.objectFormat}`,
     ]);
+    await validateExternalAttributes(input.destination);
     await runRestoreGit(input.destination, [
       "config",
       "core.autocrlf",
@@ -690,6 +763,7 @@ export async function restoreWorkspace(input: RestoreInput): Promise<WorkspaceMa
       ]);
     }
     const index = await runRestoreGit(input.destination, ["ls-files", "--stage", "-z"]);
+    validateIndex(index, "invalid_artifact");
     if (createHash("sha256").update(index).digest("hex") !== manifest.git.indexFingerprint)
       reject("invalid_artifact", "Restored index differs from the source");
     for (const file of manifest.files)

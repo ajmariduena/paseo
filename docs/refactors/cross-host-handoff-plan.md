@@ -116,10 +116,14 @@ in the existing Linux/Windows server integration job and the macOS server job. L
 Linux only until those CI jobs pass. Staging cleanup, host-wide disk quotas and the ownership
 transaction are still pending; the daemon does not advertise the complete handoff capability.
 
-Before the workspace slice is complete, cover directories without Git,
-validate index paths as well as materialized paths,
-and resolve attributes stored outside the checkout. Directory-entry durability belongs in the
-transaction's ready/commit boundary. Linux tests do not establish macOS or Windows behavior.
+Before the workspace slice is complete, cover directories without Git. Directory-entry durability
+belongs in the transaction's ready/commit boundary. Linux tests do not establish macOS or Windows
+behavior. Path collision checks include index-only entries and directory segments. External Git
+attribute rules require moving into `.gitattributes` before capture or restore: Git reads them
+outside the checkout, and the handoff does not transport host configuration. Attribute-location
+discovery requires a Git version supporting `GIT_ATTR_SYSTEM` and `GIT_ATTR_GLOBAL`; unsupported
+Git versions get an explicit update request. See [Git attributes](https://git-scm.com/docs/gitattributes)
+and [Git logical variables](https://git-scm.com/docs/git-var).
 
 Git bundle and patch generation now uses the shared Git scheduler's bounded file sink. It applies
 backpressure while writing and keeps stdout out of daemon memory. The existing real-process Git

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -83,6 +84,48 @@ test("refuses intent-to-add instead of silently changing the Git index", async (
   await expect(
     captureWorkspace({ cwd: source, artifactDirectory: artifact }),
   ).rejects.toMatchObject({ code: "unsupported_workspace" });
+});
+
+test.each([
+  ["case-file", "CASE-FILE"],
+  ["directory/one", "DIRECTORY/two"],
+  ["é/one", "e\u0301/two"],
+])("refuses colliding index paths %s and %s even without working files", async (first, second) => {
+  const hash = (await git(source, "rev-parse", "HEAD:tracked.txt")).trim();
+  await git(source, "update-index", "--add", "--cacheinfo", `100644,${hash},${first}`);
+  await git(source, "update-index", "--add", "--cacheinfo", `100644,${hash},${second}`);
+  await expect(
+    captureWorkspace({ cwd: source, artifactDirectory: artifact }),
+  ).rejects.toMatchObject({ code: "unsupported_workspace" });
+});
+
+test("rejects an incoming index with portable path collisions before publishing the checkout", async () => {
+  const manifest = await captureWorkspace({ cwd: source, artifactDirectory: artifact });
+  const hash = (await git(source, "rev-parse", "HEAD:tracked.txt")).trim();
+  await git(source, "update-index", "--add", "--cacheinfo", `100644,${hash},case-file`);
+  await git(source, "update-index", "--add", "--cacheinfo", `100644,${hash},CASE-FILE`);
+  const patch = await git(
+    source,
+    "diff",
+    "--cached",
+    "--binary",
+    "--full-index",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+  );
+  const sha256 = createHash("sha256").update(patch).digest("hex");
+  manifest.git.indexPatch = { sha256, size: Buffer.byteLength(patch) };
+  manifest.git.indexFingerprint = createHash("sha256")
+    .update(await git(source, "ls-files", "--stage", "-z"))
+    .digest("hex");
+  await writeFile(path.join(artifact, "blobs", sha256), patch);
+  await writeFile(path.join(artifact, "manifest.json"), JSON.stringify(manifest));
+  await expect(
+    restoreWorkspace({ artifactDirectory: artifact, destination }),
+  ).rejects.toMatchObject({ code: "invalid_artifact" });
+  await expect(readFile(path.join(destination, "tracked.txt"))).rejects.toMatchObject({
+    code: "ENOENT",
+  });
 });
 
 test("restores staged binaries, renames, staged deletions and unstaged deletions", async () => {
@@ -252,6 +295,41 @@ test("refuses LFS and custom filters whose data is not in a Git bundle", async (
   ).rejects.toMatchObject({ code: "unsupported_workspace" });
 });
 
+test.each(["repository info", "global"])(
+  "refuses %s attributes that would be lost on the destination",
+  async (location) => {
+    const attributes =
+      location === "global"
+        ? path.join(root, "attributes")
+        : path.join(source, ".git", "info", "attributes");
+    await writeFile(attributes, "tracked.txt text eol=crlf\n");
+    if (location === "global") await git(source, "config", "core.attributesFile", attributes);
+    await expect(
+      captureWorkspace({ cwd: source, artifactDirectory: artifact }),
+    ).rejects.toMatchObject({ code: "unsupported_workspace" });
+  },
+);
+
+test("rechecks external attributes before source release", async () => {
+  await captureWorkspace({ cwd: source, artifactDirectory: artifact });
+  await writeFile(path.join(source, ".git", "info", "attributes"), "tracked.txt text eol=crlf\n");
+  await expect(
+    verifyCapturedWorkspace({ cwd: source, artifactDirectory: artifact }),
+  ).rejects.toMatchObject({ code: "unsupported_workspace" });
+});
+
+test("permits comment-only external attributes without copying host configuration", async () => {
+  await writeFile(
+    path.join(source, ".git", "info", "attributes"),
+    "# Local instructions\n\n  # No rules\n",
+  );
+  await captureWorkspace({ cwd: source, artifactDirectory: artifact });
+  await restoreWorkspace({ artifactDirectory: artifact, destination });
+  await expect(
+    readFile(path.join(destination, ".git", "info", "attributes")),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+});
+
 test("preserves Git line-ending normalization when hosts have different defaults", async () => {
   await git(source, "config", "core.autocrlf", "true");
   await writeFile(path.join(source, "tracked.txt"), "committed\r\n");
@@ -269,6 +347,8 @@ test.each([
   { name: "case", first: "file", second: "FILE" },
   { name: "unicode", first: "é", second: "e\u0301" },
   { name: "case folding", first: "σ", second: "ς" },
+  { name: "directory case", first: "Dir/a", second: "dir/b" },
+  { name: "directory normalization", first: "é/a", second: "e\u0301/b" },
   { name: "parent", first: "file", second: "file/child" },
 ])("rejects $name path collisions before materialization", async ({ first, second }) => {
   const manifest = await captureWorkspace({ cwd: source, artifactDirectory: artifact });
