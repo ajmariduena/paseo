@@ -259,6 +259,17 @@ describe("paseo daemon bootstrap", () => {
       // Shutdown drains the boot reconciliation, so this observes its persisted
       // result even when the background pass starts after the RPC assertions.
       await daemon.daemon.stop();
+      // Snapshot reads already in flight can finish after watcher disposal. Wait for
+      // their subprocesses before removing a cwd that Windows still has open.
+      await expect
+        .poll(
+          () => {
+            const { active, pending } = snapshotGitCommandRuntimeMetrics();
+            return { active, pending };
+          },
+          { timeout: 10_000 },
+        )
+        .toEqual({ active: 0, pending: 0 });
       const reloadedProjects = new FileBackedProjectRegistry(
         path.join(paseoHome, "projects", "projects.json"),
         registryLogger,
@@ -276,7 +287,7 @@ describe("paseo daemon bootstrap", () => {
     } finally {
       await client.close();
       await daemon.close();
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     }
   });
 

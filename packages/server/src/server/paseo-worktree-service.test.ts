@@ -162,7 +162,7 @@ test("handoff drains admitted worktree creation through the final durable worksp
 
 test("handoff drains creation through real teardown and rollback when preparation precedes registration", async () => {
   const { repoDir, tempDir, paseoHome, ownership, deps, workspaces } = await createHandoffFixture();
-  const entered = Promise.withResolvers<void>();
+  const entered = Promise.withResolvers<string>();
   const finishRegistration = Promise.withResolvers<void>();
   const teardownEntered = path.join(tempDir, "teardown-entered");
   const finishTeardown = path.join(tempDir, "finish-teardown");
@@ -188,17 +188,17 @@ test("handoff drains creation through real teardown and rollback when preparatio
   );
   const register = deps.workspaceProvisioning.createWorkspaceForWorktree;
   deps.workspaceProvisioning.createWorkspaceForWorktree = async (input) => {
-    entered.resolve();
+    entered.resolve(input.worktreeRoot);
     await finishRegistration.promise;
     return register(input);
   };
-  const projectRoot = await getPaseoWorktreesRoot(repoDir, paseoHome);
-  const worktreePath = path.join(projectRoot, "rollback");
   const creating = createPaseoWorktree({ cwd: repoDir, paseoHome, worktreeSlug: "rollback" }, deps);
   const failed = expect(creating).rejects.toMatchObject({ code: "fenced" });
   let id: string;
+  let worktreePath: string;
   try {
-    await Promise.race([
+    // Observe the checkout selected by creation, including canonical paths and suffixes.
+    worktreePath = await Promise.race([
       entered.promise,
       failed.then(() => {
         throw new Error("Creation failed before registration");
