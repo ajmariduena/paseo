@@ -146,6 +146,17 @@ describe("WS outbound zod-aot validation", () => {
       older,
       current,
       { ...current, workspace: { ...workspace, reviewDigest: "a".repeat(64) } },
+      {
+        ...current,
+        stoppedWork: {
+          ...current.stoppedWork,
+          review: {
+            agents: [{ id: "agent", instanceId: "00000000-0000-4000-8000-000000000001" }],
+            terminals: [],
+            setupIds: [],
+          },
+        },
+      },
     ]) {
       expect(GeneratedWSOutboundMessageSchema.safeParse(envelope(result))).toEqual({
         success: true,
@@ -158,6 +169,17 @@ describe("WS outbound zod-aot validation", () => {
       { ...current, workspace: { ...workspace, omittedPaths: Array(51).fill(".env") } },
       { ...current, conversations: [{ ...conversation, artifactBytes: -1 }] },
       { ...current, stoppedWork: { ...current.stoppedWork, setupOperations: "one" } },
+      {
+        ...current,
+        stoppedWork: {
+          ...current.stoppedWork,
+          review: {
+            agents: [],
+            terminals: [{ id: "terminal", name: "Build", instanceId: "invalid" }],
+            setupIds: [],
+          },
+        },
+      },
     ]) {
       expect(GeneratedWSOutboundMessageSchema.safeParse(envelope(result)).success).toBe(false);
     }
@@ -290,6 +312,7 @@ describe("WS outbound zod-aot validation", () => {
         cleanupComplete: false,
         cancellationAccepted: false,
         workspaceReviewDigest: "a".repeat(64),
+        stoppedWorkReview: { agents: [], terminals: [], setupIds: [] },
       });
       expect(GeneratedWSOutboundMessageSchema.safeParse(message)).toEqual({
         success: true,
@@ -303,6 +326,7 @@ describe("WS outbound zod-aot validation", () => {
       { ...result, cleanupComplete: "true" },
       { ...result, cancellationAccepted: "false" },
       { ...result, workspaceReviewDigest: "invalid" },
+      { ...result, stoppedWorkReview: { agents: [], terminals: [], setupIds: ["invalid"] } },
     ]) {
       expect(GeneratedWSOutboundMessageSchema.safeParse(envelope(invalid)).success).toBe(false);
     }

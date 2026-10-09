@@ -2,6 +2,7 @@ import type {
   HandoffDestinationSnapshot,
   HandoffCancellationProof,
   HandoffReleaseReceipt,
+  HandoffStoppedWorkReview,
 } from "@getpaseo/protocol/handoff-control";
 import type { DaemonClient } from "./daemon-client.js";
 import {
@@ -50,6 +51,7 @@ export interface PrepareWorkspaceHandoffInput extends HandoffConnections {
   continuationMode: "native" | "context";
   expectedAgentIds?: string[];
   workspaceReviewDigest?: string;
+  stoppedWorkReview?: HandoffStoppedWorkReview;
   onProgress?: (progress: WorkspaceHandoffProgress) => void;
 }
 export interface ActivateWorkspaceHandoffInput {
@@ -73,24 +75,32 @@ function requireDistinctHosts(input: HandoffConnections) {
   return { sourceServerId, destinationServerId };
 }
 
-async function validateWorkspaceReview(
+async function validateReview(
   input: PrepareWorkspaceHandoffInput,
   prior: HandoffDestinationSnapshot | null,
 ) {
   const expected = input.workspaceReviewDigest ?? prior?.workspaceReviewDigest;
-  if (expected && !prior) {
+  const stoppedWorkReview = input.stoppedWorkReview ?? prior?.stoppedWorkReview;
+  if ((expected || stoppedWorkReview) && !prior) {
     const current = handoffResult(
       await handoffRequest(
         () => input.source.handoffPreviewSource({ workspaceId: input.workspaceId }),
         input.signal,
       ),
     );
-    if (current.workspace?.reviewDigest !== expected)
+    if (expected && current.workspace?.reviewDigest !== expected)
       throw new HandoffReviewChangedError(
         "Workspace files or exclusions changed after review; review the transfer again",
       );
+    if (
+      stoppedWorkReview &&
+      JSON.stringify(current.stoppedWork?.review) !== JSON.stringify(stoppedWorkReview)
+    )
+      throw new HandoffReviewChangedError(
+        "Work that will stop changed after review; review the transfer again",
+      );
   }
-  return expected;
+  return { workspaceReviewDigest: expected, stoppedWorkReview };
 }
 
 /** Keep transferId in the caller's durable UI state. Reconnect reuses the hosts' journals. */
@@ -106,7 +116,7 @@ export async function prepareWorkspaceHandoff(
     signal,
   );
   if (prior.error && prior.error.code !== "not_found") handoffResult(prior);
-  const workspaceReviewDigest = await validateWorkspaceReview(input, prior.result);
+  const { workspaceReviewDigest, stoppedWorkReview } = await validateReview(input, prior.result);
   const inventory = prior.result
     ? { agentIds: prior.result.sourceAgentIds }
     : handoffResult(
@@ -127,12 +137,12 @@ export async function prepareWorkspaceHandoff(
           destinationParent: input.destinationParent,
           continuationMode: input.continuationMode,
           workspaceReviewDigest,
+          stoppedWorkReview,
         }),
       signal,
     ),
   );
-  if (reserved.workspaceReviewDigest !== workspaceReviewDigest)
-    throw new Error("Destination reservation did not retain the reviewed workspace boundary");
+  validateReservedReview(reserved, { workspaceReviewDigest, stoppedWorkReview });
   if (reserved.state === "cancelled")
     throw new Error("This handoff was cancelled; start a new transfer");
   if (reserved.state === "active") {
@@ -161,6 +171,7 @@ export async function prepareWorkspaceHandoff(
             destinationServerId,
             reservationId: reserved.reservationId,
             workspaceReviewDigest: reserved.workspaceReviewDigest,
+            stoppedWorkReview: reserved.stoppedWorkReview,
           }),
         signal,
       ),
@@ -172,7 +183,8 @@ export async function prepareWorkspaceHandoff(
     prepared.source.destinationServerId !== destinationServerId ||
     prepared.source.reservationId !== reserved.reservationId ||
     prepared.source.workspaceId !== input.workspaceId ||
-    prepared.source.workspaceReviewDigest !== reserved.workspaceReviewDigest
+    prepared.source.workspaceReviewDigest !== reserved.workspaceReviewDigest ||
+    JSON.stringify(prepared.source.stoppedWorkReview) !== JSON.stringify(reserved.stoppedWorkReview)
   )
     throw new Error("Source handoff belongs to another destination reservation");
   const manifest = prepared.manifest;
@@ -203,6 +215,16 @@ export async function prepareWorkspaceHandoff(
   );
   progress("ready");
   return staged;
+}
+
+function validateReservedReview(
+  reserved: HandoffDestinationSnapshot,
+  review: Pick<PrepareWorkspaceHandoffInput, "workspaceReviewDigest" | "stoppedWorkReview">,
+) {
+  if (reserved.workspaceReviewDigest !== review.workspaceReviewDigest)
+    throw new Error("Destination reservation did not retain the reviewed workspace boundary");
+  if (JSON.stringify(reserved.stoppedWorkReview) !== JSON.stringify(review.stoppedWorkReview))
+    throw new Error("Destination reservation did not retain the reviewed work that will stop");
 }
 
 /** A timeout after release leaves ownership at destination; retry activation with this same ID. */
@@ -237,7 +259,8 @@ export async function activateWorkspaceHandoff(
       prepared.source.destinationServerId !== destinationServerId ||
       prepared.source.reservationId !== target.reservationId ||
       prepared.source.manifestDigest !== target.manifestDigest ||
-      prepared.source.workspaceReviewDigest !== target.workspaceReviewDigest
+      prepared.source.workspaceReviewDigest !== target.workspaceReviewDigest ||
+      JSON.stringify(prepared.source.stoppedWorkReview) !== JSON.stringify(target.stoppedWorkReview)
     )
       throw new Error("Handoff ownership and destination content do not match");
     input.onProgress?.({ phase: "releasing" });

@@ -11416,6 +11416,49 @@ test("close during in-flight stream does not clear persistence sessionId", async
   expect(persisted?.persistence?.sessionId).toBe(snapshot.persistence?.sessionId);
 });
 
+test("reviewed close refuses a runtime replaced by an earlier queued reload", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-reviewed-close-"));
+  const resumeStarted = deferred<void>();
+  const resumeAllowed = deferred<void>();
+  const client = new (class extends TestAgentClient {
+    override async resumeSession(
+      handle: AgentPersistenceHandle,
+      config?: Partial<AgentSessionConfig>,
+    ) {
+      resumeStarted.resolve();
+      await resumeAllowed.promise;
+      return super.resumeSession(handle, config);
+    }
+  })();
+  const manager = new AgentManager({ clients: { codex: client }, logger });
+  let agentId: string | undefined;
+  try {
+    const created = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    agentId = created.id;
+    const reviewed = manager.getAgent(agentId)?.session;
+    if (!reviewed) throw new Error("Missing reviewed session");
+    const reload = manager.reloadAgentSession(agentId);
+    await resumeStarted.promise;
+    const closing = manager.closeAgent(agentId, reviewed);
+    const refused = expect(closing).rejects.toThrow("Reviewed agent runtime was replaced");
+    resumeAllowed.resolve();
+    await reload;
+    await refused;
+    const current = manager.getAgent(agentId)?.session;
+    expect(current).not.toBe(reviewed);
+    if (!current) throw new Error("Replacement runtime must remain open");
+    await manager.closeAgent(agentId, current);
+    expect(manager.getAgent(agentId)).toBeNull();
+  } finally {
+    resumeAllowed.resolve();
+    if (agentId) await manager.closeAgent(agentId).catch(() => undefined);
+    await manager.flush().catch(() => undefined);
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
 test("closeAgent persists one final closed snapshot", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-close-no-persist-"));
   const storagePath = join(workdir, "agents");

@@ -257,6 +257,12 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   revalidation. It rereads the agent inventory strictly instead of silently skipping damaged records.
   Failed cleanup leaves the transfer preparing and fenced; a successful retry captures only after
   stop confirmation. Archived, delegated and non-Claude conversations are currently refused.
+  Reviewed preparation retains the selected provider-session and terminal instances and setup-run
+  identities in both journals. A changed set before preparation requires a new review; after
+  fencing, retries permit completed stops but refuse new or replacement writers. Provider closure
+  checks the reviewed session inside its lifecycle lock, including when a reload was already queued.
+  Readiness and release refuse surviving terminals or setup. These identities bind stop approval;
+  they do not establish OS process identity or recover uncertain descendants after daemon restart.
   Error-reporting barriers for background event failures, launch-time provider configuration and
   complete resource dispositions remain open.
 - `destination.ts`, `ownership.posix.test.ts` and `archive.e2e.test.ts` cover durable destination
@@ -321,8 +327,11 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   review also shows estimated workspace/provider bytes, ignored paths, live conversation count,
   terminal names and active setup count. Terminal enumeration is shared with preparation and
   deduplicates nested buckets. The network regression leaves terminals running during review and
-  confirms their exit during preparation; the setup regression retains its active count through an
-  uncertain stop until cleanup succeeds. The browser test recovers from a nonportable source path,
+  confirms their exit during preparation. A same-name terminal replacement is refused before
+  reservation and by source preparation; fresh review then survives both hosts restarting. The setup
+  regression retains approved run identities through failed cleanup and journal reload, refuses a
+  replacement with the same active count, and prevents release while setup is active.
+  The browser test recovers from a nonportable source path,
   shows the ignored `.env` and running terminal, and verifies the excluded file is absent in the
   destination. Review content scrolls above the pinned actions at compact width.
   The source conversation set is checked again before reservation; a changed set returns the form
@@ -377,6 +386,7 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   verifies bytes and destination navigation after a real activation conflict and source shutdown;
   changing exclusions after review leaves the terminal running, shows an actionable error and
   creates no destination reservation or source fence before a fresh review;
+  starting a terminal after review also requires re-review while both terminals remain running;
   compact recovery deletes the local transfer record, reloads the same identity and context mode
   from both host journals, then cancels and verifies a fresh form after clearing local state again.
   Two destination-only recovery cases select one of two reservations and retain its original mode.
@@ -414,6 +424,7 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   See the [history results](../qa-evidence/handoff-history.txt),
   [preflight results](../qa-evidence/handoff-preflight.txt),
   [workspace review binding results](../qa-evidence/handoff-review-binding.txt),
+  [stopped-work review results](../qa-evidence/handoff-writers-review.txt),
   [source ownership and UI results](../qa-evidence/handoff-source-state.txt),
   [source launch controls results](../qa-evidence/handoff-source-controls.txt),
   [source file, Git and script results](../qa-evidence/handoff-source-mutations.txt),
@@ -431,9 +442,9 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   is unavailable without that local record, pinned-key client persistence,
   complete omitted-path access and integration/resource dispositions,
   concurrent windows and other connected clients' unsaved buffers and conversation draft transfer,
-  complete source mutation affordances and native-platform evidence remain open. Review binding
-  for integrations and stopped resources is still pending; the workspace digest does not cover
-  those inventories. Final transfer size is not shown separately.
+  complete source mutation affordances and native-platform evidence remain open. Integrations and
+  resources outside the current provider-session/terminal/setup inventory still need review binding
+  and dispositions. Final transfer size is not shown separately.
 - Source retirement/tombstones and automation dispositions remain unimplemented.
   The composite archive currently captures Claude conversations;
   other provider codecs remain open. Complete handoff is not advertised.

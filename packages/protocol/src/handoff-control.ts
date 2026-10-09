@@ -43,10 +43,25 @@ export const HandoffWorkspacePreviewSchema = z.object({
   omittedPathCount: z.number().int().nonnegative(),
   reviewDigest: HandoffDigestSchema.optional(),
 });
+export const HandoffStoppedWorkReviewSchema = z.object({
+  agents: z.array(z.object({ id: z.string().min(1), instanceId: z.string().uuid() })).max(1000),
+  terminals: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        instanceId: z.string().uuid(),
+        name: z.string().max(4096),
+      }),
+    )
+    .max(1000),
+  setupIds: z.array(z.string().uuid()).max(1000),
+});
+export type HandoffStoppedWorkReview = z.infer<typeof HandoffStoppedWorkReviewSchema>;
 export const HandoffStoppedWorkPreviewSchema = z.object({
   agentIds: z.array(z.string().min(1)).max(1000),
   terminals: z.array(z.object({ id: z.string().min(1), name: z.string().max(4096) })).max(1000),
   setupOperations: z.number().int().nonnegative(),
+  review: HandoffStoppedWorkReviewSchema.optional(),
 });
 export const HandoffSourcePreviewSchema = z.object({
   workspaceId: z.string().min(1),
@@ -113,6 +128,7 @@ export const HandoffSourceStatusSchema = HandoffSourceInspectionSchema.extend({
   manifestDigest: HandoffDigestSchema.nullable(),
   publicKey: z.string().min(1).max(1024),
   workspaceReviewDigest: HandoffDigestSchema.optional(),
+  stoppedWorkReview: HandoffStoppedWorkReviewSchema.optional(),
 });
 export const HandoffSourceSnapshotSchema = z.object({
   source: HandoffSourceStatusSchema,
@@ -163,6 +179,7 @@ export const HandoffDestinationSnapshotSchema = z.object({
     .max(1000),
   continuationMode: z.enum(["native", "context"]),
   workspaceReviewDigest: HandoffDigestSchema.optional(),
+  stoppedWorkReview: HandoffStoppedWorkReviewSchema.optional(),
   state: z.enum([
     "reserved",
     "receiving",
@@ -246,6 +263,7 @@ export const HandoffPrepareSourceRequestSchema = z.object({
   destinationServerId: z.string().min(1),
   reservationId: HandoffTransferIdSchema,
   workspaceReviewDigest: HandoffDigestSchema.optional(),
+  stoppedWorkReview: HandoffStoppedWorkReviewSchema.optional(),
 });
 export const HandoffPrepareSourceResponseSchema = z.object({
   type: z.literal("workspace.handoff.prepare_source.response"),
@@ -295,6 +313,7 @@ export const HandoffReserveDestinationRequestSchema = z.object({
   destinationParent: z.string().min(1),
   continuationMode: z.enum(["native", "context"]),
   workspaceReviewDigest: HandoffDigestSchema.optional(),
+  stoppedWorkReview: HandoffStoppedWorkReviewSchema.optional(),
 });
 export const HandoffReserveDestinationResponseSchema = z.object({
   type: z.literal("workspace.handoff.reserve_destination.response"),

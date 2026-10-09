@@ -8,6 +8,7 @@ import {
   HandoffReleaseReceiptSchema as ReceiptSchema,
   HandoffCancellationBindingSchema,
   HandoffCancellationProofSchema,
+  HandoffStoppedWorkReviewSchema,
   type HandoffCancellationProof,
 } from "@getpaseo/protocol/handoff-control";
 import { readBoundedFile, syncDirectory, writeJournal } from "./artifacts.js";
@@ -20,6 +21,7 @@ const SourceSchema = z.object({
   destinationServerId: z.string().min(1),
   reservationId: HandoffTransferIdSchema,
   workspaceReviewDigest: HandoffDigestSchema.optional(),
+  stoppedWorkReview: HandoffStoppedWorkReviewSchema.optional(),
 });
 const RecordSchema = SourceSchema.extend({
   state: z.enum(["preparing", "ready", "released", "cancelled"]),

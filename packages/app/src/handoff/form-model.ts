@@ -277,6 +277,7 @@ export function openHandoffForm(origin: HandoffOrigin, ports: HandoffFormPorts) 
             ...record,
             reviewedAgentIds: preview.conversations.map((conversation) => conversation.agentId),
             workspaceReviewDigest: preview.workspace.reviewDigest,
+            stoppedWorkReview: preview.stoppedWork.review,
           },
           preview,
         });

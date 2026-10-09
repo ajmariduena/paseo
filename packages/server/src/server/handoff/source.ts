@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, realpath, rm } from "node:fs/promises";
 import path from "node:path";
 import type { Logger } from "pino";
@@ -6,6 +7,7 @@ import { HandoffArchiveManifestSchema, HandoffTransferIdSchema } from "@getpaseo
 import type {
   HandoffConversationPreview,
   HandoffSourcePreview,
+  HandoffStoppedWorkReview,
 } from "@getpaseo/protocol/handoff-control";
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import type { AgentManager } from "../agent/agent-manager.js";
@@ -66,7 +68,7 @@ interface SourceOptions {
     "getAgent" | "listAgents" | "closeAgent" | "projectHistoryForHandoff"
   >;
   terminals: Pick<TerminalManager, "listDirectories" | "getTerminals" | "killTerminalAndWait">;
-  setup: Pick<WorkspaceSetupRuntime, "stop" | "countActive">;
+  setup: Pick<WorkspaceSetupRuntime, "stop" | "activeIds">;
   getProviderRuntimeSettings: ProviderSnapshotManager["getProviderRuntimeSettings"];
   onWorkspaceChanged?: (workspaceId: string) => Promise<void>;
 }
@@ -77,6 +79,7 @@ interface SourceRequest {
   destinationServerId: string;
   reservationId: string;
   workspaceReviewDigest?: string;
+  stoppedWorkReview?: HandoffStoppedWorkReview;
 }
 
 export class HandoffSourceError extends Error {
@@ -103,6 +106,7 @@ function sameIds(left: string[], right: string[]): boolean {
 /** Owns the source-side order: fence, stop, drain, persist, capture, then certify readiness. */
 export class HandoffSource {
   private tail: Promise<unknown> = Promise.resolve();
+  private readonly writerInstances = new WeakMap<object, string>();
   private closing = false;
   constructor(private readonly options: SourceOptions) {}
 
@@ -155,15 +159,17 @@ export class HandoffSource {
     }
     const workspace = await previewWorkspace({ cwd: inventory.cwd });
     const terminals = await this.sourceTerminals(inventory);
+    const review = this.reviewWriters(inventory, terminals);
     return {
       workspaceId,
       cwd: inventory.cwd,
       conversations,
       workspace,
       stoppedWork: {
-        agentIds: inventory.agentIds.filter((id) => this.options.agentManager.getAgent(id)),
+        agentIds: review.agents.map(({ id }) => id),
         terminals: terminals.map((terminal) => ({ id: terminal.id, name: terminal.name })),
-        setupOperations: this.options.setup.countActive(workspaceId),
+        setupOperations: review.setupIds.length,
+        review,
       },
     };
   }
@@ -232,12 +238,24 @@ export class HandoffSource {
             "Workspace files or exclusions changed after review; cancel this transfer and review again",
           );
       }
+      if (
+        input.stoppedWorkReview &&
+        this.options.ownership.forWorkspace(input.workspaceId)?.id !== input.transferId
+      ) {
+        const current = this.reviewWriters(inventory, await this.sourceTerminals(inventory));
+        if (JSON.stringify(current) !== JSON.stringify(input.stoppedWorkReview))
+          refuse(
+            "review_changed",
+            "Work that will stop changed after review; cancel this transfer and review again",
+          );
+      }
       let source = await this.options.ownership.prepare({
         id: input.transferId,
         ...inventory,
         destinationServerId: input.destinationServerId,
         reservationId: input.reservationId,
         workspaceReviewDigest: input.workspaceReviewDigest,
+        stoppedWorkReview: input.stoppedWorkReview,
       });
       await this.publishTransfer(input.transferId);
       if (source.state === "cancelled")
@@ -454,9 +472,15 @@ export class HandoffSource {
   }
 
   private async stopWriters(source: SourceHandoffStatus): Promise<void> {
+    const terminals = await this.sourceTerminals(source);
+    this.assertReviewedWriters(source.stoppedWorkReview, this.reviewWriters(source, terminals));
     const stops = [() => this.options.setup.stop(source.workspaceId)];
-    for (const id of source.agentIds) stops.push(() => this.options.agentManager.closeAgent(id));
-    for (const terminal of await this.sourceTerminals(source))
+    for (const id of source.agentIds) {
+      const session = this.options.agentManager.getAgent(id)?.session;
+      if (session || !source.stoppedWorkReview)
+        stops.push(() => this.options.agentManager.closeAgent(id, session ?? undefined));
+    }
+    for (const terminal of terminals)
       stops.push(() => this.options.terminals.killTerminalAndWait(terminal.id));
     const results = await Promise.allSettled(stops.map(async (stop) => stop()));
     const failures = results.filter((result) => result.status === "rejected");
@@ -467,10 +491,66 @@ export class HandoffSource {
       );
   }
 
+  private reviewWriters(
+    source: { workspaceId: string; agentIds: string[] },
+    terminals: TerminalSession[],
+  ): HandoffStoppedWorkReview {
+    const instanceId = (writer: object) => {
+      let id = this.writerInstances.get(writer);
+      if (!id) {
+        id = randomUUID();
+        this.writerInstances.set(writer, id);
+      }
+      return id;
+    };
+    const agents = source.agentIds.flatMap((id) => {
+      const session = this.options.agentManager.getAgent(id)?.session;
+      return session ? [{ id, instanceId: instanceId(session) }] : [];
+    });
+    const review = {
+      agents,
+      terminals: terminals.map((terminal) => ({
+        id: terminal.id,
+        instanceId: instanceId(terminal),
+        name: terminal.name,
+      })),
+      setupIds: this.options.setup.activeIds(source.workspaceId),
+    };
+    if (review.setupIds.length > 1000)
+      refuse("invalid_source", "Too many setup operations to review for handoff");
+    return review;
+  }
+
+  private assertReviewedWriters(
+    approved: HandoffStoppedWorkReview | undefined,
+    current: HandoffStoppedWorkReview,
+  ) {
+    if (!approved) return;
+    // Stops and natural exits shrink the set. A retry may not stop a replacement runtime.
+    const has = <T>(allowed: T[], values: T[]) => {
+      const entries = new Set(allowed.map((value) => JSON.stringify(value)));
+      return values.every((value) => entries.has(JSON.stringify(value)));
+    };
+    if (
+      !has(approved.agents, current.agents) ||
+      !has(approved.terminals, current.terminals) ||
+      !has(approved.setupIds, current.setupIds)
+    )
+      refuse(
+        "review_changed",
+        "Work that will stop changed after review; cancel this transfer and review again",
+      );
+  }
+
   private async verify(source: SourceHandoffStatus, prepared: PreparedSource): Promise<void> {
     const inventory = await this.inspect(source.workspaceId);
     if (!sameIds(inventory.agentIds, source.agentIds))
       refuse("inventory_changed", "Source conversation inventory changed after capture");
+    if (
+      (await this.sourceTerminals(source)).length > 0 ||
+      this.options.setup.activeIds(source.workspaceId).length > 0
+    )
+      refuse("stop_uncertain", "Source terminals or setup are still running");
     for (const id of source.agentIds) {
       if (this.options.agentManager.getAgent(id))
         refuse("stop_uncertain", "Source provider runtime is still loaded");

@@ -1,4 +1,7 @@
-import { HandoffCancellationProofSchema } from "@getpaseo/protocol/handoff-control";
+import {
+  HandoffStoppedWorkReviewSchema,
+  HandoffCancellationProofSchema,
+} from "@getpaseo/protocol/handoff-control";
 import { createPublicKey, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath, rename, rm } from "node:fs/promises";
@@ -59,6 +62,7 @@ const ReservationSchema = z.object({
   destinationParent: z.string().min(1),
   continuationMode: z.enum(["native", "context"]).default("native"),
   workspaceReviewDigest: HandoffDigestSchema.optional(),
+  stoppedWorkReview: HandoffStoppedWorkReviewSchema.optional(),
 });
 const BindingSchema = z.object({
   publicKey: z.string().min(1).max(1024),

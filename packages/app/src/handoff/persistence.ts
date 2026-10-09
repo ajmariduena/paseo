@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { HandoffDestinationSnapshotSchema } from "@getpaseo/protocol/handoff-control";
+import {
+  HandoffDestinationSnapshotSchema,
+  HandoffStoppedWorkReviewSchema,
+} from "@getpaseo/protocol/handoff-control";
 import { HandoffDigestSchema } from "@getpaseo/protocol/handoff";
 import type {
   HandoffDestinationSnapshot,
@@ -23,6 +26,7 @@ const HandoffRecordSchema = z.object({
   continuationMode: z.enum(["native", "context"]),
   reviewedAgentIds: z.array(z.string().min(1)).max(1000).optional(),
   workspaceReviewDigest: HandoffDigestSchema.optional(),
+  stoppedWorkReview: HandoffStoppedWorkReviewSchema.optional(),
   intent: z.enum(["prepare", "activate", "cancel"]),
   snapshot: HandoffDestinationSnapshotSchema.nullable(),
 });
@@ -45,6 +49,7 @@ export function restoreHandoffRecord(input: {
     snapshot.transferId !== source.id ||
     snapshot.reservationId !== source.reservationId ||
     snapshot.workspaceReviewDigest !== source.workspaceReviewDigest ||
+    JSON.stringify(snapshot.stoppedWorkReview) !== JSON.stringify(source.stoppedWorkReview) ||
     JSON.stringify([...snapshot.sourceAgentIds].sort()) !==
       JSON.stringify([...source.agentIds].sort()) ||
     (snapshot.manifestDigest !== null && snapshot.manifestDigest !== source.manifestDigest) ||
@@ -130,6 +135,7 @@ function restoredRecord(
     continuationMode: snapshot.continuationMode,
     reviewedAgentIds: snapshot.sourceAgentIds,
     workspaceReviewDigest: snapshot.workspaceReviewDigest,
+    stoppedWorkReview: snapshot.stoppedWorkReview,
     intent,
     snapshot,
   };
@@ -165,7 +171,8 @@ export function createHandoffPersistence(storage: Storage) {
           snapshot.sourceServerId !== record.sourceServerId ||
           snapshot.sourceWorkspaceId !== record.workspaceId ||
           snapshot.continuationMode !== record.continuationMode ||
-          snapshot.workspaceReviewDigest !== record.workspaceReviewDigest)
+          snapshot.workspaceReviewDigest !== record.workspaceReviewDigest ||
+          JSON.stringify(snapshot.stoppedWorkReview) !== JSON.stringify(record.stoppedWorkReview))
       )
         throw new Error("Saved handoff destination does not match the transfer");
       return record;

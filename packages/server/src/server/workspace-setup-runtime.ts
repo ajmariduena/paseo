@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { HandoffMutationScope, HandoffOwnership } from "./handoff/ownership.js";
 
 export async function acquireWorkspaceSetupMutation(
@@ -28,6 +29,7 @@ export async function acquireWorkspaceSetupMutation(
 export type WorkspaceSetupOperation = (signal: AbortSignal) => Promise<void>;
 
 interface WorkspaceSetupRun {
+  id: string;
   controller: AbortController;
   completion: Promise<void>;
 }
@@ -39,9 +41,14 @@ export class WorkspaceSetupRuntime {
     return this.runs.get(workspaceId)?.size ?? 0;
   }
 
+  activeIds(workspaceId: string): string[] {
+    return [...(this.runs.get(workspaceId) ?? [])].map((run) => run.id).sort();
+  }
+
   start(workspaceId: string, operation: WorkspaceSetupOperation): void {
     const controller = new AbortController();
     const run: WorkspaceSetupRun = {
+      id: randomUUID(),
       controller,
       completion: Promise.resolve(),
     };

@@ -224,6 +224,13 @@ test.skipIf(process.platform === "win32")(
     expect(preview.result?.stoppedWork).toEqual({
       agentIds: [],
       setupOperations: 0,
+      review: {
+        agents: [],
+        setupIds: [],
+        terminals: terminals
+          .map(({ id, name }) => ({ id, name, instanceId: expect.any(String) }))
+          .sort((a, b) => a.id.localeCompare(b.id)),
+      },
       terminals: terminals
         .map(({ id, name }) => ({ id, name }))
         .sort((a, b) => a.id.localeCompare(b.id)),
@@ -243,6 +250,110 @@ test.skipIf(process.platform === "win32")(
     expect(prepared.result?.source.state).toBe("ready");
     expect(await manager.getTerminals(cwd)).toEqual([]);
     expect(terminals.every((terminal) => terminal.getExitInfo() !== null)).toBe(true);
+  },
+  30_000,
+);
+
+test.skipIf(process.platform === "win32")(
+  "requires a fresh review when a terminal is replaced before source preparation",
+  async () => {
+    let source = await startHost("source");
+    let destination = await startHost("destination");
+    const cwd = path.join(root, "reviewed-writers");
+    await mkdir(cwd);
+    const created = await source.client.createWorkspace({
+      source: { kind: "directory", path: cwd },
+    });
+    if (!created.workspace) throw new Error("Missing workspace");
+    const workspaceId = created.workspace.id;
+    const manager = source.daemon.daemon.terminalManager;
+    const launch = () =>
+      manager.createTerminal({
+        cwd,
+        workspaceId,
+        name: "Build",
+        command: process.execPath,
+        args: ["-e", "setInterval(() => {}, 1000)"],
+      });
+    const original = await launch();
+    const preview = await source.client.handoffPreviewSource({ workspaceId });
+    await manager.killTerminalAndWait(original.id);
+    const replacement = await launch();
+    const request = {
+      source: source.client,
+      destination: destination.client,
+      transferId: randomUUID(),
+      workspaceId,
+      destinationParent: root,
+      continuationMode: "context" as const,
+      stoppedWorkReview: preview.result?.stoppedWork?.review,
+    };
+    await expect(prepareWorkspaceHandoff(request)).rejects.toThrow(
+      "Work that will stop changed after review",
+    );
+    expect(replacement.getExitInfo()).toBeNull();
+    expect((await source.client.handoffFindSource({ workspaceId })).result).toBeNull();
+    expect((await destination.client.handoffGetDestinationStatus(request)).error?.code).toBe(
+      "not_found",
+    );
+    const reserved = await destination.client.handoffReserveDestination({
+      ...request,
+      sourceServerId: source.daemon.daemon.getServerId(),
+      sourceWorkspaceId: workspaceId,
+      sourceAgentIds: [],
+    });
+    if (!reserved.result) throw new Error("Missing reservation");
+    const prepare = {
+      transferId: request.transferId,
+      workspaceId,
+      agentIds: [],
+      destinationServerId: destination.daemon.daemon.getServerId(),
+      reservationId: reserved.result.reservationId,
+      stoppedWorkReview: request.stoppedWorkReview,
+    };
+    expect((await source.client.handoffPrepareSource(prepare)).error?.code).toBe("review_changed");
+    expect(replacement.getExitInfo()).toBeNull();
+    expect((await source.client.handoffFindSource({ workspaceId })).result).toBeNull();
+    await cancelWorkspaceHandoff({
+      sourceServerId: source.daemon.daemon.getServerId(),
+      getSource: () => source.client,
+      destination: destination.client,
+      transferId: request.transferId,
+    });
+    const refreshed = await source.client.handoffPreviewSource({ workspaceId });
+    const stoppedWorkReview = refreshed.result?.stoppedWork?.review;
+    if (!stoppedWorkReview) throw new Error("Missing refreshed stopped work review");
+    const next = { ...request, transferId: randomUUID(), stoppedWorkReview };
+    const staged = await prepareWorkspaceHandoff(next);
+    expect(replacement.getExitInfo()).not.toBeNull();
+    expect(staged.stoppedWorkReview).toEqual(stoppedWorkReview);
+    await stopHost(source);
+    await stopHost(destination);
+    source = await startHost("source");
+    destination = await startHost("destination");
+    expect(
+      (await source.client.handoffGetSourceStatus(next)).result?.source.stoppedWorkReview,
+    ).toEqual(stoppedWorkReview);
+    expect(
+      (await destination.client.handoffGetDestinationStatus(next)).result?.stoppedWorkReview,
+    ).toEqual(stoppedWorkReview);
+    expect(
+      (
+        await source.client.handoffPrepareSource({
+          ...prepare,
+          transferId: next.transferId,
+          reservationId: staged.reservationId,
+          stoppedWorkReview: undefined,
+        })
+      ).error?.code,
+    ).toBe("conflict");
+    const active = await activateWorkspaceHandoff({
+      sourceServerId: source.daemon.daemon.getServerId(),
+      getSource: () => source.client,
+      destination: destination.client,
+      transferId: next.transferId,
+    });
+    expect(active.state).toBe("active");
   },
   30_000,
 );

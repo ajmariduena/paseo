@@ -1979,7 +1979,17 @@ export class AgentManager {
     }
   }
 
-  closeAgent(agentId: string): Promise<void> {
+  closeAgent(agentId: string, expectedSession?: AgentSession): Promise<void> {
+    if (expectedSession) {
+      // Check inside the lifecycle lock: a queued reload can replace the reviewed runtime.
+      return this.runLifecycleMutation(agentId, async () => {
+        const agent = this.agents.get(agentId);
+        if (!agent) return;
+        if (agent.session !== expectedSession)
+          throw new Error("Reviewed agent runtime was replaced; review the transfer again");
+        await this.closeAgentRuntime({ agentId });
+      });
+    }
     return this.closeAgentWhen({ agentId });
   }
 

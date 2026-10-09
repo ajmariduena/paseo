@@ -91,8 +91,23 @@ test("handoff reservation requires an explicit continuation mode", () => {
       ...reserve,
       continuationMode,
     });
-    const reviewed = { ...reserve, continuationMode, workspaceReviewDigest: "a".repeat(64) };
+    const reviewed = {
+      ...reserve,
+      continuationMode,
+      workspaceReviewDigest: "a".repeat(64),
+      stoppedWorkReview: {
+        agents: [],
+        terminals: [],
+        setupIds: ["00000000-0000-4000-8000-000000000002"],
+      },
+    };
     expect(SessionInboundMessageSchema.parse(reviewed)).toEqual(reviewed);
+    expect(
+      SessionInboundMessageSchema.safeParse({
+        ...reviewed,
+        stoppedWorkReview: { ...reviewed.stoppedWorkReview, setupIds: ["invalid"] },
+      }).success,
+    ).toBe(false);
     expect(
       SessionInboundMessageSchema.safeParse({ ...reviewed, workspaceReviewDigest: "invalid" })
         .success,

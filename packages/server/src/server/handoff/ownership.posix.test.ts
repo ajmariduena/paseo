@@ -249,34 +249,36 @@ test("source preparation keeps ownership fenced after uncertain cleanup and retr
   await entered.promise;
   let stopFails = true;
   const failure = new Error("setup exit is unconfirmed");
-  const source = new HandoffSource({
-    directory: captures,
-    serverId: sourceServerId,
-    logger: createTestLogger(),
-    ownership,
-    archives: new HandoffArchiveStore(path.join(root, "source-archives")),
-    workspaces: { get: async () => workspace, list: async () => [workspace] },
-    agents: new AgentStorage(path.join(root, "agents"), createTestLogger()),
-    agentManager: {
-      getAgent: () => null,
-      listAgents: () => [],
-      closeAgent: async () => {},
-      projectHistoryForHandoff: async () => [],
-    },
-    terminals: {
-      listDirectories: () => [],
-      getTerminals: async () => [],
-      killTerminalAndWait: async () => {},
-    },
-    setup: {
-      countActive: (workspaceId) => setup.countActive(workspaceId),
-      stop: async () => {
-        if (stopFails) throw failure;
-        await setup.stop(workspace.workspaceId);
+  const createSource = (sourceOwnership = ownership) =>
+    new HandoffSource({
+      directory: captures,
+      serverId: sourceServerId,
+      logger: createTestLogger(),
+      ownership: sourceOwnership,
+      archives: new HandoffArchiveStore(path.join(root, "source-archives")),
+      workspaces: { get: async () => workspace, list: async () => [workspace] },
+      agents: new AgentStorage(path.join(root, "agents"), createTestLogger()),
+      agentManager: {
+        getAgent: () => null,
+        listAgents: () => [],
+        closeAgent: async () => {},
+        projectHistoryForHandoff: async () => [],
       },
-    },
-    getProviderRuntimeSettings: () => undefined,
-  });
+      terminals: {
+        listDirectories: () => [],
+        getTerminals: async () => [],
+        killTerminalAndWait: async () => {},
+      },
+      setup: {
+        activeIds: (workspaceId) => setup.activeIds(workspaceId),
+        stop: async () => {
+          if (stopFails) throw failure;
+          await setup.stop(workspace.workspaceId);
+        },
+      },
+      getProviderRuntimeSettings: () => undefined,
+    });
+  let source = createSource();
   const request = {
     transferId,
     workspaceId: workspace.workspaceId,
@@ -284,23 +286,56 @@ test("source preparation keeps ownership fenced after uncertain cleanup and retr
     destinationServerId: "destination",
     reservationId: randomUUID(),
   };
-  expect((await source.preview(workspace.workspaceId)).stoppedWork).toEqual({
+  const preview = await source.preview(workspace.workspaceId);
+  expect(preview.stoppedWork).toEqual({
     agentIds: [],
     terminals: [],
     setupOperations: 1,
+    review: { agents: [], terminals: [], setupIds: setup.activeIds(workspace.workspaceId) },
   });
-  await expect(source.prepare(request)).rejects.toMatchObject({ errors: [failure] });
+  const reviewedRequest = { ...request, stoppedWorkReview: preview.stoppedWork?.review };
+  await expect(source.prepare(reviewedRequest)).rejects.toMatchObject({ errors: [failure] });
   expect(setup.countActive(workspace.workspaceId)).toBe(1);
   expect(ownership.status(transferId).state).toBe("preparing");
   await expect(readdir(captures)).rejects.toMatchObject({ code: "ENOENT" });
   await expect(ownership.withMutation({ cwd }, async () => {})).rejects.toMatchObject({
     code: "fenced",
   });
+  await source.dispose();
+  const recoveredOwnership = new HandoffOwnership({ directory, sourceServerId });
+  await recoveredOwnership.initialize();
+  expect(recoveredOwnership.status(transferId).stoppedWorkReview).toEqual(
+    reviewedRequest.stoppedWorkReview,
+  );
+  source = createSource(recoveredOwnership);
+  await setup.stop(workspace.workspaceId);
+  const replacementEntered = Promise.withResolvers<void>();
+  setup.start(workspace.workspaceId, async (signal) => {
+    await new Promise<void>((resolve) => {
+      signal.addEventListener("abort", () => resolve(), { once: true });
+      replacementEntered.resolve();
+    });
+  });
+  await replacementEntered.promise;
   stopFails = false;
-  const prepared = await source.prepare(request);
+  await expect(source.prepare(reviewedRequest)).rejects.toMatchObject({ code: "review_changed" });
+  expect(setup.countActive(workspace.workspaceId)).toBe(1);
+  await setup.stop(workspace.workspaceId);
+  const prepared = await source.prepare(reviewedRequest);
   expect(prepared.source.state).toBe("ready");
   expect(setup.countActive(workspace.workspaceId)).toBe(0);
-  expect(await source.prepare(request)).toEqual(prepared);
+  expect(await source.prepare(reviewedRequest)).toEqual(prepared);
+  const lateSetupEntered = Promise.withResolvers<void>();
+  setup.start(workspace.workspaceId, async (signal) => {
+    await new Promise<void>((resolve) => {
+      signal.addEventListener("abort", () => resolve(), { once: true });
+      lateSetupEntered.resolve();
+    });
+  });
+  await lateSetupEntered.promise;
+  await expect(source.release(transferId)).rejects.toMatchObject({ code: "stop_uncertain" });
+  expect(recoveredOwnership.status(transferId).state).toBe("ready");
+  await setup.stop(workspace.workspaceId);
   const receipt = await source.release(transferId);
   expect(receipt.manifestDigest).toBe(prepared.manifest.entrypoint.sha256);
   await source.dispose();

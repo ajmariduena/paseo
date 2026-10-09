@@ -31,7 +31,12 @@ const emptyReview = {
     omittedPathCount: 0,
     reviewDigest: "c".repeat(64),
   },
-  stoppedWork: { agentIds: [], terminals: [], setupOperations: 0 },
+  stoppedWork: {
+    agentIds: [],
+    terminals: [],
+    setupOperations: 0,
+    review: { agents: [], terminals: [], setupIds: [] },
+  },
   conversationBytes: 0,
   unsavedFiles: [],
 };
@@ -86,6 +91,7 @@ function fixture() {
         ...destination,
         continuationMode: record.continuationMode,
         workspaceReviewDigest: record.workspaceReviewDigest,
+        stoppedWorkReview: record.stoppedWorkReview,
       };
     },
     activate: async (record) => {
@@ -95,6 +101,7 @@ function fixture() {
         ...destination,
         state: "active",
         workspaceReviewDigest: record.workspaceReviewDigest,
+        stoppedWorkReview: record.stoppedWorkReview,
       };
     },
     cancel: async (record) => {
@@ -106,6 +113,7 @@ function fixture() {
         cleanupComplete: true,
         cancellationAccepted: true,
         workspaceReviewDigest: record.workspaceReviewDigest,
+        stoppedWorkReview: record.stoppedWorkReview,
       };
     },
   };
@@ -135,6 +143,7 @@ describe("handoff form recovery", () => {
     const saved = await persistence.load(origin);
     if (!saved) throw new Error("Missing saved transfer");
     expect(saved.workspaceReviewDigest).toBe(emptyReview.workspace.reviewDigest);
+    expect(saved.stoppedWorkReview).toEqual(emptyReview.stoppedWork.review);
     const reopened = openHandoffForm(origin, ports);
     await reopened.load();
     expect(reopened.getState()).toMatchObject({
@@ -283,6 +292,7 @@ describe("handoff form recovery", () => {
       { ...destination, reservationId: "00000000-0000-4000-8000-000000000003" },
       { ...destination, manifestDigest: "b".repeat(64) },
       { ...destination, workspaceReviewDigest: "b".repeat(64) },
+      { ...destination, stoppedWorkReview: emptyReview.stoppedWork.review },
       { ...destination, sourceAgentIds: ["another-conversation"] },
     ]) {
       expect(() =>
@@ -351,6 +361,7 @@ describe("handoff form recovery", () => {
       ...destination,
       state: "released",
       workspaceReviewDigest: record.workspaceReviewDigest,
+      stoppedWorkReview: record.stoppedWorkReview,
     });
     const model = await reviewedForm(ports);
     await model.prepare();
@@ -427,6 +438,7 @@ describe("handoff form recovery", () => {
         ...destination,
         state: "active",
         workspaceReviewDigest: record.workspaceReviewDigest,
+        stoppedWorkReview: record.stoppedWorkReview,
       };
     };
     await reopened.retry();

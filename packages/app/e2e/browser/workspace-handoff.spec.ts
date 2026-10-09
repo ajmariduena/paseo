@@ -247,6 +247,40 @@ test.describe("workspace handoff", () => {
       await page.getByTestId("handoff-submit").click();
       await expect(page.getByTestId("handoff-omissions-review")).toHaveText(".env");
       await expect(page.getByTestId("handoff-submit")).toHaveText("Prepare transfer");
+      const added = await host.sourceClient.createTerminal(
+        host.workspace.repoPath,
+        "Started after review",
+        undefined,
+        {
+          workspaceId: host.workspace.workspaceId,
+          command: process.execPath,
+          args: ["-e", "setInterval(() => {}, 1000)"],
+        },
+      );
+      expect(added.error).toBeNull();
+      await page.getByTestId("handoff-submit").click();
+      await expect(page.getByTestId("handoff-error")).toHaveText(
+        "Work that will stop changed after review; review the transfer again",
+      );
+      expect(
+        (await host.sourceClient.listTerminals(host.workspace.repoPath)).terminals,
+      ).toHaveLength(2);
+      expect(
+        (await host.sourceClient.handoffFindSource({ workspaceId: host.workspace.workspaceId }))
+          .result,
+      ).toBeNull();
+      expect(
+        (
+          await host.destinationClient.handoffListDestination({
+            sourceServerId: host.source.serverId,
+            sourceWorkspaceId: host.workspace.workspaceId,
+          })
+        ).result?.transfers,
+      ).toEqual([]);
+      await page.screenshot({ path: testInfo.outputPath("handoff-writers-changed.png") });
+      await page.getByTestId("handoff-submit").click();
+      await expect(page.getByTestId("handoff-submit")).toHaveText("Prepare transfer");
+      await expect(page.getByTestId("handoff-sheet")).toContainText("Started after review");
       await page.getByTestId("handoff-submit").click();
       await expect(page.getByTestId("handoff-submit")).toHaveText("Move workspace", {
         timeout: 30_000,
