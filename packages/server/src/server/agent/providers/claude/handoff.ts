@@ -54,13 +54,19 @@ interface SourceInput {
   artifactDirectory: string;
   limits?: ClaudeSessionArchiveLimits;
 }
-interface InstallInput {
-  artifactDirectory: string;
+interface InstallTarget {
   configDir: string;
   cwd: string;
   importId: string;
   cliVersion: string;
   limits?: ClaudeSessionArchiveLimits;
+}
+interface InstallInput extends InstallTarget {
+  artifactDirectory: string;
+}
+interface InstallArchiveInput extends InstallTarget {
+  manifest: ClaudeSessionArchive;
+  blobsDirectory: string;
 }
 
 function reject(code: ClaudeSessionArchiveError["code"], message: string): never {
@@ -239,10 +245,14 @@ export async function readClaudeSessionArchive(
   artifactDirectory: string,
   limits = DEFAULT_LIMITS,
 ): Promise<ClaudeSessionArchive> {
-  const bytes = await readBoundedFile(
-    path.join(artifactDirectory, "manifest.json"),
-    4 * 1024 * 1024,
-  );
+  return readClaudeSessionManifest(path.join(artifactDirectory, "manifest.json"), limits);
+}
+
+export async function readClaudeSessionManifest(
+  manifestPath: string,
+  limits = DEFAULT_LIMITS,
+): Promise<ClaudeSessionArchive> {
+  const bytes = await readBoundedFile(manifestPath, 4 * 1024 * 1024);
   return validateManifest(JSON.parse(bytes.toString("utf8")), limits);
 }
 
@@ -263,9 +273,21 @@ export async function verifyCapturedClaudeSession(input: SourceInput): Promise<v
 
 /** Installs no credentials, settings or processes. importId is allocated and journaled by the destination. */
 export async function installClaudeSession(input: InstallInput): Promise<AgentPersistenceHandle> {
-  UUID.parse(input.importId);
   const limits = input.limits ?? DEFAULT_LIMITS;
   const manifest = await readClaudeSessionArchive(input.artifactDirectory, limits);
+  return installClaudeSessionArchive({
+    ...input,
+    manifest,
+    blobsDirectory: path.join(input.artifactDirectory, "blobs"),
+  });
+}
+
+export async function installClaudeSessionArchive(
+  input: InstallArchiveInput,
+): Promise<AgentPersistenceHandle> {
+  UUID.parse(input.importId);
+  const limits = input.limits ?? DEFAULT_LIMITS;
+  const manifest = validateManifest(input.manifest, limits);
   const minimumNamespaceVersion = /^2\.1\.(\d+)$/.exec(input.cliVersion);
   if (
     !minimumNamespaceVersion ||
@@ -288,23 +310,14 @@ export async function installClaudeSession(input: InstallInput): Promise<AgentPe
   await mkdir(projects, { recursive: true, mode: 0o700 });
   const destination = path.join(projects, projectDirName);
   if (await isPresent(destination)) {
-    const stat = await lstat(destination);
-    if (!stat.isDirectory() || stat.isSymbolicLink())
-      reject("destination_exists", "Claude handoff namespace is already occupied");
-    const marker = path.join(destination, ".paseo-handoff.json");
-    if (!(await isPresent(marker)))
-      reject("destination_exists", "Claude handoff namespace is not owned by this handoff");
-    const record = await readBoundedFile(marker, 4 * 1024 * 1024);
-    if (record.toString("utf8") !== JSON.stringify(manifest))
-      reject("destination_exists", "Claude handoff namespace is already occupied");
-    await verifyInstalled(destination, manifest, limits);
+    await verifyClaudeSessionInstallation(input);
   } else {
     const staging = path.join(projects, `.paseo-import-${randomUUID()}`);
     await mkdir(staging, { mode: 0o700 });
     try {
       for (const file of manifest.files) {
         const bytes = await readBoundedFile(
-          path.join(input.artifactDirectory, "blobs", file.blob.sha256),
+          path.join(input.blobsDirectory, file.blob.sha256),
           limits.maxFileBytes,
         );
         if (bytes.length !== file.blob.size || digest(bytes).sha256 !== file.blob.sha256)
@@ -328,6 +341,41 @@ export async function installClaudeSession(input: InstallInput): Promise<AgentPe
     nativeHandle: manifest.sessionId,
     metadata: { cwd: input.cwd, claudeProjectDirName: projectDirName },
   };
+}
+
+export async function verifyClaudeSessionInstallation(
+  input: Pick<InstallArchiveInput, "configDir" | "importId" | "manifest" | "limits">,
+): Promise<void> {
+  UUID.parse(input.importId);
+  const limits = input.limits ?? DEFAULT_LIMITS;
+  const manifest = validateManifest(input.manifest, limits);
+  const destination = path.join(input.configDir, "projects", `paseo-handoff-${input.importId}`);
+  const stat = await lstat(destination);
+  if (!stat.isDirectory() || stat.isSymbolicLink())
+    reject("destination_exists", "Claude handoff namespace is already occupied");
+  const marker = path.join(destination, ".paseo-handoff.json");
+  if (!(await isPresent(marker)))
+    reject("destination_exists", "Claude handoff namespace is not owned by this handoff");
+  const record = await readBoundedFile(marker, 4 * 1024 * 1024);
+  if (record.toString("utf8") !== JSON.stringify(manifest))
+    reject("destination_exists", "Claude handoff namespace is already occupied");
+  await verifyInstalled(destination, manifest, limits);
+}
+
+export async function removeClaudeSessionInstallation(
+  input: Pick<InstallArchiveInput, "configDir" | "importId" | "manifest">,
+): Promise<void> {
+  UUID.parse(input.importId);
+  const project = path.join(input.configDir, "projects", `paseo-handoff-${input.importId}`);
+  if (!(await isPresent(project))) return;
+  const stat = await lstat(project);
+  if (!stat.isDirectory() || stat.isSymbolicLink())
+    reject("destination_exists", "Claude handoff namespace is not owned by this handoff");
+  const marker = await readBoundedFile(path.join(project, ".paseo-handoff.json"), 4 * 1024 * 1024);
+  if (marker.toString("utf8") !== JSON.stringify(validateManifest(input.manifest, DEFAULT_LIMITS)))
+    reject("destination_exists", "Claude handoff namespace is not owned by this handoff");
+  await rm(project, { recursive: true });
+  await syncDirectory(path.dirname(project));
 }
 function installedPath(project: string, sessionId: string, file: string): string {
   return file === "transcript.jsonl"

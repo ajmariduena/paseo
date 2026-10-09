@@ -17,6 +17,9 @@ import { resolvePaseoWorktreesBaseRoot } from "../utils/worktree.js";
 import { HtmlRenderStore } from "./agent/html-render/store.js";
 import { HandoffOwnership } from "./handoff/ownership.js";
 import { HandoffArchiveStore } from "./handoff/archive.js";
+import { resolveClaudeCodeVersion } from "./agent/providers/claude/agent.js";
+import { claudeConfigDir } from "./agent/providers/claude/project-dir.js";
+import { createProviderEnv } from "./agent/provider-launch-config.js";
 import { HandoffDestination } from "./handoff/destination.js";
 
 export type ListenTarget =
@@ -705,6 +708,14 @@ export async function createPaseoDaemon(
     directory: path.join(config.paseoHome, "handoff-destination"),
     serverId,
     archives: handoffArchives,
+    resolveClaudeRuntime: async () => {
+      const runtimeSettings = providerSnapshotManager.getProviderRuntimeSettings("claude");
+      const env = createProviderEnv({ runtimeSettings });
+      return {
+        configDir: path.resolve(claudeConfigDir(env)),
+        cliVersion: await resolveClaudeCodeVersion(runtimeSettings),
+      };
+    },
   });
   await handoffDestination.initialize();
   const obsoleteTimelineDirectory = path.join(config.paseoHome, "agent-timelines");

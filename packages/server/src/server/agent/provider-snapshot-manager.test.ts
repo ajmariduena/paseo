@@ -3776,3 +3776,34 @@ test("model overrides preserve negotiated plugin capabilities and connection shu
     manager.destroy();
   }
 });
+
+test("native handoff resolves current host launch settings after configuration changes", () => {
+  const manager = new ProviderSnapshotManager({
+    logger: createTestLogger(),
+    runtimeSettings: { claude: { env: { CLAUDE_CONFIG_DIR: "/old-host-home" } } },
+    providerOverrides: { claude: { env: { DESTINATION_ONLY: "local" } } },
+  });
+  try {
+    expect(manager.getProviderRuntimeSettings("claude")?.env).toEqual({
+      CLAUDE_CONFIG_DIR: "/old-host-home",
+      DESTINATION_ONLY: "local",
+    });
+    manager.applyMutableProviderConfig(
+      { claude: { env: { CLAUDE_CONFIG_DIR: "/new-host-home" } } },
+      { replace: true },
+    );
+    const resolved = manager.getProviderRuntimeSettings("claude");
+    expect(resolved?.env).toEqual({ CLAUDE_CONFIG_DIR: "/new-host-home" });
+    if (!resolved?.env) throw new Error("Expected native runtime settings");
+    resolved.env.CLAUDE_CONFIG_DIR = "/caller-mutation";
+    expect(manager.getProviderRuntimeSettings("claude")?.env).toEqual({
+      CLAUDE_CONFIG_DIR: "/new-host-home",
+    });
+    manager.applyMutableProviderConfig({ claude: { enabled: false } }, { replace: true });
+    expect(() => manager.getProviderRuntimeSettings("claude")).toThrow(
+      "no enabled native runtime configuration",
+    );
+  } finally {
+    manager.destroy();
+  }
+});

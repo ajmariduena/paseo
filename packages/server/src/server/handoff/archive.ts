@@ -77,6 +77,11 @@ interface ReadInput {
 }
 type BlobProgress = HandoffArchiveStatus["blobs"][number];
 
+export interface VerifiedHandoffArchive {
+  manifest: HandoffArchiveManifest;
+  blobsDirectory: string;
+}
+
 function fail(code: ArchiveErrorCode, message: string, blob: string | null = null): never {
   throw new HandoffArchiveError(code, message, blob);
 }
@@ -213,7 +218,7 @@ export class HandoffArchiveStore {
   /** Keep the archive immutable while a server-side consumer materializes verified content. */
   async withVerifiedArchive<T>(
     id: string,
-    consume: (archive: { manifest: HandoffArchiveManifest; blobsDirectory: string }) => Promise<T>,
+    consume: (archive: VerifiedHandoffArchive) => Promise<T>,
   ): Promise<T> {
     return this.serialize(id, async () => {
       const record = await this.readRecord(id);

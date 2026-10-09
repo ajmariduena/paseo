@@ -4,14 +4,20 @@ import { lstat, mkdir, open, readdir, realpath, rm } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { HandoffArchiveManifestSchema, HandoffTransferIdSchema } from "@getpaseo/protocol/handoff";
-import type { HandoffArchiveStore } from "./archive.js";
+import type { HandoffArchiveStore, VerifiedHandoffArchive } from "./archive.js";
 import { readBoundedFile, syncDirectory, writeJournal } from "./artifacts.js";
 import { verifyHandoffRelease, type HandoffReleaseReceipt } from "./ownership.js";
 import {
   HandoffWorkspaceError,
-  restoreWorkspaceArchive,
-  verifyWorkspaceArchive,
+  restoreWorkspaceFromArchive,
+  verifyWorkspaceFromArchive,
 } from "./workspace.js";
+import { readHandoffBundle, type VerifiedHandoffBundle } from "./bundle.js";
+import {
+  installClaudeSessionArchive,
+  verifyClaudeSessionInstallation,
+  removeClaudeSessionInstallation,
+} from "../agent/providers/claude/handoff.js";
 import { generateProjectId, generateWorkspaceId } from "../workspace-registry-model.js";
 
 const ReservationSchema = z.object({
@@ -25,6 +31,15 @@ const BindingSchema = z.object({
   publicKey: z.string().min(1).max(1024),
   manifest: HandoffArchiveManifestSchema,
 });
+const ClaudeRuntimeSchema = z.object({
+  configDir: z.string().min(1),
+  cliVersion: z.string().regex(/^2\.1\.\d+$/),
+});
+const PreparedConversationSchema = z.object({
+  sourceAgentId: z.string().min(1),
+  title: z.string().max(4096).nullable(),
+  sessionId: z.string().uuid(),
+});
 const RecordSchema = ReservationSchema.extend({
   reservationId: HandoffTransferIdSchema,
   workspaceId: z.string().regex(/^wks_[a-f0-9]{16}$/),
@@ -37,6 +52,8 @@ const RecordSchema = ReservationSchema.extend({
   state: z.enum(["reserved", "receiving", "staged", "released", "cancelled"]),
   binding: BindingSchema.nullable(),
   receipt: z.unknown().nullable(),
+  claudeRuntime: ClaudeRuntimeSchema.nullable().default(null),
+  preparedConversations: z.array(PreparedConversationSchema).max(1000).default([]),
 });
 const JournalSchema = z.object({
   version: z.literal(1),
@@ -54,6 +71,7 @@ interface DestinationOptions {
   serverId: string;
   archives: HandoffArchiveStore;
   write?: typeof writeJournal;
+  resolveClaudeRuntime?: () => Promise<z.infer<typeof ClaudeRuntimeSchema>>;
 }
 
 export class HandoffDestinationError extends Error {
@@ -171,6 +189,8 @@ export class HandoffDestination {
         state: "reserved",
         binding: null,
         receipt: null,
+        claudeRuntime: null,
+        preparedConversations: [],
       };
       await mkdir(containerPath(record), { mode: 0o700 });
       await syncDirectory(destinationParent);
@@ -208,36 +228,72 @@ export class HandoffDestination {
 
   stage(transferId: string): Promise<DestinationHandoffStatus> {
     return this.serialize(async () => {
-      const record = this.requireRecord(transferId);
-      if (record.sourceAgentIds.length > 0)
-        fail(
-          "unprepared_conversations",
-          "Prepare every conversation artifact before staging this handoff",
-        );
+      let record = this.requireRecord(transferId);
       if (!record.binding || record.state === "cancelled")
         fail("invalid_state", "Destination cannot stage this transfer");
       await this.assertContainer(record);
-      if (record.state === "staged" || record.state === "released") {
-        try {
-          await this.verifyStaging(record);
-          return structuredClone(record);
-        } catch (error) {
-          const changed = error instanceof HandoffWorkspaceError && error.code === "source_changed";
-          if (!changed && !isMissing(error)) throw error;
+      return this.options.archives.withVerifiedArchive(transferId, async (archive) => {
+        const content = await this.readBundle(record, archive);
+        if (record.sourceAgentIds.length > 0 && record.claudeRuntime === null) {
+          if (!this.options.resolveClaudeRuntime)
+            fail(
+              "unprepared_conversations",
+              "Claude native session installation is unavailable on this host",
+            );
+          const runtime = ClaudeRuntimeSchema.parse(await this.options.resolveClaudeRuntime());
+          if (!path.isAbsolute(runtime.configDir))
+            fail("invalid_state", "Claude configuration directory must be absolute");
+          record = { ...record, claudeRuntime: runtime };
+          // Keep the provider location fixed across a crash or a later host configuration change.
+          await this.save(record);
         }
-      }
-      // Only this reservation's private checkout can be replaced after an interrupted restore.
-      await rm(record.stagingCwd, { recursive: true, force: true });
-      await restoreWorkspaceArchive({
-        store: this.options.archives,
-        transferId,
-        destination: record.stagingCwd,
-        expectedManifestDigest: record.binding.manifest.entrypoint.sha256,
+        if (record.state === "staged" || record.state === "released") {
+          try {
+            await this.verifyContents(record, archive, content);
+            return structuredClone(record);
+          } catch (error) {
+            const changed =
+              error instanceof HandoffWorkspaceError && error.code === "source_changed";
+            if (!changed && !isMissing(error)) throw error;
+          }
+        }
+        await rm(record.stagingCwd, { recursive: true, force: true });
+        await restoreWorkspaceFromArchive({
+          archive,
+          entrypoint: content.bundle.workspace,
+          destination: record.stagingCwd,
+        });
+        const preparedConversations: DestinationHandoffStatus["preparedConversations"] = [];
+        for (const conversation of content.bundle.conversations) {
+          const mapping = record.agentMappings.find(
+            (item) => item.sourceAgentId === conversation.sourceAgentId,
+          );
+          const manifest = content.sessions.get(conversation.sourceAgentId);
+          if (!mapping || !manifest || !record.claudeRuntime)
+            fail("unprepared_conversations", "Conversation reservation is incomplete");
+          const handle = await installClaudeSessionArchive({
+            manifest,
+            blobsDirectory: archive.blobsDirectory,
+            configDir: record.claudeRuntime.configDir,
+            cliVersion: record.claudeRuntime.cliVersion,
+            cwd: record.destinationCwd,
+            importId: mapping.destinationAgentId,
+          });
+          preparedConversations.push({
+            sourceAgentId: conversation.sourceAgentId,
+            title: conversation.title,
+            sessionId: handle.sessionId,
+          });
+        }
+        await syncTree(record.stagingCwd);
+        await syncDirectory(containerPath(record));
+        await this.save({
+          ...record,
+          preparedConversations,
+          state: record.state === "released" ? "released" : "staged",
+        });
+        return this.status(transferId);
       });
-      await syncTree(record.stagingCwd);
-      await syncDirectory(containerPath(record));
-      await this.save({ ...record, state: record.state === "released" ? "released" : "staged" });
-      return this.status(transferId);
     });
   }
 
@@ -266,6 +322,21 @@ export class HandoffDestination {
       if (record.state === "released")
         fail("invalid_state", "Released ownership must finish activation");
       await this.save({ ...record, state: "cancelled" });
+      const claudeRuntime = record.claudeRuntime;
+      if (claudeRuntime) {
+        await this.options.archives.withVerifiedArchive(transferId, async (archive) => {
+          const content = await this.readBundle(record, archive);
+          for (const mapping of record.agentMappings) {
+            const manifest = content.sessions.get(mapping.sourceAgentId);
+            if (!manifest) fail("unprepared_conversations", "Missing conversation during cleanup");
+            await removeClaudeSessionInstallation({
+              configDir: claudeRuntime.configDir,
+              importId: mapping.destinationAgentId,
+              manifest,
+            });
+          }
+        });
+      }
       try {
         await this.assertContainer(record);
       } catch (error) {
@@ -304,12 +375,31 @@ export class HandoffDestination {
       fail("storage_uncertain", "Destination journal state is inconsistent");
     if (record.state === "released" && !this.validReceipt(record, record.receipt))
       fail("storage_uncertain", "Destination release is invalid");
+    this.validateConversationRecords(record);
     const sourceIds = record.agentMappings.map((mapping) => mapping.sourceAgentId);
     if (
       JSON.stringify(sourceIds) !== JSON.stringify(record.sourceAgentIds) ||
       new Set(sourceIds).size !== sourceIds.length
     )
       fail("storage_uncertain", "Invalid destination agent mappings");
+  }
+
+  private validateConversationRecords(record: DestinationHandoffStatus): void {
+    if (record.claudeRuntime && !path.isAbsolute(record.claudeRuntime.configDir))
+      fail("storage_uncertain", "Invalid Claude destination directory");
+    const preparedIds = record.preparedConversations.map((item) => item.sourceAgentId).sort();
+    if (
+      new Set(preparedIds).size !== preparedIds.length ||
+      preparedIds.some((id) => !record.sourceAgentIds.includes(id))
+    )
+      fail("storage_uncertain", "Invalid prepared conversation identities");
+    if (record.state === "staged" || record.state === "released") {
+      if (
+        JSON.stringify(preparedIds) !== JSON.stringify([...record.sourceAgentIds].sort()) ||
+        (preparedIds.length > 0 && !record.claudeRuntime)
+      )
+        fail("storage_uncertain", "Destination conversation installation is incomplete");
+    }
   }
 
   private validReceipt(record: DestinationHandoffStatus, receipt: unknown): boolean {
@@ -334,15 +424,55 @@ export class HandoffDestination {
       fail("storage_uncertain", "Destination staging container changed");
   }
 
-  private async verifyStaging(record: DestinationHandoffStatus): Promise<void> {
+  private async readBundle(
+    record: DestinationHandoffStatus,
+    archive: VerifiedHandoffArchive,
+  ): Promise<VerifiedHandoffBundle> {
     if (!record.binding) fail("invalid_state", "Destination content is not bound");
-    await this.assertContainer(record);
-    await verifyWorkspaceArchive({
-      store: this.options.archives,
-      transferId: record.transferId,
-      cwd: record.stagingCwd,
-      expectedManifestDigest: record.binding.manifest.entrypoint.sha256,
+    return readHandoffBundle(archive, {
+      sourceServerId: record.sourceServerId,
+      sourceWorkspaceId: record.sourceWorkspaceId,
+      sourceAgentIds: record.sourceAgentIds,
+      manifestDigest: record.binding.manifest.entrypoint.sha256,
     });
+  }
+
+  private async verifyStaging(record: DestinationHandoffStatus): Promise<void> {
+    await this.assertContainer(record);
+    await this.options.archives.withVerifiedArchive(record.transferId, async (archive) => {
+      const content = await this.readBundle(record, archive);
+      await this.verifyContents(record, archive, content);
+    });
+  }
+
+  private async verifyContents(
+    record: DestinationHandoffStatus,
+    archive: VerifiedHandoffArchive,
+    content: VerifiedHandoffBundle,
+  ): Promise<void> {
+    await verifyWorkspaceFromArchive({
+      archive,
+      entrypoint: content.bundle.workspace,
+      cwd: record.stagingCwd,
+    });
+    for (const mapping of record.agentMappings) {
+      const manifest = content.sessions.get(mapping.sourceAgentId);
+      const prepared = record.preparedConversations.find(
+        (item) => item.sourceAgentId === mapping.sourceAgentId,
+      );
+      if (
+        !manifest ||
+        !prepared ||
+        prepared.sessionId !== manifest.sessionId ||
+        !record.claudeRuntime
+      )
+        fail("unprepared_conversations", "Conversation installation is incomplete");
+      await verifyClaudeSessionInstallation({
+        configDir: record.claudeRuntime.configDir,
+        importId: mapping.destinationAgentId,
+        manifest,
+      });
+    }
   }
 
   private assertHealthy(): void {

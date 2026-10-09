@@ -18,7 +18,7 @@ import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { readBoundedFile } from "./artifacts.js";
-import type { HandoffArchiveStore } from "./archive.js";
+import type { HandoffArchiveStore, VerifiedHandoffArchive } from "./archive.js";
 import {
   HandoffBlobSchema as BlobSchema,
   HandoffDigestSchema as DigestSchema,
@@ -816,6 +816,15 @@ interface WorkspaceArchiveInput {
 export async function packWorkspaceArchive(
   input: WorkspaceArchiveInput & { artifactDirectory: string },
 ): Promise<HandoffArchiveManifest> {
+  const { manifest, files } = await workspaceArchiveFiles(input);
+  await input.store.importLocal({ id: input.transferId, manifest, files });
+  return manifest;
+}
+
+export async function workspaceArchiveFiles(input: {
+  artifactDirectory: string;
+  limits?: WorkspaceSnapshotLimits;
+}): Promise<{ manifest: HandoffArchiveManifest; files: Map<string, string> }> {
   const limits = input.limits ?? WORKSPACE_SNAPSHOT_LIMITS;
   const manifestPath = path.join(input.artifactDirectory, "manifest.json");
   const bytes = await readBoundedFile(manifestPath, limits.maxManifestBytes);
@@ -836,37 +845,76 @@ export async function packWorkspaceArchive(
   blobs.set(entrypoint.sha256, entrypoint);
   files.set(entrypoint.sha256, manifestPath);
   const manifest: HandoffArchiveManifest = { version: 1, entrypoint, blobs: [...blobs.values()] };
-  await input.store.importLocal({ id: input.transferId, manifest, files });
-  return manifest;
+  return { manifest, files };
 }
 
 /** Materialize private staging only. Workspace publication and agent activation are separate. */
 export async function restoreWorkspaceArchive(
   input: WorkspaceArchiveInput & { destination: string },
 ): Promise<WorkspaceManifest> {
-  const limits = input.limits ?? WORKSPACE_SNAPSHOT_LIMITS;
-  return input.store.withVerifiedArchive(input.transferId, async ({ manifest, blobsDirectory }) => {
-    if (input.expectedManifestDigest && manifest.entrypoint.sha256 !== input.expectedManifestDigest)
+  return input.store.withVerifiedArchive(input.transferId, async (archive) => {
+    if (
+      input.expectedManifestDigest &&
+      archive.manifest.entrypoint.sha256 !== input.expectedManifestDigest
+    )
       reject("invalid_artifact", "Archive differs from the reserved workspace content");
-    if (manifest.entrypoint.size > limits.maxManifestBytes)
-      reject("limit_exceeded", "Workspace manifest exceeds handoff limit");
-    const workspace = parseManifest(
-      await readBoundedFile(
-        path.join(blobsDirectory, manifest.entrypoint.sha256),
-        limits.maxManifestBytes,
-      ),
-      limits,
-    );
-    const inventory = new Map(manifest.blobs.map((blob) => [blob.sha256, blob.size]));
-    for (const blob of manifestBlobs(workspace)) {
-      if (inventory.get(blob.sha256) !== blob.size)
-        reject("invalid_artifact", "Workspace references a blob outside its archive inventory");
-    }
-    return restoreWorkspaceContents({
-      manifest: workspace,
-      blobs: blobsDirectory,
+    return restoreWorkspaceFromArchive({
+      archive,
+      entrypoint: archive.manifest.entrypoint,
       destination: input.destination,
+      limits: input.limits,
     });
+  });
+}
+
+interface WorkspaceArchiveContentsInput {
+  archive: VerifiedHandoffArchive;
+  entrypoint: Blob;
+  limits?: WorkspaceSnapshotLimits;
+}
+
+async function readWorkspaceFromArchive(
+  input: WorkspaceArchiveContentsInput,
+): Promise<WorkspaceManifest> {
+  const limits = input.limits ?? WORKSPACE_SNAPSHOT_LIMITS;
+  if (input.entrypoint.size > limits.maxManifestBytes)
+    reject("limit_exceeded", "Workspace manifest exceeds handoff limit");
+  const inventory = new Map(input.archive.manifest.blobs.map((blob) => [blob.sha256, blob.size]));
+  if (inventory.get(input.entrypoint.sha256) !== input.entrypoint.size)
+    reject("invalid_artifact", "Workspace manifest is outside its archive inventory");
+  const bytes = await readBoundedFile(
+    path.join(input.archive.blobsDirectory, input.entrypoint.sha256),
+    limits.maxManifestBytes,
+  );
+  const workspace = parseManifest(bytes, limits);
+  for (const blob of manifestBlobs(workspace)) {
+    if (inventory.get(blob.sha256) !== blob.size)
+      reject("invalid_artifact", "Workspace references a blob outside its archive inventory");
+  }
+  return workspace;
+}
+
+export async function restoreWorkspaceFromArchive(
+  input: WorkspaceArchiveContentsInput & { destination: string },
+): Promise<WorkspaceManifest> {
+  const manifest = await readWorkspaceFromArchive(input);
+  return restoreWorkspaceContents({
+    manifest,
+    blobs: input.archive.blobsDirectory,
+    destination: input.destination,
+  });
+}
+
+export async function verifyWorkspaceFromArchive(
+  input: WorkspaceArchiveContentsInput & { cwd: string },
+): Promise<void> {
+  const manifest = await readWorkspaceFromArchive(input);
+  const cwd = await realpath(input.cwd);
+  await verifyWorkspaceContents({
+    cwd,
+    manifest,
+    limits: input.limits ?? WORKSPACE_SNAPSHOT_LIMITS,
+    scratchParent: path.dirname(cwd),
   });
 }
 
@@ -1005,21 +1053,17 @@ export async function verifyCapturedWorkspace(input: CaptureInput): Promise<void
 export async function verifyWorkspaceArchive(
   input: WorkspaceArchiveInput & { cwd: string },
 ): Promise<void> {
-  const limits = input.limits ?? WORKSPACE_SNAPSHOT_LIMITS;
-  const cwd = await realpath(input.cwd);
-  return input.store.withVerifiedArchive(input.transferId, async ({ manifest, blobsDirectory }) => {
-    if (input.expectedManifestDigest && manifest.entrypoint.sha256 !== input.expectedManifestDigest)
+  return input.store.withVerifiedArchive(input.transferId, async (archive) => {
+    if (
+      input.expectedManifestDigest &&
+      archive.manifest.entrypoint.sha256 !== input.expectedManifestDigest
+    )
       reject("invalid_artifact", "Archive differs from the reserved workspace content");
-    const bytes = await readBoundedFile(
-      path.join(blobsDirectory, manifest.entrypoint.sha256),
-      limits.maxManifestBytes,
-    );
-    const workspace = parseManifest(bytes, limits);
-    await verifyWorkspaceContents({
-      cwd,
-      manifest: workspace,
-      limits,
-      scratchParent: path.dirname(cwd),
+    await verifyWorkspaceFromArchive({
+      archive,
+      entrypoint: archive.manifest.entrypoint,
+      cwd: input.cwd,
+      limits: input.limits,
     });
   });
 }

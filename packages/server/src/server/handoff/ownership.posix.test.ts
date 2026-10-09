@@ -7,7 +7,10 @@ import { HandoffOwnership, verifyHandoffRelease } from "./ownership.js";
 import { writeJournal } from "./artifacts.js";
 import { HandoffDestination } from "./destination.js";
 import { HandoffArchiveStore } from "./archive.js";
-import { captureWorkspace, packWorkspaceArchive } from "./workspace.js";
+import { packHandoffArchive, readHandoffBundle } from "./bundle.js";
+import { captureClaudeSession } from "../agent/providers/claude/handoff.js";
+import { claudeProjectDirSync } from "../agent/providers/claude/project-dir.js";
+import { captureWorkspace } from "./workspace.js";
 
 const test = platformTest.skipIf(process.platform === "win32");
 let root: string;
@@ -58,9 +61,211 @@ test("reserves stable destination identities across restart without dropping unp
     restarted.reserve({ ...request, sourceWorkspaceId: "different" }),
   ).rejects.toMatchObject({ code: "conflict" });
   await expect(restarted.stage(transferId)).rejects.toMatchObject({
-    code: "unprepared_conversations",
+    code: "invalid_state",
   });
 });
+
+async function nativeDestinationFixture(
+  input: { write?: typeof writeJournal; agentIds?: string[] } = {},
+) {
+  const transferId = randomUUID();
+  const store = new HandoffArchiveStore(path.join(root, "archives"));
+  const claudeHome = path.join(root, "destination-claude");
+  const options = {
+    directory: path.join(root, "destination-journal"),
+    serverId: "destination-host",
+    archives: store,
+    write: input.write,
+    resolveClaudeRuntime: async () => ({ configDir: claudeHome, cliVersion: "2.1.295" }),
+  };
+  const destination = new HandoffDestination(options);
+  await destination.initialize();
+  const reservation = await destination.reserve({
+    transferId,
+    sourceServerId,
+    sourceWorkspaceId: "source-workspace",
+    sourceAgentIds: input.agentIds ?? ["source-agent"],
+    destinationParent: root,
+  });
+  const source = await ownership.prepare({
+    id: transferId,
+    cwd,
+    workspaceId: "source-workspace",
+    agentIds: input.agentIds ?? ["source-agent"],
+    destinationServerId: options.serverId,
+    reservationId: reservation.reservationId,
+  });
+  const sourceConfigDir = path.join(root, "source-claude");
+  const sessionId = randomUUID();
+  const project = claudeProjectDirSync(cwd, { configDir: sourceConfigDir });
+  await mkdir(project, { recursive: true });
+  const transcript =
+    JSON.stringify({
+      type: "user",
+      sessionId,
+      message: { role: "user", content: "continue the previous work" },
+    }) + "\n";
+  await writeFile(path.join(project, `${sessionId}.jsonl`), transcript);
+  const sessionDirectory = path.join(root, "session-capture");
+  await captureClaudeSession({
+    handle: { provider: "claude", sessionId },
+    cwd,
+    configDir: sourceConfigDir,
+    cliVersion: "2.1.295",
+    artifactDirectory: sessionDirectory,
+  });
+  const workspaceDirectory = path.join(root, "workspace-capture");
+  await captureWorkspace({ cwd, artifactDirectory: workspaceDirectory });
+  const manifest = await packHandoffArchive({
+    store,
+    transferId,
+    sourceServerId,
+    sourceWorkspaceId: "source-workspace",
+    sourceCwd: cwd,
+    workspaceDirectory,
+    conversations: [
+      {
+        sourceAgentId: "source-agent",
+        title: "Imported conversation",
+        artifactDirectory: sessionDirectory,
+      },
+    ],
+  });
+  await destination.bindSource({ transferId, publicKey: source.publicKey, manifest });
+  const importedPath = path.join(
+    claudeHome,
+    "projects",
+    `paseo-handoff-${reservation.agentMappings.find((item) => item.sourceAgentId === "source-agent")!.destinationAgentId}`,
+    `${sessionId}.jsonl`,
+  );
+  return {
+    destination,
+    transferId,
+    options,
+    reservation,
+    manifest,
+    importedPath,
+    transcript,
+    claudeHome,
+  };
+}
+
+test("stages native conversations under reserved identities and recovers them after restart", async () => {
+  const { destination, transferId, options, reservation, manifest, importedPath, transcript } =
+    await nativeDestinationFixture();
+  const staged = await destination.stage(transferId);
+  expect(staged.state).toBe("staged");
+  expect(await readFile(importedPath, "utf8")).toBe(transcript);
+  await expect(readdir(staged.destinationCwd)).rejects.toMatchObject({ code: "ENOENT" });
+  const recovered = new HandoffDestination(options);
+  await recovered.initialize();
+  expect(await recovered.stage(transferId)).toEqual(staged);
+  await ownership.markReady(transferId, manifest.entrypoint.sha256);
+  const receipt = await ownership.release(
+    transferId,
+    {
+      version: 1,
+      transferId,
+      sourceServerId,
+      destinationServerId: options.serverId,
+      reservationId: reservation.reservationId,
+      manifestDigest: manifest.entrypoint.sha256,
+    },
+    async () => {},
+  );
+  expect((await recovered.acceptRelease(transferId, receipt)).state).toBe("released");
+  await expect(recovered.cancel(transferId)).rejects.toMatchObject({ code: "invalid_state" });
+  expect(await readFile(importedPath, "utf8")).toBe(transcript);
+});
+
+test("refuses an archive missing a reserved conversation before installing or staging files", async () => {
+  const { destination, transferId, reservation, claudeHome } = await nativeDestinationFixture({
+    agentIds: ["source-agent", "missing-agent"],
+  });
+  await expect(destination.stage(transferId)).rejects.toMatchObject({
+    code: "conversation_mismatch",
+  });
+  expect(destination.status(transferId).state).toBe("receiving");
+  await expect(readdir(claudeHome)).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(readdir(reservation.stagingCwd)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test("refuses a conversation blob absent from the signed archive inventory", async () => {
+  const { options, transferId, manifest } = await nativeDestinationFixture();
+  await options.archives.withVerifiedArchive(transferId, async (archive) => {
+    const expected = {
+      sourceServerId,
+      sourceWorkspaceId: "source-workspace",
+      sourceAgentIds: ["source-agent"],
+      manifestDigest: manifest.entrypoint.sha256,
+    };
+    const content = await readHandoffBundle(archive, expected);
+    const session = content.sessions.get("source-agent");
+    if (!session) throw new Error("Missing captured session");
+    const omitted = session.files[0].blob.sha256;
+    const incomplete = {
+      ...manifest,
+      blobs: manifest.blobs.filter((blob) => blob.sha256 !== omitted),
+    };
+    const receiver = new HandoffArchiveStore(path.join(root, "incomplete-archive"));
+    const files = new Map(
+      incomplete.blobs.map((blob) => [blob.sha256, path.join(archive.blobsDirectory, blob.sha256)]),
+    );
+    await receiver.importLocal({ id: transferId, manifest: incomplete, files });
+    await expect(
+      receiver.withVerifiedArchive(transferId, (verified) => readHandoffBundle(verified, expected)),
+    ).rejects.toMatchObject({ code: "invalid_artifact" });
+  });
+});
+
+test("cancellation after source cancellation removes only its inactive native session", async () => {
+  const { destination, transferId, importedPath, claudeHome } = await nativeDestinationFixture();
+  await destination.stage(transferId);
+  const unrelated = path.join(claudeHome, "projects", "unrelated");
+  await mkdir(unrelated);
+  await writeFile(path.join(unrelated, "keep.jsonl"), "another session");
+  await ownership.cancel(transferId);
+  expect((await destination.cancel(transferId)).state).toBe("cancelled");
+  expect((await destination.cancel(transferId)).state).toBe("cancelled");
+  await expect(readFile(importedPath)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await readFile(path.join(unrelated, "keep.jsonl"), "utf8")).toBe("another session");
+});
+
+test.each(["before", "after"])(
+  "recovers native installation when readiness persistence fails %s the durable write",
+  async (failurePoint) => {
+    let injectFailure = true;
+    const write: typeof writeJournal = async (file, value) => {
+      const preparing = JSON.stringify(value).includes('"state":"staged"');
+      if (injectFailure && preparing && failurePoint === "before") {
+        injectFailure = false;
+        throw new Error("lost readiness write");
+      }
+      await writeJournal(file, value);
+      if (injectFailure && preparing && failurePoint === "after") {
+        injectFailure = false;
+        throw new Error("lost readiness acknowledgement");
+      }
+    };
+    const { destination, transferId, options, importedPath, transcript, claudeHome } =
+      await nativeDestinationFixture({ write });
+    await expect(destination.stage(transferId)).rejects.toThrow("lost readiness");
+    expect(await readFile(importedPath, "utf8")).toBe(transcript);
+    const recovered = new HandoffDestination({
+      ...options,
+      write: writeJournal,
+      resolveClaudeRuntime: async () => {
+        throw new Error("Must use the journaled provider location");
+      },
+    });
+    await recovered.initialize();
+    expect((await recovered.stage(transferId)).state).toBe("staged");
+    expect(await readdir(path.join(claudeHome, "projects"))).toEqual([
+      path.basename(path.dirname(importedPath)),
+    ]);
+    expect(await readFile(importedPath, "utf8")).toBe(transcript);
+  },
+);
 
 test("retries archive creation after committing its source binding", async () => {
   const transferId = randomUUID();
@@ -90,8 +295,12 @@ test("retries archive creation after committing its source binding", async () =>
   });
   const artifactDirectory = path.join(root, "snapshot");
   await captureWorkspace({ cwd, artifactDirectory });
-  const manifest = await packWorkspaceArchive({
-    artifactDirectory,
+  const manifest = await packHandoffArchive({
+    sourceServerId,
+    sourceWorkspaceId: "source-workspace",
+    sourceCwd: cwd,
+    conversations: [],
+    workspaceDirectory: artifactDirectory,
     transferId,
     store: new HandoffArchiveStore(path.join(root, "source-archives")),
   });
@@ -232,7 +441,15 @@ test("stages a reserved workspace and accepts only its signed source release", a
   await writeFile(path.join(cwd, "work.txt"), "captured work\n");
   const artifactDirectory = path.join(root, "snapshot");
   await captureWorkspace({ cwd, artifactDirectory });
-  const manifest = await packWorkspaceArchive({ artifactDirectory, store, transferId });
+  const manifest = await packHandoffArchive({
+    sourceServerId,
+    sourceWorkspaceId: "source-workspace",
+    sourceCwd: cwd,
+    conversations: [],
+    workspaceDirectory: artifactDirectory,
+    store,
+    transferId,
+  });
   await restarted.bindSource({ transferId, publicKey: source.publicKey, manifest });
   const staged = await restarted.stage(transferId);
   expect(staged.state).toBe("staged");
@@ -290,7 +507,15 @@ async function destinationFixture(write?: typeof writeJournal) {
   await writeFile(path.join(cwd, "work.txt"), "original\n");
   const artifactDirectory = path.join(root, "snapshot");
   await captureWorkspace({ cwd, artifactDirectory });
-  const manifest = await packWorkspaceArchive({ artifactDirectory, store, transferId });
+  const manifest = await packHandoffArchive({
+    sourceServerId,
+    sourceWorkspaceId: "source-workspace",
+    sourceCwd: cwd,
+    conversations: [],
+    workspaceDirectory: artifactDirectory,
+    store,
+    transferId,
+  });
   const bind = { transferId, publicKey: source.publicKey, manifest };
   await destination.bindSource(bind);
   await ownership.markReady(transferId, manifest.entrypoint.sha256);

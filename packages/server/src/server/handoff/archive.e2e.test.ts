@@ -15,12 +15,15 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { HANDOFF_CHUNK_BYTES } from "@getpaseo/protocol/handoff";
 import { DaemonClient } from "../test-utils/daemon-client.js";
 import { createTestPaseoDaemon, type TestPaseoDaemon } from "../test-utils/paseo-daemon.js";
+import { packHandoffArchive, readHandoffBundle } from "./bundle.js";
+import { captureClaudeSession } from "../agent/providers/claude/handoff.js";
+import { claudeProjectDirSync } from "../agent/providers/claude/project-dir.js";
 import { HandoffArchiveStore } from "./archive.js";
 import {
   captureWorkspace,
   packWorkspaceArchive,
   restoreWorkspaceArchive,
-  verifyWorkspaceArchive,
+  verifyWorkspaceFromArchive,
 } from "./workspace.js";
 
 const exec = promisify(execFile);
@@ -40,16 +43,30 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 }, 30_000);
 
-async function startHost(name: string): Promise<Host> {
+async function startHost(name: string, nativeSessions = false): Promise<Host> {
   const home = path.join(root, name);
   const staticDir = path.join(home, "static");
   await mkdir(staticDir, { recursive: true });
+  const versionCommand = path.join(home, "claude-version.cjs");
+  if (nativeSessions)
+    await writeFile(
+      versionCommand,
+      "if (process.argv[2] !== '--version') throw new Error('Must not start a conversation'); console.log('2.1.295');\n",
+    );
   const daemon = await createTestPaseoDaemon({
     paseoHomeRoot: home,
     staticDir,
     cleanup: false,
     mcpEnabled: false,
     agentClients: {},
+    agentProviderSettings: nativeSessions
+      ? {
+          claude: {
+            command: { mode: "replace", argv: [process.execPath, versionCommand] },
+            env: { CLAUDE_CONFIG_DIR: path.join(home, "claude") },
+          },
+        }
+      : undefined,
   });
   const client = new DaemonClient({
     url: `ws://127.0.0.1:${daemon.port}/ws`,
@@ -68,10 +85,10 @@ async function stopHost(host: Host): Promise<void> {
 }
 
 test.skipIf(process.platform === "win32")(
-  "recovers a destination reservation and signed release across real daemon restarts",
+  "transfers native conversation artifacts and recovers their signed release across real daemon restarts",
   async () => {
     const source = await startHost("source");
-    let destination = await startHost("destination");
+    let destination = await startHost("destination", true);
     const sourceDaemon = source.daemon.daemon;
     const transferId = randomUUID();
     const cwd = path.join(root, "workspace");
@@ -82,7 +99,7 @@ test.skipIf(process.platform === "win32")(
       transferId,
       sourceServerId: sourceDaemon.getServerId(),
       sourceWorkspaceId: "source-workspace",
-      sourceAgentIds: [],
+      sourceAgentIds: ["source-agent"],
       destinationParent: root,
     };
     const reserved = await destination.daemon.daemon.handoffDestination.reserve(request);
@@ -90,22 +107,52 @@ test.skipIf(process.platform === "win32")(
       id: transferId,
       cwd,
       workspaceId: request.sourceWorkspaceId,
-      agentIds: [],
+      agentIds: request.sourceAgentIds,
       destinationServerId: destination.daemon.daemon.getServerId(),
       reservationId: reserved.reservationId,
     });
     const artifactDirectory = path.join(root, "snapshot");
     await captureWorkspace({ cwd, artifactDirectory });
-    const manifest = await packWorkspaceArchive({
-      artifactDirectory,
+    const sourceConfigDir = path.join(root, "source-claude");
+    const sessionId = randomUUID();
+    const project = claudeProjectDirSync(cwd, { configDir: sourceConfigDir });
+    await mkdir(project, { recursive: true });
+    const transcript =
+      JSON.stringify({
+        type: "user",
+        sessionId,
+        message: { role: "user", content: "Complete the work from our prior conversation" },
+      }) + "\n";
+    await writeFile(path.join(project, `${sessionId}.jsonl`), transcript);
+    const sessionDirectory = path.join(root, "session-capture");
+    await captureClaudeSession({
+      handle: { provider: "claude", sessionId },
+      cwd,
+      configDir: sourceConfigDir,
+      cliVersion: "2.1.295",
+      artifactDirectory: sessionDirectory,
+    });
+    const manifest = await packHandoffArchive({
+      workspaceDirectory: artifactDirectory,
       store: sourceDaemon.handoffArchives,
       transferId,
+      sourceServerId: request.sourceServerId,
+      sourceWorkspaceId: request.sourceWorkspaceId,
+      sourceCwd: cwd,
+      conversations: [
+        {
+          sourceAgentId: "source-agent",
+          title: "Conversation to continue",
+          artifactDirectory: sessionDirectory,
+        },
+      ],
     });
     await rm(artifactDirectory, { recursive: true });
+    await rm(sessionDirectory, { recursive: true });
     const binding = { transferId, publicKey: prepared.publicKey, manifest };
     const receiving = await destination.daemon.daemon.handoffDestination.bindSource(binding);
     await stopHost(destination);
-    destination = await startHost("destination");
+    destination = await startHost("destination", true);
     expect(await destination.daemon.daemon.handoffDestination.reserve(request)).toEqual(receiving);
     await transferHandoffArchive({
       source: source.client,
@@ -114,6 +161,18 @@ test.skipIf(process.platform === "win32")(
       manifest,
     });
     const staged = await destination.daemon.daemon.handoffDestination.stage(transferId);
+    const importedPath = path.join(
+      root,
+      "destination",
+      "claude",
+      "projects",
+      `paseo-handoff-${reserved.agentMappings[0].destinationAgentId}`,
+      `${sessionId}.jsonl`,
+    );
+    expect(await readFile(importedPath, "utf8")).toBe(transcript);
+    expect(staged.preparedConversations).toEqual([
+      { sourceAgentId: "source-agent", title: "Conversation to continue", sessionId },
+    ]);
     expect(await readFile(path.join(staged.stagingCwd, "work.txt"), "utf8")).toBe(
       "work in progress\n",
     );
@@ -132,14 +191,21 @@ test.skipIf(process.platform === "win32")(
         reservationId: reserved.reservationId,
         manifestDigest: manifest.entrypoint.sha256,
       },
-      () => verifyWorkspaceArchive({ store: sourceDaemon.handoffArchives, transferId, cwd }),
+      () =>
+        sourceDaemon.handoffArchives.withVerifiedArchive(transferId, async (archive) => {
+          const content = await readHandoffBundle(archive, {
+            ...request,
+            manifestDigest: manifest.entrypoint.sha256,
+          });
+          await verifyWorkspaceFromArchive({ archive, entrypoint: content.bundle.workspace, cwd });
+        }),
     );
     const released = await destination.daemon.daemon.handoffDestination.acceptRelease(
       transferId,
       receipt,
     );
     await stopHost(destination);
-    destination = await startHost("destination");
+    destination = await startHost("destination", true);
     expect(
       await destination.daemon.daemon.handoffDestination.acceptRelease(transferId, receipt),
     ).toEqual(released);
@@ -152,6 +218,7 @@ test.skipIf(process.platform === "win32")(
     // Preparation must remain private until conversation installation and publication are complete.
     await expect(readdir(reserved.destinationCwd)).rejects.toMatchObject({ code: "ENOENT" });
     expect((await destination.client.fetchAgents()).entries).toEqual([]);
+    expect(await readFile(importedPath, "utf8")).toBe(transcript);
   },
   30_000,
 );

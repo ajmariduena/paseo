@@ -212,9 +212,14 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
 - `destination.ts`, `ownership.posix.test.ts` and `archive.e2e.test.ts` cover durable destination
   reservations, stable identity mappings, private workspace staging and signed release acceptance.
   Bootstrap owns the destination journal and shares one archive store with WebSocket transport.
-  Two-daemon tests recover reservations and receipts after restart; missing, corrupt or foreign
-  destination journals prevent startup. Preparation currently refuses transfers with conversations
-  until their artifacts can be installed; it does not publish a workspace or activate an agent.
+  `bundle.ts` binds workspace and native conversation artifacts to one signed digest and requires
+  exactly the reserved conversation set. Preparation journals the current host's Claude location
+  before installing under the reserved agent IDs; retries retain that location across configuration
+  changes. Cancellation removes only the transfer's inactive sessions after source cancellation.
+  Two-daemon tests transfer conversation bytes and recover installations and receipts after restart;
+  missing, corrupt or foreign destination journals prevent startup. These tests use a version-only
+  launcher and fixture transcripts. They do not publish Paseo agent records, run a turn or establish
+  full source-stop/activation correctness.
 - `utils/tree-kill.test.ts`, `managed-processes.test.ts` and `bootstrap-managed-processes.test.ts`
   cover observed descendant termination, helper retention and awaited startup recovery. The
   coordinator still needs launch-time ownership and durable uncertain-stop recovery.
@@ -226,9 +231,10 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   occur there and the original transcript remains unchanged. This is provider evidence, not a
   two-daemon cutover. Compaction, external attachments, file checkpoints, rewind/fork namespace
   handling and cross-OS evidence remain open before enabling native handoff.
-- Source preparation, destination activation, the composite conversation archive, readable moved
-  history, automation dispositions and the app flow remain unimplemented. Other native codecs and
-  explicit context-export continuation remain open. Complete handoff is not advertised.
+- Source preparation, publication of closed Paseo agent records, destination activation, readable
+  moved history, automation dispositions and the app flow remain unimplemented. The composite
+  archive currently supports native Claude conversations; other codecs and explicit context-export
+  continuation remain open. Complete handoff is not advertised.
 
 Keep feature code in `server/handoff`, provider transport in provider-owned codecs and orchestration
 in the client coordinator. Use dotted `workspace.handoff.*.request/response` RPCs. Follow the

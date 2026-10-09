@@ -358,6 +358,15 @@ export class ProviderSnapshotManager {
     return this.generation.definitions[provider]?.label ?? provider;
   }
 
+  /** Host-local launch settings; never include these in the public provider snapshot. */
+  getProviderRuntimeSettings(provider: AgentProvider) {
+    const definition = this.generation.definitions[provider];
+    if (!definition?.enabled || !definition.configuration) {
+      throw new Error(`Provider ${provider} has no enabled native runtime configuration`);
+    }
+    return structuredClone(definition.configuration.runtimeSettings);
+  }
+
   getAgentManagerProviderState(): AgentManagerProviderState {
     return this.createAgentManagerState(this.generation.definitions, this.providerClients);
   }
