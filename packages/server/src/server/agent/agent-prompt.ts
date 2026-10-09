@@ -164,6 +164,9 @@ async function startAgentRunInner(
     },
     "agent.session.start_stream.iterator_returned",
   );
+  // AgentManager yields its first event only after admission and the canonical prompt commit.
+  // Returning earlier can acknowledge a message whose preparation or provider start still fails.
+  await iterator.next();
   void (async () => {
     try {
       try {

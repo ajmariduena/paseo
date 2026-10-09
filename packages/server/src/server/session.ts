@@ -1,6 +1,8 @@
 import type { HandoffArchiveStore } from "./handoff/archive.js";
 import type { HandoffOwnership } from "./handoff/ownership.js";
 import type { HandoffSource } from "./handoff/source.js";
+import type { HandoffDestination } from "./handoff/destination.js";
+import { dispatchHandoffControlMessage } from "./handoff/control-rpc.js";
 import { dispatchHandoffArchiveMessage } from "./handoff/rpc.js";
 import { searchTimeline } from "./agent/chat-search/index.js";
 import type { BrowserToolsBroker } from "./browser-tools/broker.js";
@@ -564,6 +566,7 @@ export interface SessionOptions {
   handoffArchiveStore?: HandoffArchiveStore;
   handoffOwnership?: HandoffOwnership;
   handoffSource?: HandoffSource;
+  handoffDestination?: HandoffDestination;
   readAloud?: ReadAloudService;
   voiceOrchestrator?: VoiceOrchestrator | null;
   delegations?: Pick<DelegationService, "stopAll" | "disposeQueuedWake"> | null;
@@ -892,6 +895,7 @@ export class Session {
   private readonly handoffArchiveStore: HandoffArchiveStore | undefined;
   private readonly handoffOwnership: HandoffOwnership | undefined;
   private readonly handoffSource: HandoffSource | undefined;
+  private readonly handoffDestination: HandoffDestination | undefined;
   private readonly workspaceLabelService: WorkspaceLabelService | null;
   private readonly readAloud: ReadAloudService | undefined;
   private readonly voiceOrchestrator: VoiceOrchestrator | null | undefined;
@@ -1048,6 +1052,7 @@ export class Session {
     this.handoffArchiveStore = options.handoffArchiveStore;
     this.handoffOwnership = options.handoffOwnership;
     this.handoffSource = options.handoffSource;
+    this.handoffDestination = options.handoffDestination;
     this.workspaceLabelService = resolveWorkspaceLabelService(workspaceLabelService);
     this.readAloud = readAloud;
     this.voiceOrchestrator = voiceOrchestrator;
@@ -2685,6 +2690,12 @@ export class Session {
 
   private dispatchWorkspaceLifecycleMessage(msg: SessionInboundMessage): Promise<void> | undefined {
     return (
+      dispatchHandoffControlMessage({
+        source: this.handoffSource,
+        destination: this.handoffDestination,
+        message: msg,
+        emit: (reply) => this.emit(reply),
+      }) ??
       dispatchHandoffArchiveMessage({
         store: this.handoffArchiveStore,
         message: msg,

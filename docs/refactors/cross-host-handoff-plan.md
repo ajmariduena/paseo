@@ -204,14 +204,18 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
 - `archive.ts`, `archive.test.ts` and `archive.e2e.test.ts` cover persistent receive offsets,
   checksums, local capture import, and real two-daemon transport. The client coordinator in
   `packages/client/src/handoff-transfer.ts` holds one chunk in flight. The network suite transfers
-  captured workspaces and fixture conversations through this path, then invokes destination
-  activation through the server service. The source also captures a bounded readable timeline from
-  the frozen native artifacts, using the normal notification and message presentation. Its blob is
+  captured workspaces and fixture conversations through this path. The source also captures a bounded
+  readable timeline from the frozen native artifacts, using the normal notification and message presentation. Its blob is
   bound into the bundle digest. The existing timeline RPC reads that snapshot for a prepared or
   released source without loading a provider, including after source restart or deletion of the
   original transcript. Cursors remain stable across restart; corrupt, foreign, incomplete and
   oversized history fails explicitly. Native artifacts remain the unabridged provider copy.
-  Client cutover orchestration remains open.
+  `packages/client/src/workspace-handoff.ts` coordinates inspection, reservation, source preparation,
+  transfer, staging, signed release and activation through correlated `workspace.handoff.*` RPCs.
+  Retry reuses the hosts' journals and transfer ID. A network regression loses the release reply,
+  restarts both hosts and removes the original directory before recovering the same destination
+  workspace. Invalid release signatures are refused. The caller must retain the transfer ID;
+  durable app state, transfer discovery and safe cross-host cancellation remain open.
 - `ownership.ts`, `ownership.test.ts` and `bootstrap.test.ts` cover durable source fences,
   admission draining, cancel/release races, signed receipts and loading fences before providers.
   Admission is wired through agent operations, files/Git, terminal creation/input/resize, scripts,
@@ -247,8 +251,9 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   agent has no source persistence handle. Its first turn receives a bounded, explicitly historical
   excerpt and paths to the complete files; failure keeps that context pending, and success persists
   delivery across restart. Tests cover missing history, collisions, damaged context, publication
-  recovery and bounded Unicode excerpts. A real two-daemon Claude test starts a new session and
-  recovers a prior-only token from exported files to write in the destination workspace. Reservation
+  recovery and bounded Unicode excerpts. A real two-daemon Claude test uses the client coordinator
+  and RPCs, starts a new session and recovers a prior-only token from exported files to write in the
+  destination workspace. Reservation
   status and agent labels expose the mode; the app's preflight and conversation display remain open.
   Source decoding still uses the tested Claude codec; other providers and incompatible source
   formats are not yet exportable. External attachments are reported as unavailable, not transported.
@@ -269,7 +274,7 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   cursor epoch while a new source prompt remains refused.
   Compaction, external attachments, file checkpoints, rewind/fork namespace handling and cross-OS
   evidence remain open before enabling native handoff.
-- Client cutover orchestration, source retirement/tombstones, automation dispositions and the app
+- Source retirement/tombstones, automation dispositions and the app
   flow remain unimplemented. The composite archive currently captures Claude conversations;
   other provider codecs remain open. Complete handoff is not advertised.
 

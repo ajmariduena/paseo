@@ -1,12 +1,14 @@
 import {
   transferHandoffArchive,
+  prepareWorkspaceHandoff,
+  activateWorkspaceHandoff,
   type HandoffTransferProgress,
   DaemonClient as TransportClient,
 } from "@getpaseo/client/internal/daemon-client";
 import { WebSocket, type RawData } from "ws";
 import { WSOutboundMessageSchema } from "@getpaseo/protocol/messages";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import os from "node:os";
@@ -78,6 +80,93 @@ async function stopHost(host: Host): Promise<void> {
   await host.client.close();
   await host.daemon.close();
 }
+
+test.skipIf(process.platform === "win32")(
+  "coordinates handoff over RPC and recovers a lost release reply after reconnect",
+  async () => {
+    let source = await startHost("source");
+    let destination = await startHost("destination");
+    const cwd = path.join(root, "rpc-workspace");
+    await mkdir(cwd);
+    await writeFile(path.join(cwd, "work.txt"), "Pending work");
+    const created = await source.client.createWorkspace({
+      source: { kind: "directory", path: cwd },
+    });
+    if (!created.workspace) throw new Error("Workspace creation failed");
+    const inspected = await source.client.handoffInspectSource({
+      workspaceId: created.workspace.id,
+    });
+    expect(inspected.error).toBeNull();
+    expect(inspected.result).toMatchObject({ workspaceId: created.workspace.id, agentIds: [] });
+    const transferId = randomUUID();
+    const request = {
+      transferId,
+      workspaceId: created.workspace.id,
+      destinationParent: root,
+      continuationMode: "native" as const,
+    };
+    const staged = await prepareWorkspaceHandoff({
+      ...request,
+      source: source.client,
+      destination: destination.client,
+    });
+    expect(staged.state).toBe("staged");
+    expect((await destination.client.fetchWorkspaces()).entries).toEqual([]);
+    const release = await source.client.handoffReleaseSource({ transferId });
+    expect(release.error).toBeNull();
+    if (!release.result) throw new Error("Missing release receipt");
+    const refused = await destination.client.handoffActivateDestination({
+      transferId,
+      receipt: { ...release.result, signature: "invalid-signature" },
+    });
+    expect(refused.error?.code).toBe("invalid_release");
+    expect(
+      (await destination.client.handoffGetDestinationStatus({ transferId })).result?.state,
+    ).toBe("staged");
+    // The client lost the reply before forwarding it, then both hosts restarted.
+    await stopHost(source);
+    await stopHost(destination);
+    await rm(cwd, { recursive: true });
+    source = await startHost("source");
+    destination = await startHost("destination");
+    const resumed = await prepareWorkspaceHandoff({
+      ...request,
+      source: source.client,
+      destination: destination.client,
+    });
+    expect(resumed).toEqual(staged);
+    // A previous client reached release acceptance but stopped before activation.
+    await destination.daemon.daemon.handoffDestination.acceptRelease(transferId, release.result);
+    const accepted = await prepareWorkspaceHandoff({
+      ...request,
+      source: source.client,
+      destination: destination.client,
+    });
+    expect(accepted.state).toBe("released");
+    const active = await activateWorkspaceHandoff({
+      source: source.client,
+      destination: destination.client,
+      transferId,
+    });
+    expect(active.state).toBe("active");
+    expect(active.workspaceId).toBe(staged.workspaceId);
+    expect(await readFile(path.join(active.destinationCwd, "work.txt"), "utf8")).toBe(
+      "Pending work",
+    );
+    await source.client.close();
+    expect(
+      await activateWorkspaceHandoff({
+        source: source.client,
+        destination: destination.client,
+        transferId,
+      }),
+    ).toEqual(active);
+    expect((await destination.client.fetchWorkspaces()).entries.map((entry) => entry.id)).toEqual([
+      active.workspaceId,
+    ]);
+  },
+  30_000,
+);
 
 test.skipIf(process.platform === "win32")(
   "activates an explicit context export without installing a native session",
@@ -180,7 +269,11 @@ test.skipIf(process.platform === "win32")(
     const agentId = active.agentMappings[0].destinationAgentId;
     const record = await destination.daemon.daemon.agentStorage.get(agentId);
     expect(record?.persistence).toBeNull();
-    expect(record?.handoffContext).toMatchObject({ sourceAgentId, sourceCwd: cwd, pending: true });
+    expect(record?.handoffContext).toMatchObject({
+      sourceAgentId,
+      sourceCwd: await realpath(cwd),
+      pending: true,
+    });
     expect(record?.labels["paseo.handoff-mode"]).toBe("context");
     if (!record?.handoffContext) throw new Error("Missing continuation context");
     const contextDirectory = path.join(active.destinationCwd, record.handoffContext.directory);

@@ -3,6 +3,10 @@ import { lstat, mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { HandoffDigestSchema, HandoffTransferIdSchema } from "@getpaseo/protocol/handoff";
+import {
+  HandoffReleaseBindingSchema as BindingSchema,
+  HandoffReleaseReceiptSchema as ReceiptSchema,
+} from "@getpaseo/protocol/handoff-control";
 import { readBoundedFile, syncDirectory, writeJournal } from "./artifacts.js";
 
 const SourceSchema = z.object({
@@ -24,15 +28,6 @@ const JournalSchema = z.object({
   sourceServerId: z.string().min(1),
   records: z.array(RecordSchema).max(10_000),
 });
-const BindingSchema = z.object({
-  version: z.literal(1),
-  transferId: HandoffTransferIdSchema,
-  sourceServerId: z.string().min(1),
-  destinationServerId: z.string().min(1),
-  reservationId: HandoffTransferIdSchema,
-  manifestDigest: HandoffDigestSchema,
-});
-const ReceiptSchema = BindingSchema.extend({ signature: z.string().min(1).max(1024) });
 
 type SourceInput = z.infer<typeof SourceSchema>;
 type SourceRecord = z.infer<typeof RecordSchema>;

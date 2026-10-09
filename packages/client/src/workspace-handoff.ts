@@ -1,0 +1,192 @@
+import type { HandoffDestinationSnapshot } from "@getpaseo/protocol/handoff-control";
+import type { DaemonClient } from "./daemon-client.js";
+import {
+  handoffRequest,
+  handoffResult,
+  transferHandoffArchive,
+  type HandoffTransferProgress,
+} from "./handoff-transfer.js";
+
+interface HandoffConnections {
+  source: DaemonClient;
+  destination: DaemonClient;
+  transferId: string;
+  signal?: AbortSignal;
+}
+export interface WorkspaceHandoffProgress {
+  phase:
+    | "inspecting"
+    | "preparing_source"
+    | "transferring"
+    | "preparing_destination"
+    | "ready"
+    | "releasing"
+    | "activating"
+    | "active";
+  transfer?: HandoffTransferProgress;
+}
+export interface PrepareWorkspaceHandoffInput extends HandoffConnections {
+  workspaceId: string;
+  destinationParent: string;
+  continuationMode: "native" | "context";
+  onProgress?: (progress: WorkspaceHandoffProgress) => void;
+}
+function serverId(client: DaemonClient): string {
+  const info = client.getLastServerInfoMessage();
+  if (!info) throw new Error("Connect both handoff hosts before continuing");
+  return info.serverId;
+}
+function requireDistinctHosts(input: HandoffConnections) {
+  const sourceServerId = serverId(input.source);
+  const destinationServerId = serverId(input.destination);
+  if (sourceServerId === destinationServerId)
+    throw new Error("Choose a different destination host");
+  return { sourceServerId, destinationServerId };
+}
+
+/** Keep transferId in the caller's durable UI state. Reconnect reuses the hosts' journals. */
+export async function prepareWorkspaceHandoff(
+  input: PrepareWorkspaceHandoffInput,
+): Promise<HandoffDestinationSnapshot> {
+  const { source, destination, transferId, signal } = input;
+  const { sourceServerId, destinationServerId } = requireDistinctHosts(input);
+  const progress = (phase: WorkspaceHandoffProgress["phase"]) => input.onProgress?.({ phase });
+  progress("inspecting");
+  const prior = await handoffRequest(
+    () => destination.handoffGetDestinationStatus({ transferId }),
+    signal,
+  );
+  if (prior.error && prior.error.code !== "not_found") handoffResult(prior);
+  const inventory = prior.result
+    ? { agentIds: prior.result.sourceAgentIds }
+    : handoffResult(
+        await handoffRequest(
+          () => source.handoffInspectSource({ workspaceId: input.workspaceId }),
+          signal,
+        ),
+      );
+  const reserved = handoffResult(
+    await handoffRequest(
+      () =>
+        destination.handoffReserveDestination({
+          transferId,
+          sourceServerId,
+          sourceWorkspaceId: input.workspaceId,
+          sourceAgentIds: inventory.agentIds,
+          destinationParent: input.destinationParent,
+          continuationMode: input.continuationMode,
+        }),
+      signal,
+    ),
+  );
+  if (reserved.state === "cancelled")
+    throw new Error("This handoff was cancelled; start a new transfer");
+  if (reserved.state === "active") {
+    progress("active");
+    return reserved;
+  }
+  if (reserved.state === "released" || reserved.state === "activating") {
+    progress("activating");
+    return reserved;
+  }
+  progress("preparing_source");
+  const priorSource = await handoffRequest(
+    () => source.handoffGetSourceStatus({ transferId }),
+    signal,
+  );
+  if (priorSource.error && priorSource.error.code !== "not_found") handoffResult(priorSource);
+  let prepared = priorSource.result;
+  if (!prepared || prepared.source.state === "preparing") {
+    prepared = handoffResult(
+      await handoffRequest(
+        () =>
+          source.handoffPrepareSource({
+            transferId,
+            workspaceId: input.workspaceId,
+            agentIds: reserved.sourceAgentIds,
+            destinationServerId,
+            reservationId: reserved.reservationId,
+          }),
+        signal,
+      ),
+    );
+  }
+  if (prepared.source.state === "cancelled")
+    throw new Error("Source cancelled this handoff; start a new transfer");
+  if (
+    prepared.source.destinationServerId !== destinationServerId ||
+    prepared.source.reservationId !== reserved.reservationId ||
+    prepared.source.workspaceId !== input.workspaceId
+  )
+    throw new Error("Source handoff belongs to another destination reservation");
+  const manifest = prepared.manifest;
+  if (!manifest || prepared.source.manifestDigest !== manifest.entrypoint.sha256)
+    throw new Error("Source capture is not ready");
+  handoffResult(
+    await handoffRequest(
+      () =>
+        destination.handoffBindDestination({
+          transferId,
+          publicKey: prepared.source.publicKey,
+          manifest,
+        }),
+      signal,
+    ),
+  );
+  await transferHandoffArchive({
+    source,
+    destination,
+    transferId,
+    manifest,
+    signal,
+    onProgress: (transfer) => input.onProgress?.({ phase: "transferring", transfer }),
+  });
+  progress("preparing_destination");
+  const staged = handoffResult(
+    await handoffRequest(() => destination.handoffStageDestination({ transferId }), signal),
+  );
+  progress("ready");
+  return staged;
+}
+
+/** A timeout after release leaves ownership at destination; retry activation with this same ID. */
+export async function activateWorkspaceHandoff(
+  input: HandoffConnections & { onProgress?: (progress: WorkspaceHandoffProgress) => void },
+): Promise<HandoffDestinationSnapshot> {
+  const { source, destination, transferId, signal } = input;
+  const target = handoffResult(
+    await handoffRequest(() => destination.handoffGetDestinationStatus({ transferId }), signal),
+  );
+  if (target.state === "active") {
+    input.onProgress?.({ phase: "active" });
+    return target;
+  }
+  const { sourceServerId, destinationServerId } = requireDistinctHosts(input);
+  if (target.sourceServerId !== sourceServerId)
+    throw new Error("Destination reservation belongs to another source host");
+  if (!["staged", "released", "activating"].includes(target.state))
+    throw new Error("Prepare the destination before releasing source ownership");
+  const prepared = handoffResult(
+    await handoffRequest(() => source.handoffGetSourceStatus({ transferId }), signal),
+  );
+  if (
+    prepared.source.destinationServerId !== destinationServerId ||
+    prepared.source.reservationId !== target.reservationId ||
+    prepared.source.manifestDigest !== target.manifestDigest
+  )
+    throw new Error("Handoff ownership and destination content do not match");
+  input.onProgress?.({ phase: "releasing" });
+  const receipt = handoffResult(
+    await handoffRequest(() => source.handoffReleaseSource({ transferId }), signal),
+  );
+  input.onProgress?.({ phase: "activating" });
+  const active = handoffResult(
+    await handoffRequest(
+      () => destination.handoffActivateDestination({ transferId, receipt }),
+      signal,
+    ),
+  );
+  if (active.state !== "active") throw new Error("Destination has not completed activation");
+  input.onProgress?.({ phase: "active" });
+  return active;
+}

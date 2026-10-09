@@ -62,6 +62,78 @@ async function compileInlineSchema(sourceSchema: string): Promise<GeneratedSchem
 }
 
 describe("WS outbound zod-aot validation", () => {
+  it("validates handoff activation snapshots without losing continuation mode or correlation", () => {
+    const result = {
+      transferId: "00000000-0000-4000-8000-000000000001",
+      reservationId: "00000000-0000-4000-8000-000000000002",
+      sourceServerId: "source",
+      sourceWorkspaceId: "original-workspace",
+      sourceAgentIds: ["original-agent"],
+      destinationParent: "/workspaces",
+      destinationCwd: "/workspaces/imported",
+      workspaceId: "new-workspace",
+      projectId: "new-project",
+      agentMappings: [
+        {
+          sourceAgentId: "original-agent",
+          destinationAgentId: "00000000-0000-4000-8000-000000000003",
+        },
+      ],
+      continuationMode: "context",
+      state: "active",
+      manifestDigest: "a".repeat(64),
+    };
+    const envelope = (value: unknown) => ({
+      type: "session",
+      message: {
+        type: "workspace.handoff.activate_destination.response",
+        payload: { requestId: "activate", result: value, error: null },
+      },
+    });
+    for (const continuationMode of ["native", "context"]) {
+      const message = envelope({ ...result, continuationMode });
+      expect(GeneratedWSOutboundMessageSchema.safeParse(message)).toEqual({
+        success: true,
+        data: message,
+      });
+    }
+    for (const invalid of [
+      { ...result, continuationMode: "unknown" },
+      { ...result, manifestDigest: "corrupt" },
+      { ...result, state: "unknown" },
+    ]) {
+      expect(GeneratedWSOutboundMessageSchema.safeParse(envelope(invalid)).success).toBe(false);
+    }
+  });
+
+  it.each([
+    "inspect_source",
+    "prepare_source",
+    "get_source_status",
+    "release_source",
+    "reserve_destination",
+    "bind_destination",
+    "stage_destination",
+    "get_destination_status",
+    "activate_destination",
+  ])("accepts correlated handoff errors for %s", (operation) => {
+    const envelope = {
+      type: "session",
+      message: {
+        type: `workspace.handoff.${operation}.response`,
+        payload: {
+          requestId: "failed",
+          result: null,
+          error: { code: "invalid_state", message: "Cannot continue", blob: null },
+        },
+      },
+    };
+    expect(GeneratedWSOutboundMessageSchema.safeParse(envelope)).toEqual({
+      success: true,
+      data: envelope,
+    });
+  });
+
   it("applies defaults inside discriminated-union branches", async () => {
     const schema = await compileInlineSchema(`
 const SourceSchema = z.discriminatedUnion("type", [

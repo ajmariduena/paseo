@@ -41,6 +41,49 @@ test("handoff chunks reject oversized data, unsafe offsets and path-shaped trans
   ).toBe(false);
 });
 
+test("handoff activation requires a bound release receipt and reservation requires an explicit mode", () => {
+  const transferId = "00000000-0000-4000-8000-000000000001";
+  const message = {
+    type: "workspace.handoff.activate_destination.request",
+    requestId: "activate",
+    transferId,
+    receipt: {
+      version: 1,
+      transferId,
+      sourceServerId: "source",
+      destinationServerId: "destination",
+      reservationId: "00000000-0000-4000-8000-000000000002",
+      manifestDigest: "a".repeat(64),
+      signature: "signed-release",
+    },
+  };
+  expect(SessionInboundMessageSchema.parse(message)).toEqual(message);
+  for (const receipt of [
+    undefined,
+    { ...message.receipt, reservationId: "../../outside" },
+    { ...message.receipt, manifestDigest: "not-a-digest" },
+    { ...message.receipt, signature: "" },
+  ]) {
+    expect(SessionInboundMessageSchema.safeParse({ ...message, receipt }).success).toBe(false);
+  }
+  const reserve = {
+    type: "workspace.handoff.reserve_destination.request",
+    requestId: "reserve",
+    transferId,
+    sourceServerId: "source",
+    sourceWorkspaceId: "workspace",
+    sourceAgentIds: [],
+    destinationParent: "/workspaces",
+  };
+  expect(SessionInboundMessageSchema.safeParse(reserve).success).toBe(false);
+  for (const continuationMode of ["native", "context"]) {
+    expect(SessionInboundMessageSchema.parse({ ...reserve, continuationMode })).toEqual({
+      ...reserve,
+      continuationMode,
+    });
+  }
+});
+
 test("terminal listings accept older rows and retain new per-terminal directories", () => {
   const response = {
     type: "list_terminals_response",

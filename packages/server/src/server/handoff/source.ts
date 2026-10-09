@@ -228,6 +228,13 @@ export class HandoffSource {
     });
   }
 
+  async status(transferId: string) {
+    const source = this.options.ownership.status(transferId);
+    const captured = source.state === "ready" || source.state === "released";
+    const manifest = captured ? (await this.readPrepared(source)).manifest : null;
+    return { source, manifest };
+  }
+
   release(transferId: string) {
     return this.serialize(async () => {
       const source = this.options.ownership.status(transferId);

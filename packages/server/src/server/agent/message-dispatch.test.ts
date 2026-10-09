@@ -74,6 +74,59 @@ test("a late steer becomes a new turn with the same messageId", async () => {
   });
 });
 
+test("dispatch does not report started before delayed provider admission commits the user message", async () => {
+  host = createControlledHost();
+  const agentId = await host.createAgent({ steerable: false });
+  const session = host.session(agentId);
+  const originalStart = session.startTurn.bind(session);
+  let entered!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const allowed = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  session.startTurn = async (...args) => {
+    entered();
+    await allowed;
+    return originalStart(...args);
+  };
+  let settled = false;
+  const dispatch = dispatchAgentMessage({
+    agentManager: host.agentManager,
+    agentStorage: host.agentStorage,
+    agentId,
+    messageId: "delayed-message",
+    policy: {
+      kind: "intent",
+      intent: "auto",
+      prompt: "Continue after preparation",
+      steerUnavailable: "fail",
+    },
+    logger: host.logger,
+  }).then((disposition) => {
+    settled = true;
+    return disposition;
+  });
+  await started;
+  // Give an incorrectly immediate dispatch reply the chance to settle while admission is held.
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  try {
+    expect(settled).toBe(false);
+  } finally {
+    release();
+  }
+  expect(await dispatch).toBe("started");
+  expect(host.agentManager.getTimeline(agentId)).toContainEqual(
+    expect.objectContaining({
+      type: "user_message",
+      clientMessageId: "delayed-message",
+      text: "Continue after preparation",
+    }),
+  );
+});
+
 test("a steered system message reaches the provider as its prompt and the timeline as a notification", async () => {
   host = createControlledHost();
   const agentId = await host.createAgent({ steerable: true });

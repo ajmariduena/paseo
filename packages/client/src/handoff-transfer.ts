@@ -25,7 +25,7 @@ export interface HandoffTransferProgress {
   phase: "transferring" | "verifying" | "verified";
 }
 
-function result<T>(reply: { result: T | null; error: HandoffError | null }): T {
+export function handoffResult<T>(reply: { result: T | null; error: HandoffError | null }): T {
   if (reply.error) throw new HandoffTransferError(reply.error);
   if (reply.result === null) throw new Error("Host returned no handoff result");
   return reply.result;
@@ -39,7 +39,7 @@ function checkAbort(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw abortReason(signal);
 }
 
-async function request<T>(
+export async function handoffRequest<T>(
   operation: () => Promise<T>,
   signal: AbortSignal | undefined,
 ): Promise<T> {
@@ -83,13 +83,13 @@ export async function transferHandoffArchive(input: {
   onProgress?: (progress: HandoffTransferProgress) => void;
 }): Promise<HandoffArchiveStatus> {
   const { source, destination, transferId, manifest, signal } = input;
-  const sourceStatus = result(
-    await request(() => source.handoffArchiveStatus({ transferId }), signal),
+  const sourceStatus = handoffResult(
+    await handoffRequest(() => source.handoffArchiveStatus({ transferId }), signal),
   );
   validateInventory(sourceStatus, transferId, manifest);
   if (sourceStatus.state !== "verified") throw new Error("Source archive is not verified");
-  const status = result(
-    await request(() => destination.handoffArchiveBegin({ transferId, manifest }), signal),
+  const status = handoffResult(
+    await handoffRequest(() => destination.handoffArchiveBegin({ transferId, manifest }), signal),
   );
   validateInventory(status, transferId, manifest);
   const totalBytes = status.blobs.reduce((sum, blob) => sum + blob.size, 0);
@@ -101,8 +101,8 @@ export async function transferHandoffArchive(input: {
     let offset = blob.receivedBytes;
     while (offset < blob.size) {
       const length = Math.min(HANDOFF_CHUNK_BYTES, blob.size - offset);
-      const data = result(
-        await request(
+      const data = handoffResult(
+        await handoffRequest(
           () => source.handoffArchiveReadChunk({ transferId, sha256: blob.sha256, offset, length }),
           signal,
         ),
@@ -117,8 +117,8 @@ export async function transferHandoffArchive(input: {
         !/^[A-Za-z0-9+/]*={0,2}$/.test(data)
       )
         throw new Error("Source returned an invalid handoff chunk");
-      const next = result(
-        await request(
+      const next = handoffResult(
+        await handoffRequest(
           () =>
             destination.handoffArchiveWriteChunk({ transferId, sha256: blob.sha256, offset, data }),
           signal,
@@ -132,8 +132,8 @@ export async function transferHandoffArchive(input: {
     }
   }
   progress("verifying");
-  const verified = result(
-    await request(() => destination.handoffArchiveSeal({ transferId }), signal),
+  const verified = handoffResult(
+    await handoffRequest(() => destination.handoffArchiveSeal({ transferId }), signal),
   );
   validateInventory(verified, transferId, manifest);
   if (

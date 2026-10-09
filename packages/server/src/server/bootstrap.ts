@@ -2048,6 +2048,7 @@ export async function createPaseoDaemon(
               hostMetricsSampler,
               handoffOwnership,
               handoffSource,
+              handoffDestination,
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();

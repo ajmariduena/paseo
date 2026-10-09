@@ -4,7 +4,11 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, realpathSync, symlinkSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { transferHandoffArchive } from "@getpaseo/client/internal/daemon-client";
+import {
+  activateWorkspaceHandoff,
+  prepareWorkspaceHandoff,
+  transferHandoffArchive,
+} from "@getpaseo/client/internal/daemon-client";
 import { createTestPaseoDaemon, type TestPaseoDaemon } from "../../../test-utils/paseo-daemon.js";
 import { DaemonClient } from "../../../test-utils/daemon-client.js";
 import pino from "pino";
@@ -390,36 +394,19 @@ test("context-export handoff continues a real turn in a new session with the pri
     );
     expect(first.finalText.trim()).toBe("ACK");
     const transferId = randomUUID();
-    const reserved = await target.handoffDestination.reserve({
-      transferId,
-      sourceServerId: origin.getServerId(),
-      sourceWorkspaceId: workspaceId,
-      sourceAgentIds: [agent.id],
-      destinationParent: root,
-      continuationMode: "context",
-    });
-    const prepared = await origin.handoffSource.prepare({
-      transferId,
-      workspaceId,
-      agentIds: [agent.id],
-      destinationServerId: target.getServerId(),
-      reservationId: reserved.reservationId,
-    });
-    await target.handoffDestination.bindSource({
-      transferId,
-      publicKey: prepared.source.publicKey,
-      manifest: prepared.manifest,
-    });
-    await transferHandoffArchive({
+    await prepareWorkspaceHandoff({
       source: source.client,
       destination: destination.client,
       transferId,
-      manifest: prepared.manifest,
+      workspaceId,
+      destinationParent: root,
+      continuationMode: "context",
     });
-    await target.handoffDestination.stage(transferId);
-    const receipt = await origin.handoffSource.release(transferId);
-    await target.handoffDestination.acceptRelease(transferId, receipt);
-    const active = await target.handoffDestination.activate(transferId);
+    const active = await activateWorkspaceHandoff({
+      source: source.client,
+      destination: destination.client,
+      transferId,
+    });
     const importedId = active.agentMappings[0].destinationAgentId;
     const imported = await target.agentStorage.get(importedId);
     if (!imported?.handoffContext) throw new Error("Destination context is missing");
