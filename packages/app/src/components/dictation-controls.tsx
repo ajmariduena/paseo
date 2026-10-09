@@ -335,7 +335,7 @@ const styles = StyleSheet.create((theme) => ({
     opacity: 0.4,
   },
   loadingContainer: {
-    width: BUTTON_SIZE * 2 + theme.spacing[2],
+    width: BUTTON_SIZE,
     height: BUTTON_SIZE,
     alignItems: "center",
     justifyContent: "center",
@@ -400,7 +400,7 @@ const overlayStyles = StyleSheet.create((theme) => ({
     opacity: 0.5,
   },
   loadingContainer: {
-    width: OVERLAY_BUTTON_SIZE * 2 + theme.spacing[2],
+    width: OVERLAY_BUTTON_SIZE,
     height: OVERLAY_BUTTON_SIZE,
     alignItems: "center",
     justifyContent: "center",

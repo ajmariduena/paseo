@@ -727,6 +727,7 @@ export interface WorkspaceCreatedDelayControl {
   agentRequests: readonly AgentCreationIntent[];
   release(): void;
   waitForCreateRequest(): Promise<void>;
+  waitForWorkspaceUpdate(): Promise<void>;
 }
 
 /**
@@ -741,11 +742,16 @@ export async function delayBrowserWorkspaceCreatedResponse(
   const agentRequests: AgentCreationIntent[] = [];
   const creationKeys = new Set<string>();
   const createRequestIds = new Set<string>();
+  const reservedWorkspaceIds = new Set<string>();
   const delayedForwards: Array<() => void> = [];
   let releaseRequested = false;
   let resolveCreateRequest: (() => void) | null = null;
   const createRequestSeen = new Promise<void>((resolve) => {
     resolveCreateRequest = resolve;
+  });
+  let resolveWorkspaceUpdate!: () => void;
+  const workspaceUpdateSeen = new Promise<void>((resolve) => {
+    resolveWorkspaceUpdate = resolve;
   });
 
   await page.routeWebSocket(daemonPortPattern, (ws) => {
@@ -756,6 +762,7 @@ export async function delayBrowserWorkspaceCreatedResponse(
       if (sessionMessage?.type === "create_agent_request") agentRequests.push(sessionMessage);
       if (sessionMessage?.type === "workspace.create.request") {
         createRequestIds.add(sessionMessage.requestId);
+        if (sessionMessage.workspaceId) reservedWorkspaceIds.add(sessionMessage.workspaceId);
         if (sessionMessage.idempotencyKey) creationKeys.add(sessionMessage.idempotencyKey);
         if (sessionMessage.agent) agentRequests.push(sessionMessage.agent);
         resolveCreateRequest?.();
@@ -776,6 +783,13 @@ export async function delayBrowserWorkspaceCreatedResponse(
       }
 
       ws.send(message);
+      if (
+        sessionMessage?.type === "workspace_update" &&
+        sessionMessage.payload.kind === "upsert" &&
+        reservedWorkspaceIds.has(sessionMessage.payload.workspace.id)
+      ) {
+        resolveWorkspaceUpdate();
+      }
     });
   });
 
@@ -788,6 +802,7 @@ export async function delayBrowserWorkspaceCreatedResponse(
       }
     },
     waitForCreateRequest: () => createRequestSeen,
+    waitForWorkspaceUpdate: () => workspaceUpdateSeen,
   };
 }
 

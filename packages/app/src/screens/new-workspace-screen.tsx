@@ -963,6 +963,7 @@ interface SubmitDraftInput {
   draftKey: string;
   clearDraft: (lifecycle: "sent" | "abandoned") => void;
   draftId?: string;
+  createdAt?: number;
   draftContextScopeKey: string | null;
   initialSetup?: WorkspaceDraftTabSetup;
   workspaceId: string;
@@ -1094,7 +1095,7 @@ interface CreateChatAgentInput {
     composerStateRequired: string;
     selectModel: string;
   };
-  optimistic?: { workspaceId: string; agentId: string };
+  optimistic?: { workspaceId: string; agentId: string; createdAt: number };
 }
 
 function buildWorkspaceDraftSetupFromComposer(input: {
@@ -1222,20 +1223,12 @@ async function createWorkspaceChatAgent(input: CreateChatAgentInput): Promise<Su
               phase: "accepted",
               revision: snapshot.revision,
             });
-          } else if (snapshot.workspace) {
-            usePendingWorkspaceCreationStore.getState().update(key, {
-              phase: "workspace_ready",
-              revision: snapshot.revision,
-            });
           }
         }
         if (!snapshot.workspace || navigated) return;
         navigated = true;
         if (!input.optimistic && !input.isStillOnCreateScreen()) return;
         const workspace = normalizeWorkspaceDescriptor(snapshot.workspace);
-        getHostRuntimeStore().acceptWorkspaceSnapshots(serverId, [
-          { ...workspace, status: "running" },
-        ]);
         const initialSetup = buildWorkspaceDraftSetupForCreatedWorkspace({
           forkDraftSetup: input.forkDraftSetup,
           workspaceDirectory: workspace.workspaceDirectory,
@@ -1251,6 +1244,7 @@ async function createWorkspaceChatAgent(input: CreateChatAgentInput): Promise<Su
           serverId,
           clearDraft,
           draftId: input.draftId,
+          createdAt: input.optimistic?.createdAt,
           initialSetup,
           workspaceId: workspace.id,
           workspaceDirectory: workspace.workspaceDirectory,
@@ -1262,6 +1256,15 @@ async function createWorkspaceChatAgent(input: CreateChatAgentInput): Promise<Su
           agentCreation,
           navigate: !input.optimistic,
         });
+        getHostRuntimeStore().acceptWorkspaceSnapshots(serverId, [
+          { ...workspace, status: "running" },
+        ]);
+        if (input.optimistic) {
+          const store = usePendingWorkspaceCreationStore.getState();
+          const key = pendingWorkspaceCreationKey(serverId, input.optimistic.workspaceId);
+          store.update(key, { phase: "workspace_ready", revision: snapshot.revision });
+          store.markPresentationReady(key);
+        }
       },
     });
     if (!agent) throw new Error("Workspace creation returned no agent");
@@ -1378,7 +1381,7 @@ function submitWorkspaceDraft(input: SubmitDraftInput): SubmitOutcome {
   } = input;
   const draftId = draftIdInput?.trim() || generateDraftId();
   const clientMessageId = `${draftId}:initial-message`;
-  const timestamp = Date.now();
+  const timestamp = input.createdAt ?? Date.now();
   const wirePayload = splitComposerAttachmentsForSubmit(attachments, {
     format: resolveComposerAttachmentSubmitFormat({
       supportsForgeAttachments: input.supportsForgeSearch,
@@ -2429,7 +2432,7 @@ export function NewWorkspaceScreen({
     async (payload: MessagePayload) => {
       if (submitInFlightRef.current) return;
       submitInFlightRef.current = true;
-      let optimistic: { workspaceId: string; agentId: string } | undefined;
+      let optimistic: { workspaceId: string; agentId: string; createdAt: number } | undefined;
       try {
         setErrorMessage(null);
         const selectedProjectId = selectedProject
@@ -2448,6 +2451,7 @@ export function NewWorkspaceScreen({
           optimistic = {
             workspaceId: `wks_${uuid.replace(/-/g, "").slice(0, 16)}`,
             agentId: randomUUID(),
+            createdAt: Date.now(),
           };
           setLocalPendingWorkspaceCreation(
             pendingWorkspaceCreationKey(selectedServerId, optimistic.workspaceId),
@@ -2465,7 +2469,7 @@ export function NewWorkspaceScreen({
             projectKind: selectedProject.projectKind,
             sourceDirectory: selectedSourceDirectory,
             prompt: payload.text,
-            createdAt: Date.now(),
+            createdAt: optimistic.createdAt,
             phase: "preparing",
             revision: 0,
             error: null,

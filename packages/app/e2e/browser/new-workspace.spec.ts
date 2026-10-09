@@ -633,6 +633,48 @@ test.describe("New workspace flow", () => {
     }
   });
 
+  test("keeps the optimistic prompt visible when the workspace descriptor arrives early", async ({
+    page,
+  }) => {
+    const serverId = getServerId();
+    const prompt = "Keep this prompt visible through workspace creation";
+    const tempRepo = await createTempGitRepo("new-workspace-continuity-");
+    const delayedCreation = await delayBrowserWorkspaceCreatedResponse(page);
+
+    try {
+      const openedProject = await openProjectViaDaemon(client, tempRepo.path);
+      localWorkspaceIds.add(openedProject.workspaceId);
+      await gotoAppShell(page);
+      await waitForSidebarHydration(page);
+      await switchWorkspaceViaSidebar({ page, serverId, workspaceId: openedProject.workspaceId });
+      await openNewWorkspaceComposer(page, {
+        projectKey: openedProject.projectKey,
+        projectDisplayName: openedProject.projectDisplayName,
+      });
+      await page.getByRole("textbox", { name: "Message agent..." }).fill(prompt);
+      await page.getByTestId("message-input-root").getByRole("button", { name: "Create" }).click();
+
+      await delayedCreation.waitForCreateRequest();
+      await delayedCreation.waitForWorkspaceUpdate();
+      const pendingScreen = page.getByTestId("pending-workspace-screen");
+      await expect(pendingScreen).toBeVisible();
+      await expect(pendingScreen).toContainText(prompt);
+
+      delayedCreation.release();
+      const created = await waitForCreatedWorkspace(client, new Set([openedProject.workspaceId]));
+      createdWorktreeDirectories.add(created.workspaceDirectory);
+      const workspace = page.getByTestId(`workspace-deck-entry-${serverId}:${created.id}`);
+      await expect(workspace).toBeVisible();
+      await expect(pendingScreen).toHaveCount(0);
+      await expect(workspace.getByTestId("user-message").filter({ hasText: prompt })).toHaveCount(
+        1,
+      );
+    } finally {
+      delayedCreation.release();
+      await tempRepo.cleanup();
+    }
+  });
+
   test("recovers an unsent optimistic workspace after reload without resubmitting", async ({
     page,
   }) => {
