@@ -84,17 +84,43 @@ async function stopHost(host: Host): Promise<void> {
   await host.daemon.close();
 }
 
-test.skipIf(process.platform === "win32")(
-  "transfers native conversation artifacts and recovers their signed release across real daemon restarts",
-  async () => {
+test.skipIf(process.platform === "win32").each([
+  { kind: "directory", hasGit: false, subdirEntries: [], prepare: async (_cwd: string) => {} },
+  {
+    kind: "git",
+    hasGit: true,
+    subdirEntries: [".keep"],
+    prepare: async (cwd: string) => {
+      await writeFile(path.join(cwd, "subdir", ".keep"), "");
+      await exec("git", ["init", "--initial-branch=main"], { cwd });
+      await exec("git", ["add", "work.txt", "subdir"], { cwd });
+      await exec(
+        "git",
+        [
+          "-c",
+          "user.name=Handoff Test",
+          "-c",
+          "user.email=handoff@example.test",
+          "commit",
+          "-m",
+          "Initial work",
+        ],
+        { cwd },
+      );
+    },
+  },
+])(
+  "transfers native conversation artifacts and activates a $kind workspace across real daemon restarts",
+  async ({ prepare, hasGit, subdirEntries }) => {
     const source = await startHost("source");
     let destination = await startHost("destination", true);
     const sourceDaemon = source.daemon.daemon;
     const transferId = randomUUID();
     const cwd = path.join(root, "workspace");
     await mkdir(cwd);
-    await mkdir(path.join(cwd, "empty"));
+    await mkdir(path.join(cwd, "subdir"));
     await writeFile(path.join(cwd, "work.txt"), "work in progress\n");
+    await prepare(cwd);
     const request = {
       transferId,
       sourceServerId: sourceDaemon.getServerId(),
@@ -176,10 +202,8 @@ test.skipIf(process.platform === "win32")(
     expect(await readFile(path.join(staged.stagingCwd, "work.txt"), "utf8")).toBe(
       "work in progress\n",
     );
-    expect(await readdir(path.join(staged.stagingCwd, "empty"))).toEqual([]);
-    await expect(readFile(path.join(staged.stagingCwd, ".git"))).rejects.toMatchObject({
-      code: "ENOENT",
-    });
+    expect(await readdir(path.join(staged.stagingCwd, "subdir"))).toEqual(subdirEntries);
+    expect((await readdir(staged.stagingCwd)).includes(".git")).toBe(hasGit);
     await sourceDaemon.handoffOwnership.markReady(transferId, manifest.entrypoint.sha256);
     const receipt = await sourceDaemon.handoffOwnership.release(
       transferId,
@@ -219,6 +243,31 @@ test.skipIf(process.platform === "win32")(
     await expect(readdir(reserved.destinationCwd)).rejects.toMatchObject({ code: "ENOENT" });
     expect((await destination.client.fetchAgents()).entries).toEqual([]);
     expect(await readFile(importedPath, "utf8")).toBe(transcript);
+    const active = await destination.daemon.daemon.handoffDestination.activate(transferId);
+    expect(active.state).toBe("active");
+    expect(await destination.daemon.daemon.handoffDestination.activate(transferId)).toEqual(active);
+    expect(await readFile(path.join(active.destinationCwd, "work.txt"), "utf8")).toBe(
+      "work in progress\n",
+    );
+    expect((await readdir(active.destinationCwd)).includes(".git")).toBe(hasGit);
+    const agentId = active.agentMappings[0].destinationAgentId;
+    const record = await destination.daemon.daemon.agentStorage.get(agentId);
+    expect(record).toMatchObject({
+      id: agentId,
+      workspaceId: active.workspaceId,
+      cwd: active.destinationCwd,
+      lastStatus: "closed",
+      persistence: { sessionId },
+    });
+    expect((await destination.client.fetchAgents()).entries.map((entry) => entry.agent.id)).toEqual(
+      [agentId],
+    );
+    await stopHost(destination);
+    destination = await startHost("destination", true);
+    expect((await destination.client.fetchAgents()).entries.map((entry) => entry.agent.id)).toEqual(
+      [agentId],
+    );
+    expect(await destination.daemon.daemon.handoffDestination.activate(transferId)).toEqual(active);
   },
   30_000,
 );

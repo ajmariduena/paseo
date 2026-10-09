@@ -1,9 +1,10 @@
+import { isDeepStrictEqual } from "node:util";
 import { promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import type { Logger } from "pino";
 
-import { writeJsonFileAtomic } from "../atomic-file.js";
+import { writeJsonFileAtomic, syncFilePublication } from "../atomic-file.js";
 import { AGENT_TURN_OUTCOMES } from "@getpaseo/protocol/agent-lifecycle";
 import { AgentFeatureSchema, AgentStatusSchema } from "../messages.js";
 import { toStoredAgentRecord } from "./agent-projections.js";
@@ -125,7 +126,11 @@ export class AgentStorage {
   private loadPromise: Promise<StoredAgentRecord[]> | null = null;
   private logger: Logger;
 
-  constructor(baseDir: string, logger: Logger) {
+  constructor(
+    baseDir: string,
+    logger: Logger,
+    private readonly isVisible: (id: string) => boolean = () => true,
+  ) {
     this.baseDir = baseDir;
     this.logger = logger.child({ module: "agent", component: "agent-storage" });
   }
@@ -136,12 +141,12 @@ export class AgentStorage {
 
   async list(): Promise<StoredAgentRecord[]> {
     await this.load();
-    return Array.from(this.cache.values());
+    return Array.from(this.cache.values()).filter((record) => this.isVisible(record.id));
   }
 
   async get(agentId: string): Promise<StoredAgentRecord | null> {
     await this.load();
-    return this.cache.get(agentId) ?? null;
+    return this.isVisible(agentId) ? (this.cache.get(agentId) ?? null) : null;
   }
 
   async listByProviderSession(
@@ -151,6 +156,7 @@ export class AgentStorage {
     await this.load();
     return Array.from(this.cache.values()).filter(
       (record) =>
+        this.isVisible(record.id) &&
         record.persistence?.provider === provider &&
         (record.persistence.sessionId === providerHandleId ||
           record.persistence.nativeHandle === providerHandleId),
@@ -159,13 +165,29 @@ export class AgentStorage {
 
   async listByWorkspace(workspaceId: string): Promise<StoredAgentRecord[]> {
     await this.load();
-    return Array.from(this.cache.values()).filter((record) => record.workspaceId === workspaceId);
+    return Array.from(this.cache.values()).filter(
+      (record) => this.isVisible(record.id) && record.workspaceId === workspaceId,
+    );
   }
 
   async findByDaemonExecution(owner: DaemonAgentOwner): Promise<StoredAgentRecord | null> {
     await this.load();
     const agentId = this.daemonAgentIdsByExecution.get(daemonExecutionKey(owner));
-    return agentId ? (this.cache.get(agentId) ?? null) : null;
+    return agentId ? this.get(agentId) : null;
+  }
+
+  async installHandoffRecord(record: StoredAgentRecord): Promise<void> {
+    await this.load();
+    const parsed = parseStoredAgentRecord(record);
+    await this.queueRecordMutation(
+      parsed.id,
+      (existing) => {
+        if (existing && !isDeepStrictEqual(existing, parsed))
+          throw new Error("Handoff agent identity is already occupied");
+        return parsed;
+      },
+      () => syncFilePublication(this.buildRecordPath(parsed), path.dirname(this.baseDir)),
+    );
   }
 
   async upsert(record: StoredAgentRecord): Promise<void> {
@@ -180,6 +202,7 @@ export class AgentStorage {
   private queueRecordMutation(
     agentId: string,
     mutate: (existing: StoredAgentRecord | null) => StoredAgentRecord,
+    afterWrite?: () => Promise<void>,
   ): Promise<void> {
     const prev = this.pendingWrites.get(agentId) ?? Promise.resolve();
     const next = prev.then(async () => {
@@ -189,6 +212,7 @@ export class AgentStorage {
 
       const record = mutate(this.cache.get(agentId) ?? null);
       await this.writeRecord(record);
+      await afterWrite?.();
       return undefined;
     });
 

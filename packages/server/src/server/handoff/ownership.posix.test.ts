@@ -5,6 +5,10 @@ import path from "node:path";
 import { afterEach, beforeEach, expect, test as platformTest } from "vitest";
 import { HandoffOwnership, verifyHandoffRelease } from "./ownership.js";
 import { writeJournal } from "./artifacts.js";
+import { createTestLogger } from "../../test-utils/test-logger.js";
+import { AgentStorage, type StoredAgentRecord } from "../agent/agent-storage.js";
+import { FileBackedProjectRegistry, FileBackedWorkspaceRegistry } from "../workspace-registry.js";
+import { createHandoffPublication, type HandoffPublication } from "./publication.js";
 import { HandoffDestination } from "./destination.js";
 import { HandoffArchiveStore } from "./archive.js";
 import { packHandoffArchive, readHandoffBundle } from "./bundle.js";
@@ -66,7 +70,11 @@ test("reserves stable destination identities across restart without dropping unp
 });
 
 async function nativeDestinationFixture(
-  input: { write?: typeof writeJournal; agentIds?: string[] } = {},
+  input: {
+    write?: typeof writeJournal;
+    agentIds?: string[];
+    publication?: HandoffPublication;
+  } = {},
 ) {
   const transferId = randomUUID();
   const store = new HandoffArchiveStore(path.join(root, "archives"));
@@ -76,6 +84,7 @@ async function nativeDestinationFixture(
     serverId: "destination-host",
     archives: store,
     write: input.write,
+    publication: input.publication,
     resolveClaudeRuntime: async () => ({ configDir: claudeHome, cliVersion: "2.1.295" }),
   };
   const destination = new HandoffDestination(options);
@@ -176,6 +185,147 @@ test("stages native conversations under reserved identities and recovers them af
   expect((await recovered.acceptRelease(transferId, receipt)).state).toBe("released");
   await expect(recovered.cancel(transferId)).rejects.toMatchObject({ code: "invalid_state" });
   expect(await readFile(importedPath, "utf8")).toBe(transcript);
+});
+
+test.each([
+  "before records",
+  "partial records",
+  "after records",
+  "before active journal",
+  "after active journal",
+])("recovers hidden destination publication after failure %s", async (failurePoint) => {
+  let current: HandoffDestination;
+  let failOnce = true;
+  const logger = createTestLogger();
+  const isVisible = (id: string) => current.isIdentityVisible(id);
+  class InterruptedAgentStorage extends AgentStorage {
+    override async installHandoffRecord(record: StoredAgentRecord): Promise<void> {
+      if (failOnce && failurePoint === "partial records") {
+        failOnce = false;
+        throw new Error("interrupted publication");
+      }
+      await super.installHandoffRecord(record);
+    }
+  }
+  const projects = new FileBackedProjectRegistry(
+    path.join(root, "projects", "projects.json"),
+    logger,
+    { isVisible },
+  );
+  const workspaces = new FileBackedWorkspaceRegistry(
+    path.join(root, "projects", "workspaces.json"),
+    logger,
+    { isVisible },
+  );
+  const agents = new InterruptedAgentStorage(path.join(root, "agents"), logger, isVisible);
+  const publication = createHandoffPublication({
+    projects,
+    workspaces,
+    agents,
+    agentManager: { publishStoredAgent: async () => {} },
+  });
+  const interrupted: HandoffPublication = {
+    async install(input) {
+      if (failOnce && failurePoint === "before records") {
+        failOnce = false;
+        throw new Error("interrupted publication");
+      }
+      await publication.install(input);
+      if (failOnce && failurePoint === "after records") {
+        failOnce = false;
+        throw new Error("interrupted publication");
+      }
+    },
+    publish: publication.publish,
+  };
+  const write: typeof writeJournal = async (file, value) => {
+    const active = JSON.stringify(value).includes('"state":"active"');
+    if (active) {
+      expect(await projects.list()).toEqual([]);
+      expect(await workspaces.list()).toEqual([]);
+      expect(await agents.list()).toEqual([]);
+      expect(() =>
+        current.assertMutationAllowed({ cwd: current.status(fixture.transferId).destinationCwd }),
+      ).toThrow("finish activation");
+    }
+    if (active && failOnce && failurePoint === "before active journal") {
+      failOnce = false;
+      throw new Error("interrupted publication");
+    }
+    await writeJournal(file, value);
+    if (active && failOnce && failurePoint === "after active journal") {
+      failOnce = false;
+      throw new Error("interrupted publication");
+    }
+  };
+  const fixture = await nativeDestinationFixture({ publication: interrupted, write });
+  current = fixture.destination;
+  const { transferId, options, reservation, manifest } = fixture;
+  await current.stage(transferId);
+  await expect(current.activate(transferId)).rejects.toMatchObject({ code: "invalid_state" });
+  await ownership.markReady(transferId, manifest.entrypoint.sha256);
+  const receipt = await ownership.release(
+    transferId,
+    {
+      version: 1,
+      transferId,
+      sourceServerId,
+      destinationServerId: options.serverId,
+      reservationId: reservation.reservationId,
+      manifestDigest: manifest.entrypoint.sha256,
+    },
+    async () => {},
+  );
+  await current.acceptRelease(transferId, receipt);
+  await expect(current.activate(transferId)).rejects.toThrow("interrupted publication");
+  expect(await projects.list()).toEqual([]);
+  expect(await workspaces.list()).toEqual([]);
+  expect(await agents.list()).toEqual([]);
+  expect(await agents.get(reservation.agentMappings[0].destinationAgentId)).toBeNull();
+  expect(() => current.assertMutationAllowed({ cwd: reservation.destinationCwd })).toThrow(
+    "finish activation",
+  );
+  const recoveredProjects = new FileBackedProjectRegistry(
+    path.join(root, "projects", "projects.json"),
+    logger,
+    { isVisible },
+  );
+  const recoveredWorkspaces = new FileBackedWorkspaceRegistry(
+    path.join(root, "projects", "workspaces.json"),
+    logger,
+    { isVisible },
+  );
+  const recoveredAgents = new AgentStorage(path.join(root, "agents"), logger, isVisible);
+  const recoveredPublication = createHandoffPublication({
+    projects: recoveredProjects,
+    workspaces: recoveredWorkspaces,
+    agents: recoveredAgents,
+    agentManager: { publishStoredAgent: async () => {} },
+  });
+  current = new HandoffDestination({
+    ...options,
+    write: writeJournal,
+    publication: recoveredPublication,
+  });
+  await current.initialize();
+  await current.recoverActivations();
+  const active = await current.activate(transferId);
+  expect(active.state).toBe("active");
+  expect(await current.activate(transferId)).toEqual(active);
+  expect((await recoveredProjects.list()).map((record) => record.projectId)).toEqual([
+    reservation.projectId,
+  ]);
+  expect(
+    (await recoveredWorkspaces.list()).map((record) => [record.workspaceId, record.kind]),
+  ).toEqual([[reservation.workspaceId, "directory"]]);
+  expect((await recoveredAgents.list()).map((record) => [record.id, record.lastStatus])).toEqual([
+    [reservation.agentMappings[0].destinationAgentId, "closed"],
+  ]);
+  expect(() => current.assertMutationAllowed({ cwd: reservation.destinationCwd })).not.toThrow();
+  const agentId = reservation.agentMappings[0].destinationAgentId;
+  await recoveredAgents.setTitle(agentId, "Renamed after activation");
+  await current.activate(transferId);
+  expect((await recoveredAgents.get(agentId))?.title).toBe("Renamed after activation");
 });
 
 test("refuses an archive missing a reserved conversation before installing or staging files", async () => {

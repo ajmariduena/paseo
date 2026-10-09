@@ -72,7 +72,7 @@ export class HandoffOwnershipError extends Error {
 function reject(code: HandoffOwnershipError["code"], message: string): never {
   throw new HandoffOwnershipError(code, message);
 }
-function overlaps(left: string, right: string): boolean {
+export function handoffPathsOverlap(left: string, right: string): boolean {
   const within = (parent: string, child: string) => {
     const relative = path.relative(parent, child);
     return (
@@ -87,7 +87,7 @@ function protects(record: SourceRecord, scope: HandoffMutationScope): boolean {
     record.state !== "cancelled" &&
     (record.workspaceId === scope.workspaceId ||
       record.agentIds.includes(scope.agentId ?? "") ||
-      overlaps(record.cwd, scope.cwd))
+      handoffPathsOverlap(record.cwd, scope.cwd))
   );
 }
 function publicStatus(record: SourceRecord): SourceHandoffStatus {
@@ -130,6 +130,7 @@ export class HandoffOwnership {
       directory: string;
       sourceServerId: string;
       write?: typeof writeJournal;
+      assertAdditionalAdmission?: (scope: HandoffMutationScope) => void;
     },
   ) {
     this.journalPath = path.join(options.directory, "ownership.json");
@@ -341,6 +342,7 @@ export class HandoffOwnership {
   }
   private assertAllowed(scope: HandoffMutationScope): void {
     this.assertHealthy();
+    this.options.assertAdditionalAdmission?.(scope);
     const fence = [...this.records.values()].find((record) => protects(record, scope));
     if (fence) reject("fenced", `Workspace is held by handoff ${fence.id} (${fence.state})`);
   }

@@ -17,10 +17,8 @@ import { resolvePaseoWorktreesBaseRoot } from "../utils/worktree.js";
 import { HtmlRenderStore } from "./agent/html-render/store.js";
 import { HandoffOwnership } from "./handoff/ownership.js";
 import { HandoffArchiveStore } from "./handoff/archive.js";
-import { resolveClaudeCodeVersion } from "./agent/providers/claude/agent.js";
-import { claudeConfigDir } from "./agent/providers/claude/project-dir.js";
-import { createProviderEnv } from "./agent/provider-launch-config.js";
-import { HandoffDestination } from "./handoff/destination.js";
+import { createHandoffPublication } from "./handoff/publication.js";
+import { createHandoffDestination, type HandoffDestination } from "./handoff/destination.js";
 
 export type ListenTarget =
   | { type: "tcp"; host: string; port: number }
@@ -698,24 +696,23 @@ export async function createPaseoDaemon(
   const handoffOwnership = new HandoffOwnership({
     directory: path.join(config.paseoHome, "handoff-ownership"),
     sourceServerId: serverId,
+    assertAdditionalAdmission: (scope) => handoffDestination.assertMutationAllowed(scope),
   });
   // A damaged ledger must stop boot before providers, queues or automation can resume writers.
   await handoffOwnership.initialize();
   const handoffArchives = new HandoffArchiveStore(
     path.join(config.paseoHome, "handoff", "archives"),
   );
-  const handoffDestination = new HandoffDestination({
+  const handoffDestination = createHandoffDestination({
     directory: path.join(config.paseoHome, "handoff-destination"),
     serverId,
     archives: handoffArchives,
-    resolveClaudeRuntime: async () => {
-      const runtimeSettings = providerSnapshotManager.getProviderRuntimeSettings("claude");
-      const env = createProviderEnv({ runtimeSettings });
-      return {
-        configDir: path.resolve(claudeConfigDir(env)),
-        cliVersion: await resolveClaudeCodeVersion(runtimeSettings),
-      };
+    publication: {
+      install: (input) => publication().install(input),
+      publish: (record) => publication().publish(record),
     },
+    getProviderRuntimeSettings: (provider) =>
+      providerSnapshotManager.getProviderRuntimeSettings(provider),
   });
   await handoffDestination.initialize();
   const obsoleteTimelineDirectory = path.join(config.paseoHome, "agent-timelines");
@@ -1014,14 +1011,18 @@ export async function createPaseoDaemon(
     serviceProxyListenTarget = parseListenString(config.serviceProxy.standaloneListen);
   }
 
-  const agentStorage = new AgentStorage(config.agentStoragePath, logger);
+  const agentStorage = new AgentStorage(config.agentStoragePath, logger, (id) =>
+    handoffDestination.isIdentityVisible(id),
+  );
   const projectRegistry = new FileBackedProjectRegistry(
     path.join(config.paseoHome, "projects", "projects.json"),
     logger,
+    { isVisible: (id) => handoffDestination.isIdentityVisible(id) },
   );
   workspaceRegistry = new FileBackedWorkspaceRegistry(
     path.join(config.paseoHome, "projects", "workspaces.json"),
     logger,
+    { isVisible: (id) => handoffDestination.isIdentityVisible(id) },
   );
   const workspaceLabelService = createWorkspaceLabelService({
     paseoHome: config.paseoHome,
@@ -1084,6 +1085,15 @@ export async function createPaseoDaemon(
     if (git) configureGitProcessPolicy(git);
   });
   const initialAgentManagerState = providerSnapshotManager.getAgentManagerProviderState();
+  function publication() {
+    if (!workspaceRegistry) throw new Error("Workspace registry is unavailable");
+    return createHandoffPublication({
+      projects: projectRegistry,
+      workspaces: workspaceRegistry,
+      agents: agentStorage,
+      agentManager,
+    });
+  }
   const agentManager = new AgentManager({
     paseoHome: config.paseoHome,
     handoffOwnership,
@@ -1618,6 +1628,7 @@ export async function createPaseoDaemon(
     }
   });
   logger.info({ elapsed: elapsed() }, "Schedule service initialized");
+  await handoffDestination.recoverActivations();
   logger.info({ elapsed: elapsed() }, "Loading persisted agent registry");
   const persistedRecords = await agentStorage.list();
   logger.info(

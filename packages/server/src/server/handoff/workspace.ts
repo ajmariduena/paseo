@@ -873,7 +873,7 @@ interface WorkspaceArchiveContentsInput {
   limits?: WorkspaceSnapshotLimits;
 }
 
-async function readWorkspaceFromArchive(
+export async function readWorkspaceFromArchive(
   input: WorkspaceArchiveContentsInput,
 ): Promise<WorkspaceManifest> {
   const limits = input.limits ?? WORKSPACE_SNAPSHOT_LIMITS;

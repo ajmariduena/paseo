@@ -1,14 +1,20 @@
 import { createPublicKey, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readdir, realpath, rm } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, realpath, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { HandoffArchiveManifestSchema, HandoffTransferIdSchema } from "@getpaseo/protocol/handoff";
 import type { HandoffArchiveStore, VerifiedHandoffArchive } from "./archive.js";
 import { readBoundedFile, syncDirectory, writeJournal } from "./artifacts.js";
-import { verifyHandoffRelease, type HandoffReleaseReceipt } from "./ownership.js";
+import {
+  verifyHandoffRelease,
+  handoffPathsOverlap,
+  type HandoffMutationScope,
+  type HandoffReleaseReceipt,
+} from "./ownership.js";
 import {
   HandoffWorkspaceError,
+  readWorkspaceFromArchive,
   restoreWorkspaceFromArchive,
   verifyWorkspaceFromArchive,
 } from "./workspace.js";
@@ -19,6 +25,12 @@ import {
   removeClaudeSessionInstallation,
 } from "../agent/providers/claude/handoff.js";
 import { generateProjectId, generateWorkspaceId } from "../workspace-registry-model.js";
+import type { ProviderSnapshotManager } from "../agent/provider-snapshot-manager.js";
+import { createProviderEnv } from "../agent/provider-launch-config.js";
+import { resolveClaudeCodeVersion } from "../agent/providers/claude/agent.js";
+import { claudeConfigDir } from "../agent/providers/claude/project-dir.js";
+
+import type { HandoffPublication } from "./publication.js";
 
 const ReservationSchema = z.object({
   transferId: HandoffTransferIdSchema,
@@ -49,7 +61,17 @@ const RecordSchema = ReservationSchema.extend({
     .max(1000),
   destinationCwd: z.string().min(1),
   stagingCwd: z.string().min(1),
-  state: z.enum(["reserved", "receiving", "staged", "released", "cancelled"]),
+  state: z.enum([
+    "reserved",
+    "receiving",
+    "staged",
+    "released",
+    "activating",
+    "active",
+    "cancelled",
+  ]),
+  activationAt: z.string().datetime().nullable().default(null),
+  checkoutIdentity: z.object({ dev: z.string(), ino: z.string() }).nullable().default(null),
   binding: BindingSchema.nullable(),
   receipt: z.unknown().nullable(),
   claudeRuntime: ClaudeRuntimeSchema.nullable().default(null),
@@ -71,7 +93,26 @@ interface DestinationOptions {
   serverId: string;
   archives: HandoffArchiveStore;
   write?: typeof writeJournal;
+  publication?: HandoffPublication;
   resolveClaudeRuntime?: () => Promise<z.infer<typeof ClaudeRuntimeSchema>>;
+}
+
+interface DaemonDestinationOptions extends Omit<DestinationOptions, "resolveClaudeRuntime"> {
+  getProviderRuntimeSettings: ProviderSnapshotManager["getProviderRuntimeSettings"];
+}
+
+export function createHandoffDestination(options: DaemonDestinationOptions): HandoffDestination {
+  return new HandoffDestination({
+    ...options,
+    resolveClaudeRuntime: async () => {
+      const runtimeSettings = options.getProviderRuntimeSettings("claude");
+      const env = createProviderEnv({ runtimeSettings });
+      return {
+        configDir: path.resolve(claudeConfigDir(env)),
+        cliVersion: await resolveClaudeCodeVersion(runtimeSettings),
+      };
+    },
+  });
 }
 
 export class HandoffDestinationError extends Error {
@@ -102,9 +143,10 @@ function containerPath(
   return path.join(record.destinationParent, `.paseo-handoff-${record.reservationId}`);
 }
 
-/** Destination preparation owns no runtime and publishes no workspace or conversation. */
+/** Preparation stays private; activation publishes closed records after durable source release. */
 export class HandoffDestination {
   private readonly records = new Map<string, DestinationHandoffStatus>();
+  private readonly identityOwners = new Map<string, string>();
   private tail: Promise<unknown> = Promise.resolve();
   private initialized = false;
   private uncertain = false;
@@ -152,7 +194,10 @@ export class HandoffDestination {
         destinations.add(record.destinationCwd);
         loaded.set(record.transferId, record);
       }
-      for (const [id, record] of loaded) this.records.set(id, record);
+      for (const [id, record] of loaded) {
+        this.records.set(id, record);
+        this.indexIdentities(record);
+      }
     }
     this.initialized = true;
   }
@@ -189,6 +234,8 @@ export class HandoffDestination {
         state: "reserved",
         binding: null,
         receipt: null,
+        activationAt: null,
+        checkoutIdentity: null,
         claudeRuntime: null,
         preparedConversations: [],
       };
@@ -229,6 +276,9 @@ export class HandoffDestination {
   stage(transferId: string): Promise<DestinationHandoffStatus> {
     return this.serialize(async () => {
       let record = this.requireRecord(transferId);
+      if (record.state === "active") return structuredClone(record);
+      if (record.state === "activating")
+        fail("invalid_state", "Finish destination activation before preparing again");
       if (!record.binding || record.state === "cancelled")
         fail("invalid_state", "Destination cannot stage this transfer");
       await this.assertContainer(record);
@@ -303,10 +353,12 @@ export class HandoffDestination {
   ): Promise<DestinationHandoffStatus> {
     return this.serialize(async () => {
       const record = this.requireRecord(transferId);
-      if (record.state !== "staged" && record.state !== "released")
+      if (!["staged", "released", "activating", "active"].includes(record.state))
         fail("invalid_state", "Destination is not ready for release");
       if (!this.validReceipt(record, receipt))
         fail("invalid_release", "Release does not match the reserved host, key and content");
+      if (record.state === "activating" || record.state === "active")
+        return structuredClone(record);
       await this.verifyStaging(record);
       if (record.state !== "released") {
         await this.save({ ...record, state: "released", receipt });
@@ -319,7 +371,7 @@ export class HandoffDestination {
   cancel(transferId: string): Promise<DestinationHandoffStatus> {
     return this.serialize(async () => {
       const record = this.requireRecord(transferId);
-      if (record.state === "released")
+      if (["released", "activating", "active"].includes(record.state))
         fail("invalid_state", "Released ownership must finish activation");
       await this.save({ ...record, state: "cancelled" });
       const claudeRuntime = record.claudeRuntime;
@@ -349,6 +401,140 @@ export class HandoffDestination {
     });
   }
 
+  isIdentityVisible(id: string): boolean {
+    const owner = this.identityOwners.get(id);
+    if (!owner) return true;
+    return !this.uncertain && this.records.get(owner)?.state === "active";
+  }
+
+  assertMutationAllowed(scope: HandoffMutationScope): void {
+    for (const record of this.records.values()) {
+      if (record.state === "cancelled" || (record.state === "active" && !this.uncertain)) continue;
+      const identityMatches =
+        record.workspaceId === scope.workspaceId ||
+        record.agentMappings.some((mapping) => mapping.destinationAgentId === scope.agentId);
+      if (
+        identityMatches ||
+        handoffPathsOverlap(record.destinationCwd, scope.cwd) ||
+        handoffPathsOverlap(containerPath(record), scope.cwd)
+      ) {
+        fail(
+          "invalid_state",
+          "Destination handoff must finish activation before accepting mutations",
+        );
+      }
+    }
+  }
+
+  async recoverActivations(): Promise<void> {
+    for (const record of this.records.values()) {
+      if (record.state === "activating") await this.activate(record.transferId);
+    }
+  }
+
+  activate(transferId: string): Promise<DestinationHandoffStatus> {
+    return this.serialize(async () => {
+      let record = this.requireRecord(transferId);
+      const publication = this.options.publication;
+      if (!publication) fail("invalid_state", "Destination publication is unavailable");
+      if (record.state === "active") {
+        await publication.publish(record);
+        return structuredClone(record);
+      }
+      if (record.state !== "released" && record.state !== "activating")
+        fail("invalid_state", "Source ownership must be released before activation");
+      if (!this.validReceipt(record, record.receipt))
+        fail("invalid_release", "Destination has no valid source release");
+      if (record.claudeRuntime) {
+        if (!this.options.resolveClaudeRuntime)
+          fail("unprepared_conversations", "Claude native runtime is unavailable");
+        const current = await this.options.resolveClaudeRuntime();
+        if (
+          current.configDir !== record.claudeRuntime.configDir ||
+          current.cliVersion !== record.claudeRuntime.cliVersion
+        )
+          fail(
+            "unprepared_conversations",
+            "Destination provider configuration changed after preparation",
+          );
+      }
+      await this.options.archives.withVerifiedArchive(transferId, async (archive) => {
+        const content = await this.readBundle(record, archive);
+        const workspace = await readWorkspaceFromArchive({
+          archive,
+          entrypoint: content.bundle.workspace,
+        });
+        if (record.state === "released") {
+          await this.verifyContents(record, archive, content);
+          try {
+            await lstat(record.destinationCwd);
+            fail("conflict", "Destination checkout already exists");
+          } catch (error) {
+            if (!isMissing(error)) throw error;
+          }
+          const stat = await lstat(record.stagingCwd, { bigint: true });
+          record = {
+            ...record,
+            state: "activating",
+            activationAt: new Date().toISOString(),
+            checkoutIdentity: { dev: String(stat.dev), ino: String(stat.ino) },
+          };
+          await this.save(record);
+        }
+        await this.moveCheckout(record);
+        await this.verifyContents(
+          { ...record, stagingCwd: record.destinationCwd },
+          archive,
+          content,
+        );
+        await publication.install({ record, bundle: content.bundle, workspace });
+        record = { ...record, state: "active" };
+        await this.save(record);
+      });
+      await publication.publish(record);
+      return structuredClone(record);
+    });
+  }
+
+  private async moveCheckout(record: DestinationHandoffStatus): Promise<void> {
+    const identity = record.checkoutIdentity;
+    if (!identity) fail("storage_uncertain", "Destination checkout identity is missing");
+    let moved = false;
+    try {
+      const destination = await lstat(record.destinationCwd, { bigint: true });
+      if (
+        !destination.isDirectory() ||
+        String(destination.dev) !== identity.dev ||
+        String(destination.ino) !== identity.ino
+      )
+        fail("conflict", "Destination checkout is not owned by this handoff");
+      moved = true;
+    } catch (error) {
+      if (!isMissing(error)) throw error;
+    }
+    if (!moved) {
+      const staging = await lstat(record.stagingCwd, { bigint: true });
+      if (
+        !staging.isDirectory() ||
+        String(staging.dev) !== identity.dev ||
+        String(staging.ino) !== identity.ino
+      )
+        fail("storage_uncertain", "Private checkout changed before activation");
+      await rename(record.stagingCwd, record.destinationCwd);
+    }
+    await syncDirectory(record.destinationParent);
+    await syncDirectory(containerPath(record));
+  }
+
+  private indexIdentities(record: DestinationHandoffStatus): void {
+    for (const id of [
+      record.projectId,
+      record.workspaceId,
+      ...record.agentMappings.map((mapping) => mapping.destinationAgentId),
+    ])
+      this.identityOwners.set(id, record.transferId);
+  }
+
   status(transferId: string): DestinationHandoffStatus {
     this.assertHealthy();
     return structuredClone(this.requireRecord(transferId));
@@ -370,11 +556,20 @@ export class HandoffDestination {
       fail("storage_uncertain", "Destination content binding is missing");
     if (
       (record.state === "reserved" && record.binding !== null) ||
-      (record.state !== "released" && record.receipt !== null)
+      (!["released", "activating", "active"].includes(record.state) && record.receipt !== null)
     )
       fail("storage_uncertain", "Destination journal state is inconsistent");
-    if (record.state === "released" && !this.validReceipt(record, record.receipt))
+    if (
+      ["released", "activating", "active"].includes(record.state) &&
+      !this.validReceipt(record, record.receipt)
+    )
       fail("storage_uncertain", "Destination release is invalid");
+    const activationStarted = record.state === "activating" || record.state === "active";
+    if (
+      activationStarted !== (record.activationAt !== null) ||
+      activationStarted !== (record.checkoutIdentity !== null)
+    )
+      fail("storage_uncertain", "Destination activation journal is inconsistent");
     this.validateConversationRecords(record);
     const sourceIds = record.agentMappings.map((mapping) => mapping.sourceAgentId);
     if (
@@ -393,7 +588,7 @@ export class HandoffDestination {
       preparedIds.some((id) => !record.sourceAgentIds.includes(id))
     )
       fail("storage_uncertain", "Invalid prepared conversation identities");
-    if (record.state === "staged" || record.state === "released") {
+    if (["staged", "released", "activating", "active"].includes(record.state)) {
       if (
         JSON.stringify(preparedIds) !== JSON.stringify([...record.sourceAgentIds].sort()) ||
         (preparedIds.length > 0 && !record.claudeRuntime)
@@ -487,15 +682,25 @@ export class HandoffDestination {
     return record;
   }
   private async save(record: DestinationHandoffStatus): Promise<void> {
+    if (record.state === "active") {
+      // Reads and mutation admission must keep seeing "activating" throughout the durable write.
+      const records = [...this.records.values()].map((existing) =>
+        existing.transferId === record.transferId ? record : existing,
+      );
+      await this.persist(records);
+      this.records.set(record.transferId, record);
+      return;
+    }
     this.records.set(record.transferId, record);
+    this.indexIdentities(record);
     await this.persist();
   }
-  private async persist(): Promise<void> {
+  private async persist(records = [...this.records.values()]): Promise<void> {
     try {
       const journal = {
         version: 1,
         serverId: this.options.serverId,
-        records: [...this.records.values()],
+        records,
       };
       if (Buffer.byteLength(JSON.stringify(journal)) > 20 * 1024 * 1024)
         fail("invalid_state", "Destination journal exceeded its byte limit");

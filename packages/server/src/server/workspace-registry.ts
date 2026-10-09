@@ -1,9 +1,11 @@
+import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { promises as fs } from "node:fs";
 
 import type { Logger } from "pino";
 import { z } from "zod";
 
-import { writeJsonFileAtomic } from "./atomic-file.js";
+import { writeJsonFileAtomic, syncFilePublication } from "./atomic-file.js";
 import { areEquivalentPaths } from "../utils/path.js";
 import {
   generateProjectId,
@@ -186,6 +188,7 @@ class FileBackedRegistry<TRecord extends RegistryRecord> {
   protected readonly logger: Logger;
   private readonly schema: z.ZodType<TRecord, unknown>;
   private readonly getId: (record: TRecord) => string;
+  protected readonly isVisible: (id: string) => boolean;
   private loaded = false;
   private readonly cache = new Map<string, TRecord>();
   private mutationQueue: Promise<void> = Promise.resolve();
@@ -198,9 +201,11 @@ class FileBackedRegistry<TRecord extends RegistryRecord> {
     schema: z.ZodType<TRecord, unknown>;
     getId: (record: TRecord) => string;
     component: string;
+    isVisible?: (id: string) => boolean;
     writeRecords?: (filePath: string, records: readonly TRecord[]) => Promise<void>;
   }) {
     this.filePath = options.filePath;
+    this.isVisible = options.isVisible ?? (() => true);
     this.schema = options.schema;
     this.getId = options.getId;
     this.logger = options.logger.child({
@@ -225,12 +230,29 @@ class FileBackedRegistry<TRecord extends RegistryRecord> {
 
   async list(): Promise<TRecord[]> {
     await this.load();
-    return Array.from(this.cache.values());
+    return Array.from(this.cache.values()).filter((record) => this.isVisible(this.getId(record)));
   }
 
   async get(id: string): Promise<TRecord | null> {
     await this.load();
-    return this.cache.get(id) ?? null;
+    return this.isVisible(id) ? (this.cache.get(id) ?? null) : null;
+  }
+
+  async installHandoffRecord(record: TRecord): Promise<void> {
+    const parsed = this.schema.parse(record);
+    await this.mutateCache(
+      (records) => {
+        const id = this.getId(parsed);
+        const existing = records.get(id);
+        if (existing && !isDeepStrictEqual(existing, parsed))
+          throw new Error("Handoff registry identity is already occupied");
+        records.set(id, parsed);
+      },
+      {
+        afterWrite: () =>
+          syncFilePublication(this.filePath, path.dirname(path.dirname(this.filePath))),
+      },
+    );
   }
 
   async upsert(record: TRecord): Promise<void> {
@@ -391,6 +413,7 @@ export class FileBackedProjectRegistry
     filePath: string,
     logger: Logger,
     options?: {
+      isVisible?: (id: string) => boolean;
       projectIdFactory?: () => string;
       writeRecords?: (
         filePath: string,
@@ -404,6 +427,7 @@ export class FileBackedProjectRegistry
       schema: PersistedProjectRecordSchema,
       getId: (record) => record.projectId,
       component: "projects",
+      isVisible: options?.isVisible,
       writeRecords: options?.writeRecords,
     });
     this.projectIdFactory = options?.projectIdFactory ?? generateProjectId;
@@ -474,6 +498,12 @@ export class FileBackedProjectRegistry
     return () => this.mutationListeners.delete(listener);
   }
 
+  async publishHandoffRecord(projectId: string): Promise<void> {
+    const project = await this.get(projectId);
+    if (!project) throw new Error("Handoff project is not visible");
+    await this.notifyMutation({ kind: "upsert", projectId, project });
+  }
+
   override async upsert(record: PersistedProjectRecord): Promise<void> {
     await super.upsert(record);
     await this.notifyMutation({ kind: "upsert", projectId: record.projectId, project: record });
@@ -522,6 +552,7 @@ export class FileBackedWorkspaceRegistry
     filePath: string,
     logger: Logger,
     options?: {
+      isVisible?: (id: string) => boolean;
       writeRecords?: (
         filePath: string,
         records: readonly PersistedWorkspaceRecord[],
@@ -534,6 +565,7 @@ export class FileBackedWorkspaceRegistry
       schema: PersistedWorkspaceRecordSchema,
       getId: (record) => record.workspaceId,
       component: "workspaces",
+      isVisible: options?.isVisible,
       writeRecords: options?.writeRecords,
     });
   }
@@ -543,6 +575,12 @@ export class FileBackedWorkspaceRegistry
   ): () => void {
     this.mutationListeners.add(listener);
     return () => this.mutationListeners.delete(listener);
+  }
+
+  async publishHandoffRecord(workspaceId: string): Promise<void> {
+    const workspace = await this.get(workspaceId);
+    if (!workspace) throw new Error("Handoff workspace is not visible");
+    await this.notifyMutation({ kind: "upsert", workspaceId, workspace });
   }
 
   override async update(

@@ -2268,6 +2268,12 @@ export class AgentManager {
     }
   }
 
+  async publishStoredAgent(agentId: string): Promise<void> {
+    const record = await this.requireRegistry().get(agentId);
+    if (!record) throw new Error("Stored agent is not visible");
+    this.dispatchStoredAgentState(record);
+  }
+
   private dispatchStoredAgentState(record: StoredAgentRecord): void {
     const updatedAt = new Date(record.updatedAt);
     const attention = extractAttention(record);

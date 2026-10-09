@@ -200,10 +200,12 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
 - `server/handoff/workspace.ts` and its neighboring tests cover Git and directory snapshots,
   restoration and source rechecks. `packWorkspaceArchive` registers the manifest as an archive blob,
   including an empty workspace; restoration consumes only referenced blobs in the verified inventory.
+  Git capture still omits empty untracked directories; preserving or reporting them remains open.
 - `archive.ts`, `archive.test.ts` and `archive.e2e.test.ts` cover persistent receive offsets,
   checksums, local capture import, and real two-daemon transport. The client coordinator in
-  `packages/client/src/handoff-transfer.ts` holds one chunk in flight. Capture/restore tests now use
-  the server archive and network path; they still do not activate a workspace or conversation.
+  `packages/client/src/handoff-transfer.ts` holds one chunk in flight. The network suite transfers
+  captured workspaces and fixture conversations through this path, then invokes destination
+  activation through the server service. Client cutover orchestration remains open.
 - `ownership.ts`, `ownership.test.ts` and `bootstrap.test.ts` cover durable source fences,
   admission draining, cancel/release races, signed receipts and loading fences before providers.
   Admission is wired through agent operations, files/Git, terminal creation/input/resize, scripts,
@@ -216,10 +218,16 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   exactly the reserved conversation set. Preparation journals the current host's Claude location
   before installing under the reserved agent IDs; retries retain that location across configuration
   changes. Cancellation removes only the transfer's inactive sessions after source cancellation.
-  Two-daemon tests transfer conversation bytes and recover installations and receipts after restart;
-  missing, corrupt or foreign destination journals prevent startup. These tests use a version-only
-  launcher and fixture transcripts. They do not publish Paseo agent records, run a turn or establish
-  full source-stop/activation correctness.
+  Activation publishes the reserved project, workspace and closed agent IDs after source release.
+  Registry reads and mutation admission remain closed until the activation journal is durable;
+  bootstrap recovers interrupted publication before loading agents. Tests reconstruct the stores
+  after failures before, during and after publication, including lost journal acknowledgements.
+  Repeated activation preserves later agent edits. Two-daemon tests publish fixture conversations,
+  retain Git/directory workspace identity and recover the same IDs after restart. They use a
+  version-only launcher; they do not establish real provider continuation or strict source stop.
+  Missing, corrupt or foreign destination journals prevent startup. The final checkout move uses
+  an identity-checked POSIX rename; atomic no-replace behavior against external filesystem writers
+  remains an acceptance gap.
 - `utils/tree-kill.test.ts`, `managed-processes.test.ts` and `bootstrap-managed-processes.test.ts`
   cover observed descendant termination, helper retention and awaited startup recovery. The
   coordinator still needs launch-time ownership and durable uncertain-stop recovery.
@@ -231,8 +239,8 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   occur there and the original transcript remains unchanged. This is provider evidence, not a
   two-daemon cutover. Compaction, external attachments, file checkpoints, rewind/fork namespace
   handling and cross-OS evidence remain open before enabling native handoff.
-- Source preparation, publication of closed Paseo agent records, destination activation, readable
-  moved history, automation dispositions and the app flow remain unimplemented. The composite
+- Source preparation, client cutover orchestration, readable moved history, automation dispositions
+  and the app flow remain unimplemented. The composite
   archive currently supports native Claude conversations; other codecs and explicit context-export
   continuation remain open. Complete handoff is not advertised.
 
