@@ -2,6 +2,46 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const ja: TranslationResources = {
+  handoff: {
+    title: "ワークスペースを別のホストに移動",
+    destination: "移動先ホスト",
+    chooseHost: "ホストを選択",
+    noHosts: "別のホストを接続してワークスペースを移動してください",
+    parent: "移動先の親ディレクトリ",
+    mode: "会話の引き継ぎ",
+    native: "ネイティブセッションを保持",
+    context: "エクスポートした履歴で続行",
+    nativeDescription:
+      "ネイティブセッションには両ホストで互換性のあるプロバイダーバージョンが必要です。互換性がない場合、転送は停止します。",
+    contextDescription:
+      "会話は、閲覧可能なエクスポート済み履歴と引き継ぎ要約を使って新しいセッションで開始されます。",
+    stopNotice:
+      "準備中にエージェント、ターミナル、セットアップが停止します。無視対象の未追跡ファイルは除外されます。プロバイダーには移動先ホストの認証情報を使用します。移動元での以後の変更は同期されません。",
+    prepare: "転送を準備",
+    activate: "ワークスペースを移動",
+    resume: "再開",
+    cancel: "転送をキャンセル",
+    open: "移動先を開く",
+    startOver: "新しい転送",
+    loading: "保存済み転送を読み込み中…",
+    inspecting: "ワークスペースを確認中…",
+    preparing_source: "移動元を停止してワークスペースを保存中…",
+    transferring: "ファイルを転送中…",
+    preparing_destination: "移動先を準備中…",
+    ready:
+      "移動先の準備ができました。ワークスペースを移動して続行してください。移動元は停止しています。",
+    releasing: "移動元の制御を解放中…",
+    activating: "移動先を有効化中…",
+    active: "ワークスペースを移動しました。移動先ホストで続行してください。",
+    cancelled: "転送をキャンセルしました。移動元を再び使用できます。",
+    paused: "転送を保存しました。再開して両ホストを確認し、続行してください。",
+    forward:
+      "移動先での有効化を完了してください。移動元はすでに制御を解放している可能性があり、元に戻せません。",
+    saving: "転送を保存中…",
+    closeNotice: "このウィンドウを閉じ、このワークスペースから再度開いて再開できます。",
+    connectHosts: "両ホストを接続して続行してください",
+    updateHosts: "両ホストをワークスペースの移動に対応したバージョンに更新してください",
+  },
   quickPrompts: {
     longPressOpens: "長押しで別のプロンプトを選択",
     defaultBadge: "デフォルト",

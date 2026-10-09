@@ -1,4 +1,43 @@
 export const en = {
+  handoff: {
+    title: "Move workspace to another host",
+    destination: "Destination host",
+    chooseHost: "Choose a host",
+    noHosts: "Connect another host to move this workspace",
+    parent: "Destination parent directory",
+    mode: "Conversation continuity",
+    native: "Keep native sessions",
+    context: "Continue with exported history",
+    nativeDescription:
+      "Native sessions require compatible provider versions on both hosts. An incompatible session will stop the transfer.",
+    contextDescription:
+      "Conversations will start new provider sessions with readable exported history and a continuation brief.",
+    stopNotice:
+      "Preparation stops agents, terminals and setup. Ignored, untracked files are excluded. Provider access uses the destination host's credentials. Later edits on the source do not sync.",
+    prepare: "Prepare transfer",
+    activate: "Move workspace",
+    resume: "Resume",
+    cancel: "Cancel transfer",
+    open: "Open destination",
+    startOver: "New transfer",
+    loading: "Loading saved transfer…",
+    inspecting: "Inspecting workspace…",
+    preparing_source: "Stopping source and capturing workspace…",
+    transferring: "Transferring files…",
+    preparing_destination: "Preparing destination…",
+    ready: "Destination prepared. Move the workspace to continue there; the source is stopped.",
+    releasing: "Releasing source ownership…",
+    activating: "Activating destination…",
+    active: "Workspace moved. Continue on the destination host.",
+    cancelled: "Transfer cancelled. The source can be used again.",
+    paused: "Transfer saved. Resume to check both hosts and continue.",
+    forward:
+      "Finish activation on the destination. The source may already be released and cannot be used to roll back.",
+    saving: "Saving transfer…",
+    closeNotice: "You can close this window and reopen it from this workspace to resume.",
+    connectHosts: "Connect both hosts to continue",
+    updateHosts: "Update both hosts to a version that supports workspace handoff",
+  },
   quickPrompts: {
     longPressOpens: "Long press to choose another prompt",
     defaultBadge: "Default",

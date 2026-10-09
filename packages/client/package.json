@@ -24,6 +24,10 @@
     "./internal/daemon-client-websocket-transport": {
       "types": "./dist/daemon-client-websocket-transport.d.ts",
       "default": "./dist/daemon-client-websocket-transport.js"
+    },
+    "./internal/workspace-handoff": {
+      "types": "./dist/workspace-handoff.d.ts",
+      "default": "./dist/workspace-handoff.js"
     }
   },
   "publishConfig": {

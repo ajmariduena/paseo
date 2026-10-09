@@ -2,6 +2,47 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const fr: TranslationResources = {
+  handoff: {
+    title: "Déplacer le workspace vers un autre hôte",
+    destination: "Hôte de destination",
+    chooseHost: "Choisir un hôte",
+    noHosts: "Connectez un autre hôte pour déplacer ce workspace",
+    parent: "Dossier parent de destination",
+    mode: "Continuité des conversations",
+    native: "Conserver les sessions natives",
+    context: "Continuer avec l’historique exporté",
+    nativeDescription:
+      "Les sessions natives nécessitent des versions compatibles du fournisseur sur les deux hôtes. Une session incompatible arrêtera le transfert.",
+    contextDescription:
+      "Les conversations ouvriront de nouvelles sessions avec l’historique exporté lisible et un résumé de reprise.",
+    stopNotice:
+      "La préparation arrête les agents, terminaux et scripts de configuration. Les fichiers ignorés non suivis sont exclus. Le fournisseur utilise les identifiants de l’hôte de destination. Les modifications ultérieures à la source ne sont pas synchronisées.",
+    prepare: "Préparer le transfert",
+    activate: "Déplacer le workspace",
+    resume: "Reprendre",
+    cancel: "Annuler le transfert",
+    open: "Ouvrir la destination",
+    startOver: "Nouveau transfert",
+    loading: "Chargement du transfert enregistré…",
+    inspecting: "Inspection du workspace…",
+    preparing_source: "Arrêt de la source et capture du workspace…",
+    transferring: "Transfert des fichiers…",
+    preparing_destination: "Préparation de la destination…",
+    ready: "Destination prête. Déplacez le workspace pour y continuer ; la source est arrêtée.",
+    releasing: "Libération du contrôle à la source…",
+    activating: "Activation de la destination…",
+    active: "Workspace déplacé. Continuez sur l’hôte de destination.",
+    cancelled: "Transfert annulé. La source peut être réutilisée.",
+    paused: "Transfert enregistré. Reprenez pour vérifier les deux hôtes et continuer.",
+    forward:
+      "Terminez l’activation à destination. La source a peut-être déjà cédé le contrôle et ne permet pas d’annuler le déplacement.",
+    saving: "Enregistrement du transfert…",
+    closeNotice:
+      "Vous pouvez fermer cette fenêtre et la rouvrir depuis ce workspace pour reprendre.",
+    connectHosts: "Connectez les deux hôtes pour continuer",
+    updateHosts:
+      "Mettez les deux hôtes à jour vers une version prenant en charge le transfert de workspaces",
+  },
   quickPrompts: {
     longPressOpens: "Appui long pour choisir un autre prompt",
     defaultBadge: "Par défaut",

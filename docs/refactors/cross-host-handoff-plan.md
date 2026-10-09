@@ -217,8 +217,8 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   transfer, staging, signed release and activation through correlated `workspace.handoff.*` RPCs.
   Retry reuses the hosts' journals and transfer ID. A network regression loses the release reply,
   restarts both hosts and removes the original directory before recovering the same destination
-  workspace. Invalid release signatures are refused. The caller must retain the transfer ID;
-  durable app state and transfer discovery remain open. Cancellation uses the source's durable proof
+  workspace. Invalid release signatures are refused. The app retains the transfer ID and operation
+  intent before sending mutating RPCs; server-side transfer discovery remains open. Cancellation uses the source's durable proof
   before discarding destination staging. Tests cover a delayed prepare, lost cancellation replies,
   host restarts, wrong keys and signatures, persistence failures, and both cancel/release orderings.
 - `ownership.ts`, `ownership.test.ts` and `bootstrap.test.ts` cover durable source fences,
@@ -259,7 +259,8 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   recovery and bounded Unicode excerpts. A real two-daemon Claude test uses the client coordinator
   and RPCs, starts a new session and recovers a prior-only token from exported files to write in the
   destination workspace. Reservation
-  status and agent labels expose the mode; the app's preflight and conversation display remain open.
+  status and agent labels expose the mode. The app offers an explicit native/context choice for the
+  whole workspace; per-conversation compatibility reasons and provenance display remain open.
   Source decoding still uses the tested Claude codec; other providers and incompatible source
   formats are not yet exportable. External attachments are reported as unavailable, not transported.
 - `utils/tree-kill.test.ts`, `managed-processes.test.ts` and `bootstrap-managed-processes.test.ts`
@@ -279,8 +280,21 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   cursor epoch while a new source prompt remains refused.
   Compaction, external attachments, file checkpoints, rewind/fork namespace handling and cross-OS
   evidence remain open before enabling native handoff.
-- Source retirement/tombstones, automation dispositions and the app
-  flow remain unimplemented. The composite archive currently captures Claude conversations;
+- `packages/app/src/handoff` connects the workspace menu to the client coordinator. Its form persists
+  transfer identity and intent before host mutations, preserves the selected mode across reopening,
+  and exposes prepare, activate, retry, cancel and destination navigation. Read-only placement errors
+  leave the form editable. Ten form cases cover lost replies, storage failures, duplicate submissions,
+  closing during work, cancellation recovery and host journals advancing past local state. The feature
+  gate is checked on both hosts; only isolated test daemons advertise it. Two browser cases use real
+  isolated daemons and a directory workspace: desktop preparation/reload/activation verifies bytes
+  and destination navigation; compact context selection/reload/cancellation leaves the source usable.
+  These workspaces contain no conversations. See the [raw app results](../qa-evidence/handoff-app.txt)
+  and [desktop](../qa-evidence/handoff-app-desktop.png) / [compact](../qa-evidence/handoff-app-compact.png)
+  screenshots. Transfer discovery without
+  local state, recovery with the source offline, pinned-key client persistence, per-conversation
+  preflight, source moved state and native-platform evidence remain open.
+- Source retirement/tombstones and automation dispositions remain unimplemented.
+  The composite archive currently captures Claude conversations;
   other provider codecs remain open. Complete handoff is not advertised.
 
 Keep feature code in `server/handoff`, provider transport in provider-owned codecs and orchestration

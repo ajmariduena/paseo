@@ -2,6 +2,46 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const es: TranslationResources = {
+  handoff: {
+    title: "Mover workspace a otro host",
+    destination: "Host de destino",
+    chooseHost: "Elige un host",
+    noHosts: "Conecta otro host para mover este workspace",
+    parent: "Directorio padre en destino",
+    mode: "Continuidad de las conversaciones",
+    native: "Conservar sesiones nativas",
+    context: "Continuar con historial exportado",
+    nativeDescription:
+      "Las sesiones nativas requieren versiones compatibles del proveedor en ambos hosts. Una sesión incompatible detendrá el traslado.",
+    contextDescription:
+      "Las conversaciones abrirán sesiones nuevas del proveedor con el historial exportado legible y un resumen para continuar.",
+    stopNotice:
+      "La preparación detiene agentes, terminales y configuración. Se excluyen los archivos ignorados que no están versionados. El proveedor usa las credenciales del host de destino. Los cambios posteriores en origen no se sincronizan.",
+    prepare: "Preparar traslado",
+    activate: "Mover workspace",
+    resume: "Reanudar",
+    cancel: "Cancelar traslado",
+    open: "Abrir destino",
+    startOver: "Nuevo traslado",
+    loading: "Cargando traslado guardado…",
+    inspecting: "Inspeccionando workspace…",
+    preparing_source: "Deteniendo origen y capturando workspace…",
+    transferring: "Transfiriendo archivos…",
+    preparing_destination: "Preparando destino…",
+    ready: "Destino preparado. Mueve el workspace para continuar allí; el origen está detenido.",
+    releasing: "Liberando el control del origen…",
+    activating: "Activando destino…",
+    active: "Workspace trasladado. Continúa en el host de destino.",
+    cancelled: "Traslado cancelado. Puedes volver a usar el origen.",
+    paused: "Traslado guardado. Reanuda para consultar ambos hosts y continuar.",
+    forward:
+      "Completa la activación en destino. El origen podría haber cedido ya el control y no permite revertir el traslado.",
+    saving: "Guardando traslado…",
+    closeNotice:
+      "Puedes cerrar esta ventana y volver a abrirla desde este workspace para reanudar.",
+    connectHosts: "Conecta ambos hosts para continuar",
+    updateHosts: "Actualiza ambos hosts a una versión compatible con el traslado de workspaces",
+  },
   quickPrompts: {
     longPressOpens: "Mantén pulsado para elegir otro prompt",
     defaultBadge: "Predeterminado",

@@ -174,6 +174,7 @@ interface WebSocketServerConfig {
   hostnames?: HostnamesConfig;
   getAllowedOrigins?: () => Set<string>;
   getHostnames?: () => HostnamesConfig | undefined;
+  workspaceHandoff?: boolean;
   daemonStatusRpc?: boolean;
   relayConfig?: boolean;
   startPaused?: boolean;
@@ -618,6 +619,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly browserScreencastBroker: BrowserScreencastBroker | null;
   private readonly hubRelationships: HubRelationshipManagement | null;
   private connectionLifecycle: "starting" | "accepting" | "stopping" = "accepting";
+  private readonly advertiseWorkspaceHandoff: boolean;
   private readonly advertiseDaemonStatusRpc: boolean;
   private readonly advertiseRelayConfig: boolean;
   private readonly directorySync = new DirectorySyncService();
@@ -706,6 +708,8 @@ export class VoiceAssistantWebSocketServer {
     this.delegations = delegations;
     this.agentStop = agentStop;
     this.workspaceSetupRuntime = workspaceSetupRuntime;
+    // Only isolated test hosts enable this until the complete handoff delivery gates pass.
+    this.advertiseWorkspaceHandoff = wsConfig.workspaceHandoff === true;
     this.advertiseDaemonStatusRpc = wsConfig.daemonStatusRpc !== false;
     this.advertiseRelayConfig = wsConfig.relayConfig !== false;
     this.connectionLifecycle = wsConfig.startPaused === true ? "starting" : "accepting";
@@ -1907,6 +1911,7 @@ export class VoiceAssistantWebSocketServer {
         forgeLinkSummaries: true,
         // COMPAT(scratchWorkspaces): added in v0.10.3; remove gate after 2027-10-01.
         scratchWorkspaces: true,
+        ...(this.advertiseWorkspaceHandoff ? { workspaceHandoff: true } : {}),
         // COMPAT(daemonStatusRpc): added in v0.1.76, remove gate after 2026-11-18.
         ...(this.advertiseDaemonStatusRpc ? { daemonStatusRpc: true } : {}),
         // COMPAT(daemonConfigReload): added in v0.4.0, remove gate after 2027-02-14.

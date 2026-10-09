@@ -10,7 +10,8 @@ async function main(): Promise<void> {
 
   const daemon = await createTestPaseoDaemon({
     corsAllowedOrigins: [`http://localhost:${metroPort}`],
-    daemonVersion: "0.0.0",
+    daemonVersion: process.env.E2E_DAEMON_VERSION ?? "0.0.0",
+    workspaceHandoffCapability: process.env.E2E_WORKSPACE_HANDOFF_CAPABILITY === "1",
     desktopManaged: process.env.E2E_DESKTOP_MANAGED === "1",
     daemonStatusRpcCapability: process.env.E2E_DAEMON_STATUS_RPC_CAPABILITY !== "0",
     relayConfigCapability: process.env.E2E_RELAY_CONFIG_CAPABILITY !== "0",

@@ -534,6 +534,7 @@ export interface PaseoDaemonDependencies {
   hubRelationshipRetryPolicy?: HubRelationshipRetryPolicy;
   createHubDaemonId?: () => string;
   serverFeatureOverrides?: {
+    workspaceHandoff?: boolean;
     daemonStatusRpc?: boolean;
     relayConfig?: boolean;
   };
@@ -1983,6 +1984,7 @@ export async function createPaseoDaemon(
               {
                 getAllowedOrigins: () => allowedOrigins,
                 getHostnames: () => configuredHostnames,
+                workspaceHandoff: dependencies.serverFeatureOverrides?.workspaceHandoff,
                 daemonStatusRpc: dependencies.serverFeatureOverrides?.daemonStatusRpc,
                 relayConfig: dependencies.serverFeatureOverrides?.relayConfig,
                 startPaused: true,

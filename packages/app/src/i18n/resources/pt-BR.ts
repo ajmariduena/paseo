@@ -2,6 +2,45 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const ptBR: TranslationResources = {
+  handoff: {
+    title: "Mover workspace para outro host",
+    destination: "Host de destino",
+    chooseHost: "Escolha um host",
+    noHosts: "Conecte outro host para mover este workspace",
+    parent: "Diretório pai no destino",
+    mode: "Continuidade das conversas",
+    native: "Manter sessões nativas",
+    context: "Continuar com histórico exportado",
+    nativeDescription:
+      "Sessões nativas exigem versões compatíveis do provedor nos dois hosts. Uma sessão incompatível interromperá a transferência.",
+    contextDescription:
+      "As conversas iniciarão novas sessões do provedor com o histórico exportado legível e um resumo para continuar.",
+    stopNotice:
+      "A preparação interrompe agentes, terminais e configuração. Arquivos ignorados e não versionados são excluídos. O provedor usa as credenciais do host de destino. Alterações posteriores na origem não são sincronizadas.",
+    prepare: "Preparar transferência",
+    activate: "Mover workspace",
+    resume: "Retomar",
+    cancel: "Cancelar transferência",
+    open: "Abrir destino",
+    startOver: "Nova transferência",
+    loading: "Carregando transferência salva…",
+    inspecting: "Inspecionando workspace…",
+    preparing_source: "Parando origem e capturando workspace…",
+    transferring: "Transferindo arquivos…",
+    preparing_destination: "Preparando destino…",
+    ready: "Destino preparado. Mova o workspace para continuar lá; a origem está parada.",
+    releasing: "Liberando controle da origem…",
+    activating: "Ativando destino…",
+    active: "Workspace movido. Continue no host de destino.",
+    cancelled: "Transferência cancelada. A origem pode ser usada novamente.",
+    paused: "Transferência salva. Retome para verificar os dois hosts e continuar.",
+    forward:
+      "Conclua a ativação no destino. A origem pode já ter cedido o controle e não permite reverter a transferência.",
+    saving: "Salvando transferência…",
+    closeNotice: "Você pode fechar esta janela e reabri-la neste workspace para retomar.",
+    connectHosts: "Conecte os dois hosts para continuar",
+    updateHosts: "Atualize os dois hosts para uma versão que suporte transferência de workspaces",
+  },
   quickPrompts: {
     longPressOpens: "Toque e segure para escolher outro prompt",
     defaultBadge: "Padrão",

@@ -76,6 +76,7 @@ export interface WorkspaceHeaderWorkspaceActions {
   importAgentDisabled: boolean;
   copyPathDisabled: boolean;
   onOpenImportSheet: () => void;
+  onOpenHandoffSheet: (() => void) | null;
   onCopyWorkspacePath: () => void;
   onCopyBranchName: () => void;
   onOpenSetupTab: () => void;
@@ -87,6 +88,7 @@ function WorkspaceHeaderWorkspaceActionItems({
   importAgentDisabled,
   copyPathDisabled,
   onOpenImportSheet,
+  onOpenHandoffSheet,
   onCopyWorkspacePath,
   onCopyBranchName,
   onOpenSetupTab,
@@ -119,6 +121,11 @@ function WorkspaceHeaderWorkspaceActionItems({
       >
         {t("workspace.header.actions.importSession")}
       </DropdownMenuItem>
+      {onOpenHandoffSheet ? (
+        <DropdownMenuItem testID="workspace-header-handoff" onSelect={onOpenHandoffSheet}>
+          {t("handoff.title")}
+        </DropdownMenuItem>
+      ) : null}
       {showWorkspaceSetup ? (
         <>
           <DropdownMenuSeparator />

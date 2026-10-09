@@ -2,6 +2,45 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const ko: TranslationResources = {
+  handoff: {
+    title: "다른 호스트로 워크스페이스 이동",
+    destination: "대상 호스트",
+    chooseHost: "호스트 선택",
+    noHosts: "워크스페이스를 이동하려면 다른 호스트를 연결하세요",
+    parent: "대상 상위 디렉터리",
+    mode: "대화 이어가기",
+    native: "네이티브 세션 유지",
+    context: "내보낸 기록으로 계속",
+    nativeDescription:
+      "네이티브 세션에는 두 호스트의 호환되는 공급자 버전이 필요합니다. 호환되지 않는 세션은 전송을 중지합니다.",
+    contextDescription:
+      "읽을 수 있는 내보낸 기록과 인계 요약을 사용하여 새 공급자 세션에서 대화를 시작합니다.",
+    stopNotice:
+      "준비 시 에이전트, 터미널 및 설정 작업이 중지됩니다. 무시 대상으로 지정된 미추적 파일은 제외됩니다. 공급자는 대상 호스트의 자격 증명을 사용합니다. 이후 원본의 변경 사항은 동기화되지 않습니다.",
+    prepare: "전송 준비",
+    activate: "워크스페이스 이동",
+    resume: "재개",
+    cancel: "전송 취소",
+    open: "대상 열기",
+    startOver: "새 전송",
+    loading: "저장된 전송 불러오는 중…",
+    inspecting: "워크스페이스 확인 중…",
+    preparing_source: "원본 중지 및 워크스페이스 캡처 중…",
+    transferring: "파일 전송 중…",
+    preparing_destination: "대상 준비 중…",
+    ready: "대상이 준비되었습니다. 워크스페이스를 이동하여 계속하세요. 원본은 중지되었습니다.",
+    releasing: "원본 제어 해제 중…",
+    activating: "대상 활성화 중…",
+    active: "워크스페이스가 이동되었습니다. 대상 호스트에서 계속하세요.",
+    cancelled: "전송이 취소되었습니다. 원본을 다시 사용할 수 있습니다.",
+    paused: "전송이 저장되었습니다. 재개하여 두 호스트를 확인하고 계속하세요.",
+    forward:
+      "대상에서 활성화를 완료하세요. 원본의 제어가 이미 해제되었을 수 있으므로 되돌릴 수 없습니다.",
+    saving: "전송 저장 중…",
+    closeNotice: "이 창을 닫고 이 워크스페이스에서 다시 열어 재개할 수 있습니다.",
+    connectHosts: "계속하려면 두 호스트를 연결하세요",
+    updateHosts: "두 호스트를 워크스페이스 이동을 지원하는 버전으로 업데이트하세요",
+  },
   quickPrompts: {
     longPressOpens: "길게 눌러 다른 프롬프트 선택",
     defaultBadge: "기본",

@@ -1,3 +1,4 @@
+import { HandoffSheet } from "@/handoff/sheet";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { WebLinkOpenInAppProvider } from "@/web-links/context";
 import type { JsonValue } from "@getpaseo/protocol/agent-types";
@@ -977,6 +978,7 @@ interface WorkspaceHeaderTitleBarProps {
   onCreateTerminalWithProfile: (profile: TerminalProfile) => void;
   onCreateBrowser: () => void;
   onOpenImportSheet: () => void;
+  onOpenHandoffSheet: (() => void) | null;
   onCopyWorkspacePath: () => void;
   onCopyBranchName: () => void;
   onOpenSetupTab: () => void;
@@ -1006,6 +1008,7 @@ export function WorkspaceHeaderTitleBar({
   onCreateTerminalWithProfile,
   onCreateBrowser,
   onOpenImportSheet,
+  onOpenHandoffSheet,
   onCopyWorkspacePath,
   onCopyBranchName,
   onOpenSetupTab,
@@ -1044,6 +1047,7 @@ export function WorkspaceHeaderTitleBar({
             onCreateTerminalWithProfile={onCreateTerminalWithProfile}
             onCreateBrowser={onCreateBrowser}
             onOpenImportSheet={onOpenImportSheet}
+            onOpenHandoffSheet={onOpenHandoffSheet}
             onCopyWorkspacePath={onCopyWorkspacePath}
             onCopyBranchName={onCopyBranchName}
             onOpenSetupTab={onOpenSetupTab}
@@ -1055,6 +1059,7 @@ export function WorkspaceHeaderTitleBar({
             importAgentDisabled={importAgentDisabled}
             copyPathDisabled={copyPathDisabled}
             onOpenImportSheet={onOpenImportSheet}
+            onOpenHandoffSheet={onOpenHandoffSheet}
             onCopyWorkspacePath={onCopyWorkspacePath}
             onCopyBranchName={onCopyBranchName}
             onOpenSetupTab={onOpenSetupTab}
@@ -1405,6 +1410,7 @@ export function PendingWorkspaceFrame({
                   onCreateTerminalWithProfile={noop}
                   onCreateBrowser={noop}
                   onOpenImportSheet={noop}
+                  onOpenHandoffSheet={null}
                   onCopyWorkspacePath={noop}
                   onCopyBranchName={noop}
                   onOpenSetupTab={noop}
@@ -1742,6 +1748,12 @@ function WorkspaceScreenContent({
   );
   const workspaceDirectory = workspaceDescriptor?.workspaceDirectory || null;
   const isMissingWorkspaceDirectory = Boolean(workspaceDescriptor) && !workspaceDirectory;
+  const supportsHandoff = useSessionStore(
+    (state) => state.sessions[normalizedServerId]?.serverInfo?.features?.workspaceHandoff === true,
+  );
+  const [isHandoffSheetVisible, setIsHandoffSheetVisible] = useState(false);
+  const openHandoffSheet = useCallback(() => setIsHandoffSheetVisible(true), []);
+  const closeHandoffSheet = useCallback(() => setIsHandoffSheetVisible(false), []);
   const [isImportSheetVisible, setIsImportSheetVisible] = useState(false);
   const canOpenImportSheet = [client, isConnected, workspaceDirectory].every(Boolean);
   const openImportSheet = useCallback(() => {
@@ -4111,6 +4123,7 @@ function WorkspaceScreenContent({
                   onCreateTerminalWithProfile={handleCreateTerminalWithProfile}
                   onCreateBrowser={handleCreateBrowserTab}
                   onOpenImportSheet={openImportSheet}
+                  onOpenHandoffSheet={supportsHandoff ? openHandoffSheet : null}
                   onCopyWorkspacePath={handleCopyWorkspacePath}
                   onCopyBranchName={handleCopyBranchName}
                   onOpenSetupTab={handleOpenSetupTab}
@@ -4128,6 +4141,8 @@ function WorkspaceScreenContent({
     ),
     [
       canOpenImportSheet,
+      supportsHandoff,
+      openHandoffSheet,
       createTerminalDisabled,
       currentBranchName,
       handleCopyBranchName,
@@ -4318,6 +4333,13 @@ function WorkspaceScreenContent({
           </FloatingPanelPortalHostNameProvider>
           <FloatingPanelPortalHost name={workspaceFloatingPanelPortalHostName} />
         </View>
+        <HandoffSheet
+          visible={isHandoffSheetVisible}
+          active={isRouteFocused}
+          sourceServerId={normalizedServerId}
+          workspaceId={normalizedWorkspaceId}
+          onClose={closeHandoffSheet}
+        />
         <ImportSessionSheet
           visible={isRouteFocused && isImportSheetVisible}
           client={client}

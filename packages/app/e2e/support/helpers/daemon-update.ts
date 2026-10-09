@@ -22,11 +22,19 @@ interface OutdatedDaemonErrorMessage {
 
 type OutdatedDaemonMessage = OutdatedDaemonReadyMessage | OutdatedDaemonErrorMessage;
 
-export async function startOutdatedDaemon(options?: {
+interface TestDaemonOptions {
+  version?: string;
+  workspaceHandoffCapability?: boolean;
   desktopManaged?: boolean;
   daemonStatusRpcCapability?: boolean;
   relayConfigCapability?: boolean;
-}): Promise<OutdatedDaemon> {
+}
+
+export function startOutdatedDaemon(options?: TestDaemonOptions): Promise<OutdatedDaemon> {
+  return startTestDaemon({ ...options, version: "0.0.0" });
+}
+
+export async function startTestDaemon(options?: TestDaemonOptions): Promise<OutdatedDaemon> {
   const metroPort = process.env.E2E_METRO_PORT;
   if (!metroPort) {
     throw new Error("E2E_METRO_PORT is not set - globalSetup must run first");
@@ -38,6 +46,8 @@ export async function startOutdatedDaemon(options?: {
       env: {
         ...process.env,
         E2E_METRO_PORT: metroPort,
+        E2E_DAEMON_VERSION: options?.version,
+        E2E_WORKSPACE_HANDOFF_CAPABILITY: options?.workspaceHandoffCapability === true ? "1" : "0",
         E2E_DESKTOP_MANAGED: options?.desktopManaged === true ? "1" : "0",
         E2E_DAEMON_STATUS_RPC_CAPABILITY: options?.daemonStatusRpcCapability === false ? "0" : "1",
         E2E_RELAY_CONFIG_CAPABILITY: options?.relayConfigCapability === false ? "0" : "1",
