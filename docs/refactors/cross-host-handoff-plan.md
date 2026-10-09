@@ -61,7 +61,9 @@ The source issues a signed cancellation bound to the destination reservation. Re
 preparation has not arrived, so a delayed prepare cannot revive the cancelled transfer. Destination
 cleanup requires that proof and the previously pinned source key when content is already bound.
 After release, a lost acknowledgement leaves the source fenced: query/retry the same transfer,
-never infer rollback from a timeout. Returning ownership requires a new handoff. Journals load
+never infer rollback from a timeout. Once the destination has durably accepted the signed receipt,
+finish activation using its journal even when the source is offline. Until that acceptance, recovery
+still needs the source to resend its receipt. Returning ownership requires a new handoff. Journals load
 before agent resume, schedules, queues, delegation wakes, or public mutations at daemon boot.
 Corrupt or unreadable journals fail closed with a recoverable error, rather than dropping fences.
 
@@ -217,7 +219,9 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   transfer, staging, signed release and activation through correlated `workspace.handoff.*` RPCs.
   Retry reuses the hosts' journals and transfer ID. A network regression loses the release reply,
   restarts both hosts and removes the original directory before recovering the same destination
-  workspace. Invalid release signatures are refused. The app retains the transfer ID and operation
+  workspace. It also restarts the destination after accepting release and activates with the source
+  stopped. Activation without a stored receipt and mismatched source identities are refused.
+  Invalid release signatures are refused. The app retains the transfer ID and operation
   intent before sending mutating RPCs; server-side transfer discovery remains open. Cancellation uses the source's durable proof
   before discarding destination staging. Tests cover a delayed prepare, lost cancellation replies,
   host restarts, wrong keys and signatures, persistence failures, and both cancel/release orderings.
@@ -285,13 +289,14 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   and exposes prepare, activate, retry, cancel and destination navigation. Read-only placement errors
   leave the form editable. Ten form cases cover lost replies, storage failures, duplicate submissions,
   closing during work, cancellation recovery and host journals advancing past local state. The feature
-  gate is checked on both hosts; only isolated test daemons advertise it. Two browser cases use real
-  isolated daemons and a directory workspace: desktop preparation/reload/activation verifies bytes
-  and destination navigation; compact context selection/reload/cancellation leaves the source usable.
+  gate is checked on both hosts before preparation; only isolated test daemons advertise it. Two
+  browser cases use real isolated daemons and a directory workspace: desktop preparation/reload
+  verifies bytes and destination navigation after a real activation conflict and source shutdown;
+  compact context selection/reload/cancellation leaves the source usable.
   These workspaces contain no conversations. See the [raw app results](../qa-evidence/handoff-app.txt)
   and [desktop](../qa-evidence/handoff-app-desktop.png) / [compact](../qa-evidence/handoff-app-compact.png)
   screenshots. Transfer discovery without
-  local state, recovery with the source offline, pinned-key client persistence, per-conversation
+  local state, reopening recovery when the source workspace is unavailable, pinned-key client persistence, per-conversation
   preflight, source moved state and native-platform evidence remain open.
 - Source retirement/tombstones and automation dispositions remain unimplemented.
   The composite archive currently captures Claude conversations;

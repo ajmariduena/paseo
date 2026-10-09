@@ -178,6 +178,7 @@ test.skipIf(process.platform === "win32")(
   "coordinates handoff over RPC and recovers a lost release reply after reconnect",
   async () => {
     let source = await startHost("source");
+    const sourceServerId = source.daemon.daemon.getServerId();
     let destination = await startHost("destination");
     const cwd = path.join(root, "rpc-workspace");
     await mkdir(cwd);
@@ -205,6 +206,16 @@ test.skipIf(process.platform === "win32")(
     });
     expect(staged.state).toBe("staged");
     expect((await destination.client.fetchWorkspaces()).entries).toEqual([]);
+    const unreleased = await destination.client.handoffActivateDestination({ transferId });
+    expect(unreleased.error?.code).toBe("invalid_state");
+    await expect(
+      activateWorkspaceHandoff({
+        sourceServerId,
+        getSource: () => destination.client,
+        destination: destination.client,
+        transferId,
+      }),
+    ).rejects.toThrow("Source connection belongs to another host");
     const release = await source.client.handoffReleaseSource({ transferId });
     expect(release.error).toBeNull();
     if (!release.result) throw new Error("Missing release receipt");
@@ -227,8 +238,17 @@ test.skipIf(process.platform === "win32")(
     await stopHost(source);
     await stopHost(destination);
     await rm(cwd, { recursive: true });
-    source = await startHost("source");
     destination = await startHost("destination");
+    await expect(
+      activateWorkspaceHandoff({
+        sourceServerId,
+        getSource: () => source.client,
+        destination: destination.client,
+        transferId,
+      }),
+    ).rejects.toThrow("Connect both handoff hosts before continuing");
+    expect((await destination.client.fetchWorkspaces()).entries).toEqual([]);
+    source = await startHost("source");
     const resumed = await prepareWorkspaceHandoff({
       ...request,
       source: source.client,
@@ -243,24 +263,28 @@ test.skipIf(process.platform === "win32")(
       destination: destination.client,
     });
     expect(accepted.state).toBe("released");
-    const active = await activateWorkspaceHandoff({
-      source: source.client,
+    // Once the destination has the signed release, recovery must not need the source.
+    await stopHost(source);
+    await stopHost(destination);
+    destination = await startHost("destination");
+    const activation = {
+      sourceServerId,
+      getSource: () => {
+        throw new Error("Source must not be accessed after destination accepted release");
+      },
       destination: destination.client,
       transferId,
-    });
+    };
+    const active = await activateWorkspaceHandoff(activation);
     expect(active.state).toBe("active");
     expect(active.workspaceId).toBe(staged.workspaceId);
     expect(await readFile(path.join(active.destinationCwd, "work.txt"), "utf8")).toBe(
       "Pending work",
     );
-    await source.client.close();
-    expect(
-      await activateWorkspaceHandoff({
-        source: source.client,
-        destination: destination.client,
-        transferId,
-      }),
-    ).toEqual(active);
+    expect(await activateWorkspaceHandoff(activation)).toEqual(active);
+    await expect(
+      activateWorkspaceHandoff({ ...activation, sourceServerId: "another-source" }),
+    ).rejects.toThrow("Destination reservation belongs to another source host");
     expect((await destination.client.fetchWorkspaces()).entries.map((entry) => entry.id)).toEqual([
       active.workspaceId,
     ]);

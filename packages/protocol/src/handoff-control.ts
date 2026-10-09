@@ -203,7 +203,7 @@ export const HandoffActivateDestinationRequestSchema = z.object({
   type: z.literal("workspace.handoff.activate_destination.request"),
   requestId: z.string(),
   transferId: HandoffTransferIdSchema,
-  receipt: HandoffReleaseReceiptSchema,
+  receipt: HandoffReleaseReceiptSchema.optional(),
 });
 export const HandoffActivateDestinationResponseSchema = z.object({
   type: z.literal("workspace.handoff.activate_destination.response"),

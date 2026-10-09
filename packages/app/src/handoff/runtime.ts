@@ -10,18 +10,19 @@ import { getHostRuntimeStore, isHostRuntimeConnected } from "@/runtime/host-runt
 import type { HandoffFormPorts } from "./form-model";
 import { createHandoffPersistence, type HandoffRecord } from "./persistence";
 
-function connections(record: HandoffRecord) {
+function connectedClient(serverId: string) {
   const runtime = getHostRuntimeStore();
-  function connectedClient(serverId: string) {
-    const host = runtime.getSnapshot(serverId);
-    const client = runtime.getClient(serverId);
-    if (!isHostRuntimeConnected(host) || !client) throw new Error(i18n.t("handoff.connectHosts"));
-    // The complete feature stays unadvertised until its delivery gates have passed.
-    if (client.getLastServerInfoMessage()?.features?.workspaceHandoff !== true) {
-      throw new Error(i18n.t("handoff.updateHosts"));
-    }
-    return client;
+  const host = runtime.getSnapshot(serverId);
+  const client = runtime.getClient(serverId);
+  if (!isHostRuntimeConnected(host) || !client) throw new Error(i18n.t("handoff.connectHosts"));
+  // The complete feature stays unadvertised until its delivery gates have passed.
+  if (client.getLastServerInfoMessage()?.features?.workspaceHandoff !== true) {
+    throw new Error(i18n.t("handoff.updateHosts"));
   }
+  return client;
+}
+
+function connections(record: HandoffRecord) {
   return {
     source: connectedClient(record.sourceServerId),
     destination: connectedClient(record.destinationServerId),
@@ -46,6 +47,13 @@ export const handoffFormPorts: HandoffFormPorts = {
       destinationParent: record.destinationParent,
       continuationMode: record.continuationMode,
     }),
-  activate: (record, options) => activateWorkspaceHandoff({ ...connections(record), ...options }),
+  activate: (record, options) =>
+    activateWorkspaceHandoff({
+      ...options,
+      sourceServerId: record.sourceServerId,
+      getSource: () => connectedClient(record.sourceServerId),
+      destination: connectedClient(record.destinationServerId),
+      transferId: record.transferId,
+    }),
   cancel: (record, options) => cancelWorkspaceHandoff({ ...connections(record), ...options }),
 };

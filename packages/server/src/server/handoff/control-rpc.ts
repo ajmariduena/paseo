@@ -98,7 +98,8 @@ async function handle(services: Services, request: ControlRequest): Promise<Cont
           payload: { ...payload, result: snapshot(destination().status(request.transferId)) },
         };
       case "workspace.handoff.activate_destination.request":
-        await destination().acceptRelease(request.transferId, request.receipt);
+        // Without a supplied receipt, activate requires the destination's previously verified release.
+        if (request.receipt) await destination().acceptRelease(request.transferId, request.receipt);
         return {
           type: responseTypes[request.type],
           payload: {

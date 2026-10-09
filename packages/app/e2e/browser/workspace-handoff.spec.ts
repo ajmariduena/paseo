@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, rmdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
@@ -93,7 +93,7 @@ async function savedTransfer(page: Page, sourceServerId: string, workspaceId: st
 test.describe("workspace handoff", () => {
   test.skip(process.platform === "win32", "Ownership release requires POSIX directory durability");
 
-  test("recovers an editable preparation error, reloads a staged transfer and opens the destination", async ({
+  test("recovers preparation and activation errors, reloads a transfer and finishes with source offline", async ({
     page,
   }, testInfo) => {
     test.setTimeout(120_000);
@@ -123,6 +123,20 @@ test.describe("workspace handoff", () => {
       expect(await savedTransfer(page, host.source.serverId, host.workspace.workspaceId)).toBe(
         transferId,
       );
+      const staged = await host.destinationClient.handoffGetDestinationStatus({ transferId });
+      if (!staged.result) throw new Error("Missing prepared destination");
+      // A real path conflict leaves the accepted release durable but activation unfinished.
+      await mkdir(staged.result.destinationCwd);
+      await page.getByTestId("handoff-submit").click();
+      await expect(page.getByTestId("handoff-error")).toHaveText(
+        "Destination checkout already exists",
+      );
+      expect(
+        (await host.destinationClient.handoffGetDestinationStatus({ transferId })).result?.state,
+      ).toBe("released");
+      await expect(page.getByTestId("handoff-cancel")).toHaveCount(0);
+      await host.source.close();
+      await rmdir(staged.result.destinationCwd);
       await page.getByTestId("handoff-submit").click();
       await expect(page.getByTestId("handoff-status")).toHaveText(
         "Workspace moved. Continue on the destination host.",

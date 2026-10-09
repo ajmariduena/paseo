@@ -403,7 +403,8 @@ test("context-export handoff continues a real turn in a new session with the pri
       continuationMode: "context",
     });
     const active = await activateWorkspaceHandoff({
-      source: source.client,
+      sourceServerId: origin.getServerId(),
+      getSource: () => source.client,
       destination: destination.client,
       transferId,
     });

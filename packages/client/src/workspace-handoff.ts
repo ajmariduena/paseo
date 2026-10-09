@@ -1,4 +1,7 @@
-import type { HandoffDestinationSnapshot } from "@getpaseo/protocol/handoff-control";
+import type {
+  HandoffDestinationSnapshot,
+  HandoffReleaseReceipt,
+} from "@getpaseo/protocol/handoff-control";
 import type { DaemonClient } from "./daemon-client.js";
 import {
   handoffRequest,
@@ -29,6 +32,14 @@ export interface PrepareWorkspaceHandoffInput extends HandoffConnections {
   workspaceId: string;
   destinationParent: string;
   continuationMode: "native" | "context";
+  onProgress?: (progress: WorkspaceHandoffProgress) => void;
+}
+export interface ActivateWorkspaceHandoffInput {
+  sourceServerId: string;
+  getSource: () => DaemonClient;
+  destination: DaemonClient;
+  transferId: string;
+  signal?: AbortSignal;
   onProgress?: (progress: WorkspaceHandoffProgress) => void;
 }
 function serverId(client: DaemonClient): string {
@@ -151,34 +162,43 @@ export async function prepareWorkspaceHandoff(
 
 /** A timeout after release leaves ownership at destination; retry activation with this same ID. */
 export async function activateWorkspaceHandoff(
-  input: HandoffConnections & { onProgress?: (progress: WorkspaceHandoffProgress) => void },
+  input: ActivateWorkspaceHandoffInput,
 ): Promise<HandoffDestinationSnapshot> {
-  const { source, destination, transferId, signal } = input;
+  const { sourceServerId, destination, transferId, signal } = input;
+  const destinationServerId = serverId(destination);
+  if (sourceServerId === destinationServerId)
+    throw new Error("Choose a different destination host");
   const target = handoffResult(
     await handoffRequest(() => destination.handoffGetDestinationStatus({ transferId }), signal),
   );
+  if (target.sourceServerId !== sourceServerId)
+    throw new Error("Destination reservation belongs to another source host");
   if (target.state === "active") {
     input.onProgress?.({ phase: "active" });
     return target;
   }
-  const { sourceServerId, destinationServerId } = requireDistinctHosts(input);
-  if (target.sourceServerId !== sourceServerId)
-    throw new Error("Destination reservation belongs to another source host");
   if (!["staged", "released", "activating"].includes(target.state))
     throw new Error("Prepare the destination before releasing source ownership");
-  const prepared = handoffResult(
-    await handoffRequest(() => source.handoffGetSourceStatus({ transferId }), signal),
-  );
-  if (
-    prepared.source.destinationServerId !== destinationServerId ||
-    prepared.source.reservationId !== target.reservationId ||
-    prepared.source.manifestDigest !== target.manifestDigest
-  )
-    throw new Error("Handoff ownership and destination content do not match");
-  input.onProgress?.({ phase: "releasing" });
-  const receipt = handoffResult(
-    await handoffRequest(() => source.handoffReleaseSource({ transferId }), signal),
-  );
+  // A released destination owns its durable receipt, including after an app or source disconnect.
+  let receipt: HandoffReleaseReceipt | undefined;
+  if (target.state === "staged") {
+    const source = input.getSource();
+    if (serverId(source) !== sourceServerId)
+      throw new Error("Source connection belongs to another host");
+    const prepared = handoffResult(
+      await handoffRequest(() => source.handoffGetSourceStatus({ transferId }), signal),
+    );
+    if (
+      prepared.source.destinationServerId !== destinationServerId ||
+      prepared.source.reservationId !== target.reservationId ||
+      prepared.source.manifestDigest !== target.manifestDigest
+    )
+      throw new Error("Handoff ownership and destination content do not match");
+    input.onProgress?.({ phase: "releasing" });
+    receipt = handoffResult(
+      await handoffRequest(() => source.handoffReleaseSource({ transferId }), signal),
+    );
+  }
   input.onProgress?.({ phase: "activating" });
   const active = handoffResult(
     await handoffRequest(
