@@ -5892,6 +5892,7 @@ export class Session {
       paseoHome: this.paseoHome,
       worktreesRoot: this.worktreesRoot,
       serverId: this.serverId,
+      handoffOwnership: this.handoffOwnership,
       listWorkspaces: () => this.workspaceRegistry.list(),
       listAgentCwds: () =>
         this.agentManager

@@ -1154,6 +1154,7 @@ export async function createPaseoDaemon(
       paseoHome: config.paseoHome,
       worktreesRoot: config.worktreesRoot,
       serverId,
+      handoffOwnership,
       listWorkspaces: () => workspaceRegistry.list(),
       listAgentCwds: () =>
         agentManager
@@ -2048,7 +2049,7 @@ export async function createPaseoDaemon(
     } catch (error) {
       localCredential = null;
       unsubscribeWorktreeStorageConfig();
-      worktreeStorageSweeper.dispose();
+      await worktreeStorageSweeper.dispose();
       await deleteLocalCredential(config.paseoHome);
       unsubscribePluginProviders();
       await pluginRuntime.stopAllPlugins().catch(() => undefined);
@@ -2072,7 +2073,7 @@ export async function createPaseoDaemon(
     unsubscribePluginProviders();
     await hubRelationships.stop();
     unsubscribeWorktreeStorageConfig();
-    worktreeStorageSweeper.dispose();
+    await worktreeStorageSweeper.dispose();
     await workspaceReconciliation.dispose();
     scriptHealthMonitor.stop();
     hostMetricsSampler.dispose();

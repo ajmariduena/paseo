@@ -239,6 +239,7 @@ jobs:
             packages/server/src/server/bootstrap.smoke.test.ts \
             packages/server/src/server/workspace-auto-name.test.ts \
             packages/server/src/server/workspace-reconciliation-service.test.ts \
+            packages/server/src/server/worktree-storage.test.ts \
             packages/server/src/server/workspace-archive-service.test.ts \
             packages/server/src/server/paseo-worktree-service.test.ts \
             packages/server/src/server/worktree-session.test.ts \

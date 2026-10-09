@@ -206,7 +206,8 @@ the shared ledger prevents background changes to persisted source records.
 Daemon shutdown awaits reconciliation before releasing its state. Stopping watches alone leaves
 Git reads and registry writes in flight; they can recreate files during test cleanup or race a
 subsequent daemon. A held real-registry reconciliation and a daemon shutdown gate reproduce the
-early return. The macOS cleanup failure still needs confirmation from the next CI run.
+early return. The [macOS job passed on `2390b2f44`](https://github.com/ajmariduena/paseo/actions/runs/37901477285/job/113725335021)
+after this shutdown fix; newer mutation gates still need their own CI evidence.
 
 Workspace archive acquires all target identities and backing/source paths before stopping setup,
 archiving agents or executing teardown. It holds admission through directory removal and final
@@ -215,10 +216,19 @@ orphan paths and cancellation. The same ledger reaches RPCs, agent tools, merge 
 schedules and creation cleanup. Project removal also fences its workspaces before archiving any.
 Real registry tests hold removal writes across preparation, and the boot test covers both archive
 RPCs and project removal. Archive remains best-effort shutdown; its success cannot certify source
-quiescence. Plugin callbacks, storage cleanup and shared Git metadata still need integration.
+quiescence. Plugin callbacks and shared Git metadata still need integration.
+
+Manual and automatic storage cleanup admit the target paths, archived workspace identities and
+source repository before teardown or deletion. Git pruning separately admits every registered
+worktree, including missing directories and checkouts outside managed storage. A fence retains
+those stale registrations until cancellation. Storage inspection disables Git's optional index
+writes. Real-worktree tests cover unchanged index bytes, cancel/retry, shared paths, stale entries
+and teardown/removal checks held across preparation. Daemon shutdown awaits an in-flight sweep;
+its WebSocket cleanup and automatic-sweep context both receive the boot ledger. Teardown descendants
+still need coordinator stop inventory and confirmed process-tree termination.
 
 These tests do not establish the complete ownership promise: draft catalog runtimes,
-standalone teardown hooks, background workspace mutations (including storage cleanup),
+standalone teardown hooks, remaining background workspace mutations,
 shared Git metadata ownership, runtime termination and destination activation still need
 integration.
 Source history needs a readable path that does not reopen a fenced native runtime. Source release

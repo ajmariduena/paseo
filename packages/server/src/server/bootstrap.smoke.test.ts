@@ -19,6 +19,9 @@ import { createTestAgentClients } from "./test-utils/fake-agent-client.js";
 import { DaemonClient } from "./test-utils/daemon-client.js";
 import { HandoffOwnership } from "./handoff/ownership.js";
 import { WorkspaceReconciliationService } from "./workspace-reconciliation-service.js";
+import * as worktreeStorageSweeper from "./worktree-storage-sweeper.js";
+import { sweepOwnedArchivedWorktrees, type WorktreeStorageContext } from "./worktree-storage.js";
+import { writePaseoWorktreeMetadata } from "../utils/worktree-metadata.js";
 import { getOrCreateServerId } from "./server-id.js";
 import {
   createPersistedProjectRecord,
@@ -427,7 +430,156 @@ describe("paseo daemon bootstrap", () => {
     }
   });
 
-  test("handoff daemon shutdown waits for workspace reconciliation before releasing its state", async () => {
+  test.skipIf(isPlatform("win32"))(
+    "handoff refuses manual and automatic storage cleanup after boot",
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "paseo-handoff-storage-boot-"));
+      const paseoHome = path.join(root, ".paseo");
+      const repo = path.join(root, "repo");
+      const checkout = path.join(paseoHome, "worktrees", "project", "archived");
+      await mkdir(repo);
+      await mkdir(path.dirname(checkout), { recursive: true });
+      const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" });
+      git("init", "-b", "main");
+      await writeFile(
+        path.join(repo, "paseo.json"),
+        JSON.stringify({
+          worktree: {
+            teardown:
+              "node -e \"require('fs').writeFileSync(process.env.PASEO_SOURCE_CHECKOUT_PATH + '/teardown-ran', 'yes')\"",
+          },
+        }),
+      );
+      git("add", ".");
+      git(
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-m",
+        "initial",
+      );
+      git("update-ref", "refs/remotes/origin/main", "HEAD");
+      git("worktree", "add", "-b", "archived", checkout);
+      const serverId = getOrCreateServerId(paseoHome);
+      writePaseoWorktreeMetadata(checkout, { baseRefName: "main", serverId, paseoHome });
+      const logger = pino({ level: "silent" });
+      const projects = new FileBackedProjectRegistry(
+        path.join(paseoHome, "projects", "projects.json"),
+        logger,
+      );
+      const workspaces = new FileBackedWorkspaceRegistry(
+        path.join(paseoHome, "projects", "workspaces.json"),
+        logger,
+      );
+      const now = new Date().toISOString();
+      await projects.upsert(
+        createPersistedProjectRecord({
+          projectId: "storage-project",
+          rootPath: repo,
+          kind: "git",
+          displayName: "Project",
+          createdAt: now,
+          updatedAt: now,
+        }),
+      );
+      await workspaces.upsert(
+        createPersistedWorkspaceRecord({
+          workspaceId: "moving",
+          projectId: "storage-project",
+          cwd: checkout,
+          worktreeRoot: checkout,
+          mainRepoRoot: repo,
+          kind: "worktree",
+          displayName: "Archived",
+          archivedAt: now,
+          createdAt: now,
+          updatedAt: now,
+        }),
+      );
+      const ownership = new HandoffOwnership({
+        directory: path.join(paseoHome, "handoff-ownership"),
+        sourceServerId: serverId,
+      });
+      await ownership.initialize();
+      const id = randomUUID();
+      await ownership.prepare({
+        id,
+        cwd: checkout,
+        workspaceId: "moving",
+        agentIds: [],
+        destinationServerId: "target",
+        reservationId: randomUUID(),
+      });
+      const before = git("worktree", "list", "--porcelain");
+      const automaticContext = Promise.withResolvers<WorktreeStorageContext>();
+      const startSweeper = worktreeStorageSweeper.startWorktreeStorageSweeper;
+      const capture = vi
+        .spyOn(worktreeStorageSweeper, "startWorktreeStorageSweeper")
+        .mockImplementation((options) => {
+          automaticContext.resolve(options.context);
+          return startSweeper(options);
+        });
+      const daemon = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+      const client = new DaemonClient({ url: `ws://127.0.0.1:${daemon.port}/ws` });
+      try {
+        await client.connect();
+        const storage = await client.listWorktreeStorage();
+        expect(storage.error).toBeNull();
+        expect(storage.entries).toHaveLength(1);
+        const entry = storage.entries[0]!;
+        expect(entry).toMatchObject({ freeable: true, reason: "archived" });
+        expect(await client.cleanupWorktreeStorage([entry.entryId])).toMatchObject({
+          results: [
+            {
+              entryId: entry.entryId,
+              removed: false,
+              error: `Workspace is held by handoff ${id} (preparing)`,
+            },
+          ],
+          error: null,
+        });
+        expect(
+          await sweepOwnedArchivedWorktrees(await automaticContext.promise, () => true),
+        ).toMatchObject({
+          removed: 0,
+          failures: [{ error: `Workspace is held by handoff ${id} (preparing)` }],
+        });
+        await expect(access(path.join(repo, "teardown-ran"))).rejects.toMatchObject({
+          code: "ENOENT",
+        });
+        expect(git("worktree", "list", "--porcelain")).toBe(before);
+      } finally {
+        await client.close();
+        await daemon.close();
+        capture.mockRestore();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test("handoff daemon shutdown waits for storage cleanup and reconciliation before releasing its state", async () => {
+    const sweepEntered = Promise.withResolvers<void>();
+    const finishSweep = Promise.withResolvers<void>();
+    let sweepDrained = false;
+    const startSweeper = worktreeStorageSweeper.startWorktreeStorageSweeper;
+    const sweeping = vi
+      .spyOn(worktreeStorageSweeper, "startWorktreeStorageSweeper")
+      .mockImplementation((options) => {
+        const sweeper = startSweeper(options);
+        return {
+          scheduleSoon: sweeper.scheduleSoon,
+          dispose: async () => {
+            sweepEntered.resolve();
+            await finishSweep.promise;
+            await sweeper.dispose();
+            sweepDrained = true;
+          },
+        };
+      });
     const daemon = await createTestPaseoDaemon();
     const entered = Promise.withResolvers<void>();
     const finish = Promise.withResolvers<void>();
@@ -437,6 +589,7 @@ describe("paseo daemon bootstrap", () => {
       .spyOn(WorkspaceReconciliationService.prototype, "dispose")
       .mockImplementation(async function (this: WorkspaceReconciliationService) {
         entered.resolve();
+        expect(sweepDrained).toBe(true);
         await finish.promise;
         await dispose.call(this);
         drained = true;
@@ -450,14 +603,18 @@ describe("paseo daemon bootstrap", () => {
       });
     try {
       const stopping = expect(daemon.daemon.stop()).resolves.toBeUndefined();
+      await sweepEntered.promise;
+      finishSweep.resolve();
       await entered.promise;
       finish.resolve();
       await stopping;
     } finally {
+      finishSweep.resolve();
       finish.resolve();
       disposal.mockRestore();
       preparation.mockRestore();
       await daemon.close();
+      sweeping.mockRestore();
     }
   });
 
