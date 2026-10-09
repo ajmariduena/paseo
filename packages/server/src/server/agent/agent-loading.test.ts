@@ -142,6 +142,85 @@ test("resuming a stored agent keeps its unread flag and its last-activity time",
   }
 });
 
+test("loading a stored agent without a provider handle restores its record instead of starting over", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "agent-loading-no-handle-"));
+  const logger = createTestLogger();
+  const storage = new AgentStorage(path.join(root, "agents"), logger);
+  const manager = new AgentManager({
+    clients: createTestAgentClients(),
+    registry: storage,
+    logger,
+  });
+
+  const agentId = "00000000-0000-4000-8000-000000000601";
+  const createdAt = "2025-12-24T10:00:00.000Z";
+  const lastPrompt = "2026-01-02T03:04:05.000Z";
+  const markedUnread = "2026-01-09T03:04:05.000Z";
+
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd: root }, agentId, {
+      workspaceId: "workspace-a",
+    });
+    await manager.appendTimelineItem(agent.id, { type: "assistant_message", text: "Earlier work" });
+    await manager.closeAgent(agent.id);
+    await manager.flush();
+    await storage.flush();
+
+    const stored = await storage.get(agentId);
+    if (!stored) {
+      throw new Error("expected a stored agent");
+    }
+    await storage.upsert({
+      ...stored,
+      persistence: null,
+      createdAt,
+      updatedAt: markedUnread,
+      lastActivityAt: lastPrompt,
+      lastUserMessageAt: lastPrompt,
+      requiresAttention: true,
+      attentionReason: "finished",
+      attentionTimestamp: lastPrompt,
+    });
+
+    const loaded = await ensureAgentLoaded(agentId, {
+      agentManager: manager,
+      agentStorage: storage,
+      logger,
+    });
+    await manager.flush();
+    await storage.flush();
+
+    expect(loaded.createdAt.toISOString()).toBe(createdAt);
+    expect(loaded.updatedAt.toISOString()).toBe(markedUnread);
+    expect(loaded.lastUserMessageAt?.toISOString()).toBe(lastPrompt);
+    expect(loaded.attention).toEqual({
+      requiresAttention: true,
+      attentionReason: "finished",
+      attentionTimestamp: new Date(lastPrompt),
+    });
+    expect(manager.getTimeline(agentId)).toContainEqual({
+      type: "assistant_message",
+      text: "Earlier work",
+    });
+
+    const restored = await storage.get(agentId);
+    expect(restored).toMatchObject({
+      createdAt,
+      updatedAt: markedUnread,
+      lastActivityAt: markedUnread,
+      lastUserMessageAt: lastPrompt,
+      requiresAttention: true,
+      attentionReason: "finished",
+      attentionTimestamp: lastPrompt,
+    });
+  } finally {
+    await manager.closeAgent(agentId).catch(() => undefined);
+    await manager.flush().catch(() => undefined);
+    await storage.flush().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("loads an archived agent's history after its working directory is removed", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "agent-loading-missing-cwd-"));
   const worktree = path.join(root, "managed-worktree");

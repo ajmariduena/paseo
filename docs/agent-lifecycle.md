@@ -19,7 +19,8 @@ processes and subscriptions while retaining its Paseo identity, persistence hand
 workspace, labels, title, usage, attention, timestamps, and parent relationship. Opening or prompting
 the agent runs through `ensureAgentLoaded()`, which resumes the durable provider session under the
 same Paseo agent ID. Provider history is not appended again when the canonical timeline is already
-primed.
+primed. A record without a provider handle gets a fresh session but is still a restore: it keeps
+its timestamps, attention and retained timeline instead of being created again.
 
 Reload releases the old runtime before resuming its durable session: an idle provider process can
 still own an exclusive writer. A close failure retains that runtime for cleanup and blocks the

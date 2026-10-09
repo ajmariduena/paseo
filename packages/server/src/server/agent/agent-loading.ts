@@ -116,19 +116,23 @@ export async function ensureAgentLoaded(
       );
       deps.logger.info({ agentId, provider: record.provider }, "Agent resumed from persistence");
     } else {
-      // No provider handle to resume: this starts the agent's first session rather than
-      // bringing one back, so it stamps activity and carries no stored attention. Records
-      // without a handle never got far enough to accumulate either.
       const config = buildSessionConfig(record, {
         validProviders,
       });
       if (!config) {
         throw new Error(`Agent ${agentId} references unavailable provider '${record.provider}'`);
       }
+      const timestamps = extractTimestamps(record);
       snapshot = await deps.agentManager.createAgent(config, agentId, {
         labels: record.labels,
         workspaceId: record.workspaceId,
         owner: record.owner,
+        restore: {
+          createdAt: timestamps.createdAt,
+          updatedAt: timestamps.updatedAt,
+          lastUserMessageAt: timestamps.lastUserMessageAt,
+          attention: extractAttention(record),
+        },
       });
       deps.logger.info({ agentId, provider: record.provider }, "Agent created from stored config");
     }

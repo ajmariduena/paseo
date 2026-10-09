@@ -389,6 +389,13 @@ interface ProviderEnabledFlag {
 type ProviderEnabledMap = Partial<Record<AgentProvider, ProviderEnabledFlag>>;
 type ProviderClientMap = Partial<Record<AgentProvider, AgentClient>>;
 
+export interface StoredAgentRestoreState {
+  createdAt: Date;
+  updatedAt: Date;
+  lastUserMessageAt: Date | null;
+  attention: AttentionState;
+}
+
 export interface CreateAgentOptions {
   labels?: Record<string, string>;
   initialPrompt?: string;
@@ -398,6 +405,8 @@ export interface CreateAgentOptions {
   // undefined is an explicit decision: the agent never appears in the sidebar.
   workspaceId: string | undefined;
   owner?: AgentOwner;
+  /** Bringing back a stored agent that has no provider handle, which keeps its record and timeline. */
+  restore?: StoredAgentRestoreState;
 }
 
 export interface AgentManagerOptions {
@@ -1422,7 +1431,9 @@ export class AgentManager {
     options: CreateAgentOptions,
   ): Promise<ManagedAgent> {
     assertWorktreeNotCleaningUp(config.cwd);
-    await this.deleteAgentState(resolvedAgentId);
+    if (!options.restore) {
+      await this.deleteAgentState(resolvedAgentId);
+    }
     const { storedConfig, launchConfig, paseoToolPolicy } = await this.prepareSessionConfig(
       config,
       resolvedAgentId,
@@ -1445,12 +1456,14 @@ export class AgentManager {
     const createOptions = this.buildCreateSessionOptions(options);
     const session = await client.createSession(providerLaunchConfig, launchContext, createOptions);
     await this.requireExternalMcpSupport(session, storedConfig);
+    const restoreOptions = options.restore ? { ...options.restore, restoring: true } : undefined;
     const agent = await this.registerSession(session, storedConfig, resolvedAgentId, {
       labels: options.labels,
       initialTitle: options.initialTitle,
       workspaceId: options.workspaceId,
       owner: options.owner,
       historyPrimed: true,
+      ...restoreOptions,
     });
     if (!agent.internal) {
       this.pluginLifecycle?.emit("agent.created", {
