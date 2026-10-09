@@ -17,6 +17,7 @@ import { DaemonClient } from "../test-utils/daemon-client.js";
 import { createTestPaseoDaemon, type TestPaseoDaemon } from "../test-utils/paseo-daemon.js";
 import { claudeProjectDirSync } from "../agent/providers/claude/project-dir.js";
 import { HandoffArchiveStore } from "./archive.js";
+import { readHandoffBundle } from "./bundle.js";
 import { parseStoredAgentRecord } from "../agent/agent-storage.js";
 import { captureWorkspace, packWorkspaceArchive, restoreWorkspaceArchive } from "./workspace.js";
 
@@ -123,7 +124,7 @@ test.skipIf(process.platform === "win32").each([
       transferId,
       sourceServerId: sourceDaemon.getServerId(),
       sourceWorkspaceId: created.workspace.id,
-      sourceAgentIds: ["source-agent"],
+      sourceAgentIds: ["00000000-0000-4000-8000-000000000301"],
       destinationParent: root,
     };
     const reserved = await destination.daemon.daemon.handoffDestination.reserve(request);
@@ -136,12 +137,19 @@ test.skipIf(process.platform === "win32").each([
         type: "user",
         sessionId,
         message: { role: "user", content: "Complete the work from our prior conversation" },
-      }) + "\n";
+      }) +
+      "\n" +
+      JSON.stringify({
+        type: "assistant",
+        sessionId,
+        message: { role: "assistant", content: [{ type: "text", text: "Ready to continue" }] },
+      }) +
+      "\n";
     await writeFile(path.join(project, `${sessionId}.jsonl`), transcript);
     const timestamp = new Date().toISOString();
     await sourceDaemon.agentStorage.upsert(
       parseStoredAgentRecord({
-        id: "source-agent",
+        id: "00000000-0000-4000-8000-000000000301",
         provider: "claude",
         cwd,
         workspaceId: request.sourceWorkspaceId,
@@ -188,7 +196,11 @@ test.skipIf(process.platform === "win32").each([
     );
     expect(await readFile(importedPath, "utf8")).toBe(transcript);
     expect(staged.preparedConversations).toEqual([
-      { sourceAgentId: "source-agent", title: "Conversation to continue", sessionId },
+      {
+        sourceAgentId: "00000000-0000-4000-8000-000000000301",
+        title: "Conversation to continue",
+        sessionId,
+      },
     ]);
     expect(await readFile(path.join(staged.stagingCwd, "work.txt"), "utf8")).toBe(
       "work in progress\n",
@@ -221,6 +233,56 @@ test.skipIf(process.platform === "win32").each([
     await writeFile(sourceTranscript, transcript);
     const receipt = await sourceDaemon.handoffSource.release(transferId);
     expect(await sourceDaemon.handoffSource.release(transferId)).toEqual(receipt);
+    await rm(sourceTranscript);
+    const sourceHistory = await source.client.fetchAgentTimeline(
+      "00000000-0000-4000-8000-000000000301",
+    );
+    expect(JSON.stringify(sourceHistory.entries)).toContain(
+      "Complete the work from our prior conversation",
+    );
+    expect(sourceDaemon.agentManager.getAgent("00000000-0000-4000-8000-000000000301")).toBeNull();
+    await stopHost(source);
+    source = await startHost("source", true);
+    sourceDaemon = source.daemon.daemon;
+    const restartedHistory = await source.client.fetchAgentTimeline(
+      "00000000-0000-4000-8000-000000000301",
+    );
+    expect(restartedHistory.entries).toEqual(sourceHistory.entries);
+    expect(restartedHistory.epoch).toBe(sourceHistory.epoch);
+    expect(sourceDaemon.agentManager.getAgent("00000000-0000-4000-8000-000000000301")).toBeNull();
+    const lastPage = await source.client.fetchAgentTimeline(request.sourceAgentIds[0], {
+      limit: 1,
+    });
+    expect(lastPage.entries.map((entry) => entry.item.type)).toEqual(["assistant_message"]);
+    if (!lastPage.startCursor) throw new Error("Missing history cursor");
+    const priorPage = await source.client.fetchAgentTimeline(request.sourceAgentIds[0], {
+      direction: "before",
+      cursor: lastPage.startCursor,
+      limit: 1,
+    });
+    expect(priorPage.entries.map((entry) => entry.item.type)).toEqual(["user_message"]);
+    const historyFile = await sourceDaemon.handoffArchives.withVerifiedArchive(
+      transferId,
+      async (archive) => {
+        const { bundle } = await readHandoffBundle(archive, {
+          sourceServerId: request.sourceServerId,
+          sourceWorkspaceId: request.sourceWorkspaceId,
+          sourceAgentIds: request.sourceAgentIds,
+          manifestDigest: manifest.entrypoint.sha256,
+        });
+        const history = bundle.conversations[0].history;
+        if (!history) throw new Error("Missing readable conversation snapshot");
+        return path.join(archive.blobsDirectory, history.sha256);
+      },
+    );
+    const historyBytes = await readFile(historyFile);
+    await writeFile(historyFile, "damaged history");
+    await expect(source.client.fetchAgentTimeline(request.sourceAgentIds[0])).rejects.toThrow();
+    expect(sourceDaemon.agentManager.getAgent(request.sourceAgentIds[0])).toBeNull();
+    await writeFile(historyFile, historyBytes);
+    expect((await source.client.fetchAgentTimeline(request.sourceAgentIds[0])).entries).toEqual(
+      sourceHistory.entries,
+    );
     const released = await destination.daemon.daemon.handoffDestination.acceptRelease(
       transferId,
       receipt,

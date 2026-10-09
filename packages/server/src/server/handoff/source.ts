@@ -1,5 +1,6 @@
 import { mkdir, realpath, rm } from "node:fs/promises";
 import path from "node:path";
+import type { Logger } from "pino";
 import { z } from "zod";
 import { HandoffArchiveManifestSchema, HandoffTransferIdSchema } from "@getpaseo/protocol/handoff";
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
@@ -11,6 +12,7 @@ import { resolveClaudeCodeVersion } from "../agent/providers/claude/agent.js";
 import { claudeConfigDir } from "../agent/providers/claude/project-dir.js";
 import {
   captureClaudeSession,
+  readCapturedClaudeHistory,
   verifyCapturedClaudeSession,
 } from "../agent/providers/claude/handoff.js";
 import type { WorkspaceRegistry } from "../workspace-registry.js";
@@ -19,7 +21,9 @@ import type { WorkspaceSetupRuntime } from "../workspace-setup-runtime.js";
 import type { HandoffArchiveStore } from "./archive.js";
 import { readBoundedFile, syncDirectory, writeJournal } from "./artifacts.js";
 import { captureWorkspace, verifyCapturedWorkspace } from "./workspace.js";
-import { packHandoffArchive } from "./bundle.js";
+import { packHandoffArchive, readHandoffBundle } from "./bundle.js";
+import { writeHandoffHistory, readHandoffHistory, fetchHandoffHistory } from "./history.js";
+import type { AgentTimelineFetchOptions } from "../agent/agent-timeline-store-types.js";
 import {
   handoffPathsOverlap,
   type HandoffOwnership,
@@ -45,11 +49,15 @@ type PreparedSource = z.infer<typeof PreparedSchema>;
 interface SourceOptions {
   directory: string;
   serverId: string;
+  logger: Logger;
   ownership: HandoffOwnership;
   archives: HandoffArchiveStore;
   workspaces: Pick<WorkspaceRegistry, "get" | "list">;
   agents: AgentStorage;
-  agentManager: Pick<AgentManager, "getAgent" | "listAgents" | "closeAgent">;
+  agentManager: Pick<
+    AgentManager,
+    "getAgent" | "listAgents" | "closeAgent" | "projectHistoryForHandoff"
+  >;
   terminals: Pick<TerminalManager, "listDirectories" | "getTerminals" | "killTerminalAndWait">;
   setup: Pick<WorkspaceSetupRuntime, "stop">;
   getProviderRuntimeSettings: ProviderSnapshotManager["getProviderRuntimeSettings"];
@@ -172,7 +180,29 @@ export class HandoffSource {
         if (!runtime) refuse("invalid_source", "Source provider configuration is missing");
         const artifactDirectory = path.join(directory, `conversation-${index}`);
         await captureClaudeSession(this.captureInput(agent, runtime, artifactDirectory));
-        conversations.push({ sourceAgentId: agent.id, title: agent.title, artifactDirectory });
+        const events = await readCapturedClaudeHistory({
+          artifactDirectory,
+          cwd: agent.cwd,
+          logger: this.options.logger,
+        });
+        const rows = await this.options.agentManager.projectHistoryForHandoff(
+          agent.id,
+          events,
+          records[index].createdAt,
+        );
+        const historyPath = path.join(directory, `history-${index}.json`);
+        await writeHandoffHistory(historyPath, {
+          version: 1,
+          sourceAgentId: agent.id,
+          epoch: source.id,
+          rows,
+        });
+        conversations.push({
+          sourceAgentId: agent.id,
+          title: agent.title,
+          artifactDirectory,
+          historyPath,
+        });
       }
       const manifest = await packHandoffArchive({
         store: this.options.archives,
@@ -215,6 +245,38 @@ export class HandoffSource {
         () => this.verify(source, prepared),
       );
     });
+  }
+
+  async fetchTimeline(agentId: string, options: AgentTimelineFetchOptions) {
+    const source = this.options.ownership.forAgent(agentId);
+    if (!source) return null;
+    if ((source.state !== "ready" && source.state !== "released") || !source.manifestDigest)
+      refuse(
+        "invalid_source",
+        "Handoff history is not ready; retry after source preparation completes",
+      );
+    const record = await this.options.agents.get(agentId);
+    if (!record || record.internal) refuse("invalid_source", "Source conversation is unavailable");
+    const manifestDigest = source.manifestDigest;
+    const timeline = await this.options.archives.withVerifiedArchive(source.id, async (archive) => {
+      const { bundle } = await readHandoffBundle(archive, {
+        sourceServerId: this.options.serverId,
+        sourceWorkspaceId: source.workspaceId,
+        sourceAgentIds: source.agentIds,
+        manifestDigest,
+      });
+      const conversation = bundle.conversations.find(
+        (candidate) => candidate.sourceAgentId === agentId,
+      );
+      if (!conversation?.history)
+        refuse("invalid_source", "This transfer does not contain readable history");
+      const history = await readHandoffHistory(
+        path.join(archive.blobsDirectory, conversation.history.sha256),
+        agentId,
+      );
+      return fetchHandoffHistory(history, options);
+    });
+    return { record, timeline };
   }
 
   async dispose(): Promise<void> {

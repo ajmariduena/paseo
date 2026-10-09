@@ -1422,6 +1422,24 @@ export class AgentManager {
     return this.timelineStore.fetch(id, options);
   }
 
+  async projectHistoryForHandoff(
+    agentId: string,
+    history: AgentStreamEvent[],
+    fallbackTimestamp: string,
+  ): Promise<AgentTimelineRow[]> {
+    const annotations = await this.promptAnnotations.historyMatcher(agentId);
+    const rows: AgentTimelineRow[] = [];
+    for (const rawEvent of history) {
+      const event = limitAgentStreamEventContent(rawEvent);
+      if (event.type !== "timeline") continue;
+      const presented = presentReplayedItem(event.item, annotations);
+      const item = presented ? projectAgentMessage(presented) : null;
+      if (!item) continue;
+      rows.push({ seq: rows.length + 1, timestamp: event.timestamp ?? fallbackTimestamp, item });
+    }
+    return rows;
+  }
+
   listProviderSubagents(parentAgentId: string): ProviderSubagentDescriptor[] {
     this.requirePublicAgent(parentAgentId);
     return this.providerSubagents.list(parentAgentId);

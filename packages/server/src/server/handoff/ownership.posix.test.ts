@@ -57,11 +57,17 @@ test("source preparation keeps ownership fenced after uncertain cleanup and retr
   const source = new HandoffSource({
     directory: captures,
     serverId: sourceServerId,
+    logger: createTestLogger(),
     ownership,
     archives: new HandoffArchiveStore(path.join(root, "source-archives")),
     workspaces: { get: async () => workspace, list: async () => [workspace] },
     agents: new AgentStorage(path.join(root, "agents"), createTestLogger()),
-    agentManager: { getAgent: () => null, listAgents: () => [], closeAgent: async () => {} },
+    agentManager: {
+      getAgent: () => null,
+      listAgents: () => [],
+      closeAgent: async () => {},
+      projectHistoryForHandoff: async () => [],
+    },
     terminals: {
       listDirectories: () => [],
       getTerminals: async () => [],

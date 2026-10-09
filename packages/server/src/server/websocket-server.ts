@@ -1,5 +1,6 @@
 import { HandoffArchiveStore } from "./handoff/archive.js";
 import type { HandoffOwnership } from "./handoff/ownership.js";
+import type { HandoffSource } from "./handoff/source.js";
 import type { NoteStore } from "./notes/store.js";
 import type { HostMetricsSampler } from "./host-metrics/sampler.js";
 import { stat } from "node:fs/promises";
@@ -695,6 +696,7 @@ export class VoiceAssistantWebSocketServer {
     noteStore?: NoteStore,
     hostMetricsSampler?: HostMetricsSampler,
     handoffOwnership?: HandoffOwnership,
+    private readonly handoffSource?: HandoffSource,
   ) {
     this.handoffOwnership = handoffOwnership;
     this.logger = logger.child({ module: "websocket-server" });
@@ -1544,6 +1546,7 @@ export class VoiceAssistantWebSocketServer {
       workspaceLabelService: this.workspaceLabelService ?? undefined,
       handoffArchiveStore: this.handoffArchiveStore,
       handoffOwnership: this.handoffOwnership,
+      handoffSource: this.handoffSource,
       noteStore: this.noteStore,
       hostMetricsSampler: this.hostMetricsSampler,
       readAloud: this.readAloudService ?? undefined,

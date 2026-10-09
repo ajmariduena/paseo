@@ -1,5 +1,6 @@
 import type { HandoffArchiveStore } from "./handoff/archive.js";
 import type { HandoffOwnership } from "./handoff/ownership.js";
+import type { HandoffSource } from "./handoff/source.js";
 import { dispatchHandoffArchiveMessage } from "./handoff/rpc.js";
 import { searchTimeline } from "./agent/chat-search/index.js";
 import type { BrowserToolsBroker } from "./browser-tools/broker.js";
@@ -562,6 +563,7 @@ export interface SessionOptions {
   workspaceLabelService?: WorkspaceLabelService;
   handoffArchiveStore?: HandoffArchiveStore;
   handoffOwnership?: HandoffOwnership;
+  handoffSource?: HandoffSource;
   readAloud?: ReadAloudService;
   voiceOrchestrator?: VoiceOrchestrator | null;
   delegations?: Pick<DelegationService, "stopAll" | "disposeQueuedWake"> | null;
@@ -889,6 +891,7 @@ export class Session {
   >();
   private readonly handoffArchiveStore: HandoffArchiveStore | undefined;
   private readonly handoffOwnership: HandoffOwnership | undefined;
+  private readonly handoffSource: HandoffSource | undefined;
   private readonly workspaceLabelService: WorkspaceLabelService | null;
   private readonly readAloud: ReadAloudService | undefined;
   private readonly voiceOrchestrator: VoiceOrchestrator | null | undefined;
@@ -1044,6 +1047,7 @@ export class Session {
     this.directorySync = resolveDirectorySync(directorySync);
     this.handoffArchiveStore = options.handoffArchiveStore;
     this.handoffOwnership = options.handoffOwnership;
+    this.handoffSource = options.handoffSource;
     this.workspaceLabelService = resolveWorkspaceLabelService(workspaceLabelService);
     this.readAloud = readAloud;
     this.voiceOrchestrator = voiceOrchestrator;
@@ -8524,18 +8528,22 @@ export class Session {
       : undefined;
 
     try {
-      const snapshot = await ensureAgentLoaded(msg.agentId, {
-        agentManager: this.agentManager,
-        agentStorage: this.agentStorage,
-        logger: this.sessionLogger,
-      });
-      const agentPayload = await this.buildAgentPayload(snapshot);
-
-      const fetchedControlTimeline = this.agentManager.fetchTimeline(msg.agentId, {
-        direction,
-        cursor,
-        limit: pageLimit,
-      });
+      const fetchOptions = { direction, cursor, limit: pageLimit };
+      const transferred = await this.handoffSource?.fetchTimeline(msg.agentId, fetchOptions);
+      let agentPayload: AgentSnapshotPayload;
+      let fetchedControlTimeline: AgentTimelineFetchResult;
+      if (transferred) {
+        agentPayload = this.buildStoredAgentPayload(transferred.record);
+        fetchedControlTimeline = transferred.timeline;
+      } else {
+        const snapshot = await ensureAgentLoaded(msg.agentId, {
+          agentManager: this.agentManager,
+          agentStorage: this.agentStorage,
+          logger: this.sessionLogger,
+        });
+        agentPayload = await this.buildAgentPayload(snapshot);
+        fetchedControlTimeline = this.agentManager.fetchTimeline(msg.agentId, fetchOptions);
+      }
       const selectedTimeline = {
         timeline: fetchedControlTimeline,
         entries: fetchedControlTimeline.rows,
@@ -8577,7 +8585,7 @@ export class Session {
             ...(msg.mergeWindow === true ? { mergeWindow: true } : {}),
             entries: entries.map((entry) => {
               const payloadEntry = {
-                provider: snapshot.provider,
+                provider: agentPayload.provider,
                 item: entry.item,
                 timestamp: entry.timestamp,
                 seqStart: entry.seqStart,

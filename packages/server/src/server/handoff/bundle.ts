@@ -11,6 +11,7 @@ import {
 import type { HandoffArchiveStore, VerifiedHandoffArchive } from "./archive.js";
 import { readBoundedFile, writeJournal } from "./artifacts.js";
 import { workspaceArchiveFiles } from "./workspace.js";
+import { HANDOFF_HISTORY_MAX_BYTES, readHandoffHistory } from "./history.js";
 import {
   readClaudeSessionArchive,
   readClaudeSessionManifest,
@@ -23,6 +24,7 @@ const ConversationSchema = z.object({
   provider: z.literal("claude"),
   mode: z.literal("native"),
   session: HandoffBlobSchema,
+  history: HandoffBlobSchema.optional(),
 });
 const BundleSchema = z.object({
   version: z.literal(1),
@@ -38,6 +40,7 @@ export interface CapturedConversation {
   sourceAgentId: string;
   title: string | null;
   artifactDirectory: string;
+  historyPath?: string;
 }
 interface PackInput {
   store: HandoffArchiveStore;
@@ -95,12 +98,19 @@ export async function packHandoffArchive(input: PackInput): Promise<HandoffArchi
     const manifestPath = path.join(conversation.artifactDirectory, "manifest.json");
     const descriptor = await describeFile(manifestPath);
     add(descriptor, manifestPath);
+    let history;
+    if (conversation.historyPath) {
+      await readHandoffHistory(conversation.historyPath, conversation.sourceAgentId);
+      history = await describeFile(conversation.historyPath, HANDOFF_HISTORY_MAX_BYTES);
+      add(history, conversation.historyPath);
+    }
     conversations.push({
       sourceAgentId: conversation.sourceAgentId,
       title: conversation.title,
       provider: "claude",
       mode: "native",
       session: descriptor,
+      ...(history ? { history } : {}),
     });
   }
   const bundle = parseBundle({
@@ -132,8 +142,8 @@ export async function packHandoffArchive(input: PackInput): Promise<HandoffArchi
     files.set(blob.sha256, file);
   }
 }
-async function describeFile(file: string): Promise<HandoffBlob> {
-  const bytes = await readBoundedFile(file, 4 * 1024 * 1024);
+async function describeFile(file: string, maxBytes = 4 * 1024 * 1024): Promise<HandoffBlob> {
+  const bytes = await readBoundedFile(file, maxBytes);
   return { sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.length };
 }
 
@@ -165,6 +175,13 @@ export async function readHandoffBundle(
   let artifactCount = 0;
   for (const conversation of bundle.conversations) {
     requireBlob(conversation.session);
+    if (conversation.history) {
+      requireBlob(conversation.history);
+      await readHandoffHistory(
+        path.join(archive.blobsDirectory, conversation.history.sha256),
+        conversation.sourceAgentId,
+      );
+    }
     metadataBytes += conversation.session.size;
     if (metadataBytes > 20 * 1024 * 1024)
       reject("invalid_artifact", "Conversation manifests exceed the handoff metadata limit");

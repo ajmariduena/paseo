@@ -205,7 +205,13 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   checksums, local capture import, and real two-daemon transport. The client coordinator in
   `packages/client/src/handoff-transfer.ts` holds one chunk in flight. The network suite transfers
   captured workspaces and fixture conversations through this path, then invokes destination
-  activation through the server service. Client cutover orchestration remains open.
+  activation through the server service. The source also captures a bounded readable timeline from
+  the frozen native artifacts, using the normal notification and message presentation. Its blob is
+  bound into the bundle digest. The existing timeline RPC reads that snapshot for a prepared or
+  released source without loading a provider, including after source restart or deletion of the
+  original transcript. Cursors remain stable across restart; corrupt, foreign, incomplete and
+  oversized history fails explicitly. Native artifacts remain the unabridged provider copy.
+  Client cutover orchestration remains open.
 - `ownership.ts`, `ownership.test.ts` and `bootstrap.test.ts` cover durable source fences,
   admission draining, cancel/release races, signed receipts and loading fences before providers.
   Admission is wired through agent operations, files/Git, terminal creation/input/resize, scripts,
@@ -246,11 +252,13 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   daemons and a Git workspace: source preparation closes the actual runtime, the client transfers
   the archive, signed release permits destination activation and a continued native turn recalls
   the prior-only token and writes it in the new checkout. A source prompt over WebSocket and a
-  direct resume are both refused after release; the original transcript remains unchanged.
+  direct resume are both refused after release; the original transcript remains unchanged. After
+  restarting the source without provider clients, the timeline RPC returns the same history and
+  cursor epoch while a new source prompt remains refused.
   Compaction, external attachments, file checkpoints, rewind/fork namespace handling and cross-OS
   evidence remain open before enabling native handoff.
-- Client cutover orchestration, readable moved history, automation dispositions and the app flow
-  remain unimplemented. The composite
+- Client cutover orchestration, source retirement/tombstones, automation dispositions and the app
+  flow remain unimplemented. The composite
   archive currently supports native Claude conversations; other codecs and explicit context-export
   continuation remain open. Complete handoff is not advertised.
 

@@ -1,11 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, open, readdir, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, readdir, rename, rm } from "node:fs/promises";
+import os from "node:os";
+import type { Logger } from "pino";
 import path from "node:path";
 import { z } from "zod";
 import { HandoffBlobSchema } from "@getpaseo/protocol/handoff";
-import type { AgentPersistenceHandle } from "../../agent-sdk-types.js";
+import type { AgentPersistenceHandle, AgentStreamEvent } from "../../agent-sdk-types.js";
 import { readBoundedFile, syncDirectory, writeJournal } from "../../../handoff/artifacts.js";
 import { claudeTranscriptPathSync } from "./project-dir.js";
+import { ClaudeAgentClient } from "./agent.js";
 
 const UUID = z.string().uuid();
 const ManifestSchema = z.object({
@@ -246,6 +249,40 @@ export async function readClaudeSessionArchive(
   limits = DEFAULT_LIMITS,
 ): Promise<ClaudeSessionArchive> {
   return readClaudeSessionManifest(path.join(artifactDirectory, "manifest.json"), limits);
+}
+
+/** Decode the captured bytes without registering an agent or starting a provider process. */
+export async function readCapturedClaudeHistory(input: {
+  artifactDirectory: string;
+  cwd: string;
+  logger: Logger;
+}) {
+  const manifest = await readClaudeSessionArchive(input.artifactDirectory);
+  const configDir = await mkdtemp(path.join(os.tmpdir(), "paseo-handoff-history-"));
+  try {
+    const handle = await installClaudeSession({
+      ...input,
+      configDir,
+      importId: manifest.sessionId,
+      cliVersion: manifest.cliVersion,
+    });
+    const reader = await new ClaudeAgentClient({
+      logger: input.logger,
+      runtimeSettings: { env: { CLAUDE_CONFIG_DIR: configDir } },
+      queryFactory: () => {
+        throw new Error("Handoff history cannot start a provider runtime");
+      },
+    }).resumeSession(handle, { cwd: input.cwd });
+    try {
+      const history: AgentStreamEvent[] = [];
+      for await (const event of reader.streamHistory()) history.push(event);
+      return history;
+    } finally {
+      await reader.close();
+    }
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
 }
 
 export async function readClaudeSessionManifest(

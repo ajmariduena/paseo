@@ -12712,6 +12712,54 @@ test("user_message events wrapping a paseo-system envelope are not restored duri
   expect(userMessages[0].text).toBe("real user message");
 });
 
+test("handoff history preserves notification presentation without loading an agent", async () => {
+  const agentId = randomUUID();
+  const wake = formatSystemNotificationPrompt("A background task finished.");
+  const hidden = formatSystemNotificationPrompt("Internal context update");
+  const annotations = new PromptAnnotationStore(null);
+  await annotations.remember(agentId, {
+    messageId: "wake-1",
+    text: wake,
+    annotation: { kind: "notification", level: "info", message: "A background task finished." },
+  });
+  const manager = new AgentManager({ clients: {}, logger, promptAnnotations: annotations });
+  const timestamp = "2026-10-09T10:00:00.000Z";
+  const rows = await manager.projectHistoryForHandoff(
+    agentId,
+    [
+      {
+        type: "timeline",
+        provider: "claude",
+        item: { type: "user_message", text: "Continue the work" },
+      },
+      { type: "timeline", provider: "claude", item: { type: "user_message", text: wake } },
+      { type: "timeline", provider: "claude", item: { type: "user_message", text: hidden } },
+      {
+        type: "timeline",
+        provider: "claude",
+        item: { type: "assistant_message", text: "Continuing" },
+      },
+    ],
+    timestamp,
+  );
+  expect(rows).toEqual([
+    { seq: 1, timestamp, item: { type: "user_message", text: "Continue the work" } },
+    {
+      seq: 2,
+      timestamp,
+      item: {
+        type: "notification",
+        level: "info",
+        message: "A background task finished.",
+        messageId: "wake-1",
+      },
+    },
+    { seq: 3, timestamp, item: { type: "assistant_message", text: "Continuing" } },
+  ]);
+  expect(manager.getAgent(agentId)).toBeNull();
+  manager.prepareForShutdown();
+});
+
 test("a replayed wake envelope becomes its notification row again after a daemon restart", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-envelope-annotated-"));
   const annotationsDir = join(workdir, "prompt-annotations");

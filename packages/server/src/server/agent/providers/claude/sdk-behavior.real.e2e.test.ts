@@ -354,8 +354,8 @@ test("native handoff stops the source daemon runtime and continues a real turn a
     ],
     { cwd: sourceCwd },
   );
-  const hosts: TestPaseoDaemon[] = [];
-  const clients: DaemonClient[] = [];
+  const hosts = new Set<TestPaseoDaemon>();
+  const clients = new Set<DaemonClient>();
   async function startHost(name: string) {
     const home = path.join(root, name);
     const configDir = path.join(home, "claude");
@@ -374,12 +374,12 @@ test("native handoff stops the source daemon runtime and continues a real turn a
         claude: new ClaudeAgentClient({ logger: pino({ level: "warn" }), runtimeSettings }),
       },
     });
-    hosts.push(host);
+    hosts.add(host);
     const client = new DaemonClient({
       url: `ws://127.0.0.1:${host.port}/ws`,
       appVersion: "0.11.1",
     });
-    clients.push(client);
+    clients.add(client);
     await client.connect();
     return { host, client, configDir };
   }
@@ -483,6 +483,34 @@ test("native handoff stops the source daemon runtime and continues a real turn a
     );
     await target.agentManager.closeAgent(importedId);
     expect(readFileSync(sourcePath)).toEqual(sourceBytes);
+    const history = await source.client.fetchAgentTimeline(agent.id);
+    expect(JSON.stringify(history.entries)).toContain(marker);
+    expect(origin.agentManager.getAgent(agent.id)).toBeNull();
+    await source.client.close();
+    clients.delete(source.client);
+    await source.host.close();
+    hosts.delete(source.host);
+    const restarted = await createTestPaseoDaemon({
+      paseoHomeRoot: path.join(root, "source"),
+      staticDir: source.host.staticDir,
+      cleanup: false,
+      mcpEnabled: false,
+      agentClients: {},
+    });
+    hosts.add(restarted);
+    const reconnected = new DaemonClient({
+      url: `ws://127.0.0.1:${restarted.port}/ws`,
+      appVersion: "0.11.1",
+    });
+    clients.add(reconnected);
+    await reconnected.connect();
+    const restored = await reconnected.fetchAgentTimeline(agent.id);
+    expect(restored.entries).toEqual(history.entries);
+    expect(restored.epoch).toBe(history.epoch);
+    expect(restarted.daemon.agentManager.getAgent(agent.id)).toBeNull();
+    await expect(
+      reconnected.sendMessage(agent.id, "Try the old host after restart"),
+    ).rejects.toThrow("held by handoff");
   } finally {
     for (const client of clients) await client.close();
     for (const host of hosts) await host.close();

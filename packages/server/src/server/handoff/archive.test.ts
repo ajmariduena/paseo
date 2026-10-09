@@ -1,10 +1,11 @@
 import { HANDOFF_CHUNK_BYTES } from "@getpaseo/protocol/handoff";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile, truncate } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { HandoffArchiveStore, HANDOFF_ARCHIVE_LIMITS } from "./archive.js";
+import { readHandoffHistory, HANDOFF_HISTORY_MAX_BYTES } from "./history.js";
 
 let root: string;
 let store: HandoffArchiveStore;
@@ -19,6 +20,43 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await rm(root, { recursive: true, force: true });
+});
+
+test.each([
+  { sourceAgentId: "another-agent", seq: 1 },
+  { sourceAgentId: "source-agent", seq: 2 },
+])(
+  "readable history refuses foreign identity or missing rows: $sourceAgentId / $seq",
+  async ({ sourceAgentId, seq }) => {
+    const file = path.join(root, "history.json");
+    await writeFile(
+      file,
+      JSON.stringify({
+        version: 1,
+        sourceAgentId,
+        epoch: randomUUID(),
+        rows: [
+          {
+            seq,
+            timestamp: new Date().toISOString(),
+            item: { type: "user_message", text: "Retained conversation" },
+          },
+        ],
+      }),
+    );
+    await expect(readHandoffHistory(file, "source-agent")).rejects.toThrow(
+      "another conversation or has missing rows",
+    );
+  },
+);
+
+test("readable history refuses an oversized file before reading its content", async () => {
+  const file = path.join(root, "history.json");
+  await writeFile(file, "");
+  await truncate(file, HANDOFF_HISTORY_MAX_BYTES + 1);
+  await expect(readHandoffHistory(file, "source-agent")).rejects.toThrow(
+    "Invalid handoff metadata file size",
+  );
 });
 
 test("imports a captured local artifact and resumes an interrupted import without serving partial bytes", async () => {

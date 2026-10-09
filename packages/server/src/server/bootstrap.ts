@@ -1634,6 +1634,7 @@ export async function createPaseoDaemon(
   const handoffSource = new HandoffSource({
     directory: path.join(config.paseoHome, "handoff", "source"),
     serverId,
+    logger,
     ownership: handoffOwnership,
     archives: handoffArchives,
     workspaces: workspaceRegistry,
@@ -2046,6 +2047,7 @@ export async function createPaseoDaemon(
               noteStore,
               hostMetricsSampler,
               handoffOwnership,
+              handoffSource,
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();
