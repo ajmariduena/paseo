@@ -1025,6 +1025,44 @@ describe("FileEditorModel", () => {
     expect(session.writes).toEqual([]);
   });
 
+  test.each<Exclude<FileVersion, { status: "ready" }>>([
+    { status: "missing", cwd: "/workspace", path: "file.ts" },
+    {
+      status: "error",
+      cwd: "/workspace",
+      path: "file.ts",
+      error: "Requested path is not a file",
+    },
+  ])("a clean replacement after $status offers reload without local edits", async (version) => {
+    const { model, session, clock } = makeModel();
+    observeVersion(model, version);
+    observeFile(model, { content: "replacement", hasBom: false, version: ready("newer", 11) });
+
+    expect(model.getSnapshot()).toMatchObject({
+      status: "conflict",
+      content: "one",
+      modified: false,
+    });
+    expect(getFileConflictCallout(model.getSnapshot())).toEqual({
+      kind: "changed",
+      canOverwrite: false,
+    });
+    expect(model.getRecoveryDraft()).toBeNull();
+    const barrier = model.acquireSaveBarrier();
+    await barrier.flush();
+    barrier.release();
+    clock.fire();
+    expect(session.writes).toEqual([]);
+
+    await model.reload();
+    expect(model.getSnapshot()).toMatchObject({
+      status: "clean",
+      content: "replacement",
+      modified: false,
+    });
+    expect(getFileConflictCallout(model.getSnapshot())).toBeNull();
+  });
+
   test("clears a transient check error when the recovered file is unchanged", () => {
     const { model } = makeModel();
     observeVersion(model, {

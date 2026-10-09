@@ -481,7 +481,6 @@ export class FileEditorModel {
     this.setSnapshot({
       ...this.snapshot,
       status: "conflict",
-      modified: this.isModified(this.snapshot.content, true),
       observedVersion: version,
       error: version.status === "error" ? version.error : null,
     });

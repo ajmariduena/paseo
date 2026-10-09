@@ -1,0 +1,154 @@
+Editor conflict regression — 2026-10-10
+
+CI: https://github.com/ajmariduena/paseo/actions/runs/37988796056/job/114017778113
+The cancelled workflow ran head ff9be424c. Shard 2 independently completed with
+three failing browser cases, each also failing its retry. Two failures were:
+- a clean file replaced on disk offers one working reload action
+- a file check error offers a working retry
+Both expected no Overwrite button but received one. The relevant editor code
+was unchanged between that head and the current baseline 6fa01234d.
+
+A disk observation must preserve whether the user has local edits. Comparing
+an untouched buffer with newly observed disk bytes incorrectly marks it modified,
+creates a recovery draft and offers to overwrite a file the user never edited.
+Explicit editor edits still compare against the newer disk version during a
+conflict, preserving the existing regression for reverting locally edited bytes.
+
+The new missing/error cases prove no local edits, no recovery draft, no writes
+during the handoff save barrier, and successful explicit reload. All 47 cases
+in the existing editor model suite pass. No browser rerun has been performed
+for this patch yet; another workspace owns the current Playwright slot.
+The separate workspace-creation startup-error failure remains under investigation.
+This evidence makes no provider continuity or physical-host handoff claim.
+
+Before fix (expected failure)
+$ cd packages/app && npx vitest run src/file-pane/editor/model.test.ts --bail=1 -t 'a clean replacement after'
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+
+ ❯ |unit| src/file-pane/editor/model.test.ts (47 tests | 1 failed | 45 skipped) 13ms
+     × a clean replacement after 'missing' offers reload without local edits 9ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |unit| src/file-pane/editor/model.test.ts > FileEditorModel > a clean replacement after 'missing' offers reload without local edits
+AssertionError: expected { readOnly: false, …(8) } to match object { status: 'conflict', …(2) }
+(16 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+    "content": "one",
+-   "modified": false,
++   "modified": true,
+    "status": "conflict",
+  }
+
+ ❯ src/file-pane/editor/model.test.ts:1041:33
+    1039|     observeFile(model, { content: "replacement", hasBom: false, versio…
+    1040|
+    1041|     expect(model.getSnapshot()).toMatchObject({
+       |                                 ^
+    1042|       status: "conflict",
+    1043|       content: "one",
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 45 skipped (47)
+   Start at  00:24:08
+   Duration  772ms (transform 394ms, setup 44ms, import 600ms, tests 13ms, environment 0ms)
+
+
+After fix
+$ cd packages/app && npx vitest run src/file-pane/editor/model.test.ts --bail=1
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+
+
+ Test Files  1 passed (1)
+      Tests  47 passed (47)
+   Start at  00:24:17
+   Duration  926ms (transform 469ms, setup 49ms, import 734ms, tests 24ms, environment 0ms)
+
+
+
+$ npm run typecheck
+
+> paseo@0.11.1 typecheck
+> npm run typecheck --workspaces --if-present
+
+
+> @getpaseo/builtin-plugins@0.11.1 typecheck
+> tsgo -p tsconfig.json --noEmit
+
+
+> @getpaseo/expo-two-way-audio@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/highlight@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/plugin@0.11.1 typecheck
+> tsgo --noEmit && tsgo -p tsconfig.examples.json --noEmit
+
+
+> @getpaseo/protocol@0.11.1 pretypecheck
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/client@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/server@0.11.1 typecheck
+> tsgo -p tsconfig.server.typecheck.json --noEmit
+
+
+> @getpaseo/app@0.11.0-beta.36 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/relay@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/website@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/desktop@0.11.1 typecheck
+> tsgo --noEmit -p tsconfig.json
+
+
+> @getpaseo/cli@0.11.1 typecheck
+> tsgo --noEmit
+
+
+$ npm run lint
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 2.1s on 5029 files with 177 rules using 4 threads.
+
+$ npm run format
+
+> paseo@0.11.1 format
+> oxfmt .
+
+Finished in 3795ms on 5374 files using 4 threads.
