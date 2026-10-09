@@ -21,6 +21,7 @@ import type { CreatePaseoWorktreeWorkflowResult } from "../../worktree-session.j
 import { deriveProjectKey } from "../../project-key.js";
 import { areEquivalentPaths, createRealpathAwarePathMatcher } from "../../../utils/path.js";
 import type { UntrustedWorkspaceSource } from "../../workspace-automation-gate.js";
+import type { HandoffMutationScope, HandoffOwnership } from "../../handoff/ownership.js";
 import {
   assertWorktreeNotCleaningUp,
   withWorktreeProjectLock,
@@ -115,8 +116,13 @@ export function createWorkspaceProvisioningService(deps: {
   lifecycle?: PluginLifecycle;
   scratchRoot?: string;
   worktreesBaseRoot?: string;
+  handoffOwnership?: HandoffOwnership;
 }): WorkspaceProvisioningService {
   const { serverId, workspaceRegistry, projectRegistry, workspaceGitService, logger } = deps;
+
+  function withMutation<T>(scope: HandoffMutationScope, action: () => Promise<T>): Promise<T> {
+    return deps.handoffOwnership ? deps.handoffOwnership.withMutation(scope, action) : action();
+  }
 
   async function withAdoptionLock<T>(
     cwd: string,
@@ -296,11 +302,11 @@ export function createWorkspaceProvisioningService(deps: {
     title?: string | null;
     expectsInitialAgent?: boolean;
   }): Promise<PersistedWorkspaceRecord> {
-    const project = await ensureScratchProject();
     const workspaceId = input.workspaceId ?? generateWorkspaceId();
     if (!/^wks_[a-f0-9]{16}$/.test(workspaceId)) {
       throw new Error(`Invalid scratch workspace id: ${workspaceId}`);
     }
+    const project = await ensureScratchProject();
     const cwd = join(requireScratchRoot(), workspaceId);
     // Creation retries reuse the reserved id, so an existing directory is that same attempt.
     await mkdir(cwd, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
@@ -600,15 +606,43 @@ export function createWorkspaceProvisioningService(deps: {
     return refreshed;
   }
 
+  // Admit at the public boundary. Internal composition keeps that admission through
+  // registry writes and rollback, even if prepare installs a fence while we await I/O.
   return {
-    runInImportWorkspace,
-    findOrCreateWorkspaceForDirectory,
-    resolveOrCreateWorkspaceIdForCreateAgent,
-    createWorkspaceForDirectory,
-    createWorkspaceForWorktree,
-    findOrCreateProjectForDirectory,
-    ensureScratchProject,
-    createScratchWorkspace,
-    ensureWorkspaceRecordUnarchived,
+    runInImportWorkspace: (input, operation) =>
+      withMutation({ cwd: input.cwd, workspaceId: input.requestedWorkspaceId }, () =>
+        runInImportWorkspace(input, operation),
+      ),
+    findOrCreateWorkspaceForDirectory: (cwd) =>
+      withMutation({ cwd }, () => findOrCreateWorkspaceForDirectory(cwd)),
+    resolveOrCreateWorkspaceIdForCreateAgent: (input) =>
+      withMutation({ cwd: input.cwd, workspaceId: input.requestedWorkspaceId }, () =>
+        resolveOrCreateWorkspaceIdForCreateAgent(input),
+      ),
+    createWorkspaceForDirectory: (cwd, title, projectId, context) =>
+      withMutation({ cwd, workspaceId: context?.workspaceId }, () =>
+        createWorkspaceForDirectory(cwd, title, projectId, context),
+      ),
+    createWorkspaceForWorktree: (input) =>
+      withMutation({ cwd: input.worktreeRoot, workspaceId: input.workspaceId }, () =>
+        withMutation({ cwd: input.sourceCwd }, () =>
+          withMutation({ cwd: input.repoRoot }, () => createWorkspaceForWorktree(input)),
+        ),
+      ),
+    findOrCreateProjectForDirectory: (cwd) =>
+      withMutation({ cwd }, () => findOrCreateProjectForDirectory(cwd)),
+    ensureScratchProject: async () =>
+      withMutation({ cwd: requireScratchRoot() }, () => ensureScratchProject()),
+    createScratchWorkspace: async (input) => {
+      const workspaceId = input.workspaceId ?? generateWorkspaceId();
+      return withMutation({ cwd: join(requireScratchRoot(), workspaceId), workspaceId }, () =>
+        createScratchWorkspace({ ...input, workspaceId }),
+      );
+    },
+    ensureWorkspaceRecordUnarchived: (workspace) =>
+      withMutation(
+        { cwd: workspace.worktreeRoot ?? workspace.cwd, workspaceId: workspace.workspaceId },
+        () => ensureWorkspaceRecordUnarchived(workspace),
+      ),
   };
 }

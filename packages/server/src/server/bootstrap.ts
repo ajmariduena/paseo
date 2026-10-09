@@ -1016,6 +1016,7 @@ export async function createPaseoDaemon(
     }
   });
   const workspaceProvisioning = createWorkspaceProvisioningService({
+    handoffOwnership,
     lifecycle: pluginRuntime,
     serverId,
     projectRegistry,

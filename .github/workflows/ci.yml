@@ -236,6 +236,7 @@ jobs:
             packages/server/src/server/agent/agent-manager.test.ts \
             packages/server/src/server/bootstrap.smoke.test.ts \
             packages/server/src/server/workspace-auto-name.test.ts \
+            packages/server/src/server/session/workspace-provisioning/workspace-provisioning-service.test.ts \
             packages/server/src/server/session/workspace-scripts/workspace-scripts-service.test.ts \
             packages/server/src/server/session/files/workspace-files-session.test.ts \
             packages/server/src/server/session/git-mutation/git-mutation-service.test.ts \

@@ -144,6 +144,25 @@ describe("paseo daemon bootstrap", () => {
       );
       expect((await client.fetchAgents()).entries).toEqual([]);
       const error = `Workspace is held by handoff ${transferId} (preparing)`;
+      expect(
+        await client.createWorkspace({ source: { kind: "directory", path: cwd } }),
+      ).toMatchObject({
+        workspace: null,
+        error,
+      });
+      expect(await client.openProject(cwd, "handoff-open-project")).toMatchObject({
+        requestId: "handoff-open-project",
+        workspace: null,
+        error,
+      });
+      const persisted = new FileBackedWorkspaceRegistry(
+        path.join(paseoHome, "projects", "workspaces.json"),
+        registryLogger,
+      );
+      await persisted.initialize();
+      expect((await persisted.list()).map((workspace) => workspace.workspaceId)).toEqual([
+        "moved-workspace",
+      ]);
       expect(await client.startWorkspaceScript("moved-workspace", "app", "handoff-script")).toEqual(
         {
           requestId: "handoff-script",

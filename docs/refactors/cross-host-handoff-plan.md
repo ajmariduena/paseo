@@ -162,8 +162,16 @@ points use the boot ledger. The real WebSocket boot test proves a fenced service
 its port allocator; unit coverage keeps script listing and stopping available. Setup/teardown
 hooks and complete process-tree shutdown still need coordinator integration.
 
+Workspace provisioning takes admission at its public boundary, through project/workspace writes
+and failed-import rollback. Internal composition keeps that admission if a fence arrives while
+I/O is pending. Tests use real registries and hold both final writes and rollback across preparation;
+the source cannot become ready before they finish. Scratch creation checks workspace identity before
+creating directories, and worktree registration checks its source and backing directory. Unarchiving
+records is fenced too. The boot test rejects workspace creation and adoption over the real connection.
+These guards do not cover worktree filesystem creation/reconstruction or asynchronous plugin hooks.
+
 These tests do not establish the complete ownership promise: draft catalog runtimes,
-setup/teardown hooks, background workspace mutations (including provisioning, archive/recovery and worktree
+setup/teardown hooks, background workspace mutations (including archive/recovery and worktree
 creation), shared Git metadata ownership, runtime termination and destination activation still need
 integration.
 Source history needs a readable path that does not reopen a fenced native runtime. Source release
