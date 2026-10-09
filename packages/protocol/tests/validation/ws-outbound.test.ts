@@ -107,6 +107,8 @@ describe("WS outbound zod-aot validation", () => {
   });
 
   it.each([
+    "cancel_source",
+    "cancel_destination",
     "inspect_source",
     "prepare_source",
     "get_source_status",

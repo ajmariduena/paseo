@@ -8,6 +8,7 @@ import type { HandoffArchiveStore, VerifiedHandoffArchive } from "./archive.js";
 import { readBoundedFile, syncDirectory, writeJournal } from "./artifacts.js";
 import {
   verifyHandoffRelease,
+  verifyHandoffCancellation,
   handoffPathsOverlap,
   type HandoffMutationScope,
   type HandoffReleaseReceipt,
@@ -131,6 +132,7 @@ export class HandoffDestinationError extends Error {
       | "conflict"
       | "invalid_state"
       | "invalid_release"
+      | "invalid_cancellation"
       | "not_found"
       | "storage_uncertain"
       | "unprepared_conversations"
@@ -398,12 +400,30 @@ export class HandoffDestination {
     });
   }
 
-  /** The coordinator must durably cancel the source before discarding its prepared destination. */
-  cancel(transferId: string): Promise<DestinationHandoffStatus> {
+  /** Proof must come from the authenticated source, including when preparation never reached it. */
+  cancel(transferId: string, proof: unknown): Promise<DestinationHandoffStatus> {
     return this.serialize(async () => {
       const record = this.requireRecord(transferId);
       if (["released", "activating", "active"].includes(record.state))
         fail("invalid_state", "Released ownership must finish activation");
+      if (
+        !verifyHandoffCancellation(
+          proof,
+          {
+            version: 1,
+            outcome: "cancelled",
+            transferId,
+            sourceServerId: record.sourceServerId,
+            destinationServerId: this.options.serverId,
+            reservationId: record.reservationId,
+          },
+          record.binding?.publicKey,
+        )
+      )
+        fail(
+          "invalid_cancellation",
+          "Source cancellation does not match this destination reservation",
+        );
       await this.save({ ...record, state: "cancelled" });
       const claudeRuntime = record.claudeRuntime;
       if (claudeRuntime) {

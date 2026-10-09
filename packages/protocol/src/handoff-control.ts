@@ -35,6 +35,19 @@ export const HandoffReleaseReceiptSchema = HandoffReleaseBindingSchema.extend({
   signature: z.string().min(1).max(1024),
 });
 export type HandoffReleaseReceipt = z.infer<typeof HandoffReleaseReceiptSchema>;
+export const HandoffCancellationBindingSchema = z.object({
+  version: z.literal(1),
+  outcome: z.literal("cancelled"),
+  transferId: HandoffTransferIdSchema,
+  sourceServerId: z.string().min(1),
+  destinationServerId: z.string().min(1),
+  reservationId: HandoffTransferIdSchema,
+});
+export const HandoffCancellationProofSchema = z.object({
+  receipt: HandoffCancellationBindingSchema.extend({ signature: z.string().min(1).max(1024) }),
+  publicKey: z.string().min(1).max(1024),
+});
+export type HandoffCancellationProof = z.infer<typeof HandoffCancellationProofSchema>;
 export const HandoffDestinationSnapshotSchema = z.object({
   transferId: HandoffTransferIdSchema,
   reservationId: HandoffTransferIdSchema,
@@ -194,6 +207,36 @@ export const HandoffActivateDestinationRequestSchema = z.object({
 });
 export const HandoffActivateDestinationResponseSchema = z.object({
   type: z.literal("workspace.handoff.activate_destination.response"),
+  payload: z.object({
+    requestId: z.string(),
+    result: HandoffDestinationSnapshotSchema.nullable(),
+    error: HandoffErrorSchema.nullable(),
+  }),
+});
+
+export const HandoffCancelSourceRequestSchema = z.object({
+  type: z.literal("workspace.handoff.cancel_source.request"),
+  requestId: z.string(),
+  transferId: HandoffTransferIdSchema,
+  destinationServerId: z.string().min(1),
+  reservationId: HandoffTransferIdSchema,
+});
+export const HandoffCancelSourceResponseSchema = z.object({
+  type: z.literal("workspace.handoff.cancel_source.response"),
+  payload: z.object({
+    requestId: z.string(),
+    result: HandoffCancellationProofSchema.nullable(),
+    error: HandoffErrorSchema.nullable(),
+  }),
+});
+export const HandoffCancelDestinationRequestSchema = z.object({
+  type: z.literal("workspace.handoff.cancel_destination.request"),
+  requestId: z.string(),
+  transferId: HandoffTransferIdSchema,
+  proof: HandoffCancellationProofSchema,
+});
+export const HandoffCancelDestinationResponseSchema = z.object({
+  type: z.literal("workspace.handoff.cancel_destination.response"),
   payload: z.object({
     requestId: z.string(),
     result: HandoffDestinationSnapshotSchema.nullable(),

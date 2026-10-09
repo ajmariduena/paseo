@@ -3,6 +3,8 @@ import { HandoffDestinationSnapshotSchema } from "@getpaseo/protocol/handoff-con
 import type { HandoffSource } from "./source.js";
 import type { HandoffDestination, DestinationHandoffStatus } from "./destination.js";
 const responseTypes = {
+  "workspace.handoff.cancel_source.request": "workspace.handoff.cancel_source.response",
+  "workspace.handoff.cancel_destination.request": "workspace.handoff.cancel_destination.response",
   "workspace.handoff.inspect_source.request": "workspace.handoff.inspect_source.response",
   "workspace.handoff.prepare_source.request": "workspace.handoff.prepare_source.response",
   "workspace.handoff.get_source_status.request": "workspace.handoff.get_source_status.response",
@@ -42,6 +44,19 @@ async function handle(services: Services, request: ControlRequest): Promise<Cont
   }
   try {
     switch (request.type) {
+      case "workspace.handoff.cancel_source.request":
+        return {
+          type: responseTypes[request.type],
+          payload: { ...payload, result: await source().cancel(request) },
+        };
+      case "workspace.handoff.cancel_destination.request":
+        return {
+          type: responseTypes[request.type],
+          payload: {
+            ...payload,
+            result: snapshot(await destination().cancel(request.transferId, request.proof)),
+          },
+        };
       case "workspace.handoff.inspect_source.request":
         return {
           type: responseTypes[request.type],
@@ -111,6 +126,8 @@ export function dispatchHandoffControlMessage(
   },
 ): Promise<void> | undefined {
   switch (input.message.type) {
+    case "workspace.handoff.cancel_source.request":
+    case "workspace.handoff.cancel_destination.request":
     case "workspace.handoff.inspect_source.request":
     case "workspace.handoff.prepare_source.request":
     case "workspace.handoff.get_source_status.request":

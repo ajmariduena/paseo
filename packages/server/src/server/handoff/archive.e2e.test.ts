@@ -2,6 +2,7 @@ import {
   transferHandoffArchive,
   prepareWorkspaceHandoff,
   activateWorkspaceHandoff,
+  cancelWorkspaceHandoff,
   type HandoffTransferProgress,
   DaemonClient as TransportClient,
 } from "@getpaseo/client/internal/daemon-client";
@@ -81,6 +82,98 @@ async function stopHost(host: Host): Promise<void> {
   await host.daemon.close();
 }
 
+test.skipIf(process.platform === "win32").each(["reserved", "staged"] as const)(
+  "cancels a %s handoff after a lost source cancellation reply and host restart",
+  async (phase) => {
+    let source = await startHost("source");
+    let destination = await startHost("destination");
+    const cwd = path.join(root, "cancel-workspace");
+    await mkdir(cwd);
+    await writeFile(path.join(cwd, "work.txt"), "Original work");
+    const created = await source.client.createWorkspace({
+      source: { kind: "directory", path: cwd },
+    });
+    if (!created.workspace) throw new Error("Missing workspace");
+    const transferId = randomUUID();
+    const request = {
+      transferId,
+      workspaceId: created.workspace.id,
+      destinationParent: root,
+      continuationMode: "native" as const,
+    };
+    const reservation = await destination.client.handoffReserveDestination({
+      transferId,
+      sourceServerId: source.daemon.daemon.getServerId(),
+      sourceWorkspaceId: request.workspaceId,
+      sourceAgentIds: [],
+      destinationParent: root,
+      continuationMode: "native",
+    });
+    if (!reservation.result) throw new Error("Missing reservation");
+    if (phase === "staged")
+      await prepareWorkspaceHandoff({
+        ...request,
+        source: source.client,
+        destination: destination.client,
+      });
+    const cancelRequest = {
+      transferId,
+      destinationServerId: destination.daemon.daemon.getServerId(),
+      reservationId: reservation.result.reservationId,
+    };
+    const cancelled = await source.client.handoffCancelSource(cancelRequest);
+    expect(cancelled.error).toBeNull();
+    if (!cancelled.result) throw new Error("Missing cancellation proof");
+    const invalid = await destination.client.handoffCancelDestination({
+      transferId,
+      proof: {
+        ...cancelled.result,
+        receipt: { ...cancelled.result.receipt, signature: "invalid-signature" },
+      },
+    });
+    expect(invalid.error?.code).toBe("invalid_cancellation");
+    expect(
+      (await destination.client.handoffGetDestinationStatus({ transferId })).result?.state,
+    ).toBe(phase);
+    // Source committed cancellation, but its reply was not forwarded before both hosts restarted.
+    await stopHost(source);
+    await stopHost(destination);
+    source = await startHost("source");
+    destination = await startHost("destination");
+    expect((await source.client.handoffCancelSource(cancelRequest)).result).toEqual(
+      cancelled.result,
+    );
+    const delayed = await source.client.handoffPrepareSource({
+      ...cancelRequest,
+      workspaceId: request.workspaceId,
+      agentIds: [],
+    });
+    expect(delayed.error?.code).toBe("invalid_state");
+    const result = await cancelWorkspaceHandoff({
+      source: source.client,
+      destination: destination.client,
+      transferId,
+    });
+    expect(result.state).toBe("cancelled");
+    expect(
+      await cancelWorkspaceHandoff({
+        source: source.client,
+        destination: destination.client,
+        transferId,
+      }),
+    ).toEqual(result);
+    expect(await readFile(path.join(cwd, "work.txt"), "utf8")).toBe("Original work");
+    expect(
+      await source.daemon.daemon.handoffOwnership.withMutation({ cwd }, async () => "resumed"),
+    ).toBe("resumed");
+    await expect(
+      readdir(path.join(root, `.paseo-handoff-${result.reservationId}`)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await destination.client.fetchWorkspaces()).entries).toEqual([]);
+  },
+  30_000,
+);
+
 test.skipIf(process.platform === "win32")(
   "coordinates handoff over RPC and recovers a lost release reply after reconnect",
   async () => {
@@ -115,6 +208,13 @@ test.skipIf(process.platform === "win32")(
     const release = await source.client.handoffReleaseSource({ transferId });
     expect(release.error).toBeNull();
     if (!release.result) throw new Error("Missing release receipt");
+    await expect(
+      cancelWorkspaceHandoff({
+        source: source.client,
+        destination: destination.client,
+        transferId,
+      }),
+    ).rejects.toThrow("Source ownership was released");
     const refused = await destination.client.handoffActivateDestination({
       transferId,
       receipt: { ...release.result, signature: "invalid-signature" },
@@ -509,7 +609,7 @@ test.skipIf(process.platform === "win32").each([
       await destination.daemon.daemon.handoffDestination.acceptRelease(transferId, receipt),
     ).toEqual(released);
     await expect(
-      destination.daemon.daemon.handoffDestination.cancel(transferId),
+      destination.daemon.daemon.handoffDestination.cancel(transferId, null),
     ).rejects.toMatchObject({ code: "invalid_state" });
     await expect(
       sourceDaemon.handoffOwnership.withMutation({ cwd }, async () => {}),

@@ -84,6 +84,39 @@ test("handoff activation requires a bound release receipt and reservation requir
   }
 });
 
+test("handoff destination cancellation refuses release receipts and missing proofs", () => {
+  const message = {
+    type: "workspace.handoff.cancel_destination.request",
+    requestId: "cancel",
+    transferId: "00000000-0000-4000-8000-000000000001",
+    proof: {
+      publicKey: "source-key",
+      receipt: {
+        version: 1,
+        outcome: "cancelled",
+        transferId: "00000000-0000-4000-8000-000000000001",
+        sourceServerId: "source",
+        destinationServerId: "destination",
+        reservationId: "00000000-0000-4000-8000-000000000002",
+        signature: "signature",
+      },
+    },
+  };
+  expect(SessionInboundMessageSchema.parse(message)).toEqual(message);
+  expect(SessionInboundMessageSchema.safeParse({ ...message, proof: undefined }).success).toBe(
+    false,
+  );
+  expect(
+    SessionInboundMessageSchema.safeParse({
+      ...message,
+      proof: {
+        ...message.proof,
+        receipt: { ...message.proof.receipt, outcome: undefined, manifestDigest: "a".repeat(64) },
+      },
+    }).success,
+  ).toBe(false);
+});
+
 test("terminal listings accept older rows and retain new per-terminal directories", () => {
   const response = {
     type: "list_terminals_response",

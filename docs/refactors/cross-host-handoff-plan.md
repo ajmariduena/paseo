@@ -57,6 +57,9 @@ both sides and resume missing bytes. A future direct daemon transport must use t
 Before release, cancellation must durably win the source's cancel/release race before discarding
 the inactive destination. A lost release reply must not let destination cleanup destroy the only
 prepared copy while the source is irrevocably fenced.
+The source issues a signed cancellation bound to the destination reservation. Record it even if
+preparation has not arrived, so a delayed prepare cannot revive the cancelled transfer. Destination
+cleanup requires that proof and the previously pinned source key when content is already bound.
 After release, a lost acknowledgement leaves the source fenced: query/retry the same transfer,
 never infer rollback from a timeout. Returning ownership requires a new handoff. Journals load
 before agent resume, schedules, queues, delegation wakes, or public mutations at daemon boot.
@@ -215,7 +218,9 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   Retry reuses the hosts' journals and transfer ID. A network regression loses the release reply,
   restarts both hosts and removes the original directory before recovering the same destination
   workspace. Invalid release signatures are refused. The caller must retain the transfer ID;
-  durable app state, transfer discovery and safe cross-host cancellation remain open.
+  durable app state and transfer discovery remain open. Cancellation uses the source's durable proof
+  before discarding destination staging. Tests cover a delayed prepare, lost cancellation replies,
+  host restarts, wrong keys and signatures, persistence failures, and both cancel/release orderings.
 - `ownership.ts`, `ownership.test.ts` and `bootstrap.test.ts` cover durable source fences,
   admission draining, cancel/release races, signed receipts and loading fences before providers.
   Admission is wired through agent operations, files/Git, terminal creation/input/resize, scripts,

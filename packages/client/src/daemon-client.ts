@@ -1,6 +1,7 @@
 export {
   prepareWorkspaceHandoff,
   activateWorkspaceHandoff,
+  cancelWorkspaceHandoff,
   type PrepareWorkspaceHandoffInput,
   type WorkspaceHandoffProgress,
 } from "./workspace-handoff.js";
@@ -2765,6 +2766,36 @@ export class DaemonClient {
         return msg.payload;
       },
     });
+  }
+
+  handoffCancelSource(
+    options: Omit<
+      Extract<SessionInboundMessage, { type: "workspace.handoff.cancel_source.request" }>,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.cancel_source.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.cancel_source.response">({
+      requestId,
+      message: { type: "workspace.handoff.cancel_source.request", ...input },
+      timeout: 120000,
+    });
+  }
+
+  handoffCancelDestination(
+    options: Omit<
+      Extract<SessionInboundMessage, { type: "workspace.handoff.cancel_destination.request" }>,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.cancel_destination.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.cancel_destination.response">(
+      {
+        requestId,
+        message: { type: "workspace.handoff.cancel_destination.request", ...input },
+        timeout: 120000,
+      },
+    );
   }
 
   handoffInspectSource(

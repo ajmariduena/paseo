@@ -190,3 +190,33 @@ export async function activateWorkspaceHandoff(
   input.onProgress?.({ phase: "active" });
   return active;
 }
+
+/** Cancellation wins durably at source before destination is permitted to discard its copy. */
+export async function cancelWorkspaceHandoff(
+  input: HandoffConnections,
+): Promise<HandoffDestinationSnapshot> {
+  const { source, destination, transferId, signal } = input;
+  const target = handoffResult(
+    await handoffRequest(() => destination.handoffGetDestinationStatus({ transferId }), signal),
+  );
+  const { sourceServerId, destinationServerId } = requireDistinctHosts(input);
+  if (target.sourceServerId !== sourceServerId)
+    throw new Error("Destination reservation belongs to another source host");
+  if (["released", "activating", "active"].includes(target.state))
+    throw new Error("Source ownership was released; finish destination activation");
+  // Even a cancelled destination may need to retry cleanup after an interrupted delete.
+  const proof = handoffResult(
+    await handoffRequest(
+      () =>
+        source.handoffCancelSource({
+          transferId,
+          destinationServerId,
+          reservationId: target.reservationId,
+        }),
+      signal,
+    ),
+  );
+  return handoffResult(
+    await handoffRequest(() => destination.handoffCancelDestination({ transferId, proof }), signal),
+  );
+}

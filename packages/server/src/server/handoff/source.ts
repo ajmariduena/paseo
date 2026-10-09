@@ -28,6 +28,7 @@ import {
   handoffPathsOverlap,
   type HandoffOwnership,
   type SourceHandoffStatus,
+  type HandoffCancellationInput,
 } from "./ownership.js";
 
 const AgentSchema = z.object({
@@ -233,6 +234,11 @@ export class HandoffSource {
     const captured = source.state === "ready" || source.state === "released";
     const manifest = captured ? (await this.readPrepared(source)).manifest : null;
     return { source, manifest };
+  }
+
+  cancel(input: HandoffCancellationInput) {
+    // Do not reopen source admission while its preparation is still stopping or capturing writers.
+    return this.serialize(() => this.options.ownership.cancelReservation(input));
   }
 
   release(transferId: string) {

@@ -6,6 +6,9 @@ import { HandoffDigestSchema, HandoffTransferIdSchema } from "@getpaseo/protocol
 import {
   HandoffReleaseBindingSchema as BindingSchema,
   HandoffReleaseReceiptSchema as ReceiptSchema,
+  HandoffCancellationBindingSchema,
+  HandoffCancellationProofSchema,
+  type HandoffCancellationProof,
 } from "@getpaseo/protocol/handoff-control";
 import { readBoundedFile, syncDirectory, writeJournal } from "./artifacts.js";
 
@@ -23,15 +26,25 @@ const RecordSchema = SourceSchema.extend({
   privateKey: z.string().min(1).max(1024),
   publicKey: z.string().min(1).max(1024),
 });
+const CancellationRecordSchema = HandoffCancellationBindingSchema.extend({
+  privateKey: z.string().min(1).max(1024),
+  publicKey: z.string().min(1).max(1024),
+});
 const JournalSchema = z.object({
   version: z.literal(1),
   sourceServerId: z.string().min(1),
   records: z.array(RecordSchema).max(10_000),
+  cancellations: z.array(CancellationRecordSchema).max(10_000).optional(),
 });
 
 type SourceInput = z.infer<typeof SourceSchema>;
 type SourceRecord = z.infer<typeof RecordSchema>;
 type ReleaseBinding = z.infer<typeof BindingSchema>;
+type CancellationRecord = z.infer<typeof CancellationRecordSchema>;
+export type HandoffCancellationInput = Pick<
+  CancellationRecord,
+  "transferId" | "destinationServerId" | "reservationId"
+>;
 export type HandoffReleaseReceipt = z.infer<typeof ReceiptSchema>;
 export type SourceHandoffStatus = Omit<SourceRecord, "privateKey">;
 
@@ -114,6 +127,7 @@ async function mutationPath(cwd: string): Promise<string> {
 /** Load before any runtime, queue, or automation can resume. One instance owns all write leases. */
 export class HandoffOwnership {
   private readonly records = new Map<string, SourceRecord>();
+  private readonly cancellations = new Map<string, CancellationRecord>();
   private readonly mutations = new Set<Mutation>();
   private tail: Promise<unknown> = Promise.resolve();
   private initialized = false;
@@ -171,8 +185,29 @@ export class HandoffOwnership {
         loaded.set(record.id, record);
       }
       for (const [id, record] of loaded) this.records.set(id, record);
+      this.restoreCancellations(journal.cancellations ?? []);
     }
     this.initialized = true;
+  }
+
+  private restoreCancellations(cancellations: CancellationRecord[]): void {
+    for (const cancellation of cancellations) {
+      const source = this.records.get(cancellation.transferId);
+      if (
+        this.cancellations.has(cancellation.transferId) ||
+        cancellation.sourceServerId !== this.options.sourceServerId ||
+        (source &&
+          (source.state !== "cancelled" ||
+            source.destinationServerId !== cancellation.destinationServerId ||
+            source.reservationId !== cancellation.reservationId ||
+            source.publicKey !== cancellation.publicKey))
+      )
+        reject("storage_uncertain", "Invalid cancellation journal");
+      const proof = cancellationProof(cancellation);
+      if (!verifyHandoffCancellation(proof, HandoffCancellationBindingSchema.parse(cancellation)))
+        reject("storage_uncertain", "Invalid cancellation signing key");
+      this.cancellations.set(cancellation.transferId, cancellation);
+    }
   }
 
   async prepare(input: SourceInput): Promise<SourceHandoffStatus> {
@@ -183,6 +218,8 @@ export class HandoffOwnership {
       agentIds: [...new Set(parsed.agentIds)].sort(),
     };
     return this.serialize(async () => {
+      if (this.cancellations.has(source.id))
+        reject("invalid_state", "This handoff was cancelled; use a new transfer ID");
       const existing = this.records.get(source.id);
       if (existing) {
         if (JSON.stringify(SourceSchema.parse(existing)) !== JSON.stringify(source))
@@ -193,13 +230,11 @@ export class HandoffOwnership {
         reject("invalid_state", "Ownership journal reached its transfer limit");
       this.assertAllowed({ cwd: source.cwd, workspaceId: source.workspaceId });
       for (const agentId of source.agentIds) this.assertAllowed({ cwd: source.cwd, agentId });
-      const keys = generateKeyPairSync("ed25519");
       const record: SourceRecord = {
         ...source,
         state: "preparing",
         manifestDigest: null,
-        privateKey: keys.privateKey.export({ type: "pkcs8", format: "der" }).toString("base64"),
-        publicKey: keys.publicKey.export({ type: "spki", format: "der" }).toString("base64"),
+        ...signingKeys(),
       };
       // Fence synchronously before awaiting durability; a failed write stays fenced in memory.
       this.records.set(record.id, record);
@@ -324,6 +359,53 @@ export class HandoffOwnership {
     });
   }
 
+  /** A tombstone also prevents a delayed prepare when cancellation arrives first. */
+  cancelReservation(input: HandoffCancellationInput): Promise<HandoffCancellationProof> {
+    const binding = HandoffCancellationBindingSchema.parse({
+      ...input,
+      version: 1,
+      outcome: "cancelled",
+      sourceServerId: this.options.sourceServerId,
+    });
+    return this.serialize(async () => {
+      if (process.platform === "win32")
+        reject("unsupported_host", "Durable handoff cancellation is not supported on Windows yet");
+      const source = this.records.get(binding.transferId);
+      if (
+        source &&
+        (source.destinationServerId !== binding.destinationServerId ||
+          source.reservationId !== binding.reservationId)
+      )
+        reject("conflict", "Cancellation belongs to another destination reservation");
+      if (source?.state === "released")
+        reject("invalid_state", "Source ownership was released; finish destination activation");
+      const prior = this.cancellations.get(binding.transferId);
+      if (prior) {
+        if (
+          JSON.stringify(HandoffCancellationBindingSchema.parse(prior)) !== JSON.stringify(binding)
+        )
+          reject("conflict", "Cancellation belongs to another destination reservation");
+        return cancellationProof(prior);
+      }
+      if (this.cancellations.size >= 10_000)
+        reject("invalid_state", "Ownership cancellation journal reached its transfer limit");
+      const keys = source ?? signingKeys();
+      const cancellation: CancellationRecord = {
+        ...binding,
+        privateKey: keys.privateKey,
+        publicKey: keys.publicKey,
+      };
+      const cancelled: SourceRecord | undefined = source
+        ? { ...source, state: "cancelled" }
+        : undefined;
+      // Both the unfence and its proof become visible only after the same durable write.
+      await this.persistWith(cancelled, cancellation);
+      if (cancelled) this.records.set(cancelled.id, cancelled);
+      this.cancellations.set(binding.transferId, cancellation);
+      return cancellationProof(cancellation);
+    });
+  }
+
   status(id: string): SourceHandoffStatus {
     return publicStatus(this.requireRecord(id));
   }
@@ -359,7 +441,10 @@ export class HandoffOwnership {
     if ([...this.mutations].some((mutation) => protects(record, mutation.scope)))
       reject("invalid_state", "Workspace mutations are still running");
   }
-  private async persistWith(replacement?: SourceRecord): Promise<void> {
+  private async persistWith(
+    replacement?: SourceRecord,
+    cancellation?: CancellationRecord,
+  ): Promise<void> {
     const records = [...this.records.values()].map((record) =>
       record.id === replacement?.id ? replacement : record,
     );
@@ -368,6 +453,7 @@ export class HandoffOwnership {
         version: 1,
         sourceServerId: this.options.sourceServerId,
         records,
+        cancellations: [...this.cancellations.values(), ...(cancellation ? [cancellation] : [])],
       });
       if (Buffer.byteLength(JSON.stringify(journal)) > 20 * 1024 * 1024)
         reject("invalid_state", "Ownership journal exceeds its byte limit");
@@ -390,6 +476,63 @@ export class HandoffOwnership {
   }
 }
 
+function signingKeys() {
+  const keys = generateKeyPairSync("ed25519");
+  return {
+    privateKey: keys.privateKey.export({ type: "pkcs8", format: "der" }).toString("base64"),
+    publicKey: keys.publicKey.export({ type: "spki", format: "der" }).toString("base64"),
+  };
+}
+function cancellationProof(record: CancellationRecord): HandoffCancellationProof {
+  const binding = HandoffCancellationBindingSchema.parse(record);
+  const signature = sign(
+    null,
+    Buffer.from(JSON.stringify(binding)),
+    createPrivateKey({
+      key: Buffer.from(record.privateKey, "base64"),
+      format: "der",
+      type: "pkcs8",
+    }),
+  ).toString("base64");
+  return { publicKey: record.publicKey, receipt: { ...binding, signature } };
+}
+
+/** Before content binding, the key is obtained from the authenticated source cancellation reply. */
+export function verifyHandoffCancellation(
+  proof: unknown,
+  expected: z.infer<typeof HandoffCancellationBindingSchema>,
+  pinnedPublicKey?: string,
+): boolean {
+  const parsed = HandoffCancellationProofSchema.safeParse(proof);
+  if (
+    !parsed.success ||
+    (pinnedPublicKey !== undefined && parsed.data.publicKey !== pinnedPublicKey)
+  )
+    return false;
+  const binding = HandoffCancellationBindingSchema.parse(parsed.data.receipt);
+  if (JSON.stringify(binding) !== JSON.stringify(HandoffCancellationBindingSchema.parse(expected)))
+    return false;
+  return verifySignature(binding, parsed.data.receipt.signature, parsed.data.publicKey);
+}
+
+function verifySignature(binding: unknown, encodedSignature: string, publicKey: string): boolean {
+  const signature = Buffer.from(encodedSignature, "base64");
+  if (signature.length !== 64 || signature.toString("base64") !== encodedSignature) return false;
+  try {
+    const key = createPublicKey({
+      key: Buffer.from(publicKey, "base64"),
+      format: "der",
+      type: "spki",
+    });
+    return (
+      key.asymmetricKeyType === "ed25519" &&
+      verify(null, Buffer.from(JSON.stringify(binding)), key, signature)
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** The expected key and binding come from the authenticated source preflight, never the receipt. */
 export function verifyHandoffRelease(
   receipt: unknown,
@@ -398,19 +541,7 @@ export function verifyHandoffRelease(
 ): boolean {
   const parsed = ReceiptSchema.safeParse(receipt);
   if (!parsed.success) return false;
-  const signature = Buffer.from(parsed.data.signature, "base64");
-  if (signature.length !== 64 || signature.toString("base64") !== parsed.data.signature)
-    return false;
   const binding = BindingSchema.parse(parsed.data);
   if (JSON.stringify(binding) !== JSON.stringify(BindingSchema.parse(expected))) return false;
-  try {
-    return verify(
-      null,
-      Buffer.from(JSON.stringify(binding)),
-      createPublicKey({ key: Buffer.from(publicKey, "base64"), format: "der", type: "spki" }),
-      signature,
-    );
-  } catch {
-    return false;
-  }
+  return verifySignature(binding, parsed.data.signature, publicKey);
 }
