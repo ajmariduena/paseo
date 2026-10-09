@@ -102,6 +102,7 @@ function createManagedAgent(overrides: ManagedAgentOverrides = {}): ManagedAgent
   const core = resolveManagedAgentCore(overrides);
   return {
     id: overrides.id ?? "agent-test",
+    runtimeGenerationId: overrides.runtimeGenerationId,
     provider: core.provider,
     cwd: core.cwd,
     workspaceId: overrides.workspaceId,
@@ -148,6 +149,76 @@ describe("AgentStorage", () => {
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test("runtime generations reject late snapshots after close and after a replacement opens", async () => {
+    const agent = createManagedAgent({ id: "generation-agent" });
+    const seed = toStoredAgentRecord(agent);
+    agent.runtimeGenerationId = await storage.beginRuntimeGeneration(seed);
+    await storage.applySnapshot(agent);
+    const closed = createManagedAgent({
+      id: agent.id,
+      runtimeGenerationId: agent.runtimeGenerationId,
+      lifecycle: "closed",
+    });
+    await storage.applySnapshot(closed);
+    await expect(storage.applySnapshot(agent)).rejects.toThrow("already closed");
+
+    const oldRecord = await storage.get(agent.id);
+    const replacementId = await storage.beginRuntimeGeneration(seed);
+    expect(replacementId).not.toBe(agent.runtimeGenerationId);
+    await expect(storage.applySnapshot(closed)).rejects.toThrow("different runtime generation");
+    await expect(storage.upsert({ ...oldRecord!, title: "Late metadata" })).rejects.toThrow(
+      "different runtime generation",
+    );
+    const reloaded = new AgentStorage(storagePath, logger);
+    expect(await reloaded.get(agent.id)).toMatchObject({
+      lastStatus: "initializing",
+      runtimeGeneration: { id: replacementId },
+    });
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "a new runtime and clean close cannot clear an unresolved predecessor",
+    async () => {
+      const agent = createManagedAgent({ id: "unresolved-generation" });
+      const seed = toStoredAgentRecord(agent);
+      const originalId = await storage.beginRuntimeGeneration(seed);
+      storage = new AgentStorage(storagePath, logger);
+      const replacementId = await storage.beginRuntimeGeneration(seed);
+      await storage.applySnapshot(
+        createManagedAgent({
+          id: agent.id,
+          runtimeGenerationId: replacementId,
+          lifecycle: "closed",
+        }),
+      );
+      const record = await storage.get(agent.id);
+      await storage.upsert({ ...record!, unresolvedRuntimeGenerations: undefined });
+      const reloaded = new AgentStorage(storagePath, logger);
+      expect((await reloaded.get(agent.id))?.unresolvedRuntimeGenerations).toEqual([
+        { id: originalId, openedAt: expect.any(String) },
+      ]);
+      await expect(reloaded.checkpointClosedAgent(agent.id)).rejects.toThrow(
+        "unresolved runtime generations",
+      );
+    },
+  );
+
+  test("runtime recovery refuses another opening at capacity instead of discarding evidence", async () => {
+    const seed = toStoredAgentRecord(createManagedAgent({ id: "bounded-generations" }));
+    const generations: string[] = [];
+    for (let index = 0; index < 33; index++)
+      generations.push(await storage.beginRuntimeGeneration(seed));
+    await expect(storage.beginRuntimeGeneration(seed)).rejects.toThrow(
+      "runtime recovery is required",
+    );
+    const reloaded = new AgentStorage(storagePath, logger);
+    const record = await reloaded.get(seed.id);
+    expect(record?.unresolvedRuntimeGenerations?.map((generation) => generation.id)).toEqual(
+      generations.slice(0, 32),
+    );
+    expect(record?.runtimeGeneration?.id).toBe(generations[32]);
   });
 
   test("applySnapshot persists configs and snapshot metadata", async () => {

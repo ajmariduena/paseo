@@ -65,6 +65,7 @@ import {
 } from "./agent-sdk-types.js";
 import { buildArchivedAgentRecord, type ArchivedStoredAgentRecord } from "./agent-archive.js";
 import type { StoredAgentRecord, AgentStorage, RestartCancelledWork } from "./agent-storage.js";
+import { buildSerializableConfig } from "./agent-projections.js";
 import type { AgentOwner } from "./agent-owner.js";
 import {
   InMemoryAgentTimelineStore,
@@ -546,6 +547,7 @@ interface HandleStreamEventOptions {
 
 interface ManagedAgentBase {
   id: string;
+  runtimeGenerationId?: string;
   provider: AgentProvider;
   cwd: string;
   /**
@@ -1506,7 +1508,10 @@ export class AgentManager {
     const create = () =>
       this.withHandoffMutation(
         { cwd: config.cwd, workspaceId: options.workspaceId, agentId: resolvedAgentId },
-        () => this.createAgentAfterPlugin(config, resolvedAgentId, options),
+        () =>
+          this.runLifecycleMutation(resolvedAgentId, () =>
+            this.createAgentAfterPlugin(config, resolvedAgentId, options),
+          ),
       );
     return projectRoot ? withWorktreeProjectLock(projectRoot, create) : create();
   }
@@ -1517,7 +1522,9 @@ export class AgentManager {
     options: CreateAgentOptions,
   ): Promise<ManagedAgent> {
     assertWorktreeNotCleaningUp(config.cwd);
-    await this.deleteAgentState(resolvedAgentId);
+    if (this.agents.has(resolvedAgentId))
+      throw new Error(`Agent with id ${resolvedAgentId} already exists`);
+    if (!(await this.registry?.get(resolvedAgentId))) await this.deleteAgentState(resolvedAgentId);
     const { storedConfig, launchConfig, paseoToolPolicy } = await this.prepareSessionConfig(
       config,
       resolvedAgentId,
@@ -1538,9 +1545,15 @@ export class AgentManager {
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
     const createOptions = this.buildCreateSessionOptions(options);
+    const runtimeGenerationId = await this.beginRuntimeGeneration(
+      resolvedAgentId,
+      storedConfig,
+      options,
+    );
     const session = await client.createSession(providerLaunchConfig, launchContext, createOptions);
     await this.requireExternalMcpSupport(session, storedConfig);
     const agent = await this.registerSession(session, storedConfig, resolvedAgentId, {
+      runtimeGenerationId,
       labels: options.labels,
       initialTitle: options.initialTitle,
       workspaceId: options.workspaceId,
@@ -1691,6 +1704,14 @@ export class AgentManager {
           },
         );
         const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
+        const runtimeGenerationId = await this.beginRuntimeGeneration(
+          resolvedAgentId,
+          storedConfig,
+          {
+            ...options,
+            persistence: handle,
+          },
+        );
         const session = await client.resumeSession(
           handle,
           providerLaunchConfig,
@@ -1700,6 +1721,7 @@ export class AgentManager {
         await this.requireExternalMcpSupport(session, storedConfig);
         return this.registerSession(session, storedConfig, resolvedAgentId, {
           ...options,
+          runtimeGenerationId,
           persistence: handle,
           restoring: true,
         });
@@ -1752,6 +1774,11 @@ export class AgentManager {
       { reason: "import", purpose: "interactive", workspaceId: input.workspaceId },
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
+    const runtimeGenerationId = await this.beginRuntimeGeneration(
+      resolvedAgentId,
+      storedConfig,
+      input,
+    );
     const imported = await client.importSession(
       {
         providerHandleId: input.providerHandleId,
@@ -1769,6 +1796,7 @@ export class AgentManager {
 
       handedToRegistration = true;
       const agent = await this.registerSession(imported.session, importedConfig, resolvedAgentId, {
+        runtimeGenerationId,
         labels: input.labels,
         workspaceId: input.workspaceId,
         timelineRows,
@@ -1872,6 +1900,12 @@ export class AgentManager {
       this.assertAcceptingAgentRegistrations();
 
       this.paseoToolPolicies.set(agentId, paseoToolPolicy);
+      const runtimeGenerationId = await this.beginRuntimeGeneration(agentId, storedConfig, {
+        workspaceId: existing.workspaceId,
+        labels: existing.labels,
+        owner: existing.owner,
+        persistence: handle,
+      });
       session = handle
         ? await client.resumeSession(handle, providerLaunchConfig, launchContext)
         : await client.createSession(providerLaunchConfig, launchContext);
@@ -1890,6 +1924,7 @@ export class AgentManager {
       // Preserve existing labels and timeline during reload.
       handedToRegistration = true;
       return this.registerSession(session, storedConfig, agentId, {
+        runtimeGenerationId,
         labels: existing.labels,
         workspaceId: existing.workspaceId,
         owner: existing.owner,
@@ -2726,14 +2761,18 @@ export class AgentManager {
     updates?: { workspaceId?: string; labels?: AgentLabelPatch },
   ): Promise<boolean> {
     const registry = this.requireRegistry();
-    const record = await registry.get(agentId);
+    let record = await registry.get(agentId);
     if (!record || !record.archivedAt) {
       return false;
     }
 
     // Close and native restore share the lifecycle lane with persisted resume.
     // No new history or interactive runtime can acquire the writer between them.
-    if (this.agents.has(agentId)) await this.closeAgentRuntime({ agentId });
+    if (this.agents.has(agentId)) {
+      await this.closeAgentRuntime({ agentId });
+      record = await registry.get(agentId);
+      if (!record) throw new Error(`Agent ${agentId} disappeared during closure`);
+    }
     await this.syncNativeArchiveState(record.provider, record.persistence, "restore");
 
     await registry.upsert({
@@ -4216,6 +4255,7 @@ export class AgentManager {
     config: AgentSessionConfig,
     agentId: string,
     options?: {
+      runtimeGenerationId?: string;
       createdAt?: Date;
       updatedAt?: Date;
       lastUserMessageAt?: Date | null;
@@ -4404,6 +4444,7 @@ export class AgentManager {
     durableTimelineHasRows: boolean;
     options:
       | {
+          runtimeGenerationId?: string;
           createdAt?: Date;
           updatedAt?: Date;
           lastUserMessageAt?: Date | null;
@@ -4420,19 +4461,21 @@ export class AgentManager {
       | undefined;
   }): ActiveManagedAgent {
     const { resolvedAgentId, session, config, now, durableTimelineHasRows, options } = params;
+    const registration = options ?? {};
     return {
       id: resolvedAgentId,
+      runtimeGenerationId: registration.runtimeGenerationId,
       provider: config.provider,
       cwd: config.cwd,
-      workspaceId: options?.workspaceId,
-      owner: options?.owner,
+      workspaceId: registration.workspaceId,
+      owner: registration.owner,
       session,
       capabilities: session.capabilities,
       config,
       runtimeInfo: undefined,
       lifecycle: "initializing",
-      createdAt: options?.createdAt ?? now,
-      updatedAt: options?.updatedAt ?? now,
+      createdAt: registration.createdAt ?? now,
+      updatedAt: registration.updatedAt ?? now,
       availableModes: [],
       currentModeId: null,
       pendingPermissions: new Map<string, AgentPermissionRequest>(),
@@ -4446,18 +4489,18 @@ export class AgentManager {
       finalizedForegroundTurnIds: new Set<string>(),
       unsubscribeSession: null,
       persistence: attachPersistenceCwd(
-        options?.persistence ?? session.describePersistence(),
+        registration.persistence ?? session.describePersistence(),
         config.cwd,
       ),
-      historyPrimed: options?.historyPrimed ?? durableTimelineHasRows,
-      lastUserMessageAt: options?.lastUserMessageAt ?? null,
-      lastUsage: options?.lastUsage,
+      historyPrimed: registration.historyPrimed ?? durableTimelineHasRows,
+      lastUserMessageAt: registration.lastUserMessageAt ?? null,
+      lastUsage: registration.lastUsage,
       backgroundTasks: [],
-      lastError: options?.lastError,
-      lastTurnOutcome: options?.lastTurnOutcome,
-      attention: resolveInitialAttention(options?.attention),
+      lastError: registration.lastError,
+      lastTurnOutcome: registration.lastTurnOutcome,
+      attention: resolveInitialAttention(registration.attention),
       internal: config.internal ?? false,
-      labels: options?.labels ?? {},
+      labels: registration.labels ?? {},
     } as ActiveManagedAgent;
   }
 
@@ -4674,7 +4717,12 @@ export class AgentManager {
     fallbackTitle: string | null,
   ): Promise<string | null> {
     const existing = await this.registry?.get(agentId);
-    if (existing) {
+    const openingWithoutTitle =
+      existing?.runtimeGeneration !== undefined &&
+      existing.lastStatus === "initializing" &&
+      !existing.persistence &&
+      existing.title == null;
+    if (existing && !openingWithoutTitle) {
       return existing.title ?? null;
     }
     const explicitTitle =
@@ -4682,6 +4730,36 @@ export class AgentManager {
         ? config.title.trim()
         : null;
     return explicitTitle ?? fallbackTitle;
+  }
+
+  private async beginRuntimeGeneration(
+    agentId: string,
+    config: AgentSessionConfig,
+    options: {
+      workspaceId?: string;
+      labels?: Record<string, string>;
+      owner?: AgentOwner;
+      initialTitle?: string | null;
+      persistence?: AgentPersistenceHandle | null;
+    },
+  ): Promise<string | undefined> {
+    if (this.agents.has(agentId)) throw new Error(`Agent with id ${agentId} already exists`);
+    if (!this.registry || config.internal) return undefined;
+    const now = new Date().toISOString();
+    return this.registry.beginRuntimeGeneration({
+      id: agentId,
+      provider: config.provider,
+      cwd: config.cwd,
+      workspaceId: options.workspaceId,
+      labels: options.labels ?? {},
+      owner: options.owner,
+      title: config.title?.trim() || options.initialTitle || null,
+      config: buildSerializableConfig(config),
+      persistence: options.persistence,
+      createdAt: now,
+      updatedAt: now,
+      lastStatus: "initializing",
+    });
   }
 
   private async persistSnapshot(

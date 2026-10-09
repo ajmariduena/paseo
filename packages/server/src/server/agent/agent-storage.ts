@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { randomUUID } from "node:crypto";
 import { promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -51,6 +52,11 @@ const RestartCancelledWorkSchema = z.object({
   id: z.string(),
 });
 
+const RuntimeGenerationSchema = z.object({
+  id: z.string().uuid(),
+  openedAt: z.string(),
+});
+
 const STORED_AGENT_SCHEMA = z.object({
   id: z.string(),
   provider: z.string(),
@@ -94,6 +100,8 @@ const STORED_AGENT_SCHEMA = z.object({
   /** Background work a restart cancelled, told to the agent's next turn once it completes. */
   pendingRestartNote: z.array(RestartCancelledWorkSchema).optional(),
   handoffContext: HandoffContextSchema.optional(),
+  runtimeGeneration: RuntimeGenerationSchema.optional(),
+  unresolvedRuntimeGenerations: z.array(RuntimeGenerationSchema).max(32).optional(),
 });
 
 export type SerializableAgentConfig = Pick<
@@ -153,12 +161,14 @@ export class AgentStorage {
 
   async list(): Promise<StoredAgentRecord[]> {
     await this.load();
-    return Array.from(this.cache.values()).filter((record) => this.isVisible(record.id));
+    return structuredClone(
+      Array.from(this.cache.values()).filter((record) => this.isVisible(record.id)),
+    );
   }
 
   async get(agentId: string): Promise<StoredAgentRecord | null> {
     await this.load();
-    return this.isVisible(agentId) ? (this.cache.get(agentId) ?? null) : null;
+    return this.isVisible(agentId) ? structuredClone(this.cache.get(agentId) ?? null) : null;
   }
 
   async listByProviderSession(
@@ -166,19 +176,23 @@ export class AgentStorage {
     providerHandleId: string,
   ): Promise<StoredAgentRecord[]> {
     await this.load();
-    return Array.from(this.cache.values()).filter(
-      (record) =>
-        this.isVisible(record.id) &&
-        record.persistence?.provider === provider &&
-        (record.persistence.sessionId === providerHandleId ||
-          record.persistence.nativeHandle === providerHandleId),
+    return structuredClone(
+      Array.from(this.cache.values()).filter(
+        (record) =>
+          this.isVisible(record.id) &&
+          record.persistence?.provider === provider &&
+          (record.persistence.sessionId === providerHandleId ||
+            record.persistence.nativeHandle === providerHandleId),
+      ),
     );
   }
 
   async listByWorkspace(workspaceId: string): Promise<StoredAgentRecord[]> {
     await this.load();
-    return Array.from(this.cache.values()).filter(
-      (record) => this.isVisible(record.id) && record.workspaceId === workspaceId,
+    return structuredClone(
+      Array.from(this.cache.values()).filter(
+        (record) => this.isVisible(record.id) && record.workspaceId === workspaceId,
+      ),
     );
   }
 
@@ -234,7 +248,66 @@ export class AgentStorage {
   async upsert(record: StoredAgentRecord): Promise<void> {
     const candidate = structuredClone(record);
     await this.load();
-    await this.queueRecordMutation(candidate.id, () => candidate);
+    await this.queueRecordMutation(candidate.id, (existing) => {
+      this.assertRuntimeGeneration(existing, candidate.runtimeGeneration?.id);
+      this.assertRuntimeNotReopened(existing, candidate);
+      return {
+        ...candidate,
+        runtimeGeneration: existing?.runtimeGeneration,
+        unresolvedRuntimeGenerations: existing?.unresolvedRuntimeGenerations,
+      };
+    });
+  }
+
+  async beginRuntimeGeneration(seed: StoredAgentRecord): Promise<string> {
+    const input = structuredClone(seed);
+    const generation = { id: randomUUID(), openedAt: new Date().toISOString() };
+    await this.load();
+    const opened = await this.queueRecordMutation(
+      input.id,
+      (existing) => {
+        const unresolved = [...(existing?.unresolvedRuntimeGenerations ?? [])];
+        if (existing && existing.lastStatus !== "closed") {
+          if (unresolved.length === 32)
+            throw new Error("Agent runtime recovery is required before another opening");
+          unresolved.push(
+            existing.runtimeGeneration ?? { id: randomUUID(), openedAt: existing.updatedAt },
+          );
+        }
+        return {
+          ...input,
+          ...existing,
+          provider: input.provider,
+          cwd: input.cwd,
+          workspaceId: input.workspaceId ?? existing?.workspaceId,
+          config: input.config,
+          persistence: input.persistence ?? existing?.persistence,
+          lastStatus: "initializing",
+          runtimeGeneration: generation,
+          unresolvedRuntimeGenerations: unresolved.length ? unresolved : undefined,
+        };
+      },
+      process.platform === "win32" ? undefined : this.syncPublication,
+    );
+    if (!opened) throw new Error("Agent was deleted before opening its runtime");
+    return generation.id;
+  }
+
+  private assertRuntimeGeneration(record: StoredAgentRecord | null, generationId?: string): void {
+    if (record?.runtimeGeneration?.id !== generationId)
+      throw new Error("Agent snapshot belongs to a different runtime generation");
+  }
+
+  private assertRuntimeNotReopened(
+    existing: StoredAgentRecord | null,
+    next: StoredAgentRecord,
+  ): void {
+    if (
+      existing?.runtimeGeneration &&
+      existing.lastStatus === "closed" &&
+      next.lastStatus !== "closed"
+    )
+      throw new Error("Agent runtime generation is already closed");
   }
 
   async repairPendingPersistence(agentId: string): Promise<void> {
@@ -249,6 +322,8 @@ export class AgentStorage {
       (record) => {
         if (!record || !this.isVisible(agentId) || record.lastStatus !== "closed")
           throw new Error("Handoff requires a persisted closed agent");
+        if (record.unresolvedRuntimeGenerations?.length)
+          throw new Error("Handoff requires recovery of unresolved runtime generations");
         return record;
       },
       this.syncPublication,
@@ -366,8 +441,11 @@ export class AgentStorage {
         internal: hasInternalOverride ? options?.internal : agent.internal,
       }),
     );
+    const generationId = agent.runtimeGenerationId;
     await this.load();
     await this.queueRecordMutation(snapshot.id, (existing) => {
+      this.assertRuntimeGeneration(existing, generationId);
+      this.assertRuntimeNotReopened(existing, snapshot);
       const record: StoredAgentRecord = {
         ...snapshot,
         title: hasTitleOverride ? snapshot.title : (existing?.title ?? null),
@@ -375,6 +453,8 @@ export class AgentStorage {
         internal: hasInternalOverride
           ? snapshot.internal
           : (snapshot.internal ?? existing?.internal),
+        runtimeGeneration: existing?.runtimeGeneration,
+        unresolvedRuntimeGenerations: existing?.unresolvedRuntimeGenerations,
       };
 
       // Preserve soft-delete/archive status across snapshot flushes. The
@@ -460,7 +540,7 @@ export class AgentStorage {
         record.creation?.callerAgentId === creation.callerAgentId &&
         record.creation.clientRequestId === creation.clientRequestId
       ) {
-        return record;
+        return structuredClone(record);
       }
     }
     return null;

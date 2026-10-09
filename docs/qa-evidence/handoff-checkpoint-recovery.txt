@@ -1,8 +1,236 @@
 Handoff persistence recovery foundations — 2026-10-10
 
-The complete conversation barrier remains open: pre-provider runtime generations,
-revision guards, semantic obligations, callback quiescence and durable process-stop
-recovery are not implemented by these changes.
+Runtime opening generations:
+- Registered, non-internal create, resume, import and reload write an opening marker
+  before calling the provider. POSIX waits for file and directory synchronization.
+  Windows retains ordinary atomic persistence; durable handoff remains unavailable.
+- A fresh AgentStorage observed no record from inside provider create before this
+  change. It now observes the initializing generation. Interrupted replacement calls
+  leave the new opening visible instead of a preceding closed record. A failed sync
+  prevents any provider create call.
+- Delayed snapshots and record replacements cannot write into a different generation
+  or reopen a closed one. Store reads return copies so callers cannot edit recovery
+  metadata outside the write queue. Concurrent create calls for one ID open one provider.
+- An unclosed predecessor is retained across store reconstruction, later opening,
+  clean close and ordinary metadata writes. Handoff checkpoint refuses it. At capacity,
+  another opening fails without dropping any predecessor.
+- Imported history still supplies its title and first ready publication. The initial
+  opening-marker implementation broke this title behavior; the owning regression
+  reproduced it and now passes. Unarchive rereads the closed record before restoring
+  metadata, preserving its runtime closure.
+
+Scope: 29 AgentStorage cases pass (one Windows-only case skipped), along with 16
+focused AgentManager cases. Provider adapters are test doubles; the storage and
+synchronization use real temporary files. This is not fresh provider continuity,
+a physical cross-host test, an OS-process exit proof or a power-cut simulation.
+
+Remaining barrier work: per-record revision guards; semantic obligations and their
+repair evidence; callback quiescence and process-stop recovery; durable presentation
+coverage. The retained predecessor identities report uncertainty but do not implement
+its repair proof. A generation and lastStatus=closed are not a complete certificate.
+Internal agents and transient provider probes still need resource dispositions.
+
+Opening-marker regression: before fix
+$ cd packages/server
+$ npx vitest run src/server/agent/agent-manager.test.ts --bail=1 -t 'publishes an open runtime generation'
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/agent-manager.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  specify custom .env file path with { path: '/custom/path/.env' }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: 🛠️  run anywhere with `dotenvx run -- yourcommand`
+
+ ❯ src/server/agent/agent-manager.test.ts (259 tests | 1 failed | 258 skipped) 29ms
+   × publishes an open runtime generation before creating a provider session 26ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/agent-manager.test.ts > publishes an open runtime generation before creating a provider session
+AssertionError: expected null to match object { …(4) }
+
+- Expected:
+{
+  "id": "f0bea2be-ea14-47dd-91fe-2138a6e9dc5a",
+  "lastStatus": "initializing",
+  "runtimeGeneration": {
+    "id": Any<String>,
+    "openedAt": Any<String>,
+  },
+  "workspaceId": "marker-workspace",
+}
+
++ Received:
+null
+
+ ❯ src/server/agent/agent-manager.test.ts:2224:22
+    2222|     await expect(manager.createAgent({ provider: "codex", cwd: workdir…
+    2223|       .rejects.toThrow("interrupted before registration");
+    2224|     expect(observed).toMatchObject({
+       |                      ^
+    2225|       id: agentId,
+    2226|       workspaceId: "marker-workspace",
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 258 skipped (259)
+   Start at  01:11:44
+   Duration  1.73s (transform 1.13s, setup 48ms, import 1.50s, tests 29ms, environment 0ms)
+
+
+
+Imported-title regression during marker integration: before repair
+$ cd packages/server
+$ npx vitest run src/server/agent/agent-manager.test.ts --bail=1 -t 'importProviderSession imports'
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/agent-manager.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  write to custom object with { processEnv: myObject }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  suppress all logs with { quiet: true }
+
+ ❯ src/server/agent/agent-manager.test.ts (262 tests | 1 failed | 261 skipped) 35ms
+   × importProviderSession imports the selected session without listing and publishes ready state 32ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/agent-manager.test.ts > importProviderSession imports the selected session without listing and publishes ready state
+AssertionError: expected null to be 'Trace provider imports' // Object.is equality
+
+- Expected:
+"Trace provider imports"
+
++ Received:
+null
+
+ ❯ src/server/agent/agent-manager.test.ts:5740:51
+    5738|     },
+    5739|   });
+    5740|   expect((await storage.get(imported.id))?.title).toBe("Trace provider…
+       |                                                   ^
+    5741| });
+    5742|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 261 skipped (262)
+   Start at  01:16:34
+   Duration  1.59s (transform 1.03s, setup 41ms, import 1.39s, tests 35ms, environment 0ms)
+
+
+
+AgentStorage: after generation guards
+$ cd packages/server
+$ npx vitest run src/server/agent/agent-storage.test.ts --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  29 passed | 1 skipped (30)
+   Start at  01:19:38
+   Duration  1.42s (transform 587ms, setup 47ms, import 951ms, tests 284ms, environment 0ms)
+
+
+
+AgentManager: after generation integration
+$ cd packages/server
+$ npx vitest run src/server/agent/agent-manager.test.ts --bail=1 -t 'runtime generation|failed opening synchronization|importProviderSession imports|initializing session after shutdown|reload leaves a closed|reload does not create|unarchive|archive.*runtime|setTitle|persist.*title'
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  16 passed | 247 skipped (263)
+   Start at  01:20:49
+   Duration  1.53s (transform 972ms, setup 40ms, import 1.30s, tests 74ms, environment 0ms)
+
+
+
+Runtime-generation validation
+$ npm run typecheck
+
+> paseo@0.11.1 typecheck
+> npm run typecheck --workspaces --if-present
+
+
+> @getpaseo/builtin-plugins@0.11.1 typecheck
+> tsgo -p tsconfig.json --noEmit
+
+
+> @getpaseo/expo-two-way-audio@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/highlight@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/plugin@0.11.1 typecheck
+> tsgo --noEmit && tsgo -p tsconfig.examples.json --noEmit
+
+
+> @getpaseo/protocol@0.11.1 pretypecheck
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/client@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/server@0.11.1 typecheck
+> tsgo -p tsconfig.server.typecheck.json --noEmit
+
+
+> @getpaseo/app@0.11.0-beta.36 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/relay@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/website@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/desktop@0.11.1 typecheck
+> tsgo --noEmit -p tsconfig.json
+
+
+> @getpaseo/cli@0.11.1 typecheck
+> tsgo --noEmit
+
+
+$ npm run lint
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 3.1s on 5029 files with 177 rules using 4 threads.
+
+$ npm run format
+
+> paseo@0.11.1 format
+> oxfmt .
+
+Finished in 3514ms on 5374 files using 4 threads.
+
+
+Earlier publication and ownership evidence
 
 Agent-record publication:
 - Reproduced false acknowledgement in the cache after a successful rename followed
@@ -20,7 +248,7 @@ Agent-record publication:
   synchronization then fails. Windows rejects unsupported durable publication before
   retaining a candidate, so an unsupported checkpoint cannot poison ordinary writes.
   The Windows-only regression is skipped locally and awaits Windows CI.
-- Current owning suite: 26 passed, 1 Windows-only case skipped. Full typecheck and lint
+- Publication suite at 95731bfab: 26 passed, 1 Windows-only case skipped. Full typecheck and lint
   pass; npm format completed. Tests use real temporary files, injected sync failure
   and reconstruction of AgentStorage, not a power cut or a provider session.
 

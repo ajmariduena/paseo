@@ -2205,6 +2205,143 @@ test("flush waits for rejected session cleanup that starts after shutdown", asyn
   expect(manager.listAgents()).toEqual([]);
 });
 
+test("publishes an open runtime generation before creating a provider session", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-opening-marker-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+  const agentId = randomUUID();
+  let observed: StoredAgentRecord | null = null;
+  const client = new (class extends TestAgentClient {
+    override async createSession(): Promise<AgentSession> {
+      observed = await new AgentStorage(storagePath, logger).get(agentId);
+      throw new Error("interrupted before registration");
+    }
+  })();
+  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+  try {
+    await expect(
+      manager.createAgent({ provider: "codex", cwd: workdir }, agentId, {
+        workspaceId: "marker-workspace",
+      }),
+    ).rejects.toThrow("interrupted before registration");
+    expect(observed).toMatchObject({
+      id: agentId,
+      workspaceId: "marker-workspace",
+      lastStatus: "initializing",
+      runtimeGeneration: { id: expect.any(String), openedAt: expect.any(String) },
+    });
+    expect(manager.getAgent(agentId)).toBeNull();
+    await expect(storage.checkpointClosedAgent(agentId)).rejects.toThrow();
+  } finally {
+    await manager.flush();
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test.each(["resume", "reload"] as const)(
+  "publishes a replacement runtime generation before provider %s",
+  async (operation) => {
+    const workdir = mkdtempSync(join(tmpdir(), "agent-manager-replacement-marker-"));
+    const storagePath = join(workdir, "agents");
+    const storage = new AgentStorage(storagePath, logger);
+    const agentId = randomUUID();
+    let observed: StoredAgentRecord | null = null;
+    const client = new (class extends TestAgentClient {
+      override async resumeSession(): Promise<AgentSession> {
+        observed = await new AgentStorage(storagePath, logger).get(agentId);
+        throw new Error("interrupted replacement");
+      }
+    })();
+    const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+    try {
+      const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, agentId, {
+        workspaceId: "marker-workspace",
+      });
+      const operations = {
+        resume: async () => {
+          await manager.closeAgent(agentId);
+          return manager.resumeAgentFromPersistence(agent.persistence!, { cwd: workdir }, agentId, {
+            workspaceId: "marker-workspace",
+          });
+        },
+        reload: () => manager.reloadAgentSession(agentId),
+      };
+      await expect(operations[operation]()).rejects.toThrow("interrupted replacement");
+      expect(observed).toMatchObject({
+        id: agentId,
+        lastStatus: "initializing",
+        runtimeGeneration: { id: expect.any(String), openedAt: expect.any(String) },
+      });
+      const record = await storage.get(agentId);
+      expect(record?.runtimeGeneration?.id).not.toBe(agent.runtimeGenerationId);
+      expect(record?.unresolvedRuntimeGenerations).toBeUndefined();
+      await expect(storage.checkpointClosedAgent(agentId)).rejects.toThrow();
+    } finally {
+      await manager.flush();
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  },
+);
+
+test("serializes concurrent creation of one runtime generation", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-concurrent-generation-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const agentId = randomUUID();
+  let providerCalls = 0;
+  const client = new (class extends HeldAgentCreationClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      providerCalls++;
+      return super.createSession(config);
+    }
+  })();
+  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+  try {
+    const config = { provider: "codex" as const, cwd: workdir };
+    const first = manager.createAgent(config, agentId, { workspaceId: undefined });
+    await client.waitForCreationToStart();
+    const duplicate = manager.createAgent(config, agentId, { workspaceId: undefined });
+    const outcomes = Promise.allSettled([first, duplicate]);
+    client.finishCreating();
+    expect(await outcomes).toMatchObject([
+      { status: "fulfilled", value: { id: agentId } },
+      { status: "rejected", reason: new Error(`Agent with id ${agentId} already exists`) },
+    ]);
+    expect(providerCalls).toBe(1);
+    expect((await storage.get(agentId))?.runtimeGeneration?.id).toBe(
+      manager.getAgent(agentId)?.runtimeGenerationId,
+    );
+  } finally {
+    client.finishCreating();
+    await manager.closeAgent(agentId);
+    await manager.flush();
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test.skipIf(process.platform === "win32")(
+  "a failed opening synchronization never calls the provider",
+  async () => {
+    const workdir = mkdtempSync(join(tmpdir(), "agent-manager-opening-sync-"));
+    const storage = new AgentStorage(join(workdir, "agents"), logger, undefined, async () => {
+      throw new Error("injected opening sync failure");
+    });
+    const client = new TestAgentClient();
+    const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+    try {
+      await expect(
+        manager.createAgent({ provider: "codex", cwd: workdir }, randomUUID(), {
+          workspaceId: undefined,
+        }),
+      ).rejects.toThrow("injected opening sync failure");
+      expect(client.createdConfigs).toEqual([]);
+      expect(manager.listAgents()).toEqual([]);
+    } finally {
+      await manager.flush();
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  },
+);
+
 test("does not persist an initializing session after shutdown closes it", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-shutdown-register-test-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);
@@ -5514,6 +5651,7 @@ test("importProviderSession imports the selected session without listing and pub
     listCalls = 0;
     importInput: unknown = null;
     importLaunchContext: AgentLaunchContext | undefined;
+    openingRecord: StoredAgentRecord | null = null;
 
     async listImportableSessions() {
       this.listCalls += 1;
@@ -5523,6 +5661,10 @@ test("importProviderSession imports the selected session without listing and pub
     async importSession(input: ImportProviderSessionInput, context: ImportProviderSessionContext) {
       this.importInput = input;
       this.importLaunchContext = context.launchContext;
+      if (!context.launchContext) throw new Error("Import test requires a launch context");
+      this.openingRecord = await new AgentStorage(storagePath, logger).get(
+        context.launchContext.agentId,
+      );
       return {
         session,
         config: { provider: "codex" as const, cwd: workdir },
@@ -5601,6 +5743,11 @@ test("importProviderSession imports the selected session without listing and pub
   });
 
   expect(client.listCalls).toBe(0);
+  expect(client.openingRecord).toMatchObject({
+    id: imported.id,
+    lastStatus: "initializing",
+    runtimeGeneration: { id: imported.runtimeGenerationId },
+  });
   expect(client.importInput).toEqual({ providerHandleId: "thread-selected", cwd: workdir });
   expect(client.importLaunchContext).toEqual({
     agentId: imported.id,

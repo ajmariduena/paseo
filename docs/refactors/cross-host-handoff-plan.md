@@ -247,9 +247,15 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   acknowledgement until the operation's required synchronization completes. Strict handoff inventory
   repairs retained candidates before inspection, so a failed closed-record write can recover without
   reopening its provider. See [persistence evidence](../qa-evidence/handoff-checkpoint-recovery.txt).
-  This does not supply pre-provider runtime markers, revision guards, restart-safe obligations or
-  callback quiescence; the [conversation persistence contract](#conversation-persistence-contract)
-  remains incomplete.
+  Registered, non-internal conversations now publish an opening generation before provider create,
+  resume, import or reload. POSIX publication synchronizes the file and its directories; Windows
+  keeps ordinary atomic persistence and still cannot release a handoff. Old-generation snapshots
+  and attempts to reopen a closed generation fail. Unclosed predecessors survive a new runtime and
+  a later clean close, and prevent handoff until recovery proves their outcome. Capacity exhaustion
+  refuses another opening instead of discarding predecessors. This records uncertainty; it does
+  not implement the repair proof. Record revision guards, semantic obligations, callback quiescence
+  and durable process-stop recovery remain open under the
+  [conversation persistence contract](#conversation-persistence-contract).
 - `server/handoff/workspace.ts` and its neighboring tests cover Git and directory snapshots,
   restoration and source rechecks. `packWorkspaceArchive` registers the manifest as an archive blob,
   including an empty workspace; restoration consumes only referenced blobs in the verified inventory.
