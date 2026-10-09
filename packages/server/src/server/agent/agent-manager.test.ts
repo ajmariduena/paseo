@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { withWorktreeCleanupReservation } from "../worktree-use-lock.js";
+import { HandoffOwnership } from "../handoff/ownership.js";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import {
@@ -1668,6 +1669,169 @@ function fakeCodexEmitting(args: FakeCodexEmitterArgs): AgentClient {
 }
 
 const logger = createTestLogger();
+
+async function handoffAgentFixture(client = new TestAgentClient()) {
+  const root = mkdtempSync(join(tmpdir(), "agent-manager-handoff-"));
+  const cwd = join(root, "workspace");
+  mkdirSync(cwd);
+  const ownership = new HandoffOwnership({
+    directory: join(root, "ownership"),
+    sourceServerId: "source-host",
+  });
+  const manager = new AgentManager({
+    clients: { codex: client },
+    handoffOwnership: ownership,
+    logger,
+  });
+  await ownership.initialize();
+  return {
+    root,
+    cwd,
+    manager,
+    client,
+    ownership,
+    prepare: (agentIds: string[] = []) =>
+      ownership.prepare({
+        id: randomUUID(),
+        cwd,
+        workspaceId: "workspace-id",
+        agentIds,
+        destinationServerId: "target-host",
+        reservationId: randomUUID(),
+      }),
+    async cleanup() {
+      for (const agent of manager.listAgents()) await manager.closeAgent(agent.id);
+      await manager.flush();
+      rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+test("handoff prevents creating a new provider runtime in a fenced workspace", async () => {
+  const fixture = await handoffAgentFixture();
+  const { manager, cwd, client } = fixture;
+  try {
+    await fixture.prepare();
+    await expect(
+      manager.createAgent({ provider: "codex", cwd }, undefined, { workspaceId: "workspace-id" }),
+    ).rejects.toMatchObject({ code: "fenced" });
+    expect(client.createdConfigs).toEqual([]);
+    expect(manager.listAgents()).toEqual([]);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("handoff fences reloaded and resumed sessions even when their cwd changes", async () => {
+  const fixture = await handoffAgentFixture();
+  const { manager, cwd, client, root } = fixture;
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd }, undefined, {
+      workspaceId: "workspace-id",
+    });
+    await fixture.prepare([agent.id]);
+    const otherCwd = join(root, "other-workspace");
+    mkdirSync(otherCwd);
+    await expect(manager.reloadAgentSession(agent.id, { cwd: otherCwd })).rejects.toMatchObject({
+      code: "fenced",
+    });
+    // Closing a runtime must remain possible while writes are fenced.
+    await manager.closeAgent(agent.id);
+    const recovered = new HandoffOwnership({
+      directory: join(root, "ownership"),
+      sourceServerId: "source-host",
+    });
+    await recovered.initialize();
+    const restarted = new AgentManager({
+      clients: { codex: client },
+      handoffOwnership: recovered,
+      logger,
+    });
+    await expect(
+      restarted.resumeAgentFromPersistence(
+        { provider: "codex", sessionId: "old-session", metadata: { cwd: otherCwd } },
+        undefined,
+        agent.id,
+      ),
+    ).rejects.toMatchObject({ code: "fenced" });
+    expect(client.resumeOverrides).toEqual([]);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("handoff waits for admitted runtime creation to finish registering before readiness", async () => {
+  const client = new HeldAgentCreationClient();
+  const fixture = await handoffAgentFixture(client);
+  const { manager, cwd, ownership } = fixture;
+  const creating = manager.createAgent({ provider: "codex", cwd }, undefined, {
+    workspaceId: "workspace-id",
+  });
+  try {
+    await client.waitForCreationToStart();
+    const handoff = await fixture.prepare();
+    await expect(ownership.markReady(handoff.id, "a".repeat(64))).rejects.toMatchObject({
+      code: "invalid_state",
+    });
+    await expect(
+      manager.importProviderSession({
+        provider: "codex",
+        providerHandleId: "another-session",
+        cwd,
+        workspaceId: "workspace-id",
+      }),
+    ).rejects.toMatchObject({ code: "fenced" });
+    client.finishCreating();
+    const created = await creating;
+    await ownership.drain(handoff.id);
+    expect(manager.getAgent(created.id)?.lifecycle).toBe("idle");
+    expect((await ownership.markReady(handoff.id, "a".repeat(64))).state).toBe("ready");
+  } finally {
+    client.finishCreating();
+    await creating.catch(() => undefined);
+    await fixture.cleanup();
+  }
+});
+
+test("handoff cancellation lets runtime creation continue in the source workspace", async () => {
+  const fixture = await handoffAgentFixture();
+  const { manager, cwd, ownership, client } = fixture;
+  try {
+    const handoff = await fixture.prepare();
+    await ownership.cancel(handoff.id);
+    const created = await manager.createAgent({ provider: "codex", cwd }, undefined, {
+      workspaceId: "workspace-id",
+    });
+    expect(manager.getAgent(created.id)?.lifecycle).toBe("idle");
+    expect(client.createdConfigs).toHaveLength(1);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("handoff guards allow unrelated history after its working directory was removed", async () => {
+  const fixture = await handoffAgentFixture();
+  const { manager, cwd, root } = fixture;
+  try {
+    await fixture.prepare();
+    const removedCwd = join(root, "removed-workspace");
+    const restored = await manager.resumeAgentFromPersistence(
+      { provider: "codex", sessionId: "archived-session", metadata: { cwd: removedCwd } },
+      undefined,
+      undefined,
+      { workspaceId: "another-workspace" },
+      { purpose: "history" },
+    );
+    expect(restored.config.cwd).toBe(removedCwd);
+    await expect(
+      manager.createAgent({ provider: "codex", cwd }, undefined, {
+        workspaceId: "another-workspace",
+      }),
+    ).rejects.toMatchObject({ code: "fenced" });
+  } finally {
+    await fixture.cleanup();
+  }
+});
 
 test("does not start an agent in a worktree reserved for cleanup", async () => {
   const root = mkdtempSync(join(tmpdir(), "agent-manager-cleanup-reservation-"));

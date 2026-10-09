@@ -1,5 +1,5 @@
 import { createPrivateKey, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
-import { mkdir, realpath } from "node:fs/promises";
+import { lstat, mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { HandoffDigestSchema, HandoffTransferIdSchema } from "@getpaseo/protocol/handoff";
@@ -90,6 +90,27 @@ function protects(record: SourceRecord, scope: HandoffMutationScope): boolean {
 function publicStatus(record: SourceRecord): SourceHandoffStatus {
   const { privateKey: _key, ...status } = record;
   return structuredClone(status);
+}
+
+async function mutationPath(cwd: string): Promise<string> {
+  let existing = path.resolve(cwd);
+  const missing: string[] = [];
+  for (;;) {
+    try {
+      return path.join(await realpath(existing), ...missing.toReversed());
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+      const entry = await lstat(existing).catch((statError: unknown) => {
+        if (statError instanceof Error && "code" in statError && statError.code === "ENOENT")
+          return null;
+        throw statError;
+      });
+      // A dangling symlink has an unknown destination; do not treat it as a missing directory.
+      if (entry !== null || path.dirname(existing) === existing) throw error;
+      missing.push(path.basename(existing));
+      existing = path.dirname(existing);
+    }
+  }
 }
 
 /** Load before any runtime, queue, or automation can resume. One instance owns all write leases. */
@@ -189,7 +210,7 @@ export class HandoffOwnership {
   }
 
   async withMutation<T>(scope: HandoffMutationScope, operation: () => Promise<T>): Promise<T> {
-    const canonical = { ...scope, cwd: await realpath(scope.cwd) };
+    const canonical = { ...scope, cwd: await mutationPath(scope.cwd) };
     this.assertAllowed(canonical);
     let finish: () => void = () => {};
     const done = new Promise<void>((resolve) => {

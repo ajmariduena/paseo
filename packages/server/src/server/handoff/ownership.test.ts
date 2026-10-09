@@ -112,6 +112,18 @@ test("prepare retries are stable and cannot change the reserved destination", as
   });
 });
 
+test("a removed checkout keeps its fence while unrelated removed paths remain usable for history", async () => {
+  const input = source();
+  await ownership.prepare(input);
+  await rm(cwd, { recursive: true });
+  await expect(ownership.withMutation({ cwd }, async () => 1)).rejects.toMatchObject({
+    code: "fenced",
+  });
+  expect(
+    await ownership.withMutation({ cwd: path.join(root, "removed", "workspace") }, async () => 2),
+  ).toBe(2);
+});
+
 test("cancellation unfreezes only after the cancellation journal is durable", async () => {
   const input = source();
   await ownership.prepare(input);

@@ -11,6 +11,7 @@ import {
   worktreeProjectRootForCwd,
 } from "../worktree-use-lock.js";
 import { stat } from "node:fs/promises";
+import type { HandoffMutationScope, HandoffOwnership } from "../handoff/ownership.js";
 import {
   AGENT_LIFECYCLE_STATUSES,
   type AgentLifecycleStatus,
@@ -420,6 +421,7 @@ export interface CreateAgentOptions {
 
 export interface AgentManagerOptions {
   paseoHome?: string;
+  handoffOwnership?: HandoffOwnership;
   pluginLifecycle?: PluginLifecycle;
   clients?: ProviderClientMap;
   providerDefinitions?: ProviderEnabledMap;
@@ -921,12 +923,14 @@ export class AgentManager {
   private readonly rescueTimeouts: Required<AgentManagerRescueTimeouts>;
   private readonly beforeSteerUnavailableFallback?: AgentManagerOptions["beforeSteerUnavailableFallback"];
   private acceptingAgentRegistrations = true;
+  private readonly handoffOwnership: HandoffOwnership | null;
 
   constructor(options: AgentManagerOptions) {
+    this.handoffOwnership = options.handoffOwnership ?? null;
     this.htmlRenderStore = resolveHtmlRenderStore(options);
     this.visualizationStore = resolveVisualizationStore(options);
     this.pluginLifecycle = options.pluginLifecycle;
-    this.idFactory = options?.idFactory ?? (() => randomUUID());
+    this.idFactory = options.idFactory ?? (() => randomUUID());
     this.registry = options?.registry;
     this.durableTimelineStore = options?.durableTimelineStore;
     this.promptAnnotations = resolvePromptAnnotations(options);
@@ -1442,7 +1446,11 @@ export class AgentManager {
     agentId: string | undefined,
     options: CreateAgentOptions,
   ): Promise<ManagedAgent> {
-    return this.trackAgentRegistrationOperation(this.createAgentInternal(config, agentId, options));
+    return this.trackAgentRegistrationOperation(
+      this.withHandoffMutation({ cwd: config.cwd, workspaceId: options.workspaceId, agentId }, () =>
+        this.createAgentInternal(config, agentId, options),
+      ),
+    );
   }
 
   private async createAgentInternal(
@@ -1461,7 +1469,11 @@ export class AgentManager {
       options = { ...options, env: request.env };
     }
     const projectRoot = worktreeProjectRootForCwd(config.cwd);
-    const create = () => this.createAgentAfterPlugin(config, resolvedAgentId, options);
+    const create = () =>
+      this.withHandoffMutation(
+        { cwd: config.cwd, workspaceId: options.workspaceId, agentId: resolvedAgentId },
+        () => this.createAgentAfterPlugin(config, resolvedAgentId, options),
+      );
     return projectRoot ? withWorktreeProjectLock(projectRoot, create) : create();
   }
 
@@ -1507,6 +1519,23 @@ export class AgentManager {
       });
     }
     return agent;
+  }
+
+  private withHandoffMutation<T>(
+    scope: HandoffMutationScope,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    return this.handoffOwnership
+      ? this.handoffOwnership.withMutation(scope, operation)
+      : operation();
+  }
+
+  private withAgentMutation<T>(agentId: string, operation: () => Promise<T>): Promise<T> {
+    const agent = this.requireAgent(agentId);
+    return this.withHandoffMutation(
+      { cwd: agent.config.cwd, workspaceId: agent.workspaceId ?? undefined, agentId },
+      operation,
+    );
   }
 
   private buildCreateSessionOptions(options?: {
@@ -1589,44 +1618,49 @@ export class AgentManager {
       : resumeOptions;
     const purpose = currentResumeOptions?.purpose ?? "interactive";
 
-    const { storedConfig, launchConfig, paseoToolPolicy } = await this.prepareSessionConfig(
-      mergedConfig,
-      resolvedAgentId,
-      { purpose },
-    );
-    const client = this.requireClient(handle.provider);
-    const available = await client.isAvailable();
-    if (!available) {
-      throw new Error(
-        `Provider '${handle.provider}' is not available. Please ensure the CLI is installed.`,
-      );
-    }
-    this.paseoToolPolicies.set(resolvedAgentId, paseoToolPolicy);
-    const launchContext = await this.buildLaunchContext(
-      resolvedAgentId,
-      client,
-      storedConfig.cwd,
-      paseoToolPolicy,
-      undefined,
-      {
-        reason: "resume",
-        purpose,
-        workspaceId: options?.workspaceId ?? null,
+    return this.withHandoffMutation(
+      { cwd: mergedConfig.cwd, workspaceId: options?.workspaceId, agentId: resolvedAgentId },
+      async () => {
+        const { storedConfig, launchConfig, paseoToolPolicy } = await this.prepareSessionConfig(
+          mergedConfig,
+          resolvedAgentId,
+          { purpose },
+        );
+        const client = this.requireClient(handle.provider);
+        const available = await client.isAvailable();
+        if (!available) {
+          throw new Error(
+            `Provider '${handle.provider}' is not available. Please ensure the CLI is installed.`,
+          );
+        }
+        this.paseoToolPolicies.set(resolvedAgentId, paseoToolPolicy);
+        const launchContext = await this.buildLaunchContext(
+          resolvedAgentId,
+          client,
+          storedConfig.cwd,
+          paseoToolPolicy,
+          undefined,
+          {
+            reason: "resume",
+            purpose,
+            workspaceId: options?.workspaceId ?? null,
+          },
+        );
+        const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
+        const session = await client.resumeSession(
+          handle,
+          providerLaunchConfig,
+          launchContext,
+          currentResumeOptions,
+        );
+        await this.requireExternalMcpSupport(session, storedConfig);
+        return this.registerSession(session, storedConfig, resolvedAgentId, {
+          ...options,
+          persistence: handle,
+          restoring: true,
+        });
       },
     );
-    const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
-    const session = await client.resumeSession(
-      handle,
-      providerLaunchConfig,
-      launchContext,
-      currentResumeOptions,
-    );
-    await this.requireExternalMcpSupport(session, storedConfig);
-    return this.registerSession(session, storedConfig, resolvedAgentId, {
-      ...options,
-      persistence: handle,
-      restoring: true,
-    });
   }
 
   importProviderSession(input: {
@@ -1636,7 +1670,9 @@ export class AgentManager {
     workspaceId: string;
     labels?: Record<string, string>;
   }): Promise<ManagedAgent> {
-    return this.trackAgentRegistrationOperation(this.importProviderSessionInternal(input));
+    return this.trackAgentRegistrationOperation(
+      this.withHandoffMutation(input, () => this.importProviderSessionInternal(input)),
+    );
   }
 
   private async importProviderSessionInternal(input: {
@@ -1723,7 +1759,12 @@ export class AgentManager {
   ): Promise<ManagedAgent> {
     return this.trackAgentRegistrationOperation(
       this.runLifecycleMutation(agentId, () =>
-        this.reloadAgentSessionInternal(agentId, overrides, options),
+        this.withAgentMutation(agentId, () =>
+          this.withHandoffMutation(
+            { cwd: overrides?.cwd ?? this.requireAgent(agentId).config.cwd },
+            () => this.reloadAgentSessionInternal(agentId, overrides, options),
+          ),
+        ),
       ),
     );
   }

@@ -25,6 +25,13 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
+test("a dangling mutation path is never treated as an unrelated missing directory", async () => {
+  await symlink(path.join(root, "removed-target"), path.join(root, "alias"));
+  await expect(
+    ownership.withMutation({ cwd: path.join(root, "alias", "nested") }, async () => 1),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+});
+
 async function prepare() {
   const input = {
     id: randomUUID(),

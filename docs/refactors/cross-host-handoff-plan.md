@@ -116,13 +116,20 @@ in the existing Linux/Windows server integration job and the macOS server job. L
 Linux only until those CI jobs pass. Staging cleanup, host-wide disk quotas and the ownership
 transaction are still pending; the daemon does not advertise the complete handoff capability.
 
-`ownership.ts` now supplies an isolated source ledger and mutation leases. Its real-disk tests
+`ownership.ts` supplies the source ledger and mutation leases. Its real-disk tests
 cover recovering fences, draining admitted operations, cancel/release races, failures before and
 after journal writes, and destination/content-bound signed release receipts. The signing key is
 transfer-specific and stays in the source journal; the destination must pin the public key from
-its authenticated source preflight. These tests do not establish the complete ownership promise:
-bootstrap, runtime termination, all mutation entry points and destination activation are not yet
-wired to the ledger. Source release explicitly refuses Windows until durable directory updates
+its authenticated source preflight. Bootstrap loads the ledger before constructing providers or
+starting queues and automation. Agent creation, resume, import and reload hold leases through
+registration, including a changed working directory during reload. Boot tests exercise a persisted
+fence through the real WebSocket connection and reject missing or corrupt journals. Missing
+working directories retain their path fences without blocking unrelated archived history.
+
+These tests do not establish the complete ownership promise: existing-runtime prompts and settings,
+draft catalog runtimes, terminals, scripts, file/Git mutations, runtime termination and destination
+activation still need integration. Source history needs a readable path that does not reopen a
+fenced native runtime. Source release explicitly refuses Windows until durable directory updates
 have an implementation there; archive staging alone does not satisfy that requirement.
 
 Before the workspace slice is complete, cover directories without Git. Directory-entry durability

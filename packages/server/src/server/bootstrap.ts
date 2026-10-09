@@ -15,6 +15,7 @@ import { createBranchChangeRouteHandler } from "./script-route-branch-handler.js
 import { startWorktreeStorageSweeper } from "./worktree-storage-sweeper.js";
 import { resolvePaseoWorktreesBaseRoot } from "../utils/worktree.js";
 import { HtmlRenderStore } from "./agent/html-render/store.js";
+import { HandoffOwnership } from "./handoff/ownership.js";
 
 export type ListenTarget =
   | { type: "tcp"; host: string; port: number }
@@ -685,6 +686,13 @@ export async function createPaseoDaemon(
 ): Promise<PaseoDaemon> {
   configureGitProcessPolicy(config.git ?? resolveGitProcessPolicy({ env: process.env }));
   const logger = rootLogger.child({ module: "bootstrap" });
+  const serverId = getOrCreateServerId(config.paseoHome, { logger });
+  const handoffOwnership = new HandoffOwnership({
+    directory: path.join(config.paseoHome, "handoff-ownership"),
+    sourceServerId: serverId,
+  });
+  // A damaged ledger must stop boot before providers, queues or automation can resume writers.
+  await handoffOwnership.initialize();
   const obsoleteTimelineDirectory = path.join(config.paseoHome, "agent-timelines");
   await rm(obsoleteTimelineDirectory, { recursive: true, force: true }).catch((error) => {
     logger.warn(
@@ -732,7 +740,6 @@ export async function createPaseoDaemon(
     settingsDirectory: path.join(config.paseoHome, "plugin-settings"),
   });
 
-  const serverId = getOrCreateServerId(config.paseoHome, { logger });
   const daemonKeyPair = await loadOrCreateDaemonKeyPair(config.paseoHome, logger);
   const managedProcesses = createBootstrapManagedProcessRegistry(config, logger);
   // Reconcile the helper-process ledger in the background so it never blocks the
@@ -1049,6 +1056,7 @@ export async function createPaseoDaemon(
   const initialAgentManagerState = providerSnapshotManager.getAgentManagerProviderState();
   const agentManager = new AgentManager({
     paseoHome: config.paseoHome,
+    handoffOwnership,
     pluginLifecycle: pluginRuntime,
     clients: initialAgentManagerState.clients,
     providerDefinitions: initialAgentManagerState.providerDefinitions,

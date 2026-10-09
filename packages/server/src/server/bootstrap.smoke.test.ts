@@ -2,6 +2,7 @@ import { resolveDaemonVersion } from "./daemon-version.js";
 import os from "node:os";
 import http from "node:http";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import pino from "pino";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -15,6 +16,8 @@ import { generateLocalPairingOffer } from "./pairing-offer.js";
 import { createTestPaseoDaemon } from "./test-utils/paseo-daemon.js";
 import { createTestAgentClients } from "./test-utils/fake-agent-client.js";
 import { DaemonClient } from "./test-utils/daemon-client.js";
+import { HandoffOwnership } from "./handoff/ownership.js";
+import { getOrCreateServerId } from "./server-id.js";
 import { isPlatform } from "../test-utils/platform.js";
 import { findFreePort } from "./service-proxy.js";
 import {
@@ -52,6 +55,56 @@ type WebSocketProbeResult =
 describe("paseo daemon bootstrap", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  test("loads the handoff fence before accepting agent creation over the real connection", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paseo-handoff-boot-"));
+    const paseoHome = path.join(root, ".paseo");
+    const cwd = path.join(root, "workspace");
+    await mkdir(paseoHome);
+    await mkdir(cwd);
+    const ownership = new HandoffOwnership({
+      directory: path.join(paseoHome, "handoff-ownership"),
+      sourceServerId: getOrCreateServerId(paseoHome),
+    });
+    await ownership.initialize();
+    const transferId = randomUUID();
+    await ownership.prepare({
+      id: transferId,
+      cwd,
+      workspaceId: "moved-workspace",
+      agentIds: [],
+      destinationServerId: "target-host",
+      reservationId: randomUUID(),
+    });
+    const daemon = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+    const client = new DaemonClient({ url: `ws://127.0.0.1:${daemon.port}/ws` });
+    try {
+      await client.connect();
+      await client.fetchAgents();
+      await expect(client.createAgent({ provider: "codex", cwd })).rejects.toThrow(
+        `Workspace is held by handoff ${transferId}`,
+      );
+      expect((await client.fetchAgents()).entries).toEqual([]);
+    } finally {
+      await client.close();
+      await daemon.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test.each(["missing", "corrupt"])("refuses boot with a %s handoff ledger", async (failure) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paseo-handoff-damaged-"));
+    const daemon = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+    await daemon.close();
+    const ledger = path.join(daemon.paseoHome, "handoff-ownership", "ownership.json");
+    try {
+      if (failure === "missing") await rm(ledger);
+      else await writeFile(ledger, "{");
+      await expect(createPaseoDaemon(daemon.config, pino({ level: "silent" }))).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   test("starts and serves health endpoint", async () => {
