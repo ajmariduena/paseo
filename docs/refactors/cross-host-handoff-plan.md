@@ -243,6 +243,13 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
 
 ## Current evidence and integration gaps
 
+- Agent-record publication retains immutable failed writes for same-process retry and withholds
+  acknowledgement until the operation's required synchronization completes. Strict handoff inventory
+  repairs retained candidates before inspection, so a failed closed-record write can recover without
+  reopening its provider. See [persistence evidence](../qa-evidence/handoff-checkpoint-recovery.txt).
+  This does not supply pre-provider runtime markers, revision guards, restart-safe obligations or
+  callback quiescence; the [conversation persistence contract](#conversation-persistence-contract)
+  remains incomplete.
 - `server/handoff/workspace.ts` and its neighboring tests cover Git and directory snapshots,
   restoration and source rechecks. `packWorkspaceArchive` registers the manifest as an archive blob,
   including an empty workspace; restoration consumes only referenced blobs in the verified inventory.

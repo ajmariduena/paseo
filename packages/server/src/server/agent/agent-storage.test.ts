@@ -6,6 +6,8 @@ import { promises as fs } from "node:fs";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import { AgentStorage } from "./agent-storage.js";
+import { toStoredAgentRecord } from "./agent-projections.js";
+import { syncFilePublication } from "../atomic-file.js";
 import { buildConfigOverrides, buildSessionConfig } from "../persistence-hooks.js";
 import type { ManagedAgent } from "./agent-manager.js";
 import type {
@@ -273,6 +275,22 @@ describe("AgentStorage", () => {
     expect(updatedRecord?.lastStatus).toBe("running");
   });
 
+  test("a queued snapshot retains the admitted state while the live agent changes", async () => {
+    await storage.initialize();
+    const agent = createManagedAgent({ id: "changing-agent", config: { model: "admitted-model" } });
+    const admittedTime = agent.updatedAt.toISOString();
+    const publication = storage.applySnapshot(agent);
+    agent.config.model = "later-model";
+    agent.updatedAt.setUTCFullYear(2030);
+    await publication;
+
+    const reloaded = new AgentStorage(storagePath, logger);
+    expect(await reloaded.get(agent.id)).toMatchObject({
+      config: { model: "admitted-model" },
+      updatedAt: admittedTime,
+    });
+  });
+
   test("applySnapshot preserves archivedAt (soft-delete) status", async () => {
     const agentId = "agent-archived";
     await storage.applySnapshot(
@@ -523,6 +541,129 @@ describe("AgentStorage", () => {
     const reloaded = new AgentStorage(storagePath, logger);
     expect((await reloaded.get(agentId))?.pendingRestartNote).toEqual([note]);
   });
+
+  test.skipIf(process.platform === "win32")(
+    "a renamed handoff record is not acknowledged before synchronization succeeds",
+    async () => {
+      const record = toStoredAgentRecord(
+        createManagedAgent({
+          id: "incoming-agent",
+          workspaceId: "incoming-workspace",
+          lifecycle: "closed",
+        }),
+      );
+      let failSync = true;
+      const publishedTitles: Array<string | null | undefined> = [];
+      storage = new AgentStorage(
+        storagePath,
+        logger,
+        undefined,
+        async (filePath, publicationRoot) => {
+          publishedTitles.push(JSON.parse(await fs.readFile(filePath, "utf8")).title);
+          if (failSync) throw new Error("injected directory sync failure");
+          await syncFilePublication(filePath, publicationRoot);
+        },
+      );
+
+      await expect(storage.installHandoffRecord(record)).rejects.toThrow(
+        "injected directory sync failure",
+      );
+      expect(await storage.get(record.id)).toBeNull();
+      await expect(storage.listByWorkspaceForHandoff("incoming-workspace")).rejects.toThrow();
+      await expect(storage.setTitle(record.id, "Changed after repair")).rejects.toThrow(
+        "injected directory sync failure",
+      );
+      expect(await storage.get(record.id)).toBeNull();
+
+      // Retry uses the retained input, even if the rejected caller changes its object.
+      record.title = "Changed by rejected caller";
+      failSync = false;
+      await storage.setTitle(record.id, "Changed after repair");
+      expect(publishedTitles).toEqual([null, null, null, null]);
+      const reloaded = new AgentStorage(storagePath, logger);
+      expect(await reloaded.get(record.id)).toMatchObject({
+        title: "Changed after repair",
+        lastStatus: "closed",
+      });
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff retries the retained closed snapshot after its first write fails",
+    async () => {
+      const agentId = "failed-close";
+      await storage.applySnapshot(
+        createManagedAgent({ id: agentId, workspaceId: "retry-workspace" }),
+      );
+      const backup = `${storagePath}-backup`;
+      await fs.rename(storagePath, backup);
+      await fs.writeFile(storagePath, "blocked storage directory");
+      const closed = createManagedAgent({
+        id: agentId,
+        lifecycle: "closed",
+        workspaceId: "retry-workspace",
+        config: { model: "final-model" },
+      });
+      await expect(storage.applySnapshot(closed)).rejects.toThrow();
+      expect((await storage.get(agentId))?.lastStatus).toBe("idle");
+      closed.config.model = "stale-runtime-mutation";
+
+      await fs.rm(storagePath);
+      await fs.rename(backup, storagePath);
+      await expect(storage.listByWorkspaceForHandoff("retry-workspace")).resolves.toMatchObject([
+        { id: agentId, lastStatus: "closed" },
+      ]);
+      const checkpoint = await storage.checkpointClosedAgent(agentId);
+      expect(checkpoint).toMatchObject({ lastStatus: "closed", config: { model: "final-model" } });
+      const reloaded = new AgentStorage(storagePath, logger);
+      expect(await reloaded.get(agentId)).toMatchObject({
+        lastStatus: "closed",
+        config: { model: "final-model" },
+      });
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "deletion removes a renamed record even when its in-flight synchronization fails",
+    async () => {
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      storage = new AgentStorage(storagePath, logger, undefined, async () => {
+        entered.resolve();
+        await release.promise;
+        throw new Error("injected sync failure during deletion");
+      });
+      const record = toStoredAgentRecord(
+        createManagedAgent({ id: "deleted-incoming", lifecycle: "closed" }),
+      );
+      const installed = storage.installHandoffRecord(record);
+      await entered.promise;
+      const removed = storage.remove(record.id);
+      const outcomes = Promise.allSettled([installed, removed]);
+      release.resolve();
+      expect(await outcomes).toEqual([
+        { status: "rejected", reason: new Error("injected sync failure during deletion") },
+        { status: "fulfilled", value: undefined },
+      ]);
+      const reloaded = new AgentStorage(storagePath, logger);
+      expect(await reloaded.get(record.id)).toBeNull();
+    },
+  );
+
+  test.runIf(process.platform === "win32")(
+    "an unsupported handoff checkpoint does not block later ordinary writes",
+    async () => {
+      await storage.applySnapshot(
+        createManagedAgent({ id: "windows-checkpoint", lifecycle: "closed" }),
+      );
+      await expect(storage.checkpointClosedAgent("windows-checkpoint")).rejects.toThrow(
+        "unavailable on Windows",
+      );
+      await storage.setTitle("windows-checkpoint", "Still editable");
+      const reloaded = new AgentStorage(storagePath, logger);
+      expect((await reloaded.get("windows-checkpoint"))?.title).toBe("Still editable");
+    },
+  );
 
   test.skipIf(process.platform === "win32")(
     "handoff checkpoint requires closed state and reports failed writes",

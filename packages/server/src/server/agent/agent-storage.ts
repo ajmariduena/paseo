@@ -113,6 +113,10 @@ interface StoredAgentFile {
   record: StoredAgentRecord;
   filePath: string;
 }
+interface PendingRecordPublication {
+  record: StoredAgentRecord;
+  synchronize?: typeof syncFilePublication;
+}
 export type RestartCancelledWork = z.infer<typeof RestartCancelledWorkSchema>;
 export type AgentCreationRequest = NonNullable<StoredAgentRecord["creation"]>;
 export function parseStoredAgentRecord(value: unknown): StoredAgentRecord {
@@ -123,7 +127,8 @@ export class AgentStorage {
   private cache: Map<string, StoredAgentRecord> = new Map();
   private pathById: Map<string, string> = new Map();
   private pathsById: Map<string, Set<string>> = new Map();
-  private pendingWrites: Map<string, Promise<void>> = new Map();
+  private pendingWrites: Map<string, Promise<StoredAgentRecord | undefined>> = new Map();
+  private pendingPublications: Map<string, PendingRecordPublication> = new Map();
   private deleting: Set<string> = new Set();
   private daemonAgentIdsByExecution: Map<string, string> = new Map();
   private daemonExecutionKeysByAgentId: Map<string, string> = new Map();
@@ -136,6 +141,7 @@ export class AgentStorage {
     baseDir: string,
     logger: Logger,
     private readonly isVisible: (id: string) => boolean = () => true,
+    private readonly syncPublication: typeof syncFilePublication = syncFilePublication,
   ) {
     this.baseDir = baseDir;
     this.logger = logger.child({ module: "agent", component: "agent-storage" });
@@ -179,6 +185,10 @@ export class AgentStorage {
   async listByWorkspaceForHandoff(workspaceId: string): Promise<StoredAgentRecord[]> {
     await this.load();
     await Promise.all(this.pendingWrites.values());
+    const pending = [...this.pendingPublications.values()].filter(
+      ({ record }) => record.workspaceId === workspaceId,
+    );
+    await Promise.all(pending.map(({ record }) => this.repairPendingPersistence(record.id)));
     // A sidebar can omit damaged records; a handoff cannot certify an incomplete inventory.
     const files = await this.readDiskRecords({ requireComplete: true });
     const records = files
@@ -208,8 +218,8 @@ export class AgentStorage {
   }
 
   async installHandoffRecord(record: StoredAgentRecord): Promise<void> {
+    const parsed = structuredClone(parseStoredAgentRecord(record));
     await this.load();
-    const parsed = parseStoredAgentRecord(record);
     await this.queueRecordMutation(
       parsed.id,
       (existing) => {
@@ -217,45 +227,41 @@ export class AgentStorage {
           throw new Error("Handoff agent identity is already occupied");
         return parsed;
       },
-      () => syncFilePublication(this.buildRecordPath(parsed), path.dirname(this.baseDir)),
+      this.syncPublication,
     );
   }
 
   async upsert(record: StoredAgentRecord): Promise<void> {
+    const candidate = structuredClone(record);
     await this.load();
-    await this.queueRecordWrite(record);
+    await this.queueRecordMutation(candidate.id, () => candidate);
+  }
+
+  async repairPendingPersistence(agentId: string): Promise<void> {
+    await this.load();
+    await this.queueRecordMutation(agentId);
   }
 
   async checkpointClosedAgent(agentId: string): Promise<StoredAgentRecord> {
     await this.load();
-    await this.queueRecordMutation(
+    const checkpoint = await this.queueRecordMutation(
       agentId,
       (record) => {
-        if (!record || record.lastStatus !== "closed")
+        if (!record || !this.isVisible(agentId) || record.lastStatus !== "closed")
           throw new Error("Handoff requires a persisted closed agent");
         return record;
       },
-      async () => {
-        const record = this.cache.get(agentId);
-        if (!record) throw new Error("Handoff agent disappeared during persistence");
-        await syncFilePublication(this.buildRecordPath(record), path.dirname(this.baseDir));
-      },
+      this.syncPublication,
     );
-    const record = await this.get(agentId);
-    if (!record || record.lastStatus !== "closed")
-      throw new Error("Handoff agent changed during persistence");
-    return structuredClone(record);
-  }
-
-  private queueRecordWrite(record: StoredAgentRecord): Promise<void> {
-    return this.queueRecordMutation(record.id, () => record);
+    if (!checkpoint) throw new Error("Handoff agent was deleted during persistence");
+    return checkpoint;
   }
 
   private queueRecordMutation(
     agentId: string,
-    mutate: (existing: StoredAgentRecord | null) => StoredAgentRecord,
-    afterWrite?: () => Promise<void>,
-  ): Promise<void> {
+    mutate?: (existing: StoredAgentRecord | null) => StoredAgentRecord,
+    synchronize?: typeof syncFilePublication,
+  ): Promise<StoredAgentRecord | undefined> {
     const prev = this.pendingWrites.get(agentId) ?? Promise.resolve();
     // Queue progress is independent of the preceding caller's rejected outcome.
     const next = prev
@@ -264,11 +270,17 @@ export class AgentStorage {
         if (this.deleting.has(agentId)) {
           return undefined;
         }
+        if (synchronize && process.platform === "win32")
+          throw new Error("Durable directory publication is unavailable on Windows");
 
-        const record = mutate(this.cache.get(agentId) ?? null);
-        await this.writeRecord(record);
-        await afterWrite?.();
-        return undefined;
+        // A failed publication retains its exact input and durability requirement.
+        // Later mutations cannot overwrite it or evaluate against an uncommitted cache.
+        await this.publishPendingRecord(agentId);
+        if (!mutate) return undefined;
+        const record = structuredClone(mutate(this.cache.get(agentId) ?? null));
+        this.pendingPublications.set(agentId, { record, synchronize });
+        await this.publishPendingRecord(agentId);
+        return structuredClone(record);
       });
 
     const tracked = next.finally(() => {
@@ -281,13 +293,17 @@ export class AgentStorage {
     return tracked;
   }
 
-  private async writeRecord(record: StoredAgentRecord): Promise<void> {
-    const agentId = record.id;
+  private async publishPendingRecord(agentId: string): Promise<void> {
+    const publication = this.pendingPublications.get(agentId);
+    if (!publication) return;
+    const { record, synchronize } = publication;
     const nextPath = this.buildRecordPath(record);
     const previousPath = this.pathById.get(agentId);
 
     await writeJsonFileAtomic(nextPath, record);
+    // Track renamed files for deletion even when the subsequent sync fails.
     this.addIndexedPath(agentId, nextPath);
+    await synchronize?.(nextPath, path.dirname(this.baseDir));
 
     if (previousPath && previousPath !== nextPath) {
       try {
@@ -301,6 +317,7 @@ export class AgentStorage {
     this.cache.set(agentId, record);
     this.indexOwner(record);
     this.pathById.set(agentId, nextPath);
+    this.pendingPublications.delete(agentId);
   }
 
   beginDelete(agentId: string): void {
@@ -310,7 +327,7 @@ export class AgentStorage {
   async remove(agentId: string): Promise<void> {
     await this.load();
     this.beginDelete(agentId);
-    await (this.pendingWrites.get(agentId) ?? Promise.resolve());
+    await (this.pendingWrites.get(agentId) ?? Promise.resolve()).catch(() => undefined);
     const paths = Array.from(this.pathsById.get(agentId) ?? []);
     await Promise.all(
       paths.map(async (filePath) => {
@@ -332,26 +349,36 @@ export class AgentStorage {
     this.removeOwnerIndex(agentId);
     this.pathById.delete(agentId);
     this.pathsById.delete(agentId);
+    this.pendingPublications.delete(agentId);
   }
 
   async applySnapshot(
     agent: ManagedAgent,
     options?: { title?: string | null; internal?: boolean },
   ): Promise<void> {
-    await this.load();
     const hasTitleOverride =
       options !== undefined && Object.prototype.hasOwnProperty.call(options, "title");
     const hasInternalOverride =
       options !== undefined && Object.prototype.hasOwnProperty.call(options, "internal");
-    await this.queueRecordMutation(agent.id, (existing) => {
-      const record = toStoredAgentRecord(agent, {
-        title: hasTitleOverride ? (options?.title ?? null) : (existing?.title ?? null),
-        createdAt: existing?.createdAt,
-        internal: hasInternalOverride ? options?.internal : (agent.internal ?? existing?.internal),
-      });
+    const snapshot = structuredClone(
+      toStoredAgentRecord(agent, {
+        ...options,
+        internal: hasInternalOverride ? options?.internal : agent.internal,
+      }),
+    );
+    await this.load();
+    await this.queueRecordMutation(snapshot.id, (existing) => {
+      const record: StoredAgentRecord = {
+        ...snapshot,
+        title: hasTitleOverride ? snapshot.title : (existing?.title ?? null),
+        createdAt: existing?.createdAt ?? snapshot.createdAt,
+        internal: hasInternalOverride
+          ? snapshot.internal
+          : (snapshot.internal ?? existing?.internal),
+      };
 
       // Preserve soft-delete/archive status across snapshot flushes. The
-      // projection runs inside the per-agent write queue so it cannot commit a
+      // merge runs inside the per-agent write queue so it cannot commit a
       // stale pre-archive record after the archive mutation.
       if (existing && existing.archivedAt !== undefined) {
         record.archivedAt = existing.archivedAt;
@@ -380,13 +407,14 @@ export class AgentStorage {
     agentId: string,
     work: readonly RestartCancelledWork[],
   ): Promise<void> {
+    const entries = structuredClone(work);
     await this.load();
     await this.queueRecordMutation(agentId, (existing) => {
       if (!existing) {
         throw new Error(`Agent ${agentId} not found`);
       }
       const pending = [...(existing.pendingRestartNote ?? [])];
-      for (const entry of work) {
+      for (const entry of entries) {
         if (!pending.some((candidate) => candidate.id === entry.id)) pending.push(entry);
       }
       return { ...existing, pendingRestartNote: pending };
@@ -398,13 +426,14 @@ export class AgentStorage {
     agentId: string,
     delivered: readonly RestartCancelledWork[],
   ): Promise<void> {
+    const deliveredIds = new Set(delivered.map((entry) => entry.id));
     await this.load();
     await this.queueRecordMutation(agentId, (existing) => {
       if (!existing) {
         throw new Error(`Agent ${agentId} not found`);
       }
       const remaining = (existing.pendingRestartNote ?? []).filter(
-        (entry) => !delivered.some((heard) => heard.id === entry.id),
+        (entry) => !deliveredIds.has(entry.id),
       );
       const { pendingRestartNote: _cleared, ...rest } = existing;
       return remaining.length > 0 ? { ...rest, pendingRestartNote: remaining } : rest;
@@ -413,12 +442,13 @@ export class AgentStorage {
 
   /** Records the idempotency key the agent was created under, for retried create requests. */
   async setCreation(agentId: string, creation: AgentCreationRequest): Promise<void> {
+    const request = structuredClone(creation);
     await this.load();
     await this.queueRecordMutation(agentId, (existing) => {
       if (!existing) {
         throw new Error(`Agent ${agentId} not found`);
       }
-      return { ...existing, creation };
+      return { ...existing, creation: request };
     });
   }
 
@@ -438,12 +468,10 @@ export class AgentStorage {
 
   async setTitle(agentId: string, title: string): Promise<void> {
     await this.load();
-    await this.waitForPendingWrite(agentId);
-    const record = await this.get(agentId);
-    if (!record) {
-      throw new Error(`Agent ${agentId} not found`);
-    }
-    await this.upsert({ ...record, title });
+    await this.queueRecordMutation(agentId, (record) => {
+      if (!record || !this.isVisible(agentId)) throw new Error(`Agent ${agentId} not found`);
+      return { ...record, title };
+    });
   }
 
   async flush(): Promise<void> {
@@ -600,10 +628,6 @@ export class AgentStorage {
       this.daemonAgentIdsByExecution.delete(key);
     }
     this.daemonExecutionKeysByAgentId.delete(agentId);
-  }
-
-  private async waitForPendingWrite(agentId: string): Promise<void> {
-    await (this.pendingWrites.get(agentId) ?? Promise.resolve()).catch(() => undefined);
   }
 }
 

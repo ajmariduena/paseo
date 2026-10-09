@@ -1,22 +1,290 @@
 Handoff persistence recovery foundations — 2026-10-10
 
-Two independently reproduced defects are fixed here. This is not the complete
-conversation persistence barrier: runtime generations, semantic obligations,
-provider callback quiescence and durable process-stop recovery remain open.
+The complete conversation barrier remains open: pre-provider runtime generations,
+revision guards, semantic obligations, callback quiescence and durable process-stop
+recovery are not implemented by these changes.
 
-1. A rejected agent-record mutation previously rejected the next queued mutation
-   without executing it. A regression now preserves the first caller's error and
-   proves the following restart note survives reconstruction of AgentStorage.
-2. A process restart could read a released ownership journal after rename but before
-   successful directory synchronization. The source could then issue a receipt
-   from that readable state. Recovery now synchronizes the existing file and its
-   publication directories before admitting operations. Continued sync failure
-   prevents receipts and source mutations; repaired storage recovers the same
-   irrevocable binding without revalidating mutable source content.
+Agent-record publication:
+- Reproduced false acknowledgement in the cache after a successful rename followed
+  by failed directory synchronization. Failed publication now retains one immutable
+  candidate per agent, including its synchronization requirement. Later mutations
+  complete that candidate before evaluating their own preconditions. The original
+  caller still receives its failure.
+- Reproduced snapshots observing later changes to a live agent's model and timestamp.
+  Snapshot input is now captured at admission; record-owned fields merge in the queue.
+- A failed closed-record write can be repaired through the strict handoff inventory
+  and checkpoint without reopening the provider. The checkpoint returns the exact
+  record validated by its serialized publication. This is same-process recovery;
+  the retained candidate is not a restart-safe semantic obligation.
+- Deletion waits for in-flight publication and removes a renamed file even when
+  synchronization then fails. Windows rejects unsupported durable publication before
+  retaining a candidate, so an unsupported checkpoint cannot poison ordinary writes.
+  The Windows-only regression is skipped locally and awaits Windows CI.
+- Current owning suite: 26 passed, 1 Windows-only case skipped. Full typecheck and lint
+  pass; npm format completed. Tests use real temporary files, injected sync failure
+  and reconstruction of AgentStorage, not a power cut or a provider session.
 
-The ownership test uses real file rename and an injected publication failure,
-then reconstructs the owner. It does not simulate an actual power cut. Existing
-Windows release restrictions remain; no cross-host/provider continuity claim.
+Earlier foundations, retained below:
+- A rejected queue mutation no longer discards the following restart note.
+- Ownership recovery synchronizes its existing journal before mutations or recovered
+  receipts. A failed sync keeps the source fenced; repair retains the irrevocable
+  binding without revalidating mutable source content. The earlier 42 POSIX and 12
+  common ownership cases passed on 058e2be5f and were not rerun for this storage edit.
+
+Record cache acknowledgement: before fix
+$ cd packages/server
+$ npx vitest run src/server/agent/agent-storage.test.ts --bail=1 -t 'a renamed handoff record'
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/agent-storage.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: 🛡️ auth for agents: https://vestauth.com
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: 🔐 prevent building .env in docker: https://dotenvx.com/prebuild
+
+ ❯ src/server/agent/agent-storage.test.ts (23 tests | 1 failed | 22 skipped) 15ms
+     × a renamed handoff record is not acknowledged before synchronization succeeds 13ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/agent-storage.test.ts > AgentStorage > a renamed handoff record is not acknowledged before synchronization succeeds
+AssertionError: expected { id: 'incoming-agent', …(21) } to be null
+
+- Expected:
+null
+
++ Received:
+{
+  "attentionReason": null,
+  "attentionTimestamp": null,
+  "config": {
+    "modeId": "plan",
+    "model": "gpt-5.1",
+  },
+  "createdAt": "2025-01-01T00:00:00.000Z",
+  "cwd": "/tmp/project",
+  "features": [],
+  "id": "incoming-agent",
+  "internal": undefined,
+  "labels": {},
+  "lastActivityAt": "2025-01-01T00:00:00.000Z",
+  "lastError": undefined,
+  "lastModeId": "plan",
+  "lastStatus": "closed",
+  "lastUserMessageAt": "2025-01-01T00:00:00.000Z",
+  "owner": undefined,
+  "persistence": null,
+  "provider": "claude",
+  "requiresAttention": false,
+  "runtimeInfo": {
+    "modeId": "plan",
+    "model": "gpt-5.1",
+    "provider": "claude",
+    "sessionId": "session-123",
+  },
+  "title": null,
+  "updatedAt": "2025-01-01T00:00:00.000Z",
+  "workspaceId": "incoming-workspace",
+}
+
+ ❯ src/server/agent/agent-storage.test.ts:544:44
+    542|
+    543|       await expect(storage.installHandoffRecord(record)).rejects.toThr…
+    544|       expect(await storage.get(record.id)).toBeNull();
+       |                                            ^
+    545|       await expect(storage.listByWorkspaceForHandoff("incoming-workspa…
+    546|       await expect(storage.setTitle(record.id, "Changed after repair")…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 22 skipped (23)
+   Start at  01:02:21
+   Duration  966ms (transform 509ms, setup 46ms, import 775ms, tests 15ms, environment 0ms)
+
+
+
+Snapshot admission: before fix
+$ cd packages/server
+$ npx vitest run src/server/agent/agent-storage.test.ts --bail=1 -t 'a queued snapshot retains'
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/agent-storage.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  load multiple .env files with { path: ['.env.local', '.env'] }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: 🔐 prevent building .env in docker: https://dotenvx.com/prebuild
+
+ ❯ src/server/agent/agent-storage.test.ts (24 tests | 1 failed | 23 skipped) 21ms
+     × a queued snapshot retains the admitted state while the live agent changes 18ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/agent-storage.test.ts > AgentStorage > a queued snapshot retains the admitted state while the live agent changes
+AssertionError: expected { id: 'changing-agent', …(17) } to match object { …(2) }
+(21 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+    "config": {
+-     "model": "admitted-model",
++     "model": "later-model",
+    },
+-   "updatedAt": "2025-01-01T00:00:00.000Z",
++   "updatedAt": "2030-01-01T00:00:00.000Z",
+  }
+
+ ❯ src/server/agent/agent-storage.test.ts:288:42
+    286|
+    287|     const reloaded = new AgentStorage(storagePath, logger);
+    288|     expect(await reloaded.get(agent.id)).toMatchObject({
+       |                                          ^
+    289|       config: { model: "admitted-model" },
+    290|       updatedAt: admittedTime,
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 23 skipped (24)
+   Start at  01:03:22
+   Duration  1.16s (transform 618ms, setup 50ms, import 970ms, tests 21ms, environment 0ms)
+
+
+
+Retained close: intermediate regression proving inventory must repair before inspection
+$ cd packages/server
+$ npx vitest run src/server/agent/agent-storage.test.ts --bail=1 -t 'handoff retries the retained'
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/agent-storage.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  load multiple .env files with { path: ['.env.local', '.env'] }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: 🔐 prevent committing .env to code: https://dotenvx.com/precommit
+
+ ❯ src/server/agent/agent-storage.test.ts (27 tests | 1 failed | 26 skipped) 17ms
+     × handoff retries the retained closed snapshot after its first write fails 13ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/agent-storage.test.ts > AgentStorage > handoff retries the retained closed snapshot after its first write fails
+AssertionError: promise rejected "Error: Handoff agent publication is still…" instead of resolving
+ ❯ src/server/agent/agent-storage.test.ts:595:72
+    593|       await fs.rm(storagePath);
+    594|       await fs.rename(backup, storagePath);
+    595|       await expect(storage.listByWorkspaceForHandoff("retry-workspace"…
+       |                                                                        ^
+    596|         { id: agentId, lastStatus: "closed" },
+    597|       ]);
+
+Caused by: Error: Handoff agent publication is still pending
+ ❯ AgentStorage.listByWorkspaceForHandoff src/server/agent/agent-storage.ts:190:15
+ ❯ src/server/agent/agent-storage.test.ts:595:7
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 26 skipped (27)
+   Start at  01:06:06
+   Duration  971ms (transform 514ms, setup 44ms, import 789ms, tests 17ms, environment 0ms)
+
+
+
+AgentStorage: after fixes
+$ cd packages/server
+$ npx vitest run src/server/agent/agent-storage.test.ts --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  26 passed | 1 skipped (27)
+   Start at  01:06:24
+   Duration  1.04s (transform 502ms, setup 49ms, import 810ms, tests 56ms, environment 0ms)
+
+
+
+Current publication changes: validation
+$ npm run typecheck
+
+> paseo@0.11.1 typecheck
+> npm run typecheck --workspaces --if-present
+
+
+> @getpaseo/builtin-plugins@0.11.1 typecheck
+> tsgo -p tsconfig.json --noEmit
+
+
+> @getpaseo/expo-two-way-audio@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/highlight@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/plugin@0.11.1 typecheck
+> tsgo --noEmit && tsgo -p tsconfig.examples.json --noEmit
+
+
+> @getpaseo/protocol@0.11.1 pretypecheck
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/client@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/server@0.11.1 typecheck
+> tsgo -p tsconfig.server.typecheck.json --noEmit
+
+
+> @getpaseo/app@0.11.0-beta.36 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/relay@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/website@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/desktop@0.11.1 typecheck
+> tsgo --noEmit -p tsconfig.json
+
+
+> @getpaseo/cli@0.11.1 typecheck
+> tsgo --noEmit
+
+
+$ npm run lint
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 3.1s on 5029 files with 177 rules using 4 threads.
+
+$ npm run format
+
+> paseo@0.11.1 format
+> oxfmt .
+
+Finished in 3699ms on 5374 files using 4 threads.
+
 
 Storage queue: before fix
 $ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/agent/agent-storage.test.ts --bail=1 -t 'a rejected mutation does not discard'
