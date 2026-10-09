@@ -115,10 +115,15 @@ import {
   type AgentRunResult,
   type AgentSession,
   type AgentSessionConfig,
+  type AgentModelTransitionPlan,
+  type AgentSessionSelectionChange,
   type AgentSlashCommand,
+  type AgentSubmissionOutcome,
+  type AgentTurnStart,
   type SteerActiveTurnOptions,
   type SteerResult,
   type AgentStreamEvent,
+  attachTurnSubmissionOutcome,
   type AgentTimelineItem,
   type AgentUsage,
   type AgentBackgroundTask,
@@ -486,6 +491,16 @@ function isClaudeThinkingOption(value: string | null | undefined): value is Clau
   );
 }
 
+function normalizeClaudeModelId(modelId: string | null): string | null {
+  const normalized = modelId?.trim() ?? "";
+  return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeClaudeThinkingOptionId(thinkingOptionId: string | null): string | null {
+  const normalized = thinkingOptionId?.trim() ?? "";
+  return normalized.length > 0 && normalized !== "default" ? normalized : null;
+}
+
 function assertClaudeThinkingOptionSupported(
   modelId: string | null | undefined,
   thinkingOptionId: string | null | undefined,
@@ -499,6 +514,25 @@ function assertClaudeThinkingOptionSupported(
   throw new Error(
     `Thinking option '${thinkingOptionId}' is not available for model '${modelId ?? "default"}'`,
   );
+}
+
+function rejectedTransition(error: unknown): AgentModelTransitionPlan {
+  return { kind: "reject", reason: error instanceof Error ? error.message : String(error) };
+}
+
+function rejectClaudeThinkingSelection(
+  modelId: string | null,
+  thinkingOptionId: string | null,
+): AgentModelTransitionPlan | null {
+  if (thinkingOptionId !== null && !isClaudeThinkingOption(thinkingOptionId)) {
+    return { kind: "reject", reason: `Unknown thinking option: ${thinkingOptionId}` };
+  }
+  try {
+    assertClaudeThinkingOptionSupported(modelId, thinkingOptionId);
+  } catch (error) {
+    return rejectedTransition(error);
+  }
+  return null;
 }
 
 interface ClaudeOptionsLogSummary {
@@ -2147,6 +2181,7 @@ class ClaudeAgentSession implements AgentSession {
   private pendingFreshSessionId: string | null = null;
   private recentStderr = "";
   private closed = false;
+  private pendingSubmission: PendingClaudeSubmission | null = null;
 
   constructor(config: ClaudeAgentConfig, options: ClaudeAgentSessionOptions) {
     this.config = config;
@@ -2247,15 +2282,12 @@ class ClaudeAgentSession implements AgentSession {
     return result;
   }
 
-  async startTurn(
-    prompt: AgentPromptInput,
-    options?: AgentRunOptions,
-  ): Promise<{ turnId: string }> {
+  async startTurn(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<AgentTurnStart> {
     if (this.closed) {
-      throw new Error("Claude session is closed");
+      throw attachTurnSubmissionOutcome(new Error("Claude session is closed"), "unsent");
     }
     if (this.activeForegroundTurnId) {
-      throw new Error("A foreground turn is already active");
+      throw attachTurnSubmissionOutcome(new Error("A foreground turn is already active"), "unsent");
     }
 
     const slashCommand = this.resolveSlashCommandInvocation(prompt);
@@ -2264,7 +2296,8 @@ class ClaudeAgentSession implements AgentSession {
       this.activeForegroundTurnId = turnId;
       this.transitionTurnState("foreground", "rewind command");
       void this.executeRewindTurn(turnId, slashCommand);
-      return { turnId };
+      // Rewind runs locally; nothing was handed to Claude that could need a resend.
+      return { turnId, submission: Promise.resolve("accepted") };
     }
 
     if (this.autonomousTurn) {
@@ -2283,6 +2316,16 @@ class ClaudeAgentSession implements AgentSession {
     this.transitionTurnState("foreground", "foreground turn started");
     this.clearRecentStderr();
 
+    let resolveSubmission!: (outcome: AgentSubmissionOutcome) => void;
+    const submission = new Promise<AgentSubmissionOutcome>((resolve) => {
+      resolveSubmission = resolve;
+    });
+    const pending: PendingClaudeSubmission = {
+      uuid: sdkUserMessageId,
+      resolve: resolveSubmission,
+    };
+    this.pendingSubmission = pending;
+
     let cancelIssued = false;
     const requestCancel = () => {
       if (cancelIssued) {
@@ -2298,9 +2341,11 @@ class ClaudeAgentSession implements AgentSession {
         provider: "claude",
         reason: "Interrupted",
       });
-      void this.interruptActiveTurn().catch((error) => {
-        this.logger.warn({ err: error }, "Failed to interrupt during cancel");
-      });
+      void this.interruptActiveTurn(pending)
+        .catch((error) => {
+          this.logger.warn({ err: error }, "Failed to interrupt during cancel");
+        })
+        .finally(() => this.settleSubmission(pending, "unknown"));
     };
     this.cancelCurrentTurn = requestCancel;
 
@@ -2321,12 +2366,51 @@ class ClaudeAgentSession implements AgentSession {
         }
       }, 0);
     } catch (error) {
+      this.settleSubmission(pending, "unsent");
       this.finishForegroundTurn(
         this.buildTurnFailedEvent(error instanceof Error ? error.message : "Claude stream failed"),
       );
     }
 
-    return { turnId };
+    return { turnId, submission };
+  }
+
+  private settleSubmission(
+    pending: PendingClaudeSubmission,
+    outcome: AgentSubmissionOutcome,
+  ): void {
+    if (this.pendingSubmission === pending) {
+      this.pendingSubmission = null;
+    }
+    pending.resolve(outcome);
+  }
+
+  private settleActiveSubmission(outcome: AgentSubmissionOutcome): void {
+    if (this.pendingSubmission) {
+      this.settleSubmission(this.pendingSubmission, outcome);
+    }
+  }
+
+  /**
+   * The CLI acknowledges a pushed message by uuid: a command_lifecycle beyond `queued`, or the
+   * user-message replay once it is consumed. Frames about anything else are not evidence.
+   */
+  private observeSubmissionEvidence(message: SDKMessage): void {
+    const pending = this.pendingSubmission;
+    if (!pending?.uuid) {
+      return;
+    }
+    const lifecycle = readClaudeCommandLifecycle(message);
+    if (lifecycle) {
+      if (lifecycle.commandUuid !== pending.uuid || lifecycle.state === "queued") {
+        return;
+      }
+      this.settleSubmission(pending, lifecycle.state === "cancelled" ? "unsent" : "accepted");
+      return;
+    }
+    if (message.type === "user" && message.uuid === pending.uuid) {
+      this.settleSubmission(pending, "accepted");
+    }
   }
 
   async steerActiveTurn(
@@ -2525,6 +2609,61 @@ class ClaudeAgentSession implements AgentSession {
     if (this.activeForegroundTurnId || this.autonomousTurn) {
       return THINKING_APPLIES_NEXT_TURN_NOTICE;
     }
+  }
+
+  // Mirrors the setters above: thinking relaunches the query, a model switch reconciles a
+  // disabled-thinking selection the new model cannot honor, and fast mode is model-gated.
+  planModelTransition(change: AgentSessionSelectionChange): AgentModelTransitionPlan {
+    const currentModel = this.config.model ?? null;
+    const model = change.model === undefined ? currentModel : normalizeClaudeModelId(change.model);
+    const rejection = this.rejectModeOrFeatureChange(change, model);
+    if (rejection) {
+      return rejection;
+    }
+    const currentThinking = this.config.thinkingOptionId ?? null;
+    if (change.thinkingOptionId === undefined) {
+      const disabledThinkingLost =
+        model !== currentModel &&
+        currentThinking === CLAUDE_DISABLED_THINKING_OPTION_ID &&
+        !resolveClaudeDisabledThinkingForModel(model).supported;
+      return { kind: disabledThinkingLost ? "restart_session" : "in_session" };
+    }
+    const thinking = normalizeClaudeThinkingOptionId(change.thinkingOptionId);
+    const thinkingRejection = rejectClaudeThinkingSelection(model, thinking);
+    if (thinkingRejection) {
+      return thinkingRejection;
+    }
+    return { kind: thinking === currentThinking ? "in_session" : "restart_session" };
+  }
+
+  private rejectModeOrFeatureChange(
+    change: AgentSessionSelectionChange,
+    model: string | null,
+  ): AgentModelTransitionPlan | null {
+    if (change.modeId !== undefined) {
+      if (!VALID_CLAUDE_MODES.has(change.modeId)) {
+        return { kind: "reject", reason: `Invalid mode '${change.modeId}' for Claude provider` };
+      }
+      const normalizedMode = isPermissionMode(change.modeId) ? change.modeId : "default";
+      try {
+        assertClaudeModeCanRun(normalizedMode, this.buildSdkEnv());
+      } catch (error) {
+        return rejectedTransition(error);
+      }
+    }
+    for (const featureId of Object.keys(change.featureValues ?? {})) {
+      if (featureId !== "fast_mode") {
+        return { kind: "reject", reason: `Unknown Claude feature: ${featureId}` };
+      }
+    }
+    const fastMode = change.featureValues?.fast_mode ?? this.config.featureValues?.fast_mode;
+    if (fastMode === true && !claudeModelSupportsFastMode(model)) {
+      return {
+        kind: "reject",
+        reason: `Claude fast mode is not available for model '${model ?? "default"}'`,
+      };
+    }
+    return null;
   }
 
   async setFeature(featureId: string, value: unknown): Promise<void> {
@@ -2753,6 +2892,7 @@ class ClaudeAgentSession implements AgentSession {
     this.closed = true;
     this.rejectAllPendingPermissions(new Error("Claude session closed"));
     this.cancelCurrentTurn?.();
+    this.settleActiveSubmission("unknown");
     this.subscribers.clear();
     this.activeForegroundTurnId = null;
     this.activeForegroundQuery = null;
@@ -3680,6 +3820,10 @@ class ClaudeAgentSession implements AgentSession {
     if (event.type === "turn_failed" || event.type === "turn_canceled") {
       this.flushPendingToolCalls();
     }
+    // A cancel settles its own submission after trying to withdraw the message.
+    if (event.type !== "turn_canceled") {
+      this.settleActiveSubmission("unknown");
+    }
     this.notifySubscribers(event);
     this.activeForegroundTurnId = null;
     this.activeForegroundQuery = null;
@@ -3700,6 +3844,7 @@ class ClaudeAgentSession implements AgentSession {
     if (terminalSeen) {
       this.compactionMarkerOpen = false;
       if (this.activeForegroundTurnId) {
+        this.settleActiveSubmission("unknown");
         this.activeForegroundTurnId = null;
         this.activeForegroundQuery = null;
         this.activeForegroundInput = null;
@@ -3959,6 +4104,7 @@ class ClaudeAgentSession implements AgentSession {
   }
 
   private async routeSdkMessageFromPump(message: SDKMessage): Promise<void> {
+    this.observeSubmissionEvidence(message);
     this.runtimeResidency.observeMessage(message);
     this.observeBackgroundTasksChanged(message);
     if (this.shouldSuppressStaleResult(message)) {
@@ -4101,6 +4247,7 @@ class ClaudeAgentSession implements AgentSession {
     this.cachedRuntimeInfo = null;
     this.queryRestartNeeded = false;
     this.autonomousTurn = null;
+    this.settleActiveSubmission("unknown");
     this.activeForegroundTurnId = null;
     this.activeForegroundQuery = null;
     this.activeForegroundInput = null;
@@ -4108,7 +4255,7 @@ class ClaudeAgentSession implements AgentSession {
     return true;
   }
 
-  private async interruptActiveTurn(): Promise<void> {
+  private async interruptActiveTurn(withdrawal?: PendingClaudeSubmission): Promise<void> {
     const queryToInterrupt = this.query;
     if (!queryToInterrupt || typeof queryToInterrupt.interrupt !== "function") {
       this.logger.trace(
@@ -4123,7 +4270,7 @@ class ClaudeAgentSession implements AgentSession {
       return;
     }
     this.pendingInterruptAbort = true;
-    await this.discardQueuedSteers(queryToInterrupt);
+    await this.discardQueuedSteers(queryToInterrupt, withdrawal);
     try {
       await this.awaitWithTimeout(
         queryToInterrupt.interrupt(),
@@ -4138,11 +4285,14 @@ class ClaudeAgentSession implements AgentSession {
    * Interrupt means interrupt: a steer Claude never read dies with the turn instead of resuming it.
    * A steer already dequeued cannot be recalled, and does not need to be — the interrupt kills it.
    */
-  private async discardQueuedSteers(query: Query): Promise<void> {
+  private async discardQueuedSteers(
+    query: Query,
+    withdrawal?: PendingClaudeSubmission,
+  ): Promise<void> {
     const uuids = [...this.queuedSteerUuids];
     this.queuedSteerUuids.clear();
     this.permissionClearingSteerUuids.clear();
-    if (uuids.length === 0) return;
+    if (uuids.length === 0 && !withdrawal?.uuid) return;
     // The SDK runtime supports this, but its public Query type has not caught up. Keep the
     // compatibility escape hatch inside the Claude adapter.
     const cancelAsyncMessage = (
@@ -4157,6 +4307,15 @@ class ClaudeAgentSession implements AgentSession {
       } catch (error) {
         this.logger.warn({ err: error }, "Failed to discard a queued Claude steer");
       }
+    }
+    if (!withdrawal?.uuid) return;
+    // Only a confirmed removal from the queue proves the prompt was never read.
+    try {
+      if (await cancelAsyncMessage.call(query, withdrawal.uuid)) {
+        this.settleSubmission(withdrawal, "unsent");
+      }
+    } catch (error) {
+      this.logger.warn({ err: error }, "Failed to withdraw the interrupted Claude prompt");
     }
   }
 
@@ -6524,7 +6683,13 @@ function extractClaudeUserText(messageRaw: unknown): string | null {
 
 interface ClaudeCommandLifecycle {
   commandUuid: string;
-  state: "queued" | "started" | "completed";
+  state: "queued" | "started" | "completed" | "cancelled";
+}
+
+interface PendingClaudeSubmission {
+  /** SDK user uuid of the pushed message; null when the message carries none. */
+  uuid: string | null;
+  resolve: (outcome: AgentSubmissionOutcome) => void;
 }
 
 /** Runtime-only Claude frames are validated here because the SDK's public union omits them. */
@@ -6533,7 +6698,7 @@ function readClaudeCommandLifecycle(message: unknown): ClaudeCommandLifecycle | 
   if (record?.type !== "command_lifecycle") return null;
   if (
     typeof record.command_uuid !== "string" ||
-    !["queued", "started", "completed"].includes(String(record.state))
+    !["queued", "started", "completed", "cancelled"].includes(String(record.state))
   ) {
     return null;
   }

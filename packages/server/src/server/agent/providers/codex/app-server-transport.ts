@@ -33,6 +33,14 @@ interface PendingRequest {
   timer: NodeJS.Timeout;
 }
 
+/** Rejected before anything was written, so the request never reached the app-server. */
+export class CodexAppServerClientClosedError extends Error {
+  constructor() {
+    super("Codex app-server client is closed");
+    this.name = "CodexAppServerClientClosedError";
+  }
+}
+
 export class CodexAppServerRpcError extends Error {
   constructor(
     message: string,
@@ -257,7 +265,7 @@ export class CodexAppServerClient {
 
   request(method: string, params?: unknown, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<unknown> {
     if (this.disposed) {
-      return Promise.reject(new Error("Codex app-server client is closed"));
+      return Promise.reject(new CodexAppServerClientClosedError());
     }
     const id = this.nextId++;
     const payload: JsonRpcRequest = { id, method, params };

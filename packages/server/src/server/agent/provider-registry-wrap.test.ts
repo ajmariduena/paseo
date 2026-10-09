@@ -2,8 +2,10 @@ import { describe, expect, test } from "vitest";
 
 import type {
   AgentCapabilityFlags,
+  AgentModelTransitionPlan,
   AgentPromptInput,
   AgentSession,
+  AgentSessionSelectionChange,
   AgentStreamEvent,
   AgentRuntimeInfo,
   SteerActiveTurnOptions,
@@ -26,6 +28,7 @@ const OPTIONAL_AGENT_SESSION_METHOD_NAMES = [
   "setModel",
   "setThinkingOption",
   "setFeature",
+  "planModelTransition",
   "revertConversation",
   "revertFiles",
   "revertBoth",
@@ -117,6 +120,11 @@ class FakeSession implements AgentSession {
     this.recordedCalls.push("setMode");
   }
 
+  planModelTransition(_change: AgentSessionSelectionChange): AgentModelTransitionPlan {
+    this.recordedCalls.push("planModelTransition");
+    return { kind: "in_session" };
+  }
+
   getPendingPermissions() {
     this.recordedCalls.push("getPendingPermissions");
     return [];
@@ -194,6 +202,7 @@ describe("wrapSessionProvider", () => {
     await wrapped.setModel?.("sonnet");
     await wrapped.setThinkingOption?.("high");
     await wrapped.setFeature?.("feature-1", true);
+    expect(wrapped.planModelTransition?.({ model: "opus" })).toEqual({ kind: "in_session" });
     await wrapped.revertConversation?.({ messageId: "message-1" });
     await wrapped.revertFiles?.({ messageId: "message-1" });
     await wrapped.revertBoth?.({ messageId: "message-1" });
@@ -209,6 +218,7 @@ describe("wrapSessionProvider", () => {
       "setModel",
       "setThinkingOption",
       "setFeature",
+      "planModelTransition",
       "revertConversation",
       "revertFiles",
       "revertBoth",

@@ -383,7 +383,7 @@ test("a steer Claude has already read is no longer discardable on interrupt", as
   await session.interrupt();
   await waitFor(() => query()?.interrupt.mock.calls.length === 1);
 
-  expect(query()?.cancelAsyncMessage).not.toHaveBeenCalled();
+  expect(query()?.cancelAsyncMessage).not.toHaveBeenCalledWith(query()?.prompts[1]?.uuid);
   await collectUntilTerminal(turn);
   await session.close();
 });

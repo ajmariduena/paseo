@@ -109,6 +109,10 @@ Active-turn steering is an optional `AgentSession.steerActiveTurn` operation. Th
 
 A steering adapter also owes its interrupt: stopping a turn must discard the steers the provider has not read yet, or one of them resumes the turn the user just stopped. Codex clears pending input when it aborts a turn; Claude does not, so its adapter cancels the SDK messages it queued before calling `query.interrupt()`. Pi requires `clear_queue` before `abort`; older binaries without that RPC retain their native queue behavior until the pi compatibility floor reaches 0.84.4.
 
+`startTurn` resolving means the adapter started the turn locally, not that the provider took the prompt. An adapter that can tell the difference returns `submission`, a promise of `accepted`, `unsent` or `unknown`, and tags a thrown start failure with the same outcome through `attachTurnSubmissionOutcome`. `accepted` is native acknowledgement, not completion. `unsent` needs proof the prompt never reached the provider; when the evidence is missing the answer is `unknown`, and an unknown prompt is never replayed automatically. Claude proves acceptance with a `command_lifecycle` frame past `queued` or the user-message replay for the submitted SDK uuid; a query that fails before the push, or a withdrawal the CLI confirms on interrupt, is `unsent`. Codex proves acceptance with the correlated `turn/start` response, or with the root `turn/started` notification when that response is lost; failures before the `turn/start` write are `unsent`. Adapters without a correlated signal leave `submission` absent, and callers treat absence as legacy.
+
+`planModelTransition` classifies a same-session model, mode, thinking or feature change before anything applies it: `in_session` when the live runtime takes it through its setters, `restart_session` when the native process has to be relaunched on the same persisted session (Claude thinking), `new_segment` when the native session cannot carry it, and `reject` for an invalid combination (Claude fast mode on a model without it, a Codex speed tier the model lacks). An adapter that does not answer is treated as `restart_session`. Provider aliases forward it like every other session method.
+
 `SteerActiveTurnOptions.clearPendingPermissions` makes permission release part of the provider contract. A provider that accepts such a steer queues it first, denies permissions blocking its delivery, and stops once the steer is read. Steers without the flag leave permissions open. A denied plan remains in the timeline because the pending card was the only other copy of its text.
 
 Rewind accepts the canonical wire `messageId` and resolves it to the provider identity before calling the adapter. A submitted prompt cannot be rewound until its provider echo supplies that identity.
@@ -482,8 +486,9 @@ interface AgentSession {
   readonly capabilities: AgentCapabilityFlags;
   readonly features?: AgentFeature[];
   run(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<AgentRunResult>;
-  startTurn(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<{ turnId: string }>;
+  startTurn(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<AgentTurnStart>;
   steerActiveTurn?(prompt: AgentPromptInput, options: SteerActiveTurnOptions): Promise<SteerResult>;
+  planModelTransition?(change: AgentSessionSelectionChange): AgentModelTransitionPlan;
   subscribe(callback: (event: AgentStreamEvent) => void): () => void;
   streamHistory(): AsyncGenerator<AgentStreamEvent>;
   getRuntimeInfo(): Promise<AgentRuntimeInfo>;
