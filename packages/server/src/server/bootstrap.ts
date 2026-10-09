@@ -1,4 +1,5 @@
 import type { Dictionary, QuickPrompt } from "@getpaseo/protocol/messages";
+import { GlanceSummaryService } from "./glance/service.js";
 import type { PluginRegistries } from "@getpaseo/protocol/plugin-registry";
 import { describeHookWorkspace } from "./plugins/lifecycle/index.js";
 import express from "express";
@@ -1799,6 +1800,12 @@ export async function createPaseoDaemon(
 
   const speechService = createDictationAwareSpeechService({ config, logger, daemonConfigStore });
   logger.info({ elapsed: elapsed() }, "Speech service created");
+  const glanceSummaryService = new GlanceSummaryService({
+    agentManager,
+    providerSnapshotManager,
+    getConfig: () => daemonConfigStore.get(),
+    logger,
+  });
   const readAloudService = config.readAloud
     ? new ReadAloudService({
         config: config.readAloud,
@@ -1986,6 +1993,7 @@ export async function createPaseoDaemon(
               agentStop,
               noteStore,
               hostMetricsSampler,
+              glanceSummaryService,
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();

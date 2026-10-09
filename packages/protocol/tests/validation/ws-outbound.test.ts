@@ -1,3 +1,4 @@
+import { SessionInboundMessageSchema } from "../../src/messages.js";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
@@ -393,5 +394,48 @@ const SourceSchema = z.object({
       },
     });
     expect(result.success).toBe(true);
+  });
+});
+
+describe("glance summary wire contract", () => {
+  it("accepts capped batches while leaving text truncation to the server", () => {
+    const item = { id: "one", role: "user", text: "x".repeat(3001) };
+    const request = {
+      type: "glance.summarize.request",
+      requestId: "glance",
+      items: Array.from({ length: 20 }, () => item),
+    };
+    expect(SessionInboundMessageSchema.safeParse(request).success).toBe(true);
+    expect(
+      SessionInboundMessageSchema.safeParse({ ...request, items: [...request.items, item] })
+        .success,
+    ).toBe(false);
+    expect(
+      SessionInboundMessageSchema.safeParse({ ...request, items: [{ ...item, role: "system" }] })
+        .success,
+    ).toBe(false);
+  });
+
+  it("validates successful and failed responses with the generated boundary", () => {
+    for (const payload of [
+      { requestId: "glance", lines: [{ id: "one", line: "Revisa el cambio." }], error: null },
+      { requestId: "glance", lines: [], error: "Provider failed" },
+    ]) {
+      expect(
+        GeneratedWSOutboundMessageSchema.safeParse({
+          type: "session",
+          message: { type: "glance.summarize.response", payload },
+        }).success,
+      ).toBe(true);
+    }
+    expect(
+      GeneratedWSOutboundMessageSchema.safeParse({
+        type: "session",
+        message: {
+          type: "glance.summarize.response",
+          payload: { requestId: "glance", lines: [{ id: "one", line: 123 }], error: null },
+        },
+      }).success,
+    ).toBe(false);
   });
 });

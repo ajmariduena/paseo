@@ -2954,6 +2954,25 @@ export const WorkspaceMarkUnreadRequestSchema = z.object({
   requestId: z.string(),
 });
 
+export const GlanceSummaryItemSchema = z.object({
+  id: z.string(),
+  role: z.enum(["user", "assistant"]),
+  text: z.string(),
+});
+
+export const GlanceSummaryLineSchema = z.object({ id: z.string(), line: z.string() });
+
+export const GlanceSummarizeRequestSchema = z.object({
+  type: z.literal("glance.summarize.request"),
+  requestId: z.string(),
+  agentId: z.string().optional(),
+  items: z.array(GlanceSummaryItemSchema).max(20),
+});
+
+export type GlanceSummaryItem = z.infer<typeof GlanceSummaryItemSchema>;
+export type GlanceSummaryLine = z.infer<typeof GlanceSummaryLineSchema>;
+export type GlanceSummarizeRequest = z.infer<typeof GlanceSummarizeRequestSchema>;
+
 export const SpeechReadAloudPrepareRequestSchema = z.object({
   type: z.literal("speech.read_aloud.prepare.request"),
   text: z.string(),
@@ -3744,6 +3763,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   CreationSubscribeRequestSchema,
   WorkspaceClearAttentionRequestSchema,
   WorkspaceMarkUnreadRequestSchema,
+  GlanceSummarizeRequestSchema,
   SpeechReadAloudPrepareRequestSchema,
   SpeechReadAloudSynthesizeRequestSchema,
   VoiceOrchestratorStartRequestSchema,
@@ -3971,6 +3991,8 @@ export const ServerCapabilitiesSchema = z
     voice: ServerVoiceCapabilitiesSchema.optional(),
     // COMPAT(readAloud): added in v0.10.3; absent on older daemons, remove optional after 2027-09-29.
     readAloud: ServerCapabilityStateSchema.optional(),
+    // COMPAT(glanceSummary): added in v0.11.1; absent on older daemons, remove optional after 2027-10-10.
+    glanceSummary: ServerCapabilityStateSchema.optional(),
     // COMPAT(dictationSelection): added in v0.11.0; absent on older daemons, remove optional after 2027-10-04.
     dictationStt: ServerDictationSttSchema.optional(),
   })
@@ -5485,6 +5507,15 @@ export const WorkspaceMarkUnreadResponseSchema = z.object({
     workspaceId: z.string(),
     markedAgentId: z.string().nullable(),
     success: z.boolean(),
+    error: z.string().nullable(),
+  }),
+});
+
+export const GlanceSummarizeResponseSchema = z.object({
+  type: z.literal("glance.summarize.response"),
+  payload: z.object({
+    requestId: z.string(),
+    lines: z.array(GlanceSummaryLineSchema),
     error: z.string().nullable(),
   }),
 });
@@ -7756,6 +7787,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   CreationSubscribeResponseSchema,
   WorkspaceClearAttentionResponseSchema,
   WorkspaceMarkUnreadResponseSchema,
+  GlanceSummarizeResponseSchema,
   SpeechReadAloudPrepareResponseSchema,
   SpeechReadAloudSynthesizeResponseSchema,
   VoiceOrchestratorStartResponseSchema,

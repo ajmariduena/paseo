@@ -7371,3 +7371,48 @@ test.each([false, true])(
     await send;
   },
 );
+
+test.each([null, "Provider failed"])(
+  "summarizeForGlance correlates responses and handles error %s",
+  async (error) => {
+    const mock = createMockTransport();
+    const client = new DaemonClient({
+      url: "ws://test",
+      clientId: "clsk_unit_test",
+      logger: createMockLogger(),
+      reconnect: { enabled: false },
+      transportFactory: () => mock.transport,
+    });
+    clients.push(client);
+    const connecting = client.connect();
+    mock.triggerOpen();
+    await connecting;
+    const items = [{ id: "one", role: "user" as const, text: "Revisa el cambio" }];
+    const pending = client.summarizeForGlance({
+      items,
+      agentId: "agent",
+      requestId: "glance-test",
+    });
+    expect(JSON.parse(assertStr(mock.sent[0]))).toEqual({
+      type: "session",
+      message: {
+        type: "glance.summarize.request",
+        requestId: "glance-test",
+        items,
+        agentId: "agent",
+      },
+    });
+    const lines = error === null ? [{ id: "one", line: "Revisa el cambio." }] : [];
+    mock.triggerMessage(
+      wrapSessionMessage({
+        type: "glance.summarize.response",
+        payload: { requestId: "glance-test", lines, error },
+      }),
+    );
+    if (error === null) {
+      await expect(pending).resolves.toEqual(lines);
+    } else {
+      await expect(pending).rejects.toThrow(error);
+    }
+  },
+);

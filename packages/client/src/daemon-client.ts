@@ -1,3 +1,4 @@
+import type { GlanceSummaryLine, GlanceSummarizeRequest } from "@getpaseo/protocol/messages";
 import { legacyUsageIcon } from "./legacy-usage-icons.js";
 import { subscribeTimeline, type TimelineMessage } from "./timeline-subscription/index.js";
 import { ProviderSnapshotUpdates } from "./provider-snapshots/index.js";
@@ -2168,6 +2169,26 @@ export class DaemonClient {
     if (!response.success) {
       throw new Error(response.error ?? "Failed to mark workspace unread");
     }
+  }
+
+  async summarizeForGlance(
+    params: Omit<GlanceSummarizeRequest, "type" | "requestId"> & { requestId?: string },
+  ): Promise<GlanceSummaryLine[]> {
+    const response = await this.sendNamespacedCorrelatedSessionRequest<"glance.summarize.response">(
+      {
+        requestId: params.requestId,
+        message: {
+          type: "glance.summarize.request",
+          items: params.items,
+          ...(params.agentId ? { agentId: params.agentId } : {}),
+        },
+        timeout: 120_000,
+      },
+    );
+    if (response.error !== null) {
+      throw new Error(response.error);
+    }
+    return response.lines;
   }
 
   async prepareReadAloud(params: {

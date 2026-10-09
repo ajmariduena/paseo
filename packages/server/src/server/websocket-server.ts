@@ -1,5 +1,7 @@
 import type { NoteStore } from "./notes/store.js";
 import type { HostMetricsSampler } from "./host-metrics/sampler.js";
+import { homedir } from "node:os";
+import type { GlanceSummaryService } from "./glance/service.js";
 import { stat } from "node:fs/promises";
 import type { CreationSnapshot } from "@getpaseo/protocol/messages";
 import { CreationService } from "./creation/index.js";
@@ -561,6 +563,10 @@ export class VoiceAssistantWebSocketServer {
   private readonly workspaceLabelService: WorkspaceLabelService | null;
   private readonly noteStore: NoteStore | undefined;
   private readonly hostMetricsSampler: HostMetricsSampler | undefined;
+  private glanceSummaryCapability: ServerCapabilityState = {
+    enabled: false,
+    reason: "Discovering structured-generation providers.",
+  };
   private readAloudService!: ReadAloudService | null;
   private readonly voiceOrchestrator: VoiceOrchestrator | null | undefined;
   private readonly delegations: DelegationService | null | undefined;
@@ -690,6 +696,7 @@ export class VoiceAssistantWebSocketServer {
     agentStop?: AgentStop | null,
     noteStore?: NoteStore,
     hostMetricsSampler?: HostMetricsSampler,
+    private readonly glanceSummaryService?: GlanceSummaryService,
   ) {
     this.logger = logger.child({ module: "websocket-server" });
     this.voiceOrchestrator = voiceOrchestrator;
@@ -772,10 +779,16 @@ export class VoiceAssistantWebSocketServer {
     });
     const unsubscribeChange = this.daemonConfigStore.onChange((config) => {
       this.broadcastDaemonConfigChanged(config);
+      void this.refreshGlanceSummaryCapability();
     });
+    const refreshGlanceSummary = () => {
+      void this.refreshGlanceSummaryCapability();
+    };
+    this.providerSnapshotManager.on("change", refreshGlanceSummary);
     this.unsubscribeDaemonConfigChange = () => {
       unsubscribeProviderConfig();
       unsubscribeChange();
+      this.providerSnapshotManager.off("change", refreshGlanceSummary);
     };
 
     const pushLogger = this.logger.child({ module: "push" });
@@ -797,6 +810,7 @@ export class VoiceAssistantWebSocketServer {
     this.startRuntimeMetricsInterval();
     this.startApplicationSocketLeaseInterval();
 
+    void this.refreshGlanceSummaryCapability();
     this.logger.info("WebSocket server initialized on /ws");
   }
 
@@ -1031,13 +1045,24 @@ export class VoiceAssistantWebSocketServer {
     this.updateServerCapabilities(this.buildCurrentServerCapabilities(readiness));
   }
 
+  private async refreshGlanceSummaryCapability(): Promise<void> {
+    if (!this.glanceSummaryService) return;
+    this.glanceSummaryCapability = await this.glanceSummaryService.getCapability(homedir());
+    this.updateServerCapabilities(
+      this.buildCurrentServerCapabilities(this.speech?.getReadiness() ?? null),
+    );
+  }
+
   private buildCurrentServerCapabilities(
     readiness: SpeechReadinessSnapshot | null,
   ): ServerCapabilities | undefined {
-    return buildServerCapabilities({
+    const capabilities = buildServerCapabilities({
       readiness,
       readAloud: this.readAloudService?.getCapability() ?? null,
     });
+    return this.glanceSummaryService
+      ? { ...capabilities, glanceSummary: this.glanceSummaryCapability }
+      : capabilities;
   }
 
   public updateServerCapabilities(capabilities: ServerCapabilities | null | undefined): void {
@@ -1539,6 +1564,7 @@ export class VoiceAssistantWebSocketServer {
       noteStore: this.noteStore,
       hostMetricsSampler: this.hostMetricsSampler,
       readAloud: this.readAloudService ?? undefined,
+      glanceSummary: this.glanceSummaryService,
       voiceOrchestrator: this.voiceOrchestrator,
       delegations: this.delegations,
       agentStop: this.agentStop,
