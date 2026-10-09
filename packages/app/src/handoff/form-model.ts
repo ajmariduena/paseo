@@ -4,6 +4,7 @@ import type {
   HandoffDestinationPreview,
   HandoffDestinationPage,
   HandoffSourcePreview,
+  HandoffOmissionsPage,
 } from "@getpaseo/protocol/handoff-control";
 import type { WorkspaceHandoffProgress } from "@getpaseo/client/internal/workspace-handoff";
 import { HandoffReviewChangedError } from "@getpaseo/client/internal/workspace-handoff";
@@ -40,7 +41,19 @@ export type HandoffFormState =
       busy: boolean;
       error: string | null;
     }
-  | { kind: "review"; draft: Draft; record: HandoffRecord; preview: HandoffReviewPreview }
+  | {
+      kind: "review";
+      draft: Draft;
+      record: HandoffRecord;
+      preview: HandoffReviewPreview;
+      omissions: {
+        page: Omit<HandoffOmissionsPage, "reviewDigest">;
+        run:
+          | { status: "idle" }
+          | { status: "loading"; offset: number }
+          | { status: "error"; offset: number; message: string };
+      };
+    }
   | { kind: "transfer"; record: HandoffRecord; run: Run };
 
 interface OperationOptions {
@@ -66,6 +79,7 @@ export interface HandoffFormPorts {
   ): Promise<HandoffRecord>;
   newTransferId(): string;
   validate(record: HandoffRecord): Promise<HandoffReviewPreview>;
+  listOmissions(record: HandoffRecord, offset: number): Promise<HandoffOmissionsPage>;
   prepare(record: HandoffRecord, options: OperationOptions): Promise<HandoffDestinationSnapshot>;
   activate(record: HandoffRecord, options: OperationOptions): Promise<HandoffDestinationSnapshot>;
   cancel(record: HandoffRecord, options: OperationOptions): Promise<HandoffDestinationSnapshot>;
@@ -94,6 +108,11 @@ export function openHandoffForm(origin: HandoffOrigin, ports: HandoffFormPorts) 
     if (closed) return;
     state = next;
     for (const listener of listeners) listener();
+  }
+
+  function currentOmissionRequest(pageRun: { status: "loading"; offset: number }) {
+    if (closed || state.kind !== "review" || state.omissions.run !== pageRun) return null;
+    return state;
   }
 
   async function findTransfers(previous: Extract<HandoffFormState, { kind: "recovering" }>) {
@@ -280,6 +299,18 @@ export function openHandoffForm(origin: HandoffOrigin, ports: HandoffFormPorts) 
             stoppedWorkReview: preview.stoppedWork.review,
           },
           preview,
+          omissions: {
+            page: {
+              paths: preview.workspace.omittedPaths,
+              offset: 0,
+              total: preview.workspace.omittedPathCount,
+              nextOffset:
+                preview.workspace.omittedPaths.length < preview.workspace.omittedPathCount
+                  ? preview.workspace.omittedPaths.length
+                  : null,
+            },
+            run: { status: "idle" },
+          },
         });
       } catch (error) {
         publish({ kind: "editing", draft, error: message(error) });
@@ -291,8 +322,40 @@ export function openHandoffForm(origin: HandoffOrigin, ports: HandoffFormPorts) 
         publish({ kind: "editing", draft: { ...state.draft, destination: null }, error: null });
       if (state.kind === "review") publish({ kind: "editing", draft: state.draft, error: null });
     },
+    async listOmissions(offset: number) {
+      if (state.kind !== "review" || state.omissions.run.status === "loading") return;
+      const { record } = state;
+      const pageRun = { status: "loading", offset } as const;
+      publish({ ...state, omissions: { ...state.omissions, run: pageRun } });
+      try {
+        const page = await ports.listOmissions(record, offset);
+        const current = currentOmissionRequest(pageRun);
+        if (!current) return;
+        if (
+          page.reviewDigest !== record.workspaceReviewDigest ||
+          page.offset !== offset ||
+          page.total !== current.preview.workspace.omittedPathCount
+        )
+          throw new Error("Excluded paths do not match this workspace review");
+        publish({ ...current, omissions: { page, run: { status: "idle" } } });
+      } catch (error) {
+        const current = currentOmissionRequest(pageRun);
+        if (!current) return;
+        if (error instanceof HandoffReviewChangedError) {
+          publish({ kind: "editing", draft: current.draft, error: message(error) });
+          return;
+        }
+        publish({
+          ...current,
+          omissions: {
+            ...current.omissions,
+            run: { status: "error", offset, message: message(error) },
+          },
+        });
+      }
+    },
     async prepare() {
-      if (state.kind !== "review") return;
+      if (state.kind !== "review" || state.omissions.run.status === "loading") return;
       const { record, preview } = state;
       if (
         !preview.conversations.every(
@@ -347,9 +410,11 @@ export function handoffFormActions(state: HandoffFormState) {
     return { primary: ready ? "review" : null, canCancel: false } as const;
   }
   if (state.kind === "review") {
-    const ready = state.preview.conversations.every(
-      (conversation) => conversation[state.record.continuationMode].available,
-    );
+    const ready =
+      state.omissions.run.status !== "loading" &&
+      state.preview.conversations.every(
+        (conversation) => conversation[state.record.continuationMode].available,
+      );
     return { primary: ready ? "prepare" : null, canCancel: false } as const;
   }
   return transferActions(state);

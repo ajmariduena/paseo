@@ -208,8 +208,10 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   Git capture still omits empty untracked directories; preserving or reporting them remains open.
   Read-only review uses the capture's ignore rules and portable-path checks to estimate file and
   Git-history bytes. It reports file/folder/link counts and the first fifty ignored paths with the
-  total omitted-path count; ignored directories are collapsed. Tracked files matching ignore rules
-  remain included. Estimates are advisory while the source is running; the stopped capture still
+  total omitted-path count. Further pages expose every collapsed exclusion, fifty entries at a time,
+  tied to the same review digest. An ignored directory represents its entire subtree; the review
+  does not enumerate its children. Tracked files matching ignore rules remain included.
+  Estimates are advisory while the source is running; the stopped capture still
   determines the archive. Reviewing a directory does not add Git metadata or change its contents.
   App review binds the source directory, included paths/types/modes/link targets, Git HEAD/index
   and the complete collapsed omission list to a digest retained by both host journals. Changing
@@ -366,8 +368,8 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   completed. Other connected clients' buffers, concurrent windows and unsent conversation draft
   transfer remain open. Other workspace mutation surfaces need inventory.
   Source retirement still needs tombstones to replace broad path fences.
-  Nineteen form cases cover unavailable modes, inventory changes, lost replies, storage failures,
-  duplicate submissions, closing during work, cancellation recovery and host journals advancing
+  Twenty-one form cases cover unavailable modes, inventory changes, lost replies, storage failures,
+  exclusion pagination, duplicate submissions, closing during work, cancellation recovery and host journals advancing
   past local state, including destination lookup and selection failures. Reconstructed records retain
   the reserved mode and reject mismatched host, workspace, reservation, conversation set or digest;
   a released source restores forward recovery. Selecting a destination queries its unfinished
@@ -381,13 +383,17 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   verifies both scope filters and excludes completed cancellation.
   The network suite covers matching/mismatched Claude versions, missing source
   history and workflow artifacts without starting a provider turn during review. The feature
-  gate is checked on both hosts before preparation; only isolated test daemons advertise it. Seven
-  browser cases use real isolated daemons with directory or Git workspaces: desktop preparation/reload
+  gate is checked on both hosts before preparation; only isolated test daemons advertise it.
+  Browser cases use real isolated daemons with directory or Git workspaces: desktop preparation/reload
   verifies bytes and destination navigation after a real activation conflict and source shutdown;
   changing exclusions after review leaves the terminal running, shows an actionable error and
   creates no destination reservation or source fence before a fresh review;
   starting a terminal after review also requires re-review while both terminals remain running;
-  compact recovery deletes the local transfer record, reloads the same identity and context mode
+  exclusion pagination reaches entries beyond the first fifty on desktop and compact layouts,
+  rejects a changed later entry before any host mutation, then completes after fresh review.
+  Page failures keep the current entries visible with Retry; late responses cannot replace a newer
+  review. Preparation waits for an in-flight page request.
+  Compact recovery deletes the local transfer record, reloads the same identity and context mode
   from both host journals, then cancels and verifies a fresh form after clearing local state again.
   Two destination-only recovery cases select one of two reservations and retain its original mode.
   One recovers a cancellation accepted before source preparation. The other interrupts staged
@@ -425,6 +431,9 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   [preflight results](../qa-evidence/handoff-preflight.txt),
   [workspace review binding results](../qa-evidence/handoff-review-binding.txt),
   [stopped-work review results](../qa-evidence/handoff-writers-review.txt),
+  [exclusion pagination results](../qa-evidence/handoff-omissions.txt) with
+  [desktop](../qa-evidence/handoff-omissions-desktop.png) and
+  [compact](../qa-evidence/handoff-omissions-compact.png) screenshots,
   [source ownership and UI results](../qa-evidence/handoff-source-state.txt),
   [source launch controls results](../qa-evidence/handoff-source-controls.txt),
   [source file, Git and script results](../qa-evidence/handoff-source-mutations.txt),
@@ -440,11 +449,14 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   lookup starts only after selecting that host. Cleanup with the source offline is covered after
   recovering and persisting the local transfer intent. Reopening recovery when the source workspace
   is unavailable without that local record, pinned-key client persistence,
-  complete omitted-path access and integration/resource dispositions,
+  integration/resource dispositions,
   concurrent windows and other connected clients' unsaved buffers and conversation draft transfer,
   complete source mutation affordances and native-platform evidence remain open. Integrations and
   resources outside the current provider-session/terminal/setup inventory still need review binding
-  and dispositions. Final transfer size is not shown separately.
+  and dispositions. Crossing the desktop/compact breakpoint remounts the app surface and loses
+  an open, unprepared review; the paginated review is tested by opening each layout independently.
+  Preserving in-progress review across that transition remains open. Final transfer size is not
+  shown separately.
 - Source retirement/tombstones and automation dispositions remain unimplemented.
   The composite archive currently captures Claude conversations;
   other provider codecs remain open. Complete handoff is not advertised.

@@ -84,6 +84,13 @@ function fixture() {
     },
     newTransferId: () => transferId,
     validate: async () => emptyReview,
+    listOmissions: async (record, offset) => ({
+      paths: [],
+      offset,
+      total: 0,
+      nextOffset: null,
+      reviewDigest: record.workspaceReviewDigest ?? "",
+    }),
     prepare: async (record) => {
       expect(await persistence.load(origin)).toEqual(record);
       calls.push(`prepare:${record.transferId}`);
@@ -135,6 +142,95 @@ async function reviewedForm(ports: HandoffFormPorts) {
 }
 
 describe("handoff form recovery", () => {
+  it("pages exclusions without accumulating rows, keeps a failed page retryable and waits before preparation", async () => {
+    const { ports, calls } = fixture();
+    const paths = Array.from({ length: 103 }, (_, index) => `.env.${index}`);
+    ports.validate = async () => ({
+      ...emptyReview,
+      workspace: {
+        ...emptyReview.workspace,
+        omittedPaths: paths.slice(0, 50),
+        omittedPathCount: paths.length,
+      },
+    });
+    const release = deferred();
+    let fail = true;
+    ports.listOmissions = async (record, offset) => {
+      await release.promise;
+      if (offset === 100 && fail) throw new Error("Source disconnected");
+      return {
+        paths: paths.slice(offset, offset + 50),
+        offset,
+        total: paths.length,
+        nextOffset: offset + 50 < paths.length ? offset + 50 : null,
+        reviewDigest: record.workspaceReviewDigest ?? "",
+      };
+    };
+    const model = await reviewedForm(ports);
+    const pending = model.listOmissions(50);
+    expect(handoffFormActions(model.getState()).primary).toBeNull();
+    await model.prepare();
+    expect(calls).toEqual([]);
+    model.setContinuationMode("context");
+    release.resolve();
+    await pending;
+    expect(model.getState()).toMatchObject({
+      kind: "review",
+      record: { continuationMode: "context" },
+      omissions: { page: { paths: paths.slice(50, 100), offset: 50 }, run: { status: "idle" } },
+    });
+    await model.listOmissions(100);
+    expect(model.getState()).toMatchObject({
+      omissions: {
+        page: { offset: 50 },
+        run: { status: "error", offset: 100, message: "Source disconnected" },
+      },
+    });
+    fail = false;
+    await model.listOmissions(100);
+    expect(model.getState()).toMatchObject({
+      omissions: { page: { paths: paths.slice(100), nextOffset: null }, run: { status: "idle" } },
+    });
+    await model.listOmissions(0);
+    expect(model.getState()).toMatchObject({
+      omissions: { page: { paths: paths.slice(0, 50), offset: 0 } },
+    });
+    model.close();
+  });
+
+  it("discards a late omission page after leaving review and requires fresh review after exclusion changes", async () => {
+    const { ports, calls } = fixture();
+    const release = deferred();
+    ports.listOmissions = async (record, offset) => {
+      await release.promise;
+      return {
+        paths: [],
+        offset,
+        total: 0,
+        nextOffset: null,
+        reviewDigest: record.workspaceReviewDigest ?? "",
+      };
+    };
+    const model = await reviewedForm(ports);
+    const pending = model.listOmissions(0);
+    model.edit();
+    await model.review();
+    const fresh = model.getState();
+    release.resolve();
+    await pending;
+    expect(model.getState()).toBe(fresh);
+    ports.listOmissions = async () => {
+      throw new HandoffReviewChangedError("Review changed exclusions again");
+    };
+    await model.listOmissions(0);
+    expect(model.getState()).toMatchObject({
+      kind: "editing",
+      error: "Review changed exclusions again",
+    });
+    expect(calls).toEqual([]);
+    model.close();
+  });
+
   it("retains the reviewed workspace boundary across reopening and rejects a different saved approval", async () => {
     const { ports, persistence } = fixture();
     const model = await reviewedForm(ports);

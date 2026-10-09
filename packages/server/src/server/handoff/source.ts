@@ -28,7 +28,12 @@ import type { TerminalSession } from "../../terminal/terminal.js";
 import type { WorkspaceSetupRuntime } from "../workspace-setup-runtime.js";
 import type { HandoffArchiveStore } from "./archive.js";
 import { readBoundedFile, syncDirectory, writeJournal } from "./artifacts.js";
-import { captureWorkspace, verifyCapturedWorkspace, previewWorkspace } from "./workspace.js";
+import {
+  captureWorkspace,
+  verifyCapturedWorkspace,
+  previewWorkspace,
+  listWorkspaceOmissions,
+} from "./workspace.js";
 import { packHandoffArchive, readHandoffBundle } from "./bundle.js";
 import { writeHandoffHistory, readHandoffHistory, fetchHandoffHistory } from "./history.js";
 import type { AgentTimelineFetchOptions } from "../agent/agent-timeline-store-types.js";
@@ -172,6 +177,11 @@ export class HandoffSource {
         review,
       },
     };
+  }
+
+  async listOmissions(input: { workspaceId: string; reviewDigest: string; offset: number }) {
+    const inventory = await this.inventory(input.workspaceId);
+    return listWorkspaceOmissions({ ...input, cwd: inventory.cwd });
   }
 
   private conversationBlockReason(record: StoredAgentRecord) {

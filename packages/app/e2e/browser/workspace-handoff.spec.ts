@@ -30,6 +30,103 @@ function hasRecoveredLocalWork() {
 test.describe("workspace handoff", () => {
   test.skip(process.platform === "win32", "Ownership release requires POSIX directory durability");
 
+  for (const layout of ["desktop", "compact"] as const) {
+    test(`${layout} pages all exclusions and requires a fresh review when later exclusions change`, async ({
+      page,
+    }, testInfo) => {
+      test.setTimeout(120_000);
+      if (layout === "compact") await page.setViewportSize({ width: 390, height: 844 });
+      const host = await hosts(page);
+      try {
+        await writeFile(path.join(host.workspace.repoPath, ".gitignore"), ".env*\nignored/\n");
+        for (let index = 0; index < 103; index++)
+          await writeFile(
+            path.join(host.workspace.repoPath, `.env.${String(index).padStart(3, "0")}`),
+            "synthetic omitted data",
+          );
+        await mkdir(path.join(host.workspace.repoPath, "ignored"));
+        await writeFile(
+          path.join(host.workspace.repoPath, "ignored", "child.txt"),
+          "synthetic omitted child",
+        );
+        await openHandoff(page);
+        await page.getByTestId("handoff-host-trigger").click();
+        await page.getByTestId(`handoff-host-${host.destination.serverId}`).click();
+        await page.getByTestId("handoff-parent").fill(host.destinationParent);
+        await page.getByTestId("handoff-submit").click();
+        await expect(page.getByTestId("handoff-omissions-range")).toHaveText("1–50 / 104");
+        await expect(page.getByTestId("handoff-omissions-previous")).toBeDisabled();
+        await page.getByTestId("handoff-omissions-next").click();
+        await expect(page.getByTestId("handoff-omissions-range")).toHaveText("51–100 / 104");
+        await expect(page.getByTestId("handoff-omissions-review")).toContainText(".env.050");
+        await expect(page.getByTestId("handoff-omissions-review")).not.toContainText(".env.000");
+        await rename(
+          path.join(host.workspace.repoPath, ".env.102"),
+          path.join(host.workspace.repoPath, ".env.changed"),
+        );
+        await page.getByTestId("handoff-omissions-next").click();
+        await expect(page.getByTestId("handoff-error")).toHaveText(
+          "Workspace files or exclusions changed after review; review the transfer again",
+        );
+        expect(
+          (await host.sourceClient.handoffFindSource({ workspaceId: host.workspace.workspaceId }))
+            .result,
+        ).toBeNull();
+        expect(
+          (
+            await host.destinationClient.handoffListDestination({
+              sourceServerId: host.source.serverId,
+              sourceWorkspaceId: host.workspace.workspaceId,
+            })
+          ).result?.transfers,
+        ).toEqual([]);
+        await page.getByTestId("handoff-submit").click();
+        await expect(page.getByTestId("handoff-omissions-range")).toHaveText("1–50 / 104");
+        await page.getByTestId("handoff-omissions-next").click();
+        await expect(page.getByTestId("handoff-omissions-range")).toHaveText("51–100 / 104");
+        await page.getByTestId("handoff-omissions-next").click();
+        await expect(page.getByTestId("handoff-omissions-range")).toHaveText("101–104 / 104");
+        await expect(page.getByTestId("handoff-omissions-review")).toContainText(".env.changed");
+        await expect(page.getByTestId("handoff-omissions-review")).toContainText("ignored/");
+        await expect(
+          page.getByText("An excluded directory includes all its contents.", { exact: true }),
+        ).toBeVisible();
+        await expect(page.getByTestId("handoff-omissions-next")).toBeDisabled();
+        await page.getByTestId("handoff-omissions-range").scrollIntoViewIfNeeded();
+        await waitForSettledPosition(page.getByTestId("handoff-submit"));
+        await expect(page.getByTestId("handoff-omissions-previous")).toBeInViewport({ ratio: 1 });
+        await expect(page.getByTestId("handoff-submit")).toBeInViewport({ ratio: 1 });
+        await page.screenshot({ path: testInfo.outputPath(`handoff-omissions-${layout}.png`) });
+        await page.getByTestId("handoff-omissions-previous").click();
+        await expect(page.getByTestId("handoff-omissions-range")).toHaveText("51–100 / 104");
+        await page.getByTestId("handoff-submit").click();
+        await expect(page.getByTestId("handoff-submit")).toHaveText("Move workspace", {
+          timeout: 30_000,
+        });
+        const transferId = await savedTransfer(
+          page,
+          host.source.serverId,
+          host.workspace.workspaceId,
+        );
+        await page.getByTestId("handoff-submit").click();
+        await expect(page.getByTestId("handoff-submit")).toHaveText("Open destination", {
+          timeout: 30_000,
+        });
+        const status = await host.destinationClient.handoffGetDestinationStatus({ transferId });
+        if (!status.result) throw new Error("Missing transfer");
+        expect(status.result.state).toBe("active");
+        await expect(
+          readFile(path.join(status.result.destinationCwd, ".env.changed")),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(
+          readFile(path.join(status.result.destinationCwd, "ignored", "child.txt")),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        await host.close();
+      }
+    });
+  }
+
   for (const phase of ["reserved", "staged"] as const) {
     test(`recovers ${phase} cancellation without local state and finishes interrupted cleanup`, async ({
       page,

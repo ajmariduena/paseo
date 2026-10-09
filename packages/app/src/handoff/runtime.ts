@@ -8,6 +8,7 @@ import {
   activateWorkspaceHandoff,
   cancelWorkspaceHandoff,
   prepareWorkspaceHandoff,
+  HandoffReviewChangedError,
 } from "@getpaseo/client/internal/workspace-handoff";
 import { getHostRuntimeStore, isHostRuntimeConnected } from "@/runtime/host-runtime";
 import { HandoffFilesNotSavedError, type HandoffFormPorts } from "./form-model";
@@ -121,6 +122,20 @@ export const handoffFormPorts: HandoffFormPorts = {
     return record;
   },
   newTransferId: randomUUID,
+  async listOmissions(record, offset) {
+    const { source } = connections(record);
+    if (!record.workspaceReviewDigest) throw new Error(i18n.t("handoff.updateHosts"));
+    const response = await source.handoffListOmissions({
+      workspaceId: record.workspaceId,
+      reviewDigest: record.workspaceReviewDigest,
+      offset,
+    });
+    if (response.error?.code === "review_changed")
+      throw new HandoffReviewChangedError(response.error.message);
+    if (response.error) throw new Error(response.error.message);
+    if (!response.result) throw new Error("Excluded paths are unavailable");
+    return response.result;
+  },
   async validate(record) {
     const { source, destination } = connections(record);
     const inspection = await source.handoffPreviewSource({ workspaceId: record.workspaceId });

@@ -2847,6 +2847,22 @@ export class DaemonClient {
     });
   }
 
+  handoffListOmissions(
+    options: Omit<
+      Extract<SessionInboundMessage, { type: "workspace.handoff.list_omissions.request" }>,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.list_omissions.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.list_omissions.response">(
+      {
+        requestId,
+        message: { type: "workspace.handoff.list_omissions.request", ...input },
+        timeout: 30000,
+      },
+    );
+  }
+
   handoffPreviewSource(
     options: Omit<
       Extract<SessionInboundMessage, { type: "workspace.handoff.preview_source.request" }>,

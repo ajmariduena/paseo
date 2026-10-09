@@ -93,6 +93,29 @@ export const HandoffPreviewSourceRequestSchema = z.object({
   requestId: z.string(),
   workspaceId: z.string().min(1),
 });
+export const HandoffOmissionsPageSchema = z.object({
+  paths: z.array(z.string().max(4096)).max(50),
+  offset: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
+  nextOffset: z.number().int().nonnegative().nullable(),
+  reviewDigest: HandoffDigestSchema,
+});
+export type HandoffOmissionsPage = z.infer<typeof HandoffOmissionsPageSchema>;
+export const HandoffListOmissionsRequestSchema = z.object({
+  type: z.literal("workspace.handoff.list_omissions.request"),
+  requestId: z.string(),
+  workspaceId: z.string().min(1),
+  reviewDigest: HandoffDigestSchema,
+  offset: z.number().int().nonnegative(),
+});
+export const HandoffListOmissionsResponseSchema = z.object({
+  type: z.literal("workspace.handoff.list_omissions.response"),
+  payload: z.object({
+    requestId: z.string(),
+    result: HandoffOmissionsPageSchema.nullable(),
+    error: HandoffErrorSchema.nullable(),
+  }),
+});
 export const HandoffPreviewSourceResponseSchema = z.object({
   type: z.literal("workspace.handoff.preview_source.response"),
   payload: z.object({

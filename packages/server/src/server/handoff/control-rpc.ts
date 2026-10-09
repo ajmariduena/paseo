@@ -8,6 +8,7 @@ const responseTypes = {
   "workspace.handoff.list_destination.request": "workspace.handoff.list_destination.response",
   "workspace.handoff.find_source.request": "workspace.handoff.find_source.response",
   "workspace.handoff.preview_source.request": "workspace.handoff.preview_source.response",
+  "workspace.handoff.list_omissions.request": "workspace.handoff.list_omissions.response",
   "workspace.handoff.preview_destination.request": "workspace.handoff.preview_destination.response",
   "workspace.handoff.cancel_source.request": "workspace.handoff.cancel_source.response",
   "workspace.handoff.cancel_destination.request": "workspace.handoff.cancel_destination.response",
@@ -76,6 +77,11 @@ async function handle(services: Services, request: ControlRequest): Promise<Cont
         return {
           type: responseTypes[request.type],
           payload: { ...payload, result: source().findWorkspace(request.workspaceId) },
+        };
+      case "workspace.handoff.list_omissions.request":
+        return {
+          type: responseTypes[request.type],
+          payload: { ...payload, result: await source().listOmissions(request) },
         };
       case "workspace.handoff.preview_source.request":
         return {
@@ -165,6 +171,7 @@ export function dispatchHandoffControlMessage(
     case "workspace.handoff.get_conversation_history.request":
     case "workspace.handoff.list_destination.request":
     case "workspace.handoff.find_source.request":
+    case "workspace.handoff.list_omissions.request":
     case "workspace.handoff.preview_source.request":
     case "workspace.handoff.preview_destination.request":
     case "workspace.handoff.cancel_source.request":

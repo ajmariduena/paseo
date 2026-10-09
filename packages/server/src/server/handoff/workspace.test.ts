@@ -23,6 +23,7 @@ import {
   verifyCapturedWorkspace,
   WORKSPACE_SNAPSHOT_LIMITS,
   previewWorkspace,
+  listWorkspaceOmissions,
 } from "./workspace.js";
 import { HandoffArchiveStore } from "./archive.js";
 
@@ -64,6 +65,39 @@ beforeEach(async () => {
 afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
+
+test.each(["git", "directory"])(
+  "pages every reviewed exclusion for a %s workspace and rejects a changed review",
+  async (kind) => {
+    if (kind === "directory") await rm(path.join(source, ".git"), { recursive: true });
+    await writeFile(path.join(source, ".gitignore"), ".env*\nignored/\n");
+    const paths = Array.from(
+      { length: 103 },
+      (_, index) => `.env.${String(index).padStart(3, "0")}`,
+    );
+    for (const entry of paths) await writeFile(path.join(source, entry), "excluded bytes");
+    await mkdir(path.join(source, "ignored"));
+    await writeFile(path.join(source, "ignored", "nested.txt"), "excluded child");
+    paths.push("ignored/");
+    const preview = await previewWorkspace({ cwd: source, scratchParent: root });
+    expect(preview.omittedPaths).toEqual(paths.slice(0, 50));
+    const input = { cwd: source, scratchParent: root, reviewDigest: preview.reviewDigest };
+    const pages = [];
+    for (const offset of [0, 50, 100])
+      pages.push(await listWorkspaceOmissions({ ...input, offset }));
+    expect(pages.map((page) => page.nextOffset)).toEqual([50, 100, null]);
+    expect(pages.map((page) => page.total)).toEqual([104, 104, 104]);
+    expect(pages.flatMap((page) => page.paths)).toEqual(paths);
+    expect(await listWorkspaceOmissions({ ...input, offset: 50 })).toEqual(pages[1]);
+    await expect(listWorkspaceOmissions({ ...input, offset: 105 })).rejects.toMatchObject({
+      code: "invalid_artifact",
+    });
+    await rename(path.join(source, ".env.102"), path.join(source, ".env.103"));
+    await expect(listWorkspaceOmissions({ ...input, offset: 100 })).rejects.toMatchObject({
+      code: "review_changed",
+    });
+  },
+);
 
 test.each(["git", "directory"])(
   "binds the reviewed included and omitted paths before capturing a %s workspace",

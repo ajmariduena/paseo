@@ -248,7 +248,93 @@ function ReviewConversations({ state }: { state: Extract<HandoffFormState, { kin
   );
 }
 
-function ReviewWorkspace({ state }: { state: Extract<HandoffFormState, { kind: "review" }> }) {
+function ReviewOmissions({
+  state,
+  onPage,
+}: {
+  state: Extract<HandoffFormState, { kind: "review" }>;
+  onPage: (offset: number) => void;
+}) {
+  const { t } = useTranslation();
+  const { page, run } = state.omissions;
+  const busy = run.status === "loading";
+  const size = useIsCompactFormFactor() ? "md" : "sm";
+  const previous = useCallback(() => onPage(Math.max(0, page.offset - 50)), [onPage, page.offset]);
+  const next = useCallback(() => {
+    if (page.nextOffset !== null) onPage(page.nextOffset);
+  }, [onPage, page.nextOffset]);
+  const retry = useCallback(() => {
+    if (run.status === "error") onPage(run.offset);
+  }, [onPage, run]);
+  return (
+    <Field label={t("handoff.omittedPaths", { count: page.total })}>
+      <View style={styles.status}>
+        <View testID="handoff-omissions-review">
+          {page.total === 0 ? <Text style={styles.text}>{t("handoff.noOmissions")}</Text> : null}
+          {page.paths.map((entry) => (
+            <Text key={entry} selectable style={styles.path}>
+              {entry}
+            </Text>
+          ))}
+        </View>
+        {page.paths.some((entry) => entry.endsWith("/")) ? (
+          <Text style={styles.text}>{t("handoff.omittedDirectories")}</Text>
+        ) : null}
+        {page.total > 50 ? (
+          <>
+            <Text style={styles.text} testID="handoff-omissions-range">
+              {t("handoff.omissionRange", {
+                first: page.offset + 1,
+                last: page.offset + page.paths.length,
+                total: page.total,
+              })}
+            </Text>
+            <View style={styles.pagination}>
+              <Button
+                variant="ghost"
+                size={size}
+                disabled={busy || page.offset === 0}
+                loading={run.status === "loading" && run.offset < page.offset}
+                onPress={previous}
+                testID="handoff-omissions-previous"
+              >
+                {t("handoff.previousOmissions")}
+              </Button>
+              <Button
+                variant="ghost"
+                size={size}
+                disabled={busy || page.nextOffset === null}
+                loading={run.status === "loading" && run.offset > page.offset}
+                onPress={next}
+                testID="handoff-omissions-next"
+              >
+                {t("handoff.nextOmissions")}
+              </Button>
+            </View>
+          </>
+        ) : null}
+        {run.status === "error" ? (
+          <>
+            <Text style={styles.error} accessibilityRole="alert" testID="handoff-omissions-error">
+              {run.message}
+            </Text>
+            <Button variant="ghost" size={size} onPress={retry} testID="handoff-omissions-retry">
+              {t("common.actions.retry")}
+            </Button>
+          </>
+        ) : null}
+      </View>
+    </Field>
+  );
+}
+
+function ReviewWorkspace({
+  state,
+  onOmissionPage,
+}: {
+  state: Extract<HandoffFormState, { kind: "review" }>;
+  onOmissionPage: (offset: number) => void;
+}) {
   const { t } = useTranslation();
   const { workspace, stoppedWork, conversationBytes } = state.preview;
   const bytes = workspace.fileBytes + workspace.gitHistoryBytes + conversationBytes;
@@ -269,25 +355,7 @@ function ReviewWorkspace({ state }: { state: Extract<HandoffFormState, { kind: "
           <Text style={styles.text}>{t("handoff.estimateNotice")}</Text>
         </View>
       </Field>
-      <Field label={t("handoff.omittedPaths", { count: workspace.omittedPathCount })}>
-        <View style={styles.status} testID="handoff-omissions-review">
-          {workspace.omittedPathCount === 0 ? (
-            <Text style={styles.text}>{t("handoff.noOmissions")}</Text>
-          ) : null}
-          {workspace.omittedPaths.map((entry) => (
-            <Text key={entry} selectable style={styles.path}>
-              {entry}
-            </Text>
-          ))}
-          {workspace.omittedPathCount > workspace.omittedPaths.length ? (
-            <Text style={styles.text}>
-              {t("handoff.moreOmissions", {
-                count: workspace.omittedPathCount - workspace.omittedPaths.length,
-              })}
-            </Text>
-          ) : null}
-        </View>
-      </Field>
+      <ReviewOmissions state={state} onPage={onOmissionPage} />
       {state.preview.unsavedFiles.length > 0 ? (
         <Field label={t("handoff.unsavedFiles")}>
           <View style={styles.status} testID="handoff-unsaved-files">
@@ -461,7 +529,7 @@ function OpenHandoffSheet(props: Props) {
           {state.kind === "review" ? (
             <>
               <ReviewConversations state={state} />
-              <ReviewWorkspace state={state} />
+              <ReviewWorkspace state={state} onOmissionPage={model.listOmissions} />
             </>
           ) : null}
           <Text style={styles.text} testID="handoff-stop-notice">
@@ -490,6 +558,7 @@ const styles = StyleSheet.create((theme) => ({
   content: { gap: theme.spacing[4] },
   actions: { flex: 1, flexDirection: "row", gap: theme.spacing[3] },
   action: { flex: 1 },
+  pagination: { flexDirection: "row", gap: theme.spacing[3] },
   status: { gap: theme.spacing[2] },
   value: {
     fontSize: theme.fontSize.base,

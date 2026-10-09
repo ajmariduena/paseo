@@ -436,12 +436,13 @@ async function getWorkspaceState(
   }
 }
 
-/** Advisory live metadata. The stopped capture remains the authority for transferred bytes. */
-export async function previewWorkspace(input: {
+interface WorkspaceReviewInput {
   cwd: string;
   scratchParent?: string;
   limits?: WorkspaceSnapshotLimits;
-}) {
+}
+
+async function reviewWorkspace(input: WorkspaceReviewInput) {
   const cwd = await realpath(input.cwd);
   const limits = input.limits ?? WORKSPACE_SNAPSHOT_LIMITS;
   let omittedPaths: string[] = [];
@@ -455,6 +456,18 @@ export async function previewWorkspace(input: {
   );
   if (state.kind === "git") await validateGitCapture(cwd, state.paths);
   const { entries, ...files } = await previewWorkspaceFiles(cwd, state, limits);
+  return {
+    cwd,
+    state,
+    files,
+    omittedPaths,
+    reviewDigest: workspaceReviewDigest(cwd, state, entries, omittedPaths),
+  };
+}
+
+/** Advisory live metadata. The stopped capture remains the authority for transferred bytes. */
+export async function previewWorkspace(input: WorkspaceReviewInput) {
+  const { cwd, state, files, omittedPaths, reviewDigest } = await reviewWorkspace(input);
   let gitHistoryBytes = 0;
   if (state.kind === "git" && state.head) {
     const bytes = (await runGit(cwd, ["rev-list", "--disk-usage", "--objects", "HEAD"])).trim();
@@ -468,7 +481,26 @@ export async function previewWorkspace(input: {
     gitHistoryBytes,
     omittedPaths: omittedPaths.slice(0, 50),
     omittedPathCount: omittedPaths.length,
-    reviewDigest: workspaceReviewDigest(cwd, state, entries, omittedPaths),
+    reviewDigest,
+  };
+}
+
+export async function listWorkspaceOmissions(
+  input: WorkspaceReviewInput & { reviewDigest: string; offset: number },
+) {
+  const current = await reviewWorkspace(input);
+  assertWorkspaceReview(input.reviewDigest, current.reviewDigest);
+  const { omittedPaths } = current;
+  if (!Number.isSafeInteger(input.offset) || input.offset < 0 || input.offset > omittedPaths.length)
+    reject("invalid_artifact", "Invalid omission page offset");
+  const paths = omittedPaths.slice(input.offset, input.offset + 50);
+  const next = input.offset + paths.length;
+  return {
+    paths,
+    offset: input.offset,
+    total: omittedPaths.length,
+    nextOffset: next < omittedPaths.length ? next : null,
+    reviewDigest: current.reviewDigest,
   };
 }
 

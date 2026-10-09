@@ -185,6 +185,34 @@ describe("WS outbound zod-aot validation", () => {
     }
   });
 
+  it("validates bounded omission pages and their reviewed digest", () => {
+    const page = {
+      paths: [".env", "node_modules/"],
+      offset: 50,
+      total: 52,
+      nextOffset: null,
+      reviewDigest: "a".repeat(64),
+    };
+    const envelope = (result: unknown) => ({
+      type: "session",
+      message: {
+        type: "workspace.handoff.list_omissions.response",
+        payload: { requestId: "page", result, error: null },
+      },
+    });
+    expect(GeneratedWSOutboundMessageSchema.safeParse(envelope(page))).toEqual({
+      success: true,
+      data: envelope(page),
+    });
+    for (const invalid of [
+      { ...page, paths: Array(51).fill(".env") },
+      { ...page, offset: -1 },
+      { ...page, reviewDigest: "invalid" },
+      { ...page, nextOffset: 1.5 },
+    ])
+      expect(GeneratedWSOutboundMessageSchema.safeParse(envelope(invalid)).success).toBe(false);
+  });
+
   it("preserves transferred history and rejects malformed nested entries", () => {
     const epoch = "00000000-0000-4000-8000-000000000001";
     const entry = {
