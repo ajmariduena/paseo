@@ -4,7 +4,14 @@ import {
   type BottomSheetBackdropProps,
 } from "@gorhom/bottom-sheet";
 import React from "react";
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useLayoutEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+} from "react";
 import type { ElementRef, ReactNode } from "react";
 import { systemBackPress } from "./back-press";
 import {
@@ -127,6 +134,8 @@ export function useIsolatedBottomSheetVisibility({
       }),
     [],
   );
+  const presentation = useMemo(() => ({ enabled: isEnabled !== false }), [isEnabled]);
+  const activePresentation = useRef<typeof presentation | null>(null);
 
   const setSheetRef = useCallback(
     (instance: IsolatedBottomSheetModalRef | null) => {
@@ -136,15 +145,27 @@ export function useIsolatedBottomSheetVisibility({
   );
 
   const handleSheetChange = useCallback(
-    (index: number) => tracker.handleSheetIndexChange(index),
-    [tracker],
+    (index: number) => {
+      if (activePresentation.current === presentation) tracker.handleSheetIndexChange(index);
+    },
+    [presentation, tracker],
   );
 
-  const handleSheetDismiss = useCallback(() => tracker.handleSheetDismiss(), [tracker]);
+  const handleSheetDismiss = useCallback(() => {
+    if (activePresentation.current !== presentation || !presentation.enabled) return false;
+    tracker.handleSheetDismiss();
+    return true;
+  }, [presentation, tracker]);
 
-  useEffect(() => {
+  // Commit the presentation switch before Gorhom's passive portal teardown calls onDismiss.
+  // A retired presentation may finish closing after a newer sheet has already opened.
+  useLayoutEffect(() => {
+    activePresentation.current = presentation;
     tracker.syncDesired({ visible, isEnabled });
-  }, [isEnabled, tracker, visible]);
+    return () => {
+      activePresentation.current = null;
+    };
+  }, [isEnabled, presentation, tracker, visible]);
 
   return {
     sheetRef: setSheetRef,

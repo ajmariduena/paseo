@@ -391,6 +391,10 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   starting a terminal after review also requires re-review while both terminals remain running;
   exclusion pagination reaches entries beyond the first fifty on desktop and compact layouts,
   rejects a changed later entry before any host mutation, then completes after fresh review.
+  Both cases cross the compact/wide breakpoint four times with review open and retain its page
+  and prepare action. After staging, two more transitions retain the same transfer ID and move
+  action before activating the destination. Shared shell ownership follows
+  [mobile panels](../mobile-panels.md) and [sheet lifecycle](../floating-panels.md#gotcha-6--bottom-sheet-refs-are-not-lifecycle-truth).
   Page failures keep the current entries visible with Retry; late responses cannot replace a newer
   review. Preparation waits for an in-flight page request.
   Compact recovery deletes the local transfer record, reloads the same identity and context mode
@@ -434,6 +438,9 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   [exclusion pagination results](../qa-evidence/handoff-omissions.txt) with
   [desktop](../qa-evidence/handoff-omissions-desktop.png) and
   [compact](../qa-evidence/handoff-omissions-compact.png) screenshots,
+  [resize retention results](../qa-evidence/handoff-resize.txt) with
+  [desktop](../qa-evidence/handoff-resize-desktop.png) and
+  [compact](../qa-evidence/handoff-resize-compact.png) screenshots,
   [source ownership and UI results](../qa-evidence/handoff-source-state.txt),
   [source launch controls results](../qa-evidence/handoff-source-controls.txt),
   [source file, Git and script results](../qa-evidence/handoff-source-mutations.txt),
@@ -453,10 +460,8 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   concurrent windows and other connected clients' unsaved buffers and conversation draft transfer,
   complete source mutation affordances and native-platform evidence remain open. Integrations and
   resources outside the current provider-session/terminal/setup inventory still need review binding
-  and dispositions. Crossing the desktop/compact breakpoint remounts the app surface and loses
-  an open, unprepared review; the paginated review is tested by opening each layout independently.
-  Preserving in-progress review across that transition remains open. Final transfer size is not
-  shown separately.
+  and dispositions. Native rotation and wide-native Explorer dock transitions still need device
+  evidence. Final transfer size is not shown separately.
 - Source retirement/tombstones and automation dispositions remain unimplemented.
   The composite archive currently captures Claude conversations;
   other provider codecs remain open. Complete handoff is not advertised.

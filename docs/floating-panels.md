@@ -309,6 +309,12 @@ Do not treat `onChange(-1)` as a close by itself. In a stacked
 another pushed sheet. Close React state from `onDismiss`; use `onChange` only to
 track phase.
 
+Switching an adaptive sheet to its desktop presentation does not close the form. Commit that
+presentation change before Gorhom's passive portal teardown, release its Back listener, and
+ignore callbacks from the retired presentation. A closing portal can finish after the next
+compact sheet has already opened. Keep this lifecycle in `useIsolatedBottomSheetVisibility`;
+callers must not reconstruct their form to recover from a breakpoint change.
+
 All sheets use the app-wide Gorhom modal provider through `IsolatedBottomSheetModal`. This
 includes native centered dialogs: separate React Native Modals cannot present a root-owned
 sibling dialog over an existing iOS presenter.

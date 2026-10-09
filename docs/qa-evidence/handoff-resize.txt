@@ -1,0 +1,403 @@
+Handoff review retention across breakpoints — 2026-10-09
+
+Baseline: e09c21dac (complete paginated exclusion access).
+
+Scope: Linux Chromium, 1280x720 and 390x844, real isolated source/destination
+daemons and synthetic directory workspaces without conversations. The model
+regression uses the existing sheet controller and Back-press ports. No real
+provider continuation, physical MacBook/VPS transfer, Electron, native iOS/Android
+rotation, wide-native dock transition or released-version drift is claimed.
+The main daemon was not restarted.
+
+The initial browser regression lost the reviewed exclusion page on the first
+compact transition. AppContainer conditionally inserted gesture and Explorer
+hosts above the navigator. Those ancestors now stay mounted, with gestures and
+Explorer content enabled for their actual presentation. The Explorer host keeps
+the same route-content ancestry in overlay and dock layouts.
+
+A shell-only fix exposed the second failure when returning to desktop: Gorhom's
+retiring portal reported dismissal against the still-visible form. The tracker
+now resets presentation phase and releases Back while disabled. The adapter
+commits presentation ownership in a layout effect before passive portal teardown
+and drops callbacks from retired presentations, including delayed callbacks after
+re-enabling compact mode. AdaptiveModalSheet forwards only accepted dismissals.
+Ordinary user dismissal and reopening remain covered by the existing tracker suite.
+
+Each final handoff case starts in a different layout, reviews all 104 collapsed
+exclusions, refuses a changed review before host mutation, then retains the last
+review page and preparation action across four alternating breakpoint crossings.
+After preparation, two further crossings preserve the same transfer ID and move
+action. Both cases activate the destination and verify excluded files are absent.
+Assertions wait for one surviving presentation before measuring or interacting.
+They do not reopen the form or restore review from persisted intent.
+
+Screenshots inspected locally: handoff-resize-desktop.png and
+handoff-resize-compact.png. They show the retained exclusion page after the four
+review transitions, with pagination and the primary action fully in the viewport.
+
+Browser environment:
+FONTCONFIG_FILE=/tmp/handoff-browser-libs/fonts.conf
+LD_LIBRARY_PATH=/tmp/handoff-browser-libs/extracted/usr/lib/x86_64-linux-gnu
+PLAYWRIGHT_BROWSERS_PATH=/tmp/handoff-website-browsers
+PATH=/tmp/handoff-lsof/extracted/usr/bin:$PATH
+
+
+RED — baseline UI: npm run test:e2e --workspace=@getpaseo/app -- e2e/browser/workspace-handoff.spec.ts --grep "desktop pages all exclusions"
+
+
+> @getpaseo/app@0.11.0-beta.36 test:e2e
+> playwright test --project=browser e2e/browser/workspace-handoff.spec.ts --grep desktop pages all exclusions
+
+[metro] Starting project at /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+[metro] Using src/app as the root directory for Expo Router.
+[metro] Experimental Expo Autolinking module resolver is enabled.
+[metro] React Compiler enabled
+[metro] Starting Metro Bundler
+[metro] Waiting on http://localhost:41749
+[metro] Logs for your project will appear below.
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web packages/app/index.ts ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.9% (5630/5630)
+[metro] Web Bundled 3899ms packages/app/index.ts (5630 modules)
+[e2e] Metro warmed on port 41749
+
+Running 1 test using 1 worker
+
+(node:554638) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:554638) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[e2e] Worker 0 daemon started on port 46443, home: /tmp/paseo-e2e-worker-0-V8qCQC
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 361ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 103ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro] Web Bundled 318ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 8ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 240ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 10ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 239ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 10ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[e2e] Worker 0 daemon stopped
+  ✘  1 [browser] › e2e/browser/workspace-handoff.spec.ts:34:9 › workspace handoff › desktop pages all exclusions and requires a fresh review when later exclusions change (40.4s)
+[e2e] Metro stopped
+
+
+  1) [browser] › e2e/browser/workspace-handoff.spec.ts:34:9 › workspace handoff › desktop pages all exclusions and requires a fresh review when later exclusions change
+
+    Error: [2mexpect([22m[31mlocator[39m[2m).[22mtoHaveText[2m([22m[32mexpected[39m[2m)[22m failed
+
+    Locator: getByTestId('handoff-omissions-range')
+    Expected: [32m"101–104 / 104"[39m
+    Timeout: 10000ms
+    Error: element(s) not found
+
+    Call log:
+    [2m  - Expect "toHaveText" with timeout 10000ms[22m
+    [2m  - waiting for getByTestId('handoff-omissions-range')[22m
+
+
+       97 |           : [1280, 390, 1280, 390]) {
+       98 |           await page.setViewportSize({ width, height: width === 390 ? 844 : 720 });
+    >  99 |           await expect(page.getByTestId("handoff-omissions-range")).toHaveText("101–104 / 104");
+          |                                                                     ^
+      100 |           await expect(page.getByTestId("handoff-submit")).toHaveText("Prepare transfer");
+      101 |         }
+      102 |         await page.getByTestId("handoff-omissions-range").scrollIntoViewIfNeeded();
+        at /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app/e2e/browser/workspace-handoff.spec.ts:99:69
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    test-results/workspace-handoff-workspac-14702-hen-later-exclusions-change-browser/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #2: browser-console (text/plain) ────────────────────────────────────────────────────
+    [console:info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+    [console:log] Running application "main" with appParams:
+     {rootTag: #root, hydrate: undefined}
+    Development-level warnings: ON.
+    Performance optimizations: OFF.
+    [co...
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #3: video (video/webm) ──────────────────────────────────────────────────────────────
+    test-results/workspace-handoff-workspac-14702-hen-later-exclusions-change-browser/video.webm
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: test-results/workspace-handoff-workspac-14702-hen-later-exclusions-change-browser/error-context.md
+
+    attachment #5: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results/workspace-handoff-workspac-14702-hen-later-exclusions-change-browser/trace.zip
+    Usage:
+
+        npx playwright show-trace test-results/workspace-handoff-workspac-14702-hen-later-exclusions-change-browser/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  1 failed
+    [browser] › e2e/browser/workspace-handoff.spec.ts:34:9 › workspace handoff › desktop pages all exclusions and requires a fresh review when later exclusions change
+npm error Lifecycle script `test:e2e` failed with error:
+npm error code 1
+npm error path /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+npm error workspace @getpaseo/app@0.11.0-beta.36
+npm error location /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+npm error command failed
+npm error command sh -c playwright test --project=browser e2e/browser/workspace-handoff.spec.ts --grep 'desktop pages all exclusions'
+
+RED — tracker: npx vitest run src/components/ui/isolated-bottom-sheet-modal/visibility-tracker.test.ts --bail=1 (cwd packages/app)
+
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+
+ ❯ |unit| src/components/ui/isolated-bottom-sheet-modal/visibility-tracker.test.ts (15 tests | 1 failed) 13ms
+     × keeps visibility intent when switching away from a sheet and presents the next controller 6ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |unit| src/components/ui/isolated-bottom-sheet-modal/visibility-tracker.test.ts > bottom sheet visibility tracker > keeps visibility intent when switching away from a sheet and presents the next controller
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ src/components/ui/isolated-bottom-sheet-modal/visibility-tracker.test.ts:112:39
+    110|     openSheet(context);
+    111|     context.tracker.syncDesired({ visible: true, isEnabled: false });
+    112|     expect(context.backPress.press()).toBe(false);
+       |                                       ^
+    113|     context.tracker.attachController(null);
+    114|     context.tracker.handleSheetDismiss();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 3 passed (15)
+   Start at  22:15:35
+   Duration  278ms (transform 102ms, setup 72ms, import 60ms, tests 13ms, environment 0ms)
+
+
+PASS — tracker: same focused Vitest command
+
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+
+
+ Test Files  1 passed (1)
+      Tests  15 passed (15)
+   Start at  22:16:19
+   Duration  428ms (transform 133ms, setup 115ms, import 59ms, tests 21ms, environment 0ms)
+
+
+PASS — handoff UI: npm run test:e2e --workspace=@getpaseo/app -- e2e/browser/workspace-handoff.spec.ts --grep "pages all exclusions"
+
+
+> @getpaseo/app@0.11.0-beta.36 test:e2e
+> playwright test --project=browser e2e/browser/workspace-handoff.spec.ts --grep pages all exclusions
+
+[metro] Starting project at /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+[metro] Using src/app as the root directory for Expo Router.
+[metro] Experimental Expo Autolinking module resolver is enabled.
+[metro] React Compiler enabled
+[metro] Starting Metro Bundler
+[metro] Waiting on http://localhost:36635
+[metro] Logs for your project will appear below.
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] | (node:561939) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[metro] | (Use `node --trace-warnings ...` to show where the warning was created)
+[metro] Web packages/app/index.ts ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 96.1% (5296/5466)
+[metro] Web Bundled 5408ms packages/app/index.ts (5630 modules)
+[e2e] Metro warmed on port 36635
+
+Running 2 tests using 1 worker
+
+(node:562080) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:562080) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[e2e] Worker 0 daemon started on port 44931, home: /tmp/paseo-e2e-worker-0-v7tZ1B
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 351ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 101ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro] Web Bundled 304ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 7ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 228ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 10ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 230ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 12ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+  ✓  1 [browser] › e2e/browser/workspace-handoff.spec.ts:34:9 › workspace handoff › desktop pages all exclusions and requires a fresh review when later exclusions change (34.9s)
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 353ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 14ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 228ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 15ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 302ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 10ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 226ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 21ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+  ✓  2 [browser] › e2e/browser/workspace-handoff.spec.ts:34:9 › workspace handoff › compact pages all exclusions and requires a fresh review when later exclusions change (41.8s)
+[e2e] Worker 0 daemon stopped
+[e2e] Metro stopped
+
+  2 passed (1.9m)
+
+PASS — npm run typecheck
+
+
+> paseo@0.11.1 typecheck
+> npm run typecheck --workspaces --if-present
+
+
+> @getpaseo/builtin-plugins@0.11.1 typecheck
+> tsgo -p tsconfig.json --noEmit
+
+
+> @getpaseo/expo-two-way-audio@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/highlight@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/plugin@0.11.1 typecheck
+> tsgo --noEmit && tsgo -p tsconfig.examples.json --noEmit
+
+
+> @getpaseo/protocol@0.11.1 pretypecheck
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/client@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/server@0.11.1 typecheck
+> tsgo -p tsconfig.server.typecheck.json --noEmit
+
+
+> @getpaseo/app@0.11.0-beta.36 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/relay@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/website@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/desktop@0.11.1 typecheck
+> tsgo --noEmit -p tsconfig.json
+
+
+> @getpaseo/cli@0.11.1 typecheck
+> tsgo --noEmit
+
+
+PASS — npm run lint
+
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 4.1s on 5027 files with 177 rules using 4 threads.
+
+PASS — shared browser surfaces on the final implementation
+Command: npm run test:e2e --workspace=@getpaseo/app -- e2e/browser/explorer-sidebar.spec.ts e2e/browser/bottom-sheet-reopen.spec.ts e2e/browser/usage-sidebar-item.spec.ts --grep 'starts with Files and Changes|sheets reopen|both compact footer entry points'
+Environment: the same Chromium environment listed above.
+
+Explorer switches Files/Changes and closes without changing the main pane.
+The existing sheet case closes and reopens the compact sheet and restores a
+searched model to its quick card. Usage opens from both compact footer entry
+points, closes via the backdrop and reopens, exercising its onDismiss-driven
+owner cleanup. Usage report data uses that existing suite's fixture; the
+handoff cases above use real source/destination daemons.
+
+
+> @getpaseo/app@0.11.0-beta.36 test:e2e
+> playwright test --project=browser e2e/browser/explorer-sidebar.spec.ts e2e/browser/bottom-sheet-reopen.spec.ts e2e/browser/usage-sidebar-item.spec.ts --grep starts with Files and Changes|sheets reopen|both compact footer entry points
+
+[metro] Starting project at /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+[metro] Using src/app as the root directory for Expo Router.
+[metro] Experimental Expo Autolinking module resolver is enabled.
+[metro] React Compiler enabled
+[metro] Starting Metro Bundler
+[metro] Waiting on http://localhost:34029
+[metro] Logs for your project will appear below.
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web packages/app/index.ts ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.9% (5630/5630)
+[metro] Web Bundled 4163ms packages/app/index.ts (5630 modules)
+[e2e] Metro warmed on port 34029
+
+Running 3 tests using 1 worker
+
+(node:563550) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:563550) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[e2e] Worker 0 daemon started on port 42255, home: /tmp/paseo-e2e-worker-0-fh0ZYo
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 322ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 65ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+  ✓  1 [browser] › e2e/browser/bottom-sheet-reopen.spec.ts:114:7 › mobile bottom sheet reopen › sheets reopen and a searched model returns to the quick card (21.4s)
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 235ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 17ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+  ✓  2 [browser] › e2e/browser/explorer-sidebar.spec.ts:38:7 › Explorer sidebar › starts with Files and Changes, switches views, and toggles without changing main (8.4s)
+[metro] Web Bundled 321ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 8ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+  ✓  3 [browser] › e2e/browser/usage-sidebar-item.spec.ts:74:7 › Usage item › both compact footer entry points open Usage as a sheet (14.0s)
+[e2e] Worker 0 daemon stopped
+[e2e] Metro stopped
+
+  3 passed (1.1m)
+
+PASS — npm run format
+
+
+> paseo@0.11.1 format
+> oxfmt .
+
+Finished in 3592ms on 5372 files using 4 threads.

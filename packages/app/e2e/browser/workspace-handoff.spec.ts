@@ -92,8 +92,16 @@ test.describe("workspace handoff", () => {
           page.getByText("An excluded directory includes all its contents.", { exact: true }),
         ).toBeVisible();
         await expect(page.getByTestId("handoff-omissions-next")).toBeDisabled();
-        await page.getByTestId("handoff-omissions-range").scrollIntoViewIfNeeded();
+        for (const width of layout === "desktop"
+          ? [390, 1280, 390, 1280]
+          : [1280, 390, 1280, 390]) {
+          await page.setViewportSize({ width, height: width === 390 ? 844 : 720 });
+          await expect(page.getByTestId("handoff-submit")).toHaveCount(1);
+          await expect(page.getByTestId("handoff-omissions-range")).toHaveText("101–104 / 104");
+          await expect(page.getByTestId("handoff-submit")).toHaveText("Prepare transfer");
+        }
         await waitForSettledPosition(page.getByTestId("handoff-submit"));
+        await page.getByTestId("handoff-omissions-previous").scrollIntoViewIfNeeded();
         await expect(page.getByTestId("handoff-omissions-previous")).toBeInViewport({ ratio: 1 });
         await expect(page.getByTestId("handoff-submit")).toBeInViewport({ ratio: 1 });
         await page.screenshot({ path: testInfo.outputPath(`handoff-omissions-${layout}.png`) });
@@ -108,6 +116,14 @@ test.describe("workspace handoff", () => {
           host.source.serverId,
           host.workspace.workspaceId,
         );
+        for (const width of layout === "desktop" ? [390, 1280] : [1280, 390]) {
+          await page.setViewportSize({ width, height: width === 390 ? 844 : 720 });
+          await expect(page.getByTestId("handoff-submit")).toHaveCount(1);
+          await expect(page.getByTestId("handoff-submit")).toHaveText("Move workspace");
+          expect(await savedTransfer(page, host.source.serverId, host.workspace.workspaceId)).toBe(
+            transferId,
+          );
+        }
         await page.getByTestId("handoff-submit").click();
         await expect(page.getByTestId("handoff-submit")).toHaveText("Open destination", {
           timeout: 30_000,
@@ -121,6 +137,9 @@ test.describe("workspace handoff", () => {
         await expect(
           readFile(path.join(status.result.destinationCwd, "ignored", "child.txt")),
         ).rejects.toMatchObject({ code: "ENOENT" });
+      } catch (error) {
+        await page.screenshot({ path: testInfo.outputPath("handoff-resize-failure.png") });
+        throw error;
       } finally {
         await host.close();
       }
