@@ -1726,6 +1726,116 @@ test("pausing between chunks keeps verified source data and resumes only missing
 
 for (const continuationMode of ["native", "context"] as const) {
   test.skipIf(process.platform === "win32")(
+    `keeps ${continuationMode} handoff fenced until prompt annotation history is saved and unchanged`,
+    async () => {
+      let source = await startHost("source", true);
+      let destination = await startHost("destination", true);
+      const cwd = path.join(root, "annotation-workspace");
+      await mkdir(cwd);
+      const created = await source.client.createWorkspace({
+        source: { kind: "directory", path: cwd },
+      });
+      if (!created.workspace) throw new Error("Missing source workspace");
+      const workspaceId = created.workspace.id;
+      const agentId = randomUUID();
+      const sessionId = randomUUID();
+      const project = claudeProjectDirSync(cwd, { configDir: path.join(root, "source", "claude") });
+      await mkdir(project, { recursive: true });
+      await writeFile(
+        path.join(project, `${sessionId}.jsonl`),
+        JSON.stringify({
+          type: "user",
+          uuid: randomUUID(),
+          sessionId,
+          message: { role: "user", content: "A background task finished" },
+        }) + "\n",
+      );
+      const timestamp = new Date().toISOString();
+      await source.daemon.daemon.agentStorage.upsert(
+        parseStoredAgentRecord({
+          id: agentId,
+          provider: "claude",
+          cwd,
+          workspaceId,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          lastStatus: "closed",
+          persistence: { provider: "claude", sessionId },
+        }),
+      );
+      await source.daemon.daemon.agentManager.annotatePrompt(agentId, {
+        messageId: "wake-1",
+        prompt: "A background task finished",
+        annotation: { kind: "notification", level: "info", message: "Original notification" },
+      });
+      const annotationPath = path.join(
+        source.daemon.paseoHome,
+        "prompt-annotations",
+        `${agentId}.json`,
+      );
+      const original = await readFile(annotationPath, "utf8");
+      await writeFile(annotationPath, JSON.stringify({ version: 1, entries: {} }));
+      const transferId = randomUUID();
+      const request = { transferId, workspaceId, destinationParent: root, continuationMode };
+      await expect(
+        prepareWorkspaceHandoff({
+          ...request,
+          source: source.client,
+          destination: destination.client,
+        }),
+      ).rejects.toThrow("Prompt annotation history is invalid");
+      expect(
+        (await source.client.handoffGetSourceStatus({ transferId })).result?.source.state,
+      ).toBe("preparing");
+      await expect(
+        source.daemon.daemon.handoffOwnership.withMutation({ cwd }, async () => {}),
+      ).rejects.toMatchObject({ code: "fenced" });
+      await writeFile(annotationPath, original);
+      const staged = await prepareWorkspaceHandoff({
+        ...request,
+        source: source.client,
+        destination: destination.client,
+      });
+      expect(staged.state).toBe("staged");
+      await stopHost(source);
+      await stopHost(destination);
+      const changed = JSON.parse(original);
+      changed.entries[0].annotation.message = "Changed notification";
+      await writeFile(annotationPath, JSON.stringify(changed));
+      source = await startHost("source", true);
+      destination = await startHost("destination", true);
+      expect((await source.client.handoffReleaseSource({ transferId })).error?.code).toBe(
+        "source_changed",
+      );
+      expect(
+        (await source.client.handoffGetSourceStatus({ transferId })).result?.source.state,
+      ).toBe("ready");
+      await writeFile(annotationPath, original);
+      const active = await activateWorkspaceHandoff({
+        transferId,
+        sourceServerId: source.daemon.daemon.getServerId(),
+        getSource: () => source.client,
+        destination: destination.client,
+      });
+      expect(active.state).toBe("active");
+      const history = await destination.client.handoffGetConversationHistory({
+        agentId: active.agentMappings[0].destinationAgentId,
+      });
+      expect(history.error).toBeNull();
+      expect(history.result?.mode).toBe(continuationMode);
+      expect(history.result?.timeline.entries.map((entry) => entry.item)).toEqual([
+        {
+          type: "notification",
+          level: "info",
+          message: "Original notification",
+          messageId: "wake-1",
+        },
+      ]);
+    },
+    30_000,
+  );
+
+  test.skipIf(process.platform === "win32")(
     `reviews omitted conversation MCP connections before ${continuationMode} handoff and retains approval through restart`,
     async () => {
       let source = await startHost("source", true);

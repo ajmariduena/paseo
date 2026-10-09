@@ -657,6 +657,11 @@ Written by a graceful shutdown before agents close, because closing persists eve
 
 The timeline is rebuilt from provider history on load, and provider history keeps only the prompt text. When the daemon sends a prompt the user didn't write, it records the prompt's `messageId`, a SHA-256 of its text, and how to show it: a wake or permission notification becomes a `notification` row with its `source`, and a prompt another agent sent through its Paseo tools keeps its `origin`. Replayed user messages match entries by text hash, each entry once, in send order. A replayed `<paseo-system>` envelope without an entry has no timeline row. The newest 500 entries per agent are kept, and the file is deleted with the agent's state. Schema: `packages/server/src/server/agent/prompt-annotations.ts`.
 
+Await the annotation write before dispatching its prompt. A retry may acknowledge only a committed
+entry; caching an attempted write can otherwise send a prompt whose provenance disappears on
+restart. Handoff has a stricter read contract than ordinary timeline loading; see the
+[handoff plan](refactors/cross-host-handoff-plan.md#current-evidence-and-integration-gaps).
+
 ---
 
 ## Inline visual storage

@@ -12874,6 +12874,41 @@ test("user_message events wrapping a paseo-system envelope are not restored duri
   expect(userMessages[0].text).toBe("real user message");
 });
 
+test.each(["fresh", "cached"])(
+  "handoff history refuses damaged prompt annotations from a %s store",
+  async (state) => {
+    const directory = mkdtempSync(join(tmpdir(), "handoff-annotations-"));
+    const agentId = randomUUID();
+    const annotations = new PromptAnnotationStore(directory);
+    try {
+      await annotations.remember(agentId, {
+        messageId: "wake-1",
+        text: "wake",
+        annotation: { kind: "notification", level: "info", message: "Finished" },
+      });
+      writeFileSync(
+        join(directory, `${agentId}.json`),
+        JSON.stringify({ version: 1, entries: {} }),
+      );
+      const manager = new AgentManager({
+        clients: {},
+        logger,
+        promptAnnotations: state === "cached" ? annotations : new PromptAnnotationStore(directory),
+      });
+      await expect(
+        manager.projectHistoryForHandoff(
+          agentId,
+          [{ type: "timeline", provider: "claude", item: { type: "user_message", text: "wake" } }],
+          "2026-10-09T10:00:00.000Z",
+        ),
+      ).rejects.toThrow("Prompt annotation history is invalid");
+      manager.prepareForShutdown();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  },
+);
+
 test("handoff history preserves notification presentation without loading an agent", async () => {
   const agentId = randomUUID();
   const wake = formatSystemNotificationPrompt("A background task finished.");

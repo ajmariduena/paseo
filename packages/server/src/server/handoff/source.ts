@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, realpath, rm } from "node:fs/promises";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type { Logger } from "pino";
 import { z } from "zod";
 import { HandoffArchiveManifestSchema, HandoffTransferIdSchema } from "@getpaseo/protocol/handoff";
@@ -37,7 +38,12 @@ import {
   listWorkspaceOmissions,
 } from "./workspace.js";
 import { packHandoffArchive, readHandoffBundle } from "./bundle.js";
-import { writeHandoffHistory, readHandoffHistory, fetchHandoffHistory } from "./history.js";
+import {
+  writeHandoffHistory,
+  readHandoffHistory,
+  fetchHandoffHistory,
+  HandoffHistorySchema,
+} from "./history.js";
 import type { AgentTimelineFetchOptions } from "../agent/agent-timeline-store-types.js";
 import {
   handoffPathsOverlap,
@@ -601,6 +607,7 @@ export class HandoffSource {
       source.integrationReview,
       await this.options.agents.listByWorkspaceForHandoff(source.workspaceId),
     );
+    const records = new Map<string, StoredAgentRecord>();
     for (const id of source.agentIds) {
       if (this.options.agentManager.getAgent(id))
         refuse("stop_uncertain", "Source provider runtime is still loaded");
@@ -612,6 +619,7 @@ export class HandoffSource {
         record.persistence?.sessionId !== captured?.sessionId
       )
         refuse("source_changed", "Source conversation changed after capture");
+      records.set(id, record);
     }
     const directory = this.captureDirectory(source.id);
     await verifyCapturedWorkspace({
@@ -621,9 +629,30 @@ export class HandoffSource {
     });
     for (const [index, agent] of prepared.agents.entries()) {
       if (!prepared.runtime) refuse("invalid_source", "Source provider configuration is missing");
+      const record = records.get(agent.id);
+      if (!record) refuse("source_changed", "Captured conversation is missing from the source");
+      const artifactDirectory = path.join(directory, `conversation-${index}`);
       await verifyCapturedClaudeSession(
-        this.captureInput(agent, prepared.runtime, path.join(directory, `conversation-${index}`)),
+        this.captureInput(agent, prepared.runtime, artifactDirectory),
       );
+      const history = await readHandoffHistory(
+        path.join(directory, `history-${index}.json`),
+        agent.id,
+      );
+      const events = await readCapturedClaudeHistory({
+        artifactDirectory,
+        cwd: agent.cwd,
+        logger: this.options.logger,
+      });
+      const rows = await this.options.agentManager.projectHistoryForHandoff(
+        agent.id,
+        events,
+        record.createdAt,
+      );
+      const projected = HandoffHistorySchema.parse({ ...history, rows });
+      // Compare the persisted representation; optional undefined fields are absent from JSON.
+      if (!isDeepStrictEqual(history, JSON.parse(JSON.stringify(projected))))
+        refuse("source_changed", "Source conversation history presentation changed after capture");
     }
     await this.options.archives.withVerifiedArchive(source.id, async (archive) => {
       if (archive.manifest.entrypoint.sha256 !== prepared.manifest.entrypoint.sha256)

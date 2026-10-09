@@ -1429,7 +1429,7 @@ export class AgentManager {
     history: AgentStreamEvent[],
     fallbackTimestamp: string,
   ): Promise<AgentTimelineRow[]> {
-    const annotations = await this.promptAnnotations.historyMatcher(agentId);
+    const annotations = await this.promptAnnotations.historyMatcherForHandoff(agentId);
     const rows: AgentTimelineRow[] = [];
     for (const rawEvent of history) {
       const event = limitAgentStreamEventContent(rawEvent);

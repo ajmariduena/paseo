@@ -1,0 +1,338 @@
+Prompt annotation persistence and handoff history validation
+Date: 2026-10-09
+Baseline: 78d8fbf0a (plan-machine-handoff-macbook-vps)
+Platform: Linux; real temporary files, isolated daemon homes and WebSocket clients.
+
+Regressions
+- With the annotation directory blocked by a regular file, two concurrent requests for the same
+  message returned rejected/fulfilled. The duplicate incorrectly treated a cache entry as a
+  successful write. Both now reject; after repairing storage, retry persists exactly one entry.
+- An ordinary permissive read cached damaged metadata as empty, allowing the next prompt to
+  overwrite it. New writes now refuse the damaged file and can retry after repair without losing
+  earlier entries.
+- Handoff projection accepted structurally damaged annotation metadata or reused a stale cached
+  copy. Fresh and previously loaded stores now refuse it instead of losing message presentation.
+- After both daemons restarted, source release accepted a valid but changed notification record
+  even though destination staging held the earlier presentation. Release now returns source_changed
+  and keeps the source ready/fenced until the original metadata is restored or the transfer cancelled.
+
+Evidence
+- Ten annotation-store cases cover ordinary replay, failed duplicate writes/retry, per-agent
+  ordering, capture after queued writes, deletion followed by a new prompt, missing committed files,
+  duplicate IDs, malformed hashes, entry count, byte limits, repair retry and preservation of
+  damaged files when ordinary replay tolerated their missing presentation.
+- Six focused manager cases cover strict handoff reads and the existing notification/sender presentation
+  across daemon-style reconstruction. They use the existing in-process test provider, no external API.
+- Two network cases cover native and context choices with synthetic Claude transcripts and the
+  existing version-only executable. Invalid metadata blocks preparation with the source fenced;
+  repair permits staging. After both hosts restart, changed presentation blocks release. Restoring
+  the original permits activation and destination history exposes the original notification.
+- Final typecheck, lint and formatting output follows. Only the affected suites/cases were run;
+  no full local suite, main-daemon restart, provider authentication or external message delivery.
+
+Limits
+- The network conversations start closed. These cases prove persistence/reconstruction and
+  transaction behavior, not real provider shutdown or continuation, UI rendering or physical hosts.
+- This does not add a universal error barrier for background session events or optional durable
+  timeline stores. Their failure propagation and recovery remain in the acceptance plan, as do
+  launch-time process/configuration ownership and source retirement.
+- An atomic annotation write is not a new power-loss durability guarantee for ordinary message
+  dispatch. The handoff copies validated presentation into its existing durable archive before ready.
+- Existing retention keeps the latest 500 annotation entries; this does not recover already-pruned
+  provenance. Source metadata is rechecked before release; later external source edits do not sync.
+- Complete handoff remains unadvertised, PR #30 is a draft, and MacBook/VPS and platform gates remain.
+
+Raw output
+
+
+$ Expected failure: duplicate annotation acknowledgement
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/prompt-annotations.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: 🔐 encrypt with Dotenvx: https://dotenvx.com
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: 🛡️ auth for agents: https://vestauth.com
+
+ ❯ src/server/agent/prompt-annotations.test.ts (3 tests | 1 failed | 2 skipped) 11ms
+   × duplicate prompts do not acknowledge a failed annotation write and can retry 9ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/prompt-annotations.test.ts > duplicate prompts do not acknowledge a failed annotation write and can retry
+AssertionError: expected [ 'rejected', 'fulfilled' ] to deeply equal [ 'rejected', 'rejected' ]
+
+- Expected
++ Received
+
+  [
+    "rejected",
+-   "rejected",
++   "fulfilled",
+  ]
+
+ ❯ src/server/agent/prompt-annotations.test.ts:24:55
+     22|       store.remember("agent-1", prompt),
+     23|     ]);
+     24|     expect(attempts.map((attempt) => attempt.status)).toEqual(["reject…
+       |                                                       ^
+     25|     expect(store.forMessage("agent-1", "m1")).toBe(null);
+     26|     rmSync(dir);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 2 skipped (3)
+   Start at  23:35:33
+   Duration  851ms (transform 438ms, setup 43ms, import 683ms, tests 11ms, environment 0ms)
+
+
+
+$ Expected failure: permissive handoff history projection
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/agent-manager.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: 🔐 prevent committing .env to code: https://dotenvx.com/precommit
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  suppress all logs with { quiet: true }
+
+ ❯ src/server/agent/agent-manager.test.ts (258 tests | 1 failed | 256 skipped) 28ms
+   × handoff history refuses damaged prompt annotations from a fresh store 26ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/agent-manager.test.ts > handoff history refuses damaged prompt annotations from a fresh store
+AssertionError: promise resolved "[ { seq: 1, …(2) } ]" instead of rejecting
+
+- Expected:
+Error {
+  "message": "rejected promise",
+}
+
++ Received:
+[
+  {
+    "item": {
+      "text": "wake",
+      "type": "user_message",
+    },
+    "seq": 1,
+    "timestamp": "2026-10-09T10:00:00.000Z",
+  },
+]
+
+ ❯ src/server/agent/agent-manager.test.ts:12901:7
+    12899|           "2026-10-09T10:00:00.000Z",
+    12900|         ),
+    12901|       ).rejects.toThrow("Prompt annotation history is invalid");
+       |       ^
+    12902|       manager.prepareForShutdown();
+    12903|     } finally {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 256 skipped (258)
+   Start at  23:37:02
+   Duration  1.71s (transform 1.10s, setup 49ms, import 1.48s, tests 28ms, environment 0ms)
+
+
+
+$ Expected failure: source release after changed presentation and restart
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/handoff/archive.e2e.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: 🛡️ auth for agents: https://vestauth.com
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚡️ secrets for agents: https://dotenvx.com/as2
+
+ ❯ src/server/handoff/archive.e2e.test.ts (27 tests | 1 failed | 26 skipped) 1350ms
+   × keeps native handoff fenced until prompt annotation history is saved and unchanged 1347ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/handoff/archive.e2e.test.ts > keeps native handoff fenced until prompt annotation history is saved and unchanged
+AssertionError: expected undefined to be 'source_changed' // Object.is equality
+
+- Expected:
+"source_changed"
+
++ Received:
+undefined
+
+ ❯ src/server/handoff/archive.e2e.test.ts:1807:86
+    1805|       source = await startHost("source", true);
+    1806|       destination = await startHost("destination", true);
+    1807|       expect((await source.client.handoffReleaseSource({ transferId })…
+       |                                                                                      ^
+    1808|         "source_changed",
+    1809|       );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 26 skipped (27)
+   Start at  23:39:39
+   Duration  12.61s (transform 8.97s, setup 45ms, import 11.09s, tests 1.35s, environment 0ms)
+
+
+
+$ Expected failure: ordinary history permits overwriting damaged metadata
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/prompt-annotations.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  enable debug logging with { debug: true }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: 🤖 agentic secret storage: https://dotenvx.com/as2
+
+ ❯ src/server/agent/prompt-annotations.test.ts (10 tests | 1 failed | 9 skipped) 23ms
+   × ordinary history cannot turn damaged annotation metadata into a successful overwrite 20ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/prompt-annotations.test.ts > ordinary history cannot turn damaged annotation metadata into a successful overwrite
+AssertionError: promise resolved "undefined" instead of rejecting
+
+- Expected:
+Error {
+  "message": "rejected promise",
+}
+
++ Received:
+undefined
+
+ ❯ src/server/agent/prompt-annotations.test.ts:157:50
+    155|     expect((await reader.historyMatcher("agent-1")).take("first")).toB…
+    156|     const next = { messageId: "m2", text: "second", annotation: notifi…
+    157|     await expect(reader.remember("agent-1", next)).rejects.toThrow("Pr…
+       |                                                  ^
+    158|     expect(readFileSync(file, "utf8")).toBe(damaged);
+    159|     writeFileSync(file, saved);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 9 skipped (10)
+   Start at  23:44:30
+   Duration  799ms (transform 371ms, setup 38ms, import 621ms, tests 23ms, environment 0ms)
+
+
+
+$ Final: npx vitest run src/server/agent/prompt-annotations.test.ts --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  10 passed (10)
+   Start at  23:44:57
+   Duration  2.15s (transform 941ms, setup 95ms, import 1.57s, tests 156ms, environment 0ms)
+
+
+
+$ Final: npx vitest run src/server/agent/agent-manager.test.ts --bail=1 -t "handoff history|replayed wake|replayed prompt|rejected agent prompt"
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  6 passed | 252 skipped (258)
+   Start at  23:45:48
+   Duration  1.49s (transform 961ms, setup 50ms, import 1.30s, tests 35ms, environment 0ms)
+
+
+
+$ Final: npx vitest run src/server/handoff/archive.e2e.test.ts --bail=1 -t "handoff fenced until prompt annotation"
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  2 passed | 25 skipped (27)
+   Start at  23:45:52
+   Duration  14.76s (transform 9.56s, setup 44ms, import 11.97s, tests 2.64s, environment 0ms)
+
+
+
+$ Final: npm run typecheck
+
+> paseo@0.11.1 typecheck
+> npm run typecheck --workspaces --if-present
+
+
+> @getpaseo/builtin-plugins@0.11.1 typecheck
+> tsgo -p tsconfig.json --noEmit
+
+
+> @getpaseo/expo-two-way-audio@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/highlight@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/plugin@0.11.1 typecheck
+> tsgo --noEmit && tsgo -p tsconfig.examples.json --noEmit
+
+
+> @getpaseo/protocol@0.11.1 pretypecheck
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/client@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/server@0.11.1 typecheck
+> tsgo -p tsconfig.server.typecheck.json --noEmit
+
+
+> @getpaseo/app@0.11.0-beta.36 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/relay@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/website@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/desktop@0.11.1 typecheck
+> tsgo --noEmit -p tsconfig.json
+
+
+> @getpaseo/cli@0.11.1 typecheck
+> tsgo --noEmit
+
+
+
+$ Final: npm run lint
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 3.6s on 5028 files with 177 rules using 4 threads.
+
+
+$ npm run format
+
+> paseo@0.11.1 format
+> oxfmt .
+
+Finished in 3557ms on 5373 files using 4 threads.

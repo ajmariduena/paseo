@@ -239,7 +239,14 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   `packages/client/src/handoff-transfer.ts` holds one chunk in flight. The network suite transfers
   captured workspaces and fixture conversations through this path. The source also captures a bounded
   readable timeline from the frozen native artifacts, using the normal notification and message presentation. Its blob is
-  bound into the bundle digest. The existing timeline RPC reads that snapshot for a prepared or
+  bound into the bundle digest. Annotation export waits for that conversation's queued writes and
+  validates the stored metadata rather than accepting a stale cache or silently ignoring a damaged
+  file. Readiness and release compare the current presentation with the captured history, including
+  after source restart. Native/context network cases refuse damaged metadata during preparation,
+  retain the source fence, recover after repair and refuse changed notification presentation before
+  release. See [history persistence evidence](../qa-evidence/handoff-history-persistence.txt) and the
+  [annotation write contract](../data-model.md#prompt-annotation-store).
+  The existing timeline RPC reads that snapshot for a prepared or
   released source without loading a provider, including after source restart or deletion of the
   original transcript. Cursors remain stable across restart; corrupt, foreign, incomplete and
   oversized history fails explicitly. Native artifacts remain the unabridged provider copy.
@@ -279,7 +286,7 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   checks the reviewed session inside its lifecycle lock, including when a reload was already queued.
   Readiness and release refuse surviving terminals or setup. These identities bind stop approval;
   they do not establish OS process identity or recover uncertain descendants after daemon restart.
-  Error-reporting barriers for background event failures, launch-time provider configuration and
+  Error-reporting barriers for other background event failures, launch-time provider configuration and
   complete resource dispositions remain open.
 - `destination.ts`, `ownership.posix.test.ts` and `archive.e2e.test.ts` cover durable destination
   reservations, stable identity mappings, private workspace staging and signed release acceptance.
