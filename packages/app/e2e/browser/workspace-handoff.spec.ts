@@ -1,113 +1,13 @@
-import { mkdir, mkdtemp, readFile, rm, rmdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, rmdir } from "node:fs/promises";
 import path from "node:path";
-import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
-import { expect, test, type Page } from "../support/fixtures";
-import { startTestDaemon } from "../support/helpers/daemon-update";
-import { addScheduleHostAndReload } from "../support/helpers/schedule-host";
-import { seedWorkspace } from "../support/helpers/seed-client";
-import { connectDaemonClient } from "../support/helpers/daemon-client-loader";
-import { gotoAppShell } from "../support/helpers/app";
+import { expect, test } from "../support/fixtures";
 import { waitForSettledPosition } from "../support/helpers/sheet-layout";
-
-async function openHandoff(page: Page) {
-  await page.getByTestId("workspace-header-menu-trigger").click();
-  await page.getByTestId("workspace-header-handoff").click();
-  await expect(page.getByTestId("handoff-sheet")).toBeVisible();
-}
-
-async function hosts(page: Page) {
-  const cleanupSteps: (() => Promise<unknown>)[] = [];
-  async function close() {
-    const errors: unknown[] = [];
-    for (const cleanup of cleanupSteps.toReversed()) {
-      try {
-        await cleanup();
-      } catch (error) {
-        errors.push(error);
-      }
-    }
-    if (errors.length) throw new AggregateError(errors, "Handoff test cleanup failed");
-  }
-  try {
-    const source = await startTestDaemon({ version: "0.11.1", workspaceHandoffCapability: true });
-    cleanupSteps.push(() => source.close());
-    const destination = await startTestDaemon({
-      version: "0.11.1",
-      workspaceHandoffCapability: true,
-    });
-    cleanupSteps.push(() => destination.close());
-    const sourcePort = Number(source.endpoint.split(":").at(-1));
-    const destinationPort = Number(destination.endpoint.split(":").at(-1));
-    const workspace = await seedWorkspace({
-      repoPrefix: "handoff-browser-",
-      git: false,
-      port: sourcePort,
-    });
-    cleanupSteps.push(() => workspace.cleanup());
-    const destinationParent = await mkdtemp(path.join(tmpdir(), "handoff-browser-destination-"));
-    cleanupSteps.push(() => rm(destinationParent, { recursive: true, force: true }));
-    const destinationClient = await connectDaemonClient<DaemonClient>({
-      port: destinationPort,
-      clientIdPrefix: "handoff-browser",
-    });
-    cleanupSteps.push(() => destinationClient.close());
-    const sourceClient = await connectDaemonClient<DaemonClient>({
-      port: sourcePort,
-      clientIdPrefix: "handoff-source-browser",
-    });
-    cleanupSteps.push(() => sourceClient.close());
-    cleanupSteps.push(async () => {
-      const projects = await destinationClient.listProjects();
-      for (const project of projects.projects)
-        await destinationClient.removeProject(project.projectId);
-    });
-    await writeFile(path.join(workspace.repoPath, "prior-work.txt"), "work from the source\n");
-    await gotoAppShell(page);
-    await addScheduleHostAndReload({
-      page,
-      serverId: source.serverId,
-      port: sourcePort,
-      label: "Source laptop",
-    });
-    await addScheduleHostAndReload({
-      page,
-      serverId: destination.serverId,
-      port: destinationPort,
-      label: "Destination VPS",
-    });
-    const route = `/h/${encodeURIComponent(source.serverId)}/workspace/${encodeURIComponent(workspace.workspaceId)}`;
-    await page.goto(route);
-    return {
-      source,
-      destination,
-      workspace,
-      destinationParent,
-      sourceClient,
-      destinationClient,
-      route,
-      close,
-    };
-  } catch (error) {
-    await close();
-    throw error;
-  }
-}
-
-async function savedTransfer(page: Page, sourceServerId: string, workspaceId: string) {
-  const key = `paseo:workspace-handoff:${JSON.stringify([sourceServerId, workspaceId])}`;
-  return page.evaluate((storageKey) => {
-    const raw = localStorage.getItem(storageKey);
-    if (!raw) throw new Error("No saved handoff");
-    const value: { transferId: string } = JSON.parse(raw);
-    return value.transferId;
-  }, key);
-}
-
-async function forgetTransfer(page: Page, sourceServerId: string, workspaceId: string) {
-  const key = `paseo:workspace-handoff:${JSON.stringify([sourceServerId, workspaceId])}`;
-  await page.evaluate((storageKey) => localStorage.removeItem(storageKey), key);
-}
+import {
+  handoffHosts as hosts,
+  openHandoff,
+  savedTransfer,
+  forgetTransfer,
+} from "../support/helpers/workspace-handoff";
 
 test.describe("workspace handoff", () => {
   test.skip(process.platform === "win32", "Ownership release requires POSIX directory durability");

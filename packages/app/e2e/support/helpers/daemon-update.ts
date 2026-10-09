@@ -24,6 +24,7 @@ type OutdatedDaemonMessage = OutdatedDaemonReadyMessage | OutdatedDaemonErrorMes
 
 interface TestDaemonOptions {
   version?: string;
+  realClaudeConfigDir?: string;
   workspaceHandoffCapability?: boolean;
   desktopManaged?: boolean;
   daemonStatusRpcCapability?: boolean;
@@ -47,6 +48,7 @@ export async function startTestDaemon(options?: TestDaemonOptions): Promise<Outd
         ...process.env,
         E2E_METRO_PORT: metroPort,
         E2E_DAEMON_VERSION: options?.version,
+        E2E_REAL_CLAUDE_CONFIG_DIR: options?.realClaudeConfigDir,
         E2E_WORKSPACE_HANDOFF_CAPABILITY: options?.workspaceHandoffCapability === true ? "1" : "0",
         E2E_DESKTOP_MANAGED: options?.desktopManaged === true ? "1" : "0",
         E2E_DAEMON_STATUS_RPC_CAPABILITY: options?.daemonStatusRpcCapability === false ? "0" : "1",

@@ -1,5 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import pino from "pino";
+import { ClaudeAgentClient } from "../agent/providers/claude/agent.js";
 import { createTestPaseoDaemon } from "./paseo-daemon.js";
 
 async function main(): Promise<void> {
@@ -8,7 +10,15 @@ async function main(): Promise<void> {
     throw new Error("E2E_METRO_PORT is not set");
   }
 
+  const claudeConfigDir = process.env.E2E_REAL_CLAUDE_CONFIG_DIR;
+  const runtimeSettings = claudeConfigDir
+    ? { env: { CLAUDE_CONFIG_DIR: claudeConfigDir } }
+    : undefined;
   const daemon = await createTestPaseoDaemon({
+    agentProviderSettings: runtimeSettings ? { claude: runtimeSettings } : undefined,
+    agentClients: runtimeSettings
+      ? { claude: new ClaudeAgentClient({ logger: pino({ level: "warn" }), runtimeSettings }) }
+      : undefined,
     corsAllowedOrigins: [`http://localhost:${metroPort}`],
     daemonVersion: process.env.E2E_DAEMON_VERSION ?? "0.0.0",
     workspaceHandoffCapability: process.env.E2E_WORKSPACE_HANDOFF_CAPABILITY === "1",

@@ -313,7 +313,16 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   from both host journals, then cancels and verifies a fresh form after clearing local state again.
   Destination-only recovery selects one of two reservations, preserves its original mode without
   preparing work until Resume, then reconstructs and finishes an interrupted source cancellation.
-  These workspaces contain no conversations. See the [raw app results](../qa-evidence/handoff-app.txt)
+  These recovery fixtures contain no conversations. Two additional real-provider browser cases use
+  Claude Code 2.1.295, Git workspaces and separate source/destination configuration directories on
+  Linux. They review, prepare, activate, navigate and continue through the app. Native continuation
+  shows the original message and retains the provider session ID; context export starts a new session
+  and reads a prior-only token beyond the supplied excerpt from the exported files. Both approve the
+  destination Write permission through the UI, verify the destination file and absent source file,
+  and refuse source prompts before and after continuation. Context history is verified in the exported
+  files; displaying that history and its provenance in the destination conversation remains open.
+  See the [real-provider browser results](../qa-evidence/handoff-app-real.txt),
+  [recovery app results](../qa-evidence/handoff-app.txt)
   and [review](../qa-evidence/handoff-review-compact.png), [pending transfers](../qa-evidence/handoff-existing-transfers.png), [desktop](../qa-evidence/handoff-app-desktop.png) / [compact](../qa-evidence/handoff-app-compact.png)
   screenshots. Recovery without local state currently requires both paired hosts online. Destination
   lookup starts only after selecting that host. Cancellation before source preparation leaves only a
