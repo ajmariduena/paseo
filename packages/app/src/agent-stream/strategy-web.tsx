@@ -727,7 +727,7 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     onNearBottomChange,
   });
 
-  const reconcileReadingPosition = useStableEvent(() => {
+  const reconcileReadingPosition = useStableEvent((userScrolled: boolean = false) => {
     const container = scrollContainerRef.current;
     const content = contentRef.current;
     if (!isActiveRef.current || !container || !content) return;
@@ -745,7 +745,7 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     );
     const shouldAnchor = !followOutputRef.current && !isJumpSettling();
     if (!shouldAnchor) readingAnchor.reset();
-    const correctedTop = readingAnchor.reconcile(container.scrollTop, rows);
+    const correctedTop = readingAnchor.reconcile(container.scrollTop, rows, userScrolled);
     if (!shouldAnchor) {
       readingAnchor.reset();
       return;
@@ -808,14 +808,14 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
 
     lastKnownScrollTopRef.current = currentScrollTop;
     if (!followOutputRef.current && !isJumpSettling() && (scrolledUp || scrolledDown)) {
-      readingAnchor.scroll(currentScrollTop);
+      reconcileReadingPosition(true);
     }
     updateScrollMetrics();
     evaluateHistoryStart();
   }, [
     evaluateHistoryStart,
     isJumpSettling,
-    readingAnchor,
+    reconcileReadingPosition,
     stopFollowingOutputFromUserIntent,
     updateScrollMetrics,
   ]);
@@ -1113,7 +1113,8 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     };
 
     // Read user movement before the virtualizer's bubbling listener flushes a
-    // layout correction. Scroll events reuse the last committed row geometry.
+    // layout correction. An image can commit its size earlier in the same frame,
+    // so the reader is picked from measured rows, not the last committed geometry.
     scrollContainer.addEventListener("scroll", handleDomScroll, { passive: true, capture: true });
     scrollContainer.addEventListener("wheel", handleWheel, { passive: true });
     scrollContainer.addEventListener("keydown", handleKeyDown, { passive: true });

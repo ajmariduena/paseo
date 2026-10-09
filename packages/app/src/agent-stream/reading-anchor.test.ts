@@ -93,10 +93,10 @@ describe("reading anchor", () => {
     expect(anchor.getRowId()).toBe("above");
   });
 
-  it("repicks from user movement before applying a simultaneous layout correction", () => {
+  it("repicks from user movement after applying a simultaneous layout correction", () => {
     const anchor = createReadingAnchor();
     anchor.reconcile(600, rows);
-    anchor.scroll(440);
+    expect(anchor.reconcile(440, rows, true)).toBe(440);
     expect(anchor.getRowId()).toBe("above");
     expect(
       anchor.reconcile(
@@ -105,6 +105,20 @@ describe("reading anchor", () => {
       ),
     ).toBe(2440);
     expect(anchor.getRowId()).toBe("above");
+  });
+
+  it("keeps the reader when an image above it shrinks in the frame the user scrolls into it", () => {
+    const anchor = createReadingAnchor();
+    const image = { id: "image", top: 0, height: 560 };
+    const reading = { id: "reading", top: 560, height: 130 };
+    anchor.reconcile(552, [image, reading]);
+    expect(anchor.reconcile(392, [{ ...image, height: 225 }, reading], true)).toBe(392);
+    expect(anchor.getRowId()).toBe("reading");
+    const corrected = anchor.reconcile(392, [
+      { ...image, height: 225 },
+      { ...reading, top: 225 },
+    ]);
+    expect(225 - corrected).toBe(reading.top - 552 + 160);
   });
 
   it("releases the old reading position for explicit navigation", () => {
