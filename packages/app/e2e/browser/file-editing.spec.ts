@@ -31,6 +31,10 @@ interface LinkedFile {
   content: string;
 }
 
+function fileRecoveryKeys() {
+  return Object.keys(localStorage).filter((key) => key.startsWith("paseo:file-editor-draft:"));
+}
+
 function editor(page: Page) {
   return page.getByTestId("file-source-editor").filter({ visible: true }).locator(".cm-content");
 }
@@ -580,6 +584,22 @@ test.describe("CodeMirror workspace file editing", () => {
 
     await expect(page.getByTestId("file-source-editor")).toBeVisible();
     await expect(page.getByTestId("workspace-tab-modified-file_draft.ts")).toBeVisible();
+    await page.reload();
+    await expect(editor(page)).toContainText("const local = 2;");
+    await expect(page.getByTestId("file-conflict-alert")).toBeVisible();
+    page.once("dialog", (dialog) => dialog.accept());
+    await page
+      .getByTestId("workspace-tab-file_draft.ts")
+      .filter({ visible: true })
+      .first()
+      .click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Close", exact: true }).click();
+    await expect(page.getByTestId("workspace-tab-file_draft.ts")).toHaveCount(0);
+    expect(await page.evaluate(fileRecoveryKeys)).toEqual([]);
+    await openWorkspaceFile(page, "draft.ts");
+    await expect(editor(page)).toContainText("const external = 3;");
+    await expect(page.getByTestId("workspace-tab-modified-file_draft.ts")).toHaveCount(0);
+    expect(await readFile(sourcePath, "utf8")).toBe("const external = 3;\n");
   });
 
   test("refreshes Markdown and images while preserving Preview and Source behavior", async ({

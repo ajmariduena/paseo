@@ -16,6 +16,17 @@ import {
   reconnectSourceDestination,
 } from "../support/helpers/workspace-handoff";
 
+function hasRecoveredLocalWork() {
+  for (const [key, value] of Object.entries(localStorage)) {
+    if (
+      key.startsWith("paseo:file-editor-draft:") &&
+      JSON.parse(value).draft.content === "local work to preserve\n"
+    )
+      return true;
+  }
+  return false;
+}
+
 test.describe("workspace handoff", () => {
   test.skip(process.platform === "win32", "Ownership release requires POSIX directory durability");
 
@@ -239,7 +250,7 @@ test.describe("workspace handoff", () => {
   test("resolves an unsaved file conflict and waits for its save before capturing the workspace", async ({
     page,
   }, testInfo) => {
-    test.setTimeout(120_000);
+    test.setTimeout(150_000);
     const host = await hosts(page);
     const filePath = path.join(host.workspace.repoPath, "prior-work.txt");
     const editor = page
@@ -260,6 +271,21 @@ test.describe("workspace handoff", () => {
       await gate.waitForHeldClientRequest();
       await writeFile(filePath, "external work\n");
       gate.releaseHeldClientRequest();
+      await expect(page.getByTestId("file-conflict-alert")).toBeVisible();
+      await expect.poll(() => page.evaluate(hasRecoveredLocalWork)).toBe(true);
+      await page.reload();
+      await expect(editor).toContainText("local work to preserve");
+      await expect(page.getByTestId("file-conflict-alert")).toBeVisible();
+      expect(await readFile(filePath, "utf8")).toBe("external work\n");
+      // A deleted file still opens its persisted buffer after a cold reload.
+      await rm(filePath);
+      await page.reload();
+      await expect(editor).toContainText("local work to preserve");
+      await expect(page.getByTestId("file-conflict-alert")).toBeVisible();
+      await page.screenshot({ path: testInfo.outputPath("handoff-recovered-deleted-file.png") });
+      await writeFile(filePath, "external work\n");
+      await page.reload();
+      await expect(editor).toContainText("local work to preserve");
       await expect(page.getByTestId("file-conflict-alert")).toBeVisible();
       await openHandoff(page);
       await page.getByTestId("handoff-host-trigger").click();

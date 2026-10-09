@@ -2381,6 +2381,10 @@ export const ja: TranslationResources = {
       failedToLoad: "ファイルの読み込みに失敗しました",
       failedToLoadPreview: "ファイルプレビューの読み込みに失敗しました",
       editor: {
+        recoveryLoadError: "未保存の変更を復元できませんでした。復元用コピーは保持されています。",
+        recoverySaveError:
+          "復元用コピーを保存できませんでした。アプリを閉じる前にファイルを保存するか、変更内容をコピーしてください。",
+        recoveryClearError: "復元用コピーを破棄できませんでした。ファイルは開いたままです。",
         fileSize: "ファイルサイズ {{size}}",
         copyContents: "ファイルの内容をコピー",
         contentsCopied: "コピーしました",

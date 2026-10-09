@@ -2397,6 +2397,12 @@ export const ptBR: TranslationResources = {
       failedToLoad: "Falha ao carregar arquivo",
       failedToLoadPreview: "Falha ao carregar prévia do arquivo",
       editor: {
+        recoveryLoadError:
+          "Não foi possível restaurar as alterações não salvas. A cópia de recuperação foi mantida.",
+        recoverySaveError:
+          "Não foi possível manter uma cópia de recuperação. Salve o arquivo ou copie suas alterações antes de fechar o app.",
+        recoveryClearError:
+          "Não foi possível descartar a cópia de recuperação. O arquivo continua aberto.",
         fileSize: "Tamanho {{size}}",
         copyContents: "Copiar conteúdo do arquivo",
         contentsCopied: "Copiado",

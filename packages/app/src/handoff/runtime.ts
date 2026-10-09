@@ -1,3 +1,4 @@
+import { fileEditorDraftStorage } from "@/file-pane/editor/drafts";
 import { FileEditorSaveError } from "@/file-pane/editor/model";
 import { workspaceFileEditors } from "@/file-pane/editor/registry";
 import { i18n } from "@/i18n/i18next";
@@ -136,10 +137,20 @@ export const handoffFormPorts: HandoffFormPorts = {
       workspace,
       stoppedWork,
       conversationBytes,
-      unsavedFiles: workspaceFileEditors.unsavedPaths({
-        serverId: record.sourceServerId,
-        workspaceId: record.workspaceId,
-      }),
+      unsavedFiles: [
+        ...new Set([
+          ...workspaceFileEditors.unsavedPaths({
+            serverId: record.sourceServerId,
+            workspaceId: record.workspaceId,
+          }),
+          ...(
+            await fileEditorDraftStorage.listWorkspace({
+              serverId: record.sourceServerId,
+              workspaceId: record.workspaceId,
+            })
+          ).map(({ identity }) => identity.path),
+        ]),
+      ].sort(),
     };
   },
   async prepare(record, options) {
@@ -170,6 +181,11 @@ export const handoffFormPorts: HandoffFormPorts = {
       }
       if (!handoffStarted && options.signal.aborted) {
         throw new HandoffFilesNotSavedError(i18n.t("handoff.paused"), { cause: error });
+      }
+      if (!handoffStarted) {
+        throw new HandoffFilesNotSavedError(i18n.t("panels.file.editor.recoveryLoadError"), {
+          cause: error,
+        });
       }
       throw error;
     }

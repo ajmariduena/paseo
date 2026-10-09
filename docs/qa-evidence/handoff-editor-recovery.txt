@@ -1,0 +1,314 @@
+Editor recovery before workspace handoff — 2026-10-09
+
+Baseline: d98a004a4 (save-before-handoff). Changes in this commit are web editor
+checkpoints, restoration, discard and persisted-copy handoff admission.
+
+Coverage: Linux Chromium, real isolated daemons, real browser storage and file RPCs.
+No provider turn. No main daemon restart. This is not the physical MacBook/VPS test.
+Electron/macOS/Windows, native app surfaces and concurrent app windows are untested.
+Recovery applies to completed local checkpoints. Clearing the browser profile or
+crashing before a checkpoint completes can lose that recovery copy. Other clients'
+buffers and conversation draft transfer remain delivery gates in the owning plan.
+
+The model regression first reproduced an unresolved recovered conflict becoming
+an autosave after the first ordinary observation. A second regression reproduced
+loss of the local copy when editing back to original bytes during a disk conflict.
+
+
+RED — recovered conflict auto-saves after observation
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+
+ ❯ |unit| src/file-pane/editor/model.test.ts (37 tests | 1 failed) 12ms
+     × recovers local text against changed disk bytes and keeps the conflict across repeated restarts 10ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |unit| src/file-pane/editor/model.test.ts > FileEditorModel > recovers local text against changed disk bytes and keeps the conflict across repeated restarts
+AssertionError: expected { readOnly: false, …(8) } to match object { …(3) }
+(16 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+    "content": "work that has not reached disk",
+    "modified": true,
+-   "status": "conflict",
++   "status": "saving",
+  }
+
+ ❯ src/file-pane/editor/model.test.ts:144:36
+    142|     restored.connectFileObservations(new ObservationSource({ status: "…
+    143|     clock.fire();
+    144|     expect(restored.getSnapshot()).toMatchObject({
+       |                                    ^
+    145|       content: "work that has not reached disk",
+    146|       modified: true,
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed (37)
+   Start at  20:34:01
+   Duration  260ms (transform 90ms, setup 49ms, import 70ms, tests 12ms, environment 1ms)
+
+
+
+RED — editing back to original bytes during a disk conflict
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+
+ ❯ |unit| src/file-pane/editor/model.test.ts (45 tests | 1 failed) 11ms
+     × keeps local work when it is edited back to the original bytes during an external conflict 7ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |unit| src/file-pane/editor/model.test.ts > FileEditorModel > keeps local work when it is edited back to the original bytes during an external conflict
+AssertionError: expected { readOnly: false, …(8) } to match object { status: 'conflict', modified: true }
+(17 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+-   "modified": true,
++   "modified": false,
+    "status": "conflict",
+  }
+
+ ❯ src/file-pane/editor/model.test.ts:179:33
+    177|     model.edit("one");
+    178|     await model.flushRecoveryDraft();
+    179|     expect(model.getSnapshot()).toMatchObject({status: "conflict", mod…
+       |                                 ^
+    180|     expect(persisted).toMatchObject({content: "one", conflict: true});
+    181|     observeFile(model, {content: "external", hasBom: false, version: r…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 1 passed (45)
+   Start at  20:45:35
+   Duration  922ms (transform 499ms, setup 61ms, import 727ms, tests 11ms, environment 0ms)
+
+
+
+PASS — npx vitest run src/file-pane/editor/model.test.ts --bail=1 (cwd packages/app)
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+
+
+ Test Files  1 passed (1)
+      Tests  45 passed (45)
+   Start at  20:46:13
+   Duration  1.54s (transform 903ms, setup 94ms, import 1.24s, tests 28ms, environment 1ms)
+
+
+
+PASS — focused browser tests after final model changes
+
+> @getpaseo/app@0.11.0-beta.36 test:e2e
+> playwright test --project=browser e2e/browser/workspace-handoff.spec.ts e2e/browser/file-editing.spec.ts --grep resolves an unsaved file conflict|warns before closing a panel
+
+[metro] Starting project at /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+[metro] Using src/app as the root directory for Expo Router.
+[metro] Experimental Expo Autolinking module resolver is enabled.
+[metro] React Compiler enabled
+[metro] Starting Metro Bundler
+[metro] Waiting on http://localhost:44403
+[metro] Logs for your project will appear below.
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] | (node:495839) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[metro] | (Use `node --trace-warnings ...` to show where the warning was created)
+[metro] | (node:495833) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[metro] | (Use `node --trace-warnings ...` to show where the warning was created)
+[metro] Web packages/app/index.ts ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.9% (5630/5630)
+[metro] Web Bundled 4256ms packages/app/index.ts (5630 modules)
+[e2e] Metro warmed on port 44403
+
+Running 2 tests using 1 worker
+
+(node:495856) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:495856) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[e2e] Worker 0 daemon started on port 44427, home: /tmp/paseo-e2e-worker-0-Xrsms4
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 317ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 89ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro] Web Bundled 309ms packages/app/index.ts (1 module)
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 16ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+  ✓  1 [browser] › e2e/browser/file-editing.spec.ts:560:7 › CodeMirror workspace file editing › warns before closing a panel with an unsaved draft (15.4s)
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 313ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 7ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 233ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 9ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 248ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 19ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 230ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 5ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 308ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 9ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 249ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 12ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 255ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 15ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 274ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 9ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+  ✓  2 [browser] › e2e/browser/workspace-handoff.spec.ts:250:7 › workspace handoff › resolves an unsaved file conflict and waits for its save before capturing the workspace (52.4s)
+[e2e] Worker 0 daemon stopped
+[e2e] Metro stopped
+
+  2 passed (1.5m)
+
+
+PASS — npm run typecheck
+
+> paseo@0.11.1 typecheck
+> npm run typecheck --workspaces --if-present
+
+
+> @getpaseo/builtin-plugins@0.11.1 typecheck
+> tsgo -p tsconfig.json --noEmit
+
+
+> @getpaseo/expo-two-way-audio@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/highlight@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/plugin@0.11.1 typecheck
+> tsgo --noEmit && tsgo -p tsconfig.examples.json --noEmit
+
+
+> @getpaseo/protocol@0.11.1 pretypecheck
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/client@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/server@0.11.1 typecheck
+> tsgo -p tsconfig.server.typecheck.json --noEmit
+
+
+> @getpaseo/app@0.11.0-beta.36 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/relay@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/website@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/desktop@0.11.1 typecheck
+> tsgo --noEmit -p tsconfig.json
+
+
+> @getpaseo/cli@0.11.1 typecheck
+> tsgo --noEmit
+
+
+
+PASS — npm run lint
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 4.1s on 5027 files with 177 rules using 4 threads.
+
+
+PASS — npm run format
+
+> paseo@0.11.1 format
+> oxfmt .
+
+Finished in 3940ms on 5372 files using 4 threads.
+
+
+Performance probe: baseline model versus edit + completed recovery checkpoint.
+Node on the same Linux host, 20 warm-up edits and 100 samples at each file size.
+The persistence port serializes the actual draft to JSON, including its base.
+This isolates model/serialization overhead; it does not include localStorage I/O,
+CodeMirror rendering, browser responsiveness or device performance. There is no
+claim of a browser frame-time budget from these numbers.
+
+Reproduce the baseline module:
+git show d98a004a4:packages/app/src/file-pane/editor/model.ts > /tmp/handoff-editor-baseline.ts
+Run the following script with node --import tsx /tmp/handoff-editor-recovery-perf.mts.
+import { performance } from 'node:perf_hooks';
+import beforeModule from './handoff-editor-baseline.ts';
+import afterModule from '/home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app/src/file-pane/editor/model.ts';
+const { FileEditorModel: Before } = beforeModule;
+const { FileEditorModel: After } = afterModule;
+for (const bytes of [65536, 524288, 1048576]) {
+  for (const [name, Model] of [['before', Before], ['after', After]] as const) {
+    let checkpointBytes = 0;
+    const model = new Model({
+      file: {content: 'x'.repeat(bytes), hasBom: false, version: {status:'ready',cwd:'/workspace',path:'bench.txt',size:bytes,modifiedAt:'2026-10-09T00:00:00Z'}},
+      session: {write: async () => {throw new Error('Not a file-save benchmark');}},
+      clock: {setTimeout: () => 1 as never, clearTimeout: () => {}},
+      persistDraft: async (draft) => { checkpointBytes = JSON.stringify(draft).length; },
+    });
+    const samples: number[] = [];
+    for (let i = 0; i < 120; i++) {
+      const started = performance.now();
+      model.edit(`${'x'.repeat(bytes)}${i}`);
+      if ('flushRecoveryDraft' in model) await model.flushRecoveryDraft();
+      if (i >= 20) samples.push(performance.now() - started);
+    }
+    model.dispose();
+    samples.sort((a,b) => a-b);
+    console.log(JSON.stringify({name,bytes,samples:samples.length,medianMs:samples[50],p95Ms:samples[95],checkpointBytes}));
+  }
+}
+
+Raw performance output:
+{"name":"before","bytes":65536,"samples":100,"medianMs":0.017557999999979756,"p95Ms":0.060913999999996804,"checkpointBytes":0}
+{"name":"after","bytes":65536,"samples":100,"medianMs":0.14088099999997894,"p95Ms":0.22664399999999318,"checkpointBytes":131259}
+{"name":"before","bytes":524288,"samples":100,"medianMs":0.12850099999999998,"p95Ms":0.4591269999999952,"checkpointBytes":0}
+{"name":"after","bytes":524288,"samples":100,"medianMs":1.5932280000000105,"p95Ms":2.7639479999999708,"checkpointBytes":1048764}
+{"name":"before","bytes":1048576,"samples":100,"medianMs":0.3048249999999939,"p95Ms":1.1600910000000226,"checkpointBytes":0}
+{"name":"after","bytes":1048576,"samples":100,"medianMs":2.971551999999974,"p95Ms":5.646148999999923,"checkpointBytes":2097341}

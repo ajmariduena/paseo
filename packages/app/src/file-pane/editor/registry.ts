@@ -1,4 +1,5 @@
-import type { FileEditorModel } from "./model";
+import { fileEditorDraftStorage } from "./drafts";
+import { FileEditorSaveError, type FileEditorModel } from "./model";
 
 interface WorkspaceIdentity {
   serverId: string;
@@ -10,7 +11,11 @@ interface WorkspaceEditors {
   barriers: Map<FileEditorModel, SaveBarrier> | null;
 }
 
-export function createFileEditorRegistry() {
+export function createFileEditorRegistry(
+  input: {
+    listDraftPaths?: (workspace: WorkspaceIdentity) => Promise<string[]>;
+  } = {},
+) {
   const workspaces = new Map<string, WorkspaceEditors>();
   const key = (workspace: WorkspaceIdentity) =>
     JSON.stringify([workspace.serverId, workspace.workspaceId]);
@@ -69,9 +74,19 @@ export function createFileEditorRegistry() {
       try {
         signal.throwIfAborted();
         for (const model of entry.models.keys()) barriers.set(model, model.acquireSaveBarrier());
-        // Map iteration also visits editors mounted while a previous save was awaited.
-        for (const barrier of barriers.values()) await barrier.flush(signal);
+        const flushed = new Set<SaveBarrier>();
+        let draftPaths: string[] = [];
+        do {
+          // Include editors mounted while saving or checking persisted recovery copies.
+          for (const barrier of barriers.values()) {
+            if (flushed.has(barrier)) continue;
+            await barrier.flush(signal);
+            flushed.add(barrier);
+          }
+          draftPaths = (await input.listDraftPaths?.(workspace)) ?? [];
+        } while (flushed.size < barriers.size);
         signal.throwIfAborted();
+        if (draftPaths.length) throw new FileEditorSaveError(draftPaths.join(", "), null);
         return await prepare();
       } finally {
         entry.barriers = null;
@@ -82,4 +97,10 @@ export function createFileEditorRegistry() {
   };
 }
 
-export const workspaceFileEditors = createFileEditorRegistry();
+export const workspaceFileEditors = createFileEditorRegistry({
+  listDraftPaths: async (workspace) => {
+    return (await fileEditorDraftStorage.listWorkspace(workspace)).map(
+      ({ identity }) => identity.path,
+    );
+  },
+});

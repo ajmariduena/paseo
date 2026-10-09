@@ -1,4 +1,5 @@
 import type { FileVersion, FileWriteResult } from "@getpaseo/protocol/messages";
+import type { FileEditorDraft } from "./drafts";
 
 export type FileEditorStatus = "clean" | "dirty" | "saving" | "conflict" | "error";
 export type FileLineSeparator = "\n" | "\r\n" | "\r";
@@ -9,9 +10,10 @@ export interface FileEditorSnapshot {
   content: string;
   lineSeparator: FileLineSeparator;
   modified: boolean;
-  version: FileVersion;
+  version: FileEditorFile["version"];
   observedVersion: FileVersion;
   error: string | null;
+  checkpointError: string | null;
 }
 
 export type FileConflictCallout =
@@ -87,16 +89,28 @@ export class FileEditorModel {
   private ownerReadOnly: boolean;
   private readonly saveBarriers = new Set<object>();
   private readonly pendingWrites = new Set<Promise<void>>();
+  private readonly persistDraft: ((draft: FileEditorDraft | null) => Promise<void>) | null;
+  private lastDraft: FileEditorDraft | null = null;
+  private pendingCheckpoint: { draft: FileEditorDraft | null } | null = null;
+  private checkpoint: Promise<void> | null = null;
+  private draftDiscarded = false;
+  private recoveryUnverified: boolean;
+  private recoveredConflict = false;
 
   constructor(input: {
     file: FileEditorFile;
     session: FileEditorSession;
     clock?: FileEditorClock;
     readOnly?: boolean;
+    draft?: FileEditorDraft | null;
+    persistDraft?: (draft: FileEditorDraft | null) => Promise<void>;
   }) {
     this.session = input.session;
     this.clock = input.clock ?? systemClock;
     this.ownerReadOnly = input.readOnly ?? false;
+    this.persistDraft = input.persistDraft ?? null;
+    this.lastDraft = input.draft ?? null;
+    this.recoveryUnverified = input.draft != null;
     this.persistedContent = input.file.content;
     this.hasBom = input.file.hasBom;
     this.observed = { status: "ready", file: input.file };
@@ -109,6 +123,65 @@ export class FileEditorModel {
       version: input.file.version,
       observedVersion: input.file.version,
       error: null,
+      checkpointError: null,
+    };
+    const draft = input.draft;
+    if (draft && draft.content !== input.file.content) {
+      const changed =
+        draft.base.content !== input.file.content || draft.base.hasBom !== input.file.hasBom;
+      this.recoveredConflict = draft.conflict || changed;
+      this.snapshot = {
+        ...this.snapshot,
+        content: draft.content,
+        lineSeparator: detectLineSeparator(draft.content),
+        modified: true,
+        status: this.recoveredConflict ? "conflict" : "dirty",
+      };
+    }
+  }
+
+  getRecoveryDraft(): FileEditorDraft | null {
+    const needsRecovery =
+      this.recoveryUnverified ||
+      this.snapshot.modified ||
+      this.snapshot.status === "saving" ||
+      this.pendingWrites.size > 0;
+    if (!needsRecovery || this.draftDiscarded) return null;
+    return {
+      content: this.snapshot.content,
+      conflict: this.snapshot.status === "conflict",
+      base: { content: this.persistedContent, hasBom: this.hasBom, version: this.snapshot.version },
+    };
+  }
+
+  async flushRecoveryDraft(): Promise<void> {
+    this.queueRecoveryDraft();
+    while (this.checkpoint) await this.checkpoint;
+    if (this.snapshot.checkpointError)
+      throw new FileEditorSaveError(this.snapshot.version.path, this.snapshot.checkpointError);
+  }
+
+  async retryRecoveryDraft(): Promise<void> {
+    this.lastDraft = null;
+    this.pendingCheckpoint = { draft: this.getRecoveryDraft() };
+    this.startCheckpoint();
+    await this.flushRecoveryDraft();
+  }
+
+  async discardRecoveryDraft(): Promise<() => void> {
+    this.draftDiscarded = true;
+    this.pendingCheckpoint = { draft: null };
+    this.startCheckpoint();
+    try {
+      await this.flushRecoveryDraft();
+    } catch (error) {
+      this.draftDiscarded = false;
+      this.queueRecoveryDraft();
+      throw error;
+    }
+    return () => {
+      this.draftDiscarded = false;
+      this.queueRecoveryDraft();
     };
   }
 
@@ -128,6 +201,7 @@ export class FileEditorModel {
     };
     this.unsubscribeObservationSource = source.subscribe(receiveObservation);
     receiveObservation();
+    this.queueRecoveryDraft();
   }
 
   disconnectFileObservations(): void {
@@ -162,7 +236,10 @@ export class FileEditorModel {
         if (!this.saveBarriers.has(token) || this.disposed) {
           throw new FileEditorSaveError(this.snapshot.version.path, null);
         }
-        if (!this.snapshot.modified) return;
+        if (!this.snapshot.modified) {
+          await this.flushRecoveryDraft();
+          return;
+        }
         if (
           this.ownerReadOnly ||
           this.snapshot.status === "conflict" ||
@@ -175,6 +252,7 @@ export class FileEditorModel {
         if (this.disposed || this.snapshot.modified || this.snapshot.status === "error") {
           throw new FileEditorSaveError(this.snapshot.version.path, this.snapshot.error);
         }
+        await this.flushRecoveryDraft();
       },
       release: () => {
         if (!this.saveBarriers.delete(token)) return;
@@ -186,7 +264,8 @@ export class FileEditorModel {
   edit(content: string): void {
     if (this.disposed || this.snapshot.readOnly || content === this.snapshot.content) return;
     this.reloadRequested = false;
-    const modified = content !== this.persistedContent;
+    this.draftDiscarded = false;
+    const modified = this.isModified(content, this.snapshot.status === "conflict");
     let status: FileEditorStatus = modified ? "dirty" : "clean";
     if (this.snapshot.status === "conflict") {
       status = "conflict";
@@ -214,6 +293,7 @@ export class FileEditorModel {
   receiveFileObservation(observation: FileEditorObservation): void {
     if (this.disposed || observation === this.lastReceivedObservation) return;
     this.lastReceivedObservation = observation;
+    if (observation.status === "ready") this.recoveryUnverified = false;
     const version = observationVersion(observation);
     this.observed = observation;
     this.setSnapshot({ ...this.snapshot, observedVersion: version });
@@ -281,7 +361,10 @@ export class FileEditorModel {
   private performWrite(expectedVersion: Extract<FileVersion, { status: "ready" }>): Promise<void> {
     const pending = this.writeFile(expectedVersion);
     this.pendingWrites.add(pending);
-    return pending.finally(() => this.pendingWrites.delete(pending));
+    return pending.finally(() => {
+      this.pendingWrites.delete(pending);
+      this.queueRecoveryDraft();
+    });
   }
 
   private async writeFile(
@@ -329,6 +412,7 @@ export class FileEditorModel {
       modifiedAt: result.modifiedAt,
       revision: result.revision,
     };
+    this.recoveredConflict = false;
     const pending = this.takeObservedWhileSaving();
     this.persistedContent = content;
     if (pending && !observationMatchesWrite(pending, content, hasBom)) {
@@ -337,7 +421,7 @@ export class FileEditorModel {
       this.setSnapshot({
         ...this.snapshot,
         status: "conflict",
-        modified: this.snapshot.content !== this.persistedContent,
+        modified: this.isModified(this.snapshot.content, true),
         version: writtenVersion,
         observedVersion: pendingVersion,
         error: null,
@@ -359,6 +443,7 @@ export class FileEditorModel {
   }
 
   private applyFile(file: FileEditorFile): void {
+    this.recoveredConflict = false;
     this.clearAutosave();
     this.saveSequence += 1;
     this.persistedContent = file.content;
@@ -373,6 +458,7 @@ export class FileEditorModel {
       version: file.version,
       observedVersion: file.version,
       error: null,
+      checkpointError: this.snapshot.checkpointError,
     });
   }
 
@@ -382,18 +468,30 @@ export class FileEditorModel {
     return observation;
   }
 
+  private isModified(content: string, conflicting: boolean): boolean {
+    if (content !== this.persistedContent) return true;
+    if (!conflicting) return false;
+    // Reverting to the original bytes does not resolve a newer disk version.
+    if (this.observed.status === "ready") return content !== this.observed.file.content;
+    return this.observed.status === "unsettled" || this.snapshot.modified;
+  }
+
   private enterConflict(version: FileVersion): void {
     this.clearAutosave();
     this.setSnapshot({
       ...this.snapshot,
       status: "conflict",
-      modified: this.snapshot.content !== this.persistedContent,
+      modified: this.isModified(this.snapshot.content, true),
       observedVersion: version,
       error: version.status === "error" ? version.error : null,
     });
   }
 
   private adoptUnchangedFile(file: FileEditorFile): void {
+    if (this.recoveredConflict) {
+      this.enterConflict(file.version);
+      return;
+    }
     this.hasBom = file.hasBom;
     this.observed = { status: "ready", file };
     const modified = this.snapshot.content !== this.persistedContent;
@@ -429,8 +527,57 @@ export class FileEditorModel {
 
   private setSnapshot(snapshot: FileEditorSnapshot): void {
     this.snapshot = snapshot;
+    this.queueRecoveryDraft();
     for (const listener of this.listeners) listener();
   }
+
+  private queueRecoveryDraft(): void {
+    if (!this.persistDraft || this.disposed) return;
+    const draft = this.getRecoveryDraft();
+    if (sameDraft(this.lastDraft, draft)) return;
+    this.lastDraft = draft;
+    this.pendingCheckpoint = { draft };
+    this.startCheckpoint();
+  }
+
+  private startCheckpoint(): void {
+    if (!this.persistDraft || this.checkpoint || !this.pendingCheckpoint) return;
+    const persist = this.persistDraft;
+    this.checkpoint = Promise.resolve()
+      .then(async () => {
+        while (this.pendingCheckpoint) {
+          const { draft } = this.pendingCheckpoint;
+          this.pendingCheckpoint = null;
+          try {
+            await persist(draft);
+            this.setSnapshot({ ...this.snapshot, checkpointError: null });
+          } catch (error) {
+            this.setSnapshot({
+              ...this.snapshot,
+              checkpointError: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        return;
+      })
+      .finally(() => {
+        this.checkpoint = null;
+        this.startCheckpoint();
+      });
+  }
+}
+
+function sameDraft(previous: FileEditorDraft | null, next: FileEditorDraft | null): boolean {
+  if (!previous || !next) return previous === next;
+  return (
+    previous.content === next.content &&
+    previous.conflict === next.conflict &&
+    previous.base.content === next.base.content &&
+    previous.base.hasBom === next.base.hasBom &&
+    previous.base.version.modifiedAt === next.base.version.modifiedAt &&
+    previous.base.version.revision === next.base.version.revision &&
+    previous.base.version.size === next.base.version.size
+  );
 }
 
 export function getFileConflictCallout(snapshot: FileEditorSnapshot): FileConflictCallout | null {

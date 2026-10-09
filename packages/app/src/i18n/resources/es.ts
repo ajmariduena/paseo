@@ -2414,6 +2414,12 @@ export const es: TranslationResources = {
       failedToLoad: "No se pudo cargar el archivo",
       failedToLoadPreview: "No se pudo cargar la vista previa del archivo",
       editor: {
+        recoveryLoadError:
+          "No se pudieron recuperar los cambios sin guardar. La copia de recuperación se conserva.",
+        recoverySaveError:
+          "No se pudo guardar una copia de recuperación. Guarda el archivo o copia tus cambios antes de cerrar la app.",
+        recoveryClearError:
+          "No se pudo descartar la copia de recuperación. El archivo sigue abierto.",
         fileSize: "Tamaño {{size}}",
         copyContents: "Copiar contenido del archivo",
         contentsCopied: "Copiado",

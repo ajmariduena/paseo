@@ -2414,6 +2414,12 @@ export const fr: TranslationResources = {
       failedToLoad: "Impossible de charger le fichier",
       failedToLoadPreview: "Impossible de charger l’aperçu du fichier",
       editor: {
+        recoveryLoadError:
+          "Impossible de restaurer les modifications non enregistrées. La copie de récupération est conservée.",
+        recoverySaveError:
+          "Impossible de conserver une copie de récupération. Enregistrez le fichier ou copiez vos modifications avant de fermer l’application.",
+        recoveryClearError:
+          "Impossible de supprimer la copie de récupération. Le fichier reste ouvert.",
         fileSize: "Taille du fichier : {{size}}",
         copyContents: "Copier le contenu du fichier",
         contentsCopied: "Copié",

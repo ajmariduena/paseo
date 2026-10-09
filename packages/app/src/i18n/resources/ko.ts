@@ -2370,6 +2370,10 @@ export const ko: TranslationResources = {
       failedToLoad: "파일을 불러오지 못했습니다",
       failedToLoadPreview: "파일 미리보기를 불러오지 못했습니다",
       editor: {
+        recoveryLoadError: "저장하지 않은 변경 사항을 복원하지 못했습니다. 복구 사본은 유지됩니다.",
+        recoverySaveError:
+          "복구 사본을 저장하지 못했습니다. 앱을 닫기 전에 파일을 저장하거나 변경 내용을 복사하세요.",
+        recoveryClearError: "복구 사본을 삭제하지 못했습니다. 파일이 열린 상태로 유지됩니다.",
         fileSize: "파일 크기 {{size}}",
         copyContents: "파일 내용 복사",
         contentsCopied: "복사됨",

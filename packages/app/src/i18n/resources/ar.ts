@@ -2357,6 +2357,10 @@ export const ar: TranslationResources = {
       failedToLoad: "فشل تحميل الملف",
       failedToLoadPreview: "فشل تحميل معاينة الملف",
       editor: {
+        recoveryLoadError: "تعذرت استعادة تغييرات الملف غير المحفوظة. تم الاحتفاظ بنسخة الاستعادة.",
+        recoverySaveError:
+          "تعذر الاحتفاظ بنسخة للاستعادة. احفظ الملف أو انسخ تغييراتك قبل إغلاق التطبيق.",
+        recoveryClearError: "تعذر حذف نسخة الاستعادة. يبقى الملف مفتوحاً.",
         fileSize: "حجم الملف {{size}}",
         copyContents: "نسخ محتوى الملف",
         contentsCopied: "تم النسخ",

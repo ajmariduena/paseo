@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { FileVersion, FileWriteResult } from "@getpaseo/protocol/messages";
+import { createFileEditorDraftStorage, type FileEditorDraft } from "./drafts";
 import { createFileEditorRegistry } from "./registry";
 import {
   FileEditorModel,
@@ -108,6 +109,8 @@ function ready(
 interface MakeModelInput {
   content?: string;
   hasBom?: boolean;
+  draft?: FileEditorDraft | null;
+  persistDraft?: (draft: FileEditorDraft | null) => Promise<void>;
 }
 
 function makeModel(input: MakeModelInput = {}) {
@@ -118,7 +121,17 @@ function makeModel(input: MakeModelInput = {}) {
   };
   const session = new FileSession(file);
   const clock = new TestClock();
-  return { model: new FileEditorModel({ file, session, clock }), session, clock };
+  return {
+    model: new FileEditorModel({
+      file,
+      session,
+      clock,
+      draft: input.draft,
+      persistDraft: input.persistDraft,
+    }),
+    session,
+    clock,
+  };
 }
 
 function observeFile(model: FileEditorModel, file: FileEditorFile): void {
@@ -130,6 +143,257 @@ function observeVersion(model: FileEditorModel, version: FileEditorObservation):
 }
 
 describe("FileEditorModel", () => {
+  test("recovers local text against changed disk bytes and keeps the conflict across repeated restarts", () => {
+    const { model } = makeModel();
+    model.edit("work that has not reached disk");
+    const draft = model.getRecoveryDraft();
+    model.dispose();
+    const file = { content: "changed while closed", hasBom: false, version: ready("newer", 20) };
+    const session = new FileSession(file);
+    const clock = new TestClock();
+    const restored = new FileEditorModel({ file, session, draft, clock });
+    restored.connectFileObservations(new ObservationSource({ status: "ready", file }));
+    clock.fire();
+    expect(restored.getSnapshot()).toMatchObject({
+      content: "work that has not reached disk",
+      modified: true,
+      status: "conflict",
+    });
+    const nextDraft = restored.getRecoveryDraft();
+    restored.dispose();
+    const again = new FileEditorModel({ file, session, draft: nextDraft, clock: new TestClock() });
+    expect(again.getSnapshot()).toMatchObject({
+      content: "work that has not reached disk",
+      status: "conflict",
+    });
+    expect(session.writes).toEqual([]);
+  });
+
+  test("keeps local work when it is edited back to the original bytes during an external conflict", async () => {
+    let persisted: FileEditorDraft | null = null;
+    const { model } = makeModel({
+      persistDraft: async (draft) => {
+        persisted = draft;
+      },
+    });
+    model.edit("local");
+    observeFile(model, { content: "external", hasBom: false, version: ready("newer", 8) });
+    model.edit("one");
+    await model.flushRecoveryDraft();
+    expect(model.getSnapshot()).toMatchObject({ status: "conflict", modified: true });
+    expect(persisted).toMatchObject({ content: "one", conflict: true });
+    observeFile(model, { content: "external", hasBom: false, version: ready("latest", 8) });
+    await model.flushRecoveryDraft();
+    expect(persisted).toMatchObject({ content: "one", conflict: true });
+    model.dispose();
+  });
+
+  test("restores unchanged files with BOM and CRLF, then clears recovery only after the save settles", async () => {
+    let persisted: FileEditorDraft | null = null;
+    const { model } = makeModel({
+      content: "one\r\n",
+      hasBom: true,
+      persistDraft: async (draft) => {
+        persisted = draft;
+      },
+    });
+    model.edit("two\r\n");
+    await model.flushRecoveryDraft();
+    model.dispose();
+    const restored = makeModel({
+      content: "one\r\n",
+      hasBom: true,
+      draft: persisted,
+      persistDraft: async (draft) => {
+        persisted = draft;
+      },
+    });
+    restored.session.holdNextWrite();
+    restored.model.connectFileObservations(
+      new ObservationSource({ status: "ready", file: restored.session.file }),
+    );
+    expect(restored.model.getSnapshot()).toMatchObject({
+      status: "dirty",
+      content: "two\r\n",
+      lineSeparator: "\r\n",
+    });
+    restored.clock.fire();
+    await restored.model.flushRecoveryDraft();
+    expect(persisted).toMatchObject({ content: "two\r\n" });
+    expect(restored.session.writes[0]?.content).toBe("\uFEFFtwo\r\n");
+    restored.session.finishHeldWrite({ status: "written", modifiedAt: "saved", size: 8 });
+    await restored.model.acquireSaveBarrier().flush();
+    expect(persisted).toBeNull();
+    restored.model.dispose();
+  });
+
+  test("keeps a recovery copy when the file is missing and clears an already-saved copy only after observing disk", async () => {
+    const original = makeModel();
+    original.model.edit("local");
+    const draft = original.model.getRecoveryDraft()!;
+    original.model.dispose();
+    let persisted: FileEditorDraft | null = draft;
+    const { model, clock, session } = makeModel({
+      content: "local",
+      draft,
+      persistDraft: async (value) => {
+        persisted = value;
+      },
+    });
+    const source = new ObservationSource({ status: "missing", cwd: "/workspace", path: "file.ts" });
+    model.connectFileObservations(source);
+    await model.flushRecoveryDraft();
+    clock.fire();
+    expect(persisted).toMatchObject({ content: "local" });
+    expect(model.getSnapshot()).toMatchObject({ status: "conflict", content: "local" });
+    expect(session.writes).toEqual([]);
+    source.emit({ status: "ready", file: session.file });
+    await model.flushRecoveryDraft();
+    expect(persisted).toBeNull();
+    model.dispose();
+  });
+
+  test("serializes checkpoints and keeps the newest edit while an older checkpoint is pending", async () => {
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const writes: Array<string | null> = [];
+    const { model } = makeModel({
+      persistDraft: async (draft) => {
+        if (draft?.content === "first") await held;
+        writes.push(draft?.content ?? null);
+      },
+    });
+    model.edit("first");
+    await Promise.resolve();
+    model.edit("second");
+    model.edit("latest");
+    release();
+    await model.flushRecoveryDraft();
+    expect(writes).toEqual(["first", "latest"]);
+    await model.save();
+    await model.flushRecoveryDraft();
+    expect(writes.at(-1)).toBeNull();
+    model.dispose();
+  });
+
+  test("reports failed checkpoints, retries them, and restores a discarded copy when closing is cancelled", async () => {
+    let failing = true;
+    let persisted: FileEditorDraft | null = null;
+    const { model } = makeModel({
+      persistDraft: async (draft) => {
+        if (failing) throw new Error("Storage is full");
+        persisted = draft;
+      },
+    });
+    model.edit("valuable work");
+    await expect(model.flushRecoveryDraft()).rejects.toThrow("Storage is full");
+    expect(model.getSnapshot()).toMatchObject({
+      content: "valuable work",
+      checkpointError: "Storage is full",
+    });
+    failing = false;
+    await model.retryRecoveryDraft();
+    expect(persisted).toMatchObject({ content: "valuable work" });
+    expect(model.getSnapshot().checkpointError).toBeNull();
+    const restore = await model.discardRecoveryDraft();
+    expect(persisted).toBeNull();
+    restore();
+    await model.flushRecoveryDraft();
+    expect(persisted).toMatchObject({ content: "valuable work" });
+    model.dispose();
+  });
+
+  test("does not resurrect explicitly discarded text when an admitted file write completes", async () => {
+    let persisted: FileEditorDraft | null = null;
+    const { model, session } = makeModel({
+      persistDraft: async (draft) => {
+        persisted = draft;
+      },
+    });
+    session.holdNextWrite();
+    model.edit("first");
+    const saving = model.save();
+    model.edit("last unsaved edit");
+    await model.discardRecoveryDraft();
+    expect(persisted).toBeNull();
+    session.finishHeldWrite({ status: "written", modifiedAt: "saved", size: 5 });
+    await saving;
+    await model.flushRecoveryDraft();
+    expect(persisted).toBeNull();
+    model.dispose();
+  });
+
+  test("refuses handoff for unmounted recovery copies and for failed recovery storage reads", async () => {
+    let paths = ["unopened.ts"];
+    let unreadable = false;
+    const registry = createFileEditorRegistry({
+      listDraftPaths: async () => {
+        if (unreadable) throw new Error("Recovery storage cannot be read");
+        return paths;
+      },
+    });
+    let preparations = 0;
+    const prepare = async () => ++preparations;
+    const workspace = { serverId: "source", workspaceId: "workspace" };
+    const signal = new AbortController().signal;
+    await expect(registry.withSavedEditors(workspace, signal, prepare)).rejects.toThrow(
+      "unopened.ts",
+    );
+    unreadable = true;
+    await expect(registry.withSavedEditors(workspace, signal, prepare)).rejects.toThrow(
+      "Recovery storage cannot be read",
+    );
+    expect(preparations).toBe(0);
+    unreadable = false;
+    paths = [];
+    expect(await registry.withSavedEditors(workspace, signal, prepare)).toBe(1);
+  });
+
+  test("isolates recovery copies by host, workspace and tab, and preserves damaged records", async () => {
+    const values = new Map<string, string>();
+    const storage = createFileEditorDraftStorage({
+      getItem: async (key) => values.get(key) ?? null,
+      setItem: async (key, value) => {
+        values.set(key, value);
+      },
+      removeItem: async (key) => {
+        values.delete(key);
+      },
+      getAllKeys: async () => [...values.keys()],
+    });
+    const identity = {
+      serverId: "host",
+      workspaceId: "workspace",
+      tabId: "tab",
+      cwd: "/workspace",
+      path: "file.ts",
+    };
+    const { model } = makeModel();
+    model.edit("recover me");
+    const draft = model.getRecoveryDraft()!;
+    await storage.save(identity, draft);
+    expect(await storage.load(identity)).toEqual(draft);
+    expect(await storage.load({ ...identity, serverId: "other" })).toBeNull();
+    expect(await storage.load({ ...identity, workspaceId: "other" })).toBeNull();
+    expect(await storage.load({ ...identity, tabId: "other" })).toBeNull();
+    expect(await storage.listWorkspace(identity)).toHaveLength(1);
+    expect(await storage.listWorkspace({ ...identity, workspaceId: "other" })).toEqual([]);
+    const key = [...values.keys()][0]!;
+    const raw = values.get(key)!;
+    values.set(key, "damaged copy");
+    await expect(storage.load(identity)).rejects.toThrow();
+    await expect(storage.listWorkspace(identity)).rejects.toThrow();
+    expect(values.get(key)).toBe("damaged copy");
+    values.set(key, raw.replace('"path":"file.ts"', '"path":"different.ts"'));
+    await expect(storage.load(identity)).rejects.toThrow("different file");
+    expect(values.size).toBe(1);
+    await storage.save(identity, null);
+    expect(values.size).toBe(0);
+    model.dispose();
+  });
+
   test("leaves conflicting or failed saves recoverable and never prepares the workspace", async () => {
     const registry = createFileEditorRegistry();
     const workspace = { serverId: "source", workspaceId: "workspace" };

@@ -1,5 +1,6 @@
 import { useSourceHandoffReadOnly } from "@/handoff/state";
 import { Button } from "@/components/ui/button";
+import { Alert } from "@/components/ui/alert";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import React, {
   useCallback,
@@ -36,6 +37,8 @@ import { FileEditorModel, getFileConflictCallout, type FileConflictCallout } fro
 import { createFileObservationSource } from "./editor/observation-source";
 import { FileEditorView } from "./editor/view";
 import { workspaceFileEditors } from "./editor/registry";
+import { useFileEditorDraft } from "./editor/use-draft";
+import type { FileEditorDraft } from "./editor/drafts";
 import { FileSourceView } from "./source/view";
 import type { FileConflictAlertState } from "./conflict-alert";
 import type { LiveFileModel } from "./live-file/model";
@@ -222,6 +225,60 @@ function FilePreviewBody({
   );
 }
 
+function recoveryPreview(draft: FileEditorDraft): ExplorerFile {
+  return {
+    ...draft.base.version,
+    kind: "text",
+    encoding: "utf-8",
+    content: draft.base.content,
+    hasBom: draft.base.hasBom,
+    mimeType: "text/plain",
+  };
+}
+
+function chooseRecoveryPreview(disk: ExplorerFile | null, recovered: ExplorerFile | null) {
+  return disk?.kind === "text" ? disk : (recovered ?? disk);
+}
+
+function canEditPreview(
+  preview: ExplorerFile | null,
+  supportsEditing: boolean,
+  draft: FileEditorDraft | null,
+) {
+  return (isWeb && draft !== null) || isEditableTextFile({ preview, supportsEditing });
+}
+
+function FileRecoveryGate({
+  recovery,
+  children,
+}: {
+  recovery: ReturnType<typeof useFileEditorDraft>;
+  children: React.ReactNode;
+}) {
+  const { t } = useTranslation();
+  const { refetch } = recovery.query;
+  const retry = useCallback(() => void refetch(), [refetch]);
+  if (!recovery.enabled || (!recovery.query.isPending && !recovery.query.isError)) return children;
+  return (
+    <View style={styles.container} testID="workspace-file-pane">
+      <View style={styles.centerState}>
+        {recovery.query.isError ? (
+          <>
+            <Text style={styles.errorText} accessibilityRole="alert">
+              {t("panels.file.editor.recoveryLoadError")}
+            </Text>
+            <Button variant="outline" onPress={retry} loading={recovery.query.isFetching}>
+              {t("common.actions.retry")}
+            </Button>
+          </>
+        ) : (
+          <ThemedLoadingSpinner size="small" uniProps={foregroundMutedColorMapping} />
+        )}
+      </View>
+    </View>
+  );
+}
+
 export function FilePane({
   serverId,
   workspaceId,
@@ -258,6 +315,8 @@ export function FilePane({
     [normalizedFilePath, normalizedWorkspaceRoot],
   );
 
+  const recovery = useFileEditorDraft(readTarget);
+
   // Re-read the file when this pane becomes visible again (#445). `isActive`
   // covers tab switches; active app visibility covers backgrounding and returning
   // from another window after an external edit. The gate lives in isFileQueryEnabled.
@@ -284,13 +343,15 @@ export function FilePane({
 
   useEffect(() => setPreviewMode("preview"), [targetKey]);
 
-  const { file: preview, imageAttachment } = resolveFilePreviewLifecycle(previewLifecycle);
+  const { file: diskPreview, imageAttachment } = resolveFilePreviewLifecycle(previewLifecycle);
+  const recoveredPreview = useMemo<ExplorerFile | null>(() => {
+    if (!recovery.draft) return null;
+    return recoveryPreview(recovery.draft);
+  }, [recovery.draft]);
+  const preview = chooseRecoveryPreview(diskPreview, recoveredPreview);
   const imagePreviewUri = useAttachmentPreviewUrl(imageAttachment);
   const isRenderable = isRenderablePreview(preview, location.path);
-  const editable = isEditableTextFile({
-    preview,
-    supportsEditing,
-  });
+  const editable = canEditPreview(preview, supportsEditing, recovery.draft);
   const canTogglePreviewMode = isRenderable && !location.lineStart;
   const lineCount =
     preview?.kind === "text" ? (preview.content ?? "").split("\n").length : undefined;
@@ -301,30 +362,34 @@ export function FilePane({
     previewLifecycle.status === "preparing";
 
   return (
-    <FilePanePresentation
-      serverId={serverId}
-      workspaceId={workspaceId}
-      client={client}
-      readTarget={readTarget}
-      preview={preview}
-      liveFile={liveFile.model}
-      onRetryRead={liveFile.refresh}
-      retryingRead={liveFile.isRetrying}
-      retryLabel={t("common.actions.retry")}
-      filename={getFileNameFromPath(location.path) ?? location.path}
-      previewMode={canTogglePreviewMode ? previewMode : undefined}
-      onPreviewModeChange={canTogglePreviewMode ? setPreviewMode : undefined}
-      lineCount={lineCount}
-      editable={editable}
-      readOnly={readOnly}
-      disconnectedMessage={t("workspace.terminal.hostDisconnected")}
-      errorMessage={errorMessage}
-      isLoading={isLoading}
-      isMobile={isMobile}
-      location={location}
-      navigationRevision={navigationRevision}
-      imagePreviewUri={imagePreviewUri}
-    />
+    <FileRecoveryGate recovery={recovery}>
+      <FilePanePresentation
+        serverId={serverId}
+        workspaceId={workspaceId}
+        client={client}
+        readTarget={readTarget}
+        preview={preview}
+        liveFile={liveFile.model}
+        onRetryRead={liveFile.refresh}
+        retryingRead={liveFile.isRetrying}
+        retryLabel={t("common.actions.retry")}
+        filename={getFileNameFromPath(location.path) ?? location.path}
+        previewMode={canTogglePreviewMode ? previewMode : undefined}
+        onPreviewModeChange={canTogglePreviewMode ? setPreviewMode : undefined}
+        lineCount={lineCount}
+        editable={editable}
+        readOnly={readOnly || !supportsEditing}
+        draft={recovery.draft}
+        persistDraft={recovery.persistDraft}
+        disconnectedMessage={t("workspace.terminal.hostDisconnected")}
+        errorMessage={errorMessage}
+        isLoading={isLoading}
+        isMobile={isMobile}
+        location={location}
+        navigationRevision={navigationRevision}
+        imagePreviewUri={imagePreviewUri}
+      />
+    </FileRecoveryGate>
   );
 }
 
@@ -360,6 +425,8 @@ function FilePanePresentation({
   lineCount,
   editable,
   readOnly,
+  draft,
+  persistDraft,
   disconnectedMessage,
   errorMessage,
   isLoading,
@@ -383,6 +450,8 @@ function FilePanePresentation({
   lineCount?: number;
   editable: boolean;
   readOnly: boolean;
+  draft: FileEditorDraft | null;
+  persistDraft: (draft: FileEditorDraft | null) => Promise<void>;
   disconnectedMessage: string;
   errorMessage: string | null;
   isLoading: boolean;
@@ -395,7 +464,7 @@ function FilePanePresentation({
     () => (preview?.kind === "text" ? (preview.content ?? "") : ""),
     [preview],
   );
-  if (!client && readTarget) {
+  if (!client && readTarget && !draft) {
     return (
       <View style={styles.container} testID="workspace-file-pane">
         <View style={styles.centerState}>
@@ -405,7 +474,7 @@ function FilePanePresentation({
     );
   }
 
-  if (editable && client && readTarget && preview?.kind === "text") {
+  if (editable && readTarget && preview?.kind === "text") {
     return (
       <EditableFilePane
         key={`${serverId}:${readTarget.cwd}:${readTarget.path}`}
@@ -413,6 +482,8 @@ function FilePanePresentation({
         serverId={serverId}
         workspaceId={workspaceId}
         readOnly={readOnly}
+        draft={draft}
+        persistDraft={persistDraft}
         cwd={readTarget.cwd}
         path={readTarget.path}
         preview={preview as TextExplorerFile}
@@ -479,6 +550,8 @@ function EditableFilePane({
   serverId,
   workspaceId,
   readOnly,
+  draft,
+  persistDraft,
   cwd,
   path,
   preview,
@@ -493,10 +566,12 @@ function EditableFilePane({
   location,
   navigationRevision,
 }: {
-  client: DaemonClient;
+  client: DaemonClient | null;
   serverId: string;
   workspaceId: string;
   readOnly: boolean;
+  draft: FileEditorDraft | null;
+  persistDraft: (draft: FileEditorDraft | null) => Promise<void>;
   cwd: string;
   path: string;
   preview: TextExplorerFile;
@@ -515,13 +590,19 @@ function EditableFilePane({
   const { t } = useTranslation();
   const [cursor, setCursor] = useState({ line: 1, column: 1 });
   const [vimMode, setVimMode] = useState<string | null>(settings.vimKeybindings ? "NORMAL" : null);
+  const clientRef = useRef(client);
+  useLayoutEffect(() => {
+    clientRef.current = client;
+  }, [client]);
   const session = useMemo(
     () => ({
       write(input: { content: string; expectedModifiedAt: string; expectedRevision?: string }) {
-        return client.writeFile({ cwd, path, ...input });
+        const currentClient = clientRef.current;
+        if (!currentClient) throw new Error(t("common.errors.daemonClientUnavailable"));
+        return currentClient.writeFile({ cwd, path, ...input });
       },
     }),
-    [client, cwd, path],
+    [cwd, path, t],
   );
   const [model] = useState(() => {
     return new FileEditorModel({
@@ -539,6 +620,8 @@ function EditableFilePane({
       },
       session,
       readOnly,
+      draft,
+      persistDraft,
     });
   });
   useLayoutEffect(() => model.setReadOnly(readOnly), [model, readOnly]);
@@ -553,7 +636,23 @@ function EditableFilePane({
   }, [liveFile, model]);
   const snapshot = useSyncExternalStore(model.subscribe, model.getSnapshot, model.getSnapshot);
   const suspendPendingSave = useCallback(() => model.suspendAutosave(), [model]);
-  usePublishPanelInstanceAttributes({ modified: snapshot.modified, suspendPendingSave });
+  const discardChanges = useCallback(() => model.discardRecoveryDraft(), [model]);
+  usePublishPanelInstanceAttributes({
+    modified: snapshot.modified,
+    suspendPendingSave,
+    discardChanges,
+  });
+  const [retryingCheckpoint, setRetryingCheckpoint] = useState(false);
+  const retryCheckpoint = useCallback(async () => {
+    setRetryingCheckpoint(true);
+    try {
+      await model.retryRecoveryDraft();
+    } catch {
+      // The model retains the failure for the inline recovery alert.
+    } finally {
+      setRetryingCheckpoint(false);
+    }
+  }, [model]);
   const theme = UnistylesRuntime.getTheme();
   const visualTheme = useMemo(
     () => ({
@@ -636,6 +735,23 @@ function EditableFilePane({
         onModeChange={onModeChange}
         getCopyText={getCopyText}
       />
+      {snapshot.checkpointError ? (
+        <Alert
+          variant="error"
+          title={t("panels.file.editor.recoverySaveError")}
+          description={snapshot.checkpointError}
+          testID="file-recovery-error"
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onPress={retryCheckpoint}
+            loading={retryingCheckpoint}
+          >
+            {t("common.actions.retry")}
+          </Button>
+        </Alert>
+      ) : null}
       {showSource ? (
         <FileEditorView
           model={model}

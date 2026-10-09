@@ -2385,6 +2385,11 @@ export const en = {
       failedToLoad: "Failed to load file",
       failedToLoadPreview: "Failed to load file preview",
       editor: {
+        recoveryLoadError:
+          "Could not restore unsaved file changes. Your recovery copy has been kept.",
+        recoverySaveError:
+          "Could not keep a recovery copy. Save this file or copy your changes before closing the app.",
+        recoveryClearError: "Could not discard the recovery copy. The file remains open.",
         fileSize: "File size {{size}}",
         copyContents: "Copy file contents",
         contentsCopied: "Copied",

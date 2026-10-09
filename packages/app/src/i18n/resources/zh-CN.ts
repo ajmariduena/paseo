@@ -2332,6 +2332,9 @@ export const zhCN: TranslationResources = {
       failedToLoad: "加载文件失败",
       failedToLoadPreview: "加载文件预览失败",
       editor: {
+        recoveryLoadError: "无法恢复未保存的更改。恢复副本已保留。",
+        recoverySaveError: "无法保存恢复副本。请在关闭应用前保存文件或复制更改。",
+        recoveryClearError: "无法丢弃恢复副本。文件仍保持打开状态。",
         fileSize: "文件大小 {{size}}",
         copyContents: "复制文件内容",
         contentsCopied: "已复制",

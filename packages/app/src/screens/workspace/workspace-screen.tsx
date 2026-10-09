@@ -2870,9 +2870,18 @@ function WorkspaceScreenContent({
         destructive: true,
       });
       if (!confirmed) resumePendingSave?.();
+      if (confirmed && attributes.discardChanges) {
+        try {
+          await attributes.discardChanges();
+        } catch {
+          resumePendingSave?.();
+          toast.error(t("panels.file.editor.recoveryClearError"));
+          return false;
+        }
+      }
       return confirmed;
     },
-    [normalizedServerId, normalizedWorkspaceId, t],
+    [normalizedServerId, normalizedWorkspaceId, t, toast],
   );
 
   const handleCloseTabById = useCallback(
@@ -3087,6 +3096,22 @@ function WorkspaceScreenContent({
         return false;
       }
 
+      const restoreDrafts: Array<() => void> = [];
+      try {
+        for (const tab of tabsToClose) {
+          const restore = await getPanelInstanceAttributes({
+            serverId: normalizedServerId,
+            workspaceId: normalizedWorkspaceId,
+            tabId: tab.tabId,
+          }).discardChanges?.();
+          if (restore) restoreDrafts.push(restore);
+        }
+      } catch {
+        for (const restore of restoreDrafts) restore();
+        toast.error(t("panels.file.editor.recoveryClearError"));
+        return false;
+      }
+
       await closeBulkWorkspaceTabs({
         client,
         groups,
@@ -3131,6 +3156,7 @@ function WorkspaceScreenContent({
       normalizedWorkspaceId,
       persistenceKey,
       t,
+      toast,
     ],
   );
 
