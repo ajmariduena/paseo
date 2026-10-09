@@ -53,6 +53,7 @@ export const en = {
     parent: "Destination parent directory",
     mode: "Conversation continuity",
     native: "Keep native sessions",
+    mixed: "Mixed: native sessions and exported history",
     context: "Continue with exported history",
     nativeDescription:
       "Native sessions require compatible provider versions on both hosts. An incompatible session will stop the transfer.",

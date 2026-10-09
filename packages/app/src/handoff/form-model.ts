@@ -1,5 +1,7 @@
 import { isHandoffCancellationComplete } from "./persistence";
+import { handoffConversationMode } from "@getpaseo/protocol/handoff-control";
 import type {
+  HandoffConversationModes,
   HandoffDestinationSnapshot,
   HandoffDestinationPreview,
   HandoffDestinationPage,
@@ -18,6 +20,7 @@ interface Draft {
   destination: DestinationHost | null;
   destinationParent: string;
   continuationMode: "native" | "context";
+  conversationModes: HandoffConversationModes;
 }
 type Run =
   | { status: "idle" }
@@ -89,7 +92,12 @@ export interface HandoffFormPorts {
 function editingState(): HandoffFormState {
   return {
     kind: "editing",
-    draft: { destination: null, destinationParent: "", continuationMode: "native" },
+    draft: {
+      destination: null,
+      destinationParent: "",
+      continuationMode: "native",
+      conversationModes: [],
+    },
     error: null,
   };
 }
@@ -179,6 +187,7 @@ export function openHandoffForm(origin: HandoffOrigin, ports: HandoffFormPorts) 
               destination: { serverId: record.destinationServerId, label: record.destinationLabel },
               destinationParent: record.destinationParent,
               continuationMode: record.continuationMode,
+              conversationModes: record.conversationModes ?? [],
             },
             error: message(error),
           });
@@ -260,15 +269,36 @@ export function openHandoffForm(origin: HandoffOrigin, ports: HandoffFormPorts) 
     },
     setContinuationMode(continuationMode: Draft["continuationMode"]) {
       if (state.kind === "review") {
+        const conversationModes = state.preview.conversations.map(({ agentId }) => ({
+          sourceAgentId: agentId,
+          mode: continuationMode,
+        }));
         publish({
           ...state,
-          draft: { ...state.draft, continuationMode },
-          record: { ...state.record, continuationMode },
+          draft: { ...state.draft, continuationMode, conversationModes },
+          record: { ...state.record, continuationMode, conversationModes },
         });
         return;
       }
       if (state.kind !== "editing") return;
-      publish({ ...state, draft: { ...state.draft, continuationMode } });
+      publish({ ...state, draft: { ...state.draft, continuationMode, conversationModes: [] } });
+    },
+    setConversationMode(sourceAgentId: string, mode: Draft["continuationMode"]) {
+      if (
+        state.kind !== "review" ||
+        !state.preview.conversations.some((conversation) => conversation.agentId === sourceAgentId)
+      )
+        return;
+      const record = state.record;
+      const conversationModes = state.preview.conversations.map(({ agentId }) => ({
+        sourceAgentId: agentId,
+        mode: agentId === sourceAgentId ? mode : handoffConversationMode(record, agentId),
+      }));
+      publish({
+        ...state,
+        draft: { ...state.draft, conversationModes },
+        record: { ...state.record, conversationModes },
+      });
     },
     async review() {
       if (state.kind !== "editing") return;
@@ -290,11 +320,18 @@ export function openHandoffForm(origin: HandoffOrigin, ports: HandoffFormPorts) 
       publish({ kind: "checking", draft });
       try {
         const preview = await ports.validate(record);
+        const conversationModes = preview.conversations.map(({ agentId }) => ({
+          sourceAgentId: agentId,
+          mode:
+            draft.conversationModes.find((item) => item.sourceAgentId === agentId)?.mode ??
+            continuationMode,
+        }));
         publish({
           kind: "review",
-          draft,
+          draft: { ...draft, conversationModes },
           record: {
             ...record,
+            conversationModes,
             reviewedAgentIds: preview.conversations.map((conversation) => conversation.agentId),
             workspaceReviewDigest: preview.workspace.reviewDigest,
             stoppedWorkReview: preview.stoppedWork.review,
@@ -361,7 +398,8 @@ export function openHandoffForm(origin: HandoffOrigin, ports: HandoffFormPorts) 
       const { record, preview } = state;
       if (
         !preview.conversations.every(
-          (conversation) => conversation[record.continuationMode].available,
+          (conversation) =>
+            conversation[handoffConversationMode(record, conversation.agentId)].available,
         )
       )
         return;
@@ -415,7 +453,8 @@ export function handoffFormActions(state: HandoffFormState) {
     const ready =
       state.omissions.run.status !== "loading" &&
       state.preview.conversations.every(
-        (conversation) => conversation[state.record.continuationMode].available,
+        (conversation) =>
+          conversation[handoffConversationMode(state.record, conversation.agentId)].available,
       );
     return { primary: ready ? "prepare" : null, canCancel: false } as const;
   }

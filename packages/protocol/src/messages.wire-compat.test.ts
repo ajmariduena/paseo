@@ -96,6 +96,8 @@ test("handoff reservation requires an explicit continuation mode", () => {
       continuationMode,
       workspaceReviewDigest: "a".repeat(64),
       integrationReview: [{ agentId: "agent", omittedMcpServers: ["browser"] }],
+      sourceAgentIds: ["agent"],
+      conversationModes: [{ sourceAgentId: "agent", mode: "context" }],
       stoppedWorkReview: {
         agents: [],
         terminals: [],
@@ -103,6 +105,12 @@ test("handoff reservation requires an explicit continuation mode", () => {
       },
     };
     expect(SessionInboundMessageSchema.parse(reviewed)).toEqual(reviewed);
+    expect(
+      SessionInboundMessageSchema.safeParse({
+        ...reviewed,
+        conversationModes: [{ sourceAgentId: "agent", mode: "automatic" }],
+      }).success,
+    ).toBe(false);
     expect(
       SessionInboundMessageSchema.safeParse({
         ...reviewed,

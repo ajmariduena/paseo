@@ -60,6 +60,7 @@ export const ptBR: TranslationResources = {
     parent: "Diretório pai no destino",
     mode: "Continuidade das conversas",
     native: "Manter sessões nativas",
+    mixed: "Misto: sessões nativas e histórico exportado",
     context: "Continuar com histórico exportado",
     nativeDescription:
       "Sessões nativas exigem versões compatíveis do provedor nos dois hosts. Uma sessão incompatível interromperá a transferência.",

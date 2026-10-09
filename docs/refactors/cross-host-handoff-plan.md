@@ -298,9 +298,15 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   native activation policy must not prevent reading exported history. A workflow-bearing fixture
   now exports its history while native installation still refuses its automation state.
   The app shows native/context availability and reasons for each conversation, using read-only
-  source-artifact and destination-version inspection. The chosen mode still applies to the whole
-  workspace; mixed per-conversation choices remain open. Destination conversations identify native
-  continuation versus a new session with exported history and open a read-only previous conversation
+  source-artifact and destination-version inspection. A multi-conversation review lets you retain
+  native sessions where compatible and explicitly select exported history for another conversation.
+  The selected plan is fixed in the destination reservation and local recovery. A changed retry is
+  refused. Native installation, context files, cancellation cleanup, labels and readable history
+  follow each conversation's choice. Recovery without local state retains the same plan; the transfer
+  summary identifies mixed continuation. The [mixed-continuation evidence](../qa-evidence/handoff-mixed.txt)
+  separates synthetic session transport/UI coverage from real-provider continuity.
+  Destination conversations identify native continuation versus a new session with exported history
+  and open a read-only previous conversation
   with its source host and path. Historical links retain source authority and may be unavailable;
   they must not resolve against the destination's workspace by accident.
   Source decoding still uses the tested Claude codec; other providers and incompatible source

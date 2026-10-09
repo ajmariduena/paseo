@@ -1,6 +1,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { AgentProviderRuntimeSettingsMap } from "@getpaseo/protocol/provider-config";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { expect, type Page } from "@playwright/test";
 import { startTestDaemon } from "./daemon-update";
@@ -21,6 +22,10 @@ export async function handoffHosts(
   options: {
     git?: boolean;
     mcpServersSupported?: boolean;
+    providerSettings?: {
+      source: AgentProviderRuntimeSettingsMap;
+      destination: AgentProviderRuntimeSettingsMap;
+    };
     repo?: Parameters<typeof seedWorkspace>[0]["repo"];
     claudeConfigDirs?: { source: string; destination: string };
   } = {},
@@ -43,10 +48,12 @@ export async function handoffHosts(
       workspaceHandoffCapability: true,
       realClaudeConfigDir: options.claudeConfigDirs?.source,
       mcpServersSupported: options.mcpServersSupported,
+      providerSettings: options.providerSettings?.source,
     });
     cleanupSteps.push(() => source.close());
     const destination = await startTestDaemon({
       realClaudeConfigDir: options.claudeConfigDirs?.destination,
+      providerSettings: options.providerSettings?.destination,
       version: "0.11.1",
       workspaceHandoffCapability: true,
     });

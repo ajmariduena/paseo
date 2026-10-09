@@ -1,3 +1,7 @@
+import {
+  handoffConversationMode,
+  handoffContinuationSummary,
+} from "@getpaseo/protocol/handoff-control";
 import { isHandoffCancellationComplete } from "./persistence";
 import { useCallback, useMemo } from "react";
 import { Text, View } from "react-native";
@@ -6,7 +10,11 @@ import { StyleSheet } from "react-native-unistyles";
 import { AdaptiveModalSheet } from "@/components/adaptive-modal-sheet";
 import { Button } from "@/components/ui/button";
 import { Field, FormTextInput } from "@/components/ui/form-field";
-import { SelectField, type SelectFieldDisplay } from "@/components/ui/select-field";
+import {
+  SelectField,
+  type SelectFieldDisplay,
+  type SelectFieldOption,
+} from "@/components/ui/select-field";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useHosts } from "@/runtime/host-runtime";
 import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
@@ -131,7 +139,7 @@ function TransferSummary({ state }: { state: Extract<HandoffFormState, { kind: "
         </Text>
       </Field>
       <Field label={t("handoff.mode")}>
-        <Text style={styles.value}>{t(`handoff.${state.record.continuationMode}`)}</Text>
+        <Text style={styles.value}>{t(`handoff.${handoffContinuationSummary(state.record)}`)}</Text>
       </Field>
       <View style={styles.status}>
         <Text style={styles.value} testID="handoff-status" accessibilityLiveRegion="polite">
@@ -182,7 +190,7 @@ function RecoveryTransfers({
       state.page.transfers.map((transfer) => ({
         id: transfer.transferId,
         value: transfer.transferId,
-        label: t(`handoff.${transfer.continuationMode}`),
+        label: t(`handoff.${handoffContinuationSummary(transfer)}`),
         description: shortenPath(transfer.destinationCwd),
         testID: `handoff-recovery-${transfer.transferId}`,
       })),
@@ -220,8 +228,55 @@ function RecoveryTransfers({
   );
 }
 
-function ReviewConversations({ state }: { state: Extract<HandoffFormState, { kind: "review" }> }) {
+function ConversationModeField({
+  agentId,
+  title,
+  mode,
+  options,
+  onMode,
+}: {
+  agentId: string;
+  title: string;
+  mode: "native" | "context";
+  options: SelectFieldOption<"native" | "context">[];
+  onMode: (sourceAgentId: string, mode: "native" | "context") => void;
+}) {
   const { t } = useTranslation();
+  const size = useIsCompactFormFactor() ? "md" : "sm";
+  const display = useMemo(
+    () => ({ label: t(`handoff.${mode}`), description: t(`handoff.${mode}Description`) }),
+    [mode, t],
+  );
+  const change = useCallback(
+    (value: "native" | "context") => onMode(agentId, value),
+    [agentId, onMode],
+  );
+  return (
+    <SelectField
+      label={title}
+      value={mode}
+      selectedDisplay={display}
+      options={options}
+      onChange={change}
+      size={size}
+      placeholder={t("handoff.mode")}
+      emptyText=""
+      triggerTestID={`handoff-conversation-mode-${agentId}`}
+    />
+  );
+}
+
+function ReviewConversations({
+  state,
+  options,
+  onMode,
+}: {
+  state: Extract<HandoffFormState, { kind: "review" }>;
+  options: SelectFieldOption<"native" | "context">[];
+  onMode: (sourceAgentId: string, mode: "native" | "context") => void;
+}) {
+  const { t } = useTranslation();
+  const individualChoices = state.preview.conversations.length > 1;
   return (
     <Field label={t("handoff.conversations")}>
       <View style={styles.status} testID="handoff-review">
@@ -229,21 +284,34 @@ function ReviewConversations({ state }: { state: Extract<HandoffFormState, { kin
           <Text style={styles.text}>{t("handoff.emptyConversations")}</Text>
         ) : null}
         {state.preview.conversations.map((conversation) => {
-          const availability = conversation[state.record.continuationMode];
+          const mode = handoffConversationMode(state.record, conversation.agentId);
+          const availability = conversation[mode];
+          const reason =
+            availability.reason ?? (mode === "context" ? conversation.native.reason : null);
           const integrations = state.preview.integrationReview.find(
             (entry) => entry.agentId === conversation.agentId,
           );
           const omittedMcpServers = integrations?.omittedMcpServers ?? [];
           return (
             <View key={conversation.agentId} style={styles.status}>
-              <Text style={styles.value}>
-                {conversation.title ?? t("handoff.untitledConversation")}
-              </Text>
-              <Text style={availability.available ? styles.text : styles.error}>
-                {availability.available
-                  ? t(`handoff.${state.record.continuationMode}`)
-                  : availability.reason}
-              </Text>
+              {individualChoices ? (
+                <ConversationModeField
+                  agentId={conversation.agentId}
+                  title={conversation.title ?? t("handoff.untitledConversation")}
+                  mode={mode}
+                  options={options}
+                  onMode={onMode}
+                />
+              ) : (
+                <Text style={styles.value}>
+                  {conversation.title ?? t("handoff.untitledConversation")}
+                </Text>
+              )}
+              {reason || !individualChoices ? (
+                <Text style={availability.available ? styles.text : styles.error}>
+                  {reason ?? t(`handoff.${mode}`)}
+                </Text>
+              ) : null}
               {omittedMcpServers.length > 0 ? (
                 <Text style={styles.text} testID="handoff-omitted-mcp">
                   {t("handoff.omittedMcpServers", { names: omittedMcpServers.join(", ") })}
@@ -402,6 +470,12 @@ function ReviewWorkspace({
   );
 }
 
+function selectedContinuationMode(state: HandoffFormState) {
+  if (state.kind === "review" && state.preview.conversations.length === 1)
+    return handoffConversationMode(state.record, state.preview.conversations[0].agentId);
+  return "draft" in state ? state.draft.continuationMode : "native";
+}
+
 function OpenHandoffSheet(props: Props) {
   const { t } = useTranslation();
   const { model, state } = useHandoffForm(props);
@@ -455,7 +529,7 @@ function OpenHandoffSheet(props: Props) {
     state.kind === "editing" || state.kind === "checking" || state.kind === "review"
       ? state.draft
       : null;
-  const selectedMode = draft?.continuationMode ?? "native";
+  const selectedMode = selectedContinuationMode(state);
   const modeDisplay = useMemo(
     () => ({
       label: t(`handoff.${selectedMode}`),
@@ -524,10 +598,10 @@ function OpenHandoffSheet(props: Props) {
               </Field>
             </>
           )}
-          {state.kind !== "review" || state.preview.conversations.length > 0 ? (
+          {state.kind !== "review" || state.preview.conversations.length === 1 ? (
             <SelectField
               label={t("handoff.mode")}
-              value={draft.continuationMode}
+              value={selectedMode}
               disabled={state.kind === "checking"}
               selectedDisplay={modeDisplay}
               options={modeOptions}
@@ -540,7 +614,11 @@ function OpenHandoffSheet(props: Props) {
           ) : null}
           {state.kind === "review" ? (
             <>
-              <ReviewConversations state={state} />
+              <ReviewConversations
+                state={state}
+                options={modeOptions}
+                onMode={model.setConversationMode}
+              />
               <ReviewWorkspace state={state} onOmissionPage={model.listOmissions} />
             </>
           ) : null}

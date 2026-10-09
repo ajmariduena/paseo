@@ -4,6 +4,8 @@ import type {
   HandoffReleaseReceipt,
   HandoffStoppedWorkReview,
   HandoffIntegrationReview,
+  HandoffConversationModes,
+  HandoffContinuationSelection,
 } from "@getpaseo/protocol/handoff-control";
 import type { DaemonClient } from "./daemon-client.js";
 import {
@@ -50,6 +52,7 @@ export interface PrepareWorkspaceHandoffInput extends HandoffConnections {
   workspaceId: string;
   destinationParent: string;
   continuationMode: "native" | "context";
+  conversationModes?: HandoffConversationModes;
   expectedAgentIds?: string[];
   workspaceReviewDigest?: string;
   stoppedWorkReview?: HandoffStoppedWorkReview;
@@ -81,9 +84,10 @@ async function validateReview(
   input: PrepareWorkspaceHandoffInput,
   prior: HandoffDestinationSnapshot | null,
 ) {
-  const expected = input.workspaceReviewDigest ?? prior?.workspaceReviewDigest;
-  const stoppedWorkReview = input.stoppedWorkReview ?? prior?.stoppedWorkReview;
-  const integrationReview = input.integrationReview ?? prior?.integrationReview;
+  const saved = prior ?? input;
+  const expected = input.workspaceReviewDigest ?? saved.workspaceReviewDigest;
+  const stoppedWorkReview = input.stoppedWorkReview ?? saved.stoppedWorkReview;
+  const integrationReview = input.integrationReview ?? saved.integrationReview;
   if ((expected || stoppedWorkReview || integrationReview) && !prior) {
     const current = handoffResult(
       await handoffRequest(
@@ -110,7 +114,12 @@ async function validateReview(
         "Work that will stop changed after review; review the transfer again",
       );
   }
-  return { workspaceReviewDigest: expected, stoppedWorkReview, integrationReview };
+  return {
+    workspaceReviewDigest: expected,
+    stoppedWorkReview,
+    integrationReview,
+    conversationModes: input.conversationModes ?? saved.conversationModes,
+  };
 }
 
 /** Keep transferId in the caller's durable UI state. Reconnect reuses the hosts' journals. */
@@ -126,10 +135,8 @@ export async function prepareWorkspaceHandoff(
     signal,
   );
   if (prior.error && prior.error.code !== "not_found") handoffResult(prior);
-  const { workspaceReviewDigest, stoppedWorkReview, integrationReview } = await validateReview(
-    input,
-    prior.result,
-  );
+  const { workspaceReviewDigest, stoppedWorkReview, integrationReview, conversationModes } =
+    await validateReview(input, prior.result);
   const inventory = prior.result
     ? { agentIds: prior.result.sourceAgentIds }
     : handoffResult(
@@ -149,6 +156,7 @@ export async function prepareWorkspaceHandoff(
           sourceAgentIds: inventory.agentIds,
           destinationParent: input.destinationParent,
           continuationMode: input.continuationMode,
+          conversationModes,
           workspaceReviewDigest,
           stoppedWorkReview,
           integrationReview,
@@ -156,7 +164,13 @@ export async function prepareWorkspaceHandoff(
       signal,
     ),
   );
-  validateReservedReview(reserved, { workspaceReviewDigest, stoppedWorkReview, integrationReview });
+  validateReservedReview(reserved, {
+    workspaceReviewDigest,
+    stoppedWorkReview,
+    integrationReview,
+    continuationMode: input.continuationMode,
+    conversationModes,
+  });
   if (reserved.state === "cancelled")
     throw new Error("This handoff was cancelled; start a new transfer");
   if (reserved.state === "active") {
@@ -231,6 +245,19 @@ export async function prepareWorkspaceHandoff(
   return staged;
 }
 
+export function handoffContinuationsMatch(
+  left: HandoffContinuationSelection,
+  right: HandoffContinuationSelection,
+): boolean {
+  const sorted = (modes: HandoffConversationModes | undefined) =>
+    modes?.toSorted((a, b) => a.sourceAgentId.localeCompare(b.sourceAgentId));
+  return (
+    left.continuationMode === right.continuationMode &&
+    JSON.stringify(sorted(left.conversationModes)) ===
+      JSON.stringify(sorted(right.conversationModes))
+  );
+}
+
 export function handoffReviewsMatch(
   left: Pick<
     HandoffDestinationSnapshot,
@@ -252,9 +279,15 @@ function validateReservedReview(
   reserved: HandoffDestinationSnapshot,
   review: Pick<
     PrepareWorkspaceHandoffInput,
-    "workspaceReviewDigest" | "stoppedWorkReview" | "integrationReview"
+    | "workspaceReviewDigest"
+    | "stoppedWorkReview"
+    | "integrationReview"
+    | "continuationMode"
+    | "conversationModes"
   >,
 ) {
+  if (!handoffContinuationsMatch(reserved, review))
+    throw new Error("Destination reservation did not retain the selected conversation modes");
   if (JSON.stringify(reserved.integrationReview) !== JSON.stringify(review.integrationReview))
     throw new Error("Destination reservation did not retain the reviewed conversation connections");
   if (reserved.workspaceReviewDigest !== review.workspaceReviewDigest)

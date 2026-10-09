@@ -56,6 +56,7 @@ export const ja: TranslationResources = {
     parent: "移動先の親ディレクトリ",
     mode: "会話の引き継ぎ",
     native: "ネイティブセッションを保持",
+    mixed: "混在：ネイティブセッションとエクスポートした履歴",
     context: "エクスポートした履歴で続行",
     nativeDescription:
       "ネイティブセッションには両ホストで互換性のあるプロバイダーバージョンが必要です。互換性がない場合、転送は停止します。",

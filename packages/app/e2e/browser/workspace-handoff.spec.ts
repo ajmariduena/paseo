@@ -1,4 +1,7 @@
-import { mkdir, readFile, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { claudeProjectDirSync } from "../../../server/src/server/agent/providers/claude/project-dir";
+import { mkdir, mkdtemp, readFile, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, test } from "../support/fixtures";
 import { pressDirectNewTabShortcut } from "../support/helpers/launcher";
@@ -29,6 +32,140 @@ function hasRecoveredLocalWork() {
 
 test.describe("workspace handoff", () => {
   test.skip(process.platform === "win32", "Ownership release requires POSIX directory durability");
+
+  for (const layout of ["desktop", "compact"] as const) {
+    test(`${layout} preserves mixed conversation choices through recovery and activation`, async ({
+      page,
+    }, testInfo) => {
+      test.setTimeout(150_000);
+      if (layout === "compact") await page.setViewportSize({ width: 390, height: 844 });
+      const fixtureDirectory = await mkdtemp(path.join(tmpdir(), "handoff-mixed-browser-"));
+      const versionCommand = path.join(fixtureDirectory, "version.cjs");
+      await writeFile(
+        versionCommand,
+        "if (process.argv[2] !== '--version') throw new Error('No provider turns in this fixture'); console.log('2.1.295');\n",
+      );
+      const sourceConfigDir = path.join(fixtureDirectory, "source");
+      const host = await hosts(page, {
+        providerSettings: {
+          source: {
+            claude: {
+              command: { mode: "replace", argv: [process.execPath, versionCommand] },
+              env: { CLAUDE_CONFIG_DIR: sourceConfigDir },
+            },
+          },
+          destination: {
+            claude: {
+              command: { mode: "replace", argv: [process.execPath, versionCommand] },
+              env: { CLAUDE_CONFIG_DIR: path.join(fixtureDirectory, "destination") },
+            },
+          },
+        },
+      }).catch(async (error: unknown) => {
+        await rm(fixtureDirectory, { recursive: true, force: true });
+        throw error;
+      });
+      try {
+        const native = await host.sourceClient.createAgent({
+          provider: "claude",
+          cwd: host.workspace.repoPath,
+          workspaceId: host.workspace.workspaceId,
+          title: "Compatible conversation",
+        });
+        const context = await host.sourceClient.createAgent({
+          provider: "claude",
+          cwd: host.workspace.repoPath,
+          workspaceId: host.workspace.workspaceId,
+          title: "Conversation with a workflow",
+        });
+        const project = claudeProjectDirSync(host.workspace.repoPath, {
+          configDir: sourceConfigDir,
+        });
+        await mkdir(project, { recursive: true });
+        for (const agent of [native, context]) {
+          if (!agent.persistence) throw new Error("Missing synthetic provider session");
+          await writeFile(
+            path.join(project, `${agent.persistence.sessionId}.jsonl`),
+            JSON.stringify({
+              type: "user",
+              uuid: randomUUID(),
+              sessionId: agent.persistence.sessionId,
+              message: { role: "user", content: "Keep the prior workspace task" },
+            }) + "\n",
+          );
+        }
+        if (!context.persistence) throw new Error("Missing synthetic context session");
+        const workflows = path.join(project, context.persistence.sessionId, "workflows");
+        await mkdir(workflows, { recursive: true });
+        await writeFile(path.join(workflows, "state.json"), JSON.stringify({ type: "state" }));
+        await openHandoff(page);
+        await page.getByTestId("handoff-host-trigger").click();
+        await page.getByTestId(`handoff-host-${host.destination.serverId}`).click();
+        await page.getByTestId("handoff-parent").fill(host.destinationParent);
+        await page.getByTestId("handoff-submit").click();
+        const nativeChoice = page.getByTestId(`handoff-conversation-mode-${native.id}`);
+        const contextChoice = page.getByTestId(`handoff-conversation-mode-${context.id}`);
+        await expect(nativeChoice).toContainText("Keep native sessions");
+        await expect(contextChoice).toContainText("Keep native sessions");
+        await expect(page.getByTestId("handoff-submit")).toBeDisabled();
+        await contextChoice.click();
+        await page.getByText("Continue with exported history", { exact: true }).last().click();
+        await expect(nativeChoice).toContainText("Keep native sessions");
+        await expect(contextChoice).toContainText("Continue with exported history");
+        await expect(
+          page.getByText(
+            "Conversations will start new provider sessions with readable exported history and a continuation brief.",
+            { exact: true },
+          ),
+        ).toBeVisible();
+        await expect(page.getByTestId("handoff-review")).toContainText(
+          "Claude workflow state needs an explicit disposition before native continuation",
+        );
+        await expect(page.getByTestId("handoff-submit")).toBeEnabled();
+        await contextChoice.scrollIntoViewIfNeeded();
+        await waitForSettledPosition(contextChoice);
+        await page.screenshot({
+          path: path.join(__dirname, `../../../../docs/qa-evidence/handoff-mixed-${layout}.png`),
+        });
+        await page.getByTestId("handoff-submit").click();
+        await expect(page.getByTestId("handoff-submit")).toHaveText("Move workspace", {
+          timeout: 30_000,
+        });
+        const transferId = await savedTransfer(
+          page,
+          host.source.serverId,
+          host.workspace.workspaceId,
+        );
+        await forgetTransfer(page, host.source.serverId, host.workspace.workspaceId);
+        await page.reload();
+        await page.getByTestId("handoff-source-open").click();
+        await expect(
+          page.getByText("Mixed: native sessions and exported history", { exact: true }),
+        ).toBeVisible();
+        expect(await savedTransfer(page, host.source.serverId, host.workspace.workspaceId)).toBe(
+          transferId,
+        );
+        await page.getByTestId("handoff-submit").click();
+        await expect(page.getByTestId("handoff-submit")).toHaveText("Open destination", {
+          timeout: 30_000,
+        });
+        const active = await host.destinationClient.handoffGetDestinationStatus({ transferId });
+        expect(active.result?.state).toBe("active");
+        expect(active.result?.conversationModes).toEqual(
+          expect.arrayContaining([
+            { sourceAgentId: native.id, mode: "native" },
+            { sourceAgentId: context.id, mode: "context" },
+          ]),
+        );
+      } catch (error) {
+        await page.screenshot({ path: testInfo.outputPath("handoff-mixed-failure.png") });
+        throw error;
+      } finally {
+        await host.close();
+        await rm(fixtureDirectory, { recursive: true, force: true });
+      }
+    });
+  }
 
   for (const layout of ["desktop", "compact"] as const) {
     test(`${layout} shows conversation MCP connections that need reconfiguration`, async ({

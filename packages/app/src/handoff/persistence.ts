@@ -1,9 +1,13 @@
 import { z } from "zod";
-import { handoffReviewsMatch } from "@getpaseo/client/internal/workspace-handoff";
+import {
+  handoffReviewsMatch,
+  handoffContinuationsMatch,
+} from "@getpaseo/client/internal/workspace-handoff";
 import {
   HandoffDestinationSnapshotSchema,
   HandoffStoppedWorkReviewSchema,
   HandoffIntegrationReviewSchema,
+  HandoffConversationModesSchema,
 } from "@getpaseo/protocol/handoff-control";
 import { HandoffDigestSchema } from "@getpaseo/protocol/handoff";
 import type {
@@ -26,6 +30,7 @@ const HandoffRecordSchema = z.object({
   destinationLabel: z.string().min(1),
   destinationParent: z.string().min(1),
   continuationMode: z.enum(["native", "context"]),
+  conversationModes: HandoffConversationModesSchema.optional(),
   reviewedAgentIds: z.array(z.string().min(1)).max(1000).optional(),
   workspaceReviewDigest: HandoffDigestSchema.optional(),
   stoppedWorkReview: HandoffStoppedWorkReviewSchema.optional(),
@@ -135,6 +140,7 @@ function restoredRecord(
     destinationLabel: destination.label,
     destinationParent: snapshot.destinationParent,
     continuationMode: snapshot.continuationMode,
+    conversationModes: snapshot.conversationModes,
     reviewedAgentIds: snapshot.sourceAgentIds,
     workspaceReviewDigest: snapshot.workspaceReviewDigest,
     stoppedWorkReview: snapshot.stoppedWorkReview,
@@ -173,7 +179,7 @@ export function createHandoffPersistence(storage: Storage) {
         (snapshot.transferId !== record.transferId ||
           snapshot.sourceServerId !== record.sourceServerId ||
           snapshot.sourceWorkspaceId !== record.workspaceId ||
-          snapshot.continuationMode !== record.continuationMode ||
+          !handoffContinuationsMatch(snapshot, record) ||
           !handoffReviewsMatch(snapshot, record))
       )
         throw new Error("Saved handoff destination does not match the transfer");

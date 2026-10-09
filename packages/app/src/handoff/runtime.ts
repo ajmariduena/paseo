@@ -156,6 +156,7 @@ export const handoffFormPorts: HandoffFormPorts = {
     });
     if (preview.error) throw new Error(preview.error.message);
     if (!preview.result) throw new Error("Destination preview is missing");
+    if (!preview.result.supportsConversationModes) throw new Error(i18n.t("handoff.updateHosts"));
     return {
       ...preview.result,
       workspace,
@@ -192,6 +193,7 @@ export const handoffFormPorts: HandoffFormPorts = {
             workspaceId: record.workspaceId,
             destinationParent: record.destinationParent,
             continuationMode: record.continuationMode,
+            conversationModes: record.conversationModes,
             expectedAgentIds: record.reviewedAgentIds,
             workspaceReviewDigest: record.workspaceReviewDigest,
             stoppedWorkReview: record.stoppedWorkReview,

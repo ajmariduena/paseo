@@ -1,0 +1,476 @@
+Mixed per-conversation handoff — 2026-10-09
+
+Baseline: ff9be424c (conversation MCP omission review).
+
+Scope: a workspace can keep a compatible Claude session native while explicitly
+exporting another conversation's history. The complete choice set is fixed in the
+destination reservation, retained through recovery, and cannot change on retry.
+Missing, repeated and foreign conversation choices are rejected before reservation.
+Native artifacts are installed only for native choices; exported workspace files
+are created only for context choices. History and destination agent metadata follow
+each choice. Cancellation removes native installations while preserving unrelated
+content under the unused namespace of a context-only conversation.
+
+The network cases use real isolated daemons, filesystem transport and both daemon
+restarts. After release is durably accepted, activation completes with the source
+offline. The synthetic Claude launcher accepts --version only. These cases prove
+artifact transport, publication and history, not a continued real-provider turn.
+The selected run also covers existing all-native Git/directory and all-context flows.
+
+The browser cases use Linux Chromium at 1280x720 and 390x844, isolated source and
+destination daemons, the existing fake agent clients and synthetic transcripts.
+Native continuation is initially selected for both conversations. A workflow artifact
+makes one incompatible and disables preparation. Choosing exported history explicitly
+keeps the other native, explains the new provider session, and enables preparation.
+After deleting the local transfer record and reloading, journal recovery restores
+the same transfer ID and mixed mode summary. Activation preserves both choices.
+Both final browser cases passed; screenshots were inspected locally:
+handoff-mixed-desktop.png and handoff-mixed-compact.png. Both show the distinct
+choices and the explicit new-session explanation above the pinned action.
+
+The initial run timed out in isolated daemon startup before desktop review and was
+interrupted during the compact case; it has no complete result. In the next run,
+desktop passed and compact reached the correct recovery UI, but its test looked for
+the summary inside the compact header test ID. The assertion now checks the visible
+summary itself. A subsequent run hit the ten-second review assertion while another
+browser run was active and swap use reached 3.9/4 GiB; compact was interrupted.
+That run does not establish a completed result or the cause of the delay. Final
+verification ran after typecheck/lint and without overlapping browser runs. Metro
+reported an unreadable cache on startup, rebuilt it and completed both cases. No main-daemon
+restart was requested or performed by this work.
+
+No fresh real-provider turn, physical MacBook/VPS round trip, Electron, native iOS/
+Android or released-version drift is claimed. Complete handoff stays unadvertised.
+Optional per-conversation fields preserve old native/context wire shapes; new app
+review requires explicit destination support before any mutation.
+
+Browser environment:
+FONTCONFIG_FILE=/tmp/handoff-browser-libs/fonts.conf
+LD_LIBRARY_PATH=/tmp/handoff-browser-libs/extracted/usr/lib/x86_64-linux-gnu
+PLAYWRIGHT_BROWSERS_PATH=/tmp/handoff-website-browsers
+PATH=/tmp/handoff-lsof/extracted/usr/bin:$PATH
+
+
+$ npm run build:server
+
+> paseo@0.11.1 build:server
+> npm run build:server-deps && npm run build --workspace=@getpaseo/server && npm run build --workspace=@getpaseo/cli
+
+
+> paseo@0.11.1 build:server-deps
+> npm run build:client && concurrently --kill-others-on-fail --names highlight,plugin,relay --prefix-colors yellow,green,blue "npm run build:highlight" "npm run build:plugin" "npm run build:relay"
+
+
+> paseo@0.11.1 build:client
+> npm run build --workspace=@getpaseo/client
+
+
+> @getpaseo/client@0.11.1 build
+> npm run build --workspace=@getpaseo/protocol && npm run build --workspace=@getpaseo/relay && tsc -p tsconfig.json --incremental false
+
+
+> @getpaseo/protocol@0.11.1 prebuild
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 build
+> tsc -p tsconfig.json --incremental false
+
+
+> @getpaseo/relay@0.11.1 build
+> tsc -p tsconfig.json --incremental false
+
+[relay] npm run build:relay exited with code 0
+[highlight] npm run build:highlight exited with code 0
+[plugin] npm run build:plugin exited with code 0
+
+> @getpaseo/server@0.11.1 build
+> npm run build:lib && npm run build:scripts
+
+
+> @getpaseo/server@0.11.1 build:lib
+> tsc -p tsconfig.server.json --incremental false && node scripts/build-opencode-bridge-plugin.mjs && node -e "const fs=require('node:fs'); fs.mkdirSync('dist/server/server/speech/providers/local/sherpa/assets',{recursive:true}); fs.copyFileSync('src/server/speech/providers/local/sherpa/assets/silero_vad.onnx','dist/server/server/speech/providers/local/sherpa/assets/silero_vad.onnx'); fs.cpSync('src/terminal/shell-integration','dist/server/terminal/shell-integration',{recursive:true}); fs.cpSync('src/terminal/shell-integration','dist/src/terminal/shell-integration',{recursive:true}); fs.copyFileSync('src/terminal/terminal-ts-loader.mjs','dist/server/terminal/terminal-ts-loader.mjs'); fs.rmSync('dist/server/skills',{recursive:true,force:true}); fs.cpSync('../../skills','dist/server/skills',{recursive:true}); fs.rmSync('dist/server/builtin-plugins',{recursive:true,force:true}); fs.cpSync('../../plugins','dist/server/builtin-plugins',{recursive:true,filter:(source)=>!source.split(require('node:path').sep).some((segment)=>segment==='node_modules'||segment==='test')&&!/\.(test|spec)\.[cm]?[jt]sx?$/.test(source)&&!source.endsWith('.tsbuildinfo')});"
+
+
+> @getpaseo/server@0.11.1 build:scripts
+> tsc -p tsconfig.scripts.json --incremental false && node -e "const fs=require('node:fs'); fs.mkdirSync('dist/scripts',{recursive:true}); fs.copyFileSync('scripts/mcp-stdio-socket-bridge-cli.mjs','dist/scripts/mcp-stdio-socket-bridge-cli.mjs');"
+
+
+> @getpaseo/cli@0.11.1 build
+> tsc -p tsconfig.json --incremental false
+
+
+
+$ npm run build:client (after the final client change)
+
+> paseo@0.11.1 build:client
+> npm run build --workspace=@getpaseo/client
+
+
+> @getpaseo/client@0.11.1 build
+> npm run build --workspace=@getpaseo/protocol && npm run build --workspace=@getpaseo/relay && tsc -p tsconfig.json --incremental false
+
+
+> @getpaseo/protocol@0.11.1 prebuild
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 build
+> tsc -p tsconfig.json --incremental false
+
+
+> @getpaseo/relay@0.11.1 build
+> tsc -p tsconfig.json --incremental false
+
+
+
+$ packages/server: npx vitest run src/server/handoff/archive.e2e.test.ts -t "retains mixed|explicit context export|transfers native conversation" --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  5 passed | 19 skipped (24)
+   Start at  22:52:54
+   Duration  30.11s (transform 14.38s, setup 108ms, import 17.68s, tests 12.05s, environment 0ms)
+
+
+
+$ packages/app: npx vitest run src/handoff/form-model.test.ts src/i18n/resources.test.ts --bail=1
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+
+
+ Test Files  2 passed (2)
+      Tests  62 passed (62)
+   Start at  22:52:53
+   Duration  3.05s (transform 1.66s, setup 213ms, import 1.97s, tests 1.35s, environment 1ms)
+
+
+
+$ packages/protocol: npx vitest run src/messages.wire-compat.test.ts tests/validation/ws-outbound.test.ts --bail=1
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/protocol
+
+
+ Test Files  2 passed (2)
+      Tests  64 passed (64)
+   Start at  22:52:53
+   Duration  9.43s (transform 8.14s, setup 0ms, import 9.91s, tests 901ms, environment 0ms)
+
+
+
+$ npm run test:e2e --workspace=@getpaseo/app -- e2e/browser/workspace-handoff.spec.ts --grep "preserves mixed conversation" (compact assertion failure)
+
+> @getpaseo/app@0.11.0-beta.36 test:e2e
+> playwright test --project=browser e2e/browser/workspace-handoff.spec.ts --grep preserves mixed conversation
+
+[metro] Starting project at /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+[metro] Using src/app as the root directory for Expo Router.
+[metro] Experimental Expo Autolinking module resolver is enabled.
+[metro] React Compiler enabled
+[metro] Starting Metro Bundler
+[metro] Waiting on http://localhost:38889
+[metro] Logs for your project will appear below.
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web packages/app/index.ts ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.9% (5629/5630)
+[metro] Web Bundled 4941ms packages/app/index.ts (5631 modules)
+[e2e] Metro warmed on port 38889
+
+Running 2 tests using 1 worker
+
+(node:589697) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:589697) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[e2e] Worker 0 daemon started on port 44279, home: /tmp/paseo-e2e-worker-0-xTfi9A
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 301ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 166ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (86 modules)
+[metro] Web Bundled 327ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 7ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 273ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 12ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 271ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 46ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 339ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 6ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+  ✓  1 [browser] › e2e/browser/workspace-handoff.spec.ts:37:9 › workspace handoff › desktop preserves mixed conversation choices through recovery and activation (40.4s)
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 339ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 8ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 326ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 7ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 330ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 16ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro] Web Bundled 254ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 11ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 314ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 6ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[e2e] Worker 0 daemon stopped
+  ✘  2 [browser] › e2e/browser/workspace-handoff.spec.ts:37:9 › workspace handoff › compact preserves mixed conversation choices through recovery and activation (53.3s)
+[e2e] Metro stopped
+
+
+  1) [browser] › e2e/browser/workspace-handoff.spec.ts:37:9 › workspace handoff › compact preserves mixed conversation choices through recovery and activation 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByTestId('handoff-sheet')
+    Expected substring: "Mixed: native sessions and exported history"
+    Received string:    "Move workspace to another host"
+    Timeout: 10000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 10000ms
+      - waiting for getByTestId('handoff-sheet')
+        14 × locator resolved to <div data-testid="handoff-sheet" class="css-view-g5y9jx unistyles_247ee86h983 ">…</div>
+           - unexpected value "Move workspace to another host"
+
+
+      131 |         await page.reload();
+      132 |         await page.getByTestId("handoff-source-open").click();
+    > 133 |         await expect(page.getByTestId("handoff-sheet")).toContainText(
+          |                                                         ^
+      134 |           "Mixed: native sessions and exported history",
+      135 |         );
+      136 |         expect(await savedTransfer(page, host.source.serverId, host.workspace.workspaceId)).toBe(
+        at /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app/e2e/browser/workspace-handoff.spec.ts:133:57
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    test-results/workspace-handoff-workspac-eb72e-ugh-recovery-and-activation-browser/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #2: browser-console (text/plain) ────────────────────────────────────────────────────
+    [console:info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+    [console:log] Running application "main" with appParams:
+     {rootTag: #root, hydrate: undefined} 
+    Development-level warnings: ON.
+    Performance optimizations: OFF.
+    [co...
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #3: video (video/webm) ──────────────────────────────────────────────────────────────
+    test-results/workspace-handoff-workspac-eb72e-ugh-recovery-and-activation-browser/video.webm
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: test-results/workspace-handoff-workspac-eb72e-ugh-recovery-and-activation-browser/error-context.md
+
+    attachment #5: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results/workspace-handoff-workspac-eb72e-ugh-recovery-and-activation-browser/trace.zip
+    Usage:
+
+        npx playwright show-trace test-results/workspace-handoff-workspac-eb72e-ugh-recovery-and-activation-browser/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  1 failed
+    [browser] › e2e/browser/workspace-handoff.spec.ts:37:9 › workspace handoff › compact preserves mixed conversation choices through recovery and activation 
+  1 passed (2.1m)
+npm error Lifecycle script `test:e2e` failed with error:
+npm error code 1
+npm error path /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+npm error workspace @getpaseo/app@0.11.0-beta.36
+npm error location /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+npm error command failed
+npm error command sh -c playwright test --project=browser e2e/browser/workspace-handoff.spec.ts --grep 'preserves mixed conversation'
+
+
+$ npm run test:e2e --workspace=@getpaseo/app -- e2e/browser/workspace-handoff.spec.ts --grep "preserves mixed conversation" (final)
+
+> @getpaseo/app@0.11.0-beta.36 test:e2e
+> playwright test --project=browser e2e/browser/workspace-handoff.spec.ts --grep preserves mixed conversation
+
+[metro] Starting project at /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+[metro] Using src/app as the root directory for Expo Router.
+[metro] Experimental Expo Autolinking module resolver is enabled.
+[metro] React Compiler enabled
+[metro] Starting Metro Bundler
+[metro] Waiting on http://localhost:37219
+[metro] Logs for your project will appear below.
+[metro] Error while reading cache, falling back to a full crawl:
+[metro]  Error: Unable to deserialize cloned data.
+[metro]     at deserialize (node:v8:469:14)
+[metro]     at DiskCacheManager.read (/home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/node_modules/metro-file-map/src/cache/DiskCacheManager.js:60:33)
+[metro]     at FileMap.read (/home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/node_modules/metro-file-map/src/index.js:284:14)
+[metro]     at /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/node_modules/metro-file-map/src/index.js:202:25
+[metro]     at DependencyGraph.ready (/home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/node_modules/metro/src/node-haste/DependencyGraph.js:88:5)
+[metro]     at Bundler.ready (/home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/node_modules/metro/src/Bundler.js:62:5)
+[metro]     at IncrementalBundler.ready (/home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/node_modules/metro/src/IncrementalBundler.js:302:5)
+[metro]     at Server.ready (/home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/node_modules/metro/src/Server.js:1305:5)
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] | (node:599071) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[metro] | (Use `node --trace-warnings ...` to show where the warning was created)
+[metro] Web packages/app/index.ts ▓▓▓▓▓▓▓▓▓░░░░░░░ 59.1% (2641/4919)
+[metro] Web Bundled 6065ms packages/app/index.ts (5631 modules)
+[e2e] Metro warmed on port 37219
+
+Running 2 tests using 1 worker
+
+(node:599173) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:599173) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[e2e] Worker 0 daemon started on port 34327, home: /tmp/paseo-e2e-worker-0-4n2gy4
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 382ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 136ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (86 modules)
+[metro] Web Bundled 341ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 8ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 284ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 9ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 325ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 10ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 299ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 7ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+  ✓  1 [browser] › e2e/browser/workspace-handoff.spec.ts:37:9 › workspace handoff › desktop preserves mixed conversation choices through recovery and activation (42.2s)
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 328ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 14ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 344ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 8ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 294ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 7ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 239ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 18ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 325ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 7ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+  ✓  2 [browser] › e2e/browser/workspace-handoff.spec.ts:37:9 › workspace handoff › compact preserves mixed conversation choices through recovery and activation (44.6s)
+[e2e] Worker 0 daemon stopped
+[e2e] Metro stopped
+
+  2 passed (1.9m)
+
+
+$ npm run typecheck (final)
+
+> paseo@0.11.1 typecheck
+> npm run typecheck --workspaces --if-present
+
+
+> @getpaseo/builtin-plugins@0.11.1 typecheck
+> tsgo -p tsconfig.json --noEmit
+
+
+> @getpaseo/expo-two-way-audio@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/highlight@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/plugin@0.11.1 typecheck
+> tsgo --noEmit && tsgo -p tsconfig.examples.json --noEmit
+
+
+> @getpaseo/protocol@0.11.1 pretypecheck
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/client@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/server@0.11.1 typecheck
+> tsgo -p tsconfig.server.typecheck.json --noEmit
+
+
+> @getpaseo/app@0.11.0-beta.36 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/relay@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/website@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/desktop@0.11.1 typecheck
+> tsgo --noEmit -p tsconfig.json
+
+
+> @getpaseo/cli@0.11.1 typecheck
+> tsgo --noEmit
+
+
+
+$ npm run lint (final)
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 3.4s on 5027 files with 177 rules using 4 threads.
+
+
+$ npm run format
+
+> paseo@0.11.1 format
+> oxfmt .
+
+Finished in 4047ms on 5372 files using 4 threads.

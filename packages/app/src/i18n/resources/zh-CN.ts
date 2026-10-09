@@ -55,6 +55,7 @@ export const zhCN: TranslationResources = {
     parent: "目标父目录",
     mode: "对话衔接方式",
     native: "保留原生会话",
+    mixed: "混合：原生会话和导出的历史记录",
     context: "使用导出的历史继续",
     nativeDescription: "原生会话需要两台主机上的提供商版本兼容。不兼容的会话会停止传输。",
     contextDescription: "对话将在新的提供商会话中开始，并提供可读的导出历史和衔接摘要。",

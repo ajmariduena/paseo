@@ -101,6 +101,7 @@ function fixture() {
         workspaceReviewDigest: record.workspaceReviewDigest,
         stoppedWorkReview: record.stoppedWorkReview,
         integrationReview: record.integrationReview,
+        conversationModes: record.conversationModes,
       };
     },
     activate: async (record) => {
@@ -112,6 +113,7 @@ function fixture() {
         workspaceReviewDigest: record.workspaceReviewDigest,
         stoppedWorkReview: record.stoppedWorkReview,
         integrationReview: record.integrationReview,
+        conversationModes: record.conversationModes,
       };
     },
     cancel: async (record) => {
@@ -125,6 +127,7 @@ function fixture() {
         workspaceReviewDigest: record.workspaceReviewDigest,
         stoppedWorkReview: record.stoppedWorkReview,
         integrationReview: record.integrationReview,
+        conversationModes: record.conversationModes,
       };
     },
   };
@@ -426,6 +429,62 @@ describe("handoff form recovery", () => {
     expect(reopened.getState().kind).toBe("editing");
   });
 
+  it("keeps compatible sessions native while explicitly exporting another conversation across review and recovery", async () => {
+    const { ports, persistence, calls } = fixture();
+    ports.validate = async () => ({
+      ...emptyReview,
+      conversations: [
+        {
+          agentId: "native-agent",
+          title: "Native work",
+          provider: "claude",
+          native: { available: true, reason: null },
+          context: { available: true, reason: null },
+        },
+        {
+          agentId: "context-agent",
+          title: "Workflow work",
+          provider: "claude",
+          native: { available: false, reason: "Workflow disposition required" },
+          context: { available: true, reason: null },
+        },
+      ],
+    });
+    const model = await reviewedForm(ports);
+    expect(handoffFormActions(model.getState()).primary).toBeNull();
+    await model.prepare();
+    expect(calls).toEqual([]);
+    model.setConversationMode("missing", "context");
+    expect(handoffFormActions(model.getState()).primary).toBeNull();
+    model.setConversationMode("context-agent", "context");
+    const choices = [
+      { sourceAgentId: "native-agent", mode: "native" },
+      { sourceAgentId: "context-agent", mode: "context" },
+    ];
+    expect(model.getState()).toMatchObject({ record: { conversationModes: choices } });
+    expect(handoffFormActions(model.getState()).primary).toBe("prepare");
+    model.edit();
+    await model.review();
+    expect(model.getState()).toMatchObject({ record: { conversationModes: choices } });
+    await model.prepare();
+    model.close();
+    const saved = await persistence.load(origin);
+    expect(saved?.conversationModes).toEqual(choices);
+    const reopened = openHandoffForm(origin, ports);
+    await reopened.load();
+    expect(reopened.getState()).toMatchObject({
+      kind: "transfer",
+      record: { conversationModes: choices, snapshot: { conversationModes: choices } },
+    });
+    await reopened.activate();
+    expect(calls).toEqual([`prepare:${transferId}`, `activate:${transferId}`]);
+    if (!saved) throw new Error("Missing saved transfer");
+    await persistence.save({ ...saved, conversationModes: [] });
+    await expect(persistence.load(origin)).rejects.toThrow(
+      "Saved handoff destination does not match the transfer",
+    );
+  });
+
   it("requires an explicit supported continuation choice after read-only review", async () => {
     const { ports, persistence, calls } = fixture();
     ports.validate = async () => ({
@@ -465,6 +524,7 @@ describe("handoff form recovery", () => {
       workspaceReviewDigest: record.workspaceReviewDigest,
       stoppedWorkReview: record.stoppedWorkReview,
       integrationReview: record.integrationReview,
+      conversationModes: record.conversationModes,
     });
     const model = await reviewedForm(ports);
     await model.prepare();
@@ -543,6 +603,7 @@ describe("handoff form recovery", () => {
         workspaceReviewDigest: record.workspaceReviewDigest,
         stoppedWorkReview: record.stoppedWorkReview,
         integrationReview: record.integrationReview,
+        conversationModes: record.conversationModes,
       };
     };
     await reopened.retry();

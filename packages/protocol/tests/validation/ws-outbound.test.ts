@@ -342,6 +342,7 @@ describe("WS outbound zod-aot validation", () => {
       const message = envelope({
         ...result,
         continuationMode,
+        conversationModes: [{ sourceAgentId: "agent", mode: "context" }],
         cleanupComplete: false,
         cancellationAccepted: false,
         workspaceReviewDigest: "a".repeat(64),

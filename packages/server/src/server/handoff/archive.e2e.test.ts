@@ -1878,3 +1878,190 @@ for (const continuationMode of ["native", "context"] as const) {
     30_000,
   );
 }
+
+for (const outcome of ["activate", "cancel"] as const) {
+  test.skipIf(process.platform === "win32")(
+    `retains mixed native/context choices through restart and ${outcome}`,
+    async () => {
+      let source = await startHost("source", true);
+      let destination = await startHost("destination", true);
+      const cwd = path.join(root, "mixed-workspace");
+      await mkdir(cwd);
+      const created = await source.client.createWorkspace({
+        source: { kind: "directory", path: cwd },
+      });
+      if (!created.workspace) throw new Error("Missing workspace");
+      const workspaceId = created.workspace.id;
+      const project = claudeProjectDirSync(cwd, { configDir: path.join(root, "source", "claude") });
+      await mkdir(project, { recursive: true });
+      const choices = ["native", "context"].map((mode) => ({
+        mode,
+        agentId: randomUUID(),
+        sessionId: randomUUID(),
+      }));
+      for (const choice of choices) {
+        const timestamp = new Date().toISOString();
+        await source.daemon.daemon.agentStorage.upsert(
+          parseStoredAgentRecord({
+            id: choice.agentId,
+            provider: "claude",
+            cwd,
+            workspaceId,
+            title: choice.mode,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            lastStatus: "closed",
+            persistence: { provider: "claude", sessionId: choice.sessionId },
+          }),
+        );
+        await writeFile(
+          path.join(project, `${choice.sessionId}.jsonl`),
+          JSON.stringify({
+            type: "user",
+            uuid: randomUUID(),
+            sessionId: choice.sessionId,
+            message: { role: "user", content: `${choice.mode} conversation prior-only-token` },
+          }) + "\n",
+        );
+        if (choice.mode === "context") {
+          const workflows = path.join(project, choice.sessionId, "workflows");
+          await mkdir(workflows, { recursive: true });
+          await writeFile(path.join(workflows, "state.json"), JSON.stringify({ type: "state" }));
+        }
+      }
+      const conversationModes = [
+        { sourceAgentId: choices[0].agentId, mode: "native" as const },
+        { sourceAgentId: choices[1].agentId, mode: "context" as const },
+      ].sort((a, b) => a.sourceAgentId.localeCompare(b.sourceAgentId));
+      const request = {
+        transferId: randomUUID(),
+        workspaceId,
+        destinationParent: root,
+        continuationMode: "native" as const,
+        conversationModes,
+      };
+      const review = await source.client.handoffPreviewSource({ workspaceId });
+      if (!review.result) throw new Error("Missing source review");
+      const compatibility = await destination.client.handoffPreviewDestination({
+        conversations: review.result.conversations,
+      });
+      expect(compatibility.result?.supportsConversationModes).toBe(true);
+      expect(
+        compatibility.result?.conversations.find((item) => item.agentId === choices[1].agentId),
+      ).toMatchObject({
+        native: { available: false },
+        context: { available: true },
+      });
+      for (const invalid of [
+        [],
+        [conversationModes[0], conversationModes[0]],
+        [...conversationModes, { sourceAgentId: "unknown", mode: "context" as const }],
+      ]) {
+        const rejected = await destination.client.handoffReserveDestination({
+          ...request,
+          sourceServerId: source.daemon.daemon.getServerId(),
+          sourceWorkspaceId: workspaceId,
+          sourceAgentIds: choices.map((item) => item.agentId),
+          conversationModes: invalid,
+        });
+        expect(rejected.error?.code).toBe("invalid_state");
+        expect((await destination.client.handoffGetDestinationStatus(request)).error?.code).toBe(
+          "not_found",
+        );
+      }
+      const staged = await prepareWorkspaceHandoff({
+        ...request,
+        source: source.client,
+        destination: destination.client,
+      });
+      expect(staged).toMatchObject({ state: "staged", conversationModes });
+      const mapping = (sourceAgentId: string) => {
+        const found = staged.agentMappings.find((item) => item.sourceAgentId === sourceAgentId);
+        if (!found) throw new Error("Missing conversation mapping");
+        return found.destinationAgentId;
+      };
+      const nativeId = mapping(choices[0].agentId);
+      const contextId = mapping(choices[1].agentId);
+      const configDir = path.join(root, "destination", "claude", "projects");
+      expect(await readdir(configDir)).toContain(`paseo-handoff-${nativeId}`);
+      expect(await readdir(configDir)).not.toContain(`paseo-handoff-${contextId}`);
+      const sourceId = source.daemon.daemon.getServerId();
+      await stopHost(source);
+      await stopHost(destination);
+      source = await startHost("source", true);
+      destination = await startHost("destination", true);
+      const recovered = await destination.client.handoffGetDestinationStatus(request);
+      expect(recovered.result?.conversationModes).toEqual(conversationModes);
+      expect(
+        (
+          await destination.client.handoffListDestination({
+            sourceServerId: sourceId,
+            sourceWorkspaceId: workspaceId,
+          })
+        ).result?.transfers[0].conversationModes,
+      ).toEqual(conversationModes);
+      await expect(
+        prepareWorkspaceHandoff({
+          ...request,
+          source: source.client,
+          destination: destination.client,
+          conversationModes: conversationModes.map(({ sourceAgentId }) => ({
+            sourceAgentId,
+            mode: "context",
+          })),
+        }),
+      ).rejects.toThrow("Transfer already has another destination reservation");
+      if (outcome === "cancel") {
+        // No native installation belongs to the context conversation; cleanup must leave foreign content alone.
+        const foreign = path.join(configDir, `paseo-handoff-${contextId}`);
+        await mkdir(foreign);
+        await writeFile(path.join(foreign, "foreign.txt"), "unrelated");
+        const cancelled = await cancelWorkspaceHandoff({
+          sourceServerId: sourceId,
+          getSource: () => source.client,
+          destination: destination.client,
+          transferId: request.transferId,
+        });
+        expect(cancelled.cleanupComplete).toBe(true);
+        expect(await readdir(configDir)).not.toContain(`paseo-handoff-${nativeId}`);
+        expect(await readFile(path.join(foreign, "foreign.txt"), "utf8")).toBe("unrelated");
+        return;
+      }
+      const release = await source.client.handoffReleaseSource(request);
+      if (!release.result) throw new Error("Missing release receipt");
+      await destination.daemon.daemon.handoffDestination.acceptRelease(
+        request.transferId,
+        release.result,
+      );
+      await stopHost(source);
+      const active = await activateWorkspaceHandoff({
+        sourceServerId: sourceId,
+        getSource: () => {
+          throw new Error("Source is offline");
+        },
+        destination: destination.client,
+        transferId: request.transferId,
+      });
+      expect(active.state).toBe("active");
+      const native = await destination.daemon.daemon.agentStorage.get(nativeId);
+      const context = await destination.daemon.daemon.agentStorage.get(contextId);
+      expect(native).toMatchObject({ persistence: { sessionId: choices[0].sessionId } });
+      expect(native).not.toHaveProperty("handoffContext");
+      expect(context).toMatchObject({ persistence: null, handoffContext: { pending: true } });
+      for (const choice of choices) {
+        const history = await destination.client.handoffGetConversationHistory({
+          agentId: mapping(choice.agentId),
+        });
+        expect(history.result?.mode).toBe(choice.mode);
+        expect(JSON.stringify(history.result?.timeline.entries)).toContain(
+          `${choice.mode} conversation prior-only-token`,
+        );
+      }
+      const contextDirectories = await readdir(
+        path.join(active.destinationCwd, `handoff-context-${active.reservationId}`),
+      );
+      expect(contextDirectories).toEqual([contextId]);
+    },
+    30_000,
+  );
+}

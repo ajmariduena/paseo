@@ -1,5 +1,6 @@
 import { fork, type ChildProcess } from "node:child_process";
 import path from "node:path";
+import type { AgentProviderRuntimeSettingsMap } from "@getpaseo/protocol/provider-config";
 import { killProcessTree } from "./spawn-node";
 
 export interface OutdatedDaemon {
@@ -29,6 +30,7 @@ interface TestDaemonOptions {
   realClaudeConfigDir?: string;
   workspaceHandoffCapability?: boolean;
   mcpServersSupported?: boolean;
+  providerSettings?: AgentProviderRuntimeSettingsMap;
   desktopManaged?: boolean;
   daemonStatusRpcCapability?: boolean;
   relayConfigCapability?: boolean;
@@ -52,6 +54,9 @@ export async function startTestDaemon(options?: TestDaemonOptions): Promise<Outd
         E2E_METRO_PORT: metroPort,
         E2E_DAEMON_VERSION: options?.version,
         E2E_REAL_CLAUDE_CONFIG_DIR: options?.realClaudeConfigDir,
+        E2E_PROVIDER_SETTINGS: options?.providerSettings
+          ? JSON.stringify(options.providerSettings)
+          : undefined,
         E2E_MCP_SERVERS_SUPPORTED: options?.mcpServersSupported === true ? "1" : "0",
         E2E_WORKSPACE_HANDOFF_CAPABILITY: options?.workspaceHandoffCapability === true ? "1" : "0",
         E2E_DESKTOP_MANAGED: options?.desktopManaged === true ? "1" : "0",

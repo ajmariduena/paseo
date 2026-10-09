@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import pino from "pino";
+import { AgentProviderRuntimeSettingsMapSchema } from "@getpaseo/protocol/provider-config";
 import { ClaudeAgentClient } from "../agent/providers/claude/agent.js";
 import { createTestAgentClients } from "./fake-agent-client.js";
 import { createTestPaseoDaemon } from "./paseo-daemon.js";
@@ -12,11 +13,16 @@ async function main(): Promise<void> {
   }
 
   const claudeConfigDir = process.env.E2E_REAL_CLAUDE_CONFIG_DIR;
+  const providerSettings = process.env.E2E_PROVIDER_SETTINGS
+    ? AgentProviderRuntimeSettingsMapSchema.parse(JSON.parse(process.env.E2E_PROVIDER_SETTINGS))
+    : undefined;
+  if (claudeConfigDir && providerSettings)
+    throw new Error("Choose either a real Claude home or fake-provider runtime settings");
   const runtimeSettings = claudeConfigDir
     ? { env: { CLAUDE_CONFIG_DIR: claudeConfigDir } }
     : undefined;
   const daemon = await createTestPaseoDaemon({
-    agentProviderSettings: runtimeSettings ? { claude: runtimeSettings } : undefined,
+    agentProviderSettings: runtimeSettings ? { claude: runtimeSettings } : providerSettings,
     agentClients: runtimeSettings
       ? { claude: new ClaudeAgentClient({ logger: pino({ level: "warn" }), runtimeSettings }) }
       : createTestAgentClients({

@@ -85,6 +85,7 @@ const HandoffContinuationAvailabilitySchema = z.object({
   reason: z.string().nullable(),
 });
 export const HandoffDestinationPreviewSchema = z.object({
+  supportsConversationModes: z.boolean().optional(),
   conversations: z
     .array(
       HandoffConversationIdentitySchema.extend({
@@ -198,6 +199,37 @@ export const HandoffCancellationProofSchema = z.object({
   publicKey: z.string().min(1).max(1024),
 });
 export type HandoffCancellationProof = z.infer<typeof HandoffCancellationProofSchema>;
+export const HandoffConversationModesSchema = z
+  .array(
+    z.object({
+      sourceAgentId: z.string().min(1),
+      mode: z.enum(["native", "context"]),
+    }),
+  )
+  .max(1000);
+export type HandoffConversationModes = z.infer<typeof HandoffConversationModesSchema>;
+export type HandoffContinuationSelection = Pick<
+  HandoffDestinationSnapshot,
+  "continuationMode" | "conversationModes"
+>;
+
+/** A per-conversation plan is complete; absent plans apply the workspace choice to every conversation. */
+export function handoffConversationMode(
+  selection: HandoffContinuationSelection,
+  sourceAgentId: string,
+) {
+  if (!selection.conversationModes) return selection.continuationMode;
+  const choice = selection.conversationModes.find((item) => item.sourceAgentId === sourceAgentId);
+  if (!choice) throw new Error("Conversation continuation choice is missing");
+  return choice.mode;
+}
+
+export function handoffContinuationSummary(selection: HandoffContinuationSelection) {
+  const modes = new Set(selection.conversationModes?.map((item) => item.mode));
+  if (modes.size > 1) return "mixed" as const;
+  return modes.values().next().value ?? selection.continuationMode;
+}
+
 export const HandoffDestinationSnapshotSchema = z.object({
   transferId: HandoffTransferIdSchema,
   reservationId: HandoffTransferIdSchema,
@@ -212,6 +244,7 @@ export const HandoffDestinationSnapshotSchema = z.object({
     .array(z.object({ sourceAgentId: z.string().min(1), destinationAgentId: z.string().uuid() }))
     .max(1000),
   continuationMode: z.enum(["native", "context"]),
+  conversationModes: HandoffConversationModesSchema.optional(),
   workspaceReviewDigest: HandoffDigestSchema.optional(),
   stoppedWorkReview: HandoffStoppedWorkReviewSchema.optional(),
   integrationReview: HandoffIntegrationReviewSchema.optional(),
@@ -238,6 +271,7 @@ export const HandoffDestinationPageSchema = z.object({
         transferId: true,
         destinationCwd: true,
         continuationMode: true,
+        conversationModes: true,
         state: true,
       }),
     )
@@ -348,6 +382,7 @@ export const HandoffReserveDestinationRequestSchema = z.object({
   sourceAgentIds: z.array(z.string().min(1)).max(1000),
   destinationParent: z.string().min(1),
   continuationMode: z.enum(["native", "context"]),
+  conversationModes: HandoffConversationModesSchema.optional(),
   workspaceReviewDigest: HandoffDigestSchema.optional(),
   stoppedWorkReview: HandoffStoppedWorkReviewSchema.optional(),
   integrationReview: HandoffIntegrationReviewSchema.optional(),

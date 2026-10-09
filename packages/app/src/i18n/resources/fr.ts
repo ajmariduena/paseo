@@ -61,6 +61,7 @@ export const fr: TranslationResources = {
     parent: "Dossier parent de destination",
     mode: "Continuité des conversations",
     native: "Conserver les sessions natives",
+    mixed: "Mixte : sessions natives et historique exporté",
     context: "Continuer avec l’historique exporté",
     nativeDescription:
       "Les sessions natives nécessitent des versions compatibles du fournisseur sur les deux hôtes. Une session incompatible arrêtera le transfert.",

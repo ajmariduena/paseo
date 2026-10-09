@@ -57,6 +57,7 @@ export const ko: TranslationResources = {
     parent: "대상 상위 디렉터리",
     mode: "대화 이어가기",
     native: "네이티브 세션 유지",
+    mixed: "혼합: 기본 세션 및 내보낸 기록",
     context: "내보낸 기록으로 계속",
     nativeDescription:
       "네이티브 세션에는 두 호스트의 호환되는 공급자 버전이 필요합니다. 호환되지 않는 세션은 전송을 중지합니다.",

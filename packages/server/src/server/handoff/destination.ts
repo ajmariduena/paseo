@@ -1,5 +1,7 @@
 import {
   HandoffStoppedWorkReviewSchema,
+  HandoffConversationModesSchema,
+  handoffConversationMode,
   HandoffIntegrationReviewSchema,
   HandoffCancellationProofSchema,
 } from "@getpaseo/protocol/handoff-control";
@@ -62,6 +64,7 @@ const ReservationSchema = z.object({
   sourceAgentIds: z.array(z.string().min(1)).max(1000),
   destinationParent: z.string().min(1),
   continuationMode: z.enum(["native", "context"]).default("native"),
+  conversationModes: HandoffConversationModesSchema.optional(),
   workspaceReviewDigest: HandoffDigestSchema.optional(),
   stoppedWorkReview: HandoffStoppedWorkReviewSchema.optional(),
   integrationReview: HandoffIntegrationReviewSchema.optional(),
@@ -213,6 +216,7 @@ export class HandoffDestination {
       }
     }
     return {
+      supportsConversationModes: true,
       conversations: conversations.map((conversation) => {
         const identity = {
           agentId: conversation.agentId,
@@ -293,7 +297,11 @@ export class HandoffDestination {
         fail("unsupported_host", "Durable handoff activation is not supported on Windows yet");
       const destinationParent = await realpath(request.destinationParent);
       const sourceAgentIds = [...new Set(request.sourceAgentIds)].sort();
-      const canonical = { ...request, sourceAgentIds, destinationParent };
+      const conversationModes = request.conversationModes?.toSorted((left, right) =>
+        left.sourceAgentId.localeCompare(right.sourceAgentId),
+      );
+      const canonical = { ...request, sourceAgentIds, destinationParent, conversationModes };
+      this.validateConversationModes(canonical, "invalid_state");
       const existing = this.records.get(request.transferId);
       if (existing) {
         if (JSON.stringify(ReservationSchema.parse(existing)) !== JSON.stringify(canonical))
@@ -371,8 +379,7 @@ export class HandoffDestination {
       return this.options.archives.withVerifiedArchive(transferId, async (archive) => {
         const content = await this.readBundle(record, archive);
         if (
-          record.continuationMode === "native" &&
-          record.sourceAgentIds.length > 0 &&
+          record.sourceAgentIds.some((id) => handoffConversationMode(record, id) === "native") &&
           record.claudeRuntime === null
         ) {
           if (!this.options.resolveClaudeRuntime)
@@ -402,18 +409,17 @@ export class HandoffDestination {
           archive,
           entrypoint: content.bundle.workspace,
           destination: record.stagingCwd,
-          additionalFiles:
-            record.continuationMode === "context"
-              ? handoffContextFiles({
-                  content,
-                  reservationId: record.reservationId,
-                  agentMappings: record.agentMappings,
-                })
-              : [],
+          additionalFiles: handoffContextFiles({
+            content,
+            reservationId: record.reservationId,
+            agentMappings: record.agentMappings.filter(
+              (mapping) => handoffConversationMode(record, mapping.sourceAgentId) === "context",
+            ),
+          }),
         });
         const preparedConversations: DestinationHandoffStatus["preparedConversations"] = [];
         for (const conversation of content.bundle.conversations) {
-          if (record.continuationMode === "context") {
+          if (handoffConversationMode(record, conversation.sourceAgentId) === "context") {
             preparedConversations.push({
               sourceAgentId: conversation.sourceAgentId,
               title: conversation.title,
@@ -520,6 +526,7 @@ export class HandoffDestination {
       await this.options.archives.withVerifiedArchive(record.transferId, async (archive) => {
         const content = await this.readBundle(record, archive);
         for (const mapping of record.agentMappings) {
+          if (handoffConversationMode(record, mapping.sourceAgentId) !== "native") continue;
           const manifest = content.sessions.get(mapping.sourceAgentId);
           if (!manifest) fail("unprepared_conversations", "Missing conversation during cleanup");
           await removeClaudeSessionInstallation({
@@ -708,7 +715,7 @@ export class HandoffDestination {
       limit: input.limit ?? 100,
     });
     return {
-      mode: record.continuationMode,
+      mode: handoffConversationMode(record, mapping.sourceAgentId),
       provider: conversation.provider,
       sourceServerId: record.sourceServerId,
       sourceWorkspaceId: record.sourceWorkspaceId,
@@ -756,10 +763,11 @@ export class HandoffDestination {
       });
     const transfers = records
       .slice(0, 20)
-      .map(({ transferId, destinationCwd, continuationMode, state }) => ({
+      .map(({ transferId, destinationCwd, continuationMode, conversationModes, state }) => ({
         transferId,
         destinationCwd,
         continuationMode,
+        conversationModes,
         state,
       }));
     return { transfers, nextCursor: records.length > 20 ? transfers[19].transferId : null };
@@ -815,15 +823,26 @@ export class HandoffDestination {
       fail("storage_uncertain", "Invalid destination agent mappings");
   }
 
-  private validateConversationRecords(record: DestinationHandoffStatus): void {
-    if (record.continuationMode === "context" && record.claudeRuntime !== null)
-      fail("storage_uncertain", "Context export cannot contain a native runtime installation");
+  private validateConversationModes(
+    record: Pick<DestinationHandoffStatus, "conversationModes" | "sourceAgentIds">,
+    code: "invalid_state" | "storage_uncertain",
+  ) {
+    if (!record.conversationModes) return;
+    const ids = record.conversationModes.map((item) => item.sourceAgentId).sort();
     if (
-      record.preparedConversations.some(
-        (conversation) => conversation.mode !== record.continuationMode,
-      )
+      new Set(ids).size !== ids.length ||
+      JSON.stringify(ids) !== JSON.stringify([...record.sourceAgentIds].sort())
     )
-      fail("storage_uncertain", "Prepared continuation mode differs from the reservation");
+      fail(code, "Continuation choices must cover each reserved conversation exactly once");
+  }
+
+  private validateConversationRecords(record: DestinationHandoffStatus): void {
+    this.validateConversationModes(record, "storage_uncertain");
+    const hasNative = record.sourceAgentIds.some(
+      (id) => handoffConversationMode(record, id) === "native",
+    );
+    if (!hasNative && record.claudeRuntime !== null)
+      fail("storage_uncertain", "Context export cannot contain a native runtime installation");
     if (record.claudeRuntime && !path.isAbsolute(record.claudeRuntime.configDir))
       fail("storage_uncertain", "Invalid Claude destination directory");
     const preparedIds = record.preparedConversations.map((item) => item.sourceAgentId).sort();
@@ -832,10 +851,17 @@ export class HandoffDestination {
       preparedIds.some((id) => !record.sourceAgentIds.includes(id))
     )
       fail("storage_uncertain", "Invalid prepared conversation identities");
+    if (
+      record.preparedConversations.some(
+        (conversation) =>
+          conversation.mode !== handoffConversationMode(record, conversation.sourceAgentId),
+      )
+    )
+      fail("storage_uncertain", "Prepared continuation mode differs from the reservation");
     if (["staged", "released", "activating", "active"].includes(record.state)) {
       if (
         JSON.stringify(preparedIds) !== JSON.stringify([...record.sourceAgentIds].sort()) ||
-        (preparedIds.length > 0 && record.continuationMode === "native" && !record.claudeRuntime)
+        (hasNative && !record.claudeRuntime)
       )
         fail("storage_uncertain", "Destination conversation installation is incomplete");
     }
@@ -893,21 +919,20 @@ export class HandoffDestination {
       archive,
       entrypoint: content.bundle.workspace,
       cwd: record.stagingCwd,
-      additionalFiles:
-        record.continuationMode === "context"
-          ? handoffContextFiles({
-              content,
-              reservationId: record.reservationId,
-              agentMappings: record.agentMappings,
-            })
-          : [],
+      additionalFiles: handoffContextFiles({
+        content,
+        reservationId: record.reservationId,
+        agentMappings: record.agentMappings.filter(
+          (mapping) => handoffConversationMode(record, mapping.sourceAgentId) === "context",
+        ),
+      }),
     });
     for (const mapping of record.agentMappings) {
       const manifest = content.sessions.get(mapping.sourceAgentId);
       const prepared = record.preparedConversations.find(
         (item) => item.sourceAgentId === mapping.sourceAgentId,
       );
-      if (record.continuationMode === "context") {
+      if (handoffConversationMode(record, mapping.sourceAgentId) === "context") {
         if (prepared?.mode !== "context")
           fail("unprepared_conversations", "Context export is not prepared");
         continue;
