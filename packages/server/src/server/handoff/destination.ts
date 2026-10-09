@@ -1,3 +1,4 @@
+import { HandoffCancellationProofSchema } from "@getpaseo/protocol/handoff-control";
 import { createPublicKey, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath, rename, rm } from "node:fs/promises";
@@ -97,6 +98,8 @@ const RecordSchema = ReservationSchema.extend({
   checkoutIdentity: z.object({ dev: z.string(), ino: z.string() }).nullable().default(null),
   binding: BindingSchema.nullable(),
   receipt: z.unknown().nullable(),
+  cancellationProof: HandoffCancellationProofSchema.nullable().default(null),
+  cleanupComplete: z.boolean().default(false),
   claudeRuntime: ClaudeRuntimeSchema.nullable().default(null),
   preparedConversations: z.array(PreparedConversationSchema).max(1000).default([]),
 });
@@ -304,6 +307,8 @@ export class HandoffDestination {
         state: "reserved",
         binding: null,
         receipt: null,
+        cancellationProof: null,
+        cleanupComplete: false,
         activationAt: null,
         checkoutIdentity: null,
         claudeRuntime: null,
@@ -458,56 +463,70 @@ export class HandoffDestination {
     });
   }
 
-  /** Proof must come from the authenticated source, including when preparation never reached it. */
-  cancel(transferId: string, proof: unknown): Promise<DestinationHandoffStatus> {
+  /** A retry can reuse the source proof only after this destination has durably accepted it. */
+  cancel(transferId: string, proof?: unknown): Promise<DestinationHandoffStatus> {
     return this.serialize(async () => {
       const record = this.requireRecord(transferId);
       if (["released", "activating", "active"].includes(record.state))
         fail("invalid_state", "Released ownership must finish activation");
-      if (
-        !verifyHandoffCancellation(
-          proof,
-          {
-            version: 1,
-            outcome: "cancelled",
-            transferId,
-            sourceServerId: record.sourceServerId,
-            destinationServerId: this.options.serverId,
-            reservationId: record.reservationId,
-          },
-          record.binding?.publicKey,
-        )
-      )
+      const acceptedProof = proof === undefined ? record.cancellationProof : proof;
+      if (!this.validCancellation(record, acceptedProof))
         fail(
           "invalid_cancellation",
           "Source cancellation does not match this destination reservation",
         );
-      await this.save({ ...record, state: "cancelled" });
-      const claudeRuntime = record.claudeRuntime;
-      if (claudeRuntime) {
-        await this.options.archives.withVerifiedArchive(transferId, async (archive) => {
-          const content = await this.readBundle(record, archive);
-          for (const mapping of record.agentMappings) {
-            const manifest = content.sessions.get(mapping.sourceAgentId);
-            if (!manifest) fail("unprepared_conversations", "Missing conversation during cleanup");
-            await removeClaudeSessionInstallation({
-              configDir: claudeRuntime.configDir,
-              importId: mapping.destinationAgentId,
-              manifest,
-            });
-          }
-        });
-      }
-      try {
-        await this.assertContainer(record);
-      } catch (error) {
-        if (isMissing(error)) return this.status(transferId);
-        throw error;
-      }
-      await rm(containerPath(record), { recursive: true });
-      await syncDirectory(record.destinationParent);
+      if (record.cleanupComplete) return structuredClone(record);
+      const cancelled: DestinationHandoffStatus = {
+        ...record,
+        state: "cancelled",
+        cancellationProof: HandoffCancellationProofSchema.parse(acceptedProof),
+      };
+      await this.save(cancelled);
+      await this.cleanupCancellation(cancelled);
+      await this.save({ ...cancelled, cleanupComplete: true });
       return this.status(transferId);
     });
+  }
+
+  private validCancellation(record: DestinationHandoffStatus, proof: unknown): boolean {
+    return verifyHandoffCancellation(
+      proof,
+      {
+        version: 1,
+        outcome: "cancelled",
+        transferId: record.transferId,
+        sourceServerId: record.sourceServerId,
+        destinationServerId: this.options.serverId,
+        reservationId: record.reservationId,
+      },
+      record.binding?.publicKey ?? record.cancellationProof?.publicKey,
+    );
+  }
+
+  private async cleanupCancellation(record: DestinationHandoffStatus): Promise<void> {
+    const claudeRuntime = record.claudeRuntime;
+    if (claudeRuntime) {
+      await this.options.archives.withVerifiedArchive(record.transferId, async (archive) => {
+        const content = await this.readBundle(record, archive);
+        for (const mapping of record.agentMappings) {
+          const manifest = content.sessions.get(mapping.sourceAgentId);
+          if (!manifest) fail("unprepared_conversations", "Missing conversation during cleanup");
+          await removeClaudeSessionInstallation({
+            configDir: claudeRuntime.configDir,
+            importId: mapping.destinationAgentId,
+            manifest,
+          });
+        }
+      });
+    }
+    try {
+      await this.assertContainer(record);
+      await rm(containerPath(record), { recursive: true });
+    } catch (error) {
+      if (!isMissing(error)) throw error;
+    }
+    // Also sync an already-missing container: a previous delete may have lost its durable ack.
+    await syncDirectory(record.destinationParent);
   }
 
   isIdentityVisible(id: string): boolean {
@@ -518,7 +537,11 @@ export class HandoffDestination {
 
   assertMutationAllowed(scope: HandoffMutationScope): void {
     for (const record of this.records.values()) {
-      if (record.state === "cancelled" || (record.state === "active" && !this.uncertain)) continue;
+      if (
+        !this.uncertain &&
+        (record.state === "active" || (record.state === "cancelled" && record.cleanupComplete))
+      )
+        continue;
       const identityMatches =
         record.workspaceId === scope.workspaceId ||
         record.agentMappings.some((mapping) => mapping.destinationAgentId === scope.agentId);
@@ -711,7 +734,7 @@ export class HandoffDestination {
         (record) =>
           record.sourceServerId === input.sourceServerId &&
           record.sourceWorkspaceId === input.sourceWorkspaceId &&
-          record.state !== "cancelled" &&
+          !(record.state === "cancelled" && record.cleanupComplete) &&
           record.state !== "active" &&
           (!input.cursor || record.transferId > input.cursor),
       )
@@ -736,7 +759,18 @@ export class HandoffDestination {
     await this.tail;
   }
 
+  private validateCancellation(record: DestinationHandoffStatus): void {
+    if (
+      (record.cancellationProof &&
+        (record.state !== "cancelled" ||
+          !this.validCancellation(record, record.cancellationProof))) ||
+      (record.cleanupComplete && (record.state !== "cancelled" || !record.cancellationProof))
+    )
+      fail("storage_uncertain", "Destination cancellation journal is inconsistent");
+  }
+
   private validateRecord(record: DestinationHandoffStatus): void {
+    this.validateCancellation(record);
     if (
       !path.isAbsolute(record.destinationParent) ||
       record.stagingCwd !== path.join(containerPath(record), "checkout") ||

@@ -1,3 +1,4 @@
+import { isHandoffCancellationComplete } from "./persistence";
 import type {
   HandoffDestinationSnapshot,
   HandoffDestinationPreview,
@@ -317,7 +318,8 @@ export function openHandoffForm(origin: HandoffOrigin, ports: HandoffFormPorts) 
       await run({ ...state.record, intent: "cancel" });
     },
     startOver() {
-      if (state.kind !== "transfer" || state.record.snapshot?.state !== "cancelled") return;
+      if (state.kind !== "transfer" || !isHandoffCancellationComplete(state.record.snapshot))
+        return;
       publish(editingState());
     },
     close() {
@@ -355,7 +357,9 @@ function transferActions(state: Extract<HandoffFormState, { kind: "transfer" }>)
   if (state.run.status === "running") return { primary: null, canCancel: false } as const;
   const snapshot = state.record.snapshot;
   if (snapshot?.state === "active") return { primary: "open", canCancel: false } as const;
-  if (snapshot?.state === "cancelled") return { primary: "startOver", canCancel: false } as const;
+  if (isHandoffCancellationComplete(snapshot))
+    return { primary: "startOver", canCancel: false } as const;
+  if (snapshot?.state === "cancelled") return { primary: "retry", canCancel: false } as const;
   const committed =
     state.record.intent === "activate" ||
     snapshot?.state === "released" ||

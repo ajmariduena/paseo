@@ -234,8 +234,13 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   Invalid release signatures are refused. The app retains the transfer ID and operation
   intent before sending mutating RPCs. Source-journal discovery finds the held transfer by workspace
   even after source-directory removal; its response contains no private signing key. Cancellation uses the source's durable proof
-  before discarding destination staging. Tests cover a delayed prepare, lost cancellation replies,
-  host restarts, wrong keys and signatures, persistence failures, and both cancel/release orderings.
+  before discarding destination staging. Read-only source status exposes cancellation even when
+  preparation never created a source snapshot. The destination persists the accepted proof before
+  cleanup and records completion after durable deletion; interrupted cleanup remains discoverable
+  and fenced across restart. Retries reuse the accepted proof without contacting the source.
+  Completed retries preserve later files at the former staging path. Tests cover a delayed prepare,
+  lost cancellation replies, host restarts, wrong keys and signatures, persistence failures,
+  interrupted native-artifact cleanup and both cancel/release orderings.
 - `ownership.ts`, `ownership.test.ts` and `bootstrap.test.ts` cover durable source fences,
   admission draining, cancel/release races, signed receipts and loading fences before providers.
   Admission is wired through agent operations, files/Git, terminal creation/input/resize, scripts,
@@ -345,25 +350,30 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   completed. Other connected clients' buffers, concurrent windows and unsent conversation draft
   transfer remain open. Other workspace mutation surfaces need inventory.
   Source retirement still needs tombstones to replace broad path fences.
-  Sixteen form cases cover unavailable modes, inventory changes, lost replies, storage failures,
+  Eighteen form cases cover unavailable modes, inventory changes, lost replies, storage failures,
   duplicate submissions, closing during work, cancellation recovery and host journals advancing
   past local state, including destination lookup and selection failures. Reconstructed records retain
   the reserved mode and reject mismatched host, workspace, reservation, conversation set or digest;
   a released source restores forward recovery. Selecting a destination queries its unfinished
   reservations in pages of twenty, scoped to the source host and workspace. The user chooses an
   existing transfer before resuming; discovery and selection do not prepare or publish work.
-  A matching cancelled source record restores cancellation intent so interrupted destination cleanup
-  can finish. The network regression discovers twenty-one reservations after destination restart,
+  A matching source cancellation tombstone or cancelled destination record restores cancellation
+  intent. Pending cleanup offers Resume; starting a new transfer requires completed cleanup.
+  The workspace menu keeps saved recovery accessible after an offline reload. A damaged local
+  record opens the form's load error instead of hiding the action. The network regression
+  discovers twenty-one reservations after destination restart,
   verifies both scope filters and excludes completed cancellation.
   The network suite covers matching/mismatched Claude versions, missing source
   history and workflow artifacts without starting a provider turn during review. The feature
-  gate is checked on both hosts before preparation; only isolated test daemons advertise it. Six
+  gate is checked on both hosts before preparation; only isolated test daemons advertise it. Seven
   browser cases use real isolated daemons with directory or Git workspaces: desktop preparation/reload
   verifies bytes and destination navigation after a real activation conflict and source shutdown;
   compact recovery deletes the local transfer record, reloads the same identity and context mode
   from both host journals, then cancels and verifies a fresh form after clearing local state again.
-  Destination-only recovery selects one of two reservations, preserves its original mode without
-  preparing work until Resume, then reconstructs and finishes an interrupted source cancellation.
+  Two destination-only recovery cases select one of two reservations and retain its original mode.
+  One recovers a cancellation accepted before source preparation. The other interrupts staged
+  cleanup with a real path conflict, rediscovers it without local state, saves the recovered intent,
+  then reloads and finishes cleanup with the source stopped. Both leave the other reservation intact.
   The source link case removes the destination host, checks its visible error, reconnects and opens
   the same activated workspace. After release and reload, it also verifies disabled agent, terminal
   and profile launchers through the menu and keyboard. Compact cancellation restores an unsent
@@ -399,14 +409,16 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   [source file, Git and script results](../qa-evidence/handoff-source-mutations.txt),
   [save-before-handoff results](../qa-evidence/handoff-editor-save.txt),
   [editor recovery results](../qa-evidence/handoff-editor-recovery.txt),
+  [cancellation recovery results](../qa-evidence/handoff-cancellation-recovery.txt) with
+  [offline recovery](../qa-evidence/handoff-cancellation-offline.png) and
+  [completed cleanup](../qa-evidence/handoff-cancellation-complete.png) screenshots,
   [real-provider browser results](../qa-evidence/handoff-app-real.txt),
   [recovery app results](../qa-evidence/handoff-app.txt)
   and [review](../qa-evidence/handoff-review-compact.png), [pending transfers](../qa-evidence/handoff-existing-transfers.png), [desktop](../qa-evidence/handoff-app-desktop.png) / [compact](../qa-evidence/handoff-app-compact.png)
   screenshots. Recovery without local state currently requires both paired hosts online. Destination
-  lookup starts only after selecting that host. Cancellation before source preparation leaves only a
-  tombstone; automatic discovery of that cancellation intent remains open, as does unfinished cleanup
-  after the destination journal already says cancelled. Reopening recovery when the source workspace
-  is unavailable, pinned-key client persistence,
+  lookup starts only after selecting that host. Cleanup with the source offline is covered after
+  recovering and persisting the local transfer intent. Reopening recovery when the source workspace
+  is unavailable without that local record, pinned-key client persistence,
   complete omitted-path access and integration/resource dispositions,
   concurrent windows and other connected clients' unsaved buffers and conversation draft transfer,
   complete source mutation affordances and native-platform evidence remain open. Review does not bind approval to a resource digest or

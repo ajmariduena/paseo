@@ -214,6 +214,42 @@ describe("WS outbound zod-aot validation", () => {
     ).toBe(false);
   });
 
+  it("discovers cancellation tombstones without a prepared source and still accepts old status replies", () => {
+    const cancellation = {
+      publicKey: "source-key",
+      receipt: {
+        version: 1,
+        outcome: "cancelled",
+        transferId: "00000000-0000-4000-8000-000000000001",
+        reservationId: "00000000-0000-4000-8000-000000000002",
+        sourceServerId: "source",
+        destinationServerId: "destination",
+        signature: "signature",
+      },
+    };
+    const envelope = (extra: object) => ({
+      type: "session",
+      message: {
+        type: "workspace.handoff.get_source_status.response",
+        payload: { requestId: "status", result: null, error: null, ...extra },
+      },
+    });
+    for (const extra of [{}, { cancellation: null }, { cancellation }]) {
+      const message = envelope(extra);
+      expect(GeneratedWSOutboundMessageSchema.safeParse(message)).toEqual({
+        success: true,
+        data: message,
+      });
+    }
+    expect(
+      GeneratedWSOutboundMessageSchema.safeParse(
+        envelope({
+          cancellation: { ...cancellation, receipt: { ...cancellation.receipt, signature: "" } },
+        }),
+      ).success,
+    ).toBe(false);
+  });
+
   it("validates handoff activation snapshots without losing continuation mode or correlation", () => {
     const result = {
       transferId: "00000000-0000-4000-8000-000000000001",
@@ -243,7 +279,12 @@ describe("WS outbound zod-aot validation", () => {
       },
     });
     for (const continuationMode of ["native", "context"]) {
-      const message = envelope({ ...result, continuationMode });
+      const message = envelope({
+        ...result,
+        continuationMode,
+        cleanupComplete: false,
+        cancellationAccepted: false,
+      });
       expect(GeneratedWSOutboundMessageSchema.safeParse(message)).toEqual({
         success: true,
         data: message,
@@ -253,6 +294,8 @@ describe("WS outbound zod-aot validation", () => {
       { ...result, continuationMode: "unknown" },
       { ...result, manifestDigest: "corrupt" },
       { ...result, state: "unknown" },
+      { ...result, cleanupComplete: "true" },
+      { ...result, cancellationAccepted: "false" },
     ]) {
       expect(GeneratedWSOutboundMessageSchema.safeParse(envelope(invalid)).success).toBe(false);
     }

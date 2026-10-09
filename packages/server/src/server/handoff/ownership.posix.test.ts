@@ -1,5 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, test as platformTest } from "vitest";
@@ -725,7 +734,8 @@ test("refuses a conversation blob absent from the signed archive inventory", asy
 });
 
 test("cancellation after source cancellation removes only its inactive native session", async () => {
-  const { destination, transferId, importedPath, claudeHome } = await nativeDestinationFixture();
+  const { destination, transferId, importedPath, claudeHome, options } =
+    await nativeDestinationFixture();
   await destination.stage(transferId);
   const unrelated = path.join(claudeHome, "projects", "unrelated");
   await mkdir(unrelated);
@@ -750,8 +760,20 @@ test("cancellation after source cancellation removes only its inactive native se
     destinationServerId: source.destinationServerId,
     reservationId: source.reservationId,
   });
-  expect((await destination.cancel(transferId, proof)).state).toBe("cancelled");
-  expect((await destination.cancel(transferId, proof)).state).toBe("cancelled");
+  const container = path.dirname(destination.status(transferId).stagingCwd);
+  const moved = `${container}-original`;
+  await rename(container, moved);
+  await symlink(unrelated, container);
+  await expect(destination.cancel(transferId, proof)).rejects.toMatchObject({
+    code: "storage_uncertain",
+  });
+  await expect(readFile(importedPath)).rejects.toMatchObject({ code: "ENOENT" });
+  await rm(container);
+  await rename(moved, container);
+  const recovered = new HandoffDestination(options);
+  await recovered.initialize();
+  expect((await recovered.cancel(transferId)).cleanupComplete).toBe(true);
+  expect((await recovered.cancel(transferId, proof)).state).toBe("cancelled");
   await expect(readFile(importedPath)).rejects.toMatchObject({ code: "ENOENT" });
   expect(await readFile(path.join(unrelated, "keep.jsonl"), "utf8")).toBe("another session");
 });
@@ -849,6 +871,123 @@ test("retries archive creation after committing its source binding", async () =>
     }),
   ).rejects.toMatchObject({ code: "conflict" });
 });
+
+test("discovers interrupted cancellation cleanup after restart and retries without contacting the source", async () => {
+  const options = {
+    directory: path.join(root, "destination-journal"),
+    serverId: "destination-host",
+    archives: new HandoffArchiveStore(path.join(root, "archives")),
+  };
+  const destination = new HandoffDestination(options);
+  await destination.initialize();
+  const transferId = randomUUID();
+  const reserved = await destination.reserve({
+    transferId,
+    sourceServerId,
+    sourceWorkspaceId: "source-workspace",
+    sourceAgentIds: [],
+    destinationParent: root,
+  });
+  await expect(destination.cancel(transferId, undefined)).rejects.toMatchObject({
+    code: "invalid_cancellation",
+  });
+  const container = path.dirname(reserved.stagingCwd);
+  const original = `${container}-original`;
+  const unrelated = path.join(root, "unrelated");
+  await mkdir(unrelated);
+  await writeFile(path.join(unrelated, "keep.txt"), "user data");
+  await rename(container, original);
+  await symlink(unrelated, container);
+  const proof = await ownership.cancelReservation({
+    transferId,
+    destinationServerId: options.serverId,
+    reservationId: reserved.reservationId,
+  });
+  await expect(destination.cancel(transferId, proof)).rejects.toMatchObject({
+    code: "storage_uncertain",
+  });
+  const query = { sourceServerId, sourceWorkspaceId: "source-workspace" };
+  expect(destination.list(query).transfers.map((entry) => entry.transferId)).toContain(transferId);
+  expect(destination.status(transferId)).toMatchObject({
+    state: "cancelled",
+    cleanupComplete: false,
+  });
+  expect(() => destination.assertMutationAllowed({ cwd: reserved.stagingCwd })).toThrow();
+  const recovered = new HandoffDestination(options);
+  await recovered.initialize();
+  expect(recovered.list(query).transfers.map((entry) => entry.transferId)).toContain(transferId);
+  expect(() => recovered.assertMutationAllowed({ cwd: reserved.stagingCwd })).toThrow();
+  await rm(container);
+  await rename(original, container);
+  expect(await recovered.cancel(transferId, undefined)).toMatchObject({
+    state: "cancelled",
+    cleanupComplete: true,
+  });
+  expect(recovered.list(query).transfers).toEqual([]);
+  expect(() => recovered.assertMutationAllowed({ cwd: reserved.stagingCwd })).not.toThrow();
+  expect(await readFile(path.join(unrelated, "keep.txt"), "utf8")).toBe("user data");
+  await expect(readdir(container)).rejects.toMatchObject({ code: "ENOENT" });
+  // Completed cleanup cannot delete a later directory reusing the old staging pathname.
+  await mkdir(container);
+  await writeFile(path.join(container, "later.txt"), "later data");
+  const completed = new HandoffDestination(options);
+  await completed.initialize();
+  expect((await completed.cancel(transferId, undefined)).cleanupComplete).toBe(true);
+  expect(await readFile(path.join(container, "later.txt"), "utf8")).toBe("later data");
+});
+
+test.each(["before", "after"])(
+  "recovers cancellation completion when its journal acknowledgement fails %s the write",
+  async (point) => {
+    const options = {
+      directory: path.join(root, "destination-journal"),
+      serverId: "destination-host",
+      archives: new HandoffArchiveStore(path.join(root, "archives")),
+    };
+    let interrupted = false;
+    const destination = new HandoffDestination({
+      ...options,
+      write: async (file, value) => {
+        const completing = JSON.stringify(value).includes('"cleanupComplete":true');
+        if (completing && !interrupted && point === "before") {
+          interrupted = true;
+          throw new Error("lost completion");
+        }
+        await writeJournal(file, value);
+        if (completing && !interrupted && point === "after") {
+          interrupted = true;
+          throw new Error("lost completion acknowledgement");
+        }
+      },
+    });
+    await destination.initialize();
+    const transferId = randomUUID();
+    const reserved = await destination.reserve({
+      transferId,
+      sourceServerId,
+      sourceWorkspaceId: "source-workspace",
+      sourceAgentIds: [],
+      destinationParent: root,
+    });
+    const proof = await ownership.cancelReservation({
+      transferId,
+      destinationServerId: options.serverId,
+      reservationId: reserved.reservationId,
+    });
+    await expect(destination.cancel(transferId, proof)).rejects.toThrow("lost completion");
+    expect(() => destination.assertMutationAllowed({ cwd: reserved.stagingCwd })).toThrow();
+    await expect(readdir(path.dirname(reserved.stagingCwd))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    const recovered = new HandoffDestination(options);
+    await recovered.initialize();
+    expect((await recovered.cancel(transferId)).cleanupComplete).toBe(true);
+    expect(() => recovered.assertMutationAllowed({ cwd: reserved.stagingCwd })).not.toThrow();
+    expect(
+      recovered.list({ sourceServerId, sourceWorkspaceId: "source-workspace" }).transfers,
+    ).toEqual([]);
+  },
+);
 
 test("cancels only private staging and keeps cancellation idempotent after restart", async () => {
   const options = {

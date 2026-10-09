@@ -35,6 +35,7 @@ interface Services {
 function snapshot(record: DestinationHandoffStatus) {
   return HandoffDestinationSnapshotSchema.parse({
     ...record,
+    cancellationAccepted: record.cancellationProof !== null,
     manifestDigest: record.binding?.manifest.entrypoint.sha256 ?? null,
   });
 }
@@ -112,7 +113,7 @@ async function handle(services: Services, request: ControlRequest): Promise<Cont
       case "workspace.handoff.get_source_status.request":
         return {
           type: responseTypes[request.type],
-          payload: { ...payload, result: await source().status(request.transferId) },
+          payload: { ...payload, ...(await source().recoveryStatus(request.transferId)) },
         };
       case "workspace.handoff.release_source.request":
         return {

@@ -9,7 +9,11 @@ import {
   openHandoffForm,
   type HandoffFormPorts,
 } from "./form-model";
-import { createHandoffPersistence, restoreHandoffRecord } from "./persistence";
+import {
+  createHandoffPersistence,
+  restoreHandoffRecord,
+  restoreCancelledHandoffRecord,
+} from "./persistence";
 import { HandoffReviewChangedError } from "@getpaseo/client/internal/workspace-handoff";
 
 const origin = { sourceServerId: "source", workspaceId: "workspace" };
@@ -87,7 +91,12 @@ function fixture() {
     cancel: async (record) => {
       expect((await persistence.load(origin))?.intent).toBe("cancel");
       calls.push(`cancel:${record.transferId}`);
-      return { ...destination, state: "cancelled" };
+      return {
+        ...destination,
+        state: "cancelled",
+        cleanupComplete: true,
+        cancellationAccepted: true,
+      };
     },
   };
   return { values, persistence, calls, ports };
@@ -467,6 +476,67 @@ describe("handoff form recovery", () => {
     await running;
     expect(model.getState()).toBe(atClose);
     expect((await persistence.load(origin))?.snapshot).toBeNull();
+  });
+
+  it("keeps an interrupted destination cleanup resumable and refuses starting over", async () => {
+    const { ports, persistence, calls } = fixture();
+    const record = restoreCancelledHandoffRecord({
+      origin,
+      destination: { serverId: "destination", label: "VPS" },
+      snapshot: {
+        ...destination,
+        state: "cancelled",
+        cleanupComplete: false,
+        cancellationAccepted: true,
+      },
+    });
+    await persistence.save(record);
+    const model = openHandoffForm(origin, ports);
+    await model.load();
+    expect(handoffFormActions(model.getState())).toEqual({ primary: "retry", canCancel: false });
+    model.startOver();
+    expect(model.getState().kind).toBe("transfer");
+    await model.retry();
+    expect(calls).toEqual([`cancel:${transferId}`]);
+    expect(handoffFormActions(model.getState())).toEqual({
+      primary: "startOver",
+      canCancel: false,
+    });
+  });
+
+  it("restores a cancellation that preceded source preparation only for the matching reservation", () => {
+    const input = {
+      origin,
+      destination: { serverId: "destination", label: "VPS" },
+      snapshot: { ...destination, state: "reserved" as const, manifestDigest: null },
+      proof: {
+        publicKey: "source-key",
+        receipt: {
+          version: 1 as const,
+          outcome: "cancelled" as const,
+          transferId,
+          sourceServerId: origin.sourceServerId,
+          destinationServerId: "destination",
+          reservationId: destination.reservationId,
+          signature: "signed-proof",
+        },
+      },
+    };
+    expect(restoreCancelledHandoffRecord(input)).toMatchObject({ intent: "cancel", transferId });
+    for (const field of ["transferId", "sourceServerId", "destinationServerId", "reservationId"]) {
+      expect(() =>
+        restoreCancelledHandoffRecord({
+          ...input,
+          proof: { ...input.proof, receipt: { ...input.proof.receipt, [field]: "wrong" } },
+        }),
+      ).toThrow("does not match");
+    }
+    expect(() =>
+      restoreCancelledHandoffRecord({
+        ...input,
+        snapshot: { ...input.snapshot, state: "released" },
+      }),
+    ).toThrow("released transfer");
   });
 
   it("reopens a failed cancellation as a cancellation retry", async () => {

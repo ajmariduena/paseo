@@ -311,6 +311,18 @@ export class HandoffSource {
     return { source, manifest };
   }
 
+  async recoveryStatus(transferId: string) {
+    const cancellation = this.options.ownership.cancellation(transferId);
+    try {
+      return { result: await this.status(transferId), cancellation };
+    } catch (error) {
+      // Cancellation can precede preparation, leaving a tombstone without a workspace snapshot.
+      if (cancellation && error instanceof Error && "code" in error && error.code === "not_found")
+        return { result: null, cancellation };
+      throw error;
+    }
+  }
+
   findWorkspace(workspaceId: string) {
     // Discovery must still work after the source checkout has been removed.
     return this.options.ownership.forWorkspace(workspaceId);

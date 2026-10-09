@@ -406,6 +406,12 @@ export class HandoffOwnership {
     });
   }
 
+  cancellation(id: string): HandoffCancellationProof | null {
+    this.assertHealthy();
+    const record = this.cancellations.get(id);
+    return record ? cancellationProof(record) : null;
+  }
+
   status(id: string): SourceHandoffStatus {
     return publicStatus(this.requireRecord(id));
   }

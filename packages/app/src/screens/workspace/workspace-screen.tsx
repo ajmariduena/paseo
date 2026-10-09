@@ -1,4 +1,5 @@
 import { HandoffSheet } from "@/handoff/sheet";
+import { useHandoffAvailable } from "@/handoff/use-handoff-form";
 import { SourceHandoff } from "@/handoff/source";
 import { useSourceHandoffReadOnly } from "@/handoff/state";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
@@ -1756,9 +1757,10 @@ function WorkspaceScreenContent({
   );
   const workspaceDirectory = workspaceDescriptor?.workspaceDirectory || null;
   const isMissingWorkspaceDirectory = Boolean(workspaceDescriptor) && !workspaceDirectory;
-  const supportsHandoff = useSessionStore(
-    (state) => state.sessions[normalizedServerId]?.serverInfo?.features?.workspaceHandoff === true,
-  );
+  const canOpenHandoff = useHandoffAvailable({
+    sourceServerId: normalizedServerId,
+    workspaceId: normalizedWorkspaceId,
+  });
   const [isHandoffSheetVisible, setIsHandoffSheetVisible] = useState(false);
   const openHandoffSheet = useCallback(() => setIsHandoffSheetVisible(true), []);
   const closeHandoffSheet = useCallback(() => setIsHandoffSheetVisible(false), []);
@@ -4172,7 +4174,7 @@ function WorkspaceScreenContent({
                   onCreateTerminalWithProfile={handleCreateTerminalWithProfile}
                   onCreateBrowser={handleCreateBrowserTab}
                   onOpenImportSheet={openImportSheet}
-                  onOpenHandoffSheet={supportsHandoff ? openHandoffSheet : null}
+                  onOpenHandoffSheet={canOpenHandoff ? openHandoffSheet : null}
                   onCopyWorkspacePath={handleCopyWorkspacePath}
                   onCopyBranchName={handleCopyBranchName}
                   onOpenSetupTab={handleOpenSetupTab}
@@ -4190,7 +4192,7 @@ function WorkspaceScreenContent({
     ),
     [
       canOpenImportSheet,
-      supportsHandoff,
+      canOpenHandoff,
       openHandoffSheet,
       createTerminalDisabled,
       isHandoffReadOnly,

@@ -15,6 +15,7 @@ import {
   createHandoffPersistence,
   restoreHandoffRecord,
   restoreReservedHandoffRecord,
+  restoreCancelledHandoffRecord,
   type HandoffRecord,
   type HandoffOrigin,
 } from "./persistence";
@@ -68,6 +69,7 @@ export async function readSourceHandoffRecord(
 }
 
 const persistence = createHandoffPersistence(AsyncStorage);
+export const loadSavedHandoff = persistence.load;
 export const handoffFormPorts: HandoffFormPorts = {
   ...persistence,
   async listDestination(origin, host, cursor) {
@@ -81,20 +83,26 @@ export const handoffFormPorts: HandoffFormPorts = {
     return response.result;
   },
   async recoverDestination(origin, destination, transferId) {
-    const source = connectedClient(origin.sourceServerId);
     const response = await connectedClient(destination.serverId).handoffGetDestinationStatus({
       transferId,
     });
     if (response.error) throw new Error(response.error.message);
     if (!response.result) throw new Error("Destination handoff record is missing");
     const snapshot = response.result;
-    const held = await source.handoffFindSource({ workspaceId: origin.workspaceId });
-    if (held.error) throw new Error(held.error.message);
-    if (held.result)
-      return restoreHandoffRecord({ origin, destination, snapshot, source: held.result });
-    const previous = await source.handoffGetSourceStatus({ transferId });
+    if (snapshot.state === "cancelled")
+      return restoreCancelledHandoffRecord({ origin, destination, snapshot });
+    const previous = await connectedClient(origin.sourceServerId).handoffGetSourceStatus({
+      transferId,
+    });
     if (previous.error && previous.error.code !== "not_found")
       throw new Error(previous.error.message);
+    if (previous.cancellation)
+      return restoreCancelledHandoffRecord({
+        origin,
+        destination,
+        snapshot,
+        proof: previous.cancellation,
+      });
     if (previous.result)
       return restoreHandoffRecord({
         origin,
@@ -198,5 +206,12 @@ export const handoffFormPorts: HandoffFormPorts = {
       destination: connectedClient(record.destinationServerId),
       transferId: record.transferId,
     }),
-  cancel: (record, options) => cancelWorkspaceHandoff({ ...connections(record), ...options }),
+  cancel: (record, options) =>
+    cancelWorkspaceHandoff({
+      ...options,
+      sourceServerId: record.sourceServerId,
+      getSource: () => connectedClient(record.sourceServerId),
+      destination: connectedClient(record.destinationServerId),
+      transferId: record.transferId,
+    }),
 };

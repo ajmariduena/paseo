@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, rmdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, test } from "../support/fixtures";
 import { pressDirectNewTabShortcut } from "../support/helpers/launcher";
@@ -30,94 +30,142 @@ function hasRecoveredLocalWork() {
 test.describe("workspace handoff", () => {
   test.skip(process.platform === "win32", "Ownership release requires POSIX directory durability");
 
-  test("chooses a destination-only reservation and resumes its original mode without a local record", async ({
-    page,
-  }, testInfo) => {
-    test.setTimeout(120_000);
-    const host = await hosts(page);
-    const firstId = "00000000-0000-4000-8000-000000000001";
-    const chosenId = "00000000-0000-4000-8000-000000000002";
-    try {
-      const query = {
-        sourceServerId: host.source.serverId,
-        sourceWorkspaceId: host.workspace.workspaceId,
-      };
-      for (const [transferId, continuationMode] of [
-        [firstId, "native"],
-        [chosenId, "context"],
-      ] as const) {
-        const reserved = await host.destinationClient.handoffReserveDestination({
-          ...query,
-          transferId,
-          continuationMode,
-          sourceAgentIds: [],
-          destinationParent: host.destinationParent,
+  for (const phase of ["reserved", "staged"] as const) {
+    test(`recovers ${phase} cancellation without local state and finishes interrupted cleanup`, async ({
+      page,
+    }, testInfo) => {
+      test.setTimeout(120_000);
+      const host = await hosts(page);
+      const firstId = "00000000-0000-4000-8000-000000000001";
+      const chosenId = "00000000-0000-4000-8000-000000000002";
+      try {
+        const query = {
+          sourceServerId: host.source.serverId,
+          sourceWorkspaceId: host.workspace.workspaceId,
+        };
+        for (const [transferId, continuationMode] of [
+          [firstId, "native"],
+          [chosenId, "context"],
+        ] as const) {
+          const reserved = await host.destinationClient.handoffReserveDestination({
+            ...query,
+            transferId,
+            continuationMode,
+            sourceAgentIds: [],
+            destinationParent: host.destinationParent,
+          });
+          expect(reserved.error).toBeNull();
+        }
+        await openHandoff(page);
+        await page.getByTestId("handoff-host-trigger").click();
+        await page.getByTestId(`handoff-host-${host.destination.serverId}`).click();
+        await page.getByTestId("handoff-recovery-trigger").click();
+        await expect(page.getByTestId(`handoff-recovery-${firstId}`)).toBeVisible();
+        await expect(page.getByTestId(`handoff-recovery-${chosenId}`)).toBeVisible();
+        await expect(page.getByTestId(`handoff-recovery-${firstId}`)).toHaveAccessibleName(
+          "Keep native sessions",
+        );
+        await expect(page.getByTestId(`handoff-recovery-${chosenId}`)).toHaveAccessibleName(
+          "Continue with exported history",
+        );
+        await page.screenshot({ path: testInfo.outputPath("handoff-existing-transfers.png") });
+        await page.getByTestId(`handoff-recovery-${chosenId}`).click();
+        await expect(
+          page.getByText("Continue with exported history", { exact: true }),
+        ).toBeVisible();
+        expect(await savedTransfer(page, host.source.serverId, host.workspace.workspaceId)).toBe(
+          chosenId,
+        );
+        expect(
+          (await host.sourceClient.handoffFindSource({ workspaceId: host.workspace.workspaceId }))
+            .result,
+        ).toBeNull();
+        expect((await host.destinationClient.fetchWorkspaces()).entries).toEqual([]);
+        if (phase === "staged") {
+          await page.getByTestId("handoff-submit").click();
+          await expect(page.getByTestId("handoff-submit")).toHaveText("Move workspace", {
+            timeout: 30_000,
+          });
+        }
+        const prepared = await host.destinationClient.handoffGetDestinationStatus({
+          transferId: chosenId,
         });
-        expect(reserved.error).toBeNull();
+        expect(prepared.result).toMatchObject({
+          transferId: chosenId,
+          state: phase,
+          continuationMode: "context",
+        });
+        if (!prepared.result) throw new Error("Missing destination reservation");
+        // The source accepted cancellation, but its reply never reached destination cleanup.
+        const cancelledAtSource = await host.sourceClient.handoffCancelSource({
+          transferId: chosenId,
+          destinationServerId: host.destination.serverId,
+          reservationId: prepared.result.reservationId,
+        });
+        expect(cancelledAtSource.error).toBeNull();
+        if (phase === "staged") {
+          if (!cancelledAtSource.result) throw new Error("Missing cancellation proof");
+          const container = path.join(
+            host.destinationParent,
+            `.paseo-handoff-${prepared.result.reservationId}`,
+          );
+          const moved = `${container}-original`;
+          const unrelated = path.join(host.destinationParent, "unrelated");
+          await mkdir(unrelated);
+          await writeFile(path.join(unrelated, "keep.txt"), "user data");
+          await rename(container, moved);
+          await symlink(unrelated, container);
+          const interrupted = await host.destinationClient.handoffCancelDestination({
+            transferId: chosenId,
+            proof: cancelledAtSource.result,
+          });
+          expect(interrupted.error?.code).toBe("storage_uncertain");
+          expect(
+            (await host.destinationClient.handoffGetDestinationStatus({ transferId: chosenId }))
+              .result,
+          ).toMatchObject({
+            state: "cancelled",
+            cleanupComplete: false,
+            cancellationAccepted: true,
+          });
+          expect(await readFile(path.join(unrelated, "keep.txt"), "utf8")).toBe("user data");
+          await rm(container);
+          await rename(moved, container);
+        }
+        await forgetTransfer(page, host.source.serverId, host.workspace.workspaceId);
+        await page.reload();
+        await openHandoff(page);
+        await page.getByTestId("handoff-host-trigger").click();
+        await page.getByTestId(`handoff-host-${host.destination.serverId}`).click();
+        await page.getByTestId("handoff-recovery-trigger").click();
+        await page.getByTestId(`handoff-recovery-${chosenId}`).click();
+        await expect(page.getByTestId("handoff-status")).toHaveText(
+          "Cancellation is incomplete. Resume to finish cancelling this transfer.",
+        );
+        if (phase === "staged") {
+          await host.sourceClient.close();
+          await host.source.close();
+          await page.reload();
+          await openHandoff(page);
+          await expect(page.getByTestId("handoff-status")).toHaveText(
+            "Cancellation is incomplete. Resume to finish cancelling this transfer.",
+          );
+          await page.screenshot({ path: testInfo.outputPath("handoff-cancellation-offline.png") });
+        }
+        await page.getByTestId("handoff-submit").click();
+        await expect(page.getByTestId("handoff-status")).toHaveText(
+          "Transfer cancelled. The source can be used again.",
+        );
+        await page.screenshot({ path: testInfo.outputPath("handoff-cancellation-complete.png") });
+        const remaining = await host.destinationClient.handoffListDestination(query);
+        expect(remaining.result?.transfers.map((transfer) => transfer.transferId)).toEqual([
+          firstId,
+        ]);
+      } finally {
+        await host.close();
       }
-      await openHandoff(page);
-      await page.getByTestId("handoff-host-trigger").click();
-      await page.getByTestId(`handoff-host-${host.destination.serverId}`).click();
-      await page.getByTestId("handoff-recovery-trigger").click();
-      await expect(page.getByTestId(`handoff-recovery-${firstId}`)).toBeVisible();
-      await expect(page.getByTestId(`handoff-recovery-${chosenId}`)).toBeVisible();
-      await expect(page.getByTestId(`handoff-recovery-${firstId}`)).toHaveAccessibleName(
-        "Keep native sessions",
-      );
-      await expect(page.getByTestId(`handoff-recovery-${chosenId}`)).toHaveAccessibleName(
-        "Continue with exported history",
-      );
-      await page.screenshot({ path: testInfo.outputPath("handoff-existing-transfers.png") });
-      await page.getByTestId(`handoff-recovery-${chosenId}`).click();
-      await expect(page.getByText("Continue with exported history", { exact: true })).toBeVisible();
-      expect(await savedTransfer(page, host.source.serverId, host.workspace.workspaceId)).toBe(
-        chosenId,
-      );
-      expect(
-        (await host.sourceClient.handoffFindSource({ workspaceId: host.workspace.workspaceId }))
-          .result,
-      ).toBeNull();
-      expect((await host.destinationClient.fetchWorkspaces()).entries).toEqual([]);
-      await page.getByTestId("handoff-submit").click();
-      await expect(page.getByTestId("handoff-submit")).toHaveText("Move workspace", {
-        timeout: 30_000,
-      });
-      const prepared = await host.destinationClient.handoffGetDestinationStatus({
-        transferId: chosenId,
-      });
-      expect(prepared.result).toMatchObject({
-        transferId: chosenId,
-        state: "staged",
-        continuationMode: "context",
-      });
-      if (!prepared.result) throw new Error("Missing destination reservation");
-      // The source accepted cancellation, but its reply never reached destination cleanup.
-      const cancelledAtSource = await host.sourceClient.handoffCancelSource({
-        transferId: chosenId,
-        destinationServerId: host.destination.serverId,
-        reservationId: prepared.result.reservationId,
-      });
-      expect(cancelledAtSource.error).toBeNull();
-      await forgetTransfer(page, host.source.serverId, host.workspace.workspaceId);
-      await page.reload();
-      await openHandoff(page);
-      await page.getByTestId("handoff-host-trigger").click();
-      await page.getByTestId(`handoff-host-${host.destination.serverId}`).click();
-      await page.getByTestId("handoff-recovery-trigger").click();
-      await page.getByTestId(`handoff-recovery-${chosenId}`).click();
-      await expect(page.getByTestId("handoff-status")).toHaveText(
-        "Cancellation is incomplete. Resume to finish cancelling this transfer.",
-      );
-      await page.getByTestId("handoff-submit").click();
-      await expect(page.getByTestId("handoff-status")).toHaveText(
-        "Transfer cancelled. The source can be used again.",
-      );
-      const remaining = await host.destinationClient.handoffListDestination(query);
-      expect(remaining.result?.transfers.map((transfer) => transfer.transferId)).toEqual([firstId]);
-    } finally {
-      await host.close();
-    }
-  });
+    });
+  }
 
   test("recovers preparation and activation errors, reloads a transfer and finishes with source offline", async ({
     page,

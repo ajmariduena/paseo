@@ -1,5 +1,6 @@
 import type {
   HandoffDestinationSnapshot,
+  HandoffCancellationProof,
   HandoffReleaseReceipt,
 } from "@getpaseo/protocol/handoff-control";
 import type { DaemonClient } from "./daemon-client.js";
@@ -230,29 +231,37 @@ export async function activateWorkspaceHandoff(
 
 /** Cancellation wins durably at source before destination is permitted to discard its copy. */
 export async function cancelWorkspaceHandoff(
-  input: HandoffConnections,
+  input: Omit<ActivateWorkspaceHandoffInput, "onProgress">,
 ): Promise<HandoffDestinationSnapshot> {
-  const { source, destination, transferId, signal } = input;
+  const { sourceServerId, destination, transferId, signal } = input;
   const target = handoffResult(
     await handoffRequest(() => destination.handoffGetDestinationStatus({ transferId }), signal),
   );
-  const { sourceServerId, destinationServerId } = requireDistinctHosts(input);
+  const destinationServerId = serverId(destination);
+  if (destinationServerId === sourceServerId)
+    throw new Error("Choose a different destination host");
   if (target.sourceServerId !== sourceServerId)
     throw new Error("Destination reservation belongs to another source host");
   if (["released", "activating", "active"].includes(target.state))
     throw new Error("Source ownership was released; finish destination activation");
-  // Even a cancelled destination may need to retry cleanup after an interrupted delete.
-  const proof = handoffResult(
-    await handoffRequest(
-      () =>
-        source.handoffCancelSource({
-          transferId,
-          destinationServerId,
-          reservationId: target.reservationId,
-        }),
-      signal,
-    ),
-  );
+  if (target.state === "cancelled" && target.cleanupComplete === true) return target;
+  let proof: HandoffCancellationProof | undefined;
+  if (!target.cancellationAccepted) {
+    const source = input.getSource();
+    if (serverId(source) !== sourceServerId)
+      throw new Error("Source connection belongs to another host");
+    proof = handoffResult(
+      await handoffRequest(
+        () =>
+          source.handoffCancelSource({
+            transferId,
+            destinationServerId,
+            reservationId: target.reservationId,
+          }),
+        signal,
+      ),
+    );
+  }
   return handoffResult(
     await handoffRequest(() => destination.handoffCancelDestination({ transferId, proof }), signal),
   );

@@ -170,6 +170,8 @@ export const HandoffDestinationSnapshotSchema = z.object({
     "cancelled",
   ]),
   manifestDigest: HandoffDigestSchema.nullable(),
+  cleanupComplete: z.boolean().optional(),
+  cancellationAccepted: z.boolean().optional(),
 });
 export type HandoffSourceSnapshot = z.infer<typeof HandoffSourceSnapshotSchema>;
 export type HandoffDestinationSnapshot = z.infer<typeof HandoffDestinationSnapshotSchema>;
@@ -260,6 +262,7 @@ export const HandoffGetSourceStatusResponseSchema = z.object({
   payload: z.object({
     requestId: z.string(),
     result: HandoffSourceSnapshotSchema.nullable(),
+    cancellation: HandoffCancellationProofSchema.nullable().optional(),
     error: HandoffErrorSchema.nullable(),
   }),
 });
@@ -375,7 +378,7 @@ export const HandoffCancelDestinationRequestSchema = z.object({
   type: z.literal("workspace.handoff.cancel_destination.request"),
   requestId: z.string(),
   transferId: HandoffTransferIdSchema,
-  proof: HandoffCancellationProofSchema,
+  proof: HandoffCancellationProofSchema.optional(),
 });
 export const HandoffCancelDestinationResponseSchema = z.object({
   type: z.literal("workspace.handoff.cancel_destination.response"),

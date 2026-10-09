@@ -1,3 +1,4 @@
+import { isHandoffCancellationComplete } from "./persistence";
 import { useCallback, useMemo } from "react";
 import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
@@ -33,7 +34,8 @@ export function HandoffSheet(props: Props) {
 function statusKey(state: Extract<HandoffFormState, { kind: "transfer" }>) {
   if (state.run.status === "running") return state.run.progress?.phase ?? "saving";
   if (state.record.snapshot?.state === "active") return "active";
-  if (state.record.snapshot?.state === "cancelled") return "cancelled";
+  if (isHandoffCancellationComplete(state.record.snapshot)) return "cancelled";
+  if (state.record.snapshot?.state === "cancelled") return "cancelPending";
   if (state.record.intent === "cancel") return "cancelPending";
   const forward =
     state.record.intent === "activate" ||

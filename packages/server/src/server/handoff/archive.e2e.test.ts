@@ -303,7 +303,8 @@ test.skipIf(process.platform === "win32")(
       ).result,
     ).toEqual({ transfers: [], nextCursor: null });
     await cancelWorkspaceHandoff({
-      source: source.client,
+      sourceServerId: source.daemon.daemon.getServerId(),
+      getSource: () => source.client,
       destination: destination.client,
       transferId: ids[0],
     });
@@ -378,6 +379,10 @@ test.skipIf(process.platform === "win32").each(["reserved", "staged"] as const)(
     expect((await source.client.handoffCancelSource(cancelRequest)).result).toEqual(
       cancelled.result,
     );
+    const discovered = await source.client.handoffGetSourceStatus({ transferId });
+    expect(discovered.error).toBeNull();
+    expect(discovered.cancellation).toEqual(cancelled.result);
+    expect(discovered.result?.source.state ?? null).toBe(phase === "reserved" ? null : "cancelled");
     const delayed = await source.client.handoffPrepareSource({
       ...cancelRequest,
       workspaceId: request.workspaceId,
@@ -385,18 +390,34 @@ test.skipIf(process.platform === "win32").each(["reserved", "staged"] as const)(
     });
     expect(delayed.error?.code).toBe("invalid_state");
     const result = await cancelWorkspaceHandoff({
-      source: source.client,
+      sourceServerId: source.daemon.daemon.getServerId(),
+      getSource: () => source.client,
       destination: destination.client,
       transferId,
     });
     expect(result.state).toBe("cancelled");
+    expect(result.cleanupComplete).toBe(true);
+    expect(result.cancellationAccepted).toBe(true);
     expect(
       await cancelWorkspaceHandoff({
-        source: source.client,
+        sourceServerId: source.daemon.daemon.getServerId(),
+        getSource: () => source.client,
         destination: destination.client,
         transferId,
       }),
     ).toEqual(result);
+    await stopHost(source);
+    expect(
+      await cancelWorkspaceHandoff({
+        sourceServerId: result.sourceServerId,
+        getSource: () => {
+          throw new Error("Source is offline");
+        },
+        destination: destination.client,
+        transferId,
+      }),
+    ).toEqual(result);
+    source = await startHost("source");
     expect(await readFile(path.join(cwd, "work.txt"), "utf8")).toBe("Original work");
     expect(
       await source.daemon.daemon.handoffOwnership.withMutation({ cwd }, async () => "resumed"),
@@ -474,7 +495,8 @@ test.skipIf(process.platform === "win32")(
     if (!release.result) throw new Error("Missing release receipt");
     await expect(
       cancelWorkspaceHandoff({
-        source: source.client,
+        sourceServerId: source.daemon.daemon.getServerId(),
+        getSource: () => source.client,
         destination: destination.client,
         transferId,
       }),

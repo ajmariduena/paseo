@@ -94,7 +94,7 @@ test("handoff reservation requires an explicit continuation mode", () => {
   }
 });
 
-test("handoff destination cancellation refuses release receipts and missing proofs", () => {
+test("handoff destination cancellation accepts a saved-proof retry and refuses release receipts", () => {
   const message = {
     type: "workspace.handoff.cancel_destination.request",
     requestId: "cancel",
@@ -114,7 +114,7 @@ test("handoff destination cancellation refuses release receipts and missing proo
   };
   expect(SessionInboundMessageSchema.parse(message)).toEqual(message);
   expect(SessionInboundMessageSchema.safeParse({ ...message, proof: undefined }).success).toBe(
-    false,
+    true,
   );
   expect(
     SessionInboundMessageSchema.safeParse({

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { HandoffDestinationSnapshotSchema } from "@getpaseo/protocol/handoff-control";
 import type {
   HandoffDestinationSnapshot,
+  HandoffCancellationProof,
   HandoffSourceSnapshot,
 } from "@getpaseo/protocol/handoff-control";
 
@@ -44,7 +45,7 @@ export function restoreHandoffRecord(input: {
     JSON.stringify([...snapshot.sourceAgentIds].sort()) !==
       JSON.stringify([...source.agentIds].sort()) ||
     (snapshot.manifestDigest !== null && snapshot.manifestDigest !== source.manifestDigest) ||
-    snapshot.state === "cancelled" ||
+    (snapshot.state === "cancelled" && source.state !== "cancelled") ||
     (destinationReleased && source.state !== "released") ||
     (source.state === "released" && snapshot.state !== "staged" && !destinationReleased)
   )
@@ -73,6 +74,41 @@ export function restoreReservedHandoffRecord(input: {
   )
     throw new Error("Destination reservation does not match this workspace");
   return restoredRecord(origin, destination, snapshot, "prepare");
+}
+
+export function restoreCancelledHandoffRecord(input: {
+  origin: HandoffOrigin;
+  destination: { serverId: string; label: string };
+  snapshot: HandoffDestinationSnapshot;
+  proof?: HandoffCancellationProof;
+}): HandoffRecord {
+  const { origin, destination, snapshot, proof } = input;
+  if (
+    destination.serverId === origin.sourceServerId ||
+    snapshot.sourceServerId !== origin.sourceServerId ||
+    snapshot.sourceWorkspaceId !== origin.workspaceId ||
+    ["released", "activating", "active"].includes(snapshot.state)
+  )
+    throw new Error("Cancellation belongs to a different workspace or released transfer");
+  if (proof) {
+    const receipt = proof.receipt;
+    if (
+      receipt.sourceServerId !== origin.sourceServerId ||
+      receipt.destinationServerId !== destination.serverId ||
+      receipt.transferId !== snapshot.transferId ||
+      receipt.reservationId !== snapshot.reservationId
+    )
+      throw new Error("Cancellation does not match the destination reservation");
+  } else if (snapshot.state !== "cancelled") {
+    throw new Error("Source cancellation has not been confirmed");
+  }
+  return restoredRecord(origin, destination, snapshot, "cancel");
+}
+
+export function isHandoffCancellationComplete(
+  snapshot: HandoffDestinationSnapshot | null,
+): boolean {
+  return snapshot?.state === "cancelled" && snapshot.cleanupComplete === true;
 }
 
 function restoredRecord(
