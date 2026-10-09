@@ -506,6 +506,24 @@ describe("AgentStorage", () => {
     );
   });
 
+  test("a rejected mutation does not discard the next queued restart note", async () => {
+    const agentId = "queued-agent";
+    await storage.applySnapshot(createManagedAgent({ id: agentId }));
+    const note = { kind: "turn", label: "Interrupted work", id: "interrupted-turn" };
+
+    const outcomes = await Promise.allSettled([
+      storage.completeHandoffContext(agentId),
+      storage.addPendingRestartNote(agentId, [note]),
+    ]);
+
+    expect(outcomes).toEqual([
+      { status: "rejected", reason: new Error(`Agent ${agentId} has no handoff context`) },
+      { status: "fulfilled", value: undefined },
+    ]);
+    const reloaded = new AgentStorage(storagePath, logger);
+    expect((await reloaded.get(agentId))?.pendingRestartNote).toEqual([note]);
+  });
+
   test.skipIf(process.platform === "win32")(
     "handoff checkpoint requires closed state and reports failed writes",
     async () => {

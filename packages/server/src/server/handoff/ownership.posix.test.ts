@@ -14,6 +14,7 @@ import path from "node:path";
 import { afterEach, beforeEach, expect, test as platformTest } from "vitest";
 import { HandoffOwnership, verifyHandoffRelease, verifyHandoffCancellation } from "./ownership.js";
 import { writeJournal } from "./artifacts.js";
+import { syncFilePublication, writeJsonFileAtomic } from "../atomic-file.js";
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import { AgentStorage, type StoredAgentRecord } from "../agent/agent-storage.js";
 import {
@@ -1371,6 +1372,53 @@ test("a lost reply after durable release cannot resurrect source ownership", asy
   });
   expect(verifyHandoffRelease(receipt, binding, status.publicKey)).toBe(true);
   await expect(restarted.cancel(input.id)).rejects.toMatchObject({ code: "invalid_state" });
+});
+
+test("a readable release after failed synchronization is not a durable receipt", async () => {
+  const { input, binding, status } = await prepare();
+  const interrupted = new HandoffOwnership({
+    directory,
+    sourceServerId,
+    write: async (file, value) => {
+      await writeJsonFileAtomic(file, value);
+      throw new Error("directory synchronization failed");
+    },
+  });
+  await interrupted.initialize();
+  await expect(interrupted.release(input.id, binding, async () => {})).rejects.toThrow(
+    "directory synchronization failed",
+  );
+  const journalPath = path.join(directory, "ownership.json");
+  expect(JSON.parse(await readFile(journalPath, "utf8")).records[0].state).toBe("released");
+
+  let storageRepaired = false;
+  const restarted = new HandoffOwnership({
+    directory,
+    sourceServerId,
+    sync: async (file, publicationRoot) => {
+      if (!storageRepaired) throw new Error("directory synchronization failed");
+      await syncFilePublication(file, publicationRoot);
+    },
+  });
+  await expect(restarted.initialize()).rejects.toThrow("directory synchronization failed");
+  await expect(restarted.release(input.id, binding, async () => {})).rejects.toMatchObject({
+    code: "storage_uncertain",
+  });
+  await expect(restarted.withMutation({ cwd }, async () => "unsafe")).rejects.toMatchObject({
+    code: "storage_uncertain",
+  });
+
+  storageRepaired = true;
+  await restarted.initialize();
+  const receipt = await restarted.release(input.id, binding, async () => {
+    throw new Error("must not revalidate an irrevocable release");
+  });
+  expect(verifyHandoffRelease(receipt, binding, status.publicKey)).toBe(true);
+  expect(await restarted.release(input.id, binding, async () => {})).toEqual(receipt);
+  await expect(restarted.cancel(input.id)).rejects.toMatchObject({ code: "invalid_state" });
+  await expect(restarted.withMutation({ cwd }, async () => "unsafe")).rejects.toMatchObject({
+    code: "fenced",
+  });
 });
 
 test("failure before persisting release returns no receipt and recovers the ready source fence", async () => {

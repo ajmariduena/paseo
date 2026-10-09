@@ -66,6 +66,45 @@ finish activation using its journal even when the source is offline. Until that 
 still needs the source to resend its receipt. Returning ownership requires a new handoff. Journals load
 before agent resume, schedules, queues, delegation wakes, or public mutations at daemon boot.
 Corrupt or unreadable journals fail closed with a recoverable error, rather than dropping fences.
+Reading a journal after a process restart does not prove its last rename was synchronized. Finish
+file and directory publication before enabling recovered ownership or issuing a receipt. A recovered
+release keeps its original binding and never repeats the release decision against mutable source data.
+
+### Conversation persistence contract
+
+The complete conversation barrier remains implementation work. Certify a conversation from durable
+inputs, resolved storage obligations and a provider that has finished delivering semantic callbacks.
+Keep recovery metadata in the existing agent and presentation stores. A stopped runtime can still
+have uncertified state; cancellation, user acknowledgement and a new runtime do not repair it.
+
+Durably mark a runtime generation open before calling a provider's create, resume or import method.
+Guard later writes by generation and record revision. Preserve an immutable final candidate when
+the provider stops but publication fails, so retry can complete storage without reopening the provider.
+Queue progress must remain independent of each operation's outcome. A later snapshot repairs only
+fields it actually contains, never an unknown partial handler or a record-owned acknowledgement.
+
+Retain bounded obligations for carried restart notes, handoff context and presentation publication.
+Publish their exact identities and retry inputs before dispatch or other external effects. Bind
+annotations to native message identities with prepared, dispatched and withdrawn dispositions;
+repeated text and prepended context cannot establish that identity. Prove the required completion
+milestone before clearing carried notes. Absence from compacted or incomplete artifacts does not
+prove a prompt was never sent. Recovery never replays a prompt or tool to discover the outcome.
+
+Keep required presentation facts without sliding-window eviction. Reserve capacity for daemon error
+rows before admitting a turn, and account for any unavailable detail explicitly. Retain full content
+or identify the omission; a truncated row cannot certify complete content. Publish an exact pending
+presentation revision before writing its file, then synchronize it and commit its coverage reference.
+Recovery may finish that known publication, but cannot adopt an arbitrary suffix. Legacy entry counts
+and text matches do not prove lifetime coverage; preserve available history and state when full
+fidelity is unproven.
+
+Provider closure must drain current and retiring message producers, hooks and deferred delivery before
+removing subscribers. Track admitted manager work and its descendants per conversation, isolate
+client delivery failures from authoritative effects, and prevent stale work from changing a sealed
+record. Crash recovery also requires the separate durable process-stop proof. Bind the checkpoint,
+presentation coverage, native artifacts and resource dispositions into preparation and release.
+The optional durable timeline backend needs its own checkpoint and restart-safe invalidation before
+it can participate; production's provider-derived timeline does not require a second transcript store.
 
 ## Workspace fidelity
 

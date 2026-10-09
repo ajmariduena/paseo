@@ -1,0 +1,168 @@
+Handoff persistence recovery foundations — 2026-10-10
+
+Two independently reproduced defects are fixed here. This is not the complete
+conversation persistence barrier: runtime generations, semantic obligations,
+provider callback quiescence and durable process-stop recovery remain open.
+
+1. A rejected agent-record mutation previously rejected the next queued mutation
+   without executing it. A regression now preserves the first caller's error and
+   proves the following restart note survives reconstruction of AgentStorage.
+2. A process restart could read a released ownership journal after rename but before
+   successful directory synchronization. The source could then issue a receipt
+   from that readable state. Recovery now synchronizes the existing file and its
+   publication directories before admitting operations. Continued sync failure
+   prevents receipts and source mutations; repaired storage recovers the same
+   irrevocable binding without revalidating mutable source content.
+
+The ownership test uses real file rename and an injected publication failure,
+then reconstructs the owner. It does not simulate an actual power cut. Existing
+Windows release restrictions remain; no cross-host/provider continuity claim.
+
+Storage queue: before fix
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/agent/agent-storage.test.ts --bail=1 -t 'a rejected mutation does not discard'
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla
+
+stdout | packages/server/src/server/agent/agent-storage.test.ts
+[dotenv@17.3.1] injecting env (0) from packages/server/.env.test -- tip: ⚙️  suppress all logs with { quiet: true }
+[dotenv@17.3.1] injecting env (0) from packages/.env -- tip: 🔐 encrypt with Dotenvx: https://dotenvx.com
+
+ ❯ packages/server/src/server/agent/agent-storage.test.ts (22 tests | 1 failed | 21 skipped) 16ms
+     × a rejected mutation does not discard the next queued restart note 14ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/server/src/server/agent/agent-storage.test.ts > AgentStorage > a rejected mutation does not discard the next queued restart note
+AssertionError: expected [ { status: 'rejected', …(1) }, …(1) ] to deeply equal [ { status: 'rejected', …(1) }, …(1) ]
+
+- Expected
++ Received
+
+@@ -4,9 +4,11 @@
+        "message": "Agent queued-agent has no handoff context",
+      },
+      "status": "rejected",
+    },
+    {
+-     "status": "fulfilled",
+-     "value": undefined,
++     "reason": Error {
++       "message": "Agent queued-agent has no handoff context",
++     },
++     "status": "rejected",
+    },
+  ]
+
+ ❯ packages/server/src/server/agent/agent-storage.test.ts:519:22
+    517|     ]);
+    518|
+    519|     expect(outcomes).toEqual([
+       |                      ^
+    520|       { status: "rejected", reason: new Error(`Agent ${agentId} has no…
+    521|       { status: "fulfilled", value: undefined },
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 21 skipped (22)
+   Start at  00:52:03
+   Duration  892ms (transform 444ms, setup 43ms, import 712ms, tests 16ms, environment 0ms)
+
+
+Storage queue: after fix
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/agent/agent-storage.test.ts --bail=1
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla
+
+
+ Test Files  1 passed (1)
+      Tests  22 passed (22)
+   Start at  00:52:24
+   Duration  941ms (transform 479ms, setup 40ms, import 739ms, tests 51ms, environment 0ms)
+
+
+Ownership durability: before fix
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/handoff/ownership.posix.test.ts --bail=1 -t 'a readable release after failed synchronization'
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla
+
+stdout | packages/server/src/server/handoff/ownership.posix.test.ts
+[dotenv@17.3.1] injecting env (0) from packages/server/.env.test -- tip: ⚙️  enable debug logging with { debug: true }
+[dotenv@17.3.1] injecting env (0) from packages/.env -- tip: 🛠️  run anywhere with `dotenvx run -- yourcommand`
+
+ ❯ packages/server/src/server/handoff/ownership.posix.test.ts (42 tests | 1 failed | 41 skipped) 24ms
+   × a readable release after failed synchronization is not a durable receipt 23ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/server/src/server/handoff/ownership.posix.test.ts > a readable release after failed synchronization is not a durable receipt
+AssertionError: promise resolved "undefined" instead of rejecting
+
+- Expected:
+Error {
+  "message": "rejected promise",
+}
+
++ Received:
+undefined
+
+ ❯ packages/server/src/server/handoff/ownership.posix.test.ts:1403:38
+    1401|     },
+    1402|   });
+    1403|   await expect(restarted.initialize()).rejects.toThrow("directory sync…
+       |                                      ^
+    1404|   await expect(restarted.release(input.id, binding, async () => {})).r…
+    1405|     code: "storage_uncertain",
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 41 skipped (42)
+   Start at  00:53:25
+   Duration  1.68s (transform 962ms, setup 54ms, import 1.48s, tests 24ms, environment 0ms)
+
+
+Ownership durability: after fix
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/handoff/ownership.posix.test.ts --bail=1
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla
+
+
+ Test Files  1 passed (1)
+      Tests  42 passed (42)
+   Start at  00:53:56
+   Duration  3.30s (transform 916ms, setup 42ms, import 1.41s, tests 1.73s, environment 0ms)
+
+
+Ownership recovery and admission regressions
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/handoff/ownership.test.ts --bail=1
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla
+
+
+ Test Files  1 passed (1)
+      Tests  12 passed (12)
+   Start at  00:55:11
+   Duration  355ms (transform 115ms, setup 49ms, import 139ms, tests 58ms, environment 0ms)
+
+
+Workspace checks
+$ npm run typecheck
+Completed successfully for all workspaces.
+
+$ npm run lint
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 2.0s on 5029 files with 177 rules using 4 threads.
+
+$ npm run format
+
+> paseo@0.11.1 format
+> oxfmt .
+
+Finished in 3510ms on 5374 files using 4 threads.

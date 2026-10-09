@@ -13,6 +13,7 @@ import {
   type HandoffCancellationProof,
 } from "@getpaseo/protocol/handoff-control";
 import { readBoundedFile, syncDirectory, writeJournal } from "./artifacts.js";
+import { syncFilePublication } from "../atomic-file.js";
 
 const SourceSchema = z.object({
   id: HandoffTransferIdSchema,
@@ -144,6 +145,7 @@ export class HandoffOwnership {
       directory: string;
       sourceServerId: string;
       write?: typeof writeJournal;
+      sync?: typeof syncFilePublication;
       assertAdditionalAdmission?: (scope: HandoffMutationScope) => void;
     },
   ) {
@@ -188,6 +190,14 @@ export class HandoffOwnership {
         if (publicKey !== record.publicKey)
           reject("storage_uncertain", "Invalid handoff signing key");
         loaded.set(record.id, record);
+      }
+      // A process restart can still read a rename whose directory sync failed.
+      // Finish publication before enabling mutations or issuing recovered proofs.
+      if (process.platform !== "win32") {
+        await (this.options.sync ?? syncFilePublication)(
+          this.journalPath,
+          path.dirname(this.options.directory),
+        );
       }
       for (const [id, record] of loaded) this.records.set(id, record);
       this.restoreCancellations(journal.cancellations ?? []);
