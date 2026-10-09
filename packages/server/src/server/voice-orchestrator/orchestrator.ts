@@ -21,7 +21,9 @@ import type {
   VoiceToolResult,
 } from "@getpaseo/protocol/voice-fleet/types";
 import type { PaseoToolCatalog } from "../agent/tools/types.js";
-import { FastLlmClient, type FastLlmConfig } from "./fast-brain/llm-client.js";
+import type { FastLlmConfig } from "./fast-brain/llm-client.js";
+import { FastBrain } from "./fast-brain/fast-brain.js";
+import { VoiceCommandsService } from "./fast-brain/voice-commands-service.js";
 import { VoiceRouter, type RoutePlan, type RouteResult } from "./fast-brain/router.js";
 import { VoiceToolbox, type VoiceAgentDefaults } from "./fast-brain/voice-toolbox.js";
 import { DigestSummarizer } from "./digest/digest-summarizer.js";
@@ -121,6 +123,10 @@ export interface VoiceOrchestratorOptions {
   projectRegistry?: ProjectRegistry | null;
   /** The fast model that turns requests into tool calls; without it the llm agent does. */
   router?: FastLlmConfig | null;
+  /** Answers when the router's model fails, stalls or has no key. */
+  routerBackup?: FastLlmConfig | null;
+  /** Where Settings → Voice → Voice commands reads and writes its choices. */
+  voiceCommands?: { paseoHome: string; env: NodeJS.ProcessEnv };
   /** Paseo tools acting for the user with no calling agent. */
   createToolCatalog?: (context: VoiceCallerContext) => Promise<PaseoToolCatalog>;
   hostMetrics?: (() => Promise<HostMetricsSnapshot>) | null;
@@ -159,8 +165,9 @@ export class VoiceOrchestrator {
   private agentModes: Record<string, string> = {};
   private agentDefaults: VoiceAgentDefaults = {};
   private spokenRequests = 0;
-  private readonly llm: FastLlmClient | null;
-  private readonly summarizer: DigestSummarizer | null;
+  private readonly llm: FastBrain;
+  private readonly summarizer: DigestSummarizer;
+  readonly commands: VoiceCommandsService | null;
   readonly localFleet: LocalFleet;
   readonly remoteFleet: RemoteFleet;
   private readonly toolbox: VoiceToolbox | null;
@@ -183,17 +190,17 @@ export class VoiceOrchestrator {
       logger: this.logger,
     });
     this.webrtc = new LiveWebrtcHub({ orchestrator: this, logger: this.logger });
-    this.llm = options.router ? new FastLlmClient(options.router, this.logger) : null;
-    this.vocabulary = buildVocabulary({ names: [], dictionary: options.dictionary?.() });
-    if (options.router) {
-      this.logger.info(
-        { provider: options.router.provider, model: options.router.model },
-        "Voice fast brain ready",
-      );
-    }
-    this.summarizer = this.llm
-      ? new DigestSummarizer({ llm: this.llm, language: () => this.language, logger: this.logger })
+    this.llm = new FastBrain(this.logger);
+    this.llm.configure({ primary: options.router ?? null, backup: options.routerBackup ?? null });
+    this.commands = options.voiceCommands
+      ? new VoiceCommandsService({ ...options.voiceCommands, brain: this.llm, logger: this.logger })
       : null;
+    this.vocabulary = buildVocabulary({ names: [], dictionary: options.dictionary?.() });
+    this.summarizer = new DigestSummarizer({
+      llm: this.llm,
+      language: () => this.language,
+      logger: this.logger,
+    });
     this.localFleet = new LocalFleet({
       agentManager: options.agentManager,
       agentStorage: options.agentStorage,
@@ -270,7 +277,7 @@ export class VoiceOrchestrator {
 
   /** Whether requests skip the llm agent: a fast model picks tools and the host runs them. */
   get hasFastBrain(): boolean {
-    return this.llm !== null && this.toolbox !== null;
+    return this.llm.available && this.toolbox !== null;
   }
 
   async ensureAgent(): Promise<string> {
@@ -340,7 +347,7 @@ export class VoiceOrchestrator {
       deliver: (notices) => this.deliverNotices(notices),
     });
 
-    if (this.llm && this.toolbox) {
+    if (this.llm.available && this.toolbox) {
       this.router = new VoiceRouter({
         llm: this.llm,
         executor: {
@@ -351,7 +358,7 @@ export class VoiceOrchestrator {
       });
       this.llm.keepWarm(true);
     }
-    this.summarizer?.setWatching(true);
+    this.summarizer.setWatching(true);
     this.localFleet.refreshHealth();
     this.toolbox?.prewarm();
     void this.refreshVocabulary();
@@ -561,7 +568,7 @@ export class VoiceOrchestrator {
     history: string[];
   }): Promise<string> {
     if (params.kind === "call_start") return callGreeting(this.language);
-    if (this.llm) {
+    if (this.llm.available) {
       try {
         const completion = await this.llm.complete({
           messages: [
@@ -633,7 +640,7 @@ export class VoiceOrchestrator {
 
   /** This host's fleet for a call running on another host; asking counts as watching. */
   async fleetDigest(): Promise<VoiceFleetDigest> {
-    this.summarizer?.observe(90_000);
+    this.summarizer.observe(90_000);
     this.localFleet.refreshHealth();
     this.toolbox?.prewarm();
     return this.localFleet.digest();
@@ -888,8 +895,8 @@ export class VoiceOrchestrator {
     this.router = null;
     this.lastPhoneSyncAt = 0;
     this.lastPhoneAppState = null;
-    this.llm?.keepWarm(false);
-    this.summarizer?.setWatching(false);
+    this.llm.keepWarm(false);
+    this.summarizer.setWatching(false);
     // Only a call that ends forgets the fleet; a new call may already have the phone's report.
     if (hadCall) this.remoteFleet.reset();
     this.lastUtterance = null;

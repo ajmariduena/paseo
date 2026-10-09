@@ -477,6 +477,7 @@ export interface PaseoDaemonConfig {
   voiceLlmThinking?: string | null;
   voiceLive?: GptLiveEngineConfig | null;
   voiceRouter?: FastLlmConfig | null;
+  voiceRouterBackup?: FastLlmConfig | null;
   dictionary?: Dictionary;
   voiceLanguage?: string | null;
   dictationFinalTimeoutMs?: number;
@@ -627,6 +628,10 @@ function createInitialMutableDaemonConfig(config: PaseoDaemonConfig): MutableDae
   }
 
   return initialConfig;
+}
+
+function voiceCommandsOptions(config: PaseoDaemonConfig) {
+  return { paseoHome: config.paseoHome, env: config.configReload?.env ?? process.env };
 }
 
 function createInitialDictationConfig(
@@ -1816,6 +1821,8 @@ export async function createPaseoDaemon(
     speech: speechService,
     projectRegistry,
     router: config.voiceRouter,
+    routerBackup: config.voiceRouterBackup,
+    voiceCommands: voiceCommandsOptions(config),
     dictionary: () => daemonConfigStore.get().dictionary,
     createToolCatalog: async (callerContext) =>
       createAgentToolCatalog({ callerContext, transport: "native" }),

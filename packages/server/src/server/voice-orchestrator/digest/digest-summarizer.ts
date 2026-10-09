@@ -1,6 +1,6 @@
 import type pino from "pino";
 import type { AgentTimelineItem } from "../../agent/agent-sdk-types.js";
-import type { FastLlmClient } from "../fast-brain/llm-client.js";
+import type { FastLlm } from "../fast-brain/fast-brain.js";
 import { describeLanguage } from "../prompt.js";
 import { condenseTurn } from "./agent-digest.js";
 
@@ -42,7 +42,7 @@ export class DigestSummarizer {
 
   constructor(
     private readonly options: {
-      llm: FastLlmClient;
+      llm: FastLlm;
       language: () => string | null;
       logger: pino.Logger;
       now?: () => number;
@@ -51,6 +51,11 @@ export class DigestSummarizer {
 
   private now(): number {
     return this.options.now?.() ?? Date.now();
+  }
+
+  /** False while no fast model is set up; summaries wait for one. */
+  get enabled(): boolean {
+    return this.options.llm.available;
   }
 
   /** A call runs on this host: summaries may run until it ends. */
@@ -125,6 +130,7 @@ export class DigestSummarizer {
   }
 
   private summarize(request: SummaryRequest): Promise<string | null> {
+    if (!this.enabled) return Promise.resolve(null);
     const existing = this.inFlight.get(request.agentId);
     if (existing) return existing;
     this.spentThisHour += 1;

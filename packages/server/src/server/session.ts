@@ -256,6 +256,10 @@ import {
   VoiceMessagesSessionHandler,
   isVoiceMessagesRequest,
 } from "./session/voice/voice-messages-handler.js";
+import {
+  handleVoiceCommandsRequest,
+  isVoiceCommandsRequest,
+} from "./session/voice/voice-commands-handler.js";
 import type pino from "pino";
 import { ScheduleService } from "./schedule/service.js";
 import {
@@ -3013,6 +3017,12 @@ export class Session {
 
   private dispatchVoiceAndControlMessage(msg: SessionInboundMessage): Promise<void> | undefined {
     if (isVoiceMessagesRequest(msg)) return this.voiceMessages.handle(msg);
+    if (isVoiceCommandsRequest(msg)) {
+      return handleVoiceCommandsRequest(msg, {
+        service: this.voiceOrchestrator?.commands ?? null,
+        emit: (message) => this.emit(message),
+      });
+    }
     switch (msg.type) {
       case "voice_audio_chunk":
       case "abort_request":

@@ -1,3 +1,4 @@
+import { Agent as HttpAgent, request as httpRequest } from "node:http";
 import { Agent, request } from "node:https";
 import type pino from "pino";
 
@@ -6,6 +7,7 @@ export interface FastLlmConfig {
   provider: string;
   /** OpenAI-compatible base URL ending in /v1. */
   baseUrl: string;
+  /** Empty for endpoints that need no key, like a model on the local network. */
   apiKey: string;
   model: string;
   /** `none` turns reasoning off on models that support it. */
@@ -117,7 +119,8 @@ function parseCompletion(
  * host, warmed at call start and kept warm while a call runs.
  */
 export class FastLlmClient {
-  private readonly agent = new Agent({ keepAlive: true, keepAliveMsecs: 15_000, maxSockets: 8 });
+  private readonly agent: Agent | HttpAgent;
+  private readonly send: typeof request;
   private readonly url: URL;
   private warmTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -126,6 +129,14 @@ export class FastLlmClient {
     private readonly logger: pino.Logger,
   ) {
     this.url = new URL(`${config.baseUrl.replace(/\/+$/, "")}/chat/completions`);
+    const options = { keepAlive: true, keepAliveMsecs: 15_000, maxSockets: 8 };
+    const secure = this.url.protocol === "https:";
+    this.agent = secure ? new Agent(options) : new HttpAgent(options);
+    this.send = secure ? request : httpRequest;
+  }
+
+  private authHeaders(): Record<string, string> {
+    return this.config.apiKey ? { Authorization: `Bearer ${this.config.apiKey}` } : {};
   }
 
   /**
@@ -240,13 +251,13 @@ export class FastLlmClient {
     timeoutMs: number,
   ): Promise<{ status: number; body: string }> {
     return new Promise((resolve, reject) => {
-      const req = request(
+      const req = this.send(
         this.url,
         {
           method: "POST",
           agent: this.agent,
           headers: {
-            Authorization: `Bearer ${this.config.apiKey}`,
+            ...this.authHeaders(),
             "Content-Type": "application/json",
             "Content-Length": Buffer.byteLength(payload),
           },
@@ -271,12 +282,12 @@ export class FastLlmClient {
 
   private get(url: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      const req = request(
+      const req = this.send(
         url,
         {
           method: "GET",
           agent: this.agent,
-          headers: { Authorization: `Bearer ${this.config.apiKey}` },
+          headers: this.authHeaders(),
         },
         (res) => {
           res.resume();

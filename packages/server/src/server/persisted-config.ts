@@ -79,7 +79,7 @@ const ElevenLabsProviderSchema = z
   })
   .strict();
 
-const CerebrasProviderSchema = z
+const ApiKeyProviderSchema = z
   .object({
     apiKey: z.string().trim().min(1).optional(),
     baseUrl: z.string().trim().min(1).optional(),
@@ -91,7 +91,10 @@ const ProvidersSchema = z
     openai: OpenAiProviderSchema.optional(),
     local: LocalSpeechProviderSchema.optional(),
     elevenlabs: ElevenLabsProviderSchema.optional(),
-    cerebras: CerebrasProviderSchema.optional(),
+    cerebras: ApiKeyProviderSchema.optional(),
+    groq: ApiKeyProviderSchema.optional(),
+    sambanova: ApiKeyProviderSchema.optional(),
+    google: ApiKeyProviderSchema.optional(),
   })
   .strict();
 
@@ -164,9 +167,31 @@ const FeatureVoiceModeSchema = z
     /** The fast model that turns a call's requests into actions; "off" uses the llm agent. */
     router: z
       .object({
-        provider: z.enum(["cerebras", "openai", "off"]).optional(),
+        provider: z
+          .enum(["cerebras", "groq", "sambanova", "openai", "google", "custom", "off"])
+          .optional(),
         model: z.string().trim().min(1).optional(),
         reasoningEffort: z.string().trim().min(1).optional(),
+        /** Answers when the model fails or stalls; false turns the default backup off. */
+        backup: z
+          .union([
+            z
+              .object({
+                provider: z.enum(["cerebras", "groq", "sambanova", "openai", "google", "custom"]),
+                model: z.string().trim().min(1),
+              })
+              .strict(),
+            z.literal(false),
+          ])
+          .optional(),
+        /** Any OpenAI-compatible endpoint, for the custom provider. */
+        custom: z
+          .object({
+            baseUrl: z.string().trim().min(1),
+            apiKey: z.string().trim().min(1).optional(),
+          })
+          .strict()
+          .optional(),
       })
       .strict()
       .optional(),

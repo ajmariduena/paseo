@@ -1,3 +1,4 @@
+import { VoiceCommandsSettingsSchema } from "./voice-commands/rpc-schemas.js";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import {
@@ -781,6 +782,21 @@ test("the dictionary is optional in config responses and patches", () => {
   expect(oldConfigSchema.safeParse(current).success).toBe(true);
   const legacyInfo = { status: "server_info", serverId: "host", features: { voiceFleet: true } };
   expect(ServerInfoStatusPayloadSchema.parse(legacyInfo).features?.dictionary).toBeUndefined();
+});
+
+test("voice commands settings stay readable as they grow", () => {
+  const legacyInfo = { status: "server_info", serverId: "host", features: { dictionary: true } };
+  expect(ServerInfoStatusPayloadSchema.parse(legacyInfo).features?.voiceCommands).toBeUndefined();
+  const settings = {
+    selection: { provider: "cerebras", model: "qwen-3.8-27b" },
+    backup: null,
+    active: { provider: "cerebras", model: "qwen-3.8-27b" },
+    lastRoundTripMs: 312,
+    providers: [{ id: "cerebras", label: "Cerebras", hasKey: true, region: "us" }],
+    options: [{ provider: "cerebras", model: "qwen-3.8-27b", label: "Qwen 3.8 27B", tier: "fast" }],
+    futureField: true,
+  };
+  expect(VoiceCommandsSettingsSchema.parse(settings)).toEqual(settings);
 });
 
 test("quick prompt capability is optional and discarded by older feature schemas", () => {

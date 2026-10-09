@@ -161,7 +161,7 @@ export class LocalFleet {
       timeline,
       now: Date.now(),
     });
-    if (!summarizer) return base;
+    if (!summarizer?.enabled) return base;
     summarizer.refresh({
       agentId: agent.id,
       title: base.title,
@@ -176,7 +176,7 @@ export class LocalFleet {
   /** Waits briefly for a fresh summary of an agent that just settled, for its notice. */
   async settledSummary(agent: ManagedAgent, timeoutMs: number): Promise<string | null> {
     const { summarizer } = this.options;
-    if (!summarizer) return null;
+    if (!summarizer?.enabled) return null;
     const digest = this.digestAgent(agent);
     return summarizer.ensure(
       {
