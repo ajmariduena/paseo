@@ -1,5 +1,6 @@
 import {
   HandoffStoppedWorkReviewSchema,
+  HandoffIntegrationReviewSchema,
   HandoffCancellationProofSchema,
 } from "@getpaseo/protocol/handoff-control";
 import { createPublicKey, randomUUID } from "node:crypto";
@@ -63,6 +64,7 @@ const ReservationSchema = z.object({
   continuationMode: z.enum(["native", "context"]).default("native"),
   workspaceReviewDigest: HandoffDigestSchema.optional(),
   stoppedWorkReview: HandoffStoppedWorkReviewSchema.optional(),
+  integrationReview: HandoffIntegrationReviewSchema.optional(),
 });
 const BindingSchema = z.object({
   publicKey: z.string().min(1).max(1024),

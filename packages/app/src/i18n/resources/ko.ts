@@ -37,6 +37,9 @@ export const ko: TranslationResources = {
     loadMoreTransfers: "전송 더 불러오기",
     review: "이동 검토",
     conversations: "대화",
+    omittedMcpServers: "다시 설정해야 하는 MCP 연결: {{names}}",
+    integrationScope:
+      "호스트 및 프로젝트의 MCP 연결은 확인되지 않았습니다. 대상 호스트의 인증 정보와 권한이 적용됩니다.",
     emptyConversations: "이 워크스페이스에는 대화가 없습니다.",
     untitledConversation: "제목 없는 대화",
     location: "대상 디렉터리",

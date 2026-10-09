@@ -1723,3 +1723,158 @@ test("pausing between chunks keeps verified source data and resumes only missing
     ).state,
   ).toBe("verified");
 }, 30_000);
+
+for (const continuationMode of ["native", "context"] as const) {
+  test.skipIf(process.platform === "win32")(
+    `reviews omitted conversation MCP connections before ${continuationMode} handoff and retains approval through restart`,
+    async () => {
+      let source = await startHost("source", true);
+      let destination = await startHost("destination", true);
+      const cwd = path.join(root, "mcp-workspace");
+      await mkdir(cwd);
+      const created = await source.client.createWorkspace({
+        source: { kind: "directory", path: cwd },
+      });
+      if (!created.workspace) throw new Error("Missing source workspace");
+      const workspaceId = created.workspace.id;
+      const agentId = randomUUID();
+      const sessionId = randomUUID();
+      const project = claudeProjectDirSync(cwd, { configDir: path.join(root, "source", "claude") });
+      await mkdir(project, { recursive: true });
+      await writeFile(
+        path.join(project, `${sessionId}.jsonl`),
+        JSON.stringify({
+          type: "user",
+          uuid: randomUUID(),
+          sessionId,
+          message: { role: "user", content: "Continue the workspace task" },
+        }) + "\n",
+      );
+      const timestamp = new Date().toISOString();
+      const record = parseStoredAgentRecord({
+        id: agentId,
+        provider: "claude",
+        cwd,
+        workspaceId,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        lastStatus: "closed",
+        persistence: { provider: "claude", sessionId },
+        config: {
+          mcpServers: {
+            tracker: {
+              type: "http",
+              url: "https://PRIVATE_ENDPOINT.invalid/mcp",
+              headers: { Authorization: "PRIVATE_CREDENTIAL" },
+            },
+            browser: {
+              type: "stdio",
+              command: "/PRIVATE_EXECUTABLE",
+              env: { TOKEN: "PRIVATE_ENV" },
+            },
+          },
+        },
+      });
+      await source.daemon.daemon.agentStorage.upsert(record);
+      const preview = await source.client.handoffPreviewSource({ workspaceId });
+      expect(preview.error).toBeNull();
+      const integrationReview = preview.result?.integrationReview;
+      expect(integrationReview).toEqual([{ agentId, omittedMcpServers: ["browser", "tracker"] }]);
+      expect(JSON.stringify(preview)).not.toContain("PRIVATE_");
+      const request = {
+        transferId: randomUUID(),
+        workspaceId,
+        destinationParent: root,
+        continuationMode,
+        integrationReview,
+      };
+      const changed = {
+        ...record,
+        config: { mcpServers: { calendar: { type: "stdio", command: "/PRIVATE_NEW_EXECUTABLE" } } },
+      };
+      await source.daemon.daemon.agentStorage.upsert(changed);
+      await expect(
+        prepareWorkspaceHandoff({
+          ...request,
+          source: source.client,
+          destination: destination.client,
+        }),
+      ).rejects.toThrow("Conversation MCP connections changed after review");
+      expect((await destination.client.handoffGetDestinationStatus(request)).error?.code).toBe(
+        "not_found",
+      );
+      expect((await source.client.handoffFindSource({ workspaceId })).result).toBeNull();
+      const reservation = await destination.client.handoffReserveDestination({
+        ...request,
+        sourceServerId: source.daemon.daemon.getServerId(),
+        sourceWorkspaceId: workspaceId,
+        sourceAgentIds: [agentId],
+      });
+      if (!reservation.result) throw new Error("Missing destination reservation");
+      const prepare = {
+        transferId: request.transferId,
+        workspaceId,
+        agentIds: [agentId],
+        integrationReview,
+        destinationServerId: destination.daemon.daemon.getServerId(),
+        reservationId: reservation.result.reservationId,
+      };
+      expect((await source.client.handoffPrepareSource(prepare)).error?.code).toBe(
+        "review_changed",
+      );
+      expect((await source.client.handoffFindSource({ workspaceId })).result).toBeNull();
+      await source.daemon.daemon.agentStorage.upsert(record);
+      const staged = await prepareWorkspaceHandoff({
+        ...request,
+        source: source.client,
+        destination: destination.client,
+      });
+      expect(staged).toMatchObject({ state: "staged", integrationReview });
+      await stopHost(source);
+      await stopHost(destination);
+      source = await startHost("source", true);
+      destination = await startHost("destination", true);
+      expect(
+        (await source.client.handoffGetSourceStatus(request)).result?.source.integrationReview,
+      ).toEqual(integrationReview);
+      expect(
+        (await destination.client.handoffGetDestinationStatus(request)).result?.integrationReview,
+      ).toEqual(integrationReview);
+      expect(
+        (await source.client.handoffPrepareSource({ ...prepare, integrationReview: [] })).error
+          ?.code,
+      ).toBe("review_changed");
+      await expect(
+        prepareWorkspaceHandoff({
+          ...request,
+          integrationReview: [],
+          source: source.client,
+          destination: destination.client,
+        }),
+      ).rejects.toThrow("Transfer already has another destination reservation");
+      await source.daemon.daemon.agentStorage.upsert(changed);
+      expect((await source.client.handoffReleaseSource(request)).error?.code).toBe(
+        "review_changed",
+      );
+      expect((await source.client.handoffGetSourceStatus(request)).result?.source.state).toBe(
+        "ready",
+      );
+      await source.daemon.daemon.agentStorage.upsert(record);
+      const active = await activateWorkspaceHandoff({
+        sourceServerId: source.daemon.daemon.getServerId(),
+        getSource: () => source.client,
+        destination: destination.client,
+        transferId: request.transferId,
+      });
+      expect(active.state).toBe("active");
+      const imported = await destination.daemon.daemon.agentStorage.get(
+        active.agentMappings[0].destinationAgentId,
+      );
+      expect(imported?.lastStatus).toBe("closed");
+      expect(imported?.config?.mcpServers).toBeUndefined();
+      expect(JSON.stringify(imported)).not.toContain("PRIVATE_");
+      expect(JSON.stringify(active)).not.toContain("PRIVATE_");
+    },
+    30_000,
+  );
+}

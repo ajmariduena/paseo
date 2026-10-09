@@ -4,10 +4,12 @@ import path from "node:path";
 import type { Logger } from "pino";
 import { z } from "zod";
 import { HandoffArchiveManifestSchema, HandoffTransferIdSchema } from "@getpaseo/protocol/handoff";
-import type {
-  HandoffConversationPreview,
-  HandoffSourcePreview,
-  HandoffStoppedWorkReview,
+import {
+  HandoffIntegrationReviewSchema,
+  type HandoffIntegrationReview,
+  type HandoffConversationPreview,
+  type HandoffSourcePreview,
+  type HandoffStoppedWorkReview,
 } from "@getpaseo/protocol/handoff-control";
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import type { AgentManager } from "../agent/agent-manager.js";
@@ -85,6 +87,7 @@ interface SourceRequest {
   reservationId: string;
   workspaceReviewDigest?: string;
   stoppedWorkReview?: HandoffStoppedWorkReview;
+  integrationReview?: HandoffIntegrationReview;
 }
 
 export class HandoffSourceError extends Error {
@@ -169,6 +172,7 @@ export class HandoffSource {
       workspaceId,
       cwd: inventory.cwd,
       conversations,
+      integrationReview: this.reviewIntegrations(inventory.records),
       workspace,
       stoppedWork: {
         agentIds: review.agents.map(({ id }) => id),
@@ -259,6 +263,10 @@ export class HandoffSource {
             "Work that will stop changed after review; cancel this transfer and review again",
           );
       }
+      this.assertReviewedIntegrations(
+        input.integrationReview,
+        await this.options.agents.listByWorkspaceForHandoff(input.workspaceId),
+      );
       let source = await this.options.ownership.prepare({
         id: input.transferId,
         ...inventory,
@@ -266,6 +274,7 @@ export class HandoffSource {
         reservationId: input.reservationId,
         workspaceReviewDigest: input.workspaceReviewDigest,
         stoppedWorkReview: input.stoppedWorkReview,
+        integrationReview: input.integrationReview,
       });
       await this.publishTransfer(input.transferId);
       if (source.state === "cancelled")
@@ -285,6 +294,7 @@ export class HandoffSource {
       const records: StoredAgentRecord[] = [];
       for (const id of source.agentIds)
         records.push(await this.options.agents.checkpointClosedAgent(id));
+      this.assertReviewedIntegrations(source.integrationReview, records);
       const agents = records.map((record) => this.nativeAgent(record));
       const runtime = agents.length > 0 ? await this.nativeRuntime() : null;
       const directory = this.captureDirectory(source.id);
@@ -552,6 +562,32 @@ export class HandoffSource {
       );
   }
 
+  private reviewIntegrations(records: StoredAgentRecord[]): HandoffIntegrationReview {
+    // Only caller-supplied MCP names belong in the review. Commands, URLs, headers and env stay local.
+    // Provider-discovered host/project integrations are not part of this inventory.
+    const review = records
+      .map((record) => ({
+        agentId: record.id,
+        omittedMcpServers: Object.keys(record.config?.mcpServers ?? {}).sort(),
+      }))
+      .sort((left, right) => left.agentId.localeCompare(right.agentId));
+    const parsed = HandoffIntegrationReviewSchema.safeParse(review);
+    if (!parsed.success)
+      refuse("invalid_source", "Conversation integrations exceed the handoff review limits");
+    return parsed.data;
+  }
+
+  private assertReviewedIntegrations(
+    approved: HandoffIntegrationReview | undefined,
+    records: StoredAgentRecord[],
+  ) {
+    if (approved && JSON.stringify(approved) !== JSON.stringify(this.reviewIntegrations(records)))
+      refuse(
+        "review_changed",
+        "Conversation MCP connections changed after review; cancel this transfer and review again",
+      );
+  }
+
   private async verify(source: SourceHandoffStatus, prepared: PreparedSource): Promise<void> {
     const inventory = await this.inspect(source.workspaceId);
     if (!sameIds(inventory.agentIds, source.agentIds))
@@ -561,6 +597,10 @@ export class HandoffSource {
       this.options.setup.activeIds(source.workspaceId).length > 0
     )
       refuse("stop_uncertain", "Source terminals or setup are still running");
+    this.assertReviewedIntegrations(
+      source.integrationReview,
+      await this.options.agents.listByWorkspaceForHandoff(source.workspaceId),
+    );
     for (const id of source.agentIds) {
       if (this.options.agentManager.getAgent(id))
         refuse("stop_uncertain", "Source provider runtime is still loaded");

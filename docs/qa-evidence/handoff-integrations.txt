@@ -1,0 +1,376 @@
+Conversation MCP omission review — 2026-10-09
+
+Baseline: 1c50261f7 (review retention across layout breakpoints).
+
+Scope: caller-supplied MCP server names stored on each conversation. Provider-discovered
+host/project integrations are not inventoried; the UI states that limit. Commands, URLs,
+headers and environment values are not part of the review or destination agent config.
+Existing transcript/workspace fidelity rules still apply; this is not a content secret scanner.
+
+Both host journals and local recovery retain the exact reviewed names. The client checks
+before reserving; the source checks before fencing, after closed-record checkpoints and
+before release. A change requires a fresh review. The network cases cover both native
+and context modes, including review drift, no reservation/source fence on rejected review,
+server-side refusal, changed retry approval, both daemon restarts, release refusal while
+review differs, and final activation as a closed conversation with no copied MCP config.
+The synthetic Claude version command refuses every invocation except --version; these
+cases do not launch a provider turn or establish native provider continuity.
+
+Browser scope: Linux Chromium at 1280x720 and 390x844, real isolated daemons using the
+existing fake provider with MCP support enabled. The synthetic conversation has no native
+transcript: its refusal remains visible, preparation remains disabled, and review creates
+neither a destination reservation nor a source fence. MCP names and the uninspected-scope
+notice remain visible without exposing the synthetic endpoint, token or command.
+Screenshots: handoff-integrations-desktop.png and handoff-integrations-compact.png.
+
+The first desktop attempt timed out during isolated daemon startup (20 seconds), before
+opening review. Compact passed in that run; the focused desktop retry passed. No daemon
+restart was used as a remedy and the main daemon was not restarted.
+No fresh real-provider turn, physical MacBook/VPS round trip, Electron, native iOS/Android,
+or released-version drift is claimed. Complete handoff stays unadvertised.
+
+Optional wire fields preserve older request/response shapes. The app requires the review
+field when starting a new transfer, while existing journal recovery retains absent fields.
+Protocol tests cover old previews and bounded current reviews in both Zod and generated
+outbound validators.
+
+$ packages/server: npx vitest run src/server/handoff/archive.e2e.test.ts -t "reviews omitted conversation MCP" --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  2 passed | 20 skipped (22)
+   Start at  22:35:29
+   Duration  12.89s (transform 8.35s, setup 40ms, import 10.44s, tests 2.29s, environment 0ms)
+
+
+$ packages/app: npx vitest run src/handoff/form-model.test.ts src/i18n/locales.test.ts --bail=1
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+
+
+ Test Files  2 passed (2)
+      Tests  36 passed (36)
+   Start at  22:35:26
+   Duration  455ms (transform 270ms, setup 117ms, import 279ms, tests 37ms, environment 1ms)
+
+
+$ packages/app: npx vitest run src/i18n/resources.test.ts --bail=1
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+
+
+ Test Files  1 passed (1)
+      Tests  40 passed (40)
+   Start at  22:37:47
+   Duration  1.92s (transform 586ms, setup 54ms, import 642ms, tests 1.06s, environment 0ms)
+
+
+$ packages/protocol: npx vitest run src/messages.wire-compat.test.ts --bail=1
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/protocol
+
+
+ Test Files  1 passed (1)
+      Tests  32 passed (32)
+   Start at  22:35:26
+   Duration  930ms (transform 471ms, setup 0ms, import 740ms, tests 60ms, environment 0ms)
+
+
+$ packages/protocol: npx vitest run tests/validation/ws-outbound.test.ts --bail=1
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/protocol
+
+
+ Test Files  1 passed (1)
+      Tests  32 passed (32)
+   Start at  22:39:21
+   Duration  5.74s (transform 4.60s, setup 0ms, import 5.19s, tests 446ms, environment 0ms)
+
+
+$ npm run test:e2e --workspace=@getpaseo/app -- e2e/browser/workspace-handoff.spec.ts --grep "shows conversation MCP" (initial startup failure; compact passes)
+
+> @getpaseo/app@0.11.0-beta.36 test:e2e
+> playwright test --project=browser e2e/browser/workspace-handoff.spec.ts --grep shows conversation MCP
+
+[metro] Starting project at /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+[metro] Using src/app as the root directory for Expo Router.
+[metro] Experimental Expo Autolinking module resolver is enabled.
+[metro] React Compiler enabled
+[metro] Starting Metro Bundler
+[metro] Waiting on http://localhost:46093
+[metro] Logs for your project will appear below.
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] | (node:570686) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[metro] | (Use `node --trace-warnings ...` to show where the warning was created)
+[metro] | (node:570679) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[metro] | (Use `node --trace-warnings ...` to show where the warning was created)
+[metro] | (node:570680) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[metro] | (Use `node --trace-warnings ...` to show where the warning was created)
+[metro] Web packages/app/index.ts ▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░ 90.2% (4880/5137)
+[metro] Web packages/app/index.ts ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.9% (5629/5630)
+[metro] Web packages/app/index.ts ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.9% (5630/5630)
+[metro] Web Bundled 31355ms packages/app/index.ts (5630 modules)
+[e2e] Metro warmed on port 46093
+
+Running 2 tests using 1 worker
+
+(node:570968) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:570968) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[e2e] Worker 0 daemon started on port 35711, home: /tmp/paseo-e2e-worker-0-0iGUG7
+[e2e] Worker 0 daemon stopped
+  ✘  1 [browser] › e2e/browser/workspace-handoff.spec.ts:34:9 › workspace handoff › desktop shows conversation MCP connections that need reconfiguration (27.9s)
+(node:571535) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:571535) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[e2e] Worker 1 daemon started on port 45357, home: /tmp/paseo-e2e-worker-1-o7jwed
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 803ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 158ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (86 modules)
+[metro] Web Bundled 288ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 7ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 337ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 6ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 272ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 19ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+  ✓  2 [browser] › e2e/browser/workspace-handoff.spec.ts:34:9 › workspace handoff › compact shows conversation MCP connections that need reconfiguration (35.8s)
+[e2e] Worker 1 daemon stopped
+[e2e] Metro stopped
+
+
+  1) [browser] › e2e/browser/workspace-handoff.spec.ts:34:9 › workspace handoff › desktop shows conversation MCP connections that need reconfiguration 
+
+    Error: Timed out starting outdated daemon. (node:571257) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+    (Use `node --trace-warnings ...` to show where the warning was created)
+    (node:571257) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+    (Use `node --trace-warnings ...` to show where the warning was created)
+
+
+       at ../support/helpers/daemon-update.ts:89
+
+      87 |   return new Promise((resolve, reject) => {
+      88 |     const timeout = setTimeout(() => {
+    > 89 |       reject(new Error(`Timed out starting outdated daemon. ${stderr.join("")}`));
+         |              ^
+      90 |     }, 20_000);
+      91 |
+      92 |     child.once("exit", (code, signal) => {
+        at Timeout.<anonymous> (/home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app/e2e/support/helpers/daemon-update.ts:89:14)
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    test-results/workspace-handoff-workspac-d4643-s-that-need-reconfiguration-browser/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #2: video (video/webm) ──────────────────────────────────────────────────────────────
+    test-results/workspace-handoff-workspac-d4643-s-that-need-reconfiguration-browser/video.webm
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #3: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results/workspace-handoff-workspac-d4643-s-that-need-reconfiguration-browser/trace.zip
+    Usage:
+
+        npx playwright show-trace test-results/workspace-handoff-workspac-d4643-s-that-need-reconfiguration-browser/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  1 failed
+    [browser] › e2e/browser/workspace-handoff.spec.ts:34:9 › workspace handoff › desktop shows conversation MCP connections that need reconfiguration 
+  1 passed (2.3m)
+npm error Lifecycle script `test:e2e` failed with error:
+npm error code 1
+npm error path /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+npm error workspace @getpaseo/app@0.11.0-beta.36
+npm error location /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+npm error command failed
+npm error command sh -c playwright test --project=browser e2e/browser/workspace-handoff.spec.ts --grep 'shows conversation MCP'
+
+$ npm run test:e2e --workspace=@getpaseo/app -- e2e/browser/workspace-handoff.spec.ts --grep "desktop shows conversation MCP" (focused retry)
+
+> @getpaseo/app@0.11.0-beta.36 test:e2e
+> playwright test --project=browser e2e/browser/workspace-handoff.spec.ts --grep desktop shows conversation MCP
+
+[metro] Starting project at /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+[metro] Using src/app as the root directory for Expo Router.
+[metro] Experimental Expo Autolinking module resolver is enabled.
+[metro] React Compiler enabled
+[metro] Starting Metro Bundler
+[metro] Waiting on http://localhost:44809
+[metro] Logs for your project will appear below.
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web packages/app/index.ts ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.9% (5629/5630)
+[metro] Web Bundled 4499ms packages/app/index.ts (5630 modules)
+[e2e] Metro warmed on port 44809
+
+Running 1 test using 1 worker
+
+(node:572702) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:572702) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[e2e] Worker 0 daemon started on port 37257, home: /tmp/paseo-e2e-worker-0-SkMYmm
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 238ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 125ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro] Web Bundled 318ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 11ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 253ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 14ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 328ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 10ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+  ✓  1 [browser] › e2e/browser/workspace-handoff.spec.ts:34:9 › workspace handoff › desktop shows conversation MCP connections that need reconfiguration (29.7s)
+[e2e] Worker 0 daemon stopped
+[e2e] Metro stopped
+
+  1 passed (58.4s)
+
+$ npm run build:server
+
+> paseo@0.11.1 build:server
+> npm run build:server-deps && npm run build --workspace=@getpaseo/server && npm run build --workspace=@getpaseo/cli
+
+
+> paseo@0.11.1 build:server-deps
+> npm run build:client && concurrently --kill-others-on-fail --names highlight,plugin,relay --prefix-colors yellow,green,blue "npm run build:highlight" "npm run build:plugin" "npm run build:relay"
+
+
+> paseo@0.11.1 build:client
+> npm run build --workspace=@getpaseo/client
+
+
+> @getpaseo/client@0.11.1 build
+> npm run build --workspace=@getpaseo/protocol && npm run build --workspace=@getpaseo/relay && tsc -p tsconfig.json --incremental false
+
+
+> @getpaseo/protocol@0.11.1 prebuild
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 build
+> tsc -p tsconfig.json --incremental false
+
+
+> @getpaseo/relay@0.11.1 build
+> tsc -p tsconfig.json --incremental false
+
+[relay] npm run build:relay exited with code 0
+[highlight] npm run build:highlight exited with code 0
+[plugin] npm run build:plugin exited with code 0
+
+> @getpaseo/server@0.11.1 build
+> npm run build:lib && npm run build:scripts
+
+
+> @getpaseo/server@0.11.1 build:lib
+> tsc -p tsconfig.server.json --incremental false && node scripts/build-opencode-bridge-plugin.mjs && node -e "const fs=require('node:fs'); fs.mkdirSync('dist/server/server/speech/providers/local/sherpa/assets',{recursive:true}); fs.copyFileSync('src/server/speech/providers/local/sherpa/assets/silero_vad.onnx','dist/server/server/speech/providers/local/sherpa/assets/silero_vad.onnx'); fs.cpSync('src/terminal/shell-integration','dist/server/terminal/shell-integration',{recursive:true}); fs.cpSync('src/terminal/shell-integration','dist/src/terminal/shell-integration',{recursive:true}); fs.copyFileSync('src/terminal/terminal-ts-loader.mjs','dist/server/terminal/terminal-ts-loader.mjs'); fs.rmSync('dist/server/skills',{recursive:true,force:true}); fs.cpSync('../../skills','dist/server/skills',{recursive:true}); fs.rmSync('dist/server/builtin-plugins',{recursive:true,force:true}); fs.cpSync('../../plugins','dist/server/builtin-plugins',{recursive:true,filter:(source)=>!source.split(require('node:path').sep).some((segment)=>segment==='node_modules'||segment==='test')&&!/\.(test|spec)\.[cm]?[jt]sx?$/.test(source)&&!source.endsWith('.tsbuildinfo')});"
+
+
+> @getpaseo/server@0.11.1 build:scripts
+> tsc -p tsconfig.scripts.json --incremental false && node -e "const fs=require('node:fs'); fs.mkdirSync('dist/scripts',{recursive:true}); fs.copyFileSync('scripts/mcp-stdio-socket-bridge-cli.mjs','dist/scripts/mcp-stdio-socket-bridge-cli.mjs');"
+
+
+> @getpaseo/cli@0.11.1 build
+> tsc -p tsconfig.json --incremental false
+
+
+$ npm run typecheck
+
+> paseo@0.11.1 typecheck
+> npm run typecheck --workspaces --if-present
+
+
+> @getpaseo/builtin-plugins@0.11.1 typecheck
+> tsgo -p tsconfig.json --noEmit
+
+
+> @getpaseo/expo-two-way-audio@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/highlight@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/plugin@0.11.1 typecheck
+> tsgo --noEmit && tsgo -p tsconfig.examples.json --noEmit
+
+
+> @getpaseo/protocol@0.11.1 pretypecheck
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/client@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/server@0.11.1 typecheck
+> tsgo -p tsconfig.server.typecheck.json --noEmit
+
+
+> @getpaseo/app@0.11.0-beta.36 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/relay@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/website@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/desktop@0.11.1 typecheck
+> tsgo --noEmit -p tsconfig.json
+
+
+> @getpaseo/cli@0.11.1 typecheck
+> tsgo --noEmit
+
+
+$ npm run lint
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 3.4s on 5027 files with 177 rules using 4 threads.
+
+$ npm run format
+
+> paseo@0.11.1 format
+> oxfmt .
+
+Finished in 3831ms on 5372 files using 4 threads.

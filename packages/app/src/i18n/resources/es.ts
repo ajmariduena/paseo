@@ -39,6 +39,9 @@ export const es: TranslationResources = {
     loadMoreTransfers: "Cargar más traslados",
     review: "Revisar traslado",
     conversations: "Conversaciones",
+    omittedMcpServers: "Conexiones MCP que debes reconfigurar: {{names}}",
+    integrationScope:
+      "No se han comprobado las conexiones MCP del host y del proyecto. Se usarán las credenciales y los permisos del destino.",
     emptyConversations: "Este workspace no tiene conversaciones.",
     untitledConversation: "Conversación sin título",
     location: "Directorio de destino",

@@ -141,8 +141,8 @@ export const handoffFormPorts: HandoffFormPorts = {
     const inspection = await source.handoffPreviewSource({ workspaceId: record.workspaceId });
     if (inspection.error) throw new Error(inspection.error.message);
     if (!inspection.result) throw new Error("Source preview is missing");
-    const { workspace, stoppedWork, conversations } = inspection.result;
-    if (!workspace?.reviewDigest || !stoppedWork?.review)
+    const { workspace, stoppedWork, conversations, integrationReview } = inspection.result;
+    if (!workspace?.reviewDigest || !stoppedWork?.review || !integrationReview)
       throw new Error(i18n.t("handoff.updateHosts"));
     let conversationBytes = 0;
     for (const conversation of conversations) {
@@ -160,6 +160,7 @@ export const handoffFormPorts: HandoffFormPorts = {
       ...preview.result,
       workspace,
       stoppedWork,
+      integrationReview,
       conversationBytes,
       unsavedFiles: [
         ...new Set([
@@ -194,6 +195,7 @@ export const handoffFormPorts: HandoffFormPorts = {
             expectedAgentIds: record.reviewedAgentIds,
             workspaceReviewDigest: record.workspaceReviewDigest,
             stoppedWorkReview: record.stoppedWorkReview,
+            integrationReview: record.integrationReview,
           });
         },
       );

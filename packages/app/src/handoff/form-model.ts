@@ -26,6 +26,7 @@ type Run =
 export interface HandoffReviewPreview extends HandoffDestinationPreview {
   workspace: NonNullable<HandoffSourcePreview["workspace"]>;
   stoppedWork: NonNullable<HandoffSourcePreview["stoppedWork"]>;
+  integrationReview: NonNullable<HandoffSourcePreview["integrationReview"]>;
   conversationBytes: number;
   unsavedFiles: string[];
 }
@@ -297,6 +298,7 @@ export function openHandoffForm(origin: HandoffOrigin, ports: HandoffFormPorts) 
             reviewedAgentIds: preview.conversations.map((conversation) => conversation.agentId),
             workspaceReviewDigest: preview.workspace.reviewDigest,
             stoppedWorkReview: preview.stoppedWork.review,
+            integrationReview: preview.integrationReview,
           },
           preview,
           omissions: {

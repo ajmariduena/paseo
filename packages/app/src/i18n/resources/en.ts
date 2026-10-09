@@ -33,6 +33,9 @@ export const en = {
     loadMoreTransfers: "Load more transfers",
     review: "Review transfer",
     conversations: "Conversations",
+    omittedMcpServers: "MCP connections to reconfigure: {{names}}",
+    integrationScope:
+      "Host and project MCP connections have not been checked. Destination credentials and permissions apply.",
     emptyConversations: "This workspace has no conversations.",
     untitledConversation: "Untitled conversation",
     location: "Destination directory",

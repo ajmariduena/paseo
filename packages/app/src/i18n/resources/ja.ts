@@ -36,6 +36,9 @@ export const ja: TranslationResources = {
     loadMoreTransfers: "転送をさらに読み込む",
     review: "転送内容を確認",
     conversations: "会話",
+    omittedMcpServers: "再設定が必要なMCP接続: {{names}}",
+    integrationScope:
+      "ホストとプロジェクトのMCP接続は未確認です。移動先の認証情報と権限が適用されます。",
     emptyConversations: "このワークスペースには会話がありません。",
     untitledConversation: "無題の会話",
     location: "移動先ディレクトリ",

@@ -337,7 +337,12 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   shows the ignored `.env` and running terminal, and verifies the excluded file is absent in the
   destination. Review content scrolls above the pinned actions at compact width.
   The source conversation set is checked again before reservation; a changed set returns the form
-  to review.
+  to review. Review also names caller-supplied MCP connections that will need reconfiguration for
+  each conversation. Only names cross hosts; commands, endpoints, headers and environment do not.
+  Both journals retain that omission approval through restart. Changing the names requires a new
+  review before reservation, before stopping, after checkpointing or before release. This covers
+  conversation-level configuration; provider-discovered host/project MCP connections remain
+  uninspected and the review says so. See the [integration review evidence](../qa-evidence/handoff-integrations.txt).
   Source workspace snapshots project ownership from the durable journal, including live updates
   through preparation, cancellation and release. The app keeps ownership beside the cached
   directory cursor: a reconnect with no newer rows must not reopen source controls. Reconnecting
@@ -456,11 +461,11 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   lookup starts only after selecting that host. Cleanup with the source offline is covered after
   recovering and persisting the local transfer intent. Reopening recovery when the source workspace
   is unavailable without that local record, pinned-key client persistence,
-  integration/resource dispositions,
+  provider-discovered integration/resource dispositions,
   concurrent windows and other connected clients' unsaved buffers and conversation draft transfer,
-  complete source mutation affordances and native-platform evidence remain open. Integrations and
-  resources outside the current provider-session/terminal/setup inventory still need review binding
-  and dispositions. Native rotation and wide-native Explorer dock transitions still need device
+  complete source mutation affordances and native-platform evidence remain open. Provider-discovered
+  integrations and resources outside the current provider-session/terminal/setup inventory still
+  need review binding and dispositions. Native rotation and wide-native Explorer dock transitions still need device
   evidence. Final transfer size is not shown separately.
 - Source retirement/tombstones and automation dispositions remain unimplemented.
   The composite archive currently captures Claude conversations;

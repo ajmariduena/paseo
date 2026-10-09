@@ -20,6 +20,7 @@ export async function handoffHosts(
   page: Page,
   options: {
     git?: boolean;
+    mcpServersSupported?: boolean;
     repo?: Parameters<typeof seedWorkspace>[0]["repo"];
     claudeConfigDirs?: { source: string; destination: string };
   } = {},
@@ -41,6 +42,7 @@ export async function handoffHosts(
       version: "0.11.1",
       workspaceHandoffCapability: true,
       realClaudeConfigDir: options.claudeConfigDirs?.source,
+      mcpServersSupported: options.mcpServersSupported,
     });
     cleanupSteps.push(() => source.close());
     const destination = await startTestDaemon({

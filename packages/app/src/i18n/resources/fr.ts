@@ -41,6 +41,9 @@ export const fr: TranslationResources = {
     loadMoreTransfers: "Charger plus de transferts",
     review: "Vérifier le transfert",
     conversations: "Conversations",
+    omittedMcpServers: "Connexions MCP à reconfigurer : {{names}}",
+    integrationScope:
+      "Les connexions MCP de l’hôte et du projet n’ont pas été vérifiées. Les identifiants et autorisations de destination s’appliquent.",
     emptyConversations: "Cet espace de travail ne contient aucune conversation.",
     untitledConversation: "Conversation sans titre",
     location: "Dossier de destination",

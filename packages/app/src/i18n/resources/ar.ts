@@ -36,6 +36,9 @@ export const ar: TranslationResources = {
     loadMoreTransfers: "تحميل المزيد من عمليات النقل",
     review: "مراجعة النقل",
     conversations: "المحادثات",
+    omittedMcpServers: "اتصالات MCP التي تحتاج إلى إعادة إعداد: {{names}}",
+    integrationScope:
+      "لم يتم التحقق من اتصالات MCP للمضيف والمشروع. ستُستخدم بيانات الاعتماد والأذونات الخاصة بالوجهة.",
     emptyConversations: "لا توجد محادثات في مساحة العمل هذه.",
     untitledConversation: "محادثة بلا عنوان",
     location: "مجلد الوجهة",

@@ -36,6 +36,8 @@ export const zhCN: TranslationResources = {
     loadMoreTransfers: "加载更多传输",
     review: "检查转移",
     conversations: "对话",
+    omittedMcpServers: "需要重新配置的 MCP 连接：{{names}}",
+    integrationScope: "尚未检查主机和项目的 MCP 连接。将使用目标主机的凭据和权限。",
     emptyConversations: "此工作区没有对话。",
     untitledConversation: "未命名对话",
     location: "目标目录",

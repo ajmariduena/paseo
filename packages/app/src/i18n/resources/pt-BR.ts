@@ -40,6 +40,9 @@ export const ptBR: TranslationResources = {
     loadMoreTransfers: "Carregar mais transferências",
     review: "Revisar transferência",
     conversations: "Conversas",
+    omittedMcpServers: "Conexões MCP para reconfigurar: {{names}}",
+    integrationScope:
+      "As conexões MCP do host e do projeto não foram verificadas. Serão usadas as credenciais e permissões do destino.",
     emptyConversations: "Este workspace não tem conversas.",
     untitledConversation: "Conversa sem título",
     location: "Diretório de destino",

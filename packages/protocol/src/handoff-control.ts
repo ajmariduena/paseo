@@ -63,12 +63,22 @@ export const HandoffStoppedWorkPreviewSchema = z.object({
   setupOperations: z.number().int().nonnegative(),
   review: HandoffStoppedWorkReviewSchema.optional(),
 });
+export const HandoffIntegrationReviewSchema = z
+  .array(
+    z.object({
+      agentId: z.string().min(1),
+      omittedMcpServers: z.array(z.string().min(1).max(4096)).max(1000),
+    }),
+  )
+  .max(1000);
+export type HandoffIntegrationReview = z.infer<typeof HandoffIntegrationReviewSchema>;
 export const HandoffSourcePreviewSchema = z.object({
   workspaceId: z.string().min(1),
   cwd: z.string().min(1),
   conversations: z.array(HandoffConversationPreviewSchema).max(1000),
   workspace: HandoffWorkspacePreviewSchema.optional(),
   stoppedWork: HandoffStoppedWorkPreviewSchema.optional(),
+  integrationReview: HandoffIntegrationReviewSchema.optional(),
 });
 const HandoffContinuationAvailabilitySchema = z.object({
   available: z.boolean(),
@@ -152,6 +162,7 @@ export const HandoffSourceStatusSchema = HandoffSourceInspectionSchema.extend({
   publicKey: z.string().min(1).max(1024),
   workspaceReviewDigest: HandoffDigestSchema.optional(),
   stoppedWorkReview: HandoffStoppedWorkReviewSchema.optional(),
+  integrationReview: HandoffIntegrationReviewSchema.optional(),
 });
 export const HandoffSourceSnapshotSchema = z.object({
   source: HandoffSourceStatusSchema,
@@ -203,6 +214,7 @@ export const HandoffDestinationSnapshotSchema = z.object({
   continuationMode: z.enum(["native", "context"]),
   workspaceReviewDigest: HandoffDigestSchema.optional(),
   stoppedWorkReview: HandoffStoppedWorkReviewSchema.optional(),
+  integrationReview: HandoffIntegrationReviewSchema.optional(),
   state: z.enum([
     "reserved",
     "receiving",
@@ -287,6 +299,7 @@ export const HandoffPrepareSourceRequestSchema = z.object({
   reservationId: HandoffTransferIdSchema,
   workspaceReviewDigest: HandoffDigestSchema.optional(),
   stoppedWorkReview: HandoffStoppedWorkReviewSchema.optional(),
+  integrationReview: HandoffIntegrationReviewSchema.optional(),
 });
 export const HandoffPrepareSourceResponseSchema = z.object({
   type: z.literal("workspace.handoff.prepare_source.response"),
@@ -337,6 +350,7 @@ export const HandoffReserveDestinationRequestSchema = z.object({
   continuationMode: z.enum(["native", "context"]),
   workspaceReviewDigest: HandoffDigestSchema.optional(),
   stoppedWorkReview: HandoffStoppedWorkReviewSchema.optional(),
+  integrationReview: HandoffIntegrationReviewSchema.optional(),
 });
 export const HandoffReserveDestinationResponseSchema = z.object({
   type: z.literal("workspace.handoff.reserve_destination.response"),

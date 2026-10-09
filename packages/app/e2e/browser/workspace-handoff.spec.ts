@@ -31,6 +31,74 @@ test.describe("workspace handoff", () => {
   test.skip(process.platform === "win32", "Ownership release requires POSIX directory durability");
 
   for (const layout of ["desktop", "compact"] as const) {
+    test(`${layout} shows conversation MCP connections that need reconfiguration`, async ({
+      page,
+    }, testInfo) => {
+      test.setTimeout(120_000);
+      if (layout === "compact") await page.setViewportSize({ width: 390, height: 844 });
+      const host = await hosts(page, { mcpServersSupported: true });
+      try {
+        await host.sourceClient.createAgent({
+          workspaceId: host.workspace.workspaceId,
+          config: {
+            provider: "claude",
+            cwd: host.workspace.repoPath,
+            mcpServers: {
+              "issue-tracker": {
+                type: "http",
+                url: "https://PRIVATE_ENDPOINT.invalid/mcp",
+                headers: { Authorization: "PRIVATE_TOKEN" },
+              },
+              "local-browser": { type: "stdio", command: "/PRIVATE_COMMAND" },
+            },
+          },
+        });
+        await openHandoff(page);
+        await page.getByTestId("handoff-host-trigger").click();
+        await page.getByTestId(`handoff-host-${host.destination.serverId}`).click();
+        await page.getByTestId("handoff-parent").fill(host.destinationParent);
+        await page.getByTestId("handoff-submit").click();
+        const omissions = page.getByTestId("handoff-omitted-mcp");
+        await expect(omissions).toHaveText(
+          "MCP connections to reconfigure: issue-tracker, local-browser",
+        );
+        await expect(page.getByTestId("handoff-review")).toContainText(
+          "Host and project MCP connections have not been checked.",
+        );
+        await expect(page.getByTestId("handoff-sheet")).not.toContainText("PRIVATE_");
+        // The fake provider has no portable session. An integration warning must not hide that refusal.
+        await expect(page.getByTestId("handoff-submit")).toBeDisabled();
+        await omissions.scrollIntoViewIfNeeded();
+        await waitForSettledPosition(omissions);
+        await expect(omissions).toBeInViewport({ ratio: 1 });
+        await page.screenshot({
+          path: path.join(
+            __dirname,
+            `../../../../docs/qa-evidence/handoff-integrations-${layout}.png`,
+          ),
+        });
+        expect(
+          (await host.sourceClient.handoffFindSource({ workspaceId: host.workspace.workspaceId }))
+            .result,
+        ).toBeNull();
+        expect(
+          (
+            await host.destinationClient.handoffListDestination({
+              sourceServerId: host.source.serverId,
+              sourceWorkspaceId: host.workspace.workspaceId,
+            })
+          ).result?.transfers,
+        ).toEqual([]);
+      } catch (error) {
+        await page.screenshot({ path: testInfo.outputPath("handoff-integrations-failure.png") });
+        throw error;
+      } finally {
+        await host.close();
+      }
+    });
+  }
+
+  for (const layout of ["desktop", "compact"] as const) {
     test(`${layout} pages all exclusions and requires a fresh review when later exclusions change`, async ({
       page,
     }, testInfo) => {

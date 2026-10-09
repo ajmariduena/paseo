@@ -38,6 +38,9 @@ export const ru: TranslationResources = {
     loadMoreTransfers: "Загрузить ещё переносы",
     review: "Проверить перенос",
     conversations: "Разговоры",
+    omittedMcpServers: "Подключения MCP, требующие повторной настройки: {{names}}",
+    integrationScope:
+      "Подключения MCP хоста и проекта не проверены. Будут использоваться учётные данные и разрешения целевого хоста.",
     emptyConversations: "В этом рабочем пространстве нет разговоров.",
     untitledConversation: "Разговор без названия",
     location: "Целевая папка",

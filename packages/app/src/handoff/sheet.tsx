@@ -230,6 +230,10 @@ function ReviewConversations({ state }: { state: Extract<HandoffFormState, { kin
         ) : null}
         {state.preview.conversations.map((conversation) => {
           const availability = conversation[state.record.continuationMode];
+          const integrations = state.preview.integrationReview.find(
+            (entry) => entry.agentId === conversation.agentId,
+          );
+          const omittedMcpServers = integrations?.omittedMcpServers ?? [];
           return (
             <View key={conversation.agentId} style={styles.status}>
               <Text style={styles.value}>
@@ -240,9 +244,17 @@ function ReviewConversations({ state }: { state: Extract<HandoffFormState, { kin
                   ? t(`handoff.${state.record.continuationMode}`)
                   : availability.reason}
               </Text>
+              {omittedMcpServers.length > 0 ? (
+                <Text style={styles.text} testID="handoff-omitted-mcp">
+                  {t("handoff.omittedMcpServers", { names: omittedMcpServers.join(", ") })}
+                </Text>
+              ) : null}
             </View>
           );
         })}
+        {state.preview.conversations.length > 0 ? (
+          <Text style={styles.text}>{t("handoff.integrationScope")}</Text>
+        ) : null}
       </View>
     </Field>
   );

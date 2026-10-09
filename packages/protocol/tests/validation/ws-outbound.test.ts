@@ -146,6 +146,7 @@ describe("WS outbound zod-aot validation", () => {
       older,
       current,
       { ...current, workspace: { ...workspace, reviewDigest: "a".repeat(64) } },
+      { ...current, integrationReview: [{ agentId: "agent", omittedMcpServers: ["browser"] }] },
       {
         ...current,
         stoppedWork: {
@@ -168,6 +169,10 @@ describe("WS outbound zod-aot validation", () => {
       { ...current, workspace: { ...workspace, reviewDigest: "invalid" } },
       { ...current, workspace: { ...workspace, omittedPaths: Array(51).fill(".env") } },
       { ...current, conversations: [{ ...conversation, artifactBytes: -1 }] },
+      {
+        ...current,
+        integrationReview: [{ agentId: "agent", omittedMcpServers: ["x".repeat(4097)] }],
+      },
       { ...current, stoppedWork: { ...current.stoppedWork, setupOperations: "one" } },
       {
         ...current,
@@ -341,6 +346,7 @@ describe("WS outbound zod-aot validation", () => {
         cancellationAccepted: false,
         workspaceReviewDigest: "a".repeat(64),
         stoppedWorkReview: { agents: [], terminals: [], setupIds: [] },
+        integrationReview: [{ agentId: "agent", omittedMcpServers: ["tracker"] }],
       });
       expect(GeneratedWSOutboundMessageSchema.safeParse(message)).toEqual({
         success: true,

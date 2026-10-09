@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import pino from "pino";
 import { ClaudeAgentClient } from "../agent/providers/claude/agent.js";
+import { createTestAgentClients } from "./fake-agent-client.js";
 import { createTestPaseoDaemon } from "./paseo-daemon.js";
 
 async function main(): Promise<void> {
@@ -18,7 +19,9 @@ async function main(): Promise<void> {
     agentProviderSettings: runtimeSettings ? { claude: runtimeSettings } : undefined,
     agentClients: runtimeSettings
       ? { claude: new ClaudeAgentClient({ logger: pino({ level: "warn" }), runtimeSettings }) }
-      : undefined,
+      : createTestAgentClients({
+          supportsMcpServers: process.env.E2E_MCP_SERVERS_SUPPORTED === "1",
+        }),
     corsAllowedOrigins: [`http://localhost:${metroPort}`],
     daemonVersion: process.env.E2E_DAEMON_VERSION ?? "0.0.0",
     workspaceHandoffCapability: process.env.E2E_WORKSPACE_HANDOFF_CAPABILITY === "1",
