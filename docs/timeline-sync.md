@@ -120,8 +120,9 @@ An agent that switched provider rebuilds its timeline from the sealed snapshots 
 segments followed by the active provider's replay. Seeding mints a new epoch with dense sequence
 numbers, so clients reset to the tail as on any epoch change; it happens only when the daemon has
 no retained state for the agent. Dividers, incarnation markers and coverage warnings are
-`notification` rows with a `source` of kind `provider_switch`, `incarnation` or
-`retired_history`.
+`notification` rows carrying an optional `providerSegment` of kind `provider_switch`,
+`incarnation` or `retired_history`; it is a separate field rather than a `source` kind so that
+clients whose `source` union predates provider switching still parse the row.
 
 ## Provider child history
 
