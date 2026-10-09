@@ -143,7 +143,8 @@ async function terminateTrackedProcessTree(
       if (remaining.length === 0) return true;
       // Children first, while their parent can still reap them. Keep their
       // identities through both phases; parent exit is not tree exit.
-      for (const entry of remaining.toReversed()) {
+      for (let index = remaining.length - 1; index >= 0; index--) {
+        const entry = remaining[index]!;
         if (signalled.get(entry.pid) === entry.startedAt) continue;
         try {
           access.signal(entry.pid, signal);
