@@ -1,5 +1,7 @@
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
+import type { AgentRuntimeHold } from "../../agent-sdk-types.js";
+
 type BackgroundTasksChangedMessage = Extract<
   SDKMessage,
   { type: "system"; subtype: "background_tasks_changed" }
@@ -53,12 +55,25 @@ export class ClaudeRuntimeResidency {
     this.holdsSessionPermissions = false;
   }
 
+  holds(): AgentRuntimeHold[] {
+    const holds: AgentRuntimeHold[] = [];
+    if (this.liveTaskIds.size > 0 || this.sessionCronCount > 0) {
+      holds.push({
+        kind: "background_work",
+        taskIds: [...this.liveTaskIds],
+        cronCount: this.sessionCronCount,
+      });
+    }
+    if (!this.inventoryReported) {
+      holds.push({ kind: "inventory_unknown" });
+    }
+    if (this.holdsSessionPermissions) {
+      holds.push({ kind: "session_permissions" });
+    }
+    return holds;
+  }
+
   canRelease(): boolean {
-    return (
-      this.inventoryReported &&
-      this.liveTaskIds.size === 0 &&
-      this.sessionCronCount === 0 &&
-      !this.holdsSessionPermissions
-    );
+    return this.holds().length === 0;
   }
 }

@@ -67,6 +67,27 @@ describe("ClaudeRuntimeResidency", () => {
     expect(residency.canRelease()).toBe(false);
   });
 
+  it("names what holds the runtime so a caller can tell finite work from the rest", () => {
+    const residency = new ClaudeRuntimeResidency();
+    expect(residency.holds()).toEqual([{ kind: "inventory_unknown" }]);
+
+    residency.observeStopHook(stopHook(["shell-1"], 1));
+    expect(residency.holds()).toEqual([
+      { kind: "background_work", taskIds: ["shell-1"], cronCount: 1 },
+    ]);
+
+    residency.observeStopHook(stopHook([]));
+    residency.observePermissionUpdates([{ destination: "session" }]);
+    expect(residency.holds()).toEqual([{ kind: "session_permissions" }]);
+
+    residency.reset();
+    residency.observeMessage(tasksChanged(["monitor-1"]));
+    expect(residency.holds()).toEqual([
+      { kind: "background_work", taskIds: ["monitor-1"], cronCount: 0 },
+      { kind: "inventory_unknown" },
+    ]);
+  });
+
   it("forgets everything when the CLI process restarts", () => {
     const residency = new ClaudeRuntimeResidency();
     residency.observeStopHook(stopHook([]));

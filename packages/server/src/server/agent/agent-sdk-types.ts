@@ -712,6 +712,15 @@ export type AgentModelTransitionPlan =
   | { kind: "new_segment" }
   | { kind: "reject"; reason: string };
 
+/**
+ * What still depends on a live runtime. `background_work` ends on its own; the other two never
+ * end without the process, so a caller must not wait on them.
+ */
+export type AgentRuntimeHold =
+  | { kind: "background_work"; taskIds: string[]; cronCount: number }
+  | { kind: "inventory_unknown" }
+  | { kind: "session_permissions" };
+
 export interface AgentSession {
   readonly provider: AgentProvider;
   readonly id: string | null;
@@ -720,6 +729,8 @@ export interface AgentSession {
   readonly idleBackendEvictionEligible?: boolean;
   /** Return false while provider-owned background work needs this runtime; reject if it cannot be checked. */
   canEvictIdleBackend?(): Promise<boolean>;
+  /** The holds behind `canEvictIdleBackend`; empty means the runtime can be released. */
+  describeRuntimeHolds?(): Promise<AgentRuntimeHold[]>;
   readonly features?: AgentFeature[];
   /** New provider-owned rows to commit on registration. streamHistory must also
    * replay them at their original timestamps; restored sessions omit old rows. */

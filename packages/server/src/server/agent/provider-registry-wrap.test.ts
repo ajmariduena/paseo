@@ -4,6 +4,7 @@ import type {
   AgentCapabilityFlags,
   AgentModelTransitionPlan,
   AgentPromptInput,
+  AgentRuntimeHold,
   AgentSession,
   AgentSessionSelectionChange,
   AgentStreamEvent,
@@ -23,6 +24,8 @@ type OptionalAgentSessionMethodName = {
 }[keyof AgentSession];
 
 const OPTIONAL_AGENT_SESSION_METHOD_NAMES = [
+  "canEvictIdleBackend",
+  "describeRuntimeHolds",
   "steerActiveTurn",
   "listCommands",
   "setModel",
@@ -75,6 +78,16 @@ class FakeSession implements AgentSession {
   async run() {
     this.recordedCalls.push("run");
     return { timeline: [] };
+  }
+
+  async canEvictIdleBackend() {
+    this.recordedCalls.push("canEvictIdleBackend");
+    return false;
+  }
+
+  async describeRuntimeHolds(): Promise<AgentRuntimeHold[]> {
+    this.recordedCalls.push("describeRuntimeHolds");
+    return [{ kind: "inventory_unknown" }];
   }
 
   async startTurn() {
@@ -197,6 +210,8 @@ describe("wrapSessionProvider", () => {
     const session = new FakeSession();
     const wrapped = wrapSessionProvider("custom-claude", session);
 
+    expect(await wrapped.canEvictIdleBackend?.()).toBe(false);
+    expect(await wrapped.describeRuntimeHolds?.()).toEqual([{ kind: "inventory_unknown" }]);
     await wrapped.steerActiveTurn?.("follow-up", { expectedTurnId: "turn-1" });
     await wrapped.listCommands?.();
     await wrapped.setModel?.("sonnet");
@@ -213,6 +228,8 @@ describe("wrapSessionProvider", () => {
       { prompt: "follow-up", options: { expectedTurnId: "turn-1" } },
     ]);
     expect(session.recordedCalls).toEqual([
+      "canEvictIdleBackend",
+      "describeRuntimeHolds",
       "steerActiveTurn",
       "listCommands",
       "setModel",

@@ -1,4 +1,4 @@
-import type { AgentSession } from "./agent-sdk-types.js";
+import type { AgentRuntimeHold, AgentSession } from "./agent-sdk-types.js";
 import type { ManagedAgent } from "./agent-manager.js";
 
 export type ProviderSwitchBlocker =
@@ -10,6 +10,8 @@ export type ProviderSwitchBlocker =
   | { kind: "permission_responses_in_flight"; count: number }
   | { kind: "out_of_band_in_flight" }
   | { kind: "provider_subagents_running"; count: number }
+  | { kind: "runtime_release_unproven"; state: "pending" | "failed" }
+  | { kind: "provider_runtime_hold"; hold: AgentRuntimeHold }
   | { kind: "provider_background_work" }
   | { kind: "provider_background_unverified"; reason: string };
 
@@ -24,6 +26,8 @@ export interface ProviderSwitchWorkFacts {
   hasRun: boolean;
   hasInFlightOutOfBand: boolean;
   runningProviderSubagentCount: number;
+  /** `held`: the runtime is owned normally. A close in flight or one that failed is not a release. */
+  runtimeRelease: "held" | "pending" | "failed";
 }
 
 export interface ProviderSwitchEligibilityOptions {
@@ -71,24 +75,32 @@ export function collectProviderSwitchWorkBlockers(
       count: facts.runningProviderSubagentCount,
     });
   }
+  if (facts.runtimeRelease !== "held") {
+    blockers.push({ kind: "runtime_release_unproven", state: facts.runtimeRelease });
+  }
   return blockers;
 }
 
 /**
  * The provider is asked only once the manager-side facts are quiet, and only when it can answer.
- * A provider without `canEvictIdleBackend` has nothing depending on its runtime.
+ * A provider without a probe has nothing depending on its runtime. Typed holds are preferred
+ * over the boolean probe because they say whether the hold ends on its own.
  */
 export async function collectProviderSwitchBlockers(
   facts: ProviderSwitchWorkFacts,
-  session: Pick<AgentSession, "canEvictIdleBackend"> | null,
+  session: Pick<AgentSession, "canEvictIdleBackend" | "describeRuntimeHolds"> | null,
   options: ProviderSwitchEligibilityOptions = {},
 ): Promise<ProviderSwitchBlocker[]> {
   const blockers = collectProviderSwitchWorkBlockers(facts, options);
-  if (blockers.length > 0 || !session?.canEvictIdleBackend) {
+  if (blockers.length > 0 || !session) {
     return blockers;
   }
   try {
-    if (!(await session.canEvictIdleBackend())) {
+    if (session.describeRuntimeHolds) {
+      for (const hold of await session.describeRuntimeHolds()) {
+        blockers.push({ kind: "provider_runtime_hold", hold });
+      }
+    } else if (session.canEvictIdleBackend && !(await session.canEvictIdleBackend())) {
       blockers.push({ kind: "provider_background_work" });
     }
   } catch (error) {
@@ -98,4 +110,19 @@ export async function collectProviderSwitchBlockers(
     });
   }
   return blockers;
+}
+
+/** Whether the blocker ends on its own, so a caller may wait for it instead of refusing. */
+export function isWaitableProviderSwitchBlocker(blocker: ProviderSwitchBlocker): boolean {
+  switch (blocker.kind) {
+    case "runtime_release_unproven":
+      return blocker.state === "pending";
+    case "provider_runtime_hold":
+      return blocker.hold.kind === "background_work";
+    case "provider_background_work":
+    case "provider_background_unverified":
+      return false;
+    default:
+      return true;
+  }
 }

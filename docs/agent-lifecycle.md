@@ -38,8 +38,10 @@ needs the process, and a rejection also retains the runtime: when in doubt, stay
 Providers that do not opt in stay resident indefinitely. Switching an agent's provider asks a
 narrower question through `AgentManager.getProviderSwitchBlockers`: only live work counts (turns,
 runs, permissions, out-of-band commands, running provider subagents, a replacement reservation
-another operation holds), then `canEvictIdleBackend()` when the provider defines it. The eviction
-opt-in, timeout and handle checks are not part of it. Claude opts in and releases only when the
+another operation holds, a close still in flight or one that failed), then the provider's
+`describeRuntimeHolds()` when it defines it, else `canEvictIdleBackend()`. Typed holds say whether
+the hold ends on its own: background work does, unknown inventory and session-scoped grants do
+not. The eviction opt-in, timeout and handle checks are not part of it. Claude opts in and releases only when the
 last Stop hook in the current CLI process reported empty `background_tasks` and `session_crons`,
 no later `background_tasks_changed` added a task, and the session holds no session-scoped
 permission grant. Neither signal is sent at process start, and older CLIs never send them, so a

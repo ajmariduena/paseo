@@ -65,6 +65,7 @@ import {
   collectProviderSwitchBlockers,
   type ProviderSwitchBlocker,
   type ProviderSwitchEligibilityOptions,
+  type ProviderSwitchWorkFacts,
 } from "./provider-switch-eligibility.js";
 import type { StoredAgentRecord, AgentStorage, RestartCancelledWork } from "./agent-storage.js";
 import type { AgentOwner } from "./agent-owner.js";
@@ -863,6 +864,9 @@ export class AgentManager {
   private readonly agentRegistrationTasks = new Set<Promise<void>>();
   private readonly inFlightAgentCloses = new Map<string, Promise<void>>();
   private readonly reloadedSessionCloses = new WeakMap<AgentSession, Promise<void>>();
+  /** Runtimes whose last close failed: they may still own a native writer until a close succeeds. */
+  private readonly unreleasedSessions = new WeakSet<AgentSession>();
+  private readonly pendingSessionCloses = new WeakSet<AgentSession>();
   private readonly lifecycleMutationTails = new Map<string, Promise<void>>();
   private readonly inFlightOutOfBand = new Map<string, number>();
   private readonly stopRequests = new Set<string>();
@@ -1810,7 +1814,7 @@ export class AgentManager {
   private async closeReloadedSession(session: AgentSession, agentId: string): Promise<void> {
     let operation = this.reloadedSessionCloses.get(session);
     if (!operation) {
-      operation = session.close();
+      operation = this.trackSessionClose(session, session.close());
       this.reloadedSessionCloses.set(session, operation);
       // Keep pending closes across request timeouts; a retry must await the same release.
       void operation.catch(() => this.reloadedSessionCloses.delete(session));
@@ -1925,6 +1929,7 @@ export class AgentManager {
     return collectProviderSwitchBlockers(
       {
         lifecycle: agent.lifecycle,
+        runtimeRelease: this.describeRuntimeRelease(agent),
         activeForegroundTurnId: agent.activeForegroundTurnId,
         activeTurnId: agent.activeTurnId,
         pendingReplacement: agent.pendingReplacement,
@@ -1937,6 +1942,18 @@ export class AgentManager {
       agent.session,
       options,
     );
+  }
+
+  private describeRuntimeRelease(agent: ManagedAgent): ProviderSwitchWorkFacts["runtimeRelease"] {
+    if (!agent.session) {
+      return "held";
+    }
+    const closing =
+      this.inFlightAgentCloses.has(agent.id) || this.pendingSessionCloses.has(agent.session);
+    if (closing) {
+      return "pending";
+    }
+    return this.unreleasedSessions.has(agent.session) ? "failed" : "held";
   }
 
   private isIdleBackendEvictionCandidate(agent: ActiveManagedAgent): boolean {
@@ -2030,7 +2047,7 @@ export class AgentManager {
     onClose?.(agent);
     // Retain ownership until shutdown succeeds. A failed close may still own a
     // native writer, so publishing a resumable closed snapshot would orphan it.
-    await agent.session.close();
+    await this.trackSessionClose(agent.session, agent.session.close());
     this.cancelRunningProviderSubagents(agentId);
     const closedAgent = this.prepareAgentForClosure(agent, "agent closed");
 
@@ -2053,6 +2070,19 @@ export class AgentManager {
     if (persistError !== undefined) {
       throw persistError;
     }
+  }
+
+  private async trackSessionClose(session: AgentSession, close: Promise<void>): Promise<void> {
+    this.pendingSessionCloses.add(session);
+    try {
+      await close;
+    } catch (error) {
+      this.unreleasedSessions.add(session);
+      throw error;
+    } finally {
+      this.pendingSessionCloses.delete(session);
+    }
+    this.unreleasedSessions.delete(session);
   }
 
   private cancelRunningProviderSubagents(parentAgentId: string): void {

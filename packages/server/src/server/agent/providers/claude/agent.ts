@@ -113,6 +113,7 @@ import {
   type AgentPromptInput,
   type AgentRunOptions,
   type AgentRunResult,
+  type AgentRuntimeHold,
   type AgentSession,
   type AgentSessionConfig,
   type AgentModelTransitionPlan,
@@ -2100,6 +2101,11 @@ class ClaudeAgentSession implements AgentSession {
   async canEvictIdleBackend(): Promise<boolean> {
     if (!this.query && !this.childProcess) return true;
     return this.runtimeResidency.canRelease();
+  }
+
+  async describeRuntimeHolds(): Promise<AgentRuntimeHold[]> {
+    if (!this.query && !this.childProcess) return [];
+    return this.runtimeResidency.holds();
   }
 
   private readonly config: ClaudeAgentConfig;
