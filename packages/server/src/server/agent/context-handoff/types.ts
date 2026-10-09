@@ -1,5 +1,11 @@
-import type { AgentTimelineItem } from "../agent-sdk-types.js";
 import type { AgentTimelineRow } from "../agent-timeline-store-types.js";
+
+export class HandoffInputError extends Error {
+  constructor(readonly field: string) {
+    super(`Invalid handoff input: ${field}`);
+    this.name = "HandoffInputError";
+  }
+}
 
 export interface RowIdentity {
   segmentId: string;
@@ -23,12 +29,18 @@ export type HandoffProvenance =
   | { type: "row"; identity: RowIdentity }
   | { type: "artifact"; id: string; origin: string };
 
+export type HandoffOrigin =
+  | { kind: "user" | "assistant" }
+  | { kind: "agent"; agentId: string }
+  | { kind: "tool"; name: string; callId: string }
+  | { kind: "artifact"; source: string };
+
 export interface HandoffItem {
   role: "user" | "assistant";
-  kind: AgentTimelineItem["type"] | "context_artifact";
+  kind: "user_message" | "assistant_message" | "tool_call" | "error" | "context_artifact";
   text: string;
   provenance: HandoffProvenance;
-  origin: string;
+  origin: HandoffOrigin;
   status: "completed" | "running" | "failed" | "canceled" | "interrupted";
 }
 

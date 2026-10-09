@@ -1,9 +1,11 @@
 import type { AgentPromptInput } from "../agent-sdk-types.js";
 import { renderPromptAttachmentAsText } from "../prompt-attachments.js";
+import { HandoffInputError } from "./types.js";
 
 export interface BudgetInput {
   prompt: AgentPromptInput;
   occupancy: number;
+  // Effective minimum of model window, reported window and any compaction threshold.
   contextWindow?: number;
   cap?: number;
 }
@@ -16,13 +18,6 @@ export interface HandoffBudget {
   occupancy: number;
   currentInput: number;
   reserve: number;
-}
-
-export class HandoffInputError extends Error {
-  constructor(readonly field: string) {
-    super(`Invalid handoff input: ${field}`);
-    this.name = "HandoffInputError";
-  }
 }
 
 export function promptCost(prompt: AgentPromptInput): number {
@@ -56,7 +51,7 @@ export function handoffBudget(input: BudgetInput): HandoffBudget {
   const currentInput = promptCost(input.prompt);
   const reserve = Math.max(16_000, Math.ceil(contextWindow / 4));
   const remaining = contextWindow - input.occupancy - currentInput - reserve;
-  const available = Math.max(0, Math.min(cap, 64_000, remaining));
+  const available = Math.max(0, Math.min(cap, remaining));
   return {
     available,
     cap,

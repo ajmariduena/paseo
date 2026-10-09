@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { HandoffBudgetError, historyCost, historyResponseItems, selectHistory } from "./history.js";
+import {
+  HandoffBudgetError,
+  historyCost,
+  historyCostItems,
+  renderHistoricalItem,
+  selectHistory,
+} from "./history.js";
+import { escapeHandoffText } from "./envelope.js";
 import type { HandoffItem } from "./types.js";
 
 const envelope = { id: "attempt:one", from: "claude", to: "codex" };
@@ -10,7 +17,7 @@ function message(id: number, role: HandoffItem["role"], text: string): HandoffIt
     role,
     text,
     kind,
-    origin: role,
+    origin: { kind: role },
     status: "interrupted",
     provenance: { type: "row", identity: { segmentId: "source", rowIndex: id } },
   };
@@ -22,17 +29,29 @@ const messages = [
 ];
 
 describe("T3 history golden cases", () => {
+  it("keeps a typical escaped item header within T3's 146-byte framing", () => {
+    const header = escapeHandoffText(renderHistoricalItem(message(1234, "user", "")));
+    expect(Buffer.byteLength(header)).toBeLessThanOrEqual(146);
+    expect(header).toContain("source=source#1234; origin=user");
+  });
   it("retains short conversations verbatim in role and order", () => {
     const selected = selectHistory({ messages, coverage: "History", budget: 16_000, envelope });
     expect(selected.messages).toEqual(messages);
     expect(
-      historyResponseItems({
+      historyCostItems({
         messages: selected.messages,
         context: selected.context,
         envelope,
       }).map((item) => item.role),
     ).toEqual(["user", "user", "assistant"]);
     expect(selected.omittedItems).toEqual([]);
+    const items = historyCostItems({
+      messages: selected.messages,
+      context: selected.context,
+      envelope,
+    });
+    expect(items[1]!.content[0]!.text).toContain(messages[0]!.text);
+    expect(items[2]!.content[0]!.text).toContain(messages[1]!.text);
   });
 
   it("omits oversized multilingual items whole and preserves original constraints and recent work", () => {
@@ -104,7 +123,10 @@ describe("T3 history golden cases", () => {
       budget: 16_000,
       envelope,
     });
-    const budgets = [baseline.cost - 850, baseline.cost - 550, baseline.cost - 250, baseline.cost];
+    const priority = [candidates[2]!, candidates[3]!, candidates[0]!, candidates[1]!];
+    const budgets = [1, 2, 3, 4].map((count) =>
+      historyCost({ messages: priority.slice(0, count), context: baseline.context, envelope }),
+    );
     const selections = [];
     for (const budget of budgets) {
       const selected = selectHistory({ messages: candidates, coverage: "", budget, envelope });
@@ -122,5 +144,17 @@ describe("T3 history golden cases", () => {
     expect(() => selectHistory({ messages, coverage: "History", budget: 0, envelope })).toThrow(
       HandoffBudgetError,
     );
+  });
+
+  it("encodes header delimiters while preserving structured provenance and origin", () => {
+    const item = message(0, "user", "body");
+    item.provenance = { type: "row", identity: { segmentId: "seg#1;\nforged", rowIndex: 0 } };
+    item.origin = { kind: "agent", agentId: "peer;\nforged" };
+    expect(renderHistoricalItem(item)).toContain(
+      "source=seg%231%3B%0Aforged#0; origin=agent:peer%3B%0Aforged",
+    );
+    expect(
+      selectHistory({ messages: [item], coverage: "", budget: 16_000, envelope }).messages,
+    ).toEqual([item]);
   });
 });

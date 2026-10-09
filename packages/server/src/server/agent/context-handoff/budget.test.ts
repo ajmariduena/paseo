@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { HandoffInputError, handoffBudget, promptCost } from "./budget.js";
+import { handoffBudget, promptCost } from "./budget.js";
+import { HandoffInputError } from "./types.js";
 import type { AgentPromptInput } from "../agent-sdk-types.js";
 import { renderPromptAttachmentAsText } from "../prompt-attachments.js";
 
@@ -51,21 +52,31 @@ describe("handoff budget (T3 golden cases)", () => {
     expect(handoffBudget({ prompt: "", occupancy: 120_000 }).available).toBe(0);
   });
 
-  it.each([0, 1, 8, 10, 16])(
-    "budgets image batches of %i against known and unknown windows",
-    (count) => {
-      const prompt: AgentPromptInput = Array.from({ length: count }, () => ({
-        type: "image",
-        mimeType: "image/png",
-        data: "encoded",
-      }));
-      const expected = Math.max(0, Math.min(16_000, 128_000 - 32_000 - 2 - count * 8_192));
-      expect(handoffBudget({ prompt, occupancy: 0 }).available).toBe(expected);
-      expect(handoffBudget({ prompt, occupancy: 0, contextWindow: 2_000_000 }).available).toBe(
-        16_000,
-      );
-    },
-  );
+  it.each([
+    { count: 0, expected: 16_000 },
+    { count: 1, expected: 16_000 },
+    { count: 8, expected: 16_000 },
+    { count: 10, expected: 14_078 },
+    { count: 16, expected: 0 },
+  ])("budgets image batches of $count against known and unknown windows", ({ count, expected }) => {
+    const prompt: AgentPromptInput = Array.from({ length: count }, () => ({
+      type: "image",
+      mimeType: "image/png",
+      data: "encoded",
+    }));
+    expect(handoffBudget({ prompt, occupancy: 0 }).available).toBe(expected);
+    expect(handoffBudget({ prompt, occupancy: 0, contextWindow: 2_000_000 }).available).toBe(
+      16_000,
+    );
+  });
+
+  it("honors a caller's effective small window or auto-compaction limit", () => {
+    const prompt: AgentPromptInput = [{ type: "image", mimeType: "image/png", data: "encoded" }];
+    expect(handoffBudget({ prompt, occupancy: 0, contextWindow: 20_000 }).available).toBe(0);
+    expect(handoffBudget({ prompt: "", occupancy: 0, contextWindow: 20_000 }).available).toBe(
+      3_998,
+    );
+  });
 
   it("charges text, issue and review attachments as actual rendered text", () => {
     const text = {

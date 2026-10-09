@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import { mapHandoffItems, rowIdentityKey } from "./mapping.js";
 import type { HandoffSourceRow } from "./types.js";
+import { HandoffInputError } from "./types.js";
 import type {
   AgentTimelineItem,
   ToolCallDetail,
@@ -27,6 +28,52 @@ function tool(detail: ToolCallDetail): ToolCallTimelineItem {
   };
 }
 
+it("renders read, search, fetch and worktree descriptors without native payloads", () => {
+  const result = mapItems([
+    tool({ type: "read", filePath: "/repo/secret.env", content: "TOKEN=abc" }),
+    tool({
+      type: "search",
+      query: "needle",
+      content: "matched file contents",
+      filePaths: ["secret.env"],
+      webResults: [{ title: "private", url: "https://private.test" }],
+      numFiles: 2,
+      numMatches: 3,
+    }),
+    tool({
+      type: "fetch",
+      url: "https://example.test",
+      result: "page contents",
+      prompt: "private prompt",
+    }),
+    tool({
+      type: "worktree_setup",
+      worktreePath: "/worktree",
+      branchName: "feature",
+      log: "setup log",
+      commands: [],
+    }),
+    tool({ type: "plain_text", label: "Tool result", text: "hidden payload" }),
+  ]);
+  expect(result.items.map((item) => item.text)).toEqual([
+    "Read: /repo/secret.env",
+    "Search: needle\nFiles: 2\nMatches: 3",
+    "Fetch: https://example.test",
+    "Worktree: /worktree\nBranch: feature",
+    "Tool result",
+  ]);
+});
+
+it("renders an unknown tool failure once", () => {
+  const failed: ToolCallTimelineItem = {
+    ...tool({ type: "unknown", input: "task", output: null }),
+    status: "failed",
+    error: "unique failure",
+  };
+  const result = mapItems([failed]);
+  expect(result.items[0]!.text.split("unique failure")).toHaveLength(2);
+});
+
 it("maps parent messages with stable identity and origin, excluding native and child rows", () => {
   const row: HandoffSourceRow = {
     identity: { segmentId: "segment:a", rowIndex: 4 },
@@ -52,7 +99,7 @@ it("maps parent messages with stable identity and origin, excluding native and c
       kind: "user_message",
       text: "Task result",
       status: "completed",
-      origin: "agent:child:a",
+      origin: { kind: "agent", agentId: "child:a" },
       provenance: { type: "row", identity: row.identity },
     },
   ]);
@@ -85,7 +132,7 @@ it("ports T3 command outcomes without reasoning and preserves multilingual outpu
     role: "assistant",
     kind: "tool_call",
     status: "failed",
-    origin: "tool:Bash; call:call:command",
+    origin: { kind: "tool", name: "Bash", callId: "call:command" },
   });
   expect(result.items[0]!.text).toContain("Exit code: 1");
   expect(result.items[0]!.text).toContain("界".repeat(300));
@@ -122,11 +169,10 @@ it("maps plans, file-change names, errors and delegated results with their paren
         input: { agentId: "child", task: "Review" },
         output: { delegatedTask: { result: "Approved", status: "completed" }, agentId: "child" },
       },
-      error: null,
     }),
   ]);
   expect(result.items[3]!.status).toBe("failed");
-  expect(result.items[4]!.origin).toBe("tool:tool; call:call:1");
+  expect(result.items[4]!.origin).toEqual({ kind: "tool", name: "tool", callId: "call:1" });
 });
 
 it("keeps delegated task descriptors but excludes mirrored child logs and actions", () => {
@@ -152,7 +198,11 @@ it("drops todos, notifications, compaction and plugin rows", () => {
     { type: "compaction", status: "completed" },
     { type: "plugin", id: "plugin:row", pluginId: "plugin", kind: "test", version: 1, data: null },
   ]);
-  expect(result).toEqual({ items: [], omittedItems: [] });
+  expect(result).toEqual({
+    items: [],
+    omittedItems: [],
+    sourceRows: [0, 1, 2, 3].map((rowIndex) => ({ segmentId: "source", rowIndex })),
+  });
 });
 
 it("omits oversized tool activity whole and records its stable source", () => {
@@ -162,6 +212,7 @@ it("omits oversized tool activity whole and records its stable source", () => {
   expect(result).toEqual({
     items: [],
     omittedItems: [{ type: "row", identity: { segmentId: "source", rowIndex: 0 } }],
+    sourceRows: [{ segmentId: "source", rowIndex: 0 }],
   });
 });
 
@@ -207,4 +258,25 @@ it("preserves interrupted partials and deduplicates by stable identity, not nati
     { type: "row", identity: row.identity },
     { type: "row", identity: { segmentId: "b", rowIndex: 0 } },
   ]);
+});
+
+it("drops complete system envelopes while preserving incomplete examples", () => {
+  const result = mapItems([
+    { type: "user_message", text: "<paseo-system>\nnotification\n</paseo-system>" },
+    { type: "user_message", text: "<paseo-system>\nunfinished example" },
+  ]);
+  expect(result.items.map((item) => item.text)).toEqual(["<paseo-system>\nunfinished example"]);
+  expect(result.sourceRows).toEqual([
+    { segmentId: "source", rowIndex: 0 },
+    { segmentId: "source", rowIndex: 1 },
+  ]);
+});
+
+it.each([
+  { segmentId: "", rowIndex: 0 },
+  { segmentId: "source", rowIndex: -1 },
+  { segmentId: "source", rowIndex: 1.5 },
+  { segmentId: "source", rowIndex: NaN },
+])("rejects invalid row identity $segmentId/$rowIndex", (identity) => {
+  expect(() => rowIdentityKey(identity)).toThrow(HandoffInputError);
 });
