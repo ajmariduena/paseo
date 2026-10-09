@@ -1,5 +1,6 @@
 import type { Logger } from "pino";
 import { isPeerMessage } from "@getpaseo/protocol/peer-message";
+import { agentMessageCallId } from "./agent-messages/index.js";
 
 import {
   ActiveTurnChangedError,
@@ -483,7 +484,8 @@ export function isMessageAlreadyDispatched(
     .getTimeline(agentId)
     .some(
       (item) =>
-        item.type === "user_message" &&
-        (item.clientMessageId === messageId || item.messageId === messageId),
+        (item.type === "user_message" &&
+          (item.clientMessageId === messageId || item.messageId === messageId)) ||
+        (item.type === "tool_call" && item.callId === agentMessageCallId(messageId)),
     );
 }

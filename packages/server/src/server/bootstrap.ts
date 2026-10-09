@@ -132,6 +132,7 @@ import { createPaseoWorktree as createRegisteredPaseoWorktree } from "./paseo-wo
 import { createWorkspaceProvisioningService } from "./session/workspace-provisioning/workspace-provisioning-service.js";
 import { createPaseoWorktreeWorkflow } from "./worktree-session.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
+import { formatAttachmentContentDisposition } from "./file-download/content-disposition.js";
 import type { OpenAiSpeechProviderConfig } from "./speech/providers/openai/config.js";
 import type { ElevenLabsSpeechProviderConfig } from "./speech/providers/elevenlabs/runtime.js";
 import type { LocalSpeechProviderConfig } from "./speech/providers/local/config.js";
@@ -718,7 +719,11 @@ export async function createPaseoDaemon(
   });
   const browserToolsPolicy = new DaemonConfigBrowserToolsPolicy(daemonConfigStore);
   const browserToolsBroker = new BrowserToolsBroker({});
-  const pluginRuntime = new PluginService(logger, daemonConfigStore, daemonVersion, {
+  const pluginRuntime: PluginService = new PluginService(logger, daemonConfigStore, daemonVersion, {
+    usageAgents: {
+      hasAgent: (id) => agentManager.getAgent(id) !== null,
+      usageSession: (id) => agentManager.usageSession(id),
+    },
     managedSources: new ManagedPluginSources(config.paseoHome, {
       registries: config.pluginRegistries,
       defaultUrl: config.pluginRegistryUrl,
@@ -932,9 +937,8 @@ export async function createPaseoDaemon(
         return;
       }
 
-      const safeFileName = entry.fileName.replace(/["\r\n]/g, "_");
       res.setHeader("Content-Type", entry.mimeType);
-      res.setHeader("Content-Disposition", `attachment; filename="${safeFileName}"`);
+      res.setHeader("Content-Disposition", formatAttachmentContentDisposition(entry.fileName));
       res.setHeader("Content-Length", fileStats.size.toString());
 
       const stream = fileHandle.createReadStream();
@@ -1354,7 +1358,6 @@ export async function createPaseoDaemon(
         emit: emitExternalSessionMessage,
         sessionLogger: logger,
         terminalManager,
-        archiveWorkspaceRecord: archiveWorkspaceRecordExternal,
         serviceProxy,
         scriptRuntimeStore,
         getDaemonTcpPort: () => (boundListenTarget?.type === "tcp" ? boundListenTarget.port : null),
@@ -1618,9 +1621,8 @@ export async function createPaseoDaemon(
       serviceProxyPublicBaseUrl,
       resolveScriptHealth: (hostname) => scriptHealthMonitor.getHealthForHostname(hostname),
       logger,
-      // MCP operations do not belong to one WebSocket session, so lifecycle
-      // status updates fan out to every connected client.
       emit: (message) => wsServer?.broadcast(wrapSessionMessage(message)),
+      publishStatusUpdate: (message) => wsServer?.publishScriptStatusUpdate(message),
       spawnWorkspaceScript,
       assertAutomationAllowed: (workspaceId) =>
         assertWorkspaceAutomationAllowedForWorkspace(workspaceRegistry, workspaceId),

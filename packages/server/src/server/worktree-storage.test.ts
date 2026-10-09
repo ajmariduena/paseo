@@ -51,7 +51,8 @@ function expectCleanupReserved(path: string): void {
   expect(() => assertWorktreeNotCleaningUp(path)).toThrow("Worktree is cleaning up");
 }
 
-describe("worktree storage cleanup", () => {
+// Process checks read lsof, which Windows lacks; there every entry stays kept as unverifiable.
+describe.skipIf(process.platform === "win32")("worktree storage cleanup", () => {
   let root: string;
   let repo: string;
   let worktreesRoot: string;

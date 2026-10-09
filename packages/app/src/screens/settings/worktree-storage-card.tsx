@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useFetchQuery } from "@/data/query";
 import { useCallback, useMemo, useState } from "react";
 import { Text, View } from "react-native";
+import { useTranslation } from "react-i18next";
 import { Switch } from "@/components/ui/switch";
 import { useDaemonConfig } from "@/hooks/use-daemon-config";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
@@ -67,6 +68,7 @@ function AutomaticWorktreeCleanupSection({
 }
 
 function ConnectedWorktreeStorageCard({ serverId }: Props) {
+  const { t } = useTranslation();
   const client = useHostRuntimeClient(serverId);
   const queryClient = useQueryClient();
   const queryKey = useMemo(() => ["worktree-storage", serverId], [serverId]);
@@ -75,7 +77,7 @@ function ConnectedWorktreeStorageCard({ serverId }: Props) {
     staleTimeMs: 5_000,
     queryKey,
     queryFn: async () => {
-      if (!client) throw new Error("Host is not connected");
+      if (!client) throw new Error(t("common.errors.daemonClientUnavailable"));
       const payload = await client.listWorktreeStorage();
       if (payload.error) throw new Error(payload.error);
       return payload;
@@ -89,10 +91,10 @@ function ConnectedWorktreeStorageCard({ serverId }: Props) {
   }, [refetch]);
   const onCleanup = useCallback(
     (entryIds: string[], legacyEntryIds: string[]) => {
-      if (!client) throw new Error("Host is not connected");
+      if (!client) throw new Error(t("common.errors.daemonClientUnavailable"));
       return client.cleanupWorktreeStorage(entryIds, legacyEntryIds);
     },
-    [client],
+    [client, t],
   );
   const onAfterCleanup = useCallback(async () => {
     await queryClient.invalidateQueries({ queryKey });

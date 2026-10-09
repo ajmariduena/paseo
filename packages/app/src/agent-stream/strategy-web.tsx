@@ -20,6 +20,7 @@ import { withUnistyles } from "react-native-unistyles";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { useStableEvent } from "@/hooks/use-stable-event";
+import type { StreamItem } from "@/types/stream";
 import type { Theme } from "@/styles/theme";
 import { WEB_SCROLLBAR_SIZE_PX } from "@/styles/web-scrollbar";
 import { DomOverlayScrollbar } from "@/components/ui/overlay-scrollbar/dom-overlay-scrollbar";
@@ -75,6 +76,8 @@ const historyStartSlotStyle: CSSProperties = {
   height: HISTORY_START_SLOT_HEIGHT_PX,
   flexShrink: 0,
 };
+
+const streamRowsHostStyle: CSSProperties = { position: "relative", width: "100%" };
 
 const streamRowStyle: CSSProperties = {
   display: "flex",
@@ -268,6 +271,23 @@ function isScrollContainerOverscrolledPastBottom(
   return getScrollContainerDistanceFromBottom(scrollContainer) < -BOTTOM_OVERSCROLL_TOLERANCE_PX;
 }
 
+// Position updates do not change a row's content. Keep renderer work separate
+// from virtual measurements while retaining the same component across lanes.
+const StreamRowContent = React.memo(function StreamRowContent({
+  item,
+  index,
+  items,
+  render,
+}: {
+  revision?: StreamRenderInput["liveHeadRowRevision"];
+  item: StreamItem;
+  index: number;
+  items: StreamItem[];
+  render: StreamRenderInput["renderers"]["renderHistoryVirtualizedRow"];
+}) {
+  return render(item, index, items);
+});
+
 function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: boolean }) {
   const {
     segments: inputSegments,
@@ -426,6 +446,10 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
   const rowVirtualizer = useVirtualizer({
     count: segments.historyVirtualized.length,
     enabled: shouldUseVirtualizer,
+    initialRect: {
+      width: scrollContainerRef.current?.clientWidth ?? 0,
+      height: scrollContainerRef.current?.clientHeight ?? 0,
+    },
     getScrollElement: () => scrollContainerRef.current,
     getItemKey: (index: number) => segments.historyVirtualized[index]?.id ?? index,
     estimateSize: (index: number) => {
@@ -537,25 +561,31 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     scheduler.schedule();
   });
 
-  // ResizeObserver runs before paint. Batch measurements and commit React's new
-  // positions here so a resized image cannot overlap rows for an extra frame.
-  // Use resizeItem exclusively; measureElement would install a second observer.
+  const measureVirtualizedRows = useStableEvent(() => {
+    let resized = false;
+    for (const element of contentRef.current?.querySelectorAll<HTMLElement>(
+      "[data-history-row-id][data-index]",
+    ) ?? []) {
+      const index = Number(element.dataset.index);
+      const height = measureVirtualElement(element, undefined, rowVirtualizer);
+      if (rowVirtualizer.measurementsCache[index]?.size === height) continue;
+      rowVirtualizer.resizeItem(index, height);
+      resized = true;
+    }
+    return resized;
+  });
+
+  // Measure the committed DOM rather than queued observer entries: flushSync can
+  // also commit an image's pending intrinsic dimensions, invalidating those entries.
   const virtualRowObserver = useMemo(
     () =>
-      new ResizeObserver((entries) => {
+      new ResizeObserver(() => {
         if (!isActiveRef.current) return;
         flushSync(() => {
-          for (const entry of entries) {
-            const element = entry.target as HTMLElement;
-            if (!element.isConnected) continue;
-            rowVirtualizer.resizeItem(
-              Number(element.dataset.index),
-              measureVirtualElement(element, entry, rowVirtualizer),
-            );
-          }
+          measureVirtualizedRows();
         });
       }),
-    [rowVirtualizer],
+    [measureVirtualizedRows],
   );
   const measureVirtualizedRowElement = useCallback(
     (node: HTMLDivElement | null) => {
@@ -697,7 +727,7 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     onNearBottomChange,
   });
 
-  const reconcileReadingPosition = useStableEvent(() => {
+  const reconcileReadingPosition = useStableEvent((userScrolled: boolean = false) => {
     const container = scrollContainerRef.current;
     const content = contentRef.current;
     if (!isActiveRef.current || !container || !content) return;
@@ -715,7 +745,7 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     );
     const shouldAnchor = !followOutputRef.current && !isJumpSettling();
     if (!shouldAnchor) readingAnchor.reset();
-    const correctedTop = readingAnchor.reconcile(container.scrollTop, rows);
+    const correctedTop = readingAnchor.reconcile(container.scrollTop, rows, userScrolled);
     if (!shouldAnchor) {
       readingAnchor.reset();
       return;
@@ -732,8 +762,18 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
   // Apply row positions and their scroll correction in the same paint, including
   // the ordinary-to-virtualized handoff and measurements of newly mounted rows.
   useLayoutEffect(() => {
+    // Commit positions for every resized row before accepting reading geometry.
+    // Child layout can change during this commit, ahead of ResizeObserver delivery.
+    if (!isActive || measureVirtualizedRows()) return;
     reconcileReadingPosition();
-  }, [contentWidth, isActive, segments, virtualRows, reconcileReadingPosition]);
+  }, [
+    contentWidth,
+    isActive,
+    segments,
+    virtualRows,
+    measureVirtualizedRows,
+    reconcileReadingPosition,
+  ]);
 
   const stopFollowingOutputFromUserIntent = useStableEvent(() => {
     cancelPendingStickToBottom();
@@ -768,14 +808,14 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
 
     lastKnownScrollTopRef.current = currentScrollTop;
     if (!followOutputRef.current && !isJumpSettling() && (scrolledUp || scrolledDown)) {
-      readingAnchor.scroll(currentScrollTop);
+      reconcileReadingPosition(true);
     }
     updateScrollMetrics();
     evaluateHistoryStart();
   }, [
     evaluateHistoryStart,
     isJumpSettling,
-    readingAnchor,
+    reconcileReadingPosition,
     stopFollowingOutputFromUserIntent,
     updateScrollMetrics,
   ]);
@@ -916,6 +956,9 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
       evaluateHistoryStart();
     }
     const observer = new ResizeObserver(() => {
+      flushSync(() => {
+        measureVirtualizedRows();
+      });
       const nextGeometry = getObservedViewportGeometry(scrollContainer);
       if (pendingResumeGeometryCheckRef.current) {
         pendingResumeGeometryCheckRef.current = false;
@@ -954,6 +997,7 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     scheduleHistoryStartPrependSettle,
     scheduleStickToBottom,
     updateScrollMetrics,
+    measureVirtualizedRows,
   ]);
 
   useLayoutEffect(() => {
@@ -1069,7 +1113,8 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     };
 
     // Read user movement before the virtualizer's bubbling listener flushes a
-    // layout correction. Scroll events reuse the last committed row geometry.
+    // layout correction. An image can commit its size earlier in the same frame,
+    // so the reader is picked from measured rows, not the last committed geometry.
     scrollContainer.addEventListener("scroll", handleDomScroll, { passive: true, capture: true });
     scrollContainer.addEventListener("wheel", handleWheel, { passive: true });
     scrollContainer.addEventListener("keydown", handleKeyDown, { passive: true });
@@ -1172,13 +1217,13 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     }),
     [],
   );
-  const virtualRowsContainerStyle = useMemo((): CSSProperties => {
-    return {
-      position: "relative",
-      width: "100%",
+  const virtualRowsContainerStyle = useMemo(
+    (): CSSProperties => ({
       height: virtualTotalSize,
-    };
-  }, [virtualTotalSize]);
+      flexShrink: 0,
+    }),
+    [virtualTotalSize],
+  );
   const renderVirtualRowStyle = useCallback(
     (start: number): CSSProperties => ({
       position: "absolute",
@@ -1199,12 +1244,16 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
         data-message-id={getStreamItemMessageId(item)}
         style={streamRowStyle}
       >
-        {renderHistoryMountedRow(item, index, segments.historyMounted)}
+        <StreamRowContent
+          item={item}
+          index={index}
+          items={segments.historyMounted}
+          render={renderHistoryMountedRow}
+        />
       </div>
     ));
   }, [renderHistoryMountedRow, segments.historyMounted]);
   const liveHeadRows = useMemo(() => {
-    void liveHeadRowRevision;
     return segments.liveHead.map((item, index) => (
       <div
         key={item.id}
@@ -1212,7 +1261,13 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
         data-message-id={getStreamItemMessageId(item)}
         style={streamRowStyle}
       >
-        {renderLiveHeadRow(item, index, segments.liveHead)}
+        <StreamRowContent
+          item={item}
+          index={index}
+          items={segments.liveHead}
+          revision={liveHeadRowRevision}
+          render={renderLiveHeadRow}
+        />
       </div>
     ));
   }, [liveHeadRowRevision, renderLiveHeadRow, segments.liveHead]);
@@ -1245,7 +1300,7 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     !liveAuxiliary;
 
   return (
-    <div style={viewportStyle}>
+    <div style={viewportStyle} data-window-content>
       <div
         ref={handleScrollContainerRef}
         data-testid="agent-chat-scroll"
@@ -1255,13 +1310,12 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
       >
         <div ref={handleContentRef} style={contentContainerStyle}>
           {historyStartSlot}
-          {shouldUseVirtualizer ? (
-            <div style={virtualRowsContainerStyle}>
-              {virtualRows.map((virtualRow) => {
+          <div style={streamRowsHostStyle}>
+            <div style={virtualRowsContainerStyle} />
+            {[
+              ...virtualRows.map((virtualRow) => {
                 const item = segments.historyVirtualized[virtualRow.index];
-                if (!item) {
-                  return null;
-                }
+                if (!item) return null;
                 return (
                   <div
                     key={virtualRow.key}
@@ -1271,17 +1325,18 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
                     ref={measureVirtualizedRowElement}
                     style={renderVirtualRowStyle(virtualRow.start)}
                   >
-                    {renderHistoryVirtualizedRow(
-                      item,
-                      virtualRow.index,
-                      segments.historyVirtualized,
-                    )}
+                    <StreamRowContent
+                      item={item}
+                      index={virtualRow.index}
+                      items={segments.historyVirtualized}
+                      render={renderHistoryVirtualizedRow}
+                    />
                   </div>
                 );
-              })}
-            </div>
-          ) : null}
-          {mountedRows}
+              }),
+              ...mountedRows,
+            ]}
+          </div>
           {liveAuxiliary}
           {shouldRenderEmpty ? listEmptyComponent : null}
         </div>

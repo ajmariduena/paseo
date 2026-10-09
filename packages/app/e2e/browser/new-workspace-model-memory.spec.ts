@@ -2,12 +2,13 @@ import { mkdtemp, rename, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
-import { test, expect } from "../support/fixtures";
+import { test, expect, type Page } from "../support/fixtures";
 import { seedModelProvider } from "../support/helpers/agent-profiles";
 import { connectDaemonClient } from "../support/helpers/daemon-client-loader";
 import { gotoWorkspace } from "../support/helpers/launcher";
 import {
   openGlobalNewWorkspaceComposer,
+  selectNewWorkspaceProject,
   submitNewWorkspaceEmpty,
   submitNewWorkspacePrompt,
 } from "../support/helpers/new-workspace";
@@ -57,6 +58,15 @@ async function prepareCatalogState(
   await expectProviderStatus(client, undefined, hostStatus);
 }
 
+/** The global composer starts on "No project"; the catalogs under test belong to the seeded one. */
+async function openSeededProjectComposer(
+  page: Page,
+  workspace: { projectKey: string; projectDisplayName: string },
+) {
+  await openGlobalNewWorkspaceComposer(page);
+  await selectNewWorkspaceProject(page, workspace);
+}
+
 for (const hostStatus of ["ready", "unavailable"] as const) {
   test(`remembers the manually selected model after two creations with a ${hostStatus} host catalog and ready project catalog`, async ({
     page,
@@ -80,7 +90,7 @@ for (const hostStatus of ["ready", "unavailable"] as const) {
       await startWithoutRememberedModel(page);
       await gotoWorkspace(page, workspace.workspaceId);
       await waitForSidebarHydration(page);
-      await openGlobalNewWorkspaceComposer(page);
+      await openSeededProjectComposer(page, workspace);
       for (const [index, select] of [chooseModel, reselectModel].entries()) {
         const count = index + 1;
         await test.step(`create workspace ${count} and return`, async () => {
@@ -89,14 +99,14 @@ for (const hostStatus of ["ready", "unavailable"] as const) {
           await submitNewWorkspacePrompt(page, "Remember this model on the next workspace");
           await expect(page).toHaveURL(/\/workspace\//);
           await expectCreatedModelAgents(page, client, PROVIDER, MODEL, count);
-          await openGlobalNewWorkspaceComposer(page);
+          await openSeededProjectComposer(page, workspace);
           await expectSavedSelection(page, PROVIDER, MODEL);
           await expectRememberedModel(page, LABEL);
         });
       }
       await submitNewWorkspaceEmpty(page);
       await expect(page).toHaveURL(/\/workspace\//);
-      await openGlobalNewWorkspaceComposer(page);
+      await openSeededProjectComposer(page, workspace);
       await expectSavedSelection(page, PROVIDER, MODEL);
       await expectRememberedModel(page, LABEL);
     } finally {

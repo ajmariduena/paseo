@@ -34,7 +34,9 @@ import { buildHostWorkspaceRoute } from "@/utils/host-routes";
 import { WORKSPACE_DECK_MAX_MOUNTED_WORKSPACES } from "@/screens/workspace/workspace-deck-retention";
 import { delayBrowserAgentCreatedStatus } from "../support/helpers/new-workspace";
 import { installDaemonWebSocketGate } from "../support/helpers/daemon-websocket-gate";
-import { gotoAppShell, openSettings, selectModel } from "../support/helpers/app";
+import { gotoAppShell, openSettings } from "../support/helpers/app";
+import { selectComposerModel } from "../support/helpers/combined-model-picker";
+import { showDetailedToolCalls } from "../support/helpers/tool-call-detail-level";
 import { observeTimelineSubscriptions } from "../support/helpers/timeline-delivery";
 import { rememberTimelineRequestCounts } from "../support/helpers/timeline-resume";
 import {
@@ -341,6 +343,7 @@ async function replaySteeredSleepTurnInBrowser(
   testInfo: { workerIndex: number },
   shape: "claude" | "codex",
 ): Promise<void> {
+  await showDetailedToolCalls(page);
   const gate = await installDaemonWebSocketGate(page);
   gate.holdNextShellToolCall("completed");
   await gotoAppShell(page);
@@ -378,15 +381,6 @@ async function queueMessage(page: Page, prompt: string): Promise<void> {
   await sendDraftToQueue(page);
 }
 
-async function expectQueuedSendFailuresRestored(page: Page, prompts: string[]): Promise<void> {
-  await expect(page.getByRole("button", { name: "Send queued message now" })).toHaveCount(
-    prompts.length,
-  );
-  for (const prompt of prompts) {
-    await expect(page.getByTestId("user-message").filter({ hasText: prompt })).toHaveCount(0);
-  }
-}
-
 async function expectFailedSubmissionRestored(page: Page, prompt: string): Promise<void> {
   await expectComposerDraft(page, prompt);
   await expectComposerEditable(page);
@@ -407,12 +401,14 @@ async function expectInterruptedTurnOrderAfterReconnect(
   try {
     await openAgentRoute(page, { workspaceId: agent.workspaceId, agentId: agent.agentId });
     await expectComposerVisible(page);
+    await configureInterruptInSettings(page);
+    await page.goBack();
+    await expectComposerVisible(page);
     await agent.client.sendAgentMessage(agent.agentId, "Start the turn that will be interrupted.");
     await expect(page.getByRole("button", { name: /stop|cancel/i }).first()).toBeVisible();
     await expect(page.getByText("Cycle 1", { exact: true })).toBeVisible();
-    await queueMessage(page, prompt);
     gate.setAgentStreamSuppressed(true);
-    await page.getByRole("button", { name: "Send queued message now" }).click();
+    await submitMessage(page, prompt);
     const promptRow = page.getByTestId("user-message").filter({ hasText: prompt });
     await expect(promptRow).toBeVisible();
     await gate.waitForServerMessage("send_agent_message_response");
@@ -647,6 +643,7 @@ async function expectStaleCanonicalPagePreservesNewerLiveOutput(
   page: Page,
   testInfo: { workerIndex: number },
 ): Promise<void> {
+  await showDetailedToolCalls(page);
   const gate = await installDaemonWebSocketGate(page);
   const agent = await seedMockAgentWorkspace({
     repoPrefix: `submission-stale-canonical-${testInfo.workerIndex}-`,
@@ -861,7 +858,7 @@ async function beginDraftCreateSubmission(
   scenario: DraftCreateScenario,
 ): Promise<DraftCreatePendingSubmission> {
   await openWorkspaceDraft(page, scenario.workspaceId);
-  await selectModel(page, "one-minute-stream");
+  await selectComposerModel(page, "one-minute-stream");
   const prompt = "Keep this row through create handoff.";
   const userMessage = await submitMessageWithImage(page, prompt);
   await scenario.agentCreatedDelay.waitForCreateRequest();
@@ -887,7 +884,7 @@ test.describe("Agent message submission", () => {
     const prompt = "Withhold synthetic user message until interrupted.";
     try {
       await openWorkspaceDraft(page, workspace.workspaceId);
-      await selectModel(page, "one-minute-stream");
+      await selectComposerModel(page, "one-minute-stream");
 
       await submitMessage(page, prompt);
       await expectAgentReadyToInterrupt(page);
@@ -919,7 +916,7 @@ test.describe("Agent message submission", () => {
     const prompt = "Emit synthetic user message before accepting turn.";
     try {
       await openWorkspaceDraft(page, workspace.workspaceId);
-      await selectModel(page, "one-minute-stream");
+      await selectComposerModel(page, "one-minute-stream");
 
       await submitMessage(page, prompt);
       await expectAgentReadyToInterrupt(page);
@@ -959,7 +956,7 @@ test.describe("Agent message submission", () => {
     const prompt = "Delay synthetic user message by 2000ms.";
     try {
       await openWorkspaceDraft(page, workspace.workspaceId);
-      await selectModel(page, "one-minute-stream");
+      await selectComposerModel(page, "one-minute-stream");
 
       await submitMessage(page, prompt);
       const submittedPrompt = page.getByTestId("user-message").filter({ hasText: prompt });
@@ -986,7 +983,7 @@ test.describe("Agent message submission", () => {
     const prompt = "Emit 205 assistant messages before synthetic user message.";
     try {
       await openWorkspaceDraft(page, workspace.workspaceId);
-      await selectModel(page, "one-minute-stream");
+      await selectComposerModel(page, "one-minute-stream");
 
       await submitMessage(page, prompt);
       const submittedPrompt = page.getByTestId("user-message").filter({ hasText: prompt });
@@ -1061,6 +1058,8 @@ test.describe("Agent message submission", () => {
       await page.getByRole("button", { name: "Stop agent", exact: true }).click();
       await gate.waitForHeldServerMessage();
 
+      await expect(page.getByText("Queue paused after you stopped the agent")).toBeVisible();
+      await page.getByRole("button", { name: "Resume", exact: true }).click();
       await expect(page.getByTestId("user-message").filter({ hasText: secondPrompt })).toHaveCount(
         1,
       );
@@ -1293,26 +1292,22 @@ test.describe("Agent message submission", () => {
     await replaySteeredSleepTurnInBrowser(page, testInfo, "codex");
   });
 
-  test("restores overlapping queued sends when their connection fails", async ({
-    page,
-  }, testInfo) => {
+  test("restores a queued send when its connection fails", async ({ page }, testInfo) => {
     test.setTimeout(120_000);
     const gate = await gateNextAgentMessage(page);
     const agent = await startRunningMockAgent(page, {
-      prefix: `overlapping-queued-send-${testInfo.workerIndex}-`,
+      prefix: `queued-send-failure-${testInfo.workerIndex}-`,
       model: "one-minute-stream",
-      prompt: "Keep the agent running while messages queue.",
+      prompt: "Keep the agent running while a message queues.",
     });
-    const prompts = ["Restore the first queued send.", "Restore the second queued send."];
+    const prompt = "Restore this queued send.";
     try {
-      await queueMessage(page, prompts[0]);
-      await queueMessage(page, prompts[1]);
-      await page.getByRole("button", { name: "Send queued message now" }).first().click();
-      await gate.waitForRequest(1);
-      await page.getByRole("button", { name: "Send queued message now" }).first().click();
-      await gate.waitForRequest(2);
+      await queueMessage(page, prompt);
+      const request = await gate.waitForRequest(1);
+      expect(request.activeTurnBehavior).toBe("queue");
       await gate.disconnect();
-      await expectQueuedSendFailuresRestored(page, prompts);
+      await expectFailedSubmissionRestored(page, prompt);
+      await expect(page.getByRole("button", { name: "Send queued message now" })).toHaveCount(0);
     } finally {
       await agent.cleanup();
     }

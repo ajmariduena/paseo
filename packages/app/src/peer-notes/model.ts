@@ -1,7 +1,7 @@
 import type { TFunction } from "i18next";
 import { parsePeerMessage, type PeerMessage } from "@getpaseo/protocol/peer-message";
 import type { SessionState } from "@/stores/session-store";
-import type { StreamItem, UserMessageItem } from "@/types/stream";
+import type { StreamItem, ToolCallItem, UserMessageItem } from "@/types/stream";
 
 export type PeerNote = PeerMessage;
 
@@ -11,13 +11,38 @@ const SHORT_AGENT_ID_LENGTH = 8;
 
 const noteByItem = new WeakMap<UserMessageItem, PeerNote | null>();
 
-/** The note another session sent, when this user message is one. */
+/** The note another session sent, when this row is one. */
 export function readPeerNote(item: StreamItem | null | undefined): PeerNote | null {
+  if (item?.kind === "tool_call") return readAgentMessageNote(item);
   if (item?.kind !== "user_message") return null;
+  // COMPAT(peerMessageEnvelope): notes sent before the fork adopted upstream's agent-message
+  // envelope arrive as user messages; remove after 2027-04-08.
   const cached = noteByItem.get(item);
   if (cached !== undefined) return cached;
   const note = item.text.startsWith(OPEN_TAG) ? parsePeerMessage(item.text) : null;
   noteByItem.set(item, note);
+  return note;
+}
+
+const noteByToolCall = new WeakMap<ToolCallItem, PeerNote | null>();
+
+function readAgentMessageNote(item: ToolCallItem): PeerNote | null {
+  const cached = noteByToolCall.get(item);
+  if (cached !== undefined) return cached;
+  const message = item.payload.source === "agent" ? item.payload.data.agentMessage : undefined;
+  const note =
+    message?.relation === "peer"
+      ? {
+          sender: {
+            agentId: message.sender.id,
+            title: message.sender.title ?? null,
+            workspaceTitle: message.sender.workspaceTitle ?? null,
+            branch: message.sender.branch ?? null,
+          },
+          body: message.text,
+        }
+      : null;
+  noteByToolCall.set(item, note);
   return note;
 }
 

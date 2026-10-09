@@ -1,5 +1,6 @@
 import { expect, type Page } from "@playwright/test";
 import { escapeRegex } from "./regex";
+import { closeModelControl, openModelPicker, pickModelFromBrowser } from "./model-control";
 
 export const gotoAppShell = async (page: Page) => {
   await page.goto("/");
@@ -324,62 +325,9 @@ export const selectModel = async (page: Page, model: string) => {
     throw new Error("Model must be a non-empty string.");
   }
 
-  const modelTrigger = page
-    .locator(
-      '[data-testid="agent-model-selector"]:visible, [data-testid="draft-model-select"]:visible',
-    )
-    .first();
-  if (
-    await modelTrigger
-      .getByText(new RegExp(`^${escapeRegex(normalizedModel)}$`, "i"))
-      .first()
-      .isVisible()
-      .catch(() => false)
-  ) {
-    return;
-  }
-
-  if (await modelTrigger.isVisible().catch(() => false)) {
-    await modelTrigger.click();
-  } else {
-    const modelButton = page
-      .getByRole("button", { name: /Select model/i })
-      .filter({ visible: true })
-      .first();
-    if (await modelButton.isVisible().catch(() => false)) {
-      await modelButton.click();
-    } else {
-      const modelLabel = page.getByText("MODEL", { exact: true }).first();
-      await expect(modelLabel).toBeVisible();
-      await modelLabel.click();
-    }
-  }
-
-  // Wait for the model dropdown to open
-  const searchInput = page.getByRole("textbox", { name: /search model/i });
-  await expect(searchInput).toBeVisible({ timeout: 10000 });
-
-  // Type to search/filter models
-  await searchInput.fill(normalizedModel);
-
-  const dialog = page.getByRole("dialog");
-  const exactOption = dialog
-    .getByText(new RegExp(`^${escapeRegex(normalizedModel)}$`, "i"))
-    .first();
-  const exactVisible = await exactOption.isVisible().catch(() => false);
-  if (exactVisible) {
-    await exactOption.click({ force: true });
-  } else {
-    // Modern labels include version suffixes (for example "Haiku 4.5"), so
-    // select the first filtered result using keyboard confirm.
-    await searchInput.press("Enter");
-  }
-
-  // Wait for dropdown to close
-  if (await searchInput.isVisible().catch(() => false)) {
-    await page.keyboard.press("Escape").catch(() => undefined);
-  }
-  await expect(searchInput).not.toBeVisible({ timeout: 5000 });
+  await openModelPicker(page);
+  await pickModelFromBrowser(page, normalizedModel);
+  await closeModelControl(page);
 };
 
 export const selectMode = async (page: Page, mode: string) => {

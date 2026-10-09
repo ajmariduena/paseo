@@ -3,8 +3,8 @@ import type { ComboboxOption as ComboboxOptionType } from "@/components/ui/combo
 import { isWorkspaceArchivePending } from "@/contexts/session-workspace-upserts";
 import {
   filterWorkspaceProjectsForHost,
-  getHostProjectId,
   getHostProjectSourceDirectory,
+  resolveHostProjectCandidate,
   resolveInitialWorkspaceProject,
   type HostProjectListItem,
 } from "@/projects/host-projects";
@@ -121,7 +121,12 @@ export function useNewWorkspaceProjectPicker({
   // Without a route project, the project last used in New workspace wins over
   // "No project", which wins over the last opened workspace's project.
   const usableRememberedProject =
-    rememberedProject && getHostProjectId(rememberedProject, selectedServerId)
+    rememberedProject &&
+    resolveHostProjectCandidate({
+      candidate: rememberedProject,
+      projects: selectableProjects,
+      serverId: selectedServerId,
+    })
       ? rememberedProject
       : null;
   const lastActiveProject = usableRememberedProject ?? scratchProject ?? lastActiveProjectInput;

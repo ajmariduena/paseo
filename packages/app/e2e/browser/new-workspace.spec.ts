@@ -791,7 +791,10 @@ test.describe("New workspace flow", () => {
       await startTrackingSidebarStatusGroups(page);
 
       await openGlobalNewWorkspaceComposer(page);
-      await expectNewWorkspaceProjectSelected(page, openedProject.projectDisplayName);
+      await selectNewWorkspaceProject(page, {
+        projectKey: openedProject.projectKey,
+        projectDisplayName: openedProject.projectDisplayName,
+      });
       await submitNewWorkspaceWithoutPrompt(page);
 
       const createdWorkspace = await assertNewWorkspaceSidebarAndHeader(page, {

@@ -182,15 +182,22 @@ test.describe("New Workspace dictation submit", () => {
       await dictateAndSend(page, harness.waitForAudio);
       await harness.waitForCreateRequest();
 
+      const pendingWorkspace = page.getByTestId("pending-workspace-screen");
       const composer = page.getByRole("textbox", { name: "Message agent..." });
-      await expect(composer).toHaveValue(TRANSCRIPT);
+      await expect(pendingWorkspace).toBeVisible();
+      await expect(pendingWorkspace.getByText(TRANSCRIPT, { exact: true }).first()).toBeVisible();
       await expect(composer).not.toBeEditable();
 
       harness.failWorkspaceCreation();
 
+      const failure = page.getByTestId("pending-workspace-status");
+      await expect(failure).toContainText(CREATE_FAILURE);
+      await expect(pendingWorkspace.getByText(TRANSCRIPT, { exact: true }).first()).toBeVisible();
+
+      await page.getByTestId("pending-workspace-return-to-draft").click();
+      await expect(page).toHaveURL(/\/new(?:\?.*)?$/);
       await expect(composer).toBeEditable();
       await expect(composer).toHaveValue(TRANSCRIPT);
-      await expect(page.getByText(CREATE_FAILURE).first()).toBeVisible();
     } finally {
       await seeded.cleanup();
     }

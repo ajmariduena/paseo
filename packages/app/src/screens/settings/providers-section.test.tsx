@@ -44,7 +44,10 @@ const { theme, snapshotState, configState, patchConfigMock, openProviderSettings
 );
 
 vi.mock("react-native", () => ({
-  Platform: { OS: "web" },
+  Platform: {
+    OS: "web",
+    select: (options: Record<string, unknown>) => options.web ?? options.default,
+  },
   View: ({ children, testID }: { children?: React.ReactNode; testID?: string }) =>
     React.createElement("div", { "data-testid": testID }, children),
   Text: ({ children }: { children?: React.ReactNode }) =>

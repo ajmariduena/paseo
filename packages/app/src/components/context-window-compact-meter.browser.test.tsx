@@ -1,7 +1,13 @@
 import React, { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ContextWindowMeter, type ContextWindowCompaction } from "./context-window-meter";
+import { CompactableMeter, type ContextWindowCompaction } from "./context-window-compact-meter";
+import {
+  formatSessionCost,
+  getMeterGeometry,
+  resolveMeterUsage,
+  resolveTriggerStyle,
+} from "./context-window-ring";
 
 const onCompact = vi.fn();
 const COMPACTION: ContextWindowCompaction = { timing: "now", onCompact };
@@ -50,26 +56,32 @@ function meter(): HTMLElement {
   return element;
 }
 
-describe("context window meter", () => {
+function compactMeterProps(usedTokens: number, totalCostUsd?: number) {
+  const usage = resolveMeterUsage(200_000, usedTokens);
+  if (!usage) throw new Error("expected usage");
+  const geometry = getMeterGeometry(false, 20);
+  return {
+    usage,
+    sessionCost: totalCostUsd === undefined ? null : formatSessionCost(totalCostUsd),
+    triggerStyle: resolveTriggerStyle(geometry, usage, false),
+    ring: { usage, geometry, showPercentage: false, pending: false },
+    compaction: COMPACTION,
+  };
+}
+
+describe("context window compact meter", () => {
   it("shows the percentage once the window is 75% used", () => {
-    mount(<ContextWindowMeter maxTokens={200_000} usedTokens={164_000} />);
+    mount(<CompactableMeter {...compactMeterProps(164_000)} />);
     expect(meter().textContent).toBe("82%");
   });
 
   it("stays a bare ring below 75%", () => {
-    mount(<ContextWindowMeter maxTokens={200_000} usedTokens={100_000} />);
+    mount(<CompactableMeter {...compactMeterProps(100_000)} />);
     expect(meter().textContent).toBe("");
   });
 
   it("opens the context panel and hands the compact press to the caller after closing", () => {
-    mount(
-      <ContextWindowMeter
-        maxTokens={200_000}
-        usedTokens={164_000}
-        totalCostUsd={3.41}
-        compaction={COMPACTION}
-      />,
-    );
+    mount(<CompactableMeter {...compactMeterProps(164_000, 3.41)} />);
 
     click(meter());
     const button = byTestId("context-window-compact");
@@ -79,12 +91,6 @@ describe("context window meter", () => {
     click(button as HTMLElement);
 
     expect(onCompact).toHaveBeenCalledTimes(1);
-    expect(byTestId("context-window-compact")).toBeNull();
-  });
-
-  it("has no panel when the agent cannot compact", () => {
-    mount(<ContextWindowMeter maxTokens={200_000} usedTokens={164_000} />);
-    click(meter());
     expect(byTestId("context-window-compact")).toBeNull();
   });
 });

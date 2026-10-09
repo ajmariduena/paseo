@@ -6,6 +6,7 @@ import type { FormPreferences } from "@/create-agent-preferences/preferences";
 import { gotoAppShell } from "../support/helpers/app";
 import { captureWorkspaceAgentRequest } from "../support/helpers/creation";
 import { openAgentRoute } from "../support/helpers/mock-agent";
+import { openAdvancedModelSettings } from "../support/helpers/model-control";
 import {
   openGlobalNewWorkspaceComposer,
   selectNewWorkspaceProject,
@@ -97,16 +98,17 @@ async function selectMode(page: Page, label: string): Promise<void> {
 }
 
 async function expectThinkingOptionsFit(page: Page): Promise<void> {
-  const thinkingControl = page.getByTestId("agent-thinking-selector").first();
-  await expect(thinkingControl).toBeVisible({ timeout: 30_000 });
-  await thinkingControl.click();
+  await openAdvancedModelSettings(page);
+  await page.getByTestId("agent-effort-level").filter({ visible: true }).click();
 
-  const popup = page.getByTestId("combobox-desktop-container").last();
-  await expect(popup).toBeVisible({ timeout: 10_000 });
-  await expectNoTruncation(popup);
+  const popups = page.getByTestId("combobox-desktop-container");
+  await expect(popups).toHaveCount(2, { timeout: 10_000 });
+  await expectNoTruncation(popups.last());
 
   await page.keyboard.press("Escape");
-  await expect(page.getByTestId("combobox-desktop-container")).toHaveCount(0, { timeout: 5_000 });
+  await expect(popups).toHaveCount(1, { timeout: 5_000 });
+  await page.keyboard.press("Escape");
+  await expect(popups).toHaveCount(0, { timeout: 5_000 });
 }
 
 test.describe("New workspace Codex mode preferences", () => {

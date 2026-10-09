@@ -111,7 +111,7 @@ async function openAndCloseModelSelectorTwice(page: Page) {
 }
 
 test.describe("mobile bottom sheet reopen", () => {
-  test("sheets reopen and model search returns to configuration", async ({ page }) => {
+  test("sheets reopen and a searched model returns to the quick card", async ({ page }) => {
     const session = await openMockAgentAtMobileBreakpoint(page);
     try {
       await test.step("tab switcher opens, closes, and reopens", async () => {
@@ -122,24 +122,27 @@ test.describe("mobile bottom sheet reopen", () => {
         await openAndCloseModelSelectorTwice(page);
       });
 
-      await test.step("model search returns to configuration", async () => {
+      await test.step("a searched model returns to the quick card", async () => {
         await openModelSelector(page);
-        const sheet = page.getByTestId("agent-advanced-page");
 
         await dismissModelBrowserAndReopenCard(page);
         await page.getByTestId("agent-effort-model").click();
 
-        await page.getByRole("textbox", { name: /search.*models/i }).click();
-        const model = page.getByRole("button", { name: /^Ten second stream/ });
+        await page.getByRole("textbox", { name: /search.*models/i }).fill("one minute");
+        const model = page.getByTestId("model-row-mock-one-minute-stream");
         await expect(model).toBeVisible({
           timeout: 10_000,
         });
 
         await model.click();
 
-        await expect(sheet).toBeVisible();
-        await expect(page.getByTestId("agent-effort-model")).toContainText("Ten second stream");
         await expect(page.getByTestId("agent-model-browser")).not.toBeVisible();
+        await expect(page.getByTestId("agent-advanced-page")).not.toBeVisible();
+        const overlay = page.getByTestId("agent-intelligence-overlay");
+        await expect(overlay).toBeVisible();
+        await expect(overlay.getByTestId("agent-quick-change-model")).toContainText(
+          "One minute stream",
+        );
       });
     } finally {
       await session.cleanup();

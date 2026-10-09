@@ -509,6 +509,9 @@ export const ar: TranslationResources = {
         completed: "اكتملت",
       },
     },
+    turnFooter: {
+      workedFor: "عمل لمدة {{duration}}",
+    },
     compaction: {
       loading: "الضغط...",
       auto: "يتم ضغط السياق تلقائيًا",
@@ -1113,6 +1116,47 @@ export const ar: TranslationResources = {
         actions: {
           viewPullRequest: "عرض",
           openOn: "فتح على {{brand}}",
+          addToChat: "إضافة إلى الدردشة",
+          addAllToChat: "إضافة الكل إلى الدردشة",
+          addingToChat: "جارٍ الإضافة...",
+        },
+        checksOverview: {
+          headline: {
+            actionRequired: "بعض الفحوصات تحتاج إلى انتباهك",
+            failure: "بعض الفحوصات لم تنجح",
+            pending: "بعض الفحوصات لم تكتمل بعد",
+            success: "نجحت جميع الفحوصات",
+            none: "لا توجد فحوصات",
+          },
+          count: {
+            actionRequired: "{{count}} تحتاج إجراءً",
+            warning: "{{count}} مع تحذير",
+            failure: "{{count}} فاشلة",
+            pending: "{{count}} قيد التشغيل",
+            manual: "{{count}} يدوية",
+            success: "{{count}} ناجحة",
+            ignored: "{{count}} متخطاة",
+          },
+          detailOne: "الفحص: {{parts}}",
+          detailMany: "الفحوصات: {{parts}}",
+          groupOne: {
+            actionRequired: "{{count}} فحص يحتاج إجراءً",
+            warning: "{{count}} فحص مع تحذير",
+            failure: "{{count}} فحص فاشل",
+            pending: "{{count}} فحص قيد التشغيل",
+            manual: "{{count}} فحص يدوي",
+            success: "{{count}} فحص ناجح",
+            ignored: "{{count}} فحص متخطى",
+          },
+          groupMany: {
+            actionRequired: "{{count}} فحوصات تحتاج إجراءً",
+            warning: "{{count}} فحوصات مع تحذير",
+            failure: "{{count}} فحوصات فاشلة",
+            pending: "{{count}} فحوصات قيد التشغيل",
+            manual: "{{count}} فحوصات يدوية",
+            success: "{{count}} فحوصات ناجحة",
+            ignored: "{{count}} فحوصات متخطاة",
+          },
         },
         checksSummary: {
           passedLabel: "نجح",
@@ -1126,17 +1170,21 @@ export const ar: TranslationResources = {
           checks: "الشيكات",
           pipeline: "خط المعالجة",
           reviews: "التعليقات",
+          activity: "النشاط",
         },
         empty: {
           noJobs: "لا توجد مهام",
           loadingPipeline: "جارٍ تحميل خط المعالجة...",
           pipelineJobsLoadFailed: "تعذر تحميل مهام خط المعالجة",
           allowedToFail: "مسموح بالفشل",
+          noActivity: "لا يوجد نشاط بعد",
         },
         approvals: "{{given}} من {{required}} موافقات",
         accessibility: {
           pullRequest: "سحب الطلب #{{number}}",
           pullRequest_mr: "طلب دمج !{{number}}",
+          commentActions: "إجراءات التعليق",
+          threadActions: "إجراءات سلسلة النقاش",
           checkStatus: {
             passed: "ناجح",
             failed: "فاشل",
@@ -1165,6 +1213,8 @@ export const ar: TranslationResources = {
         },
         thread: {
           discussion: "سلسلة المناقشة",
+          resolved: "تم الحل",
+          outdated: "قديم",
         },
         errors: {
           statusLoadFailed: "غير قادر على تحميل حالة طلب السحب",
@@ -1231,6 +1281,16 @@ export const ar: TranslationResources = {
     },
   },
   sidebar: {
+    statusGroupAccessibility: "مجموعة {{label}}",
+    statusBucket: {
+      needsInput: "تحتاج إدخالاً",
+      failed: "فشل",
+      readyToReview: "جاهزة للمراجعة",
+      working: "قيد العمل",
+      background: "في الخلفية",
+      waiting: "في الانتظار",
+      done: "تم",
+    },
     display: {
       trigger: "تفضيلات العرض",
       heading: "العرض",
@@ -1994,6 +2054,12 @@ export const ar: TranslationResources = {
       helper: "الاتصال بخادم Paseo يعمل على المضيف البعيد.",
       fields: {
         target: "مضيف SSH",
+        password: "كلمة مرور الدايمون",
+        optional: "خياري",
+      },
+      passwordVisibility: {
+        show: "إظهار كلمة المرور",
+        hide: "إخفاء كلمة المرور",
       },
       actions: {
         cancel: "إلغاء",
@@ -2401,6 +2467,8 @@ export const ar: TranslationResources = {
     dismiss: "رفض",
   },
   contextWindow: {
+    noData: "لا توجد بيانات للسياق",
+    accessibilityNoData: "نافذة السياق: لا توجد بيانات للسياق",
     title: "نافذة السياق",
     used: "تم استخدام{{percentage}}%",
     tokens: "رموز{{used}}/{{max}}",

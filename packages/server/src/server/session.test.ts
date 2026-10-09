@@ -4387,7 +4387,7 @@ describe("session branch validation", () => {
       writeFileSync(join(repoDir, "README.md"), "hello\n");
       execSync("git add README.md", { cwd: repoDir });
       execSync("git -c commit.gpgsign=false commit -m init", { cwd: repoDir });
-      execSync("git tag v1", { cwd: repoDir });
+      execSync("git -c tag.gpgSign=false tag v1", { cwd: repoDir });
 
       const messages: unknown[] = [];
       const workspaceGitService = {

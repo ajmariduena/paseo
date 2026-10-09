@@ -119,7 +119,7 @@ import { PluginTimelineItemView, useInstalledTimelineTransform } from "@/plugins
 import { SubagentTimelineProvider } from "@/subagents/timeline/context";
 import { LineageMarker } from "@/subagents/timeline/lineage-marker";
 import { readAgentMessageSender } from "@/subagents/timeline/message-sender";
-import { readPeerNote } from "@/peer-notes/model";
+import { isPeerNote, readPeerNote } from "@/peer-notes/model";
 import { PeerNoteRow } from "@/peer-notes/row";
 import { resolveSendMarker, useSendMarkerStore } from "@/composer/submission/send-markers";
 import { SubagentNotificationRows } from "@/subagents/timeline/notification-row";
@@ -336,6 +336,10 @@ const AGENT_CAPABILITY_FLAG_KEYS: (keyof AgentCapabilityFlags)[] = [
 ];
 
 const EMPTY_STREAM_HEAD: StreamItem[] = [];
+
+function isPromptOrPeerNote(item: StreamItem): boolean {
+  return item.kind === "user_message" || isPeerNote(item);
+}
 
 function useRetainedValue<T>(value: T, active: boolean): T {
   const retainedRef = useRef(value);
@@ -766,8 +770,8 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     // A peer note arrives open while nothing has been prompted after it.
     const latestUserMessageId = useMemo(
       () =>
-        (effectiveStreamHead ?? EMPTY_STREAM_HEAD).findLast((item) => item.kind === "user_message")
-          ?.id ?? effectiveStreamItems.findLast((item) => item.kind === "user_message")?.id,
+        (effectiveStreamHead ?? EMPTY_STREAM_HEAD).findLast(isPromptOrPeerNote)?.id ??
+        effectiveStreamItems.findLast(isPromptOrPeerNote)?.id,
       [effectiveStreamHead, effectiveStreamItems],
     );
     const renderPeerNoteBody = useCallback(
@@ -954,6 +958,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
               detail={data.detail}
               cwd={context.cwd}
               metadata={data.metadata}
+              agentMessage={data.agentMessage}
               isLastInSequence={isLastInSequence}
               onOpenFilePath={handleToolCallOpenFile}
               maxDetailHeight={maxDetailHeight}
@@ -1023,6 +1028,19 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
             />
           );
         }
+        const peerNote = readPeerNote(item);
+        if (peerNote) {
+          return (
+            <PeerNoteRow
+              itemId={item.id}
+              note={peerNote}
+              timestamp={item.timestamp}
+              defaultExpanded={item.id === latestUserMessageId}
+              isLastInSequence={layoutItem.isLastInToolSequence}
+              renderBody={renderPeerNoteBody}
+            />
+          );
+        }
         const group = getToolCallGroup(item.id);
         if (!group || (group.mode === "subagents" && group.run.calls.length === 1)) {
           return renderSingleToolCallItem(item, layoutItem.isLastInToolSequence);
@@ -1084,6 +1102,8 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         getTurnFoldRow,
         handleOpenTurnChanges,
         handleToolCallOpenFile,
+        latestUserMessageId,
+        renderPeerNoteBody,
         renderSingleToolCallItem,
         setToolCallGroupExpanded,
         setTurnFoldExpanded,

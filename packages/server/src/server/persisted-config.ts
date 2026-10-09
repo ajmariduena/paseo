@@ -1,4 +1,4 @@
-import { QuickPromptSchema } from "@getpaseo/protocol/messages";
+import { QuickPromptSchema } from "@getpaseo/protocol/quick-prompt";
 import { PluginRegistriesSchema } from "@getpaseo/protocol/plugin-registry";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";

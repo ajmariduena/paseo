@@ -447,10 +447,6 @@ export function buildHostHealthRoute(serverId?: string) {
     : ("/host-health" as const);
 }
 
-export function buildUsageRoute() {
-  return "/usage" as const;
-}
-
 export function buildOpenProjectRoute() {
   return "/open-project" as const;
 }

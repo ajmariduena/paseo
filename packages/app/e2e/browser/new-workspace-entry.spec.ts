@@ -5,10 +5,12 @@ import {
   expectNewWorkspaceControlsEnabled,
   expectNewWorkspaceProjectSelected,
   expectNewWorkspaceTriggerLabelsAligned,
+  NO_PROJECT_LABEL,
   openGlobalNewWorkspaceComposer,
   openMissingProjectNewWorkspaceComposer,
   openNewWorkspaceComposer,
   openNewWorkspaceProjectPickerWithShortcut,
+  rememberNewWorkspaceProjectAndReload,
 } from "../support/helpers/new-workspace";
 import { getE2EDaemonPort } from "../support/helpers/daemon-port";
 import { seedWorkspace, type SeededWorkspace } from "../support/helpers/seed-client";
@@ -87,7 +89,7 @@ test.describe("New workspace entry points", () => {
       });
       await expect(page.getByTestId("host-picker-trigger")).toBeVisible({ timeout: 30_000 });
       await expectNewWorkspaceTriggerLabelsAligned(page, {
-        projectLabel: seeded.projectDisplayName,
+        projectLabel: NO_PROJECT_LABEL,
         hostLabel: "localhost",
       });
     } finally {
@@ -151,7 +153,7 @@ test.describe("New workspace entry points", () => {
     }
   });
 
-  test("keeps the in-progress form when the remembered workspace is archived elsewhere", async ({
+  test("keeps the in-progress form when the remembered project's workspace is archived elsewhere", async ({
     page,
   }) => {
     const otherProject: SeededWorkspace = await seedWorkspace({
@@ -178,8 +180,13 @@ test.describe("New workspace entry points", () => {
         .getByTestId(`sidebar-workspace-row-${serverId}:${rememberedProject.workspaceId}`)
         .click();
       await expect(page).toHaveURL(/\/workspace\//, { timeout: 30_000 });
+      await rememberNewWorkspaceProjectAndReload(page, {
+        serverId,
+        projectId: rememberedProject.projectId,
+      });
+      await waitForSidebarHydration(page);
 
-      await page.goto(`/new?serverId=${encodeURIComponent(serverId)}`);
+      await openGlobalNewWorkspaceComposer(page);
       await expectNewWorkspaceProjectSelected(page, rememberedProject.projectDisplayName);
 
       const composer = page.getByRole("textbox", { name: "Message agent..." });

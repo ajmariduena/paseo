@@ -9,9 +9,20 @@ import {
 import { openCommandCenter } from "../support/helpers/command-center";
 import { runWorkspaceActionFromCommandCenter } from "../support/helpers/command-center-workspace-actions";
 import { selectModel } from "../support/helpers/app";
+import { seedModelProvider } from "../support/helpers/agent-profiles";
+import {
+  expectComposerEffort,
+  expectComposerModel,
+  expectComposerModelControl,
+} from "../support/helpers/model-control";
 
 const DISABLE_DEFAULT_SEED_ONCE_KEY = "@paseo:e2e-disable-default-seed-once";
 const SEED_NONCE_KEY = "@paseo:e2e-seed-nonce";
+const OTHER_PROVIDER = {
+  id: "draft-mode-other",
+  label: "Draft mode other",
+  models: [{ id: "other-model", label: "Other provider model", description: "Second provider" }],
+};
 
 async function openNewAgentTab(page: Page): Promise<void> {
   // Preference persistence does not depend on the animated tab-creation menu.
@@ -25,11 +36,7 @@ async function chooseDraftControl(page: Page, query: string, choice: string): Pr
 }
 
 async function expectThinkingSelected(page: Page, label: string): Promise<void> {
-  await expect(
-    page
-      .getByRole("button", { name: `Select thinking option (${label})` })
-      .filter({ visible: true }),
-  ).toBeVisible({ timeout: 30_000 });
+  await expectComposerEffort(page, label);
 }
 
 async function expectModeSelected(page: Page, label: string): Promise<void> {
@@ -143,6 +150,7 @@ test.describe("Workspace draft thinking preferences", () => {
     page,
   }) => {
     const workspace = await seedWorkspace({ repoPrefix: "draft-mode-preferences-" });
+    const otherProvider = await seedModelProvider(OTHER_PROVIDER);
 
     try {
       await gotoWorkspace(page, workspace.workspaceId);
@@ -158,7 +166,8 @@ test.describe("Workspace draft thinking preferences", () => {
 
       await openNewAgentTab(page);
       await expectModeSelected(page, "Approval test");
-      await selectModel(page, "gpt-5.4-mini");
+      await selectModel(page, OTHER_PROVIDER.models[0].label);
+      await expectComposerModel(page, OTHER_PROVIDER.models[0].label);
 
       await openNewAgentTab(page);
       await reloadWithPersistedPreferences(page);
@@ -167,6 +176,7 @@ test.describe("Workspace draft thinking preferences", () => {
       await expectModeSelected(page, "Approval test");
     } finally {
       await workspace.cleanup();
+      await otherProvider.restore();
     }
   });
 
@@ -181,10 +191,7 @@ test.describe("Workspace draft thinking preferences", () => {
       await seedLegacyModelPreference(page);
       await reloadWithPersistedPreferences(page);
 
-      await expect(
-        page.getByRole("button", { name: "Select model (Five minute stream)" }),
-      ).toBeVisible({ timeout: 30_000 });
-      await expectThinkingSelected(page, "Medium");
+      await expectComposerModelControl(page, { model: "Five minute stream", effort: "Medium" });
     } finally {
       await workspace.cleanup();
     }

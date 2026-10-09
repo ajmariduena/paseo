@@ -1,4 +1,7 @@
 import type { StreamItem, ToolCallItem, UserMessageItem } from "@/types/stream";
+
+/** A prompt opens a fold, and so does a peer note that starts its own turn. */
+type FoldStartItem = UserMessageItem | ToolCallItem;
 import { describeToolCall } from "@/tool-calls/detail-level/grouping";
 import { isSubagentNotification } from "@/subagents/timeline/notification-source";
 import { isSubagentSpawnCall } from "@/subagents/timeline/spawn-call";
@@ -75,7 +78,7 @@ const EMPTY_SUMMARY: OverviewSummary = {
   paseoCallCount: 0,
 };
 
-export function getTurnFoldKey(user: UserMessageItem): string {
+export function getTurnFoldKey(user: FoldStartItem): string {
   const cursor = user.timelineCursor;
   return cursor ? `${cursor.epoch}:${cursor.seq}` : user.id;
 }
@@ -287,8 +290,8 @@ function isSameAnchor(item: ToolCallItem, anchor: RowAnchor): boolean {
  * that starts its own turn opens a fold, the way a prompt does.
  */
 function startsFoldSegment(item: StreamItem, previous: StreamItem | null): boolean {
-  if (item.kind !== "user_message") return false;
-  return !isPeerNote(item) || !continuesTurn(previous, item);
+  if (!isPeerNote(item)) return item.kind === "user_message";
+  return !continuesTurn(previous, item);
 }
 
 /** The block rows of the last assistant message, when the response ends with it. */
@@ -358,7 +361,7 @@ export function createTurnFolding() {
       return item;
     };
 
-    const planRunning = (user: UserMessageItem, rows: StreamItem[]): SegmentPlan => {
+    const planRunning = (user: FoldStartItem, rows: StreamItem[]): SegmentPlan => {
       const fold: TurnFold = {
         key: getTurnFoldKey(user),
         state: "running",
@@ -380,7 +383,7 @@ export function createTurnFolding() {
       return { rows: [header, ...rows] };
     };
 
-    const planComplete = (user: UserMessageItem, rows: StreamItem[]): SegmentPlan | null => {
+    const planComplete = (user: FoldStartItem, rows: StreamItem[]): SegmentPlan | null => {
       const answer = findFinalAnswer(rows);
       const calls = answer ? collectSucceededTurnCalls(rows, input.getToolCalls) : null;
       if (!answer || !calls) return null;
@@ -447,7 +450,7 @@ export function createTurnFolding() {
     let output: StreamItem[] | null = null;
     let copiedUntil = 0;
     for (const [position, userIndex] of userIndices.entries()) {
-      const user = input.tail[userIndex] as UserMessageItem;
+      const user = input.tail[userIndex] as FoldStartItem;
       const isLatest = position === userIndices.length - 1;
       const end = isLatest ? input.tail.length : userIndices[position + 1]!;
       const rows = input.tail.slice(userIndex + 1, end);

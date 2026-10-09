@@ -9,14 +9,17 @@ import { clickNewChat, gotoWorkspace } from "../support/helpers/launcher";
 import {
   assertNewWorkspaceSidebarAndHeader,
   connectNewWorkspaceDaemonClient,
-  expectNewWorkspaceProjectSelected,
   openGlobalNewWorkspaceComposer,
+  selectNewWorkspaceProject,
   selectWorkspaceIsolation,
   submitNewWorkspaceEmpty,
   submitNewWorkspacePrompt,
 } from "../support/helpers/new-workspace";
 import { getServerId } from "../support/helpers/server-id";
-import { selectSidebarStatusGrouping } from "../support/helpers/sidebar";
+import {
+  expectWorkspaceAbsentFromSidebar,
+  selectSidebarStatusGrouping,
+} from "../support/helpers/sidebar";
 import { seedWorkspace, type SeededWorkspace } from "../support/helpers/seed-client";
 import {
   expectSubagentRowVisible,
@@ -27,7 +30,14 @@ import { expectWorkspaceHeader, waitForSidebarHydration } from "../support/helpe
 import { getVisibleWorkspaceAgentTabIds } from "../support/helpers/workspace-tabs";
 
 type NewWorkspaceDaemonClient = Awaited<ReturnType<typeof connectNewWorkspaceDaemonClient>>;
-type WorkspaceIndicator = "attention" | "done" | "failed" | "loading" | "needs_input" | "running";
+type WorkspaceIndicator =
+  | "attention"
+  | "done"
+  | "failed"
+  | "loading"
+  | "needs_input"
+  | "running"
+  | "waiting";
 
 interface CreatedAgentAssertion {
   workspaceId: string;
@@ -126,6 +136,7 @@ async function expectWorkspaceRowHasOnlyIndicator(
     "loading",
     "needs_input",
     "running",
+    "waiting",
   ] satisfies WorkspaceIndicator[]) {
     const locator = row.locator(`[data-testid="workspace-status-indicator-${indicator}"]`);
     if (indicator === input.indicator) {
@@ -270,7 +281,10 @@ test.describe("Workspace model regressions", () => {
       await gotoWorkspace(page, seeded.workspaceId);
       await waitForSidebarHydration(page);
       await openGlobalNewWorkspaceComposer(page);
-      await expectNewWorkspaceProjectSelected(page, seeded.projectDisplayName);
+      await selectNewWorkspaceProject(page, {
+        projectKey: seeded.projectKey,
+        projectDisplayName: seeded.projectDisplayName,
+      });
       await selectWorkspaceIsolation(page, "local");
       await submitNewWorkspacePrompt(page, "Fix login bug");
 
@@ -355,7 +369,10 @@ test.describe("Workspace model regressions", () => {
       });
 
       await openGlobalNewWorkspaceComposer(page);
-      await expectNewWorkspaceProjectSelected(page, seeded.projectDisplayName);
+      await selectNewWorkspaceProject(page, {
+        projectKey: seeded.projectKey,
+        projectDisplayName: seeded.projectDisplayName,
+      });
       await selectWorkspaceIsolation(page, "local");
       await submitNewWorkspaceEmpty(page);
 
@@ -471,7 +488,10 @@ test.describe("Workspace model regressions", () => {
       });
 
       await openGlobalNewWorkspaceComposer(page);
-      await expectNewWorkspaceProjectSelected(page, seeded.projectDisplayName);
+      await selectNewWorkspaceProject(page, {
+        projectKey: seeded.projectKey,
+        projectDisplayName: seeded.projectDisplayName,
+      });
       await selectWorkspaceIsolation(page, "local");
       await submitNewWorkspaceEmpty(page);
 
@@ -538,7 +558,7 @@ test.describe("Workspace model regressions", () => {
     }
   });
 
-  test("cross-workspace subagent opens in its workspace and keeps its parent relationship", async ({
+  test("cross-workspace subagent opens in its workspace, stays out of the sidebar, and keeps its parent relationship", async ({
     page,
   }) => {
     const serverId = getServerId();
@@ -555,15 +575,11 @@ test.describe("Workspace model regressions", () => {
       await expectWorkspaceTabVisible(page, agents.child.id);
 
       const parentRowTestId = `sidebar-workspace-row-${serverId}:${agents.parent.workspaceId}`;
-      const childRowTestId = `sidebar-workspace-row-${serverId}:${agents.child.workspaceId}`;
-      await expectWorkspaceRowHasOnlyIndicator(page, {
-        rowTestId: childRowTestId,
-        indicator: "running",
-      });
       await expectWorkspaceRowHasOnlyIndicator(page, {
         rowTestId: parentRowTestId,
-        indicator: "done",
+        indicator: "waiting",
       });
+      await expectWorkspaceAbsentFromSidebar(page, agents.child.workspaceId);
 
       await gotoWorkspace(page, agents.parent.workspaceId);
       await openSubagentsTrack(page);

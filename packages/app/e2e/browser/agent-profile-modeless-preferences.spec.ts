@@ -9,6 +9,7 @@ import {
   seedModelProvider,
 } from "../support/helpers/agent-profiles";
 import { gotoAppShell } from "../support/helpers/app";
+import { closeModelControl, expectComposerModel } from "../support/helpers/model-control";
 import { captureWorkspaceAgentRequest } from "../support/helpers/creation";
 import {
   openGlobalNewWorkspaceComposer,
@@ -119,7 +120,9 @@ test.describe("Agent profiles repair modeless provider preferences", () => {
 
       await openModelPicker(page);
       await drillIntoProvider(page, MODELESS_PROVIDER);
-      await page.getByRole("button", { name: /Pi profile model/ }).click();
+      await page.getByTestId(`model-row-${MODELESS_PROVIDER}-${MODELESS_MODEL}`).click();
+      await closeModelControl(page);
+      await expectComposerModel(page, "Pi profile model");
 
       await submitNewWorkspacePrompt(page, "Create a Pi agent after repairing preferences.");
       const createAgentRequest = await createAgentRecorder.waitForRequest();
