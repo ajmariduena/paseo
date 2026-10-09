@@ -1,4 +1,4 @@
-Editor conflict regression — 2026-10-10
+Editor and creation regressions — 2026-10-10
 
 CI: https://github.com/ajmariduena/paseo/actions/runs/37988796056/job/114017778113
 The cancelled workflow ran head ff9be424c. Shard 2 independently completed with
@@ -16,9 +16,20 @@ conflict, preserving the existing regression for reverting locally edited bytes.
 
 The new missing/error cases prove no local edits, no recovery draft, no writes
 during the handoff save barrier, and successful explicit reload. All 47 cases
-in the existing editor model suite pass. No browser rerun has been performed
-for this patch yet; another workspace owns the current Playwright slot.
-The separate workspace-creation startup-error failure remains under investigation.
+in the existing editor model suite pass. Both originally failing editor cases now
+pass in real Chromium against an isolated daemon (10.5 seconds each). The run
+used explicit local browser libraries and font configuration because this Linux
+host has no system font installation. No app changes were needed for that setup.
+The workspace-creation failure also reproduced locally. The one-shot startup
+fixture removed its failure gate when automatic workspace naming opened an
+internal session, allowing the requested Codex agent to start afterward. The gate
+now fails every creation until explicitly released. Retry tests release it only
+after checking the visible failure and preserved workspace.
+
+The four affected startup cases pass in Chromium: navigation before initialization,
+retry, retry after remount, and Codex Full Access preference retention with the
+expected visible startup failure. No real provider turn is required for the Codex
+failure path.
 This evidence makes no provider continuity or physical-host handoff claim.
 
 Before fix (expected failure)
@@ -152,3 +163,43 @@ $ npm run format
 > oxfmt .
 
 Finished in 3795ms on 5374 files using 4 threads.
+
+Focused browser confirmation
+$ FONTCONFIG_FILE=/tmp/handoff-browser-libs/fonts.conf LD_LIBRARY_PATH=/tmp/handoff-browser-libs/extracted/usr/lib/x86_64-linux-gnu PLAYWRIGHT_BROWSERS_PATH=/tmp/handoff-website-browsers npm run test:e2e --workspace=@getpaseo/app -- e2e/browser/file-change-conflicts.spec.ts e2e/browser/new-workspace-codex-mode-preferences.spec.ts --grep 'a clean file replaced on disk|a file check error offers|keeps Full Access as the global Codex mode'
+
+  ✓ a clean file replaced on disk offers one working reload action (10.5s)
+  ✓ a file check error offers a working retry (10.5s)
+Creation case: failed; this does not validate the separate creation path.
+The creation case was subsequently rerun with corrected system-ui font fallback
+and reproduced CI's missing startup-error message.
+
+Startup failure reproduction (before fixture fix)
+$ npm run test:e2e --workspace=@getpaseo/app -- e2e/browser/new-workspace-codex-mode-preferences.spec.ts --grep 'keeps Full Access as the global Codex mode'
+
+  1 failed
+  Locator: getByText(/Creation startup failed for test/).first()
+  Expected: visible
+  Timeout: 10000ms
+  Error: element(s) not found
+
+Temporary diagnostic logs identified two session openings:
+  STARTUP_HOOK create interactive
+  STARTUP_COMMAND fail
+  Structured branch name generation failed
+  STARTUP_HOOK create interactive
+  STARTUP_COMMAND release
+The diagnostic logging was removed before the final verification.
+
+Startup verification (after fixture fix)
+$ FONTCONFIG_FILE=/tmp/handoff-browser-fonts.conf LD_LIBRARY_PATH=/tmp/handoff-browser-libs/extracted/usr/lib/x86_64-linux-gnu PLAYWRIGHT_BROWSERS_PATH=/tmp/handoff-website-browsers npm run test:e2e --workspace=@getpaseo/app -- e2e/browser/new-workspace-codex-mode-preferences.spec.ts e2e/browser/creation-idempotency.spec.ts --grep 'keeps Full Access as the global Codex mode|retrying failed agent initialization preserves its workspace|new workspace navigation and optimistic prompt precede agent initialization'
+
+  ✓  1 [browser] › e2e/browser/creation-idempotency.spec.ts:93:5 › new workspace navigation and optimistic prompt precede agent initialization (16.2s)
+  ✓  2 [browser] › e2e/browser/creation-idempotency.spec.ts:116:7 › retrying failed agent initialization preserves its workspace (13.4s)
+  ✓  3 [browser] › e2e/browser/creation-idempotency.spec.ts:116:7 › retrying failed agent initialization preserves its workspace after remount (23.6s)
+  ✓  4 [browser] › e2e/browser/new-workspace-codex-mode-preferences.spec.ts:117:7 › New workspace Codex mode preferences › keeps Full Access as the global Codex mode after the workspace draft auto-submit handoff (18.0s)
+[e2e] Worker 0 daemon stopped
+[e2e] Metro stopped
+  4 passed (1.6m)
+
+Startup change checks: npm run typecheck completed for all workspaces; npm run lint
+reported 0 warnings and 0 errors; npm run format completed.
