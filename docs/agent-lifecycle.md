@@ -23,7 +23,9 @@ primed.
 
 Reload releases the old runtime before resuming its durable session: an idle provider process can
 still own an exclusive writer. A close failure retains that runtime for cleanup and blocks the
-replacement. Read the final provider handle after closure before resuming. A failed replacement
+replacement. Closure must join already admitted provider operations, including a rewind that can
+change the session handle after its process stops. Read the final provider handle after closure
+before resuming. A failed replacement
 retains its opening marker and the preceding session handle for retry; a later successful resume
 does not certify that failed opening. Handoff requires recovery evidence for unresolved generations
 ([conversation persistence contract](refactors/cross-host-handoff-plan.md#conversation-persistence-contract)).

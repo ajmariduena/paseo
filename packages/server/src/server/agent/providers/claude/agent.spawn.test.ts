@@ -336,6 +336,201 @@ describe("Claude spawn override", () => {
     await expect(session.listCommands()).rejects.toThrow("Claude session is closed");
   });
 
+  test("close waits for a mode change admitted before shutdown", async () => {
+    vi.useFakeTimers();
+    const entered = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    const query = createQueryMock([]);
+    vi.mocked(query.setPermissionMode).mockImplementation(async () => {
+      entered.resolve();
+      await finish.promise;
+    });
+    const session = await new ClaudeAgentClient({
+      logger: createTestLogger(),
+      resolveBinary: async () => "/test/claude/bin",
+      queryFactory: () => query,
+    }).createSession({ provider: "claude", cwd: process.cwd() });
+    const modeChanged = session.setMode("plan");
+    try {
+      await entered.promise;
+      const outcome = session.close().then(
+        () => null,
+        (error: unknown) => error,
+      );
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(await outcome).toMatchObject({
+        message: "Claude session operations did not settle during close",
+      });
+      finish.resolve();
+      await modeChanged;
+      await session.close();
+      expect(await session.getCurrentMode()).toBe("plan");
+    } finally {
+      finish.resolve();
+      await modeChanged;
+      vi.useRealTimers();
+      await session.close();
+    }
+  });
+
+  test("concurrent control operations share one query opening", async () => {
+    const entered = Promise.withResolvers<void>();
+    const binary = Promise.withResolvers<string>();
+    const queryFactory = vi.fn(() => createQueryMock([]));
+    const session = await new ClaudeAgentClient({
+      logger: createTestLogger(),
+      resolveBinary: async () => {
+        entered.resolve();
+        return binary.promise;
+      },
+      queryFactory,
+    }).createSession({ provider: "claude", cwd: process.cwd() });
+    try {
+      const first = session.listCommands();
+      await entered.promise;
+      const second = session.listCommands();
+      binary.resolve("/test/claude/bin");
+      await Promise.all([first, second]);
+      expect(queryFactory).toHaveBeenCalledTimes(1);
+    } finally {
+      binary.resolve("/test/claude/bin");
+      await session.close();
+    }
+  });
+
+  test("close retains an admitted opening and prevents a late provider launch", async () => {
+    vi.useFakeTimers();
+    const entered = Promise.withResolvers<void>();
+    const binary = Promise.withResolvers<string>();
+    const queryFactory = vi.fn(() => createQueryMock([]));
+    const session = await new ClaudeAgentClient({
+      logger: createTestLogger(),
+      resolveBinary: async () => {
+        entered.resolve();
+        return binary.promise;
+      },
+      queryFactory,
+    }).createSession({ provider: "claude", cwd: process.cwd() });
+    const commands = session.listCommands().then(
+      () => null,
+      (error: unknown) => error,
+    );
+    try {
+      await entered.promise;
+      const outcome = session.close().then(
+        () => null,
+        (error: unknown) => error,
+      );
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(await outcome).toMatchObject({
+        message: "Claude session operations did not settle during close",
+      });
+      binary.resolve("/test/claude/bin");
+      expect(await commands).toMatchObject({ message: "Claude session is closed" });
+      await session.close();
+      expect(queryFactory).not.toHaveBeenCalled();
+    } finally {
+      binary.resolve("/test/claude/bin");
+      await commands;
+      vi.useRealTimers();
+      await session.close();
+    }
+  });
+
+  test("closed sessions refuse mutations that need no live query", async () => {
+    const session = await new ClaudeAgentClient({
+      logger: createTestLogger(),
+      resolveBinary: async () => "/test/claude/bin",
+      queryFactory: () => createQueryMock([]),
+    }).createSession({ provider: "claude", cwd: process.cwd() });
+    await session.close();
+    await expect(session.setThinkingOption("high")).rejects.toThrow("Claude session is closed");
+    await expect(session.setFeature?.("fast_mode", false)).rejects.toThrow(
+      "Claude session is closed",
+    );
+    await expect(session.revertConversation?.({ messageId: "unseen-message" })).rejects.toThrow(
+      "Claude session is closed",
+    );
+    await expect(
+      session.steerActiveTurn?.("late prompt", { expectedTurnId: "retired-turn" }),
+    ).rejects.toThrow("Claude session is closed");
+    await expect(session.respondToPermission("old-request", { behavior: "allow" })).rejects.toThrow(
+      "Claude session is closed",
+    );
+  });
+
+  test("close waits for the detached rewind turn and delivers its outcome", async () => {
+    vi.useFakeTimers();
+    const entered = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    const query = createQueryMock([]);
+    vi.mocked(query.rewindFiles).mockImplementation(async () => {
+      entered.resolve();
+      await finish.promise;
+      return { canRewind: true };
+    });
+    const session = await new ClaudeAgentClient({
+      logger: createTestLogger(),
+      resolveBinary: async () => "/test/claude/bin",
+      queryFactory: () => query,
+    }).createSession({ provider: "claude", cwd: process.cwd() });
+    const events: AgentStreamEvent[] = [];
+    session.subscribe((event) => events.push(event));
+    try {
+      await session.startTurn?.("/rewind 33333333-3333-4333-8333-333333333333");
+      await entered.promise;
+      const outcome = session.close().then(
+        () => null,
+        (error: unknown) => error,
+      );
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(await outcome).toMatchObject({
+        message: "Claude session operations did not settle during close",
+      });
+      finish.resolve();
+      await session.close();
+      expect(events).toContainEqual(expect.objectContaining({ type: "turn_completed" }));
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "timeline",
+          item: expect.objectContaining({ text: expect.stringContaining("Rewound tracked files") }),
+        }),
+      );
+    } finally {
+      finish.resolve();
+      vi.useRealTimers();
+      await session.close();
+    }
+  });
+
+  test("a reentrant close joins the same operation and interrupt stays idempotent", async () => {
+    let reentered: Promise<void> | null = null;
+    let firstClose = true;
+    const query = createQueryMock([], {
+      onClose: () => {
+        if (firstClose) {
+          firstClose = false;
+          reentered = session.close();
+        }
+      },
+    });
+    const session = await new ClaudeAgentClient({
+      logger: createTestLogger(),
+      resolveBinary: async () => "/test/claude/bin",
+      queryFactory: () => query,
+    }).createSession({ provider: "claude", cwd: process.cwd() });
+    try {
+      await session.listCommands();
+      const closing = session.close();
+      await closing;
+      expect(reentered).toBe(closing);
+      expect(query.close).toHaveBeenCalledTimes(1);
+      await expect(session.interrupt()).resolves.toBeUndefined();
+    } finally {
+      await session.close();
+    }
+  });
+
   test("retains a runtime whose exit is uncertain and retries cleanup before closing its query", async () => {
     const query = createQueryMock([]);
     let stopped = 0;

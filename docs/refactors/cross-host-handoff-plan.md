@@ -257,9 +257,11 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   its process stop, message drain and iterator return complete. Native stdout drains before SDK
   cleanup; pending submission callbacks run before subscribers are removed. Timeouts preserve the
   pending operation for retry, and message-handler failures refuse closure. Reload reads the final
-  persistence handle after provider shutdown. This covers owned query pumps, not all admitted
-  callbacks: opening/control operations, hooks, rewind work and manager descendants still need a
-  complete generation boundary. Record revision guards, semantic obligations and durable process-stop
+  persistence handle after provider shutdown. Closure also joins admitted provider control, opening
+  and rewind work before removing subscribers; a timeout retains that work for retry. New public
+  mutations are refused during closure, while repeated interruption joins the close. Concurrent
+  control requests share one query opening. SDK hook callbacks and manager descendants still need
+  a complete generation boundary. Record revision guards, semantic obligations and durable process-stop
   recovery also remain open under the
   [conversation persistence contract](#conversation-persistence-contract).
 - `server/handoff/workspace.ts` and its neighboring tests cover Git and directory snapshots,
