@@ -2531,7 +2531,11 @@ describe("session checkout merge handling", () => {
         baseRef: "main",
         mode: "merge",
       },
-      { paseoHome: "/tmp/paseo-home" },
+      {
+        paseoHome: "/tmp/paseo-home",
+        worktreesRoot: undefined,
+        withMutation: expect.any(Function),
+      },
     );
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/base-worktree", {
       force: true,

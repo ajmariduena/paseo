@@ -11,12 +11,8 @@ import { WorkspaceGitServiceImpl } from "./workspace-git-service.js";
 import type { FileChange, FileObserver, SubscribeToFileChanges } from "./file-observer/index.js";
 
 function createLogger(): pino.Logger {
-  const logger = {
-    child: () => logger,
-    debug: vi.fn(),
-    warn: vi.fn(),
-  };
-  return logger as unknown as pino.Logger;
+  // Keep watcher degradation visible when a CI readiness assertion times out.
+  return pino({ level: "warn" });
 }
 
 function createFacts(cwd: string): CheckoutSnapshotFacts {

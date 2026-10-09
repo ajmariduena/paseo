@@ -1,9 +1,20 @@
 import { randomUUID } from "node:crypto";
 import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import type { FileChange } from "./file-observer/index.js";
 
 export const WATCHER_LIVENESS_CANARY_TIMEOUT_MS = 10_000;
+const CANARY_CONTENT = "paseo watcher liveness canary\n";
+
+async function repeatCanaryWrite(canaryPath: string, signal: AbortSignal): Promise<never> {
+  for (;;) {
+    await delay(250, undefined, { signal });
+    // A native watcher can become ready after the first write. A later update
+    // must still round-trip through its callback; writing alone proves nothing.
+    await writeFile(canaryPath, CANARY_CONTENT, { flag: "r+" });
+  }
+}
 
 export interface WatcherLivenessCanary {
   readonly path: string;
@@ -32,7 +43,9 @@ export function createWatcherLivenessCanary(
       return filtered;
     },
     async verify(signal) {
-      await writeFile(canaryPath, "paseo watcher liveness canary\n", { flag: "wx" });
+      await writeFile(canaryPath, CANARY_CONTENT, { flag: "wx" });
+      const retryController = new AbortController();
+      const retries = repeatCanaryWrite(canaryPath, retryController.signal);
       let timeout: NodeJS.Timeout | null = null;
       let removeAbortListener = () => {};
       try {
@@ -55,10 +68,13 @@ export function createWatcherLivenessCanary(
           signal.addEventListener("abort", rejectForAbort, { once: true });
           removeAbortListener = () => signal.removeEventListener("abort", rejectForAbort);
         });
-        await Promise.race([reported, timeoutPromise, abortPromise]);
+        await Promise.race([reported, timeoutPromise, abortPromise, retries]);
       } finally {
         if (timeout) clearTimeout(timeout);
         removeAbortListener();
+        retryController.abort();
+        // Teardown is a barrier: an in-flight write must finish before removal.
+        await Promise.allSettled([retries]);
         await rm(canaryPath, { force: true });
       }
     },

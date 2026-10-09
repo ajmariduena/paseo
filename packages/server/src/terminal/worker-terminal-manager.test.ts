@@ -356,13 +356,22 @@ it("handoff: fences a real worker terminal and permits input again after cancell
       workspaceId: "ws-test",
       ...nodeTerminalCommand(`
       const fs = require("node:fs");
-      process.stdin.on("data", () => fs.writeFileSync("input.txt", "resumed"));
-      process.stdout.write("handoff-ready");
-      setInterval(() => {}, 1000);
+      const startup = setInterval(() => {
+        if (!fs.existsSync("start.txt")) return;
+        clearInterval(startup);
+        process.stdin.on("data", () => fs.writeFileSync("input.txt", "resumed"));
+        process.stdout.write("handoff-ready");
+        setInterval(() => {}, 1000);
+      }, 10);
     `),
     }),
   );
-  await waitForCondition(() => getVisibleText(session).includes("handoff-ready"), 10000);
+  // Start output after registration so readiness cannot come from the creation snapshot.
+  writeFileSync(join(cwd, "start.txt"), "start");
+  await waitForCondition(async () => {
+    const snapshot = await manager!.getTerminalState(session.id);
+    return snapshot !== null && getVisibleTextFromState(snapshot.state).includes("handoff-ready");
+  }, 10000);
   await ownership.prepare(transfer);
   expect(() => session.send({ type: "input", data: "blocked\r" })).toThrow(
     "Workspace is held by handoff",
