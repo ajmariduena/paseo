@@ -119,6 +119,21 @@ function encodedSize(value: unknown): number {
   return Buffer.byteLength(encodeJsonFile(value), "utf8");
 }
 
+/**
+ * The same value as it sits `depth` levels down in the written file: every line after the
+ * first gains two spaces per level, so a child pane is measured where it actually lives.
+ */
+function encodedSizeNested(value: unknown, depth: number): number {
+  const text = encodeJsonFile(value);
+  let newlines = 0;
+  for (let index = text.indexOf("\n"); index !== -1; index = text.indexOf("\n", index + 1)) {
+    newlines += 1;
+  }
+  return Buffer.byteLength(text, "utf8") + newlines * depth * 2;
+}
+
+const CHILD_PANE_DEPTH = 2;
+
 interface Trimmed {
   rows: SnapshotRow[];
   droppedRanges: SnapshotRowRange[];
@@ -137,7 +152,7 @@ function trimOldest(
     rows: rows.slice(dropped),
     droppedRanges: dropped > 0 ? [{ fromRowIndex: 0, toRowIndex: dropped - 1 }] : [],
   });
-  if (measure(trimmedBy(0)) <= cap) return trimmedBy(0);
+  if (rows.length === 0 || measure(trimmedBy(0)) <= cap) return trimmedBy(0);
   let low = 1;
   let high = rows.length;
   while (low < high) {
@@ -157,6 +172,8 @@ function buildChildPanes(
   input: SealSnapshotInput,
 ): Pick<SegmentSnapshot, "childPanes" | "childPanesNotice"> {
   const identity = { segmentId: input.segmentId, incarnationId: input.incarnationId };
+  const measure = (pane: ChildPane): number => encodedSizeNested(pane, CHILD_PANE_DEPTH);
+  let overflowed = false;
   const panes = input.childPanes.map((pane, index): ChildPane => {
     if (index >= CHILD_PANE_COUNT_CAP) {
       return { descriptor: pane.descriptor, rows: null, droppedRanges: [] };
@@ -164,11 +181,17 @@ function buildChildPanes(
     const trimmed = trimOldest(
       toSnapshotRows(pane.rows, identity),
       CHILD_PANE_BYTE_CAP,
-      (candidate) => encodedSize({ descriptor: pane.descriptor, ...candidate }),
+      (candidate) => measure({ descriptor: pane.descriptor, ...candidate }),
     );
-    return { descriptor: pane.descriptor, ...trimmed };
+    const bounded: ChildPane = { descriptor: pane.descriptor, ...trimmed };
+    if (measure(bounded) <= CHILD_PANE_BYTE_CAP) return bounded;
+    // The descriptor alone is over the cap: keep it as the only thing this pane can show.
+    overflowed = true;
+    return { descriptor: pane.descriptor, rows: null, droppedRanges: [] };
   });
-  const notice = input.childPanes.length > CHILD_PANE_COUNT_CAP ? ("too_many" as const) : null;
+  let notice: SegmentSnapshot["childPanesNotice"] = null;
+  if (overflowed) notice = "over_cap";
+  else if (input.childPanes.length > CHILD_PANE_COUNT_CAP) notice = "too_many";
   return { childPanes: panes, childPanesNotice: notice };
 }
 

@@ -73,9 +73,10 @@ function isPlanningMode(mode: AgentMode | undefined): boolean {
 }
 
 // Provider options that narrow what the mode alone would allow; the runtime honors them over
-// the mode preset, so the switch has to as well.
+// the mode preset. A read-only sandbox never writes, which is stricter than asking first, so it
+// sits with the non-writing (planning) tier.
 const SANDBOX_OVERRIDE_LEVELS: Record<string, Record<string, PermissionLevel>> = {
-  codex: { "read-only": 1, "workspace-write": 2, "danger-full-access": 3 },
+  codex: { "read-only": 0, "workspace-write": 2, "danger-full-access": 3 },
 };
 
 function overrideLevel(source: SwitchSource): PermissionLevel | null {
@@ -84,11 +85,15 @@ function overrideLevel(source: SwitchSource): PermissionLevel | null {
   return SANDBOX_OVERRIDE_LEVELS[source.driver]?.[sandbox] ?? null;
 }
 
-function effectivePolicy(source: SwitchSource): EffectivePolicy {
+/**
+ * The authority the agent actually runs with. Provider overrides count only when the target
+ * cannot carry them (another driver); within the driver they travel with the config.
+ */
+function effectivePolicy(source: SwitchSource, carriesProviderOptions: boolean): EffectivePolicy {
   const mode = source.modes.find((candidate) => candidate.id === source.config.modeId);
   const planning = isPlanningMode(mode) || source.config.featureValues?.plan_mode === true;
   const modeLevel = modePermissionLevel(mode);
-  const override = overrideLevel(source);
+  const override = carriesProviderOptions ? null : overrideLevel(source);
   if (modeLevel === null) return { planning, level: override };
   if (override === null) return { planning, level: modeLevel };
   return { planning, level: override < modeLevel ? override : modeLevel };
@@ -141,7 +146,7 @@ function resolvePolicy(
   input: PlanTargetConfigInput,
 ): { ok: true; policy: ResolvedPolicy } | { ok: false; rejection: TargetConfigRejection } {
   const { source, target, request } = input;
-  const current = effectivePolicy(source);
+  const current = effectivePolicy(source, source.driver === target.driver);
   const targetHasPlanFeature = target.featureIds.includes("plan_mode");
   if (request.modeId !== undefined) {
     const requested = target.modes.find((mode) => mode.id === request.modeId);

@@ -7,6 +7,7 @@ import type { AgentTimelineRow } from "../agent-timeline-store-types.js";
 import type { ProviderSubagentDescriptor } from "../provider-subagents/store.js";
 import {
   buildSegmentSnapshot,
+  CHILD_PANE_BYTE_CAP,
   CHILD_PANE_COUNT_CAP,
   SegmentSnapshotStore,
   SNAPSHOT_BYTE_CAP,
@@ -239,4 +240,37 @@ test("descriptors that alone exceed the cap drop the child panes, and a bare env
   expect(() =>
     buildSegmentSnapshot(sealInput({ rows: [], model: "m".repeat(9 * 1024 * 1024) })),
   ).toThrow(SnapshotTooLargeError);
+});
+
+/** The child pane object exactly as it sits inside the written file. */
+function nestedPaneBytes(snapshot: ReturnType<typeof buildSegmentSnapshot>): number {
+  const text = JSON.stringify(snapshot, null, 2);
+  const start = text.indexOf("    {", text.indexOf('"childPanes": ['));
+  const end = text.indexOf("\n    }", start) + "\n    }".length;
+  return Buffer.byteLength(text.slice(start, end), "utf8");
+}
+
+test("the 512 KiB child cap bounds the pane as it is nested in the file", () => {
+  const rows = Array.from({ length: 5_000 }, (_, index) => row(index + 1, `child line ${index}`));
+
+  const sealed = buildSegmentSnapshot(
+    sealInput({ rows: [row(1, "parent")], childPanes: [{ descriptor: descriptor("c1"), rows }] }),
+  );
+
+  expect(sealed.childPanes[0].rows?.length).toBeGreaterThan(1_000);
+  expect(nestedPaneBytes(sealed)).toBeLessThanOrEqual(CHILD_PANE_BYTE_CAP);
+  expect(sealed.childPanes[0].droppedRanges).toEqual([
+    { fromRowIndex: 0, toRowIndex: 5_000 - (sealed.childPanes[0].rows?.length ?? 0) - 1 },
+  ]);
+});
+
+test("a child whose descriptor alone exceeds its cap keeps the descriptor and reports no drop", () => {
+  const heavy = { ...descriptor("c1"), description: "d".repeat(600 * 1024) };
+
+  const sealed = buildSegmentSnapshot(
+    sealInput({ rows: [row(1, "parent")], childPanes: [{ descriptor: heavy, rows: [] }] }),
+  );
+
+  expect(sealed.childPanes).toEqual([{ descriptor: heavy, rows: null, droppedRanges: [] }]);
+  expect(sealed.childPanesNotice).toBe("over_cap");
 });

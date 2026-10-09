@@ -6,7 +6,7 @@ import { SETTLED_SWITCH_PHASES, type SwitchOperation } from "./record.js";
 import type { SegmentSnapshotStore } from "./snapshot-store.js";
 
 export interface BootReconciliationDeps {
-  storage: Pick<AgentStorage, "list" | "commitProviderSwitch" | "scanRecordIds">;
+  storage: Pick<AgentStorage, "commitProviderSwitch" | "scanRecords">;
   snapshots: Pick<
     SegmentSnapshotStore,
     "listAgents" | "listIncarnations" | "delete" | "deleteAgent"
@@ -160,10 +160,11 @@ async function sweepOrphans(
 
 /**
  * Boot, before any sender dispatches: settles every switch operation a restart cut and sweeps
- * snapshot and handoff files nothing references. Each record change is one atomic write; an
- * agent whose write fails is reported for the boot barrier. Sweeping needs a complete record
- * scan and never touches an agent whose record exists but cannot be read. Nothing here loads an
- * agent or sends a prompt.
+ * snapshot and handoff files nothing references. One fresh scan of the record files decides
+ * both, so a record the boot cache missed still owns its history. Each record change is one
+ * atomic write; an agent whose write fails is reported for the boot barrier. Sweeping needs a
+ * complete scan and never touches an agent whose record exists but cannot be read. Nothing
+ * here loads an agent or sends a prompt.
  */
 export async function reconcileProviderSwitchesAtBoot(
   deps: BootReconciliationDeps,
@@ -177,16 +178,13 @@ export async function reconcileProviderSwitchesAtBoot(
     orphanSnapshots: [],
     orphanHandoffs: [],
   };
-  const records = new Map<string, StoredAgentRecord>();
-  for (const record of await deps.storage.list()) {
-    records.set(record.id, record);
-  }
+  const scan = await deps.storage.scanRecords();
+  const records = scan.records;
   await settleOperations(deps, records, summary);
   for (const entry of summary.failed) {
     deps.logger.warn(entry, "provider_switch.operation_failed_at_boot");
   }
 
-  const scan = await deps.storage.scanRecordIds();
   summary.unreadableRecords = [...scan.unreadable].sort();
   if (!scan.complete) {
     summary.sweep = "skipped_incomplete_scan";

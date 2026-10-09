@@ -195,6 +195,39 @@ test("history of an agent whose record cannot be read is never swept", async () 
   expect(await snapshots.read("agent-broken", "retired")).not.toBeNull();
 });
 
+test("a record repaired after storage loaded keeps the snapshots it references", async () => {
+  const brokenDir = join(root, "agents", "repaired");
+  mkdirSync(brokenDir, { recursive: true });
+  writeFileSync(join(brokenDir, "agent-repaired.json"), "{ not json");
+  await seal("agent-repaired", "inc-kept");
+  await seal("agent-repaired", "inc-orphan");
+  const fresh = new AgentStorage(join(root, "agents"), createTestLogger());
+  await fresh.initialize();
+  writeFileSync(
+    join(brokenDir, "agent-repaired.json"),
+    JSON.stringify(
+      record("agent-repaired", {
+        cwd: "/tmp/repaired",
+        providerSegments: [segment("seg-a", "inc-kept", null)],
+      }),
+    ),
+  );
+
+  const summary = await reconcileProviderSwitchesAtBoot({
+    storage: fresh,
+    snapshots,
+    handoffs,
+    logger: createTestLogger(),
+    now: () => LATER,
+  });
+
+  expect(summary.sweep).toBe("done");
+  expect(summary.orphanSnapshots).toEqual([
+    { agentId: "agent-repaired", incarnationId: "inc-orphan" },
+  ]);
+  expect(await snapshots.read("agent-repaired", "inc-kept")).not.toBeNull();
+});
+
 test("a record scan that cannot complete sweeps nothing", async () => {
   await storage.upsert(record("agent-ok"));
   await storage.flush();

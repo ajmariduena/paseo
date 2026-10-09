@@ -630,7 +630,7 @@ The prompt file is written before the queue file references it and deleted after
 
 **Path:** `$PASEO_HOME/context/segments/{agentId}/{incarnationId}.json`
 
-The history of a provider session an agent no longer runs on, sealed once when the session is displaced or retired and never rewritten. Rows are dense, with stable `{segmentId, incarnationId, rowIndex}` identities and provider-native ids prefixed by the incarnation, so a retired tool call never merges with a live one. Seal time applies the only caps that touch the file: 8 MiB per snapshot, dropping the oldest rows into `droppedRanges`, after child panes lose their rows (512 KiB per child, 32 children with rows). The 32 MiB per-agent cap applies at seed time in memory and never rewrites a file. Schema: `packages/server/src/server/agent/provider-switch/snapshot-store.ts`.
+The history of a provider session an agent no longer runs on, sealed once when the session is displaced or retired and never rewritten. Sealing publishes the file create-once: a hard link from the finished temp file where the filesystem supports it, an exclusive create otherwise, so concurrent sealers of one incarnation see exactly one winner. Rows are dense, with stable `{segmentId, incarnationId, rowIndex}` identities and provider-native ids prefixed by the incarnation, so a retired tool call never merges with a live one. Seal time applies the only caps that touch the file: 8 MiB per snapshot, dropping the oldest rows into `droppedRanges`, after child panes lose their rows (512 KiB per child, 32 children with rows). The 32 MiB per-agent cap applies at seed time in memory and never rewrites a file. Schema: `packages/server/src/server/agent/provider-switch/snapshot-store.ts`.
 
 ## Handoff Store
 

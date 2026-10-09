@@ -116,7 +116,7 @@ export type SerializableAgentConfig = Pick<
 export type StoredAgentRecord = z.infer<typeof STORED_AGENT_SCHEMA>;
 
 export interface AgentRecordScan {
-  readable: Set<string>;
+  records: Map<string, StoredAgentRecord>;
   unreadable: Set<string>;
   /** False when a directory could not be listed, so absence proves nothing. */
   complete: boolean;
@@ -356,24 +356,25 @@ export class AgentStorage {
   }
 
   /**
-   * Every record file on disk by agent id, readable or not, and whether the walk saw every
-   * directory. Boot cleanup needs the difference between "absent" and "could not be read".
+   * A fresh read of every record file on disk, independent of the boot cache: the records that
+   * parse, the ids of files that do not, and whether the walk saw every directory. Boot cleanup
+   * decides ownership from this one scan, so a record repaired after load still counts.
    */
-  async scanRecordIds(): Promise<AgentRecordScan> {
+  async scanRecords(): Promise<AgentRecordScan> {
     const { filePaths, complete } = await this.enumerateRecordFiles();
-    const readable = new Set<string>();
+    const records = new Map<string, StoredAgentRecord>();
     const unreadable = new Set<string>();
     await Promise.all(
       filePaths.map(async (filePath) => {
         const record = await this.readRecordFile(filePath);
         if (record) {
-          readable.add(record.id);
+          records.set(record.id, record);
         } else {
           unreadable.add(path.basename(filePath, ".json"));
         }
       }),
     );
-    return { readable, unreadable, complete };
+    return { records, unreadable, complete };
   }
 
   /** Adds work to the agent's pending restart note; entries dedupe by id. */

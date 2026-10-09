@@ -305,8 +305,39 @@ test("a Codex read-only sandbox override narrows the effective authority before 
 
   const plan = planTargetConfig({ source, target, request: {} });
 
-  expect(plan).toMatchObject({ status: "resolved", target: { config: { modeId: "default" } } });
+  // Read-only never writes; Always Ask writes after approval. Only a non-writing mode keeps it.
+  expect(plan).toMatchObject({ status: "resolved", target: { config: { modeId: "plan" } } });
   expect(plan.status === "resolved" && plan.target.config.providerOptions).toBeUndefined();
+  expect(plan.status === "resolved" && plan.target.config.featureValues).toBeUndefined();
+
+  const noNonWritingMode = planTargetConfig({
+    source,
+    target: claudeTarget({
+      modes: CLAUDE_MODES.filter(
+        (mode) => mode.colorTier !== "safe" && mode.colorTier !== "planning",
+      ),
+    }),
+    request: {},
+  });
+  expect(noNonWritingMode).toEqual({
+    status: "rejected",
+    rejection: {
+      kind: "mode_required",
+      reason: "broader",
+      candidates: ["acceptEdits", "bypassPermissions"],
+    },
+  });
+
+  // Within the driver the override travels with the config, so the mode maps by its own tier.
+  const sameDriverAlias = planTargetConfig({
+    source,
+    target: codexTarget({ provider: "codex-work", modes: manifestModes("codex") }),
+    request: {},
+  });
+  expect(sameDriverAlias).toMatchObject({
+    status: "resolved",
+    target: { config: { modeId: "auto", providerOptions: { sandbox_mode: "read-only" } } },
+  });
 
   const withoutOverride = planTargetConfig({
     source: { ...source, config: { modeId: "auto", model: "gpt-5.4" } },
