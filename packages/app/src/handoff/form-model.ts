@@ -1,6 +1,7 @@
 import type {
   HandoffDestinationSnapshot,
   HandoffDestinationPreview,
+  HandoffDestinationPage,
 } from "@getpaseo/protocol/handoff-control";
 import type { WorkspaceHandoffProgress } from "@getpaseo/client/internal/workspace-handoff";
 import { HandoffReviewChangedError } from "@getpaseo/client/internal/workspace-handoff";
@@ -24,6 +25,13 @@ export type HandoffFormState =
   | { kind: "load_error"; message: string }
   | { kind: "editing"; draft: Draft; error: string | null }
   | { kind: "checking"; draft: Draft }
+  | {
+      kind: "recovering";
+      draft: Draft & { destination: DestinationHost };
+      page: HandoffDestinationPage;
+      busy: boolean;
+      error: string | null;
+    }
   | { kind: "review"; draft: Draft; record: HandoffRecord; preview: HandoffDestinationPreview }
   | { kind: "transfer"; record: HandoffRecord; run: Run };
 
@@ -35,6 +43,16 @@ export interface HandoffFormPorts {
   load(origin: HandoffOrigin): Promise<HandoffRecord | null>;
   save(record: HandoffRecord): Promise<void>;
   discard(origin: HandoffOrigin): Promise<void>;
+  listDestination(
+    origin: HandoffOrigin,
+    destination: DestinationHost,
+    cursor: string | null,
+  ): Promise<HandoffDestinationPage>;
+  recoverDestination(
+    origin: HandoffOrigin,
+    destination: DestinationHost,
+    transferId: string,
+  ): Promise<HandoffRecord>;
   newTransferId(): string;
   validate(record: HandoffRecord): Promise<HandoffDestinationPreview>;
   prepare(record: HandoffRecord, options: OperationOptions): Promise<HandoffDestinationSnapshot>;
@@ -65,6 +83,34 @@ export function openHandoffForm(origin: HandoffOrigin, ports: HandoffFormPorts) 
     if (closed) return;
     state = next;
     for (const listener of listeners) listener();
+  }
+
+  async function findTransfers(previous: Extract<HandoffFormState, { kind: "recovering" }>) {
+    publish({ ...previous, busy: true, error: null });
+    try {
+      const page = await ports.listDestination(
+        origin,
+        previous.draft.destination,
+        previous.page.nextCursor,
+      );
+      const transfers = new Map(
+        (previous.page.nextCursor ? previous.page.transfers : []).map((transfer) => [
+          transfer.transferId,
+          transfer,
+        ]),
+      );
+      for (const transfer of page.transfers) transfers.set(transfer.transferId, transfer);
+      if (transfers.size === 0) publish({ kind: "editing", draft: previous.draft, error: null });
+      else
+        publish({
+          ...previous,
+          page: { ...page, transfers: [...transfers.values()] },
+          busy: false,
+          error: null,
+        });
+    } catch (error) {
+      publish({ ...previous, busy: false, error: message(error) });
+    }
   }
 
   async function run(record: HandoffRecord) {
@@ -135,9 +181,42 @@ export function openHandoffForm(origin: HandoffOrigin, ports: HandoffFormPorts) 
         loading = false;
       }
     },
-    setDestination(destination: DestinationHost) {
+    async setDestination(destination: DestinationHost) {
       if (state.kind !== "editing" || destination.serverId === origin.sourceServerId) return;
-      publish({ ...state, draft: { ...state.draft, destination } });
+      await findTransfers({
+        kind: "recovering",
+        draft: { ...state.draft, destination },
+        page: { transfers: [], nextCursor: null },
+        busy: false,
+        error: null,
+      });
+    },
+    async moreTransfers() {
+      if (state.kind !== "recovering" || state.busy || (!state.error && !state.page.nextCursor))
+        return;
+      await findTransfers(state);
+    },
+    async recoverTransfer(transferId: string) {
+      if (
+        state.kind !== "recovering" ||
+        state.busy ||
+        !state.page.transfers.some((transfer) => transfer.transferId === transferId)
+      )
+        return;
+      const previous = state;
+      publish({ ...previous, busy: true, error: null });
+      try {
+        const record = await ports.recoverDestination(
+          origin,
+          previous.draft.destination,
+          transferId,
+        );
+        if (closed) return;
+        await ports.save(record);
+        publish({ kind: "transfer", record, run: { status: "idle" } });
+      } catch (error) {
+        publish({ ...previous, busy: false, error: message(error) });
+      }
     },
     setDestinationParent(destinationParent: string) {
       if (state.kind !== "editing") return;
@@ -190,6 +269,8 @@ export function openHandoffForm(origin: HandoffOrigin, ports: HandoffFormPorts) 
       }
     },
     edit() {
+      if (state.kind === "recovering" && !state.busy)
+        publish({ kind: "editing", draft: { ...state.draft, destination: null }, error: null });
       if (state.kind === "review") publish({ kind: "editing", draft: state.draft, error: null });
     },
     async prepare() {
@@ -234,6 +315,11 @@ export function openHandoffForm(origin: HandoffOrigin, ports: HandoffFormPorts) 
 export type HandoffFormModel = ReturnType<typeof openHandoffForm>;
 
 export function handoffFormActions(state: HandoffFormState) {
+  if (state.kind === "recovering")
+    return {
+      primary: !state.busy && state.error ? "moreTransfers" : null,
+      canCancel: false,
+    } as const;
   if (state.kind === "checking") return { primary: null, canCancel: false } as const;
   if (state.kind === "loading") return { primary: null, canCancel: false } as const;
   if (state.kind === "load_error") return { primary: "load", canCancel: false } as const;

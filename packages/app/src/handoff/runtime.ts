@@ -8,7 +8,12 @@ import {
 } from "@getpaseo/client/internal/workspace-handoff";
 import { getHostRuntimeStore, isHostRuntimeConnected } from "@/runtime/host-runtime";
 import type { HandoffFormPorts } from "./form-model";
-import { createHandoffPersistence, restoreHandoffRecord, type HandoffRecord } from "./persistence";
+import {
+  createHandoffPersistence,
+  restoreHandoffRecord,
+  restoreReservedHandoffRecord,
+  type HandoffRecord,
+} from "./persistence";
 
 function connectedClient(serverId: string) {
   const runtime = getHostRuntimeStore();
@@ -33,6 +38,40 @@ function connections(record: HandoffRecord) {
 const persistence = createHandoffPersistence(AsyncStorage);
 export const handoffFormPorts: HandoffFormPorts = {
   ...persistence,
+  async listDestination(origin, host, cursor) {
+    const response = await connectedClient(host.serverId).handoffListDestination({
+      sourceServerId: origin.sourceServerId,
+      sourceWorkspaceId: origin.workspaceId,
+      ...(cursor ? { cursor } : {}),
+    });
+    if (response.error) throw new Error(response.error.message);
+    if (!response.result) throw new Error("Destination transfer list is missing");
+    return response.result;
+  },
+  async recoverDestination(origin, destination, transferId) {
+    const source = connectedClient(origin.sourceServerId);
+    const response = await connectedClient(destination.serverId).handoffGetDestinationStatus({
+      transferId,
+    });
+    if (response.error) throw new Error(response.error.message);
+    if (!response.result) throw new Error("Destination handoff record is missing");
+    const snapshot = response.result;
+    const held = await source.handoffFindSource({ workspaceId: origin.workspaceId });
+    if (held.error) throw new Error(held.error.message);
+    if (held.result)
+      return restoreHandoffRecord({ origin, destination, snapshot, source: held.result });
+    const previous = await source.handoffGetSourceStatus({ transferId });
+    if (previous.error && previous.error.code !== "not_found")
+      throw new Error(previous.error.message);
+    if (previous.result)
+      return restoreHandoffRecord({
+        origin,
+        destination,
+        snapshot,
+        source: previous.result.source,
+      });
+    return restoreReservedHandoffRecord({ origin, destination, snapshot });
+  },
   async load(origin) {
     const saved = await persistence.load(origin);
     if (saved) return saved;

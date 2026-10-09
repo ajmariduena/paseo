@@ -3,6 +3,11 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ptBR: TranslationResources = {
   handoff: {
+    cancelPending:
+      "O cancelamento está incompleto. Retome para concluir o cancelamento desta transferência.",
+    pendingTransfers: "Transferências pendentes",
+    chooseTransfer: "Escolha uma transferência para retomar",
+    loadMoreTransfers: "Carregar mais transferências",
     review: "Revisar transferência",
     conversations: "Conversas",
     emptyConversations: "Este workspace não tem conversas.",

@@ -3,6 +3,10 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ko: TranslationResources = {
   handoff: {
+    cancelPending: "취소가 완료되지 않았습니다. 재개하여 이 전송의 취소를 완료하세요.",
+    pendingTransfers: "완료되지 않은 전송",
+    chooseTransfer: "재개할 전송 선택",
+    loadMoreTransfers: "전송 더 불러오기",
     review: "이동 검토",
     conversations: "대화",
     emptyConversations: "이 워크스페이스에는 대화가 없습니다.",

@@ -3,6 +3,10 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ar: TranslationResources = {
   handoff: {
+    cancelPending: "الإلغاء غير مكتمل. استأنف لإنهاء إلغاء عملية النقل هذه.",
+    pendingTransfers: "عمليات نقل غير مكتملة",
+    chooseTransfer: "اختر عملية نقل لاستئنافها",
+    loadMoreTransfers: "تحميل المزيد من عمليات النقل",
     review: "مراجعة النقل",
     conversations: "المحادثات",
     emptyConversations: "لا توجد محادثات في مساحة العمل هذه.",

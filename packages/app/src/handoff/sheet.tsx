@@ -34,6 +34,7 @@ function statusKey(state: Extract<HandoffFormState, { kind: "transfer" }>) {
   if (state.run.status === "running") return state.run.progress?.phase ?? "saving";
   if (state.record.snapshot?.state === "active") return "active";
   if (state.record.snapshot?.state === "cancelled") return "cancelled";
+  if (state.record.intent === "cancel") return "cancelPending";
   const forward =
     state.record.intent === "activate" ||
     state.record.snapshot?.state === "released" ||
@@ -44,6 +45,7 @@ function statusKey(state: Extract<HandoffFormState, { kind: "transfer" }>) {
 }
 
 function busyLabel(state: HandoffFormState) {
+  if (state.kind === "recovering" && state.busy) return "loading";
   if (state.kind === "loading") return "loading";
   if (state.kind === "checking") return "reviewing";
   if (state.kind !== "transfer" || state.run.status !== "running") return null;
@@ -66,6 +68,7 @@ function HandoffFooter({
   const actions = handoffFormActions(state);
   const busy = busyLabel(state);
   const labels = {
+    moreTransfers: t("handoff.resume"),
     review: t("handoff.review"),
     prepare: t("handoff.prepare"),
     activate: t("handoff.activate"),
@@ -78,17 +81,22 @@ function HandoffFooter({
     state.kind === "transfer" &&
     state.run.status === "running" &&
     state.record.snapshot?.state === "staged";
+  const returning = state.kind === "review" || state.kind === "recovering";
+  const canReturn = returning && !(state.kind === "recovering" && state.busy);
+  let fallback: keyof typeof labels = "review";
+  if (state.kind === "review") fallback = "prepare";
+  if (state.kind === "recovering") fallback = "retry";
   return (
     <View style={styles.actions}>
-      {actions.canCancel || retainCancel || state.kind === "review" ? (
+      {actions.canCancel || retainCancel || returning ? (
         <Button
           variant="secondary"
           style={styles.action}
           onPress={onCancel}
-          disabled={state.kind !== "review" && !actions.canCancel}
+          disabled={!canReturn && !actions.canCancel}
           testID="handoff-cancel"
         >
-          {state.kind === "review" ? t("common.back") : t("handoff.cancel")}
+          {returning ? t("common.back") : t("handoff.cancel")}
         </Button>
       ) : null}
       <Button
@@ -99,9 +107,7 @@ function HandoffFooter({
         loading={busy !== null}
         testID="handoff-submit"
       >
-        {busy
-          ? t(`handoff.busy.${busy}`)
-          : labels[actions.primary ?? (state.kind === "review" ? "prepare" : "review")]}
+        {busy ? t(`handoff.busy.${busy}`) : labels[actions.primary ?? fallback]}
       </Button>
     </View>
   );
@@ -151,11 +157,65 @@ function TransferSummary({ state }: { state: Extract<HandoffFormState, { kind: "
 }
 
 function handoffSnapPoints(state: HandoffFormState) {
-  if (state.kind === "transfer") return TRANSFER_SNAP_POINTS;
+  if (state.kind === "transfer" || state.kind === "recovering") return TRANSFER_SNAP_POINTS;
   if (state.kind === "review") {
     return state.preview.conversations.length > 0 ? REVIEW_SNAP_POINTS : TRANSFER_SNAP_POINTS;
   }
   return undefined;
+}
+
+function RecoveryTransfers({
+  state,
+  onSelect,
+  onMore,
+}: {
+  state: Extract<HandoffFormState, { kind: "recovering" }>;
+  onSelect: (id: string) => void;
+  onMore: () => void;
+}) {
+  const { t } = useTranslation();
+  const size = useIsCompactFormFactor() ? "md" : "sm";
+  const options = useMemo(
+    () =>
+      state.page.transfers.map((transfer) => ({
+        id: transfer.transferId,
+        value: transfer.transferId,
+        label: t(`handoff.${transfer.continuationMode}`),
+        description: shortenPath(transfer.destinationCwd),
+        testID: `handoff-recovery-${transfer.transferId}`,
+      })),
+    [state.page.transfers, t],
+  );
+  return (
+    <>
+      <Field label={t("handoff.destination")}>
+        <Text style={styles.value}>{state.draft.destination.label}</Text>
+      </Field>
+      <SelectField
+        label={t("handoff.pendingTransfers")}
+        placeholder={t("handoff.chooseTransfer")}
+        emptyText={t("handoff.loading")}
+        options={options}
+        value={null}
+        selectedDisplay={null}
+        loading={state.busy}
+        disabled={state.busy}
+        onChange={onSelect}
+        size={size}
+        triggerTestID="handoff-recovery-trigger"
+      />
+      {state.page.nextCursor ? (
+        <Button variant="ghost" disabled={state.busy} onPress={onMore}>
+          {t("handoff.loadMoreTransfers")}
+        </Button>
+      ) : null}
+      {state.error ? (
+        <Text style={styles.error} accessibilityRole="alert" testID="handoff-error">
+          {state.error}
+        </Text>
+      ) : null}
+    </>
+  );
 }
 
 function ReviewConversations({ state }: { state: Extract<HandoffFormState, { kind: "review" }> }) {
@@ -226,7 +286,7 @@ function OpenHandoffSheet(props: Props) {
     void model[primary]();
   }, [model, primary, props, state]);
   const cancel = useCallback(() => {
-    if (state.kind === "review") model.edit();
+    if (state.kind === "review" || state.kind === "recovering") model.edit();
     else void model.cancel();
   }, [model, state.kind]);
   const setHost = useCallback(
@@ -334,6 +394,13 @@ function OpenHandoffSheet(props: Props) {
         </>
       ) : null}
       {state.kind === "transfer" ? <TransferSummary state={state} /> : null}
+      {state.kind === "recovering" ? (
+        <RecoveryTransfers
+          state={state}
+          onSelect={model.recoverTransfer}
+          onMore={model.moreTransfers}
+        />
+      ) : null}
     </AdaptiveModalSheet>
   );
 }

@@ -3,6 +3,11 @@ import { pluginSettings } from "./plugin-settings";
 
 export const fr: TranslationResources = {
   handoff: {
+    cancelPending:
+      "L’annulation est incomplète. Reprenez pour terminer l’annulation de ce transfert.",
+    pendingTransfers: "Transferts en cours",
+    chooseTransfer: "Choisir un transfert à reprendre",
+    loadMoreTransfers: "Charger plus de transferts",
     review: "Vérifier le transfert",
     conversations: "Conversations",
     emptyConversations: "Cet espace de travail ne contient aucune conversation.",

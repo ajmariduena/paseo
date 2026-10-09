@@ -3,6 +3,10 @@ import { pluginSettings } from "./plugin-settings";
 
 export const zhCN: TranslationResources = {
   handoff: {
+    cancelPending: "取消尚未完成。请继续以完成取消此传输。",
+    pendingTransfers: "未完成的传输",
+    chooseTransfer: "选择要继续的传输",
+    loadMoreTransfers: "加载更多传输",
     review: "检查转移",
     conversations: "对话",
     emptyConversations: "此工作区没有对话。",

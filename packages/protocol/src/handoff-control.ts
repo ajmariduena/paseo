@@ -143,6 +143,36 @@ export const HandoffDestinationSnapshotSchema = z.object({
 export type HandoffSourceSnapshot = z.infer<typeof HandoffSourceSnapshotSchema>;
 export type HandoffDestinationSnapshot = z.infer<typeof HandoffDestinationSnapshotSchema>;
 
+export const HandoffDestinationPageSchema = z.object({
+  transfers: z
+    .array(
+      HandoffDestinationSnapshotSchema.pick({
+        transferId: true,
+        destinationCwd: true,
+        continuationMode: true,
+        state: true,
+      }),
+    )
+    .max(20),
+  nextCursor: HandoffTransferIdSchema.nullable(),
+});
+export type HandoffDestinationPage = z.infer<typeof HandoffDestinationPageSchema>;
+export const HandoffListDestinationRequestSchema = z.object({
+  type: z.literal("workspace.handoff.list_destination.request"),
+  requestId: z.string(),
+  sourceServerId: z.string().min(1),
+  sourceWorkspaceId: z.string().min(1),
+  cursor: HandoffTransferIdSchema.optional(),
+});
+export const HandoffListDestinationResponseSchema = z.object({
+  type: z.literal("workspace.handoff.list_destination.response"),
+  payload: z.object({
+    requestId: z.string(),
+    result: HandoffDestinationPageSchema.nullable(),
+    error: HandoffErrorSchema.nullable(),
+  }),
+});
+
 export const HandoffFindSourceRequestSchema = z.object({
   type: z.literal("workspace.handoff.find_source.request"),
   requestId: z.string(),

@@ -294,22 +294,32 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   and exposes review, prepare, activate, retry, cancel and destination navigation. Review does not
   stop work or reserve a destination. Read-only placement errors leave the form editable. The source
   conversation set is checked again before reservation; a changed set returns the form to review.
-  Thirteen form cases cover unavailable modes, inventory changes, lost replies, storage failures,
+  Fourteen form cases cover unavailable modes, inventory changes, lost replies, storage failures,
   duplicate submissions, closing during work, cancellation recovery and host journals advancing
-  past local state. Reconstructed records retain the reserved mode and reject mismatched host,
-  workspace, reservation, conversation set or digest; a released source restores forward recovery.
+  past local state, including destination lookup and selection failures. Reconstructed records retain
+  the reserved mode and reject mismatched host, workspace, reservation, conversation set or digest;
+  a released source restores forward recovery. Selecting a destination queries its unfinished
+  reservations in pages of twenty, scoped to the source host and workspace. The user chooses an
+  existing transfer before resuming; discovery and selection do not prepare or publish work.
+  A matching cancelled source record restores cancellation intent so interrupted destination cleanup
+  can finish. The network regression discovers twenty-one reservations after destination restart,
+  verifies both scope filters and excludes completed cancellation.
   The network suite covers matching/mismatched Claude versions, missing source
   history and workflow artifacts without starting a provider turn during review. The feature
-  gate is checked on both hosts before preparation; only isolated test daemons advertise it. Two
+  gate is checked on both hosts before preparation; only isolated test daemons advertise it. Three
   browser cases use real isolated daemons and a directory workspace: desktop preparation/reload
   verifies bytes and destination navigation after a real activation conflict and source shutdown;
   compact recovery deletes the local transfer record, reloads the same identity and context mode
   from both host journals, then cancels and verifies a fresh form after clearing local state again.
+  Destination-only recovery selects one of two reservations, preserves its original mode without
+  preparing work until Resume, then reconstructs and finishes an interrupted source cancellation.
   These workspaces contain no conversations. See the [raw app results](../qa-evidence/handoff-app.txt)
-  and [review](../qa-evidence/handoff-review-compact.png), [desktop](../qa-evidence/handoff-app-desktop.png) / [compact](../qa-evidence/handoff-app-compact.png)
-  screenshots. Recovery without local state currently requires the source ownership record and both
-  paired hosts online. Destination-only reservations, unfinished cancellation cleanup, reopening
-  recovery when the source workspace is unavailable, pinned-key client persistence,
+  and [review](../qa-evidence/handoff-review-compact.png), [pending transfers](../qa-evidence/handoff-existing-transfers.png), [desktop](../qa-evidence/handoff-app-desktop.png) / [compact](../qa-evidence/handoff-app-compact.png)
+  screenshots. Recovery without local state currently requires both paired hosts online. Destination
+  lookup starts only after selecting that host. Cancellation before source preparation leaves only a
+  tombstone; automatic discovery of that cancellation intent remains open, as does unfinished cleanup
+  after the destination journal already says cancelled. Reopening recovery when the source workspace
+  is unavailable, pinned-key client persistence,
   resource/omitted-file preflight, source moved state and native-platform evidence remain open.
 - Source retirement/tombstones and automation dispositions remain unimplemented.
   The composite archive currently captures Claude conversations;

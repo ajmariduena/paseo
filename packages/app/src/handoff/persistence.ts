@@ -44,22 +44,53 @@ export function restoreHandoffRecord(input: {
     JSON.stringify([...snapshot.sourceAgentIds].sort()) !==
       JSON.stringify([...source.agentIds].sort()) ||
     (snapshot.manifestDigest !== null && snapshot.manifestDigest !== source.manifestDigest) ||
-    source.state === "cancelled" ||
     snapshot.state === "cancelled" ||
     (destinationReleased && source.state !== "released") ||
     (source.state === "released" && snapshot.state !== "staged" && !destinationReleased)
   )
     throw new Error("Source and destination handoff records do not match");
+  const intents = {
+    cancelled: "cancel",
+    released: "activate",
+    ready: "prepare",
+    preparing: "prepare",
+  } as const;
+  const intent = intents[source.state];
+  return restoredRecord(origin, destination, snapshot, intent);
+}
+
+export function restoreReservedHandoffRecord(input: {
+  origin: HandoffOrigin;
+  destination: { serverId: string; label: string };
+  snapshot: HandoffDestinationSnapshot;
+}): HandoffRecord {
+  const { origin, destination, snapshot } = input;
+  if (
+    destination.serverId === origin.sourceServerId ||
+    snapshot.sourceServerId !== origin.sourceServerId ||
+    snapshot.sourceWorkspaceId !== origin.workspaceId ||
+    snapshot.state !== "reserved"
+  )
+    throw new Error("Destination reservation does not match this workspace");
+  return restoredRecord(origin, destination, snapshot, "prepare");
+}
+
+function restoredRecord(
+  origin: HandoffOrigin,
+  destination: { serverId: string; label: string },
+  snapshot: HandoffDestinationSnapshot,
+  intent: HandoffRecord["intent"],
+): HandoffRecord {
   return {
     version: 1,
     ...origin,
-    transferId: source.id,
+    transferId: snapshot.transferId,
     destinationServerId: destination.serverId,
     destinationLabel: destination.label,
     destinationParent: snapshot.destinationParent,
     continuationMode: snapshot.continuationMode,
-    reviewedAgentIds: source.agentIds,
-    intent: source.state === "released" ? "activate" : "prepare",
+    reviewedAgentIds: snapshot.sourceAgentIds,
+    intent,
     snapshot,
   };
 }

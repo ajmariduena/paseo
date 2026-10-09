@@ -3,6 +3,7 @@ import { HandoffDestinationSnapshotSchema } from "@getpaseo/protocol/handoff-con
 import type { HandoffSource } from "./source.js";
 import type { HandoffDestination, DestinationHandoffStatus } from "./destination.js";
 const responseTypes = {
+  "workspace.handoff.list_destination.request": "workspace.handoff.list_destination.response",
   "workspace.handoff.find_source.request": "workspace.handoff.find_source.response",
   "workspace.handoff.preview_source.request": "workspace.handoff.preview_source.response",
   "workspace.handoff.preview_destination.request": "workspace.handoff.preview_destination.response",
@@ -58,6 +59,11 @@ async function handle(services: Services, request: ControlRequest): Promise<Cont
   }
   try {
     switch (request.type) {
+      case "workspace.handoff.list_destination.request":
+        return {
+          type: responseTypes[request.type],
+          payload: { ...payload, result: destination().list(request) },
+        };
       case "workspace.handoff.find_source.request":
         return {
           type: responseTypes[request.type],
@@ -148,6 +154,7 @@ export function dispatchHandoffControlMessage(
   },
 ): Promise<void> | undefined {
   switch (input.message.type) {
+    case "workspace.handoff.list_destination.request":
     case "workspace.handoff.find_source.request":
     case "workspace.handoff.preview_source.request":
     case "workspace.handoff.preview_destination.request":

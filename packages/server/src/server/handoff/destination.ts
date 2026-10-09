@@ -37,6 +37,7 @@ import { handoffContextFiles } from "./context.js";
 import type {
   HandoffConversationPreview,
   HandoffDestinationPreview,
+  HandoffDestinationPage,
 } from "@getpaseo/protocol/handoff-control";
 
 const ReservationSchema = z.object({
@@ -636,6 +637,37 @@ export class HandoffDestination {
   status(transferId: string): DestinationHandoffStatus {
     this.assertHealthy();
     return structuredClone(this.requireRecord(transferId));
+  }
+
+  list(input: {
+    sourceServerId: string;
+    sourceWorkspaceId: string;
+    cursor?: string;
+  }): HandoffDestinationPage {
+    this.assertHealthy();
+    const records = [...this.records.values()]
+      .filter(
+        (record) =>
+          record.sourceServerId === input.sourceServerId &&
+          record.sourceWorkspaceId === input.sourceWorkspaceId &&
+          record.state !== "cancelled" &&
+          record.state !== "active" &&
+          (!input.cursor || record.transferId > input.cursor),
+      )
+      .sort((left, right) => {
+        if (left.transferId < right.transferId) return -1;
+        if (left.transferId > right.transferId) return 1;
+        return 0;
+      });
+    const transfers = records
+      .slice(0, 20)
+      .map(({ transferId, destinationCwd, continuationMode, state }) => ({
+        transferId,
+        destinationCwd,
+        continuationMode,
+        state,
+      }));
+    return { transfers, nextCursor: records.length > 20 ? transfers[19].transferId : null };
   }
 
   async dispose(): Promise<void> {

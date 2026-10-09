@@ -47,6 +47,10 @@ function fixture() {
   const calls: string[] = [];
   const ports: HandoffFormPorts = {
     ...persistence,
+    listDestination: async () => ({ transfers: [], nextCursor: null }),
+    recoverDestination: async () => {
+      throw new Error("No transfer was selected");
+    },
     newTransferId: () => transferId,
     validate: async () => ({ conversations: [] }),
     prepare: async (record) => {
@@ -71,7 +75,7 @@ function fixture() {
 async function editedForm(ports: HandoffFormPorts) {
   const model = openHandoffForm(origin, ports);
   await model.load();
-  model.setDestination({ serverId: "destination", label: "VPS" });
+  await model.setDestination({ serverId: "destination", label: "VPS" });
   model.setDestinationParent("/projects");
   return model;
 }
@@ -83,6 +87,57 @@ async function reviewedForm(ports: HandoffFormPorts) {
 }
 
 describe("handoff form recovery", () => {
+  it("recovers a chosen destination-only reservation without starting work and keeps lookup failures retryable", async () => {
+    const { ports, calls, persistence } = fixture();
+    ports.listDestination = async () => {
+      throw new Error("Destination disconnected");
+    };
+    const model = await editedForm(ports);
+    expect(model.getState()).toMatchObject({
+      kind: "recovering",
+      error: "Destination disconnected",
+      busy: false,
+    });
+    const recoveredId = "00000000-0000-4000-8000-000000000004";
+    const snapshot = {
+      ...destination,
+      transferId: recoveredId,
+      state: "reserved" as const,
+      continuationMode: "context" as const,
+      manifestDigest: null,
+    };
+    ports.listDestination = async () => ({ transfers: [snapshot], nextCursor: null });
+    await model.moreTransfers();
+    expect(model.getState()).toMatchObject({ kind: "recovering", error: null });
+    await model.recoverTransfer(recoveredId);
+    expect(model.getState()).toMatchObject({
+      kind: "recovering",
+      error: "No transfer was selected",
+    });
+    expect(await persistence.load(origin)).toBeNull();
+    ports.recoverDestination = async () => ({
+      version: 1,
+      ...origin,
+      transferId: recoveredId,
+      destinationServerId: "destination",
+      destinationLabel: "VPS",
+      destinationParent: snapshot.destinationParent,
+      continuationMode: "context",
+      intent: "prepare",
+      snapshot,
+    });
+    await model.recoverTransfer(recoveredId);
+    expect(model.getState()).toMatchObject({
+      kind: "transfer",
+      record: { transferId: recoveredId, continuationMode: "context" },
+      run: { status: "idle" },
+    });
+    expect((await persistence.load(origin))?.transferId).toBe(recoveredId);
+    expect(calls).toEqual([]);
+    await model.retry();
+    expect(calls).toEqual([`prepare:${recoveredId}`]);
+  });
+
   it("restores a released transfer without local state as forward recovery in its reserved mode", async () => {
     const { ports, persistence, calls } = fixture();
     const source: HandoffSourceSnapshot["source"] = {

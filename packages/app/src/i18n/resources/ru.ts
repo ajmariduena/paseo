@@ -3,6 +3,10 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ru: TranslationResources = {
   handoff: {
+    cancelPending: "Отмена не завершена. Продолжите, чтобы завершить отмену этого переноса.",
+    pendingTransfers: "Незавершённые переносы",
+    chooseTransfer: "Выберите перенос для продолжения",
+    loadMoreTransfers: "Загрузить ещё переносы",
     review: "Проверить перенос",
     conversations: "Разговоры",
     emptyConversations: "В этом рабочем пространстве нет разговоров.",

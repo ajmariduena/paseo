@@ -82,6 +82,77 @@ async function stopHost(host: Host): Promise<void> {
   await host.daemon.close();
 }
 
+test.skipIf(process.platform === "win32")(
+  "discovers destination-only reservations in bounded pages after restart",
+  async () => {
+    const source = await startHost("source");
+    let destination = await startHost("destination");
+    const sourceServerId = source.daemon.daemon.getServerId();
+    const query = { sourceServerId, sourceWorkspaceId: "lost-local-state" };
+    const ids = Array.from(
+      { length: 21 },
+      (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+    );
+    for (const transferId of ids) {
+      await destination.client.handoffReserveDestination({
+        ...query,
+        transferId,
+        sourceAgentIds: [],
+        destinationParent: root,
+        continuationMode: "context",
+      });
+    }
+    await stopHost(destination);
+    destination = await startHost("destination");
+    const first = await destination.client.handoffListDestination(query);
+    expect(first.error).toBeNull();
+    expect(first.result?.transfers.map((transfer) => transfer.transferId)).toEqual(
+      ids.slice(0, 20),
+    );
+    expect(first.result?.nextCursor).toBe(ids[19]);
+    const last = await destination.client.handoffListDestination({ ...query, cursor: ids[19] });
+    expect(last.result?.transfers).toEqual([
+      {
+        transferId: ids[20],
+        destinationCwd: (
+          await destination.client.handoffGetDestinationStatus({ transferId: ids[20] })
+        ).result?.destinationCwd,
+        continuationMode: "context",
+        state: "reserved",
+      },
+    ]);
+    expect(last.result?.nextCursor).toBeNull();
+    expect(
+      (
+        await destination.client.handoffListDestination({
+          ...query,
+          sourceWorkspaceId: "another-workspace",
+        })
+      ).result,
+    ).toEqual({ transfers: [], nextCursor: null });
+    expect(
+      (
+        await destination.client.handoffListDestination({
+          ...query,
+          sourceServerId: "another-host",
+        })
+      ).result,
+    ).toEqual({ transfers: [], nextCursor: null });
+    await cancelWorkspaceHandoff({
+      source: source.client,
+      destination: destination.client,
+      transferId: ids[0],
+    });
+    const afterCancel = await destination.client.handoffListDestination(query);
+    expect(afterCancel.result?.transfers.map((transfer) => transfer.transferId)).toEqual(
+      ids.slice(1),
+    );
+    expect(afterCancel.result?.nextCursor).toBeNull();
+    expect((await destination.client.fetchWorkspaces()).entries).toEqual([]);
+  },
+  30_000,
+);
+
 test.skipIf(process.platform === "win32").each(["reserved", "staged"] as const)(
   "cancels a %s handoff after a lost source cancellation reply and host restart",
   async (phase) => {

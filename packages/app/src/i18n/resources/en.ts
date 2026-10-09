@@ -1,5 +1,9 @@
 export const en = {
   handoff: {
+    cancelPending: "Cancellation is incomplete. Resume to finish cancelling this transfer.",
+    pendingTransfers: "Unfinished transfers",
+    chooseTransfer: "Choose a transfer to resume",
+    loadMoreTransfers: "Load more transfers",
     review: "Review transfer",
     conversations: "Conversations",
     emptyConversations: "This workspace has no conversations.",

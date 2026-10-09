@@ -3,6 +3,10 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ja: TranslationResources = {
   handoff: {
+    cancelPending: "キャンセルが完了していません。再開してこの転送のキャンセルを完了してください。",
+    pendingTransfers: "未完了の転送",
+    chooseTransfer: "再開する転送を選択",
+    loadMoreTransfers: "転送をさらに読み込む",
     review: "転送内容を確認",
     conversations: "会話",
     emptyConversations: "このワークスペースには会話がありません。",
