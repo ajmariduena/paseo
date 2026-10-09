@@ -354,6 +354,48 @@ describe("wire schema compatibility", () => {
     });
   });
 
+  test("provider switch dividers and retired-history rows are notification sources", () => {
+    const divider = {
+      type: "notification",
+      level: "info",
+      message: "Switched from claude to codex",
+      source: {
+        kind: "provider_switch",
+        segmentId: "seg-b",
+        fromProvider: "claude",
+        toProvider: "codex",
+        fromModel: "claude-opus-5-5",
+        toModel: null,
+        handoffId: "handoff-1",
+      },
+    };
+    expect(AgentTimelineItemPayloadSchema.parse(divider)).toEqual(divider);
+    const gap = {
+      type: "notification",
+      level: "warning",
+      message: "The earlier claude history could not be read",
+      source: {
+        kind: "retired_history",
+        segmentId: "seg-a",
+        incarnationId: "inc-a1",
+        reason: "unavailable",
+      },
+    };
+    expect(AgentTimelineItemPayloadSchema.parse(gap)).toEqual(gap);
+    const marker = {
+      type: "notification",
+      level: "warning",
+      message: "A codex prompt's delivery was uncertain; a new session was started",
+      source: {
+        kind: "incarnation",
+        segmentId: "seg-b",
+        incarnationId: "inc-b2",
+        reason: "uncertain_delivery",
+      },
+    };
+    expect(AgentTimelineItemPayloadSchema.parse(marker)).toEqual(marker);
+  });
+
   test("agent snapshots carry the server queue, and old clients still parse them", () => {
     const snapshot = {
       id: "agent-1",

@@ -725,6 +725,27 @@ export const NotificationSourceSchema = z.discriminatedUnion("kind", [
       }),
     ),
   }),
+  z.object({
+    kind: z.literal("provider_switch"),
+    segmentId: z.string(),
+    fromProvider: z.string(),
+    toProvider: z.string(),
+    fromModel: z.string().nullable(),
+    toModel: z.string().nullable(),
+    handoffId: z.string().nullable(),
+  }),
+  z.object({
+    kind: z.literal("incarnation"),
+    segmentId: z.string(),
+    incarnationId: z.string(),
+    reason: z.enum(["resume_failed", "uncertain_delivery"]),
+  }),
+  z.object({
+    kind: z.literal("retired_history"),
+    segmentId: z.string(),
+    incarnationId: z.string(),
+    reason: z.enum(["dropped", "unavailable", "over_cap"]),
+  }),
 ]);
 
 // zod-aot 0.20.4 miscompiles this as a nested discriminated union by omitting
