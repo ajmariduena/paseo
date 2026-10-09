@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -226,6 +226,78 @@ test("a record repaired after storage loaded keeps the snapshots it references",
     { agentId: "agent-repaired", incarnationId: "inc-orphan" },
   ]);
   expect(await snapshots.read("agent-repaired", "inc-kept")).not.toBeNull();
+});
+
+test("a record repaired after storage loaded settles its operation from the file, not the cache", async () => {
+  const dir = join(root, "agents", "tmp-repaired-op");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "agent-op.json"), "{ not json");
+  await seal("agent-op", "inc-kept");
+  const fresh = new AgentStorage(join(root, "agents"), createTestLogger());
+  await fresh.initialize();
+  writeFileSync(
+    join(dir, "agent-op.json"),
+    JSON.stringify(
+      record("agent-op", {
+        cwd: "/tmp/repaired-op",
+        providerSegments: [segment("seg-a", "inc-kept", null)],
+        switchOperations: [operation("committed")],
+      }),
+    ),
+  );
+
+  const summary = await reconcileProviderSwitchesAtBoot({
+    storage: fresh,
+    snapshots,
+    handoffs,
+    logger: createTestLogger(),
+    now: () => LATER,
+  });
+
+  expect(summary.recoveryFailed).toEqual([]);
+  expect(summary.completed).toEqual([{ agentId: "agent-op", operationId: "op-committed" }]);
+  expect(summary.orphanSnapshots).toEqual([]);
+  expect(await snapshots.read("agent-op", "inc-kept")).not.toBeNull();
+  const onDisk = JSON.parse(readFileSync(join(dir, "agent-op.json"), "utf8")) as StoredAgentRecord;
+  expect(onDisk.switchOperations?.[0]).toMatchObject({ phase: "done", updatedAt: LATER });
+  expect(onDisk.providerSegments?.[0].id).toBe("seg-a");
+  expect((await fresh.get("agent-op"))?.switchOperations?.[0].phase).toBe("done");
+});
+
+test("a record replaced on disk after storage loaded is settled and swept from the file", async () => {
+  await storage.upsert(record("agent-replaced", { cwd: "/tmp/replaced" }));
+  await storage.flush();
+  const fresh = new AgentStorage(join(root, "agents"), createTestLogger());
+  await fresh.initialize();
+  await seal("agent-replaced", "inc-kept");
+  const filePath = join(root, "agents", "tmp-replaced", "agent-replaced.json");
+  writeFileSync(
+    filePath,
+    JSON.stringify(
+      record("agent-replaced", {
+        cwd: "/tmp/replaced",
+        providerSegments: [segment("seg-a", "inc-kept", null)],
+        switchOperations: [operation("committed")],
+      }),
+    ),
+  );
+
+  const summary = await reconcileProviderSwitchesAtBoot({
+    storage: fresh,
+    snapshots,
+    handoffs,
+    logger: createTestLogger(),
+    now: () => LATER,
+  });
+
+  expect(summary.recoveryFailed).toEqual([]);
+  expect(summary.completed).toEqual([{ agentId: "agent-replaced", operationId: "op-committed" }]);
+  expect(summary.orphanSnapshots).toEqual([]);
+  expect(await snapshots.read("agent-replaced", "inc-kept")).not.toBeNull();
+  const onDisk = JSON.parse(readFileSync(filePath, "utf8")) as StoredAgentRecord;
+  expect(onDisk.providerSegments?.[0].id).toBe("seg-a");
+  expect(onDisk.switchOperations?.[0]).toMatchObject({ phase: "done", updatedAt: LATER });
+  expect((await fresh.get("agent-replaced"))?.providerSegments?.[0].id).toBe("seg-a");
 });
 
 test("a record scan that cannot complete sweeps nothing", async () => {

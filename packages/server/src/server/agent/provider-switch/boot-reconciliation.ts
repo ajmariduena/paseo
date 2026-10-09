@@ -90,11 +90,15 @@ async function settleOperations(
     const now = deps.now();
     let changed: SwitchOperation[] = [];
     try {
-      const written = await deps.storage.commitProviderSwitch(record.id, (candidate) => {
-        const reconciled = reconcileOperations(candidate.switchOperations ?? [], now);
-        changed = reconciled.changed;
-        return { ...candidate, switchOperations: reconciled.operations };
-      });
+      const written = await deps.storage.commitProviderSwitch(
+        record.id,
+        (candidate) => {
+          const reconciled = reconcileOperations(candidate.switchOperations ?? [], now);
+          changed = reconciled.changed;
+          return { ...candidate, switchOperations: reconciled.operations };
+        },
+        { authoritative: record },
+      );
       records.set(record.id, written);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

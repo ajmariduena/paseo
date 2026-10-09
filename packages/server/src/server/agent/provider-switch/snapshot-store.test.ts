@@ -1,4 +1,12 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -273,4 +281,12 @@ test("a child whose descriptor alone exceeds its cap keeps the descriptor and re
 
   expect(sealed.childPanes).toEqual([{ descriptor: heavy, rows: null, droppedRanges: [] }]);
   expect(sealed.childPanesNotice).toBe("over_cap");
+});
+
+test("a snapshot file that is not complete JSON reads as unavailable, not as a seal", async () => {
+  const store = new SegmentSnapshotStore(root);
+  mkdirSync(join(root, "agent-1"), { recursive: true });
+  writeFileSync(join(root, "agent-1", "inc-a1.json"), '{"version": 1, "rows": [');
+
+  expect(await store.read("agent-1", "inc-a1")).toBeNull();
 });

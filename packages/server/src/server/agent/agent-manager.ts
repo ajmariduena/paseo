@@ -4787,11 +4787,13 @@ export class AgentManager {
       }
     }
 
+    // Everything the rebuild needs is read before anything is deleted, so a failed read leaves
+    // the current timeline in place.
+    const now = new Date();
+    const retired = await this.loadRetiredHistorySeed(agent.id, now);
     this.agentStreamCoalescer.flushAndDiscard(agent.id);
     await this.deleteCommittedTimeline(agent.id);
     this.timelineStore.delete(agent.id);
-    const now = new Date();
-    const retired = await this.loadRetiredHistorySeed(agent.id, now);
     this.timelineStore.initialize(agent.id, {
       ...(retired ? { rows: retired.rows } : {}),
       timestamp: now.toISOString(),

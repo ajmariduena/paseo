@@ -293,8 +293,15 @@ export class SegmentSnapshotStore {
     return result;
   }
 
+  /** Null for a missing file and for one that is not complete JSON: neither is a seal. */
   async read(agentId: string, incarnationId: string): Promise<SegmentSnapshot | null> {
-    const raw = await readJson(this.filePath(agentId, incarnationId));
+    let raw: unknown;
+    try {
+      raw = await readJson(this.filePath(agentId, incarnationId));
+    } catch (error) {
+      if (error instanceof SyntaxError) return null;
+      throw error;
+    }
     return raw === null ? null : SegmentSnapshotSchema.parse(raw);
   }
 

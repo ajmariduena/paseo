@@ -325,19 +325,23 @@ export class AgentStorage {
   /**
    * One atomic write of a switch commit: the builder gets an isolated copy of the record and
    * returns the whole next record (active selection, segments, operation phase). The cache
-   * only changes once the file is on disk.
+   * only changes once the file is on disk. A caller holding a fresher read of the record than
+   * the cache (boot's scan) passes it as `authoritative`; the write then reconciles the cache
+   * and path index to it.
    */
   async commitProviderSwitch(
     agentId: string,
     build: (candidate: StoredAgentRecord) => StoredAgentRecord,
+    options?: { authoritative?: StoredAgentRecord },
   ): Promise<StoredAgentRecord> {
     await this.load();
     let written: StoredAgentRecord | null = null;
     await this.queueRecordMutation(agentId, (existing) => {
-      if (!existing) {
+      const current = options?.authoritative ?? existing;
+      if (!current) {
         throw new Error(`Agent ${agentId} not found`);
       }
-      const next = build(structuredClone(existing));
+      const next = build(structuredClone(current));
       if (next.id !== agentId) {
         throw new Error(`Switch commit for ${agentId} returned record ${next.id}`);
       }
@@ -369,6 +373,9 @@ export class AgentStorage {
         const record = await this.readRecordFile(filePath);
         if (record) {
           records.set(record.id, record);
+          // The path index follows the disk, so a later write replaces this file, not a copy.
+          this.pathById.set(record.id, filePath);
+          this.addIndexedPath(record.id, filePath);
         } else {
           unreadable.add(path.basename(filePath, ".json"));
         }
