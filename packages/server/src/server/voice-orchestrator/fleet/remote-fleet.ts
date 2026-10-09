@@ -16,7 +16,10 @@ export type CourierChannel = (request: CourierRequest) => void;
 // The phone checks in every few seconds during a call; past this its view is not live.
 const SYNC_STALE_MS = 20_000;
 // A remote action runs over two phone hops; past this the user hears it wasn't confirmed.
+// Creations get longer: a worktree with setup scripts can take most of a minute.
 const COURIER_TIMEOUT_MS = 16_000;
+const COURIER_CREATION_TIMEOUT_MS = 60_000;
+const SLOW_TOOLS = new Set(["start_agent", "create_workspace", "archive_workspace"]);
 
 export class CourierTimeoutError extends Error {
   constructor(readonly hostLabel: string) {
@@ -97,10 +100,13 @@ export class RemoteFleet {
       return Promise.reject(new CourierTimeoutError(hostLabel));
     }
     return new Promise<VoiceToolResult>((resolve, reject) => {
+      const timeoutMs = SLOW_TOOLS.has(request.tool)
+        ? COURIER_CREATION_TIMEOUT_MS
+        : COURIER_TIMEOUT_MS;
       const timer = setTimeout(() => {
         this.pending.delete(request.operationId);
         reject(new CourierTimeoutError(hostLabel));
-      }, COURIER_TIMEOUT_MS);
+      }, timeoutMs);
       this.pending.set(request.operationId, { resolve, reject, timer });
       try {
         channel(request);
@@ -123,6 +129,11 @@ export class RemoteFleet {
     this.pending.delete(params.operationId);
     if (params.result) entry.resolve(params.result);
     else entry.reject(new Error(params.error ?? "the other host did not answer"));
+  }
+
+  /** The phone's socket for this channel went away; wait for its next sync instead. */
+  dropChannel(channel: CourierChannel): void {
+    if (this.channel === channel) this.channel = null;
   }
 
   /** A call ended: forget the phone's view and fail anything still in flight. */

@@ -1117,8 +1117,8 @@ const VOICE_ORCHESTRATOR_START_TIMEOUT_MS = 60_000;
 // Messages mode retries on a weak link, so a lost request must fail fast instead of waiting a minute.
 const VOICE_MESSAGES_TIMEOUT_MS = 12_000;
 const VOICE_FLEET_DIGEST_TIMEOUT_MS = 5_000;
-// The host running the call gives up on a courier action after 6 s.
-const VOICE_FLEET_TOOL_TIMEOUT_MS = 14_000;
+// Creating a worktree and an agent on another host can take most of a minute.
+const VOICE_FLEET_TOOL_TIMEOUT_MS = 60_000;
 const VOICE_FLEET_SYNC_TIMEOUT_MS = 4_000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 const DEFAULT_LIVENESS_TIMEOUT_MS = 5000;

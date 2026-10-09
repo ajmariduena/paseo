@@ -76,6 +76,10 @@ interface CompletionResponseBody {
   error?: { message?: string };
 }
 
+function isFinalStatus(status: number | null): boolean {
+  return status !== null && status >= 400 && status < 500 && status !== 429;
+}
+
 function parseCompletion(
   response: { status: number; body: string },
   elapsedMs: number,
@@ -132,15 +136,37 @@ export class FastLlmClient {
   async complete(params: FastLlmRequest): Promise<FastLlmCompletion> {
     if (!params.hedgeAfterMs) return this.completeOnce(params);
     const controllers = [new AbortController(), new AbortController()];
+    const abortAll = () => {
+      for (const controller of controllers) controller.abort();
+    };
+    params.signal?.addEventListener("abort", abortAll, { once: true });
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const attempt = (index: number) =>
       this.completeOnce({ ...params, signal: controllers[index].signal }).then((result) => {
         controllers[1 - index].abort();
         return result;
       });
-    const first = attempt(0);
-    let timer: ReturnType<typeof setTimeout> | null = null;
+    const first = attempt(0).catch((error: unknown) => {
+      // A request the server rejected (4xx other than 429) fails the same way twice.
+      if (error instanceof FastLlmError && isFinalStatus(error.status)) {
+        if (timer) clearTimeout(timer);
+        abortAll();
+      }
+      throw error;
+    });
     const hedge = new Promise<FastLlmCompletion>((resolve, reject) => {
       timer = setTimeout(() => attempt(1).then(resolve, reject), params.hedgeAfterMs);
+      first.catch((error: unknown) => {
+        if (error instanceof FastLlmError && isFinalStatus(error.status)) reject(error);
+      });
+      params.signal?.addEventListener(
+        "abort",
+        () => {
+          if (timer) clearTimeout(timer);
+          reject(new DOMException("The request was aborted", "AbortError"));
+        },
+        { once: true },
+      );
     });
     try {
       return await Promise.any([first, hedge]);
@@ -148,6 +174,7 @@ export class FastLlmClient {
       throw error instanceof AggregateError ? (error.errors[0] as Error) : error;
     } finally {
       if (timer) clearTimeout(timer);
+      params.signal?.removeEventListener("abort", abortAll);
     }
   }
 

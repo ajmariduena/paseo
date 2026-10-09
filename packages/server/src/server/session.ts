@@ -2990,7 +2990,7 @@ export class Session {
       this.voiceOrchestrator.setPreferredAgentModes(request.agentModes);
       this.voiceOrchestrator.setPreferredAgentDefaults(request.agentDefaults);
       this.voiceOrchestrator.noteCallStarting();
-      const agentId = await this.voiceOrchestrator.ensureAgent();
+      const agentId = await this.voiceOrchestrator.agentIdForCall();
       this.emit({
         type: "voice.orchestrator.start.response",
         payload: { requestId, agentId, language: this.voiceOrchestrator.language, error: null },

@@ -184,17 +184,69 @@ describe("VoiceRouter confirmations", () => {
     },
   );
 
-  it("accepts an explicit unconditioned permission approval", async () => {
+  it("asks before approving a permission even with a clear yes, then approves on the next yes", async () => {
     const state = setup([action("answer_permission", { agent: "a1", decision: "allow" })]);
     const view = new FleetView(
       [host([agent("agent-upstream", { status: "waiting_permission", blocker: "git push" })])],
       NOW,
     );
-    expect((await state.router.route(input(view, "Sí, aprueba ese push."))).kind).toBe("action");
+    expect((await state.router.route(input(view, "Sí, aprueba ese push."))).kind).toBe("confirm");
+    expect(state.executions).toEqual([]);
+    expect((await state.router.route(input(view, "Sí."))).kind).toBe("action");
     expect(state.executions[0]).toMatchObject({
       tool: "answer_permission",
       args: { agentId: "agent-upstream", allow: true },
     });
+  });
+
+  it("approves an announced permission on a bare yes with no model call", async () => {
+    const state = setup([]);
+    const view = new FleetView([host([agent("agent-ci", { status: "waiting_permission" })])], NOW);
+    state.router.offerPermissionApproval({
+      host: view.hosts[0]!,
+      agentId: "agent-ci",
+      requestId: "perm-1",
+      label: "CI's request to run docker compose up",
+    });
+    const result = await state.router.route(input(view, "Sí, dale"));
+    expect(result.kind).toBe("action");
+    expect(state.executions[0]).toMatchObject({
+      tool: "answer_permission",
+      args: { agentId: "agent-ci", allow: true, requestId: "perm-1" },
+    });
+    expect(state.llm.requests).toHaveLength(0);
+  });
+
+  it("sends a yes that carries a correction back to the model instead of running the challenge", async () => {
+    const state = setup([
+      action("archive", { target: "a1" }),
+      answer("¿El de la MacBook o el de la mini?"),
+    ]);
+    const view = new FleetView([host()], NOW);
+    await state.router.route(input(view, "Archiva Upstream."));
+    const result = await state.router.route(input(view, "Sí, para la mini."));
+    expect(state.executions).toEqual([]);
+    expect(result.kind).toBe("question");
+  });
+
+  it("treats a longer no as a new instruction for the model", async () => {
+    const state = setup([
+      action("archive", { target: "a1" }),
+      answer("Entendido, ¿cuál archivo entonces?"),
+    ]);
+    const view = new FleetView([host()], NOW);
+    await state.router.route(input(view, "Archiva Upstream."));
+    await state.router.route(input(view, "No, mejor archiva el otro."));
+    expect(state.executions).toEqual([]);
+    expect(state.llm.requests).toHaveLength(2);
+    expect(state.router.hasPendingConfirmation).toBe(false);
+  });
+
+  it("asks before switching an agent to a mode that skips its permission prompts", async () => {
+    const state = setup([action("set_agent_mode", { agent: "a1", mode: "bypassPermissions" })]);
+    const view = new FleetView([host()], NOW);
+    expect((await state.router.route(input(view, "Ponlo en bypass."))).kind).toBe("confirm");
+    expect(state.executions).toEqual([]);
   });
 
   it("never treats a short conditional yes as confirmation of an existing challenge", async () => {
@@ -341,7 +393,8 @@ describe("VoiceRouter permission binding", () => {
       permissionId: "perm-heard",
     });
     const view = new FleetView([host([waiting])], NOW);
-    await state.router.route(input(view, "Sí, apruébalo."));
+    expect((await state.router.route(input(view, "Sí, apruébalo."))).kind).toBe("confirm");
+    await state.router.route(input(view, "Sí."));
     expect(state.executions[0]).toMatchObject({
       tool: "answer_permission",
       args: { agentId: "agent-ci", allow: true, requestId: "perm-heard" },

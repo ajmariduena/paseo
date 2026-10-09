@@ -61,7 +61,7 @@ export class VoiceMessagesSessionHandler {
   // Updates belong to the socket that last spoke for the call; a reconnect's next request moves them.
   private updates: { owner: OwnedOperation; source: object } | null = null;
   // The socket that last synced the fleet carries the call's actions to the other hosts.
-  private courier: { owner: OwnedOperation; source: object } | null = null;
+  private courier: { owner: OwnedOperation; source: object; channel: CourierChannel } | null = null;
   private readonly listener = (item: VoiceMessagesItem) => {
     if (!this.boundCall) return;
     this.updates?.owner.emit({
@@ -135,6 +135,7 @@ export class VoiceMessagesSessionHandler {
   private releaseCourier(): void {
     const courier = this.courier;
     this.courier = null;
+    if (courier) this.options.orchestrator?.dropCourier(courier.channel);
     void courier?.owner.release().catch((error: unknown) => {
       this.options.logger.warn({ err: error }, "Failed to release the voice courier");
     });
@@ -143,15 +144,14 @@ export class VoiceMessagesSessionHandler {
   private claimCourier(): CourierChannel | null {
     const source = this.options.delivery.currentSource;
     if (!source) return null;
-    if (this.courier?.source !== source) {
-      this.releaseCourier();
-      const owner = this.options.delivery.operation(isCourierExecute, () => {
-        if (this.courier?.owner === owner) this.courier = null;
-      });
-      this.courier = { owner, source };
-    }
-    const owner = this.courier.owner;
-    return (request) =>
+    if (this.courier?.source === source) return this.courier.channel;
+    this.releaseCourier();
+    const owner = this.options.delivery.operation(isCourierExecute, () => {
+      if (this.courier?.owner !== owner) return;
+      this.options.orchestrator?.dropCourier(channel);
+      this.courier = null;
+    });
+    const channel: CourierChannel = (request) =>
       owner.emit({
         type: "voice.courier.execute",
         payload: {
@@ -162,6 +162,8 @@ export class VoiceMessagesSessionHandler {
           language: request.language,
         },
       });
+    this.courier = { owner, source, channel };
+    return channel;
   }
 
   private async handleFleetDigest(
@@ -169,7 +171,8 @@ export class VoiceMessagesSessionHandler {
   ): Promise<void> {
     try {
       const orchestrator = this.requireOrchestrator();
-      if (msg.language) orchestrator.setPreferredLanguage(msg.language);
+      // Only fills a missing language; another host's call must not redefine this one's.
+      if (msg.language && !orchestrator.language) orchestrator.setPreferredLanguage(msg.language);
       const digest = await orchestrator.fleetDigest();
       this.emit({
         type: "voice.fleet.digest.response",
@@ -205,7 +208,7 @@ export class VoiceMessagesSessionHandler {
   ): Promise<void> {
     try {
       const orchestrator = this.requireOrchestrator();
-      if (msg.language) orchestrator.setPreferredLanguage(msg.language);
+      if (msg.language && !orchestrator.language) orchestrator.setPreferredLanguage(msg.language);
       const result = await orchestrator.invokeTool({
         operationId: msg.operationId,
         tool: msg.tool,

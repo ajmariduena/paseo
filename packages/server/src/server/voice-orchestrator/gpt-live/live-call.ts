@@ -34,8 +34,17 @@ const GREETING_FALLBACK_MS = 6_000;
 const ANNOUNCEMENT_SPEECH_TIMEOUT_MS = 20_000;
 // A pause this long in the user's speech starts planning the likely request before GPT-Live
 // delegates; the plan only runs if the request turns out the same.
-const SPECULATE_AFTER_MS = 120;
+const SPECULATE_AFTER_MS = 350;
 const SPECULATE_MIN_WORDS = 2;
+
+interface Speculation {
+  text: string;
+  plan: Promise<RoutePlan | null>;
+  abort: AbortController;
+  settled: boolean;
+  /** The user kept talking while this plan ran; plan again for the newer words. */
+  stale: boolean;
+}
 
 export interface GptLiveCallOptions {
   engine: GptLiveEngineConfig;
@@ -67,7 +76,7 @@ export class GptLiveCall {
 
   private userTurn = "";
   private readonly requests: RequestTracker;
-  private speculation: { text: string; plan: Promise<RoutePlan | null> } | null = null;
+  private speculation: Speculation | null = null;
   private speculateTimer: ReturnType<typeof setTimeout> | null = null;
   private resultAppendedAt: number | null = null;
   private readonly snapshot: LiveFleetSnapshot;
@@ -203,6 +212,7 @@ export class GptLiveCall {
     if (this.greetingTimer) clearTimeout(this.greetingTimer);
     if (this.unconfirmedSpeechTimer) clearTimeout(this.unconfirmedSpeechTimer);
     if (this.speculateTimer) clearTimeout(this.speculateTimer);
+    this.speculation?.abort.abort();
     this.speculation = null;
     this.outbox.close();
     this.settleAnnouncements(false);
@@ -414,16 +424,38 @@ export class GptLiveCall {
     }, SPECULATE_AFTER_MS);
   }
 
+  /**
+   * One plan in flight at a time: a newer pause replaces the plan (aborting its request) only
+   * once the previous one settled, so a long sentence costs a few requests, not one per word.
+   */
   private speculate(): void {
     if (this.closed) return;
     const text = this.requests.peek();
     if (text.split(/\s+/).filter(Boolean).length < SPECULATE_MIN_WORDS) return;
-    if (this.speculation?.text === text) return;
+    const current = this.speculation;
+    if (current?.text === text) return;
+    if (current && !current.settled) {
+      current.stale = true;
+      return;
+    }
+    current?.abort.abort();
+    const abort = new AbortController();
     const history = [...this.history];
-    this.speculation = {
+    const entry: Speculation = {
       text,
-      plan: this.options.orchestrator.planDelegation({ request: text, history }).catch(() => null),
+      abort,
+      settled: false,
+      stale: false,
+      plan: this.options.orchestrator
+        .planDelegation({ request: text, history, signal: abort.signal })
+        .then((plan) => plan?.completion.then(() => plan) ?? null)
+        .catch(() => null)
+        .finally(() => {
+          entry.settled = true;
+          if (entry.stale && this.speculation === entry) this.speculate();
+        }),
     };
+    this.speculation = entry;
   }
 
   private async handleDelegation(delegationId: string): Promise<void> {
@@ -434,6 +466,7 @@ export class GptLiveCall {
     this.commitUserTurn();
     const speculation = this.speculation;
     this.speculation = null;
+    if (speculation && speculation.text !== request) speculation.abort.abort();
     this.pendingDelegations += 1;
     this.transcript?.record("delegation", request, {
       speculated: speculation?.text === request,

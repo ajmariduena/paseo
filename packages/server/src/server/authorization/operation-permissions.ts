@@ -220,7 +220,8 @@ const INBOUND_PERMISSION = {
   "voice.call.set_mute.request": "workspace.write",
   "voice.fleet.digest.request": "workspace.write",
   "voice.fleet.sync.request": "workspace.write",
-  "voice.tools.invoke.request": "workspace.write",
+  // Archives and creates workspaces on behalf of the call, like the workspace RPCs.
+  "voice.tools.invoke.request": "workspace.manage",
   "voice.courier.result.request": "workspace.write",
   start_workspace_script_request: "workspace.write",
   stash_list_request: "workspace.read",
@@ -493,7 +494,7 @@ const OUTBOUND_PERMISSION = {
   "voice.fleet.digest.response": "workspace.write",
   "voice.fleet.sync.response": "workspace.write",
   "voice.courier.execute": "workspace.write",
-  "voice.tools.invoke.response": "workspace.write",
+  "voice.tools.invoke.response": "workspace.manage",
   "voice.courier.result.response": "workspace.write",
   start_workspace_script_response: "workspace.write",
   stash_list_response: "workspace.read",

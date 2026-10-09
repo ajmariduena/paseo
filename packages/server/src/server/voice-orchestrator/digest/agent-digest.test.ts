@@ -76,6 +76,7 @@ describe("buildAgentDigest", () => {
       progress: "1 of 2 steps done",
       activity: "edited 1 file (login.ts); ran 1 command (latest: npm test)",
       blocker: null,
+      permissionId: null,
       outcome: null,
       summary: null,
       unheard: false,

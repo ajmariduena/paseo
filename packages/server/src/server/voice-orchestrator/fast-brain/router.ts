@@ -1,8 +1,14 @@
+import { createHash } from "node:crypto";
 import { v4 as uuidv4 } from "uuid";
 import type pino from "pino";
 import type { VoiceToolResult } from "@getpaseo/protocol/voice-fleet/types";
 import { describeLanguage } from "../prompt.js";
-import { isSpokenApproval, isSpokenRefusal } from "../spoken-approval.js";
+import {
+  isBareApproval,
+  isSpokenApproval,
+  isSpokenRefusal,
+  mentionsApproval,
+} from "../spoken-approval.js";
 import type { FleetHost, FleetTarget, FleetView } from "../fleet/fleet-view.js";
 import type {
   FastLlmClient,
@@ -73,12 +79,16 @@ interface Challenge {
 
 const CHALLENGE_TTL_MS = 120_000;
 // Most router calls finish in 0.2–0.5 s; past this one is stuck in a queue.
-const HEDGE_AFTER_MS = 800;
+const HEDGE_AFTER_MS = 650;
 const MAX_ROUNDS = 3;
 const ROUTER_MAX_TOKENS = 700;
 const ANSWER_MAX_TOKENS = 260;
 // A search already ran; searching again in the same request only loops.
 const FOLLOW_UP_TOOLS = ROUTER_TOOLS.filter((tool) => tool.function.name !== "find_sessions");
+// Modes that let an agent act without asking; switching to one by voice needs a yes.
+const RISKY_MODE = /bypass|yolo|full.?access|danger|skip|auto/i;
+const IDEMPOTENT_BY_CONTENT = new Set(["start_agent", "create_workspace", "create_note"]);
+const CREATION_DEDUPE_MS = 10 * 60 * 1000;
 const DESTRUCTIVE_TOOLS = new Set(["stop_agent", "archive_agent", "archive_workspace"]);
 const LOOKUP_TOOLS = new Set(["read_agent", "list_notes", "find_sessions"]);
 
@@ -116,14 +126,15 @@ export class VoiceRouter {
   }
 
   /** The first model call alone, safe to start before GPT-Live delegates: it runs nothing. */
-  plan(input: RouteInput): RoutePlan {
+  plan(input: RouteInput, signal?: AbortSignal): RoutePlan {
     const key = planKey(input);
+    // No hedge: a speculative plan is cheap to lose, and the request itself hedges if needed.
     const completion = this.options.llm.complete({
       messages: this.initialMessages(input),
       tools: ROUTER_TOOLS,
       maxTokens: ROUTER_MAX_TOKENS,
       cacheKey: this.cacheKey,
-      hedgeAfterMs: HEDGE_AFTER_MS,
+      signal,
     });
     // A plan nobody uses must not surface as an unhandled rejection.
     completion.catch(() => undefined);
@@ -156,7 +167,10 @@ export class VoiceRouter {
     const messages = this.initialMessages(input);
     timings.planReused = Number(usable !== null);
     let llmStartedAt = this.now();
-    let completion = await (usable?.completion ?? this.firstCompletion(messages));
+    // A plan that failed (timeout, 429) is retried fresh instead of failing the request.
+    let completion = await (usable
+      ? usable.completion.catch(() => this.firstCompletion(messages))
+      : this.firstCompletion(messages));
     timings.llm1Ms = this.now() - llmStartedAt;
 
     const results: ExecutedCall[] = [];
@@ -258,10 +272,7 @@ export class VoiceRouter {
     }
     const gated = calls.filter((entry) => this.needsConfirmation(entry.pending, input));
     if (gated.length === 0) return null;
-    return this.askConfirmation(
-      gated.map((entry) => entry.pending),
-      input,
-    );
+    return this.askConfirmation(gated.map((entry) => entry.pending));
   }
 
   private followUp(
@@ -310,11 +321,16 @@ export class VoiceRouter {
   ): Promise<Omit<RouteResult, "timings"> | null> {
     const challenge = this.activeChallenge();
     if (!challenge) return null;
-    if (isSpokenRefusal(input.latest) && isShortReply(input.latest)) {
+    const refusal = isSpokenRefusal(input.latest);
+    if (refusal && !mentionsApproval(input.latest)) {
       this.challenge = null;
-      return { text: "Okay, cancelled; nothing was changed.", kind: "answer" };
+      // "No, mejor archiva el otro" is a new instruction for the model, not just a no.
+      if (countWords(input.latest) <= 3) {
+        return { text: "Okay, cancelled; nothing was changed.", kind: "answer" };
+      }
+      return null;
     }
-    if (!isClearApproval(input.latest) || !isShortReply(input.latest)) return null;
+    if (!isBareApproval(input.latest)) return null;
     this.challenge = null;
     const startedAt = this.now();
     const results = await Promise.all(
@@ -338,19 +354,43 @@ export class VoiceRouter {
       return false;
     }
     if (DESTRUCTIVE_TOOLS.has(call.tool)) return true;
-    if (call.tool === "answer_permission" && call.args.allow === true) {
-      return !isClearApproval(input.latest);
-    }
+    // An approval runs only as the answer to a question that named that request; a yes to
+    // anything else, or agent text in the fleet, must not approve a command.
+    if (call.tool === "answer_permission" && call.args.allow === true) return true;
+    if (call.tool === "set_agent_mode" && RISKY_MODE.test(String(call.args.mode ?? "")))
+      return true;
     return false;
   }
 
-  private askConfirmation(calls: PendingCall[], input: RouteInput): Omit<RouteResult, "timings"> {
+  private askConfirmation(calls: PendingCall[]): Omit<RouteResult, "timings"> {
     const question = `Confirm: ${calls.map((call) => call.label).join("; and ")}?`;
     this.challenge = { calls, question, expiresAt: this.now() + CHALLENGE_TTL_MS };
-    const host = input.view.isMultiHost ? " Name the host." : "";
     return {
-      text: `Not done yet; it needs the user's yes. Ask them, in a few words: ${calls.map((call) => call.label).join("; and ")}?${host} Run it only after they say yes.`,
+      text: `Not done yet; it needs the user's yes. Ask them, in a few words: ${calls.map((call) => call.label).join("; and ")}? Run it only after they say yes.`,
       kind: "confirm",
+    };
+  }
+
+  /**
+   * Paseo just told the user an agent is waiting for permission, so their next "sí" answers
+   * that request in one turn.
+   */
+  offerPermissionApproval(params: {
+    host: FleetHost;
+    agentId: string;
+    requestId: string;
+    label: string;
+  }): void {
+    const call: PendingCall = {
+      host: params.host,
+      tool: "answer_permission",
+      args: { agentId: params.agentId, allow: true, requestId: params.requestId },
+      label: `approve ${params.label}`,
+    };
+    this.challenge = {
+      calls: [call],
+      question: `Confirm: ${call.label}?`,
+      expiresAt: this.now() + CHALLENGE_TTL_MS,
     };
   }
 
@@ -385,7 +425,7 @@ export class VoiceRouter {
         host: call.host,
         tool: call.tool,
         args: call.args,
-        operationId: uuidv4(),
+        operationId: operationIdFor(call),
       });
     } catch (error) {
       this.options.logger.warn({ err: error, tool: call.tool }, "Voice tool execution failed");
@@ -752,8 +792,30 @@ function sameAction(left: PendingCall, right: PendingCall): boolean {
     left.tool === right.tool &&
     left.host.serverId === right.host.serverId &&
     left.args.agentId === right.args.agentId &&
-    left.args.workspaceId === right.args.workspaceId
+    left.args.workspaceId === right.args.workspaceId &&
+    left.args.allow === right.args.allow &&
+    (left.args.requestId === undefined ||
+      right.args.requestId === undefined ||
+      left.args.requestId === right.args.requestId) &&
+    left.args.mode === right.args.mode
   );
+}
+
+/**
+ * Creations get an id derived from what they create, so a retry after a timeout (the work
+ * kept going on the other host) finds the first one instead of making a second worktree.
+ */
+function operationIdFor(call: PendingCall): string {
+  if (!IDEMPOTENT_BY_CONTENT.has(call.tool)) return uuidv4();
+  const bucket = Math.floor(Date.now() / CREATION_DEDUPE_MS);
+  const digest = createHash("sha256")
+    .update(JSON.stringify([call.host.serverId, call.tool, call.args, bucket]))
+    .digest("hex");
+  return `voice-${digest.slice(0, 32)}`;
+}
+
+function countWords(text: string): number {
+  return text.trim().split(/\s+/).filter(Boolean).length;
 }
 
 function agentIdOf(target: FleetTarget): string {
@@ -788,7 +850,11 @@ function planKey(input: RouteInput): string {
   const lines = [...input.conversation];
   while (lines.length > 0) {
     const last = lines.at(-1) ?? "";
-    if (!last.startsWith("User:") || !latest.includes(normalizeSpoken(last.slice(5)))) break;
+    const partOfRequest =
+      last.startsWith("User:") && latest.includes(normalizeSpoken(last.slice(5)));
+    // GPT-Live's "Va." can be committed between planning and the delegation.
+    const acknowledgment = last.startsWith("Assistant:") && countWords(last.slice(10)) <= 3;
+    if (!partOfRequest && !acknowledgment) break;
     lines.pop();
   }
   return [input.latest.trim(), ...lines.slice(-8)].join("\u0000");
@@ -808,9 +874,4 @@ function isClearApproval(text: string): boolean {
   return !/(^|[^\p{L}])(si es|si está|si no|siempre que|if it|if its|if it's|only if|solo si)([^\p{L}]|$)/iu.test(
     text,
   );
-}
-
-/** "Sí, dale" confirms; a sentence that goes on to ask for something else is a new request. */
-function isShortReply(text: string): boolean {
-  return text.trim().split(/\s+/).length <= 6;
 }

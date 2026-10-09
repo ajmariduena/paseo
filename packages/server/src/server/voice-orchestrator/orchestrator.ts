@@ -279,6 +279,37 @@ export class VoiceOrchestrator {
     this.callStartingAt = Date.now();
   }
 
+  /**
+   * The voice agent's id for a starting call. With the fast brain the agent only serves
+   * escalated work, so the call doesn't wait for it to start.
+   */
+  async agentIdForCall(): Promise<string> {
+    if (!this.hasFastBrain) return this.ensureAgent();
+    void this.ensureAgent().catch((error: unknown) => {
+      this.logger.warn({ err: error }, "Voice agent unavailable; escalated requests will fail");
+    });
+    return this.resolveAgentId();
+  }
+
+  private offerPermission(permission: OfferedPermission): void {
+    this.router?.offerPermissionApproval({
+      host: {
+        serverId: null,
+        label: this.selfLabel,
+        online: true,
+        lastSeenAt: null,
+        supportsTools: true,
+        digest: null,
+      },
+      ...permission,
+    });
+  }
+
+  /** The phone's courier socket closed; actions wait for its next sync. */
+  dropCourier(channel: CourierChannel): void {
+    this.remoteFleet.dropChannel(channel);
+  }
+
   attachCall(call: VoiceOrchestratorCall): () => void {
     this.detachCurrentCall();
     this.call = call;
@@ -306,6 +337,7 @@ export class VoiceOrchestrator {
     }
     this.summarizer?.setWatching(true);
     this.localFleet.refreshHealth();
+    this.toolbox?.prewarm();
     void this.replayUnheard(this.queue);
     if (!call.announce) void this.sendCallStart(call);
     return () => {
@@ -425,24 +457,7 @@ export class VoiceOrchestrator {
   }): Promise<string> {
     if (params.request.trim()) this.noteUserUtterance(params.request);
     const router = this.router;
-    if (router) {
-      try {
-        const result = await router.route(
-          {
-            latest: params.request,
-            conversation: params.history,
-            view: params.plan?.view ?? (await this.fleetView()),
-            language: this.language,
-            audience: params.audience ?? "voice-model",
-          },
-          params.plan,
-        );
-        params.onTimings?.(result);
-        return result.text;
-      } catch (error) {
-        this.logger.warn({ err: error }, "Fast voice router failed; using the voice agent");
-      }
-    }
+    if (router) return this.routeWithRetry(router, params);
     return this.runTurn(async () => {
       const [fleet, others] = await Promise.all([
         this.describeFleetDetailed(),
@@ -453,19 +468,67 @@ export class VoiceOrchestrator {
   }
 
   /**
+   * One retry, then a short spoken failure. Falling back to the voice agent here would add
+   * many seconds of silence on top of the failed attempt; the agent stays for escalations.
+   */
+  private async routeWithRetry(
+    router: VoiceRouter,
+    params: {
+      request: string;
+      history: string[];
+      plan?: RoutePlan | null;
+      audience?: "voice-model" | "speech";
+      onTimings?: (result: RouteResult) => void;
+    },
+  ): Promise<string> {
+    const audience = params.audience ?? "voice-model";
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const plan = attempt === 0 ? params.plan : null;
+        const result = await router.route(
+          {
+            latest: params.request,
+            conversation: params.history,
+            view: plan?.view ?? (await this.fleetView()),
+            language: this.language,
+            audience,
+          },
+          plan,
+        );
+        params.onTimings?.(result);
+        return result.text;
+      } catch (error) {
+        this.logger.warn({ err: error, attempt }, "Fast voice router failed");
+      }
+    }
+    return audience === "speech"
+      ? spokenFailure(this.language)
+      : "The backend did not answer in time and nothing was done. Tell the user briefly and ask them to say it again.";
+  }
+
+  /**
    * Starts the router's model call while the user is still finishing: it only plans, so it is
    * safe to throw away. `runDelegation` uses it when the request turns out the same.
    */
-  async planDelegation(params: { request: string; history: string[] }): Promise<RoutePlan | null> {
+  async planDelegation(params: {
+    request: string;
+    history: string[];
+    signal?: AbortSignal;
+  }): Promise<RoutePlan | null> {
     const router = this.router;
     if (!router || !params.request.trim() || router.hasPendingConfirmation) return null;
-    return router.plan({
-      latest: params.request,
-      conversation: params.history,
-      view: await this.fleetView(),
-      language: this.language,
-      audience: "voice-model",
-    });
+    const view = await this.fleetView();
+    if (params.signal?.aborted) return null;
+    return router.plan(
+      {
+        latest: params.request,
+        conversation: params.history,
+        view,
+        language: this.language,
+        audience: "voice-model",
+      },
+      params.signal,
+    );
   }
 
   /** Has the orchestrator turn daemon updates (or the call start) into a short spoken text. */
@@ -519,6 +582,7 @@ export class VoiceOrchestrator {
   async fleetDigest(): Promise<VoiceFleetDigest> {
     this.summarizer?.observe(90_000);
     this.localFleet.refreshHealth();
+    this.toolbox?.prewarm();
     return this.localFleet.digest();
   }
 
@@ -1022,7 +1086,12 @@ export class VoiceOrchestrator {
   }
 
   private async deliverNotices(notices: VoiceNotice[]): Promise<void> {
-    const described: Array<{ notice: VoiceNotice; text: string; urgent: boolean }> = [];
+    const described: Array<{
+      notice: VoiceNotice;
+      text: string;
+      urgent: boolean;
+      permission?: OfferedPermission;
+    }> = [];
     for (const notice of notices) {
       const line = await this.describeNotice(notice);
       if (line) described.push({ notice, ...line });
@@ -1035,6 +1104,11 @@ export class VoiceOrchestrator {
         urgent: described.some((entry) => entry.urgent),
         onOutcome: (heard) => this.settleNotices(delivered, heard),
       });
+      const permissions = described.flatMap((entry) =>
+        entry.permission ? [entry.permission] : [],
+      );
+      // With one request announced, the user's "sí" answers it; with several it must name one.
+      if (permissions.length === 1 && permissions[0]) this.offerPermission(permissions[0]);
       return;
     }
     if (!this.knownAgentId) return;
@@ -1064,7 +1138,7 @@ export class VoiceOrchestrator {
 
   private async describeNotice(
     notice: VoiceNotice,
-  ): Promise<{ text: string; urgent: boolean } | null> {
+  ): Promise<{ text: string; urgent: boolean; permission?: OfferedPermission } | null> {
     const { agentManager } = this.options;
     const agent = agentManager.getAgent(notice.agentId);
     if (!agent) return null;
@@ -1076,11 +1150,16 @@ export class VoiceOrchestrator {
       case "permission": {
         const request = [...agent.pendingPermissions.values()].at(-1);
         if (!request) return null;
-        const summary = await this.localFleet.settledSummary(agent, NOTICE_SUMMARY_WAIT_MS);
-        const context = summary ? ` Context: ${summary}` : task;
+        // A blocked agent is said right away; its summary can't add what the request says.
+        const what = describePermission(request);
         return {
-          text: `${name} is waiting for permission to ${describePermission(request)}.${context}${again}`,
+          text: `${name} is waiting for permission to ${what}.${task}${again}`,
           urgent: true,
+          permission: {
+            agentId: agent.id,
+            requestId: request.id,
+            label: `${name}'s request to ${what}`,
+          },
         };
       }
       case "error": {
@@ -1164,6 +1243,18 @@ function fleetRank(agent: ManagedAgent): number {
   if (agent.attention.requiresAttention) return 2;
   if (agent.lifecycle === "running") return 3;
   return 4;
+}
+
+interface OfferedPermission {
+  agentId: string;
+  requestId: string;
+  label: string;
+}
+
+function spokenFailure(language: string | null): string {
+  return language?.startsWith("es")
+    ? "No pude procesarlo ahora. ¿Me lo repites?"
+    : "I couldn't process that just now. Could you say it again?";
 }
 
 /** "Alexanders-MacBook-Pro.local" → "Alexanders MacBook Pro": how a host is said aloud. */

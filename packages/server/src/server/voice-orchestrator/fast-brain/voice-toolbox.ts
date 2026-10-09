@@ -91,6 +91,16 @@ export class VoiceToolbox {
     return result;
   }
 
+  /**
+   * Provider snapshots load lazily and the first listing can take seconds; a call warms them
+   * so the first agent created by voice doesn't wait.
+   */
+  prewarm(): void {
+    void this.callCatalog("list_providers", {}).catch((error: unknown) => {
+      this.options.logger.debug({ err: error }, "Voice tools prewarm failed");
+    });
+  }
+
   private pruneOperations(): void {
     const cutoff = Date.now() - OPERATION_TTL_MS;
     for (const [id, entry] of this.operations) {
@@ -421,7 +431,9 @@ export class VoiceToolbox {
       };
     }
     await this.callCatalog("set_agent_mode", { agentId, modeId: match?.id ?? mode });
-    return { ok: true, text: `${name} is now in ${match?.label ?? mode} mode.` };
+    const label = match?.label ?? mode;
+    const suffix = /\bmode$/i.test(label) ? "" : " mode";
+    return { ok: true, text: `${name} is now in ${label}${suffix}.` };
   }
 
   private async renameAgent(agentId: string, title: string): Promise<VoiceToolResult> {
