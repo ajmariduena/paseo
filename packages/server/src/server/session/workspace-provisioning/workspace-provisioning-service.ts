@@ -85,6 +85,7 @@ export interface WorkspaceProvisioningService {
   }): Promise<PersistedWorkspaceRecord>;
   ensureWorkspaceRecordUnarchived(
     workspace: PersistedWorkspaceRecord,
+    restoreDirectory?: () => Promise<void>,
   ): Promise<PersistedWorkspaceRecord>;
 }
 
@@ -639,10 +640,15 @@ export function createWorkspaceProvisioningService(deps: {
         createScratchWorkspace({ ...input, workspaceId }),
       );
     },
-    ensureWorkspaceRecordUnarchived: (workspace) =>
+    ensureWorkspaceRecordUnarchived: (workspace, restoreDirectory) =>
       withMutation(
         { cwd: workspace.worktreeRoot ?? workspace.cwd, workspaceId: workspace.workspaceId },
-        () => ensureWorkspaceRecordUnarchived(workspace),
+        async () => {
+          // Recovery must enter before filesystem writes and retain admission
+          // through metadata refresh if a handoff starts while Git is running.
+          await restoreDirectory?.();
+          return ensureWorkspaceRecordUnarchived(workspace);
+        },
       ),
   };
 }

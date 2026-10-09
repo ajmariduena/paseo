@@ -18,6 +18,7 @@ import {
   worktreeProjectRootForCwd,
 } from "../../worktree-use-lock.js";
 import { WorktreeRequestError, toWorktreeRequestError } from "../../worktree-errors.js";
+import type { HandoffOwnership } from "../../handoff/ownership.js";
 import {
   resolveWorkspaceDisplayName,
   type PersistedProjectRecord,
@@ -68,13 +69,17 @@ type RecoveryPlan =
 type UnavailableRecoveryState = Extract<WorkspaceRecoveryState, { kind: "unavailable" }>;
 
 export function createWorkspaceRecoveryService(deps: {
+  handoffOwnership?: HandoffOwnership;
   paseoHome: string;
   worktreesRoot?: string;
   serverId?: string;
   getWorkspace: (workspaceId: string) => Promise<PersistedWorkspaceRecord | null>;
   getProject: (projectId: string) => Promise<PersistedProjectRecord | null>;
   isDirectory: (path: string) => Promise<boolean>;
-  unarchiveWorkspace: (workspace: PersistedWorkspaceRecord) => Promise<void>;
+  unarchiveWorkspace: (
+    workspace: PersistedWorkspaceRecord,
+    restoreDirectory: () => Promise<void>,
+  ) => Promise<void>;
 }): WorkspaceRecoveryService {
   async function resolveRecovery(
     workspaceId: string,
@@ -162,13 +167,32 @@ export function createWorkspaceRecoveryService(deps: {
       assertWorktreeNotCleaningUp(initial.workspace.worktreeRoot ?? initial.workspace.cwd);
       const resolved = await resolveRecovery(workspaceId);
       if (resolved.kind === "unavailable") throw new Error(resolved.message);
-      if (resolved.kind === "restore") {
-        await recreateArchivedWorktree(resolved.workspace, resolved.sourceRepoRoot);
-      } else if (!(await deps.isDirectory(resolved.workspace.cwd))) {
-        throw new Error("The archived workspace directory is no longer available.");
+      const releases: Array<() => void> = [];
+      try {
+        if (deps.handoffOwnership) {
+          releases.push(
+            await deps.handoffOwnership.acquireMutation({
+              cwd: resolved.workspace.worktreeRoot ?? resolved.workspace.cwd,
+              workspaceId,
+            }),
+          );
+          if (resolved.kind === "restore") {
+            releases.push(
+              await deps.handoffOwnership.acquireMutation({ cwd: resolved.sourceRepoRoot }),
+            );
+          }
+        }
+        await deps.unarchiveWorkspace(resolved.workspace, async () => {
+          if (resolved.kind === "restore") {
+            await recreateArchivedWorktree(resolved.workspace, resolved.sourceRepoRoot);
+          } else if (!(await deps.isDirectory(resolved.workspace.cwd))) {
+            throw new Error("The archived workspace directory is no longer available.");
+          }
+        });
+        return { workspaceId, action: resolved.kind };
+      } finally {
+        for (const release of releases.toReversed()) release();
       }
-      await deps.unarchiveWorkspace(resolved.workspace);
-      return { workspaceId, action: resolved.kind };
     };
     return projectRoot ? withWorktreeProjectLock(projectRoot, recover) : recover();
   }

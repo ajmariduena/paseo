@@ -1081,14 +1081,18 @@ export class Session {
       }),
     });
     this.workspaceRecovery = createWorkspaceRecoveryService({
+      handoffOwnership: options.handoffOwnership,
       paseoHome: this.paseoHome,
       worktreesRoot: this.worktreesRoot,
       serverId,
       getWorkspace: (workspaceId) => this.workspaceRegistry.get(workspaceId),
       getProject: (projectId) => this.projectRegistry.get(projectId),
       isDirectory: (path) => this.filesystem.isDirectory(path),
-      unarchiveWorkspace: async (workspace) => {
-        await this.workspaceProvisioning.ensureWorkspaceRecordUnarchived(workspace);
+      unarchiveWorkspace: async (workspace, restoreDirectory) => {
+        await this.workspaceProvisioning.ensureWorkspaceRecordUnarchived(
+          workspace,
+          restoreDirectory,
+        );
       },
     });
     this.checkoutSession = new CheckoutSession({
