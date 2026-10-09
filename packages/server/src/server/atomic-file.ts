@@ -31,18 +31,21 @@ export function encodeJsonFile(value: unknown): string {
 }
 
 const NO_LINK_SUPPORT = new Set(["ENOTSUP", "EOPNOTSUPP", "EPERM", "EXDEV", "EMLINK"]);
-/** A fallback write older than this that still is not complete JSON was abandoned mid-write. */
-const ABANDONED_PARTIAL_WRITE_MS = 60_000;
 
-type ExclusiveHandle = Pick<FileHandle, "writeFile" | "sync" | "close">;
+type TempHandle = Pick<FileHandle, "writeFile" | "sync" | "close">;
 
 /** The filesystem operations create-once publication depends on, so tests can take them away. */
 export interface CreateOncePort {
   link: (existingPath: string, newPath: string) => Promise<void>;
-  open: (filePath: string, flags: "wx") => Promise<ExclusiveHandle>;
+  rename: (oldPath: string, newPath: string) => Promise<void>;
+  open: (filePath: string, flags: "w") => Promise<TempHandle>;
 }
 
-const realPort: CreateOncePort = { link: fs.link, open: fs.open };
+export const REAL_CREATE_ONCE_PORT: CreateOncePort = {
+  link: fs.link,
+  rename: fs.rename,
+  open: fs.open,
+};
 
 function errorCode(error: unknown): string | null {
   return error instanceof Error && "code" in error && typeof error.code === "string"
@@ -51,81 +54,58 @@ function errorCode(error: unknown): string | null {
 }
 
 /**
- * Publishes a file only if nothing exists at the path yet; concurrent callers see exactly one
- * winner. A hard link from the finished temp file is the atomic route. Where the filesystem has
- * no hard links the file is created exclusively and written in place, which still admits one
- * winner but can expose a partially written file to a concurrent reader for the write's
- * duration. A failed in-place write removes its file; a partial file nobody finished within a
- * minute counts as abandoned and is replaced.
+ * Publishes a file only if nothing exists at the path yet. The content is written in full and
+ * fsynced to a temp file first, so the final path never holds partial data. A hard link from
+ * that temp file is the atomic create-once route. Where the filesystem has no hard links the
+ * temp file is renamed into place after checking the destination is absent; callers serialize
+ * same-path publication in process, and the remaining check-then-rename race between two
+ * processes sharing one directory is accepted on those filesystems only. A failed write leaves
+ * neither file behind.
  */
 export async function writeJsonFileCreateOnce(
   filePath: string,
   value: unknown,
-  io: CreateOncePort = realPort,
+  io: CreateOncePort = REAL_CREATE_ONCE_PORT,
 ): Promise<boolean> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  const content = encodeJsonFile(value);
   const tempPath = path.join(
     path.dirname(filePath),
     `.${path.basename(filePath)}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`,
   );
   try {
-    await fs.writeFile(tempPath, content, "utf8");
-    await io.link(tempPath, filePath);
-    return true;
-  } catch (error) {
-    const code = errorCode(error);
-    if (code === "EEXIST") return false;
-    if (code !== null && NO_LINK_SUPPORT.has(code)) {
-      return await createExclusively(filePath, content, io);
+    await writeTempFile(tempPath, encodeJsonFile(value), io);
+    try {
+      await io.link(tempPath, filePath);
+      return true;
+    } catch (error) {
+      const code = errorCode(error);
+      if (code === "EEXIST") return false;
+      if (code === null || !NO_LINK_SUPPORT.has(code)) throw error;
     }
-    throw error;
+    if (await exists(filePath)) return false;
+    await io.rename(tempPath, filePath);
+    return true;
   } finally {
     await fs.rm(tempPath, { force: true });
   }
 }
 
-async function createExclusively(
-  filePath: string,
-  content: string,
-  io: CreateOncePort,
-): Promise<boolean> {
-  let handle: ExclusiveHandle;
-  try {
-    handle = await io.open(filePath, "wx");
-  } catch (error) {
-    if (errorCode(error) !== "EEXIST") throw error;
-    if (!(await isAbandonedPartialWrite(filePath))) return false;
-    await fs.rm(filePath, { force: true });
-    return await createExclusively(filePath, content, io);
-  }
+async function writeTempFile(tempPath: string, content: string, io: CreateOncePort): Promise<void> {
+  const handle = await io.open(tempPath, "w");
   try {
     await handle.writeFile(content, "utf8");
     await handle.sync();
-  } catch (error) {
+  } finally {
     await handle.close();
-    await fs.rm(filePath, { force: true });
-    throw error;
   }
-  await handle.close();
-  return true;
 }
 
-async function isAbandonedPartialWrite(filePath: string): Promise<boolean> {
-  let text: string;
-  let modifiedAt: number;
+async function exists(filePath: string): Promise<boolean> {
   try {
-    const [stats, raw] = await Promise.all([fs.stat(filePath), fs.readFile(filePath, "utf8")]);
-    modifiedAt = stats.mtimeMs;
-    text = raw;
+    await fs.stat(filePath);
+    return true;
   } catch (error) {
-    if (errorCode(error) === "ENOENT") return true;
+    if (errorCode(error) === "ENOENT") return false;
     throw error;
-  }
-  try {
-    JSON.parse(text);
-    return false;
-  } catch {
-    return Date.now() - modifiedAt > ABANDONED_PARTIAL_WRITE_MS;
   }
 }

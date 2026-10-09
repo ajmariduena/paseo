@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
 
+import { REAL_CREATE_ONCE_PORT, type CreateOncePort } from "../../atomic-file.js";
 import type { AgentTimelineRow } from "../agent-timeline-store-types.js";
 import type { ProviderSubagentDescriptor } from "../provider-subagents/store.js";
 import {
@@ -283,10 +284,47 @@ test("a child whose descriptor alone exceeds its cap keeps the descriptor and re
   expect(sealed.childPanesNotice).toBe("over_cap");
 });
 
-test("a snapshot file that is not complete JSON reads as unavailable, not as a seal", async () => {
+test("a snapshot file that is not valid JSON is corruption, not a missing seal", async () => {
   const store = new SegmentSnapshotStore(root);
   mkdirSync(join(root, "agent-1"), { recursive: true });
   writeFileSync(join(root, "agent-1", "inc-a1.json"), '{"version": 1, "rows": [');
 
-  expect(await store.read("agent-1", "inc-a1")).toBeNull();
+  await expect(store.read("agent-1", "inc-a1")).rejects.toBeInstanceOf(SyntaxError);
 });
+
+test("without hard links, a slow first sealer still wins over a second sealer of the same incarnation", async () => {
+  const release = deferred<void>();
+  let renames = 0;
+  const slowRename: CreateOncePort = {
+    ...REAL_CREATE_ONCE_PORT,
+    link: async () => {
+      throw Object.assign(new Error("link not supported"), { code: "ENOTSUP" });
+    },
+    rename: async (from, to) => {
+      renames += 1;
+      if (renames === 1) await release.promise;
+      await REAL_CREATE_ONCE_PORT.rename(from, to);
+    },
+  };
+  const store = new SegmentSnapshotStore(root, slowRename);
+
+  const first = store.seal(sealInput({ rows: [row(1, "first")] }));
+  const second = store.seal(sealInput({ rows: [row(1, "second")] }));
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  expect(readdirSync(join(root, "agent-1")).filter((name) => name.endsWith(".json"))).toEqual([]);
+  release.resolve();
+
+  const sealed = await first;
+  await expect(second).rejects.toBeInstanceOf(SnapshotAlreadySealedError);
+  expect(JSON.parse(readFileSync(join(root, "agent-1", "inc-a1.json"), "utf8"))).toEqual(sealed);
+  expect(sealed.rows[0].item).toMatchObject({ text: "first" });
+  expect(readdirSync(join(root, "agent-1"))).toEqual(["inc-a1.json"]);
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}

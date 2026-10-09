@@ -2,7 +2,12 @@ import { readdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 
-import { encodeJsonFile, writeJsonFileCreateOnce } from "../../atomic-file.js";
+import {
+  encodeJsonFile,
+  REAL_CREATE_ONCE_PORT,
+  writeJsonFileCreateOnce,
+  type CreateOncePort,
+} from "../../atomic-file.js";
 import type { AgentTimelineItem } from "../agent-sdk-types.js";
 import type { AgentTimelineRow } from "../agent-timeline-store-types.js";
 import type { ProviderSubagentDescriptor } from "../provider-subagents/store.js";
@@ -266,7 +271,10 @@ export function buildSegmentSnapshot(input: SealSnapshotInput): SegmentSnapshot 
 export class SegmentSnapshotStore {
   private readonly tails = new Map<string, Promise<unknown>>();
 
-  constructor(private readonly directory: string) {}
+  constructor(
+    private readonly directory: string,
+    private readonly io: CreateOncePort = REAL_CREATE_ONCE_PORT,
+  ) {}
 
   seal(input: SealSnapshotInput): Promise<SegmentSnapshot> {
     const key = `${input.agentId}/${input.incarnationId}`;
@@ -278,6 +286,7 @@ export class SegmentSnapshotStore {
         const created = await writeJsonFileCreateOnce(
           this.filePath(input.agentId, input.incarnationId),
           snapshot,
+          this.io,
         );
         if (!created) {
           throw new SnapshotAlreadySealedError(input.agentId, input.incarnationId);
@@ -293,15 +302,9 @@ export class SegmentSnapshotStore {
     return result;
   }
 
-  /** Null for a missing file and for one that is not complete JSON: neither is a seal. */
+  /** Null only for a missing file; the final path never holds partial data, so bad JSON is corruption. */
   async read(agentId: string, incarnationId: string): Promise<SegmentSnapshot | null> {
-    let raw: unknown;
-    try {
-      raw = await readJson(this.filePath(agentId, incarnationId));
-    } catch (error) {
-      if (error instanceof SyntaxError) return null;
-      throw error;
-    }
+    const raw = await readJson(this.filePath(agentId, incarnationId));
     return raw === null ? null : SegmentSnapshotSchema.parse(raw);
   }
 
