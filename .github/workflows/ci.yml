@@ -90,7 +90,7 @@ jobs:
         run: node scripts/npm-retry.mjs ci
 
       - name: Lint lockfile
-        run: npx --yes lockfile-lint --path package-lock.json --type npm --allowed-hosts npm --validate-https --validate-integrity
+        run: npm run lint:lockfile
 
       - name: Verify dependency signatures
         run: npm audit signatures
