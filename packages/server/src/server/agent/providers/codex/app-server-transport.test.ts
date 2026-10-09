@@ -78,14 +78,16 @@ describe("Codex app-server transport", () => {
     try {
       for (let i = 0; i < 2; i++) {
         const closing = expect(client.dispose()).rejects.toThrow(
-          "did not report exit after SIGKILL",
+          "process tree exit is unconfirmed",
         );
         await vi.advanceTimersByTimeAsync(3_000);
         await closing;
+        expect(child.stdin.writableEnded).toBe(false);
       }
       child.exitCode = 0;
       child.emit("exit", 0, null);
       await expect(client.dispose()).resolves.toBeUndefined();
+      expect(child.stdin.writableEnded).toBe(true);
     } finally {
       vi.useRealTimers();
       child.stdout.end();

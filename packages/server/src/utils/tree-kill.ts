@@ -34,6 +34,7 @@ export interface TerminateWithTreeKillOptions {
   gracefulTimeoutMs: number;
   forceTimeoutMs?: number;
   onForceSignal?: () => void;
+  onError?: (error: unknown) => void;
   processTree?: ProcessTreeAccess;
 }
 
@@ -184,8 +185,9 @@ async function terminateTrackedProcessTree(
       return "killed";
     }
     return "kill-timeout";
-  } catch {
+  } catch (error) {
     // Incomplete process inspection or denied signals cannot certify exit.
+    options.onError?.(error);
     return "kill-timeout";
   }
 }
@@ -237,32 +239,40 @@ async function listPosixProcesses(roots: number[]): Promise<ProcessTreeEntry[]> 
       identified.push(entry);
       continue;
     }
-    try {
-      const stat = await readFile(`/proc/${entry.pid}/stat`, "utf8");
-      // comm is parenthesized and can itself contain spaces or parentheses.
-      const fields = stat
-        .slice(stat.lastIndexOf(")") + 2)
-        .trim()
-        .split(/\s+/);
-      const state = fields[0];
-      const parentPid = Number(fields[1]);
-      const startTicks = fields[19];
-      if (!state || !Number.isInteger(parentPid) || !startTicks || !/^\d+$/.test(startTicks)) {
-        throw new Error("Incomplete kernel process identity");
-      }
-      identified.push({
-        pid: entry.pid,
-        parentPid,
-        startedAt: `ticks:${startTicks}`,
-        exited: /^[ZX]/.test(state),
-      });
-    } catch (error) {
-      if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT")
-        continue;
-      throw error;
-    }
+    const identity = await readLinuxProcessEntry(entry.pid);
+    if (identity) identified.push(identity);
   }
   return identified;
+}
+
+export async function readLinuxProcessEntry(
+  pid: number,
+  readStat: (file: string) => Promise<string> = (file) => readFile(file, "utf8"),
+): Promise<ProcessTreeEntry | null> {
+  let stat: string;
+  try {
+    stat = await readStat(`/proc/${pid}/stat`);
+  } catch (error) {
+    // Exit before open reports ENOENT; exit between open and read reports ESRCH.
+    if (
+      isNoSuchProcess(error) ||
+      (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT")
+    )
+      return null;
+    throw error;
+  }
+  // comm is parenthesized and can itself contain spaces or parentheses.
+  const fields = stat
+    .slice(stat.lastIndexOf(")") + 2)
+    .trim()
+    .split(/\s+/);
+  const state = fields[0];
+  const parentPid = Number(fields[1]);
+  const startTicks = fields[19];
+  if (!state || !Number.isInteger(parentPid) || !startTicks || !/^\d+$/.test(startTicks)) {
+    throw new Error("Incomplete kernel process identity");
+  }
+  return { pid, parentPid, startedAt: `ticks:${startTicks}`, exited: /^[ZX]/.test(state) };
 }
 
 function isNoSuchProcess(error: unknown): boolean {

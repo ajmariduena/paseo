@@ -3,7 +3,12 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import { terminateWithTreeKill, type ProcessTreeEntry, type TreeKillTarget } from "./tree-kill.js";
+import {
+  readLinuxProcessEntry,
+  terminateWithTreeKill,
+  type ProcessTreeEntry,
+  type TreeKillTarget,
+} from "./tree-kill.js";
 
 const pollIntervalMs = 50;
 
@@ -134,6 +139,28 @@ afterEach(async () => {
 });
 
 describe("terminateWithTreeKill", () => {
+  test.each(["ENOENT", "ESRCH"])(
+    "accepts process exit during a kernel identity read (%s)",
+    async (code) => {
+      const readStat = async () => {
+        throw Object.assign(new Error("process exited"), { code });
+      };
+      await expect(readLinuxProcessEntry(101, readStat)).resolves.toBeNull();
+    },
+  );
+
+  test("refuses unreadable and incomplete kernel process identities", async () => {
+    const denied = Object.assign(new Error("access denied"), { code: "EACCES" });
+    await expect(
+      readLinuxProcessEntry(101, async () => {
+        throw denied;
+      }),
+    ).rejects.toBe(denied);
+    await expect(readLinuxProcessEntry(101, async () => "")).rejects.toThrow(
+      "Incomplete kernel process identity",
+    );
+  });
+
   test("handoff termination shares one in-flight stop for concurrent callers", async () => {
     const owner: TreeKillTarget = { pid: 101, kill: () => true };
     const inspected = Promise.withResolvers<void>();
@@ -272,22 +299,28 @@ describe("terminateWithTreeKill", () => {
 
   test("handoff termination reports failure when signalling the tree is denied", async () => {
     const signals: number[] = [];
+    const denied = Object.assign(new Error("permission denied"), { code: "EPERM" });
+    const errors: unknown[] = [];
     const result = await terminateWithTreeKill(
       { pid: 101, kill: () => true },
       {
         gracefulTimeoutMs: 0,
         forceTimeoutMs: 0,
+        onError: (error) => {
+          errors.push(error);
+        },
         processTree: {
           list: async () => [{ pid: 101, parentPid: 1, startedAt: "parent", exited: false }],
           signal: (pid) => {
             signals.push(pid);
-            throw Object.assign(new Error("permission denied"), { code: "EPERM" });
+            throw denied;
           },
         },
       },
     );
     expect(result).toBe("kill-timeout");
     expect(signals).toEqual([101]);
+    expect(errors).toEqual([denied]);
   });
 
   test("handoff termination retries a surviving descendant after its owner has exited", async () => {
