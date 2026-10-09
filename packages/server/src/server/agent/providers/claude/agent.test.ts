@@ -550,6 +550,7 @@ describe("ClaudeAgentClient binary resolution", () => {
     const queryFactory = vi.fn(() => ({
       close: vi.fn(),
       return: queryReturn,
+      async *[Symbol.asyncIterator]() {},
     }));
 
     const client = new ClaudeAgentClient({
@@ -596,6 +597,7 @@ describe("ClaudeAgentClient binary resolution", () => {
     const queryFactory = vi.fn(() => ({
       close: vi.fn(),
       return: queryReturn,
+      async *[Symbol.asyncIterator]() {},
     }));
 
     const client = new ClaudeAgentClient({
@@ -641,7 +643,7 @@ describe("ClaudeAgentSession features", () => {
       endQuery?.();
     });
     const queryMock = {
-      close: vi.fn(),
+      close: vi.fn(() => endQuery?.()),
       return: queryReturn,
       applyFlagSettings: vi.fn(async () => undefined),
       setModel: vi.fn(async () => undefined),

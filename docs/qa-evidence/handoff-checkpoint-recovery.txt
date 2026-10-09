@@ -1,5 +1,28 @@
 Handoff persistence recovery foundations — 2026-10-10
 
+Claude query shutdown and final session handles:
+- The regression first reproduced buffered assistant rows disappearing during close.
+  Claude now retains current and retiring query resources through process stop,
+  message-pump drain and iterator return. Native stdout reaches EOF before SDK cleanup
+  can discard its buffered frames. Submission timers are tracked and flushed before
+  subscribers and turn correlation are removed.
+- Pump and iterator-return timeouts refuse closure and retain the pending operation.
+  Retrying a rejected return issues a new cleanup attempt; retrying a pending return
+  joins the existing attempt. Handler faults continue to refuse closure after retry.
+- Query replacement drains the old session before selecting the resume handle.
+  AgentManager reload likewise reads the provider handle after close and event drain;
+  its regression first resumed and stored the old handle. A failed replacement keeps
+  its opening generation across a later resume and successful close.
+
+Scope: the six changed Claude suites passed 158 cases with one worker. Two subsequent
+recovery cases bring the final spawn suite to nine passing cases; its remaining sibling
+suites were not repeated. The focused manager run passed 26 cases, then its failed-opening
+case passed again after making the stored-generation assertion portable to Windows.
+Fixtures inject SDK streams; one process-retention case launches a harmless real Node
+child and terminates it. No credentials, provider prompts or production daemons are used.
+Complete opening/control/hook/rewind/manager callback quiescence, durable failure obligations,
+OS-process crash recovery and fresh authenticated provider continuity remain unproved.
+
 Runtime opening generations:
 - Registered, non-internal create, resume, import and reload write an opening marker
   before calling the provider. POSIX waits for file and directory synchronization.
@@ -29,6 +52,216 @@ repair evidence; callback quiescence and process-stop recovery; durable presenta
 coverage. The retained predecessor identities report uncertainty but do not implement
 its repair proof. A generation and lastStatus=closed are not a complete certificate.
 Internal agents and transient provider probes still need resource dispositions.
+
+Buffered-frame regression before the fix
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/providers/claude/agent.spawn.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  override existing env vars with { override: true }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: 🔐 prevent committing .env to code: https://dotenvx.com/precommit
+
+ ❯ src/server/agent/providers/claude/agent.spawn.test.ts (4 tests | 1 failed | 3 skipped) 26ms
+     × close drains received frames before returning the iterator or dropping subscribers 18ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/providers/claude/agent.spawn.test.ts > Claude spawn override > close drains received frames before returning the iterator or dropping subscribers
+AssertionError: expected [] to match object [ …(2) ]
+
+- Expected
++ Received
+
+- [
+-   {
+-     "item": {
+-       "text": "queued before shutdown",
+-     },
+-   },
+-   {
+-     "item": {
+-       "text": "final received frame",
+-     },
+-   },
+- ]
++ []
+
+ ❯ src/server/agent/providers/claude/agent.spawn.test.ts:79:20
+     77|       await session.close();
+     78|       const text = events.filter((event) => event.type === "timeline" …
+     79|       expect(text).toMatchObject([
+       |                    ^
+     80|         { item: { text: "queued before shutdown" } },
+     81|         { item: { text: "final received frame" } },
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 3 skipped (4)
+   Start at  01:28:34
+   Duration  930ms (transform 504ms, setup 42ms, import 740ms, tests 26ms, environment 0ms)
+
+
+
+Final-handle reload regression before the fix
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/agent-manager.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  suppress all logs with { quiet: true }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  override existing env vars with { override: true }
+
+ ❯ src/server/agent/agent-manager.test.ts (264 tests | 1 failed | 263 skipped) 36ms
+   × reload resumes the final provider handle observed after shutdown 33ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/agent-manager.test.ts > reload resumes the final provider handle observed after shutdown
+AssertionError: expected '4f930c46-1395-4020-b4be-845a4a5fbcbb' to be '8a2bd0b8-30bb-4f3b-94f3-a6ada7f39f9d' // Object.is equality
+
+Expected: "8a2bd0b8-30bb-4f3b-94f3-a6ada7f39f9d"
+Received: "4f930c46-1395-4020-b4be-845a4a5fbcbb"
+
+ ❯ TestAgentClient.resumeSession src/server/agent/agent-manager.test.ts:12152:68
+    12150|     override async resumeSession(handle: AgentPersistenceHandle, confi…
+    12151|       resumedHandles.push(handle);
+    12152|       expect((await storage.get(agentId))?.persistence?.sessionId).toB…
+       |                                                                    ^
+    12153|       return new (class extends TestAgentSession {
+    12154|         override describePersistence() { return { provider: this.provi…
+ ❯ AgentManager.reloadAgentSessionInternal src/server/agent/agent-manager.ts:1910:11
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 263 skipped (264)
+   Start at  01:37:32
+   Duration  1.54s (transform 991ms, setup 42ms, import 1.34s, tests 36ms, environment 0ms)
+
+
+
+Changed Claude suites (one worker)
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  6 passed (6)
+      Tests  158 passed (158)
+   Start at  01:39:30
+   Duration  4.88s (transform 894ms, setup 122ms, import 2.71s, tests 1.22s, environment 1ms)
+
+
+
+Final spawn suite including retry and handler-fault cases
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  9 passed (9)
+   Start at  01:42:04
+   Duration  2.85s (transform 1.56s, setup 198ms, import 2.13s, tests 222ms, environment 0ms)
+
+
+
+Focused manager closure and reload cases
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  26 passed | 238 skipped (264)
+   Start at  01:39:18
+   Duration  1.93s (transform 1.04s, setup 50ms, import 1.40s, tests 355ms, environment 0ms)
+
+
+
+Portable failed-opening recovery assertion
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 263 skipped (264)
+   Start at  01:42:08
+   Duration  2.00s (transform 1.33s, setup 38ms, import 1.78s, tests 48ms, environment 0ms)
+
+
+
+Typecheck after query-drain changes
+
+> paseo@0.11.1 typecheck
+> npm run typecheck --workspaces --if-present
+
+
+> @getpaseo/builtin-plugins@0.11.1 typecheck
+> tsgo -p tsconfig.json --noEmit
+
+
+> @getpaseo/expo-two-way-audio@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/highlight@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/plugin@0.11.1 typecheck
+> tsgo --noEmit && tsgo -p tsconfig.examples.json --noEmit
+
+
+> @getpaseo/protocol@0.11.1 pretypecheck
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/client@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/server@0.11.1 typecheck
+> tsgo -p tsconfig.server.typecheck.json --noEmit
+
+
+> @getpaseo/app@0.11.0-beta.36 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/relay@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/website@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/desktop@0.11.1 typecheck
+> tsgo --noEmit -p tsconfig.json
+
+
+> @getpaseo/cli@0.11.1 typecheck
+> tsgo --noEmit
+
+
+
+Lint after query-drain changes
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 3.7s on 5029 files with 177 rules using 4 threads.
+
 
 Opening-marker regression: before fix
 $ cd packages/server

@@ -3292,7 +3292,7 @@ test("retrying a timed-out reload waits for the original close to finish", async
   }
 });
 
-test("failed reload retains the closed agent for a later resume", async () => {
+test("failed reload retains its opening marker across a later resume", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-reload-recovery-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);
   class FailingResumeClient extends TestAgentClient {
@@ -3315,8 +3315,9 @@ test("failed reload retains the closed agent for a later resume", async () => {
     );
     await expect(manager.reloadAgentSession(created.id)).rejects.toThrow("resume unavailable");
     expect(manager.getAgent(created.id)).toBeNull();
-    expect(await storage.get(created.id)).toMatchObject({
-      lastStatus: "closed",
+    const failedOpening = await storage.get(created.id);
+    expect(failedOpening).toMatchObject({
+      lastStatus: "initializing",
       title: "Keep me",
       persistence: created.persistence,
     });
@@ -3329,6 +3330,9 @@ test("failed reload retains the closed agent for a later resume", async () => {
     expect(recovered.id).toBe(created.id);
     expect((await storage.get(created.id))?.title).toBe("Keep me");
     await manager.closeAgent(created.id);
+    expect((await storage.get(created.id))?.unresolvedRuntimeGenerations).toEqual([
+      failedOpening?.runtimeGeneration,
+    ]);
   } finally {
     await storage.flush();
     rmSync(workdir, { recursive: true, force: true });
@@ -12126,6 +12130,57 @@ test("closing persists provider events emitted during shutdown before the closed
     });
     expect(manager.getAgent(agent.id)).toBeNull();
   } finally {
+    await manager.flush();
+    await storage.flush();
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("reload resumes the final provider handle observed after shutdown", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-reload-final-handle-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const finalSessionId = randomUUID();
+  const resumedHandles: AgentPersistenceHandle[] = [];
+  const client = new (class extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      return new (class extends TestAgentSession {
+        private closed = false;
+        override describePersistence() {
+          return { provider: this.provider, sessionId: this.closed ? finalSessionId : this.id };
+        }
+        override async close(): Promise<void> {
+          this.closed = true;
+        }
+      })(config);
+    }
+    override async resumeSession(
+      handle: AgentPersistenceHandle,
+      config?: Partial<AgentSessionConfig>,
+    ): Promise<AgentSession> {
+      resumedHandles.push(handle);
+      expect((await storage.get(agentId))?.persistence?.sessionId).toBe(finalSessionId);
+      return new (class extends TestAgentSession {
+        override describePersistence() {
+          return { provider: this.provider, sessionId: handle.sessionId };
+        }
+      })({ provider: this.provider, cwd: config?.cwd ?? workdir });
+    }
+  })();
+  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+  const agentId = randomUUID();
+  try {
+    await manager.createAgent({ provider: "codex", cwd: workdir }, agentId, {
+      workspaceId: undefined,
+    });
+    await manager.reloadAgentSession(agentId);
+    expect(resumedHandles).toMatchObject([{ sessionId: finalSessionId }]);
+    await manager.closeAgent(agentId);
+    expect(await storage.get(agentId)).toMatchObject({
+      lastStatus: "closed",
+      persistence: { sessionId: finalSessionId },
+    });
+  } finally {
+    await manager.closeAgent(agentId);
     await manager.flush();
     await storage.flush();
     rmSync(workdir, { recursive: true, force: true });

@@ -253,8 +253,14 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   and attempts to reopen a closed generation fail. Unclosed predecessors survive a new runtime and
   a later clean close, and prevent handoff until recovery proves their outcome. Capacity exhaustion
   refuses another opening instead of discarding predecessors. This records uncertainty; it does
-  not implement the repair proof. Record revision guards, semantic obligations, callback quiescence
-  and durable process-stop recovery remain open under the
+  not implement the repair proof. Claude close and query replacement now retain each query until
+  its process stop, message drain and iterator return complete. Native stdout drains before SDK
+  cleanup; pending submission callbacks run before subscribers are removed. Timeouts preserve the
+  pending operation for retry, and message-handler failures refuse closure. Reload reads the final
+  persistence handle after provider shutdown. This covers owned query pumps, not all admitted
+  callbacks: opening/control operations, hooks, rewind work and manager descendants still need a
+  complete generation boundary. Record revision guards, semantic obligations and durable process-stop
+  recovery also remain open under the
   [conversation persistence contract](#conversation-persistence-contract).
 - `server/handoff/workspace.ts` and its neighboring tests cover Git and directory snapshots,
   restoration and source rechecks. `packWorkspaceArchive` registers the manifest as an archive blob,

@@ -1857,8 +1857,7 @@ export class AgentManager {
     const preservedLastUsage = existing.lastUsage;
     const preservedLastError = existing.lastError;
     const preservedAttention = existing.attention;
-    const handle = existing.persistence;
-    const provider = handle?.provider ?? existing.provider;
+    const provider = existing.persistence?.provider ?? existing.provider;
     const client = this.requireClient(provider);
     const refreshConfig = {
       ...existing.config,
@@ -1894,6 +1893,8 @@ export class AgentManager {
       // A persisted thread can have only one writer, even when its turn is idle.
       await this.closeReloadedSession(existing.session, agentId);
       await this.drainSessionEvents(agentId);
+      this.refreshSessionPersistence(existing);
+      const handle = existing.persistence;
       this.cancelRunningProviderSubagents(agentId);
       closedExisting = this.prepareAgentForClosure(existing, "agent reloaded");
       await this.persistSnapshot(closedExisting);

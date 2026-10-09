@@ -23,7 +23,10 @@ primed.
 
 Reload releases the old runtime before resuming its durable session: an idle provider process can
 still own an exclusive writer. A close failure retains that runtime for cleanup and blocks the
-replacement. Once closure succeeds, a failed resume leaves the durable agent closed and retryable.
+replacement. Read the final provider handle after closure before resuming. A failed replacement
+retains its opening marker and the preceding session handle for retry; a later successful resume
+does not certify that failed opening. Handoff requires recovery evidence for unresolved generations
+([conversation persistence contract](refactors/cross-host-handoff-plan.md#conversation-persistence-contract)).
 
 An idle agent releases its runtime after `agents.idleRuntimeTimeoutMs` (default two hours; `0`
 disables it) when its provider opts in and confirms nothing depends on the live process. The agent
