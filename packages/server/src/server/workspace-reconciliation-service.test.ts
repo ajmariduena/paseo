@@ -26,6 +26,7 @@ import { deriveProjectKey } from "./project-key.js";
 import { createTestLogger as createRealTestLogger } from "../test-utils/test-logger.js";
 import { HandoffOwnership } from "./handoff/ownership.js";
 import { WorkspaceGitServiceImpl } from "./workspace-git-service.js";
+import { createRealpathAwarePathMatcher } from "../utils/path.js";
 
 function canonicalLocalProjectKey(rootPath: string): string {
   return deriveProjectKey({
@@ -326,14 +327,15 @@ describe("WorkspaceReconciliationService", () => {
         expect(
           await new FileBackedProjectRegistry(projectFile, logger).get("project"),
         ).toMatchObject({ kind: "git" });
-        expect(
-          await new FileBackedWorkspaceRegistry(workspaceFile, logger).get("moving"),
-        ).toMatchObject({
+        const reconciled = await new FileBackedWorkspaceRegistry(workspaceFile, logger).get(
+          "moving",
+        );
+        expect(reconciled).toMatchObject({
           kind: "worktree",
-          worktreeRoot: linked,
-          mainRepoRoot: repo,
           branch: "feature",
         });
+        expect(createRealpathAwarePathMatcher(linked)(reconciled?.worktreeRoot ?? "")).toBe(true);
+        expect(createRealpathAwarePathMatcher(repo)(reconciled?.mainRepoRoot ?? "")).toBe(true);
       } finally {
         await service.dispose();
         await git.dispose();

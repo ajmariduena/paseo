@@ -181,7 +181,9 @@ test("handoff drains creation through real teardown and rollback when preparatio
   writeFileSync(
     path.join(repoDir, "paseo.json"),
     JSON.stringify({
-      worktree: { teardown: [`"${process.execPath}" "${script}"`] },
+      worktree: {
+        teardown: [`${process.platform === "win32" ? "& " : ""}"${process.execPath}" "${script}"`],
+      },
     }),
   );
   const register = deps.workspaceProvisioning.createWorkspaceForWorktree;
@@ -1559,6 +1561,7 @@ function createGitRepo(): { tempDir: string; repoDir: string } {
     stdio: "pipe",
   });
   execFileSync("git", ["config", "user.name", "Test"], { cwd: repoDir, stdio: "pipe" });
+  execFileSync("git", ["config", "core.autocrlf", "false"], { cwd: repoDir, stdio: "pipe" });
   writeFileSync(path.join(repoDir, "README.md"), "hello\n");
   execFileSync("git", ["add", "README.md"], { cwd: repoDir, stdio: "pipe" });
   execFileSync("git", ["commit", "-m", "init"], { cwd: repoDir, stdio: "pipe" });
