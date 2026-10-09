@@ -1114,6 +1114,7 @@ test("orders a concurrent replacement after a pending accepted steer", async () 
     })();
     await consumeInitial;
     await vi.waitFor(() => expect(session.startCount).toBe(2));
+    await manager.waitForAgentRunStart(agent.id);
 
     expect(session.interruptCount).toBe(1);
     expect(
@@ -1804,6 +1805,173 @@ test("handoff cancellation lets runtime creation continue in the source workspac
     });
     expect(manager.getAgent(created.id)?.lifecycle).toBe("idle");
     expect(client.createdConfigs).toHaveLength(1);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("handoff refuses prompts to an already open runtime and permits them after cancellation", async () => {
+  const fixture = await handoffAgentFixture();
+  const { manager, cwd, ownership } = fixture;
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd }, undefined, {
+      workspaceId: "workspace-id",
+    });
+    const handoff = await fixture.prepare([agent.id]);
+    await expect(manager.runAgent(agent.id, "must not run")).rejects.toMatchObject({
+      code: "fenced",
+    });
+    expect(manager.hasInFlightRun(agent.id)).toBe(false);
+    expect(manager.getTimeline(agent.id)).toEqual([]);
+    await ownership.cancel(handoff.id);
+    expect((await manager.runAgent(agent.id, "continue here")).canceled).toBe(false);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("handoff drains turn admission without waiting for the foreground turn to end", async () => {
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  const client = new (class extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      return new (class extends TestAgentSession {
+        override async startTurn() {
+          entered.resolve();
+          await release.promise;
+          return { turnId: "handoff-admitted-turn" };
+        }
+      })(config);
+    }
+  })();
+  const fixture = await handoffAgentFixture(client);
+  const { manager, cwd, ownership } = fixture;
+  let stream: AsyncGenerator<AgentStreamEvent> | null = null;
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd }, undefined, {
+      workspaceId: "workspace-id",
+    });
+    stream = manager.streamAgent(agent.id, "already admitted");
+    const starting = stream.next();
+    await entered.promise;
+    const handoff = await fixture.prepare([agent.id]);
+    await expect(ownership.markReady(handoff.id, "a".repeat(64))).rejects.toMatchObject({
+      code: "invalid_state",
+    });
+    release.resolve();
+    expect(await starting).toMatchObject({ done: false, value: { type: "turn_started" } });
+    await ownership.drain(handoff.id);
+    expect(manager.getAgent(agent.id)?.lifecycle).toBe("running");
+    await manager.cancelAgentRun(agent.id);
+    expect(manager.hasInFlightRun(agent.id)).toBe(false);
+  } finally {
+    release.resolve();
+    await stream?.return(undefined);
+    await fixture.cleanup();
+  }
+});
+
+test("handoff admission never starts a turn cancelled before iteration", async () => {
+  let starts = 0;
+  const client = new (class extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      return new (class extends TestAgentSession {
+        override async startTurn() {
+          starts++;
+          return super.startTurn();
+        }
+      })(config);
+    }
+  })();
+  const fixture = await handoffAgentFixture(client);
+  const { manager, cwd } = fixture;
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd }, undefined, {
+      workspaceId: "workspace-id",
+    });
+    const stream = manager.streamAgent(agent.id, "cancel before admission");
+    await manager.cancelAgentRun(agent.id);
+    await expect(stream.next()).rejects.toThrow("run was canceled before its turn started");
+    expect(starts).toBe(0);
+    expect(manager.hasInFlightRun(agent.id)).toBe(false);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("handoff drains an admitted out-of-band command and rejects new commands", async () => {
+  const releaseCommand = deferred<void>();
+  let executions = 0;
+  const client = new (class extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      return new (class extends TestAgentSession {
+        tryHandleOutOfBand() {
+          return {
+            run: async () => {
+              executions++;
+              await releaseCommand.promise;
+            },
+          };
+        }
+      })(config);
+    }
+  })();
+  const fixture = await handoffAgentFixture(client);
+  const { manager, cwd, ownership } = fixture;
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd }, undefined, {
+      workspaceId: "workspace-id",
+    });
+    expect(await manager.tryRunOutOfBand(agent.id, "/goal pause")).toBe(true);
+    const handoff = await fixture.prepare([agent.id]);
+    await expect(manager.tryRunOutOfBand(agent.id, "/goal resume")).rejects.toMatchObject({
+      code: "fenced",
+    });
+    await expect(ownership.markReady(handoff.id, "a".repeat(64))).rejects.toMatchObject({
+      code: "invalid_state",
+    });
+    releaseCommand.resolve();
+    await ownership.drain(handoff.id);
+    expect(manager.hasOutOfBandInFlight(agent.id)).toBe(false);
+    expect(executions).toBe(1);
+  } finally {
+    releaseCommand.resolve();
+    await fixture.cleanup();
+  }
+});
+
+test.each([
+  "mode",
+  "model",
+  "thinking",
+  "feature",
+  "permission",
+  "rewind",
+  "steer",
+  "replace",
+  "steer-or-replace",
+])("handoff fences the active runtime operation %s", async (operation) => {
+  const fixture = await handoffAgentFixture();
+  const { manager, cwd } = fixture;
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd }, undefined, {
+      workspaceId: "workspace-id",
+    });
+    await fixture.prepare([agent.id]);
+    const operations: Record<string, () => Promise<unknown>> = {
+      mode: () => manager.setAgentMode(agent.id, "plan"),
+      model: () => manager.setAgentModel(agent.id, "gpt-5.4"),
+      thinking: () => manager.setAgentThinkingOption(agent.id, "high"),
+      feature: () => manager.setAgentFeature(agent.id, "fast", true),
+      permission: () =>
+        manager.respondToPermission(agent.id, "pending-permission", { behavior: "allow" }),
+      rewind: () => manager.rewind(agent.id, "old-message", "conversation"),
+      steer: () => manager.steerAgentRun(agent.id, "continue"),
+      replace: () => manager.replaceAgentRun(agent.id, "continue"),
+      "steer-or-replace": () => manager.steerOrReplaceActiveTurn(agent.id, "continue"),
+    };
+    await expect(operations[operation]()).rejects.toMatchObject({ code: "fenced" });
+    expect(manager.getAgent(agent.id)?.lifecycle).toBe("idle");
   } finally {
     await fixture.cleanup();
   }
@@ -3324,7 +3492,7 @@ test("does not evict an agent runtime while an out-of-band command is running", 
     const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
       workspaceId: undefined,
     });
-    expect(manager.tryRunOutOfBand(agent.id, "/goal pause")).toBe(true);
+    expect(await manager.tryRunOutOfBand(agent.id, "/goal pause")).toBe(true);
 
     await vi.advanceTimersByTimeAsync(20_000);
     expect(session?.closed).toBe(false);

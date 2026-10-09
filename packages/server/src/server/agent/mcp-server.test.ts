@@ -274,7 +274,7 @@ function buildAgentManagerSpies() {
     getActiveRun: vi.fn().mockReturnValue(null),
     messageQueue: { isHeldForUserStop: () => false, releaseUserStop: () => undefined },
     waitForRunToSettle: vi.fn().mockResolvedValue(undefined),
-    tryRunOutOfBand: vi.fn().mockReturnValue(false),
+    tryRunOutOfBand: vi.fn().mockResolvedValue(false),
     subscribe: vi.fn().mockReturnValue(() => {}),
     streamAgent: vi.fn(() => (async function* noop() {})()),
     annotatePrompt: vi.fn().mockResolvedValue(undefined),

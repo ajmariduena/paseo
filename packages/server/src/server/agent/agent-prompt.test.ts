@@ -102,7 +102,7 @@ function createPermissionNotificationScenario(
       subscriber = null;
     };
   });
-  Reflect.set(agentManager, "tryRunOutOfBand", () => false);
+  Reflect.set(agentManager, "tryRunOutOfBand", async () => false);
   Reflect.set(agentManager, "streamAgent", (_agentId: string, prompt: string) => {
     resolvePromptAttempt?.();
     if (options?.parentPromptError) {

@@ -210,6 +210,15 @@ export class HandoffOwnership {
   }
 
   async withMutation<T>(scope: HandoffMutationScope, operation: () => Promise<T>): Promise<T> {
+    const release = await this.acquireMutation(scope);
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
+  async acquireMutation(scope: HandoffMutationScope): Promise<() => void> {
     const canonical = { ...scope, cwd: await mutationPath(scope.cwd) };
     this.assertAllowed(canonical);
     let finish: () => void = () => {};
@@ -218,12 +227,10 @@ export class HandoffOwnership {
     });
     const mutation = { scope: canonical, done };
     this.mutations.add(mutation);
-    try {
-      return await operation();
-    } finally {
+    return () => {
       this.mutations.delete(mutation);
       finish();
-    }
+    };
   }
 
   async drain(id: string): Promise<void> {

@@ -126,9 +126,17 @@ registration, including a changed working directory during reload. Boot tests ex
 fence through the real WebSocket connection and reject missing or corrupt journals. Missing
 working directories retain their path fences without blocking unrelated archived history.
 
-These tests do not establish the complete ownership promise: existing-runtime prompts and settings,
-draft catalog runtimes, terminals, scripts, file/Git mutations, runtime termination and destination
-activation still need integration. Source history needs a readable path that does not reopen a
+Existing-runtime prompts, steering/replacement, settings, permission responses and rewind now
+respect the fence. Turn admission holds its lease until the accepted turn and its waiter are
+published; it does not hold the lease for the whole foreground turn, which handoff must stop after
+draining admissions. Out-of-band commands hold their leases until they finish. Stop and close
+remain available. Tests cover denied prompts, cancellation before provider admission, and draining
+admitted turns and commands. Flush event and persistence queues after runtime shutdown and before
+capturing conversation data; finishing an RPC alone does not prove those writes have settled.
+
+These tests do not establish the complete ownership promise: draft catalog runtimes, terminals,
+scripts, file/Git mutations, runtime termination and destination activation still need integration.
+Source history needs a readable path that does not reopen a
 fenced native runtime. Source release explicitly refuses Windows until durable directory updates
 have an implementation there; archive staging alone does not satisfy that requirement.
 

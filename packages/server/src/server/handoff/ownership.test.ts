@@ -80,6 +80,21 @@ test("drains mutations already admitted and refuses later mutations before readi
   expect((await ownership.markReady(input.id, "a".repeat(64))).state).toBe("ready");
 });
 
+test("releasing an explicit lease twice cannot release another in-flight mutation", async () => {
+  const first = await ownership.acquireMutation({ cwd });
+  const second = await ownership.acquireMutation({ cwd });
+  const input = source();
+  await ownership.prepare(input);
+  first();
+  first();
+  await expect(ownership.markReady(input.id, "a".repeat(64))).rejects.toMatchObject({
+    code: "invalid_state",
+  });
+  second();
+  await ownership.drain(input.id);
+  expect((await ownership.markReady(input.id, "a".repeat(64))).state).toBe("ready");
+});
+
 test("blocks shared, ancestor and nested checkouts plus moved agent identities", async () => {
   const input = source();
   await mkdir(path.join(cwd, "nested"));
