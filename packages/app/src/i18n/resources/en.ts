@@ -1,7 +1,12 @@
 export const en = {
   handoff: {
+    review: "Review transfer",
+    conversations: "Conversations",
+    emptyConversations: "This workspace has no conversations.",
+    untitledConversation: "Untitled conversation",
     location: "Destination directory",
     busy: {
+      reviewing: "Reviewing…",
       loading: "Loading...",
       preparing: "Preparing...",
       moving: "Moving...",

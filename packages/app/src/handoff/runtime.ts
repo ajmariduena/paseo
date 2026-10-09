@@ -35,9 +35,16 @@ export const handoffFormPorts: HandoffFormPorts = {
   newTransferId: randomUUID,
   async validate(record) {
     const { source, destination } = connections(record);
-    const inspection = await source.handoffInspectSource({ workspaceId: record.workspaceId });
+    const inspection = await source.handoffPreviewSource({ workspaceId: record.workspaceId });
     if (inspection.error) throw new Error(inspection.error.message);
+    if (!inspection.result) throw new Error("Source preview is missing");
     await destination.listDirectory(record.destinationParent, ".");
+    const preview = await destination.handoffPreviewDestination({
+      conversations: inspection.result.conversations,
+    });
+    if (preview.error) throw new Error(preview.error.message);
+    if (!preview.result) throw new Error("Destination preview is missing");
+    return preview.result;
   },
   prepare: (record, options) =>
     prepareWorkspaceHandoff({
@@ -46,6 +53,7 @@ export const handoffFormPorts: HandoffFormPorts = {
       workspaceId: record.workspaceId,
       destinationParent: record.destinationParent,
       continuationMode: record.continuationMode,
+      expectedAgentIds: record.reviewedAgentIds,
     }),
   activate: (record, options) =>
     activateWorkspaceHandoff({

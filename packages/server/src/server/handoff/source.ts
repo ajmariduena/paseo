@@ -3,6 +3,10 @@ import path from "node:path";
 import type { Logger } from "pino";
 import { z } from "zod";
 import { HandoffArchiveManifestSchema, HandoffTransferIdSchema } from "@getpaseo/protocol/handoff";
+import type {
+  HandoffConversationPreview,
+  HandoffSourcePreview,
+} from "@getpaseo/protocol/handoff-control";
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import type { AgentManager } from "../agent/agent-manager.js";
 import type { AgentStorage, StoredAgentRecord } from "../agent/agent-storage.js";
@@ -14,6 +18,7 @@ import {
   captureClaudeSession,
   readCapturedClaudeHistory,
   verifyCapturedClaudeSession,
+  previewClaudeSession,
 } from "../agent/providers/claude/handoff.js";
 import type { WorkspaceRegistry } from "../workspace-registry.js";
 import type { TerminalManager } from "../../terminal/terminal-manager.js";
@@ -94,6 +99,75 @@ export class HandoffSource {
   constructor(private readonly options: SourceOptions) {}
 
   async inspect(workspaceId: string) {
+    const { records, ...inventory } = await this.inventory(workspaceId);
+    for (const record of records) {
+      const reason = this.conversationBlockReason(record);
+      if (reason) refuse(reason.code, reason.message);
+    }
+    return inventory;
+  }
+
+  async preview(workspaceId: string): Promise<HandoffSourcePreview> {
+    const inventory = await this.inventory(workspaceId);
+    const records = new Map(inventory.records.map((record) => [record.id, record]));
+    const conversations: HandoffConversationPreview[] = [];
+    let runtime: ReturnType<HandoffSource["nativeRuntime"]> | undefined;
+    for (const agentId of inventory.agentIds) {
+      const record = records.get(agentId);
+      const live = this.options.agentManager.getAgent(agentId);
+      const identity = {
+        agentId,
+        title: record?.title ?? null,
+        provider: record?.provider ?? live?.provider ?? "unknown",
+      };
+      try {
+        if (!record)
+          refuse("invalid_source", "Conversation has not finished saving; retry the review");
+        const reason = this.conversationBlockReason(record);
+        if (reason) refuse(reason.code, reason.message);
+        const agent = this.nativeAgent(record);
+        runtime ??= this.nativeRuntime();
+        const preview = await previewClaudeSession({
+          handle: {
+            provider: "claude",
+            sessionId: agent.sessionId,
+            metadata: { claudeProjectDirName: agent.projectDirName },
+          },
+          cwd: agent.cwd,
+          ...(await runtime),
+        });
+        conversations.push({ ...identity, provider: "claude", state: "available", ...preview });
+      } catch (error) {
+        conversations.push({
+          ...identity,
+          state: "blocked",
+          reason: error instanceof Error ? error.message : "Source session could not be inspected",
+        });
+      }
+    }
+    return { workspaceId, cwd: inventory.cwd, conversations };
+  }
+
+  private conversationBlockReason(record: StoredAgentRecord) {
+    if (
+      record.provider !== "claude" ||
+      record.archivedAt ||
+      record.owner ||
+      record.labels[PARENT_AGENT_ID_LABEL]
+    )
+      return {
+        code: "invalid_source" as const,
+        message: "This conversation requires a handoff disposition that is not implemented yet",
+      };
+    if (record.lastStatus !== "closed" && !this.options.agentManager.getAgent(record.id))
+      return {
+        code: "stop_uncertain" as const,
+        message: "Source runtime exit has not been confirmed",
+      };
+    return null;
+  }
+
+  private async inventory(workspaceId: string) {
     const workspace = await this.options.workspaces.get(workspaceId);
     if (!workspace || workspace.archivedAt)
       refuse("invalid_source", "Source workspace is unavailable");
@@ -118,21 +192,7 @@ export class HandoffSource {
       if (agent.workspaceId !== workspaceId && handoffPathsOverlap(cwd, await realpath(agent.cwd)))
         refuse("invalid_source", "Another agent writes to the source checkout");
     }
-    for (const record of records) {
-      if (
-        record.provider !== "claude" ||
-        record.archivedAt ||
-        record.owner ||
-        record.labels[PARENT_AGENT_ID_LABEL]
-      )
-        refuse(
-          "invalid_source",
-          "This conversation requires a handoff disposition that is not implemented yet",
-        );
-      if (record.lastStatus !== "closed" && !this.options.agentManager.getAgent(record.id))
-        refuse("stop_uncertain", "Source runtime exit has not been confirmed");
-    }
-    return { cwd, workspaceId, agentIds: ids };
+    return { cwd, workspaceId, agentIds: ids, records };
   }
 
   prepare(input: SourceRequest) {
@@ -353,7 +413,7 @@ export class HandoffSource {
 
   private nativeAgent(record: StoredAgentRecord): z.infer<typeof AgentSchema> {
     if (record.provider !== "claude" || !record.persistence)
-      refuse("invalid_source", "Conversation needs explicit context-export continuation");
+      refuse("invalid_source", "Conversation has no saved session that can be exported");
     return AgentSchema.parse({
       id: record.id,
       cwd: record.cwd,

@@ -3,8 +3,13 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ja: TranslationResources = {
   handoff: {
+    review: "転送内容を確認",
+    conversations: "会話",
+    emptyConversations: "このワークスペースには会話がありません。",
+    untitledConversation: "無題の会話",
     location: "移動先ディレクトリ",
     busy: {
+      reviewing: "確認中…",
       loading: "読み込み中...",
       preparing: "準備中...",
       moving: "移動中...",

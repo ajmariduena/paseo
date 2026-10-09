@@ -263,8 +263,12 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   recovery and bounded Unicode excerpts. A real two-daemon Claude test uses the client coordinator
   and RPCs, starts a new session and recovers a prior-only token from exported files to write in the
   destination workspace. Reservation
-  status and agent labels expose the mode. The app offers an explicit native/context choice for the
-  whole workspace; per-conversation compatibility reasons and provenance display remain open.
+  status and agent labels expose the mode. Historical decoding materializes only an isolated copy;
+  native activation policy must not prevent reading exported history. A workflow-bearing fixture
+  now exports its history while native installation still refuses its automation state.
+  The app shows native/context availability and reasons for each conversation, using read-only
+  source-artifact and destination-version inspection. The chosen mode still applies to the whole
+  workspace; mixed per-conversation choices and provenance display remain open.
   Source decoding still uses the tested Claude codec; other providers and incompatible source
   formats are not yet exportable. External attachments are reported as unavailable, not transported.
 - `utils/tree-kill.test.ts`, `managed-processes.test.ts` and `bootstrap-managed-processes.test.ts`
@@ -286,18 +290,22 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   evidence remain open before enabling native handoff.
 - `packages/app/src/handoff` connects the workspace menu to the client coordinator. Its form persists
   transfer identity and intent before host mutations, preserves the selected mode across reopening,
-  and exposes prepare, activate, retry, cancel and destination navigation. Read-only placement errors
-  leave the form editable. Ten form cases cover lost replies, storage failures, duplicate submissions,
-  closing during work, cancellation recovery and host journals advancing past local state. The feature
+  and exposes review, prepare, activate, retry, cancel and destination navigation. Review does not
+  stop work or reserve a destination. Read-only placement errors leave the form editable. The source
+  conversation set is checked again before reservation; a changed set returns the form to review.
+  Twelve form cases cover unavailable modes, inventory changes, lost replies, storage failures,
+  duplicate submissions, closing during work, cancellation recovery and host journals advancing
+  past local state. The network suite covers matching/mismatched Claude versions, missing source
+  history and workflow artifacts without starting a provider turn during review. The feature
   gate is checked on both hosts before preparation; only isolated test daemons advertise it. Two
   browser cases use real isolated daemons and a directory workspace: desktop preparation/reload
   verifies bytes and destination navigation after a real activation conflict and source shutdown;
   compact context selection/reload/cancellation leaves the source usable.
   These workspaces contain no conversations. See the [raw app results](../qa-evidence/handoff-app.txt)
-  and [desktop](../qa-evidence/handoff-app-desktop.png) / [compact](../qa-evidence/handoff-app-compact.png)
+  and [review](../qa-evidence/handoff-review-compact.png), [desktop](../qa-evidence/handoff-app-desktop.png) / [compact](../qa-evidence/handoff-app-compact.png)
   screenshots. Transfer discovery without
-  local state, reopening recovery when the source workspace is unavailable, pinned-key client persistence, per-conversation
-  preflight, source moved state and native-platform evidence remain open.
+  local state, reopening recovery when the source workspace is unavailable, pinned-key client persistence,
+  resource/omitted-file preflight, source moved state and native-platform evidence remain open.
 - Source retirement/tombstones and automation dispositions remain unimplemented.
   The composite archive currently captures Claude conversations;
   other provider codecs remain open. Complete handoff is not advertised.

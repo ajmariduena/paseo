@@ -328,7 +328,115 @@ test.skipIf(process.platform === "win32")(
         persistence: { provider: "claude", sessionId },
       }),
     );
+    const preview = await source.client.handoffPreviewSource({ workspaceId: created.workspace.id });
+    expect(preview.error).toBeNull();
+    if (!preview.result) throw new Error("Missing source preview");
+    expect(preview.result.conversations).toEqual([
+      {
+        agentId: sourceAgentId,
+        title: null,
+        provider: "claude",
+        state: "available",
+        cliVersion: "2.1.295",
+        hasWorkflows: false,
+      },
+    ]);
+    const compatibility = await destination.client.handoffPreviewDestination({
+      conversations: preview.result.conversations,
+    });
+    expect(compatibility.error).toBeNull();
+    expect(compatibility.result?.conversations).toEqual([
+      {
+        agentId: sourceAgentId,
+        title: null,
+        provider: "claude",
+        native: { available: true, reason: null },
+        context: { available: true, reason: null },
+      },
+    ]);
+    await rm(path.join(project, `${sessionId}.jsonl`));
+    const missingHistory = await source.client.handoffPreviewSource({
+      workspaceId: created.workspace.id,
+    });
+    expect(missingHistory.result?.conversations).toEqual([
+      {
+        agentId: sourceAgentId,
+        title: null,
+        provider: "claude",
+        state: "blocked",
+        reason: "Saved Claude session files are missing on the source host",
+      },
+    ]);
+    if (!missingHistory.result) throw new Error("Missing source failure preview");
+    const blocked = await destination.client.handoffPreviewDestination({
+      conversations: missingHistory.result.conversations,
+    });
+    expect(blocked.result?.conversations[0]).toMatchObject({
+      native: {
+        available: false,
+        reason: "Saved Claude session files are missing on the source host",
+      },
+      context: {
+        available: false,
+        reason: "Saved Claude session files are missing on the source host",
+      },
+    });
+    await writeFile(path.join(project, `${sessionId}.jsonl`), transcript);
+    await writeFile(
+      path.join(root, "destination", "claude-version.cjs"),
+      "console.log('2.1.296');\n",
+    );
+    const mismatched = await destination.client.handoffPreviewDestination({
+      conversations: preview.result.conversations,
+    });
+    expect(mismatched.result?.conversations[0]).toMatchObject({
+      native: {
+        available: false,
+        reason: "Native Claude handoff requires matching Claude Code versions, at least 2.1.295",
+      },
+      context: { available: true, reason: null },
+    });
+    await writeFile(
+      path.join(root, "destination", "claude-version.cjs"),
+      "console.log('2.1.295');\n",
+    );
+    const workflows = path.join(project, sessionId, "workflows");
+    await mkdir(workflows, { recursive: true });
+    await writeFile(path.join(workflows, "state.json"), JSON.stringify({ type: "state" }));
+    const withWorkflow = await source.client.handoffPreviewSource({
+      workspaceId: created.workspace.id,
+    });
+    expect(withWorkflow.result?.conversations[0]).toMatchObject({ hasWorkflows: true });
+    if (!withWorkflow.result) throw new Error("Missing workflow preview");
+    const workflowCompatibility = await destination.client.handoffPreviewDestination({
+      conversations: withWorkflow.result.conversations,
+    });
+    expect(workflowCompatibility.result?.conversations[0]).toMatchObject({
+      native: {
+        available: false,
+        reason: "Claude workflow state needs an explicit disposition before native continuation",
+      },
+      context: { available: true, reason: null },
+    });
+    expect(await origin.handoffOwnership.withMutation({ cwd }, async () => "still writable")).toBe(
+      "still writable",
+    );
+    expect((await destination.client.fetchWorkspaces()).entries).toEqual([]);
     const transferId = randomUUID();
+    await expect(
+      prepareWorkspaceHandoff({
+        source: source.client,
+        destination: destination.client,
+        transferId,
+        workspaceId: created.workspace.id,
+        destinationParent: root,
+        continuationMode: "context",
+        expectedAgentIds: [],
+      }),
+    ).rejects.toThrow("Source conversations changed after review");
+    expect((await destination.client.handoffGetDestinationStatus({ transferId })).error?.code).toBe(
+      "not_found",
+    );
     const request = {
       transferId,
       sourceServerId: origin.getServerId(),

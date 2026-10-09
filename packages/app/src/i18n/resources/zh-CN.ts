@@ -3,8 +3,13 @@ import { pluginSettings } from "./plugin-settings";
 
 export const zhCN: TranslationResources = {
   handoff: {
+    review: "检查转移",
+    conversations: "对话",
+    emptyConversations: "此工作区没有对话。",
+    untitledConversation: "未命名对话",
     location: "目标目录",
     busy: {
+      reviewing: "检查中…",
       loading: "正在加载...",
       preparing: "正在准备...",
       moving: "正在移动...",

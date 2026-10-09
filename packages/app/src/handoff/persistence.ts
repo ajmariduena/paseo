@@ -15,6 +15,7 @@ const HandoffRecordSchema = z.object({
   destinationLabel: z.string().min(1),
   destinationParent: z.string().min(1),
   continuationMode: z.enum(["native", "context"]),
+  reviewedAgentIds: z.array(z.string().min(1)).max(1000).optional(),
   intent: z.enum(["prepare", "activate", "cancel"]),
   snapshot: HandoffDestinationSnapshotSchema.nullable(),
 });
@@ -23,6 +24,7 @@ export type HandoffRecord = z.infer<typeof HandoffRecordSchema>;
 interface Storage {
   getItem(key: string): Promise<string | null>;
   setItem(key: string, value: string): Promise<void>;
+  removeItem(key: string): Promise<void>;
 }
 
 function storageKey(origin: HandoffOrigin): string {
@@ -55,6 +57,9 @@ export function createHandoffPersistence(storage: Storage) {
     },
     async save(record: HandoffRecord): Promise<void> {
       await storage.setItem(storageKey(record), JSON.stringify(record));
+    },
+    async discard(origin: HandoffOrigin): Promise<void> {
+      await storage.removeItem(storageKey(origin));
     },
   };
 }

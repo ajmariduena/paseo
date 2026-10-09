@@ -1,10 +1,10 @@
 Handoff app validation — Linux, 2026-10-09
 
-Browser fixtures use two isolated test hosts and a directory workspace without conversations.
-Native/context continuation with a real provider is covered separately in the acceptance plan;
-these browser cases prove workspace transfer, reload, navigation, cancellation and activation
-recovery with the source offline after the destination accepted release.
-Browser width: 1280x720 and 390x844. The compact case is browser web, not native iOS/Android.
+Browser fixtures use two isolated hosts and a directory workspace without conversations.
+They prove read-only review, workspace transfer/reload, offline activation recovery, navigation
+and cancellation. Per-conversation compatibility uses fixture transcripts in the network test;
+real provider continuation is covered separately in the acceptance plan.
+Browser widths: 1280x720 and 390x844. Compact browser web is not native iOS/Android.
 
 Browser environment used temporary Chromium, native libraries and fonts under /tmp:
 FONTCONFIG_FILE=/tmp/handoff-browser-libs/fonts.conf
@@ -20,9 +20,10 @@ $ cd packages/app && npx vitest run src/handoff/form-model.test.ts --bail=1
 
 
  Test Files  1 passed (1)
-      Tests  10 passed (10)
-   Start at  15:33:14
-   Duration  339ms (transform 114ms, setup 57ms, import 134ms, tests 15ms, environment 0ms)
+      Tests  12 passed (12)
+   Start at  16:22:12
+   Duration  582ms (transform 192ms, setup 105ms, import 193ms, tests 16ms, environment 0ms)
+
 
 
 $ cd packages/app && npx vitest run src/i18n/resources.test.ts --bail=1
@@ -32,8 +33,9 @@ $ cd packages/app && npx vitest run src/i18n/resources.test.ts --bail=1
 
  Test Files  1 passed (1)
       Tests  40 passed (40)
-   Start at  15:51:53
-   Duration  3.02s (transform 1.07s, setup 165ms, import 1.10s, tests 1.45s, environment 0ms)
+   Start at  16:23:27
+   Duration  2.12s (transform 853ms, setup 74ms, import 942ms, tests 986ms, environment 0ms)
+
 
 
 $ npm run test:e2e --workspace=@getpaseo/app -- e2e/browser/workspace-handoff.spec.ts
@@ -46,80 +48,94 @@ $ npm run test:e2e --workspace=@getpaseo/app -- e2e/browser/workspace-handoff.sp
 [metro] Experimental Expo Autolinking module resolver is enabled.
 [metro] React Compiler enabled
 [metro] Starting Metro Bundler
-[metro] Waiting on http://localhost:36199
+[metro] Waiting on http://localhost:45855
 [metro] Logs for your project will appear below.
 [metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
-[metro] Web packages/app/index.ts ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.9% (5624/5624)
-[metro] Web Bundled 4339ms packages/app/index.ts (5624 modules)
-[e2e] Metro warmed on port 36199
+[metro] | (node:356577) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[metro] | (Use `node --trace-warnings ...` to show where the warning was created)
+[metro] Web packages/app/index.ts ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 95.9% (5269/5384)
+[metro] Web Bundled 5026ms packages/app/index.ts (5624 modules)
+[e2e] Metro warmed on port 45855
 
 Running 2 tests using 1 worker
 
-(node:343568) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(node:356674) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
 (Use `node --trace-warnings ...` to show where the warning was created)
-(node:343568) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(node:356674) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
 (Use `node --trace-warnings ...` to show where the warning was created)
-[e2e] Worker 0 daemon started on port 45371, home: /tmp/paseo-e2e-worker-0-9FU3Bi
+[e2e] Worker 0 daemon started on port 36723, home: /tmp/paseo-e2e-worker-0-7ozcmZ
 [metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
-[metro] Web Bundled 319ms packages/app/index.ts (1 module)
+[metro] Web Bundled 453ms packages/app/index.ts (1 module)
 [metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
-[metro] Web Bundled 163ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (86 modules)
 [metro]  LOG  [web] Logs will appear in the browser console
-[metro] Web Bundled 319ms packages/app/index.ts (1 module)
+[metro] Web Bundled 167ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (86 modules)
+[metro] Web Bundled 315ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 25ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 299ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 15ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 289ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 18ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 290ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 17ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+  ✓  1 [browser] › e2e/browser/workspace-handoff.spec.ts:96:7 › workspace handoff › recovers preparation and activation errors, reloads a transfer and finishes with source offline (39.2s)
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 356ms packages/app/index.ts (1 module)
 [metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
 [metro] Web Bundled 10ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
 [metro]  LOG  [web] Logs will appear in the browser console
-[metro] Web Bundled 241ms packages/app/index.ts (1 module)
+[metro] Web Bundled 316ms packages/app/index.ts (1 module)
 [metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
 [metro] Web Bundled 9ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
 [metro]  LOG  [web] Logs will appear in the browser console
-[metro] Web Bundled 278ms packages/app/index.ts (1 module)
+[metro] Web Bundled 392ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 15ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 291ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 6ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 314ms packages/app/index.ts (1 module)
 [metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
 [metro] Web Bundled 9ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
 [metro]  LOG  [web] Logs will appear in the browser console
-[metro] Web Bundled 292ms packages/app/index.ts (1 module)
-[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
-[metro] Web Bundled 5ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
-[metro]  LOG  [web] Logs will appear in the browser console
-  ✓  1 [browser] › e2e/browser/workspace-handoff.spec.ts:96:7 › workspace handoff › recovers preparation and activation errors, reloads a transfer and finishes with source offline (36.9s)
-[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
-[metro] Web Bundled 304ms packages/app/index.ts (1 module)
-[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
-[metro] Web Bundled 17ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
-[metro]  LOG  [web] Logs will appear in the browser console
-[metro] Web Bundled 258ms packages/app/index.ts (1 module)
-[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
-[metro] Web Bundled 11ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
-[metro]  LOG  [web] Logs will appear in the browser console
-[metro] Web Bundled 283ms packages/app/index.ts (1 module)
-[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
-[metro] Web Bundled 17ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
-[metro]  LOG  [web] Logs will appear in the browser console
-[metro] Web Bundled 237ms packages/app/index.ts (1 module)
-[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
-[metro] Web Bundled 8ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
-[metro]  LOG  [web] Logs will appear in the browser console
-[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
-[metro] Web Bundled 294ms packages/app/index.ts (1 module)
-[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
-[metro] Web Bundled 11ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
-[metro]  LOG  [web] Logs will appear in the browser console
-  ✓  2 [browser] › e2e/browser/workspace-handoff.spec.ts:165:7 › workspace handoff › compact layout preserves explicit context choice and cancels after reopening (40.7s)
+  ✓  2 [browser] › e2e/browser/workspace-handoff.spec.ts:171:7 › workspace handoff › compact layout preserves explicit context choice and cancels after reopening (43.6s)
 [e2e] Worker 0 daemon stopped
 [e2e] Metro stopped
 
-  2 passed (1.9m)
+  2 passed (2.0m)
 
 
-$ cd packages/server && npx vitest run src/server/handoff/archive.e2e.test.ts -t "coordinates handoff over RPC" --bail=1
+$ cd packages/server && npx vitest run src/server/handoff/archive.e2e.test.ts -t "activates an explicit context export" --bail=1
 
  RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
 
 
  Test Files  1 passed (1)
       Tests  1 passed | 14 skipped (15)
-   Start at  16:04:33
-   Duration  13.02s (transform 9.09s, setup 41ms, import 11.50s, tests 1.36s, environment 0ms)
+   Start at  16:30:04
+   Duration  16.63s (transform 11.50s, setup 83ms, import 14.30s, tests 2.06s, environment 0ms)
+
+
+
+$ cd packages/server && npx vitest run src/server/agent/providers/claude/agent.history.test.ts -t "receiver limits|workflow artifacts" --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  2 passed | 19 skipped (21)
+   Start at  16:26:55
+   Duration  2.76s (transform 1.52s, setup 122ms, import 2.26s, tests 139ms, environment 0ms)
 
 
 
@@ -193,4 +209,58 @@ $ npm run lint
 > oxlint
 
 Found 0 warnings and 0 errors.
-Finished in 4.3s on 5019 files with 177 rules using 4 threads.
+Finished in 4.5s on 5019 files with 177 rules using 4 threads.
+
+$ npm run test:e2e --workspace=@getpaseo/app -- e2e/browser/workspace-handoff.spec.ts --grep "compact layout"
+
+> @getpaseo/app@0.11.0-beta.36 test:e2e
+> playwright test --project=browser e2e/browser/workspace-handoff.spec.ts --grep compact layout
+
+[metro] Starting project at /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+[metro] Using src/app as the root directory for Expo Router.
+[metro] Experimental Expo Autolinking module resolver is enabled.
+[metro] React Compiler enabled
+[metro] Starting Metro Bundler
+[metro] Waiting on http://localhost:34615
+[metro] Logs for your project will appear below.
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] | (node:357622) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[metro] | (Use `node --trace-warnings ...` to show where the warning was created)
+[metro] Web packages/app/index.ts ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.9% (5623/5624)
+[metro] Web Bundled 4369ms packages/app/index.ts (5624 modules)
+[e2e] Metro warmed on port 34615
+
+Running 1 test using 1 worker
+
+(node:357644) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:357644) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[e2e] Worker 0 daemon started on port 42629, home: /tmp/paseo-e2e-worker-0-90H0Cl
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 373ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 137ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (86 modules)
+[metro] Web Bundled 329ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 16ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 359ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 7ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 252ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 16ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 332ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 7ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+  ✓  1 [browser] › e2e/browser/workspace-handoff.spec.ts:171:7 › workspace handoff › compact layout preserves explicit context choice and cancels after reopening (46.4s)
+[e2e] Worker 0 daemon stopped
+[e2e] Metro stopped
+
+  1 passed (1.2m)

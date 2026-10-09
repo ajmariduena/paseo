@@ -2798,6 +2798,38 @@ export class DaemonClient {
     );
   }
 
+  handoffPreviewSource(
+    options: Omit<
+      Extract<SessionInboundMessage, { type: "workspace.handoff.preview_source.request" }>,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.preview_source.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.preview_source.response">(
+      {
+        requestId,
+        message: { type: "workspace.handoff.preview_source.request", ...input },
+        timeout: 30000,
+      },
+    );
+  }
+
+  handoffPreviewDestination(
+    options: Omit<
+      Extract<SessionInboundMessage, { type: "workspace.handoff.preview_destination.request" }>,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.preview_destination.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.preview_destination.response">(
+      {
+        requestId,
+        message: { type: "workspace.handoff.preview_destination.request", ...input },
+        timeout: 30000,
+      },
+    );
+  }
+
   handoffInspectSource(
     options: Omit<
       Extract<SessionInboundMessage, { type: "workspace.handoff.inspect_source.request" }>,

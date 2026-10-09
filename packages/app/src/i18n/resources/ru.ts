@@ -3,8 +3,13 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ru: TranslationResources = {
   handoff: {
+    review: "Проверить перенос",
+    conversations: "Разговоры",
+    emptyConversations: "В этом рабочем пространстве нет разговоров.",
+    untitledConversation: "Разговор без названия",
     location: "Целевая папка",
     busy: {
+      reviewing: "Проверка…",
       loading: "Загрузка...",
       preparing: "Подготовка...",
       moving: "Перенос...",

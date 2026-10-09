@@ -3,8 +3,13 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ko: TranslationResources = {
   handoff: {
+    review: "이동 검토",
+    conversations: "대화",
+    emptyConversations: "이 워크스페이스에는 대화가 없습니다.",
+    untitledConversation: "제목 없는 대화",
     location: "대상 디렉터리",
     busy: {
+      reviewing: "검토 중…",
       loading: "불러오는 중...",
       preparing: "준비 중...",
       moving: "이동 중...",

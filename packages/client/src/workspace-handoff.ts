@@ -16,6 +16,21 @@ interface HandoffConnections {
   transferId: string;
   signal?: AbortSignal;
 }
+/** No reservation or source mutation was started, so the caller can discard its local intent. */
+export class HandoffReviewChangedError extends Error {}
+
+function validateReviewedInventory(
+  expected: string[] | undefined,
+  current: string[],
+  reserved: boolean,
+) {
+  if (!expected || JSON.stringify([...current].sort()) === JSON.stringify([...expected].sort()))
+    return;
+  if (reserved) throw new Error("Saved review does not match the destination reservation");
+  throw new HandoffReviewChangedError(
+    "Source conversations changed after review; review the transfer again",
+  );
+}
 export interface WorkspaceHandoffProgress {
   phase:
     | "inspecting"
@@ -32,6 +47,7 @@ export interface PrepareWorkspaceHandoffInput extends HandoffConnections {
   workspaceId: string;
   destinationParent: string;
   continuationMode: "native" | "context";
+  expectedAgentIds?: string[];
   onProgress?: (progress: WorkspaceHandoffProgress) => void;
 }
 export interface ActivateWorkspaceHandoffInput {
@@ -76,6 +92,7 @@ export async function prepareWorkspaceHandoff(
           signal,
         ),
       );
+  validateReviewedInventory(input.expectedAgentIds, inventory.agentIds, prior.result !== null);
   const reserved = handoffResult(
     await handoffRequest(
       () =>

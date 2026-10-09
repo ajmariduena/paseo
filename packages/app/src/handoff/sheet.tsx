@@ -15,6 +15,7 @@ import { useHandoffForm } from "./use-handoff-form";
 import { shortenPath } from "@/utils/shorten-path";
 
 const TRANSFER_SNAP_POINTS = ["55%", "90%"];
+const REVIEW_SNAP_POINTS = ["80%", "95%"];
 
 interface Props extends HandoffOrigin {
   visible: boolean;
@@ -44,7 +45,7 @@ function statusKey(state: Extract<HandoffFormState, { kind: "transfer" }>) {
 
 function busyLabel(state: HandoffFormState) {
   if (state.kind === "loading") return "loading";
-  if (state.kind === "checking") return "preparing";
+  if (state.kind === "checking") return "reviewing";
   if (state.kind !== "transfer" || state.run.status !== "running") return null;
   return { prepare: "preparing", activate: "moving", cancel: "cancelling" }[state.record.intent] as
     | "preparing"
@@ -65,6 +66,7 @@ function HandoffFooter({
   const actions = handoffFormActions(state);
   const busy = busyLabel(state);
   const labels = {
+    review: t("handoff.review"),
     prepare: t("handoff.prepare"),
     activate: t("handoff.activate"),
     retry: t("handoff.resume"),
@@ -78,15 +80,15 @@ function HandoffFooter({
     state.record.snapshot?.state === "staged";
   return (
     <View style={styles.actions}>
-      {actions.canCancel || retainCancel ? (
+      {actions.canCancel || retainCancel || state.kind === "review" ? (
         <Button
           variant="secondary"
           style={styles.action}
           onPress={onCancel}
-          disabled={!actions.canCancel}
+          disabled={state.kind !== "review" && !actions.canCancel}
           testID="handoff-cancel"
         >
-          {t("handoff.cancel")}
+          {state.kind === "review" ? t("common.back") : t("handoff.cancel")}
         </Button>
       ) : null}
       <Button
@@ -97,7 +99,9 @@ function HandoffFooter({
         loading={busy !== null}
         testID="handoff-submit"
       >
-        {busy ? t(`handoff.busy.${busy}`) : labels[actions.primary ?? "prepare"]}
+        {busy
+          ? t(`handoff.busy.${busy}`)
+          : labels[actions.primary ?? (state.kind === "review" ? "prepare" : "review")]}
       </Button>
     </View>
   );
@@ -146,6 +150,42 @@ function TransferSummary({ state }: { state: Extract<HandoffFormState, { kind: "
   );
 }
 
+function handoffSnapPoints(state: HandoffFormState) {
+  if (state.kind === "transfer") return TRANSFER_SNAP_POINTS;
+  if (state.kind === "review") {
+    return state.preview.conversations.length > 0 ? REVIEW_SNAP_POINTS : TRANSFER_SNAP_POINTS;
+  }
+  return undefined;
+}
+
+function ReviewConversations({ state }: { state: Extract<HandoffFormState, { kind: "review" }> }) {
+  const { t } = useTranslation();
+  return (
+    <Field label={t("handoff.conversations")}>
+      <View style={styles.status} testID="handoff-review">
+        {state.preview.conversations.length === 0 ? (
+          <Text style={styles.text}>{t("handoff.emptyConversations")}</Text>
+        ) : null}
+        {state.preview.conversations.map((conversation) => {
+          const availability = conversation[state.record.continuationMode];
+          return (
+            <View key={conversation.agentId} style={styles.status}>
+              <Text style={styles.value}>
+                {conversation.title ?? t("handoff.untitledConversation")}
+              </Text>
+              <Text style={availability.available ? styles.text : styles.error}>
+                {availability.available
+                  ? t(`handoff.${state.record.continuationMode}`)
+                  : availability.reason}
+              </Text>
+            </View>
+          );
+        })}
+      </View>
+    </Field>
+  );
+}
+
 function OpenHandoffSheet(props: Props) {
   const { t } = useTranslation();
   const { model, state } = useHandoffForm(props);
@@ -185,14 +225,20 @@ function OpenHandoffSheet(props: Props) {
     }
     void model[primary]();
   }, [model, primary, props, state]);
-  const cancel = useCallback(() => void model.cancel(), [model]);
+  const cancel = useCallback(() => {
+    if (state.kind === "review") model.edit();
+    else void model.cancel();
+  }, [model, state.kind]);
   const setHost = useCallback(
     (serverId: string, display: SelectFieldDisplay) =>
       model.setDestination({ serverId, label: display.label }),
     [model],
   );
   const header = useMemo(() => ({ title: t("handoff.title") }), [t]);
-  const draft = state.kind === "editing" || state.kind === "checking" ? state.draft : null;
+  const draft =
+    state.kind === "editing" || state.kind === "checking" || state.kind === "review"
+      ? state.draft
+      : null;
   const selectedMode = draft?.continuationMode ?? "native";
   const modeDisplay = useMemo(
     () => ({
@@ -213,7 +259,7 @@ function OpenHandoffSheet(props: Props) {
       testID="handoff-sheet"
       footer={footer}
       contentStyle={styles.content}
-      snapPoints={state.kind === "transfer" ? TRANSFER_SNAP_POINTS : undefined}
+      snapPoints={handoffSnapPoints(state)}
     >
       {state.kind === "loading" ? <Text style={styles.text}>{t("handoff.loading")}</Text> : null}
       {state.kind === "load_error" ? (
@@ -223,43 +269,63 @@ function OpenHandoffSheet(props: Props) {
       ) : null}
       {draft ? (
         <>
-          <SelectField
-            label={t("handoff.destination")}
-            value={draft.destination?.serverId ?? null}
-            selectedDisplay={draft.destination}
-            disabled={state.kind === "checking"}
-            options={hostOptions}
-            size={size}
-            onChange={setHost}
-            placeholder={t("handoff.chooseHost")}
-            emptyText={t("handoff.noHosts")}
-            testID="handoff-host"
-            triggerTestID="handoff-host-trigger"
-          />
-          <Field label={t("handoff.parent")}>
-            <FormTextInput
-              initialValue={draft.destinationParent}
-              editable={state.kind !== "checking"}
-              onChangeText={model.setDestinationParent}
+          {state.kind === "review" ? (
+            <>
+              <Field label={t("handoff.destination")}>
+                <Text style={styles.value}>{state.record.destinationLabel}</Text>
+              </Field>
+              <Field label={t("handoff.parent")}>
+                <Text style={styles.path} selectable>
+                  {state.record.destinationParent}
+                </Text>
+              </Field>
+            </>
+          ) : (
+            <>
+              <SelectField
+                label={t("handoff.destination")}
+                value={draft.destination?.serverId ?? null}
+                selectedDisplay={draft.destination}
+                disabled={state.kind !== "editing"}
+                options={hostOptions}
+                size={size}
+                onChange={setHost}
+                placeholder={t("handoff.chooseHost")}
+                emptyText={t("handoff.noHosts")}
+                testID="handoff-host"
+                triggerTestID="handoff-host-trigger"
+              />
+              <Field label={t("handoff.parent")}>
+                <FormTextInput
+                  initialValue={draft.destinationParent}
+                  editable={state.kind === "editing"}
+                  onChangeText={model.setDestinationParent}
+                  size={size}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  testID="handoff-parent"
+                />
+              </Field>
+            </>
+          )}
+          {state.kind !== "review" || state.preview.conversations.length > 0 ? (
+            <SelectField
+              label={t("handoff.mode")}
+              value={draft.continuationMode}
+              disabled={state.kind === "checking"}
+              selectedDisplay={modeDisplay}
+              options={modeOptions}
+              onChange={model.setContinuationMode}
               size={size}
-              autoCapitalize="none"
-              autoCorrect={false}
-              testID="handoff-parent"
+              placeholder={t("handoff.mode")}
+              emptyText=""
+              triggerTestID="handoff-mode-trigger"
             />
-          </Field>
-          <SelectField
-            label={t("handoff.mode")}
-            value={draft.continuationMode}
-            disabled={state.kind === "checking"}
-            selectedDisplay={modeDisplay}
-            options={modeOptions}
-            onChange={model.setContinuationMode}
-            size={size}
-            placeholder={t("handoff.mode")}
-            emptyText=""
-            triggerTestID="handoff-mode-trigger"
-          />
-          <Text style={styles.text}>{t("handoff.stopNotice")}</Text>
+          ) : null}
+          {state.kind === "review" ? <ReviewConversations state={state} /> : null}
+          <Text style={styles.text} testID="handoff-stop-notice">
+            {t("handoff.stopNotice")}
+          </Text>
           {state.kind === "editing" && state.error ? (
             <Text style={styles.error} accessibilityRole="alert" testID="handoff-error">
               {state.error}

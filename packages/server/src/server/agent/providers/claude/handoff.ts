@@ -153,7 +153,9 @@ function validateManifest(
   manifest.files.sort((a, b) => a.path.localeCompare(b.path));
   return manifest;
 }
-async function sourceFiles(input: SourceInput): Promise<Map<string, string>> {
+async function sourceFiles(
+  input: Omit<SourceInput, "artifactDirectory">,
+): Promise<Map<string, string>> {
   UUID.parse(input.handle.sessionId);
   if (input.handle.provider !== "claude") reject("invalid_artifact", "Expected a Claude session");
   const namespace = input.handle.metadata?.claudeProjectDirName;
@@ -198,6 +200,36 @@ async function sourceFiles(input: SourceInput): Promise<Map<string, string>> {
       }
     }
   }
+}
+
+/** A live inspection is advisory; capture validates the stopped session again. */
+export async function previewClaudeSession(input: Omit<SourceInput, "artifactDirectory">) {
+  if (!/^2\.1\.\d+$/.test(input.cliVersion))
+    reject("invalid_artifact", "This Claude version has no tested source export format");
+  try {
+    const files = await sourceFiles(input);
+    return {
+      cliVersion: input.cliVersion,
+      hasWorkflows: [...files.keys()].some((file) => file.startsWith("session/workflows/")),
+    };
+  } catch (error) {
+    if (missing(error))
+      reject("invalid_artifact", "Saved Claude session files are missing on the source host");
+    throw error;
+  }
+}
+
+export function claudeNativeHandoffReason(input: {
+  sourceVersion: string;
+  destinationVersion: string;
+  hasWorkflows: boolean;
+}): string | null {
+  const version = /^2\.1\.(\d+)$/.exec(input.destinationVersion);
+  if (!version || Number(version[1]) < 295 || input.sourceVersion !== input.destinationVersion)
+    return "Native Claude handoff requires matching Claude Code versions, at least 2.1.295";
+  if (input.hasWorkflows)
+    return "Claude workflow state needs an explicit disposition before native continuation";
+  return null;
 }
 
 /** The caller must stop the source runtime and drain persistence before capture. */
@@ -260,11 +292,13 @@ export async function readCapturedClaudeHistory(input: {
   const manifest = await readClaudeSessionArchive(input.artifactDirectory);
   const configDir = await mkdtemp(path.join(os.tmpdir(), "paseo-handoff-history-"));
   try {
-    const handle = await installClaudeSession({
+    // Decoding an isolated copy does not resume its workflow or require native import compatibility.
+    const handle = await materializeClaudeSessionArchive({
       ...input,
+      manifest,
+      blobsDirectory: path.join(input.artifactDirectory, "blobs"),
       configDir,
       importId: manifest.sessionId,
-      cliVersion: manifest.cliVersion,
     });
     const reader = await new ClaudeAgentClient({
       logger: input.logger,
@@ -325,23 +359,21 @@ export async function installClaudeSessionArchive(
   UUID.parse(input.importId);
   const limits = input.limits ?? DEFAULT_LIMITS;
   const manifest = validateManifest(input.manifest, limits);
-  const minimumNamespaceVersion = /^2\.1\.(\d+)$/.exec(input.cliVersion);
-  if (
-    !minimumNamespaceVersion ||
-    Number(minimumNamespaceVersion[1]) < 295 ||
-    manifest.cliVersion !== input.cliVersion
-  ) {
-    reject(
-      "native_incompatible",
-      "Native Claude handoff requires matching Claude Code versions, at least 2.1.295",
-    );
-  }
-  if (manifest.files.some((file) => file.path.startsWith("session/workflows/"))) {
-    reject(
-      "native_incompatible",
-      "Claude workflow state needs an explicit disposition before native continuation",
-    );
-  }
+  const incompatibility = claudeNativeHandoffReason({
+    sourceVersion: manifest.cliVersion,
+    destinationVersion: input.cliVersion,
+    hasWorkflows: manifest.files.some((file) => file.path.startsWith("session/workflows/")),
+  });
+  if (incompatibility) reject("native_incompatible", incompatibility);
+  return materializeClaudeSessionArchive({ ...input, manifest });
+}
+
+async function materializeClaudeSessionArchive(
+  input: Omit<InstallArchiveInput, "cliVersion">,
+): Promise<AgentPersistenceHandle> {
+  UUID.parse(input.importId);
+  const limits = input.limits ?? DEFAULT_LIMITS;
+  const manifest = validateManifest(input.manifest, limits);
   const projectDirName = `paseo-handoff-${input.importId}`;
   const projects = path.join(input.configDir, "projects");
   await mkdir(projects, { recursive: true, mode: 0o700 });

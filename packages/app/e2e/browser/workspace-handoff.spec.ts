@@ -108,6 +108,12 @@ test.describe("workspace handoff", () => {
       await expect(page.getByTestId("handoff-parent")).toBeEditable();
       await page.getByTestId("handoff-parent").fill(host.destinationParent);
       await page.getByTestId("handoff-submit").click();
+      await expect(page.getByTestId("handoff-review")).toHaveText(
+        "This workspace has no conversations.",
+      );
+      expect((await host.destinationClient.fetchWorkspaces()).entries).toEqual([]);
+      await expect(page.getByTestId("handoff-submit")).toHaveText("Prepare transfer");
+      await page.getByTestId("handoff-submit").click();
       await expect(page.getByTestId("handoff-submit")).toHaveText("Move workspace", {
         timeout: 30_000,
       });
@@ -175,6 +181,13 @@ test.describe("workspace handoff", () => {
       await page.getByTestId("handoff-parent").fill(host.destinationParent);
       await page.getByTestId("handoff-mode-trigger").click();
       await page.getByText("Continue with exported history", { exact: true }).last().click();
+      await page.getByTestId("handoff-submit").click();
+      await expect(page.getByTestId("handoff-review")).toHaveText(
+        "This workspace has no conversations.",
+      );
+      await waitForSettledPosition(page.getByTestId("handoff-submit"));
+      await expect(page.getByTestId("handoff-stop-notice")).toBeInViewport({ ratio: 1 });
+      await page.screenshot({ path: testInfo.outputPath("handoff-review-compact.png") });
       await page.getByTestId("handoff-submit").click();
       await expect(page.getByTestId("handoff-submit")).toHaveText("Move workspace", {
         timeout: 30_000,

@@ -24,6 +24,7 @@ import {
   installClaudeSessionArchive,
   verifyClaudeSessionInstallation,
   removeClaudeSessionInstallation,
+  claudeNativeHandoffReason,
 } from "../agent/providers/claude/handoff.js";
 import { generateProjectId, generateWorkspaceId } from "../workspace-registry-model.js";
 import type { ProviderSnapshotManager } from "../agent/provider-snapshot-manager.js";
@@ -33,6 +34,10 @@ import { claudeConfigDir } from "../agent/providers/claude/project-dir.js";
 
 import type { HandoffPublication } from "./publication.js";
 import { handoffContextFiles } from "./context.js";
+import type {
+  HandoffConversationPreview,
+  HandoffDestinationPreview,
+} from "@getpaseo/protocol/handoff-control";
 
 const ReservationSchema = z.object({
   transferId: HandoffTransferIdSchema,
@@ -167,6 +172,48 @@ export class HandoffDestination {
 
   constructor(private readonly options: DestinationOptions) {
     this.journal = path.join(options.directory, "destination.json");
+  }
+
+  async preview(conversations: HandoffConversationPreview[]): Promise<HandoffDestinationPreview> {
+    let destinationVersion: string | null = null;
+    let unavailable: string | null = null;
+    if (conversations.some((conversation) => conversation.state === "available")) {
+      try {
+        if (!this.options.resolveClaudeRuntime)
+          throw new Error("Claude is unavailable on the destination host");
+        destinationVersion = (await this.options.resolveClaudeRuntime()).cliVersion;
+      } catch (error) {
+        unavailable =
+          error instanceof Error ? error.message : "Destination provider could not be inspected";
+      }
+    }
+    return {
+      conversations: conversations.map((conversation) => {
+        const identity = {
+          agentId: conversation.agentId,
+          title: conversation.title,
+          provider: conversation.provider,
+        };
+        const reason = conversation.state === "blocked" ? conversation.reason : unavailable;
+        if (reason !== null || destinationVersion === null || conversation.state === "blocked") {
+          const blocked = {
+            available: false,
+            reason: reason ?? "Destination provider is unavailable",
+          };
+          return { ...identity, native: blocked, context: blocked };
+        }
+        const nativeReason = claudeNativeHandoffReason({
+          sourceVersion: conversation.cliVersion,
+          destinationVersion,
+          hasWorkflows: conversation.hasWorkflows,
+        });
+        return {
+          ...identity,
+          native: { available: nativeReason === null, reason: nativeReason },
+          context: { available: true, reason: null },
+        };
+      }),
+    };
   }
 
   async initialize(): Promise<void> {

@@ -3,8 +3,13 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ptBR: TranslationResources = {
   handoff: {
+    review: "Revisar transferência",
+    conversations: "Conversas",
+    emptyConversations: "Este workspace não tem conversas.",
+    untitledConversation: "Conversa sem título",
     location: "Diretório de destino",
     busy: {
+      reviewing: "Revisando…",
       loading: "Carregando...",
       preparing: "Preparando...",
       moving: "Movendo...",

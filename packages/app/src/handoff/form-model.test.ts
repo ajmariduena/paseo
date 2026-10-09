@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { HandoffDestinationSnapshot } from "@getpaseo/protocol/handoff-control";
 import { handoffFormActions, openHandoffForm, type HandoffFormPorts } from "./form-model";
 import { createHandoffPersistence } from "./persistence";
+import { HandoffReviewChangedError } from "@getpaseo/client/internal/workspace-handoff";
 
 const origin = { sourceServerId: "source", workspaceId: "workspace" };
 const transferId = "00000000-0000-4000-8000-000000000001";
@@ -36,16 +37,19 @@ function fixture() {
     setItem: async (key, value) => {
       values.set(key, value);
     },
+    removeItem: async (key) => {
+      values.delete(key);
+    },
   });
   const calls: string[] = [];
   const ports: HandoffFormPorts = {
     ...persistence,
     newTransferId: () => transferId,
-    validate: async () => {},
+    validate: async () => ({ conversations: [] }),
     prepare: async (record) => {
       expect(await persistence.load(origin)).toEqual(record);
       calls.push(`prepare:${record.transferId}`);
-      return destination;
+      return { ...destination, continuationMode: record.continuationMode };
     },
     activate: async (record) => {
       expect((await persistence.load(origin))?.intent).toBe("activate");
@@ -69,11 +73,65 @@ async function editedForm(ports: HandoffFormPorts) {
   return model;
 }
 
+async function reviewedForm(ports: HandoffFormPorts) {
+  const model = await editedForm(ports);
+  await model.review();
+  return model;
+}
+
 describe("handoff form recovery", () => {
+  it("returns to review when the conversation inventory changes before any host mutation", async () => {
+    const { ports, persistence, calls } = fixture();
+    ports.prepare = async () => {
+      throw new HandoffReviewChangedError("Review the changed conversations");
+    };
+    const model = await reviewedForm(ports);
+    await model.prepare();
+    expect(model.getState()).toMatchObject({
+      kind: "editing",
+      error: "Review the changed conversations",
+    });
+    expect(await persistence.load(origin)).toBeNull();
+    expect(calls).toEqual([]);
+    const reopened = openHandoffForm(origin, ports);
+    await reopened.load();
+    expect(reopened.getState().kind).toBe("editing");
+  });
+
+  it("requires an explicit supported continuation choice after read-only review", async () => {
+    const { ports, persistence, calls } = fixture();
+    ports.validate = async () => ({
+      conversations: [
+        {
+          agentId: "conversation",
+          title: "Current work",
+          provider: "claude",
+          native: { available: false, reason: "Claude versions differ" },
+          context: { available: true, reason: null },
+        },
+      ],
+    });
+    const model = await editedForm(ports);
+    await model.review();
+    expect(model.getState()).toMatchObject({
+      kind: "review",
+      draft: { continuationMode: "native" },
+    });
+    expect(await persistence.load(origin)).toBeNull();
+    expect(calls).toEqual([]);
+    expect(handoffFormActions(model.getState()).primary).toBeNull();
+    await model.prepare();
+    expect(calls).toEqual([]);
+    model.setContinuationMode("context");
+    await model.prepare();
+    expect(calls).toEqual([`prepare:${transferId}`]);
+    expect((await persistence.load(origin))?.continuationMode).toBe("context");
+  });
+
   it("finishes activation when the host journal has advanced past the saved preparation", async () => {
     const { ports, calls } = fixture();
     ports.prepare = async () => ({ ...destination, state: "released" });
-    const model = await editedForm(ports);
+    const model = await reviewedForm(ports);
     await model.prepare();
     expect(handoffFormActions(model.getState())).toEqual({ primary: "activate", canCancel: false });
     await model.cancel();
@@ -86,7 +144,7 @@ describe("handoff form recovery", () => {
     ports.validate = async () => {
       throw new Error("Destination directory is missing");
     };
-    const model = await editedForm(ports);
+    const model = await reviewedForm(ports);
     await model.prepare();
     expect(model.getState()).toMatchObject({
       kind: "editing",
@@ -98,14 +156,15 @@ describe("handoff form recovery", () => {
     });
     expect(await persistence.load(origin)).toBeNull();
     expect(calls).toEqual([]);
-    ports.validate = async () => {};
+    ports.validate = async () => ({ conversations: [] });
+    await model.review();
     await model.prepare();
     expect(calls).toEqual([`prepare:${transferId}`]);
   });
 
   it("persists the identity before preparation and retains it after reopening", async () => {
     const { ports, calls } = fixture();
-    const first = await editedForm(ports);
+    const first = await reviewedForm(ports);
     await first.prepare();
     first.close();
     const reopened = openHandoffForm(origin, ports);
@@ -125,7 +184,7 @@ describe("handoff form recovery", () => {
 
   it("recovers a lost release reply with the same identity and never offers rollback", async () => {
     const { ports, persistence, calls } = fixture();
-    const model = await editedForm(ports);
+    const model = await reviewedForm(ports);
     await model.prepare();
     ports.activate = async (record) => {
       expect((await persistence.load(origin))?.intent).toBe("activate");
@@ -159,7 +218,7 @@ describe("handoff form recovery", () => {
     ports.save = async () => {
       throw new Error("Storage full");
     };
-    const model = await editedForm(ports);
+    const model = await reviewedForm(ports);
     await model.prepare();
     expect(calls).toEqual([]);
     expect(model.getState()).toMatchObject({
@@ -181,7 +240,7 @@ describe("handoff form recovery", () => {
       await release.promise;
       return prepare(record, options);
     };
-    const model = await editedForm(ports);
+    const model = await reviewedForm(ports);
     const running = model.prepare();
     await entered.promise;
     await model.prepare();
@@ -201,7 +260,7 @@ describe("handoff form recovery", () => {
       await release.promise;
       await persistence.save(record);
     };
-    const model = await editedForm(ports);
+    const model = await reviewedForm(ports);
     const running = model.prepare();
     await entered.promise;
     model.close();
@@ -222,7 +281,7 @@ describe("handoff form recovery", () => {
       options.onProgress({ phase: "ready" });
       return destination;
     };
-    const model = await editedForm(ports);
+    const model = await reviewedForm(ports);
     const running = model.prepare();
     await entered.promise;
     model.close();
@@ -235,7 +294,7 @@ describe("handoff form recovery", () => {
 
   it("reopens a failed cancellation as a cancellation retry", async () => {
     const { ports, persistence, calls } = fixture();
-    const model = await editedForm(ports);
+    const model = await reviewedForm(ports);
     await model.prepare();
     const cancel = ports.cancel;
     ports.cancel = async () => {
@@ -256,7 +315,7 @@ describe("handoff form recovery", () => {
 
   it("surfaces corrupt saved state without silently starting another transfer", async () => {
     const { ports, values, calls } = fixture();
-    const model = await editedForm(ports);
+    const model = await reviewedForm(ports);
     await model.prepare();
     model.close();
     for (const key of values.keys()) values.set(key, "not json");

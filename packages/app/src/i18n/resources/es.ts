@@ -3,8 +3,13 @@ import { pluginSettings } from "./plugin-settings";
 
 export const es: TranslationResources = {
   handoff: {
+    review: "Revisar traslado",
+    conversations: "Conversaciones",
+    emptyConversations: "Este workspace no tiene conversaciones.",
+    untitledConversation: "Conversación sin título",
     location: "Directorio de destino",
     busy: {
+      reviewing: "Revisando…",
       loading: "Cargando...",
       preparing: "Preparando...",
       moving: "Trasladando...",

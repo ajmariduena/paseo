@@ -1,5 +1,9 @@
-import type { HandoffDestinationSnapshot } from "@getpaseo/protocol/handoff-control";
+import type {
+  HandoffDestinationSnapshot,
+  HandoffDestinationPreview,
+} from "@getpaseo/protocol/handoff-control";
 import type { WorkspaceHandoffProgress } from "@getpaseo/client/internal/workspace-handoff";
+import { HandoffReviewChangedError } from "@getpaseo/client/internal/workspace-handoff";
 import type { HandoffOrigin, HandoffRecord } from "./persistence";
 
 interface DestinationHost {
@@ -20,6 +24,7 @@ export type HandoffFormState =
   | { kind: "load_error"; message: string }
   | { kind: "editing"; draft: Draft; error: string | null }
   | { kind: "checking"; draft: Draft }
+  | { kind: "review"; draft: Draft; record: HandoffRecord; preview: HandoffDestinationPreview }
   | { kind: "transfer"; record: HandoffRecord; run: Run };
 
 interface OperationOptions {
@@ -29,8 +34,9 @@ interface OperationOptions {
 export interface HandoffFormPorts {
   load(origin: HandoffOrigin): Promise<HandoffRecord | null>;
   save(record: HandoffRecord): Promise<void>;
+  discard(origin: HandoffOrigin): Promise<void>;
   newTransferId(): string;
-  validate(record: HandoffRecord): Promise<void>;
+  validate(record: HandoffRecord): Promise<HandoffDestinationPreview>;
   prepare(record: HandoffRecord, options: OperationOptions): Promise<HandoffDestinationSnapshot>;
   activate(record: HandoffRecord, options: OperationOptions): Promise<HandoffDestinationSnapshot>;
   cancel(record: HandoffRecord, options: OperationOptions): Promise<HandoffDestinationSnapshot>;
@@ -82,6 +88,28 @@ export function openHandoffForm(origin: HandoffOrigin, ports: HandoffFormPorts) 
       await ports.save(completed);
       publish({ kind: "transfer", record: completed, run: { status: "idle" } });
     } catch (error) {
+      if (!closed && record.intent === "prepare" && error instanceof HandoffReviewChangedError) {
+        try {
+          await ports.discard(origin);
+          publish({
+            kind: "editing",
+            draft: {
+              destination: { serverId: record.destinationServerId, label: record.destinationLabel },
+              destinationParent: record.destinationParent,
+              continuationMode: record.continuationMode,
+            },
+            error: message(error),
+          });
+          return;
+        } catch (discardError) {
+          publish({
+            kind: "transfer",
+            record,
+            run: { status: "error", message: message(discardError) },
+          });
+          return;
+        }
+      }
       publish({ kind: "transfer", record, run: { status: "error", message: message(error) } });
     }
   }
@@ -116,10 +144,18 @@ export function openHandoffForm(origin: HandoffOrigin, ports: HandoffFormPorts) 
       publish({ ...state, draft: { ...state.draft, destinationParent } });
     },
     setContinuationMode(continuationMode: Draft["continuationMode"]) {
+      if (state.kind === "review") {
+        publish({
+          ...state,
+          draft: { ...state.draft, continuationMode },
+          record: { ...state.record, continuationMode },
+        });
+        return;
+      }
       if (state.kind !== "editing") return;
       publish({ ...state, draft: { ...state.draft, continuationMode } });
     },
-    async prepare() {
+    async review() {
       if (state.kind !== "editing") return;
       const draft = state.draft;
       const { destination, continuationMode } = state.draft;
@@ -138,11 +174,33 @@ export function openHandoffForm(origin: HandoffOrigin, ports: HandoffFormPorts) 
       };
       publish({ kind: "checking", draft });
       try {
-        await ports.validate(record);
+        const preview = await ports.validate(record);
+        publish({
+          kind: "review",
+          draft,
+          record: {
+            ...record,
+            reviewedAgentIds: preview.conversations.map((conversation) => conversation.agentId),
+          },
+          preview,
+        });
       } catch (error) {
         publish({ kind: "editing", draft, error: message(error) });
         return;
       }
+    },
+    edit() {
+      if (state.kind === "review") publish({ kind: "editing", draft: state.draft, error: null });
+    },
+    async prepare() {
+      if (state.kind !== "review") return;
+      const { record, preview } = state;
+      if (
+        !preview.conversations.every(
+          (conversation) => conversation[record.continuationMode].available,
+        )
+      )
+        return;
       await run(record);
     },
     async retry() {
@@ -181,6 +239,12 @@ export function handoffFormActions(state: HandoffFormState) {
   if (state.kind === "load_error") return { primary: "load", canCancel: false } as const;
   if (state.kind === "editing") {
     const ready = state.draft.destination !== null && state.draft.destinationParent.trim() !== "";
+    return { primary: ready ? "review" : null, canCancel: false } as const;
+  }
+  if (state.kind === "review") {
+    const ready = state.preview.conversations.every(
+      (conversation) => conversation[state.record.continuationMode].available,
+    );
     return { primary: ready ? "prepare" : null, canCancel: false } as const;
   }
   return transferActions(state);

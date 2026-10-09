@@ -3,8 +3,13 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ar: TranslationResources = {
   handoff: {
+    review: "مراجعة النقل",
+    conversations: "المحادثات",
+    emptyConversations: "لا توجد محادثات في مساحة العمل هذه.",
+    untitledConversation: "محادثة بلا عنوان",
     location: "مجلد الوجهة",
     busy: {
+      reviewing: "جارٍ المراجعة…",
       loading: "جارٍ التحميل...",
       preparing: "جارٍ التحضير...",
       moving: "جارٍ النقل...",

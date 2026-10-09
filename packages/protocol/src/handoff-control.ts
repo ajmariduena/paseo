@@ -6,6 +6,73 @@ import {
   HandoffTransferIdSchema,
 } from "./handoff.js";
 
+const HandoffConversationIdentitySchema = z.object({
+  agentId: z.string().min(1),
+  title: z.string().max(4096).nullable(),
+  provider: z.string().min(1).max(256),
+});
+export const HandoffConversationPreviewSchema = z.discriminatedUnion("state", [
+  HandoffConversationIdentitySchema.extend({
+    state: z.literal("available"),
+    provider: z.literal("claude"),
+    cliVersion: z.string().min(1).max(128),
+    hasWorkflows: z.boolean(),
+  }),
+  HandoffConversationIdentitySchema.extend({
+    state: z.literal("blocked"),
+    reason: z.string().min(1),
+  }),
+]);
+export const HandoffSourcePreviewSchema = z.object({
+  workspaceId: z.string().min(1),
+  cwd: z.string().min(1),
+  conversations: z.array(HandoffConversationPreviewSchema).max(1000),
+});
+const HandoffContinuationAvailabilitySchema = z.object({
+  available: z.boolean(),
+  reason: z.string().nullable(),
+});
+export const HandoffDestinationPreviewSchema = z.object({
+  conversations: z
+    .array(
+      HandoffConversationIdentitySchema.extend({
+        native: HandoffContinuationAvailabilitySchema,
+        context: HandoffContinuationAvailabilitySchema,
+      }),
+    )
+    .max(1000),
+});
+export type HandoffConversationPreview = z.infer<typeof HandoffConversationPreviewSchema>;
+export type HandoffSourcePreview = z.infer<typeof HandoffSourcePreviewSchema>;
+export type HandoffDestinationPreview = z.infer<typeof HandoffDestinationPreviewSchema>;
+
+export const HandoffPreviewSourceRequestSchema = z.object({
+  type: z.literal("workspace.handoff.preview_source.request"),
+  requestId: z.string(),
+  workspaceId: z.string().min(1),
+});
+export const HandoffPreviewSourceResponseSchema = z.object({
+  type: z.literal("workspace.handoff.preview_source.response"),
+  payload: z.object({
+    requestId: z.string(),
+    result: HandoffSourcePreviewSchema.nullable(),
+    error: HandoffErrorSchema.nullable(),
+  }),
+});
+export const HandoffPreviewDestinationRequestSchema = z.object({
+  type: z.literal("workspace.handoff.preview_destination.request"),
+  requestId: z.string(),
+  conversations: z.array(HandoffConversationPreviewSchema).max(1000),
+});
+export const HandoffPreviewDestinationResponseSchema = z.object({
+  type: z.literal("workspace.handoff.preview_destination.response"),
+  payload: z.object({
+    requestId: z.string(),
+    result: HandoffDestinationPreviewSchema.nullable(),
+    error: HandoffErrorSchema.nullable(),
+  }),
+});
+
 export const HandoffSourceInspectionSchema = z.object({
   workspaceId: z.string().min(1),
   cwd: z.string().min(1),
