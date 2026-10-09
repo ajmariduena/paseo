@@ -208,9 +208,20 @@ export async function previewClaudeSession(input: Omit<SourceInput, "artifactDir
     reject("invalid_artifact", "This Claude version has no tested source export format");
   try {
     const files = await sourceFiles(input);
+    const limits = input.limits ?? DEFAULT_LIMITS;
+    let artifactBytes = 0;
+    for (const file of files.values()) {
+      const stat = await lstat(file);
+      if (!stat.isFile())
+        reject("invalid_artifact", "Claude session artifact changed during review");
+      artifactBytes += stat.size;
+      if (stat.size > limits.maxFileBytes || artifactBytes > limits.maxTotalBytes)
+        reject("limit_exceeded", "Claude session exceeds handoff byte limits");
+    }
     return {
       cliVersion: input.cliVersion,
       hasWorkflows: [...files.keys()].some((file) => file.startsWith("session/workflows/")),
+      artifactBytes,
     };
   } catch (error) {
     if (missing(error))

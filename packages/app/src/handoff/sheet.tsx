@@ -159,7 +159,7 @@ function TransferSummary({ state }: { state: Extract<HandoffFormState, { kind: "
 function handoffSnapPoints(state: HandoffFormState) {
   if (state.kind === "transfer" || state.kind === "recovering") return TRANSFER_SNAP_POINTS;
   if (state.kind === "review") {
-    return state.preview.conversations.length > 0 ? REVIEW_SNAP_POINTS : TRANSFER_SNAP_POINTS;
+    return REVIEW_SNAP_POINTS;
   }
   return undefined;
 }
@@ -243,6 +243,68 @@ function ReviewConversations({ state }: { state: Extract<HandoffFormState, { kin
         })}
       </View>
     </Field>
+  );
+}
+
+function ReviewWorkspace({ state }: { state: Extract<HandoffFormState, { kind: "review" }> }) {
+  const { t } = useTranslation();
+  const { workspace, stoppedWork, conversationBytes } = state.preview;
+  const bytes = workspace.fileBytes + workspace.gitHistoryBytes + conversationBytes;
+  const size =
+    bytes >= 1024 ** 2 ? `${(bytes / 1024 ** 2).toFixed(1)} MiB` : `${Math.ceil(bytes / 1024)} KiB`;
+  return (
+    <>
+      <Field label={t("handoff.dataEstimate")}>
+        <View style={styles.status} testID="handoff-data-review">
+          <Text style={styles.value}>{size}</Text>
+          <Text style={styles.text}>
+            {t("handoff.fileCounts", {
+              files: workspace.fileCount,
+              directories: workspace.directoryCount,
+              links: workspace.symlinkCount,
+            })}
+          </Text>
+          <Text style={styles.text}>{t("handoff.estimateNotice")}</Text>
+        </View>
+      </Field>
+      <Field label={t("handoff.omittedPaths", { count: workspace.omittedPathCount })}>
+        <View style={styles.status} testID="handoff-omissions-review">
+          {workspace.omittedPathCount === 0 ? (
+            <Text style={styles.text}>{t("handoff.noOmissions")}</Text>
+          ) : null}
+          {workspace.omittedPaths.map((entry) => (
+            <Text key={entry} selectable style={styles.path}>
+              {entry}
+            </Text>
+          ))}
+          {workspace.omittedPathCount > workspace.omittedPaths.length ? (
+            <Text style={styles.text}>
+              {t("handoff.moreOmissions", {
+                count: workspace.omittedPathCount - workspace.omittedPaths.length,
+              })}
+            </Text>
+          ) : null}
+        </View>
+      </Field>
+      <Field label={t("handoff.workToStop")}>
+        <View style={styles.status} testID="handoff-stopped-work-review">
+          <Text style={styles.text}>
+            {t("handoff.activeWork", {
+              agents: stoppedWork.agentIds.length,
+              setup: stoppedWork.setupOperations,
+            })}
+          </Text>
+          {stoppedWork.terminals.length === 0 ? (
+            <Text style={styles.text}>{t("handoff.noTerminals")}</Text>
+          ) : null}
+          {stoppedWork.terminals.map((terminal) => (
+            <Text key={terminal.id} style={styles.value}>
+              {terminal.name}
+            </Text>
+          ))}
+        </View>
+      </Field>
+    </>
   );
 }
 
@@ -382,7 +444,12 @@ function OpenHandoffSheet(props: Props) {
               triggerTestID="handoff-mode-trigger"
             />
           ) : null}
-          {state.kind === "review" ? <ReviewConversations state={state} /> : null}
+          {state.kind === "review" ? (
+            <>
+              <ReviewConversations state={state} />
+              <ReviewWorkspace state={state} />
+            </>
+          ) : null}
           <Text style={styles.text} testID="handoff-stop-notice">
             {t("handoff.stopNotice")}
           </Text>

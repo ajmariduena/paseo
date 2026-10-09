@@ -2,6 +2,7 @@ import type {
   HandoffDestinationSnapshot,
   HandoffDestinationPreview,
   HandoffDestinationPage,
+  HandoffSourcePreview,
 } from "@getpaseo/protocol/handoff-control";
 import type { WorkspaceHandoffProgress } from "@getpaseo/client/internal/workspace-handoff";
 import { HandoffReviewChangedError } from "@getpaseo/client/internal/workspace-handoff";
@@ -20,6 +21,11 @@ type Run =
   | { status: "idle" }
   | { status: "running"; progress: WorkspaceHandoffProgress | null }
   | { status: "error"; message: string };
+export interface HandoffReviewPreview extends HandoffDestinationPreview {
+  workspace: NonNullable<HandoffSourcePreview["workspace"]>;
+  stoppedWork: NonNullable<HandoffSourcePreview["stoppedWork"]>;
+  conversationBytes: number;
+}
 export type HandoffFormState =
   | { kind: "loading" }
   | { kind: "load_error"; message: string }
@@ -32,7 +38,7 @@ export type HandoffFormState =
       busy: boolean;
       error: string | null;
     }
-  | { kind: "review"; draft: Draft; record: HandoffRecord; preview: HandoffDestinationPreview }
+  | { kind: "review"; draft: Draft; record: HandoffRecord; preview: HandoffReviewPreview }
   | { kind: "transfer"; record: HandoffRecord; run: Run };
 
 interface OperationOptions {
@@ -54,7 +60,7 @@ export interface HandoffFormPorts {
     transferId: string,
   ): Promise<HandoffRecord>;
   newTransferId(): string;
-  validate(record: HandoffRecord): Promise<HandoffDestinationPreview>;
+  validate(record: HandoffRecord): Promise<HandoffReviewPreview>;
   prepare(record: HandoffRecord, options: OperationOptions): Promise<HandoffDestinationSnapshot>;
   activate(record: HandoffRecord, options: OperationOptions): Promise<HandoffDestinationSnapshot>;
   cancel(record: HandoffRecord, options: OperationOptions): Promise<HandoffDestinationSnapshot>;

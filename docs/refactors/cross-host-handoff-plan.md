@@ -206,6 +206,11 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   restoration and source rechecks. `packWorkspaceArchive` registers the manifest as an archive blob,
   including an empty workspace; restoration consumes only referenced blobs in the verified inventory.
   Git capture still omits empty untracked directories; preserving or reporting them remains open.
+  Read-only review uses the capture's ignore rules and portable-path checks to estimate file and
+  Git-history bytes. It reports file/folder/link counts and the first fifty ignored paths with the
+  total omitted-path count; ignored directories are collapsed. Tracked files matching ignore rules
+  remain included. Estimates are advisory while the source is running; the stopped capture still
+  determines the archive. Reviewing a directory does not add Git metadata or change its contents.
 - `archive.ts`, `archive.test.ts` and `archive.e2e.test.ts` cover persistent receive offsets,
   checksums, local capture import, and real two-daemon transport. The client coordinator in
   `packages/client/src/handoff-transfer.ts` holds one chunk in flight. The network suite transfers
@@ -301,7 +306,15 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   transfer identity and intent before host mutations, preserves the selected mode across reopening,
   and exposes review, prepare, activate, retry, cancel and destination navigation. Review does not
   stop work or reserve a destination. Read-only placement errors leave the form editable. The source
-  conversation set is checked again before reservation; a changed set returns the form to review.
+  review also shows estimated workspace/provider bytes, ignored paths, live conversation count,
+  terminal names and active setup count. Terminal enumeration is shared with preparation and
+  deduplicates nested buckets. The network regression leaves terminals running during review and
+  confirms their exit during preparation; the setup regression retains its active count through an
+  uncertain stop until cleanup succeeds. The browser test recovers from a nonportable source path,
+  shows the ignored `.env` and running terminal, and verifies the excluded file is absent in the
+  destination. Review content scrolls above the pinned actions at compact width.
+  The source conversation set is checked again before reservation; a changed set returns the form
+  to review.
   Fourteen form cases cover unavailable modes, inventory changes, lost replies, storage failures,
   duplicate submissions, closing during work, cancellation recovery and host journals advancing
   past local state, including destination lookup and selection failures. Reconstructed records retain
@@ -333,6 +346,7 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   a composer or replaying a turn. The context-export case exercises that sheet at compact width;
   its first run exposed missing pane context across the portal, now covered by the regression.
   See the [history results](../qa-evidence/handoff-history.txt),
+  [preflight results](../qa-evidence/handoff-preflight.txt),
   [real-provider browser results](../qa-evidence/handoff-app-real.txt),
   [recovery app results](../qa-evidence/handoff-app.txt)
   and [review](../qa-evidence/handoff-review-compact.png), [pending transfers](../qa-evidence/handoff-existing-transfers.png), [desktop](../qa-evidence/handoff-app-desktop.png) / [compact](../qa-evidence/handoff-app-compact.png)
@@ -341,7 +355,9 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   tombstone; automatic discovery of that cancellation intent remains open, as does unfinished cleanup
   after the destination journal already says cancelled. Reopening recovery when the source workspace
   is unavailable, pinned-key client persistence,
-  resource/omitted-file preflight, source moved state and native-platform evidence remain open.
+  complete omitted-path access and integration/resource dispositions, source moved state and
+  native-platform evidence remain open. Review does not bind approval to a resource digest or
+  revalidate reviewed exclusions before preparation; final transfer size is not shown separately.
 - Source retirement/tombstones and automation dispositions remain unimplemented.
   The composite archive currently captures Claude conversations;
   other provider codecs remain open. Complete handoff is not advertised.

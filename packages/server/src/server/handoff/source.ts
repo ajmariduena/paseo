@@ -22,10 +22,11 @@ import {
 } from "../agent/providers/claude/handoff.js";
 import type { WorkspaceRegistry } from "../workspace-registry.js";
 import type { TerminalManager } from "../../terminal/terminal-manager.js";
+import type { TerminalSession } from "../../terminal/terminal.js";
 import type { WorkspaceSetupRuntime } from "../workspace-setup-runtime.js";
 import type { HandoffArchiveStore } from "./archive.js";
 import { readBoundedFile, syncDirectory, writeJournal } from "./artifacts.js";
-import { captureWorkspace, verifyCapturedWorkspace } from "./workspace.js";
+import { captureWorkspace, verifyCapturedWorkspace, previewWorkspace } from "./workspace.js";
 import { packHandoffArchive, readHandoffBundle } from "./bundle.js";
 import { writeHandoffHistory, readHandoffHistory, fetchHandoffHistory } from "./history.js";
 import type { AgentTimelineFetchOptions } from "../agent/agent-timeline-store-types.js";
@@ -65,7 +66,7 @@ interface SourceOptions {
     "getAgent" | "listAgents" | "closeAgent" | "projectHistoryForHandoff"
   >;
   terminals: Pick<TerminalManager, "listDirectories" | "getTerminals" | "killTerminalAndWait">;
-  setup: Pick<WorkspaceSetupRuntime, "stop">;
+  setup: Pick<WorkspaceSetupRuntime, "stop" | "countActive">;
   getProviderRuntimeSettings: ProviderSnapshotManager["getProviderRuntimeSettings"];
 }
 interface SourceRequest {
@@ -145,7 +146,19 @@ export class HandoffSource {
         });
       }
     }
-    return { workspaceId, cwd: inventory.cwd, conversations };
+    const workspace = await previewWorkspace({ cwd: inventory.cwd });
+    const terminals = await this.sourceTerminals(inventory);
+    return {
+      workspaceId,
+      cwd: inventory.cwd,
+      conversations,
+      workspace,
+      stoppedWork: {
+        agentIds: inventory.agentIds.filter((id) => this.options.agentManager.getAgent(id)),
+        terminals: terminals.map((terminal) => ({ id: terminal.id, name: terminal.name })),
+        setupOperations: this.options.setup.countActive(workspaceId),
+      },
+    };
   }
 
   private conversationBlockReason(record: StoredAgentRecord) {
@@ -362,18 +375,26 @@ export class HandoffSource {
     await this.tail;
   }
 
-  private async stopWriters(source: SourceHandoffStatus): Promise<void> {
-    const stops = [() => this.options.setup.stop(source.workspaceId)];
-    for (const id of source.agentIds) stops.push(() => this.options.agentManager.closeAgent(id));
+  private async sourceTerminals(source: { workspaceId: string; cwd: string }) {
+    const terminals = new Map<string, TerminalSession>();
     for (const directory of this.options.terminals.listDirectories()) {
       for (const terminal of await this.options.terminals.getTerminals(directory)) {
         if (
           terminal.workspaceId === source.workspaceId ||
           handoffPathsOverlap(source.cwd, terminal.cwd)
         )
-          stops.push(() => this.options.terminals.killTerminalAndWait(terminal.id));
+          terminals.set(terminal.id, terminal);
       }
     }
+    if (terminals.size > 1000) refuse("invalid_source", "Too many terminals to review for handoff");
+    return [...terminals.values()].sort((left, right) => left.id.localeCompare(right.id));
+  }
+
+  private async stopWriters(source: SourceHandoffStatus): Promise<void> {
+    const stops = [() => this.options.setup.stop(source.workspaceId)];
+    for (const id of source.agentIds) stops.push(() => this.options.agentManager.closeAgent(id));
+    for (const terminal of await this.sourceTerminals(source))
+      stops.push(() => this.options.terminals.killTerminalAndWait(terminal.id));
     const results = await Promise.allSettled(stops.map(async (stop) => stop()));
     const failures = results.filter((result) => result.status === "rejected");
     if (failures.length > 0)

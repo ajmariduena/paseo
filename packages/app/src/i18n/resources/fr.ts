@@ -3,6 +3,15 @@ import { pluginSettings } from "./plugin-settings";
 
 export const fr: TranslationResources = {
   handoff: {
+    dataEstimate: "Taille estimée du transfert",
+    fileCounts: "Fichiers : {{files}} · Dossiers : {{directories}} · Liens : {{links}}",
+    estimateNotice: "Estimation pendant le travail en cours ; la taille finale peut varier.",
+    omittedPaths: "Exclus par les règles d’exclusion ({{count}})",
+    noOmissions: "Aucun chemin ne correspond aux règles d’exclusion.",
+    moreOmissions: "Chemins supplémentaires exclus : {{count}}",
+    workToStop: "Travail qui sera arrêté",
+    activeWork: "Agents actifs : {{agents}} · Opérations de configuration : {{setup}}",
+    noTerminals: "Aucun terminal ouvert.",
     history: "Conversation précédente",
     historyConnect: "Connectez l’hôte de destination pour consulter cet historique.",
     historyUnavailable: "L’historique transféré est indisponible.",
@@ -41,7 +50,7 @@ export const fr: TranslationResources = {
     contextDescription:
       "Les conversations ouvriront de nouvelles sessions avec l’historique exporté lisible et un résumé de reprise.",
     stopNotice:
-      "La préparation arrête les agents, terminaux et scripts de configuration. Les fichiers ignorés non suivis sont exclus. Le fournisseur utilise les identifiants de l’hôte de destination. Les modifications ultérieures à la source ne sont pas synchronisées.",
+      "La préparation arrête les agents, terminaux et scripts de configuration. Les fichiers ignorés non suivis sont exclus ; les fichiers suivis, y compris les secrets, sont transférés. Les identifiants et la configuration MCP restent sur chaque hôte. Les modifications ultérieures à la source ne sont pas synchronisées.",
     prepare: "Préparer le transfert",
     activate: "Déplacer le workspace",
     resume: "Reprendre",

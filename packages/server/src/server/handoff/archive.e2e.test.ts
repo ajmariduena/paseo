@@ -125,6 +125,74 @@ async function expectExportedHistory(
 }
 
 test.skipIf(process.platform === "win32")(
+  "reviews omitted files and nested terminals without stopping work until preparation",
+  async () => {
+    const source = await startHost("source");
+    const cwd = path.join(root, "workspace");
+    await mkdir(path.join(cwd, "nested"), { recursive: true });
+    await writeFile(path.join(cwd, ".gitignore"), ".env\n");
+    await writeFile(path.join(cwd, ".env"), "PRIVATE_VALUE=do-not-export\n");
+    await writeFile(path.join(cwd, "notes.txt"), "move this\n");
+    const created = await source.client.createWorkspace({
+      source: { kind: "directory", path: cwd },
+    });
+    if (!created.workspace) throw new Error("Missing source workspace");
+    const workspaceId = created.workspace.id;
+    const manager = source.daemon.daemon.terminalManager;
+    const terminals = [];
+    for (const [name, directory] of [
+      ["Root terminal", cwd],
+      ["Nested terminal", path.join(cwd, "nested")],
+    ]) {
+      terminals.push(
+        await manager.createTerminal({
+          cwd: directory,
+          workspaceId,
+          name,
+          command: process.execPath,
+          args: ["-e", "setInterval(() => {}, 1000)"],
+        }),
+      );
+    }
+    const preview = await source.client.handoffPreviewSource({ workspaceId });
+    expect(preview.error).toBeNull();
+    expect(preview.result?.workspace).toEqual({
+      kind: "directory",
+      fileCount: 2,
+      directoryCount: 1,
+      symlinkCount: 0,
+      fileBytes: Buffer.byteLength(".env\nmove this\n"),
+      gitHistoryBytes: 0,
+      omittedPaths: [".env"],
+      omittedPathCount: 1,
+    });
+    expect(preview.result?.stoppedWork).toEqual({
+      agentIds: [],
+      setupOperations: 0,
+      terminals: terminals
+        .map(({ id, name }) => ({ id, name }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
+    });
+    expect(JSON.stringify(preview)).not.toContain("PRIVATE_VALUE");
+    expect(terminals.map((terminal) => terminal.getExitInfo())).toEqual([null, null]);
+    expect((await source.client.handoffFindSource({ workspaceId })).result).toBeNull();
+    await writeFile(path.join(cwd, "notes.txt"), "still writable before preparation\n");
+    const prepared = await source.client.handoffPrepareSource({
+      transferId: randomUUID(),
+      workspaceId,
+      agentIds: [],
+      destinationServerId: "destination",
+      reservationId: randomUUID(),
+    });
+    expect(prepared.error).toBeNull();
+    expect(prepared.result?.source.state).toBe("ready");
+    expect(await manager.getTerminals(cwd)).toEqual([]);
+    expect(terminals.every((terminal) => terminal.getExitInfo() !== null)).toBe(true);
+  },
+  30_000,
+);
+
+test.skipIf(process.platform === "win32")(
   "discovers destination-only reservations in bounded pages after restart",
   async () => {
     const source = await startHost("source");
@@ -479,6 +547,7 @@ test.skipIf(process.platform === "win32")(
         state: "available",
         cliVersion: "2.1.295",
         hasWorkflows: false,
+        artifactBytes: Buffer.byteLength(transcript),
       },
     ]);
     const compatibility = await destination.client.handoffPreviewDestination({

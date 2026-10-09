@@ -3,6 +3,15 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ko: TranslationResources = {
   handoff: {
+    dataEstimate: "예상 전송 크기",
+    fileCounts: "파일 {{files}}개 · 폴더 {{directories}}개 · 링크 {{links}}개",
+    estimateNotice: "작업 중인 상태의 예상치이며 최종 전송 크기는 달라질 수 있습니다.",
+    omittedPaths: "무시 규칙으로 제외됨 ({{count}})",
+    noOmissions: "무시 규칙에 해당하는 경로가 없습니다.",
+    moreOmissions: "추가 제외 경로: {{count}}",
+    workToStop: "중지될 작업",
+    activeWork: "활성 에이전트: {{agents}} · 설정 작업: {{setup}}",
+    noTerminals: "열린 터미널이 없습니다.",
     history: "이전 대화",
     historyConnect: "이 기록을 읽으려면 대상 호스트에 연결하세요.",
     historyUnavailable: "전송된 기록을 사용할 수 없습니다.",
@@ -39,7 +48,7 @@ export const ko: TranslationResources = {
     contextDescription:
       "읽을 수 있는 내보낸 기록과 인계 요약을 사용하여 새 공급자 세션에서 대화를 시작합니다.",
     stopNotice:
-      "준비 시 에이전트, 터미널 및 설정 작업이 중지됩니다. 무시 대상으로 지정된 미추적 파일은 제외됩니다. 공급자는 대상 호스트의 자격 증명을 사용합니다. 이후 원본의 변경 사항은 동기화되지 않습니다.",
+      "준비 시 에이전트, 터미널 및 설정 작업이 중지됩니다. 무시 대상인 미추적 파일은 제외되며 비밀 정보를 포함한 추적 파일은 이동합니다. 자격 증명과 호스트 MCP 설정은 각 호스트에 남습니다. 이후 원본의 변경 사항은 동기화되지 않습니다.",
     prepare: "전송 준비",
     activate: "워크스페이스 이동",
     resume: "재개",

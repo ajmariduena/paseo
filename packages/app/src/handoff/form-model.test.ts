@@ -9,6 +9,21 @@ import { HandoffReviewChangedError } from "@getpaseo/client/internal/workspace-h
 
 const origin = { sourceServerId: "source", workspaceId: "workspace" };
 const transferId = "00000000-0000-4000-8000-000000000001";
+const emptyReview = {
+  conversations: [],
+  workspace: {
+    kind: "directory" as const,
+    fileCount: 0,
+    directoryCount: 0,
+    symlinkCount: 0,
+    fileBytes: 0,
+    gitHistoryBytes: 0,
+    omittedPaths: [],
+    omittedPathCount: 0,
+  },
+  stoppedWork: { agentIds: [], terminals: [], setupOperations: 0 },
+  conversationBytes: 0,
+};
 const destination: HandoffDestinationSnapshot = {
   transferId,
   reservationId: "00000000-0000-4000-8000-000000000002",
@@ -52,7 +67,7 @@ function fixture() {
       throw new Error("No transfer was selected");
     },
     newTransferId: () => transferId,
-    validate: async () => ({ conversations: [] }),
+    validate: async () => emptyReview,
     prepare: async (record) => {
       expect(await persistence.load(origin)).toEqual(record);
       calls.push(`prepare:${record.transferId}`);
@@ -205,6 +220,7 @@ describe("handoff form recovery", () => {
   it("requires an explicit supported continuation choice after read-only review", async () => {
     const { ports, persistence, calls } = fixture();
     ports.validate = async () => ({
+      ...emptyReview,
       conversations: [
         {
           agentId: "conversation",
@@ -260,7 +276,7 @@ describe("handoff form recovery", () => {
     });
     expect(await persistence.load(origin)).toBeNull();
     expect(calls).toEqual([]);
-    ports.validate = async () => ({ conversations: [] });
+    ports.validate = async () => emptyReview;
     await model.review();
     await model.prepare();
     expect(calls).toEqual([`prepare:${transferId}`]);

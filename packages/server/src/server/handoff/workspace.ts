@@ -361,13 +361,28 @@ async function getWorkspaceState(
   cwd: string,
   limits: WorkspaceSnapshotLimits,
   scratchParent: string,
+  onIgnoredPaths?: (paths: string[]) => void,
 ): Promise<WorkspaceState> {
   const probe = await git(["rev-parse", "--show-toplevel"], {
     cwd,
     acceptExitCodes: [0, 128],
     envOverlay: { LC_ALL: "C", GIT_OPTIONAL_LOCKS: "0" },
   });
-  if (probe.exitCode === 0) return getGitState(cwd, limits);
+  if (probe.exitCode === 0) {
+    const state = await getGitState(cwd, limits);
+    if (onIgnoredPaths) {
+      const ignored = await runGit(cwd, [
+        "ls-files",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+        "--directory",
+        "-z",
+      ]);
+      onIgnoredPaths(ignored.split("\0").filter(Boolean));
+    }
+    return state;
+  }
   if (!probe.stderr.includes("not a git repository")) {
     reject("unsupported_workspace", `Cannot inspect workspace Git state: ${probe.stderr.trim()}`);
   }
@@ -390,6 +405,7 @@ async function getWorkspaceState(
       "-z",
     ]);
     const ignored = new Set(ignoredText.split("\0").filter(Boolean));
+    onIgnoredPaths?.([...ignored]);
     const paths: string[] = [];
     const directories = [""];
     for (const directory of directories) {
@@ -416,6 +432,87 @@ async function getWorkspaceState(
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
+}
+
+/** Advisory live metadata. The stopped capture remains the authority for transferred bytes. */
+export async function previewWorkspace(input: {
+  cwd: string;
+  scratchParent?: string;
+  limits?: WorkspaceSnapshotLimits;
+}) {
+  const cwd = await realpath(input.cwd);
+  const limits = input.limits ?? WORKSPACE_SNAPSHOT_LIMITS;
+  let omittedPaths: string[] = [];
+  const state = await getWorkspaceState(
+    cwd,
+    limits,
+    input.scratchParent ?? os.tmpdir(),
+    (paths) => {
+      omittedPaths = [...new Set(paths)].sort();
+    },
+  );
+  if (state.kind === "git") await validateGitCapture(cwd, state.paths);
+  const files = await previewWorkspaceFiles(cwd, state, limits);
+  let gitHistoryBytes = 0;
+  if (state.kind === "git" && state.head) {
+    const bytes = (await runGit(cwd, ["rev-list", "--disk-usage", "--objects", "HEAD"])).trim();
+    if (!/^\d+$/.test(bytes) || !Number.isSafeInteger(Number(bytes)))
+      reject("unsupported_workspace", "Cannot estimate Git history size");
+    gitHistoryBytes = Number(bytes);
+  }
+  return {
+    kind: state.kind,
+    ...files,
+    gitHistoryBytes,
+    omittedPaths: omittedPaths.slice(0, 50),
+    omittedPathCount: omittedPaths.length,
+  };
+}
+
+async function previewWorkspaceFiles(
+  cwd: string,
+  state: WorkspaceState,
+  limits: WorkspaceSnapshotLimits,
+) {
+  let fileCount = 0;
+  let fileBytes = 0;
+  const directories = new Set<string>();
+  const folders = new Set<string>();
+  const links = new Map<string, string>();
+  for (const relative of state.paths) {
+    const absolute = path.join(cwd, relative);
+    let stat;
+    try {
+      stat = await lstat(absolute);
+    } catch (error) {
+      if (isMissing(error)) continue;
+      throw error;
+    }
+    if (!isWithin(cwd, await realpath(path.dirname(absolute))))
+      reject("source_changed", `Path leaves workspace: ${relative}`);
+    const segments = relative.split("/");
+    segments.pop();
+    while (segments.length) {
+      folders.add(segments.join("/"));
+      segments.pop();
+    }
+    if (stat.isFile()) {
+      fileBytes += stat.size;
+      fileCount++;
+      if (stat.size > limits.maxFileBytes || fileBytes > limits.maxTotalBytes)
+        reject("limit_exceeded", "Workspace exceeds handoff byte limits");
+    } else if (stat.isSymbolicLink()) {
+      links.set(portablePathKey(relative), await readlink(absolute));
+    } else if (stat.isDirectory() && state.kind === "directory") {
+      directories.add(portablePathKey(relative));
+      folders.add(relative);
+    } else {
+      reject("unsupported_workspace", `Cannot transfer directory or special file: ${relative}`);
+    }
+  }
+  validatePaths(state.paths, "unsupported_workspace", directories);
+  for (const [link, target] of links) validateSymlink(link, target, links);
+  return { fileCount, fileBytes, directoryCount: folders.size, symlinkCount: links.size };
 }
 
 async function validateGitCapture(cwd: string, paths: string[]): Promise<void> {

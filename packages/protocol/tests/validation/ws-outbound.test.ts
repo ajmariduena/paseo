@@ -62,6 +62,59 @@ async function compileInlineSchema(sourceSchema: string): Promise<GeneratedSchem
 }
 
 describe("WS outbound zod-aot validation", () => {
+  it("preserves bounded handoff review data while accepting older source previews", () => {
+    const envelope = (result: unknown) => ({
+      type: "session",
+      message: {
+        type: "workspace.handoff.preview_source.response",
+        payload: { requestId: "preview", result, error: null },
+      },
+    });
+    const conversation = {
+      agentId: "agent",
+      title: null,
+      provider: "claude",
+      state: "available",
+      cliVersion: "1.0.0",
+      hasWorkflows: false,
+    };
+    const older = { workspaceId: "workspace", cwd: "/source", conversations: [conversation] };
+    const workspace = {
+      kind: "directory",
+      fileCount: 1,
+      directoryCount: 0,
+      symlinkCount: 0,
+      fileBytes: 123,
+      gitHistoryBytes: 0,
+      omittedPaths: [".env"],
+      omittedPathCount: 1,
+    };
+    const current = {
+      ...older,
+      conversations: [{ ...conversation, artifactBytes: 456 }],
+      workspace,
+      stoppedWork: {
+        agentIds: ["agent"],
+        terminals: [{ id: "terminal", name: "Build" }],
+        setupOperations: 1,
+      },
+    };
+    for (const result of [older, current]) {
+      expect(GeneratedWSOutboundMessageSchema.safeParse(envelope(result))).toEqual({
+        success: true,
+        data: envelope(result),
+      });
+    }
+    for (const result of [
+      { ...current, workspace: { ...workspace, fileBytes: -1 } },
+      { ...current, workspace: { ...workspace, omittedPaths: Array(51).fill(".env") } },
+      { ...current, conversations: [{ ...conversation, artifactBytes: -1 }] },
+      { ...current, stoppedWork: { ...current.stoppedWork, setupOperations: "one" } },
+    ]) {
+      expect(GeneratedWSOutboundMessageSchema.safeParse(envelope(result)).success).toBe(false);
+    }
+  });
+
   it("preserves transferred history and rejects malformed nested entries", () => {
     const epoch = "00000000-0000-4000-8000-000000000001";
     const entry = {

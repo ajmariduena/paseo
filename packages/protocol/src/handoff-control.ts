@@ -25,16 +25,34 @@ export const HandoffConversationPreviewSchema = z.discriminatedUnion("state", [
     provider: z.literal("claude"),
     cliVersion: z.string().min(1).max(128),
     hasWorkflows: z.boolean(),
+    artifactBytes: z.number().int().nonnegative().optional(),
   }),
   HandoffConversationIdentitySchema.extend({
     state: z.literal("blocked"),
     reason: z.string().min(1),
   }),
 ]);
+export const HandoffWorkspacePreviewSchema = z.object({
+  kind: z.enum(["git", "directory"]),
+  fileCount: z.number().int().nonnegative(),
+  directoryCount: z.number().int().nonnegative(),
+  symlinkCount: z.number().int().nonnegative(),
+  fileBytes: z.number().int().nonnegative(),
+  gitHistoryBytes: z.number().int().nonnegative(),
+  omittedPaths: z.array(z.string().max(4096)).max(50),
+  omittedPathCount: z.number().int().nonnegative(),
+});
+export const HandoffStoppedWorkPreviewSchema = z.object({
+  agentIds: z.array(z.string().min(1)).max(1000),
+  terminals: z.array(z.object({ id: z.string().min(1), name: z.string().max(4096) })).max(1000),
+  setupOperations: z.number().int().nonnegative(),
+});
 export const HandoffSourcePreviewSchema = z.object({
   workspaceId: z.string().min(1),
   cwd: z.string().min(1),
   conversations: z.array(HandoffConversationPreviewSchema).max(1000),
+  workspace: HandoffWorkspacePreviewSchema.optional(),
+  stoppedWork: HandoffStoppedWorkPreviewSchema.optional(),
 });
 const HandoffContinuationAvailabilitySchema = z.object({
   available: z.boolean(),

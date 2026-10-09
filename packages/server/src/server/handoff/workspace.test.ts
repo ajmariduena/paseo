@@ -21,6 +21,7 @@ import {
   restoreWorkspaceArchive,
   verifyCapturedWorkspace,
   WORKSPACE_SNAPSHOT_LIMITS,
+  previewWorkspace,
 } from "./workspace.js";
 import { HandoffArchiveStore } from "./archive.js";
 
@@ -61,6 +62,57 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await rm(root, { recursive: true, force: true });
+});
+
+test("reviews directory bytes and omitted paths without changing the workspace", async () => {
+  await rm(path.join(source, ".git"), { recursive: true });
+  await mkdir(path.join(source, "empty"));
+  await mkdir(path.join(source, "ignored"));
+  await writeFile(path.join(source, "ignored", "local-cache"), "not transferred");
+  await writeFile(path.join(source, ".env"), "LOCAL_SECRET=not-transferred\n");
+  const before = await readdir(source);
+  expect(await previewWorkspace({ cwd: source, scratchParent: root })).toEqual({
+    kind: "directory",
+    fileCount: 2,
+    directoryCount: 1,
+    symlinkCount: 0,
+    fileBytes: Buffer.byteLength("committed\nignored/\n.env\n"),
+    gitHistoryBytes: 0,
+    omittedPaths: [".env", "ignored/"],
+    omittedPathCount: 2,
+  });
+  expect(await readdir(source)).toEqual(before);
+  await expect(lstat(path.join(source, ".git"))).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await readFile(path.join(source, ".env"), "utf8")).toBe("LOCAL_SECRET=not-transferred\n");
+  expect((await readdir(root)).sort()).toEqual(["source"]);
+});
+
+test("reviews Git data using transfer ignore rules and bounds the omitted-path sample", async () => {
+  await writeFile(path.join(source, ".gitignore"), "ignored/\n.env*\n");
+  await writeFile(path.join(source, ".env"), "tracked secret stays tracked\n");
+  await git(source, "add", "--force", ".env");
+  await mkdir(path.join(source, "ignored"));
+  await writeFile(path.join(source, "ignored", "cache"), "not transferred");
+  for (let index = 0; index < 51; index++)
+    await writeFile(path.join(source, `.env.${String(index).padStart(2, "0")}`), "not transferred");
+  const before = await git(source, "status", "--porcelain=v1", "-z");
+  const preview = await previewWorkspace({ cwd: source, scratchParent: root });
+  expect(preview).toMatchObject({
+    kind: "git",
+    fileCount: 3,
+    directoryCount: 0,
+    symlinkCount: 0,
+    fileBytes: Buffer.byteLength("committed\nignored/\n.env*\ntracked secret stays tracked\n"),
+    omittedPathCount: 52,
+    omittedPaths: Array.from(
+      { length: 50 },
+      (_, index) => `.env.${String(index).padStart(2, "0")}`,
+    ),
+  });
+  expect(preview.gitHistoryBytes).toBeGreaterThan(0);
+  expect(await git(source, "status", "--porcelain=v1", "-z")).toBe(before);
+  const capture = await captureWorkspace({ cwd: source, artifactDirectory: artifact });
+  expect(capture.files.map((file) => file.path)).toEqual([".env", ".gitignore", "tracked.txt"]);
 });
 
 test("moves a non-Git directory with local ignores and empty directories without creating a repository", async () => {

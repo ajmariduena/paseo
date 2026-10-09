@@ -781,8 +781,11 @@ describe("runWorktreeSetupInBackground", () => {
     }
     await Promise.all(entered.map((gate) => gate.promise));
     try {
+      expect(runtime.countActive("shared-workspace")).toBe(2);
+      expect(runtime.countActive("other-workspace")).toBe(0);
       await runtime.stop("shared-workspace");
       expect(cancelled).toEqual([0, 1]);
+      expect(runtime.countActive("shared-workspace")).toBe(0);
     } finally {
       for (const gate of finish) gate.resolve();
     }

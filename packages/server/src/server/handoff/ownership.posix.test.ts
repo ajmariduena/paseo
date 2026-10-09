@@ -20,6 +20,7 @@ import { captureClaudeSession } from "../agent/providers/claude/handoff.js";
 import { claudeProjectDirSync } from "../agent/providers/claude/project-dir.js";
 import { captureWorkspace } from "./workspace.js";
 import { HandoffSource } from "./source.js";
+import { WorkspaceSetupRuntime } from "../workspace-setup-runtime.js";
 import { writeHandoffHistory } from "./history.js";
 
 const test = platformTest.skipIf(process.platform === "win32");
@@ -228,6 +229,15 @@ test("source preparation keeps ownership fenced after uncertain cleanup and retr
     updatedAt: new Date().toISOString(),
   });
   const captures = path.join(root, "source-captures");
+  const setup = new WorkspaceSetupRuntime();
+  const entered = Promise.withResolvers<void>();
+  setup.start(workspace.workspaceId, async (signal) => {
+    await new Promise<void>((resolve) => {
+      signal.addEventListener("abort", () => resolve(), { once: true });
+      entered.resolve();
+    });
+  });
+  await entered.promise;
   let stopFails = true;
   const failure = new Error("setup exit is unconfirmed");
   const source = new HandoffSource({
@@ -250,8 +260,10 @@ test("source preparation keeps ownership fenced after uncertain cleanup and retr
       killTerminalAndWait: async () => {},
     },
     setup: {
+      countActive: (workspaceId) => setup.countActive(workspaceId),
       stop: async () => {
         if (stopFails) throw failure;
+        await setup.stop(workspace.workspaceId);
       },
     },
     getProviderRuntimeSettings: () => undefined,
@@ -263,7 +275,13 @@ test("source preparation keeps ownership fenced after uncertain cleanup and retr
     destinationServerId: "destination",
     reservationId: randomUUID(),
   };
+  expect((await source.preview(workspace.workspaceId)).stoppedWork).toEqual({
+    agentIds: [],
+    terminals: [],
+    setupOperations: 1,
+  });
   await expect(source.prepare(request)).rejects.toMatchObject({ errors: [failure] });
+  expect(setup.countActive(workspace.workspaceId)).toBe(1);
   expect(ownership.status(transferId).state).toBe("preparing");
   await expect(readdir(captures)).rejects.toMatchObject({ code: "ENOENT" });
   await expect(ownership.withMutation({ cwd }, async () => {})).rejects.toMatchObject({
@@ -272,6 +290,7 @@ test("source preparation keeps ownership fenced after uncertain cleanup and retr
   stopFails = false;
   const prepared = await source.prepare(request);
   expect(prepared.source.state).toBe("ready");
+  expect(setup.countActive(workspace.workspaceId)).toBe(0);
   expect(await source.prepare(request)).toEqual(prepared);
   const receipt = await source.release(transferId);
   expect(receipt.manifestDigest).toBe(prepared.manifest.entrypoint.sha256);

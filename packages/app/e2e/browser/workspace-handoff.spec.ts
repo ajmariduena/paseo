@@ -1,4 +1,4 @@
-import { mkdir, readFile, rmdir } from "node:fs/promises";
+import { mkdir, readFile, rm, rmdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, test } from "../support/fixtures";
 import { waitForSettledPosition } from "../support/helpers/sheet-layout";
@@ -107,6 +107,19 @@ test.describe("workspace handoff", () => {
     test.setTimeout(120_000);
     const host = await hosts(page);
     try {
+      await writeFile(path.join(host.workspace.repoPath, ".gitignore"), ".env\n");
+      await writeFile(path.join(host.workspace.repoPath, ".env"), "synthetic-secret\n");
+      const terminal = await host.sourceClient.createTerminal(
+        host.workspace.repoPath,
+        "Preview terminal",
+        undefined,
+        {
+          workspaceId: host.workspace.workspaceId,
+          command: process.execPath,
+          args: ["-e", "setInterval(() => {}, 1000)"],
+        },
+      );
+      expect(terminal.error).toBeNull();
       await openHandoff(page);
       await page.getByTestId("handoff-host-trigger").click();
       await page.getByTestId(`handoff-host-${host.destination.serverId}`).click();
@@ -115,16 +128,41 @@ test.describe("workspace handoff", () => {
       await expect(page.getByTestId("handoff-error")).toBeVisible();
       await expect(page.getByTestId("handoff-parent")).toBeEditable();
       await page.getByTestId("handoff-parent").fill(host.destinationParent);
+      await writeFile(path.join(host.workspace.repoPath, "CON.txt"), "unsupported filename");
+      await page.getByTestId("handoff-submit").click();
+      await expect(page.getByTestId("handoff-error")).toHaveText(
+        "Path is not portable between hosts: CON.txt",
+      );
+      await expect(page.getByTestId("handoff-parent")).toBeEditable();
+      await rm(path.join(host.workspace.repoPath, "CON.txt"));
       await page.getByTestId("handoff-submit").click();
       await expect(page.getByTestId("handoff-review")).toHaveText(
         "This workspace has no conversations.",
       );
       expect((await host.destinationClient.fetchWorkspaces()).entries).toEqual([]);
       await expect(page.getByTestId("handoff-submit")).toHaveText("Prepare transfer");
+      await expect(page.getByTestId("handoff-data-review")).toContainText("1 KiB");
+      // The shared directory fixture includes README.md alongside our files.
+      await expect(page.getByTestId("handoff-data-review")).toContainText("Files: 3");
+      await expect(page.getByTestId("handoff-omissions-review")).toHaveText(".env");
+      await expect(page.getByTestId("handoff-stopped-work-review")).toContainText(
+        "Preview terminal",
+      );
+      expect(
+        (await host.sourceClient.listTerminals(host.workspace.repoPath)).terminals,
+      ).toHaveLength(1);
+      expect(
+        (await host.sourceClient.handoffFindSource({ workspaceId: host.workspace.workspaceId }))
+          .result,
+      ).toBeNull();
+      await page.screenshot({ path: testInfo.outputPath("handoff-preflight-desktop.png") });
       await page.getByTestId("handoff-submit").click();
       await expect(page.getByTestId("handoff-submit")).toHaveText("Move workspace", {
         timeout: 30_000,
       });
+      expect((await host.sourceClient.listTerminals(host.workspace.repoPath)).terminals).toEqual(
+        [],
+      );
       const transferId = await savedTransfer(
         page,
         host.source.serverId,
@@ -160,6 +198,11 @@ test.describe("workspace handoff", () => {
       expect(active.error).toBeNull();
       expect(active.result?.state).toBe("active");
       if (!active.result) throw new Error("Missing destination");
+      await expect(readFile(path.join(active.result.destinationCwd, ".env"))).rejects.toMatchObject(
+        {
+          code: "ENOENT",
+        },
+      );
       expect(
         await readFile(path.join(active.result.destinationCwd, "prior-work.txt"), "utf8"),
       ).toBe("work from the source\n");
@@ -194,7 +237,16 @@ test.describe("workspace handoff", () => {
         "This workspace has no conversations.",
       );
       await waitForSettledPosition(page.getByTestId("handoff-submit"));
+      await expect(page.getByTestId("handoff-data-review")).toContainText("Files: 2");
+      await expect(page.getByTestId("handoff-omissions-review")).toHaveText(
+        "No paths match ignore rules.",
+      );
+      await expect(page.getByTestId("handoff-stopped-work-review")).toContainText(
+        "No open terminals.",
+      );
+      await page.getByTestId("handoff-stop-notice").scrollIntoViewIfNeeded();
       await expect(page.getByTestId("handoff-stop-notice")).toBeInViewport({ ratio: 1 });
+      await expect(page.getByTestId("handoff-submit")).toBeInViewport({ ratio: 1 });
       await page.screenshot({ path: testInfo.outputPath("handoff-review-compact.png") });
       await page.getByTestId("handoff-submit").click();
       await expect(page.getByTestId("handoff-submit")).toHaveText("Move workspace", {

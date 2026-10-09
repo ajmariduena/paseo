@@ -1,5 +1,14 @@
 export const en = {
   handoff: {
+    dataEstimate: "Estimated transfer size",
+    fileCounts: "Files: {{files}} · Folders: {{directories}} · Links: {{links}}",
+    estimateNotice: "Estimated while work is running; the final transfer size may differ.",
+    omittedPaths: "Excluded by ignore rules ({{count}})",
+    noOmissions: "No paths match ignore rules.",
+    moreOmissions: "Additional omitted paths: {{count}}",
+    workToStop: "Work that will stop",
+    activeWork: "Active agents: {{agents}} · Setup operations: {{setup}}",
+    noTerminals: "No open terminals.",
     history: "Previous conversation",
     historyConnect: "Connect to the destination host to read this history.",
     historyUnavailable: "Transferred history is unavailable.",
@@ -36,7 +45,7 @@ export const en = {
     contextDescription:
       "Conversations will start new provider sessions with readable exported history and a continuation brief.",
     stopNotice:
-      "Preparation stops agents, terminals and setup. Ignored, untracked files are excluded. Provider access uses the destination host's credentials. Later edits on the source do not sync.",
+      "Preparation stops agents, terminals and setup. Ignored untracked files are excluded; tracked files, including secrets, are moved. Credentials and host MCP configuration stay on each host. Later source edits do not sync.",
     prepare: "Prepare transfer",
     activate: "Move workspace",
     resume: "Resume",

@@ -3,6 +3,15 @@ import { pluginSettings } from "./plugin-settings";
 
 export const es: TranslationResources = {
   handoff: {
+    dataEstimate: "Tamaño estimado del traslado",
+    fileCounts: "Archivos: {{files}} · Carpetas: {{directories}} · Enlaces: {{links}}",
+    estimateNotice: "Estimado mientras el trabajo sigue activo; el tamaño final puede variar.",
+    omittedPaths: "Excluidos por reglas de ignorado ({{count}})",
+    noOmissions: "Ninguna ruta coincide con las reglas de exclusión.",
+    moreOmissions: "Rutas omitidas adicionales: {{count}}",
+    workToStop: "Trabajo que se detendrá",
+    activeWork: "Agentes activos: {{agents}} · Tareas de configuración: {{setup}}",
+    noTerminals: "No hay terminales abiertos.",
     history: "Conversación anterior",
     historyConnect: "Conecta el host de destino para leer este historial.",
     historyUnavailable: "El historial transferido no está disponible.",
@@ -41,7 +50,7 @@ export const es: TranslationResources = {
     contextDescription:
       "Las conversaciones abrirán sesiones nuevas del proveedor con el historial exportado legible y un resumen para continuar.",
     stopNotice:
-      "La preparación detiene agentes, terminales y configuración. Se excluyen los archivos ignorados que no están versionados. El proveedor usa las credenciales del host de destino. Los cambios posteriores en origen no se sincronizan.",
+      "La preparación detiene agentes, terminales y configuración. Se excluyen los archivos ignorados sin seguimiento; los versionados, incluidos los secretos, se trasladan. Las credenciales y la configuración MCP del host permanecen en cada host. Los cambios posteriores en origen no se sincronizan.",
     prepare: "Preparar traslado",
     activate: "Mover workspace",
     resume: "Reanudar",

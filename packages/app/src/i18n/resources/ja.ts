@@ -3,6 +3,15 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ja: TranslationResources = {
   handoff: {
+    dataEstimate: "転送サイズの見積もり",
+    fileCounts: "ファイル {{files}} · フォルダー {{directories}} · リンク {{links}}",
+    estimateNotice: "作業中の見積もりです。最終的な転送サイズは変わる場合があります。",
+    omittedPaths: "無視ルールによる除外 ({{count}})",
+    noOmissions: "無視ルールに一致するパスはありません。",
+    moreOmissions: "その他の除外パス: {{count}}",
+    workToStop: "停止する作業",
+    activeWork: "実行中のエージェント: {{agents}} · セットアップ処理: {{setup}}",
+    noTerminals: "開いているターミナルはありません。",
     history: "以前の会話",
     historyConnect: "履歴を読むには転送先ホストに接続してください。",
     historyUnavailable: "転送した履歴を利用できません。",
@@ -39,7 +48,7 @@ export const ja: TranslationResources = {
     contextDescription:
       "会話は、閲覧可能なエクスポート済み履歴と引き継ぎ要約を使って新しいセッションで開始されます。",
     stopNotice:
-      "準備中にエージェント、ターミナル、セットアップが停止します。無視対象の未追跡ファイルは除外されます。プロバイダーには移動先ホストの認証情報を使用します。移動元での以後の変更は同期されません。",
+      "準備中にエージェント、ターミナル、セットアップが停止します。無視対象の未追跡ファイルは除外されます。追跡済みファイルは機密情報も含めて移動します。認証情報とホストのMCP設定は各ホストに残ります。移動元での以後の変更は同期されません。",
     prepare: "転送を準備",
     activate: "ワークスペースを移動",
     resume: "再開",

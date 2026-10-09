@@ -3,6 +3,15 @@ import { pluginSettings } from "./plugin-settings";
 
 export const zhCN: TranslationResources = {
   handoff: {
+    dataEstimate: "预计传输大小",
+    fileCounts: "{{files}} 个文件 · {{directories}} 个文件夹 · {{links}} 个链接",
+    estimateNotice: "这是工作仍在进行时的估算，最终传输大小可能有所不同。",
+    omittedPaths: "忽略规则排除的路径 ({{count}})",
+    noOmissions: "没有路径匹配忽略规则。",
+    moreOmissions: "其他排除路径：{{count}}",
+    workToStop: "将停止的工作",
+    activeWork: "活动代理：{{agents}} · 设置任务：{{setup}}",
+    noTerminals: "没有打开的终端。",
     history: "之前的对话",
     historyConnect: "请连接目标主机以查看此历史记录。",
     historyUnavailable: "转移的历史记录不可用。",
@@ -37,7 +46,7 @@ export const zhCN: TranslationResources = {
     nativeDescription: "原生会话需要两台主机上的提供商版本兼容。不兼容的会话会停止传输。",
     contextDescription: "对话将在新的提供商会话中开始，并提供可读的导出历史和衔接摘要。",
     stopNotice:
-      "准备过程会停止代理、终端和设置任务。被忽略且未被版本控制跟踪的文件不会传输。提供商使用目标主机的凭据。源端之后的修改不会同步。",
+      "准备过程会停止代理、终端和设置任务。被忽略且未跟踪的文件不会传输；已跟踪的文件（包括密钥等敏感信息）会被移动。凭据和主机 MCP 配置保留在各自主机上。源端之后的修改不会同步。",
     prepare: "准备传输",
     activate: "移动工作区",
     resume: "恢复",

@@ -35,6 +35,10 @@ interface WorkspaceSetupRun {
 export class WorkspaceSetupRuntime {
   private readonly runs = new Map<string, Set<WorkspaceSetupRun>>();
 
+  countActive(workspaceId: string): number {
+    return this.runs.get(workspaceId)?.size ?? 0;
+  }
+
   start(workspaceId: string, operation: WorkspaceSetupOperation): void {
     const controller = new AbortController();
     const run: WorkspaceSetupRun = {
