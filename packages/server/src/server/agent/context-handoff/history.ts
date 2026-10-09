@@ -66,7 +66,7 @@ export function renderHistoricalItem(message: HandoffItem): string {
   const source = message.provenance;
   const provenance =
     source.type === "row"
-      ? `${encodeURIComponent(source.identity.segmentId)}#${source.identity.rowIndex}`
+      ? `${encodeURIComponent(source.identity.segmentId)}${source.identity.incarnationId ? `/${encodeURIComponent(source.identity.incarnationId)}` : ""}#${source.identity.rowIndex}`
       : `artifact:${encodeURIComponent(source.id)}`;
   const origin = renderOrigin(message.origin);
   return `[Historical ${message.role}; ${message.kind}; source=${provenance}; origin=${origin}; status=${message.status}]\n${message.text}`;

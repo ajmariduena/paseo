@@ -18,6 +18,7 @@ import { AgentStorage, type StoredAgentRecord } from "../agent-storage.js";
 import { createTestAgentClients } from "../../test-utils/fake-agent-client.js";
 import type { ProviderSegment } from "./record.js";
 import { SegmentSnapshotStore } from "./snapshot-store.js";
+import { SwitchRecoveryPendingError } from "./recovery-pending-error.js";
 import { StaleAgentHandleError } from "./stale-handle-error.js";
 
 const T0 = "2026-10-09T10:00:00.000Z";
@@ -161,7 +162,7 @@ async function runTurn(manager: AgentManager, agentId: string, prompt: string): 
 
 function texts(manager: AgentManager, agentId: string): string[] {
   return manager.getTimeline(agentId).map((item) => {
-    if (item.type === "notification") return `[${item.source?.kind ?? "notification"}]`;
+    if (item.type === "notification") return `[${item.providerSegment?.kind ?? "notification"}]`;
     return item.type === "assistant_message" || item.type === "user_message"
       ? item.text
       : item.type;
@@ -371,6 +372,256 @@ test("a loader that read the record before the switch committed retries with the
   } finally {
     await base.manager.closeAgent(agentId).catch(() => undefined);
     await base.cleanup();
+  }
+});
+
+test.each([
+  ["a never-accepted incarnation", "never_accepted"],
+  ["a legacy record without segments or a handle", "legacy"],
+] as const)(
+  "a loader that read %s before the switch committed restores the committed provider",
+  async (_label, staleShape) => {
+    const base = await createHarness();
+    const agentId = "00000000-0000-4000-8000-000000000807";
+    const logger = createTestLogger();
+    try {
+      const created = await base.manager.createAgent(
+        { provider: "codex", cwd: base.root },
+        agentId,
+        {
+          workspaceId: undefined,
+        },
+      );
+      await base.manager.closeAgent(agentId);
+      await base.manager.flush();
+      await base.storage.flush();
+      const committed = await switchedRecord(base, agentId);
+
+      let staleReads = 1;
+      const storage = new (class extends AgentStorage {
+        override async get(id: string): Promise<StoredAgentRecord | null> {
+          const record = await super.get(id);
+          if (!record || staleReads === 0) return record;
+          staleReads -= 1;
+          if (staleShape === "legacy") {
+            return {
+              ...record,
+              provider: "claude",
+              persistence: null,
+              providerSegments: undefined,
+              switchOperations: undefined,
+            };
+          }
+          const retired = retiredSegment("claude", "inc-claude");
+          return {
+            ...record,
+            provider: "claude",
+            persistence: null,
+            providerSegments: [
+              {
+                ...retired,
+                endedAt: null,
+                incarnations: [
+                  { ...retired.incarnations[0], endedAt: null, firstAcceptedAt: null },
+                ],
+              },
+            ],
+          };
+        }
+      })(path.join(base.root, "agents"), logger);
+      const manager = new AgentManager({
+        clients: base.clients,
+        registry: storage,
+        segmentSnapshots: base.snapshots,
+        logger,
+      });
+
+      const loaded = await ensureAgentLoaded(agentId, {
+        agentManager: manager,
+        agentStorage: storage,
+        logger,
+      });
+      await manager.flush();
+      await storage.flush();
+
+      expect(loaded.provider).toBe("codex");
+      expect(loaded.persistence?.sessionId).toBe(created.persistence?.sessionId);
+      expect(loaded.providerSegments).toEqual(committed.providerSegments);
+      expect(await storage.get(agentId)).toMatchObject({
+        provider: "codex",
+        providerSegments: committed.providerSegments,
+      });
+      await manager.closeAgent(agentId);
+      manager.prepareForShutdown();
+    } finally {
+      await base.manager.closeAgent(agentId).catch(() => undefined);
+      await base.cleanup();
+    }
+  },
+);
+
+test("every restoring registration carries the record's switch state", async () => {
+  const harness = await createHarness();
+  const agentId = "00000000-0000-4000-8000-000000000808";
+  const logger = createTestLogger();
+  try {
+    await harness.manager.createAgent({ provider: "codex", cwd: harness.root }, agentId, {
+      workspaceId: undefined,
+    });
+    await harness.manager.closeAgent(agentId);
+    await harness.manager.flush();
+    await harness.storage.flush();
+    const stored = await harness.storage.get(agentId);
+    if (!stored) throw new Error("expected a stored agent");
+    const pending = {
+      operationId: "op-2",
+      clientOperationId: "client-2",
+      fingerprint: "fp",
+      provider: "claude",
+      model: null,
+      modeId: null,
+      thinkingOptionId: null,
+      requestedAt: T1,
+      requestedBy: "user" as const,
+    };
+    const operations = [
+      {
+        operationId: "op-1",
+        clientOperationId: "client-1",
+        fingerprint: "fp",
+        phase: "done" as const,
+        sourceSegmentId: "seg-a",
+        targetSegmentId: "seg-active",
+        sealedSnapshotId: null,
+        allocatedHandle: null,
+        result: null,
+        error: null,
+        updatedAt: T1,
+      },
+    ];
+    const expectState = (agent: {
+      providerSegments?: unknown;
+      pendingProviderSwitch?: unknown;
+      switchOperations?: unknown;
+    }) => {
+      expect(agent.providerSegments).toHaveLength(1);
+      expect(agent.pendingProviderSwitch).toEqual(pending);
+      expect(agent.switchOperations).toEqual(operations);
+    };
+
+    // Fresh restore of a never-accepted incarnation.
+    await harness.storage.upsert({
+      ...stored,
+      persistence: null,
+      providerSegments: [
+        activeSegmentFor(
+          { ...stored, persistence: { provider: "codex", sessionId: "thread-reserved" } },
+          null,
+        ),
+      ],
+      pendingProviderSwitch: pending,
+      switchOperations: operations,
+    });
+    const fresh = await ensureAgentLoaded(agentId, {
+      agentManager: harness.manager,
+      agentStorage: harness.storage,
+      logger,
+    });
+    expectState(fresh);
+    await harness.manager.closeAgent(agentId);
+
+    // Accepted restore, then both reload modes.
+    const accepted = await harness.storage.get(agentId);
+    if (!accepted) throw new Error("expected a stored agent");
+    await harness.storage.upsert({
+      ...accepted,
+      persistence: stored.persistence,
+      providerSegments: [activeSegmentFor(stored, T1)],
+      pendingProviderSwitch: pending,
+      switchOperations: operations,
+    });
+    const resumed = await ensureAgentLoaded(agentId, {
+      agentManager: harness.manager,
+      agentStorage: harness.storage,
+      logger,
+    });
+    expectState(resumed);
+    expectState(await harness.manager.reloadAgentSession(agentId));
+    expectState(
+      await harness.manager.reloadAgentSession(agentId, undefined, { rehydrateFromDisk: true }),
+    );
+  } finally {
+    await harness.manager.closeAgent(agentId).catch(() => undefined);
+    await harness.cleanup();
+  }
+});
+
+test("an agent whose switch recovery failed at boot is unavailable to every loader", async () => {
+  const harness = await createHarness();
+  const agentId = "00000000-0000-4000-8000-000000000809";
+  const logger = createTestLogger();
+  try {
+    await harness.manager.createAgent({ provider: "codex", cwd: harness.root }, agentId, {
+      workspaceId: undefined,
+    });
+    await harness.manager.closeAgent(agentId);
+    await harness.manager.flush();
+    await harness.storage.flush();
+
+    harness.manager.quarantineForSwitchRecovery([agentId]);
+
+    await expect(
+      ensureAgentLoaded(agentId, {
+        agentManager: harness.manager,
+        agentStorage: harness.storage,
+        logger,
+      }),
+    ).rejects.toBeInstanceOf(SwitchRecoveryPendingError);
+    await expect(
+      harness.manager.createAgent({ provider: "codex", cwd: harness.root }, agentId, {
+        workspaceId: undefined,
+      }),
+    ).rejects.toBeInstanceOf(SwitchRecoveryPendingError);
+    expect(harness.manager.getAgent(agentId)).toBeNull();
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("a destructive reseed keeps each retired row's snapshot identity", async () => {
+  const harness = await createHarness();
+  const agentId = "00000000-0000-4000-8000-000000000810";
+  const logger = createTestLogger();
+  try {
+    await harness.manager.createAgent({ provider: "codex", cwd: harness.root }, agentId, {
+      workspaceId: undefined,
+    });
+    await harness.manager.closeAgent(agentId);
+    await harness.manager.flush();
+    await harness.storage.flush();
+    await switchedRecord(harness, agentId);
+
+    const restarted = reopen(harness);
+    await ensureAgentLoaded(agentId, {
+      agentManager: restarted,
+      agentStorage: harness.storage,
+      logger,
+    });
+    await restarted.reloadAgentSession(agentId, undefined, { rehydrateFromDisk: true });
+    await restarted.hydrateTimelineFromProvider(agentId, { broadcast: true });
+
+    const rows = await restarted.getTimelineRows(agentId);
+    expect(rows[0].origin).toEqual({
+      segmentId: "seg-inc-claude",
+      incarnationId: "inc-claude",
+      rowIndex: 0,
+    });
+    expect(restarted.fetchTimeline(agentId).rows[0]).not.toHaveProperty("origin");
+    await restarted.closeAgent(agentId);
+    restarted.prepareForShutdown();
+  } finally {
+    await harness.manager.closeAgent(agentId).catch(() => undefined);
+    await harness.cleanup();
   }
 });
 

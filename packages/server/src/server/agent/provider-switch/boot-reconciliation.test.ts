@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -170,6 +170,86 @@ test("a second boot finds nothing left to settle", async () => {
 
   expect(second.failed).toEqual([]);
   expect(second.completed).toEqual([]);
+});
+
+test("history of an agent whose record cannot be read is never swept", async () => {
+  await storage.upsert(record("agent-ok"));
+  await storage.flush();
+  mkdirSync(join(root, "agents", "broken"), { recursive: true });
+  writeFileSync(join(root, "agents", "broken", "agent-broken.json"), "{ not json");
+  await seal("agent-broken", "retired");
+  await seal("agent-gone", "gone");
+  const fresh = new AgentStorage(join(root, "agents"), createTestLogger());
+  await fresh.initialize();
+
+  const summary = await reconcileProviderSwitchesAtBoot({
+    storage: fresh,
+    snapshots,
+    handoffs,
+    logger: createTestLogger(),
+    now: () => LATER,
+  });
+
+  expect(summary.orphanSnapshots).toEqual([{ agentId: "agent-gone", incarnationId: "gone" }]);
+  expect(summary.unreadableRecords).toEqual(["agent-broken"]);
+  expect(await snapshots.read("agent-broken", "retired")).not.toBeNull();
+});
+
+test("a record scan that cannot complete sweeps nothing", async () => {
+  await storage.upsert(record("agent-ok"));
+  await storage.flush();
+  await seal("agent-gone", "gone");
+  const blocked = join(root, "agents", "blocked");
+  mkdirSync(blocked, { recursive: true });
+  chmodSync(blocked, 0o000);
+  const fresh = new AgentStorage(join(root, "agents"), createTestLogger());
+  try {
+    await fresh.initialize();
+    const summary = await reconcileProviderSwitchesAtBoot({
+      storage: fresh,
+      snapshots,
+      handoffs,
+      logger: createTestLogger(),
+      now: () => LATER,
+    });
+
+    expect(summary.sweep).toBe("skipped_incomplete_scan");
+    expect(summary.orphanSnapshots).toEqual([]);
+    expect(await snapshots.read("agent-gone", "gone")).not.toBeNull();
+  } finally {
+    chmodSync(blocked, 0o700);
+  }
+});
+
+test("a record write that fails leaves that agent for the boot barrier and settles the rest", async () => {
+  await storage.upsert(record("agent-1", { switchOperations: [operation("sealed")] }));
+  await storage.upsert(record("agent-2", { switchOperations: [operation("allocated")] }));
+  const failing = new (class extends AgentStorage {
+    override async commitProviderSwitch(
+      agentId: string,
+      build: Parameters<AgentStorage["commitProviderSwitch"]>[1],
+    ): Promise<StoredAgentRecord> {
+      if (agentId === "agent-1") throw new Error("disk full");
+      return await super.commitProviderSwitch(agentId, build);
+    }
+  })(join(root, "agents"), createTestLogger());
+  await storage.flush();
+  await failing.initialize();
+
+  const summary = await reconcileProviderSwitchesAtBoot({
+    storage: failing,
+    snapshots,
+    handoffs,
+    logger: createTestLogger(),
+    now: () => LATER,
+  });
+
+  expect(summary.recoveryFailed).toEqual([{ agentId: "agent-1", error: "disk full" }]);
+  expect(summary.failed).toEqual([
+    { agentId: "agent-2", operationId: "op-allocated", phase: "failed" },
+  ]);
+  expect((await failing.get("agent-1"))?.switchOperations?.[0].phase).toBe("sealed");
+  expect((await failing.get("agent-2"))?.switchOperations?.[0].phase).toBe("failed");
 });
 
 test("snapshots and handoffs nothing references are swept; referenced ones stay", async () => {

@@ -280,3 +280,33 @@ it.each([
 ])("rejects invalid row identity $segmentId/$rowIndex", (identity) => {
   expect(() => rowIdentityKey(identity)).toThrow(HandoffInputError);
 });
+
+it("rows from two incarnations of one segment are distinct handoff candidates", () => {
+  const rowFor = (incarnationId: string, text: string) => ({
+    identity: { segmentId: "s", incarnationId, rowIndex: 0 },
+    scope: "parent" as const,
+    row: {
+      seq: 1,
+      timestamp: "2026-10-09T10:00:00.000Z",
+      item: { type: "assistant_message" as const, text },
+    },
+  });
+
+  const mapped = mapHandoffItems({
+    rows: [rowFor("i1", "from i1"), rowFor("i2", "from i2")],
+    excludeNativeRows: new Set([
+      rowIdentityKey({ segmentId: "s", incarnationId: "i2", rowIndex: 0 }),
+    ]),
+    artifacts: [],
+  });
+
+  expect(mapped.items.map((item) => item.text)).toEqual(["from i1"]);
+  expect(mapped.sourceRows).toEqual([{ segmentId: "s", incarnationId: "i1", rowIndex: 0 }]);
+  expect(
+    mapHandoffItems({
+      rows: [rowFor("i1", "from i1"), rowFor("i2", "from i2")],
+      excludeNativeRows: new Set(),
+      artifacts: [],
+    }).items.map((item) => item.text),
+  ).toEqual(["from i1", "from i2"]);
+});

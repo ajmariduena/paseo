@@ -45,27 +45,43 @@ export interface ContextHandoff {
   cost: number;
 }
 
+function rangeScope(identity: { segmentId: string; incarnationId?: string }): string {
+  return `${identity.segmentId}\u0000${identity.incarnationId ?? ""}`;
+}
+
 function sourceRanges(sourceRows: readonly RowIdentity[]): CoverageRange[] {
   const sorted = [...sourceRows].sort((left, right) => {
-    if (left.segmentId < right.segmentId) return -1;
-    if (left.segmentId > right.segmentId) return 1;
+    const leftScope = rangeScope(left);
+    const rightScope = rangeScope(right);
+    if (leftScope < rightScope) return -1;
+    if (leftScope > rightScope) return 1;
     return left.rowIndex - right.rowIndex;
   });
   const ranges: CoverageRange[] = [];
-  for (const { segmentId, rowIndex } of sorted) {
+  for (const identity of sorted) {
+    const { segmentId, incarnationId, rowIndex } = identity;
     const last = ranges.at(-1);
-    const continuesRange = last && last.segmentId === segmentId && last.toRowIndex + 1 === rowIndex;
+    const continuesRange =
+      last && rangeScope(last) === rangeScope(identity) && last.toRowIndex + 1 === rowIndex;
     if (continuesRange) {
       last.toRowIndex = rowIndex;
     } else {
-      ranges.push({ segmentId, fromRowIndex: rowIndex, toRowIndex: rowIndex });
+      ranges.push({
+        segmentId,
+        ...(incarnationId ? { incarnationId } : {}),
+        fromRowIndex: rowIndex,
+        toRowIndex: rowIndex,
+      });
     }
   }
   return ranges;
 }
 
 function renderRange(range: CoverageRange): string {
-  return `${encodeURIComponent(range.segmentId)}:${range.fromRowIndex}-${range.toRowIndex}`;
+  const scope = range.incarnationId
+    ? `${encodeURIComponent(range.segmentId)}/${encodeURIComponent(range.incarnationId)}`
+    : encodeURIComponent(range.segmentId);
+  return `${scope}:${range.fromRowIndex}-${range.toRowIndex}`;
 }
 
 export function buildContextHandoff(input: ContextHandoffInput): ContextHandoff {

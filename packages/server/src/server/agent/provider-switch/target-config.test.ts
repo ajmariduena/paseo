@@ -1,3 +1,4 @@
+import { getAgentProviderDefinition } from "@getpaseo/protocol/provider-manifest";
 import { expect, test } from "vitest";
 
 import type { AgentMode, AgentModelDefinition } from "../agent-sdk-types.js";
@@ -284,6 +285,123 @@ test("provider options reset across drivers and carry within one", () => {
       config: { providerOptions: { sandbox_mode: "workspace-write" }, model: "gpt-5.4" },
       transition: "new_segment",
     },
+  });
+});
+
+function manifestModes(provider: string): AgentMode[] {
+  const definition = getAgentProviderDefinition(provider);
+  if (!definition) throw new Error(`no manifest for ${provider}`);
+  return definition.modes.map((mode) => Object.assign({}, mode));
+}
+
+test("a Codex read-only sandbox override narrows the effective authority before mapping", () => {
+  const source: SwitchSource = {
+    provider: "codex",
+    driver: "codex",
+    config: { modeId: "auto", model: "gpt-5.4", providerOptions: { sandbox_mode: "read-only" } },
+    modes: manifestModes("codex"),
+  };
+  const target = claudeTarget({ modes: manifestModes("claude") });
+
+  const plan = planTargetConfig({ source, target, request: {} });
+
+  expect(plan).toMatchObject({ status: "resolved", target: { config: { modeId: "default" } } });
+  expect(plan.status === "resolved" && plan.target.config.providerOptions).toBeUndefined();
+
+  const withoutOverride = planTargetConfig({
+    source: { ...source, config: { modeId: "auto", model: "gpt-5.4" } },
+    target,
+    request: {},
+  });
+  expect(withoutOverride).toMatchObject({
+    status: "resolved",
+    target: { config: { modeId: "auto" } },
+  });
+
+  const planning = planTargetConfig({
+    source: {
+      provider: "claude",
+      driver: "claude",
+      config: { modeId: "plan", model: "claude-opus-5-5" },
+      modes: manifestModes("claude"),
+    },
+    target: codexTarget({ modes: manifestModes("codex") }),
+    request: {},
+  });
+  expect(planning).toEqual({
+    status: "rejected",
+    rejection: {
+      kind: "mode_required",
+      reason: "unmappable",
+      candidates: ["auto", "auto-review", "full-access"],
+    },
+  });
+});
+
+test("a restriction the target cannot keep below its narrowest mode asks for a mode", () => {
+  const plan = planTargetConfig({
+    source: {
+      provider: "codex",
+      driver: "codex",
+      config: { modeId: "auto", model: "gpt-5.4", providerOptions: { sandbox_mode: "read-only" } },
+      modes: manifestModes("codex"),
+    },
+    target: claudeTarget({
+      modes: CLAUDE_MODES.filter(
+        (mode) => mode.colorTier !== "safe" && mode.colorTier !== "planning",
+      ),
+    }),
+    request: {},
+  });
+
+  expect(plan).toEqual({
+    status: "rejected",
+    rejection: {
+      kind: "mode_required",
+      reason: "broader",
+      candidates: ["acceptEdits", "bypassPermissions"],
+    },
+  });
+});
+
+test("an alias change takes the target alias default model unless one was requested", () => {
+  const workAlias = claudeTarget({
+    provider: "claude-work",
+    models: [model("claude-work", "claude-sonnet-5-5", { isDefault: true })],
+  });
+
+  const omitted = planTargetConfig({
+    source: claudeSource({ thinkingOptionId: "high" }),
+    target: workAlias,
+    request: {},
+  });
+  expect(omitted).toMatchObject({
+    status: "resolved",
+    target: {
+      provider: "claude-work",
+      config: { model: "claude-sonnet-5-5", thinkingOptionId: undefined },
+      transition: "new_segment",
+    },
+  });
+
+  const requested = planTargetConfig({
+    source: claudeSource(),
+    target: workAlias,
+    request: { model: "claude-opus-5-5" },
+  });
+  expect(requested).toEqual({
+    status: "rejected",
+    rejection: { kind: "model_unavailable", model: "claude-opus-5-5" },
+  });
+
+  const sameAlias = planTargetConfig({
+    source: claudeSource(),
+    target: claudeTarget({ models: CLAUDE_MODELS.toReversed() }),
+    request: {},
+  });
+  expect(sameAlias).toMatchObject({
+    status: "resolved",
+    target: { config: { model: "claude-opus-5-5", thinkingOptionId: "high" } },
   });
 });
 

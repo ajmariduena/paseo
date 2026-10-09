@@ -24,7 +24,7 @@ export interface MappedHandoff {
 export function rowIdentityKey(identity: RowIdentity): string {
   const validIndex = Number.isSafeInteger(identity.rowIndex) && identity.rowIndex >= 0;
   if (!identity.segmentId || !validIndex) throw new HandoffInputError("row identity");
-  return JSON.stringify([identity.segmentId, identity.rowIndex]);
+  return JSON.stringify([identity.segmentId, identity.incarnationId ?? null, identity.rowIndex]);
 }
 
 function toolText(item: ToolCallTimelineItem): string {

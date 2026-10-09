@@ -14,7 +14,6 @@ import {
   ProviderSegmentSchema,
   SwitchOperationSchema,
   retainSwitchOperations,
-  type ProviderSwitchRecordState,
 } from "./provider-switch/record.js";
 
 const SERIALIZABLE_CONFIG_SCHEMA = z
@@ -115,6 +114,13 @@ export type SerializableAgentConfig = Pick<
 >;
 
 export type StoredAgentRecord = z.infer<typeof STORED_AGENT_SCHEMA>;
+
+export interface AgentRecordScan {
+  readable: Set<string>;
+  unreadable: Set<string>;
+  /** False when a directory could not be listed, so absence proves nothing. */
+  complete: boolean;
+}
 export type RestartCancelledWork = z.infer<typeof RestartCancelledWorkSchema>;
 export type AgentCreationRequest = NonNullable<StoredAgentRecord["creation"]>;
 export function parseStoredAgentRecord(value: unknown): StoredAgentRecord {
@@ -317,15 +323,13 @@ export class AgentStorage {
   }
 
   /**
-   * One atomic write of the switch state (segments, pending switch, operations). The mutator
-   * sees the record's current state and returns the next; operations are capped by retention.
+   * One atomic write of a switch commit: the builder gets an isolated copy of the record and
+   * returns the whole next record (active selection, segments, operation phase). The cache
+   * only changes once the file is on disk.
    */
-  async mutateProviderSwitchState(
+  async commitProviderSwitch(
     agentId: string,
-    mutate: (
-      state: ProviderSwitchRecordState,
-      record: StoredAgentRecord,
-    ) => ProviderSwitchRecordState,
+    build: (candidate: StoredAgentRecord) => StoredAgentRecord,
   ): Promise<StoredAgentRecord> {
     await this.load();
     let written: StoredAgentRecord | null = null;
@@ -333,18 +337,12 @@ export class AgentStorage {
       if (!existing) {
         throw new Error(`Agent ${agentId} not found`);
       }
-      const next = mutate(
-        {
-          providerSegments: existing.providerSegments,
-          pendingProviderSwitch: existing.pendingProviderSwitch,
-          switchOperations: existing.switchOperations,
-        },
-        existing,
-      );
+      const next = build(structuredClone(existing));
+      if (next.id !== agentId) {
+        throw new Error(`Switch commit for ${agentId} returned record ${next.id}`);
+      }
       written = {
-        ...existing,
-        providerSegments: next.providerSegments,
-        pendingProviderSwitch: next.pendingProviderSwitch,
+        ...next,
         switchOperations: next.switchOperations
           ? retainSwitchOperations(next.switchOperations)
           : undefined,
@@ -355,6 +353,27 @@ export class AgentStorage {
       throw new Error(`Agent ${agentId} is being deleted`);
     }
     return written;
+  }
+
+  /**
+   * Every record file on disk by agent id, readable or not, and whether the walk saw every
+   * directory. Boot cleanup needs the difference between "absent" and "could not be read".
+   */
+  async scanRecordIds(): Promise<AgentRecordScan> {
+    const { filePaths, complete } = await this.enumerateRecordFiles();
+    const readable = new Set<string>();
+    const unreadable = new Set<string>();
+    await Promise.all(
+      filePaths.map(async (filePath) => {
+        const record = await this.readRecordFile(filePath);
+        if (record) {
+          readable.add(record.id);
+        } else {
+          unreadable.add(path.basename(filePath, ".json"));
+        }
+      }),
+    );
+    return { readable, unreadable, complete };
   }
 
   /** Adds work to the agent's pending restart note; entries dedupe by id. */
@@ -480,28 +499,7 @@ export class AgentStorage {
       throw error;
     }
 
-    const rootRecordPaths = entries
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-      .map((entry) => path.join(this.baseDir, entry.name));
-
-    const projectDirs = entries
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => path.join(this.baseDir, entry.name));
-
-    const projectFileLists = await Promise.all(
-      projectDirs.map(async (projectDir) => {
-        try {
-          const files = await fs.readdir(projectDir, { withFileTypes: true });
-          return files
-            .filter((file) => file.isFile() && file.name.endsWith(".json"))
-            .map((file) => path.join(projectDir, file.name));
-        } catch {
-          return [];
-        }
-      }),
-    );
-
-    const allFilePaths = [...rootRecordPaths, ...projectFileLists.flat()];
+    const allFilePaths = (await this.listRecordFiles(entries)).filePaths;
     const loaded = await Promise.all(
       allFilePaths.map(async (filePath) => {
         const record = await this.readRecordFile(filePath);
@@ -520,6 +518,45 @@ export class AgentStorage {
     }
 
     return records;
+  }
+
+  private async listRecordFiles(
+    entries: Dirent[],
+  ): Promise<{ filePaths: string[]; complete: boolean }> {
+    const rootRecordPaths = entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => path.join(this.baseDir, entry.name));
+    const projectDirs = entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(this.baseDir, entry.name));
+    let complete = true;
+    const projectFileLists = await Promise.all(
+      projectDirs.map(async (projectDir) => {
+        try {
+          const files = await fs.readdir(projectDir, { withFileTypes: true });
+          return files
+            .filter((file) => file.isFile() && file.name.endsWith(".json"))
+            .map((file) => path.join(projectDir, file.name));
+        } catch {
+          complete = false;
+          return [];
+        }
+      }),
+    );
+    return { filePaths: [...rootRecordPaths, ...projectFileLists.flat()], complete };
+  }
+
+  private async enumerateRecordFiles(): Promise<{ filePaths: string[]; complete: boolean }> {
+    let entries: Dirent[];
+    try {
+      entries = await fs.readdir(this.baseDir, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return { filePaths: [], complete: true };
+      }
+      return { filePaths: [], complete: false };
+    }
+    return this.listRecordFiles(entries);
   }
 
   private async readRecordFile(filePath: string): Promise<StoredAgentRecord | null> {

@@ -56,9 +56,11 @@ function byteSize(value: unknown): number {
 function notification(
   message: string,
   level: "info" | "warning",
-  source: NonNullable<Extract<AgentTimelineItem, { type: "notification" }>["source"]>,
+  providerSegment: NonNullable<
+    Extract<AgentTimelineItem, { type: "notification" }>["providerSegment"]
+  >,
 ): AgentTimelineItem {
-  return { type: "notification", level, message, source };
+  return { type: "notification", level, message, providerSegment };
 }
 
 function dividerRow(from: ProviderSegment, to: ProviderSegment): AgentTimelineItem {
@@ -218,6 +220,7 @@ function seedIncarnation(
       seq: output.rows.length + 1,
       timestamp: row.timestamp,
       item: row.item,
+      origin: row.identity,
       ...(row.turnId ? { turnId: row.turnId } : {}),
     });
   }

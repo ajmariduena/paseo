@@ -94,6 +94,11 @@ test("retired snapshots become dense rows followed by the divider into the activ
 
   expect(retiredSnapshotIds(state)).toEqual(["inc-a1"]);
   expect(seeded.rows.map((entry) => entry.seq)).toEqual([1, 2, 3]);
+  expect(seeded.rows.map((entry) => entry.origin)).toEqual([
+    { segmentId: "seg-a", incarnationId: "inc-a1", rowIndex: 0 },
+    { segmentId: "seg-a", incarnationId: "inc-a1", rowIndex: 1 },
+    undefined,
+  ]);
   expect(seeded.rows[0].item).toEqual({ type: "assistant_message", text: "hello" });
   expect(seeded.rows[2]).toEqual({
     seq: 3,
@@ -102,7 +107,7 @@ test("retired snapshots become dense rows followed by the divider into the activ
       type: "notification",
       level: "info",
       message: "Switched from claude to codex",
-      source: {
+      providerSegment: {
         kind: "provider_switch",
         segmentId: "seg-b",
         fromProvider: "claude",
@@ -123,7 +128,7 @@ test("a missing snapshot file is one warning row with unavailable coverage", () 
   expect(seeded.rows.map((entry) => entry.item.type)).toEqual(["notification", "notification"]);
   expect(seeded.rows[0].item).toMatchObject({
     level: "warning",
-    source: {
+    providerSegment: {
       kind: "retired_history",
       segmentId: "seg-a",
       incarnationId: "inc-a1",
@@ -132,6 +137,37 @@ test("a missing snapshot file is one warning row with unavailable coverage", () 
   });
   expect(seeded.gaps).toEqual([
     { segmentId: "seg-a", incarnationId: "inc-a1", reason: "unavailable", rows: null },
+  ]);
+});
+
+test("two incarnations of one segment keep distinct row identities", () => {
+  const state: ProviderSwitchRecordState = {
+    providerSegments: [
+      segment(
+        "seg-a",
+        "claude",
+        [
+          incarnation("inc-a1"),
+          incarnation("inc-a2", { reason: "uncertain_delivery", startedAt: T1 }),
+          incarnation("inc-a3", { endedAt: null, snapshotId: null, startedAt: T2 }),
+        ],
+        { endedAt: null },
+      ),
+    ],
+  };
+  const snapshots = new Map([
+    ["inc-a1", snapshot("seg-a", "inc-a1", [row(1, "from i1")])],
+    ["inc-a2", snapshot("seg-a", "inc-a2", [row(1, "from i2")])],
+  ]);
+
+  const seeded = seedRetiredHistory({ state, snapshots, now: T2 });
+
+  const texts = seeded.rows
+    .filter((entry) => entry.item.type === "assistant_message")
+    .map((entry) => [entry.item.type === "assistant_message" ? entry.item.text : "", entry.origin]);
+  expect(texts).toEqual([
+    ["from i1", { segmentId: "seg-a", incarnationId: "inc-a1", rowIndex: 0 }],
+    ["from i2", { segmentId: "seg-a", incarnationId: "inc-a2", rowIndex: 0 }],
   ]);
 });
 
@@ -151,7 +187,7 @@ test("seal-time drops surface as a warning row before the surviving rows", () =>
 
   expect(seeded.rows[0].item).toMatchObject({
     type: "notification",
-    source: { kind: "retired_history", reason: "dropped" },
+    providerSegment: { kind: "retired_history", reason: "dropped" },
   });
   expect(seeded.gaps).toEqual([
     {
@@ -199,7 +235,8 @@ test("the per-agent cap keeps the newest retired snapshots and warns about the o
   const seededTexts = seeded.rows.filter((entry) => entry.item.type === "assistant_message");
   expect(seededTexts).toHaveLength(4);
   const dividers = seeded.rows.filter(
-    (entry) => entry.item.type === "notification" && entry.item.source?.kind === "provider_switch",
+    (entry) =>
+      entry.item.type === "notification" && entry.item.providerSegment?.kind === "provider_switch",
   );
   expect(dividers.map((entry) => entry.item.type === "notification" && entry.item.message)).toEqual(
     ["Switched from claude to codex", "Switched from codex to claude"],
@@ -239,14 +276,14 @@ test("replaced incarnations get a marker row, including the active one", () => {
 
   expect(
     seeded.rows.map((entry) =>
-      entry.item.type === "notification" ? entry.item.source?.kind : entry.item.text,
+      entry.item.type === "notification" ? entry.item.providerSegment?.kind : entry.item.text,
     ),
   ).toEqual(["one", "incarnation", "two", "incarnation"]);
   expect(seeded.rows[1].item).toMatchObject({
-    source: { kind: "incarnation", incarnationId: "inc-a2", reason: "uncertain_delivery" },
+    providerSegment: { kind: "incarnation", incarnationId: "inc-a2", reason: "uncertain_delivery" },
   });
   expect(seeded.rows[3].item).toMatchObject({
-    source: { kind: "incarnation", incarnationId: "inc-a3", reason: "resume_failed" },
+    providerSegment: { kind: "incarnation", incarnationId: "inc-a3", reason: "resume_failed" },
   });
 });
 

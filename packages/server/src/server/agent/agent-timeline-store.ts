@@ -125,7 +125,10 @@ export class InMemoryAgentTimelineStore {
       hasNewer: page.hasNewer,
       startSeq: page.startSeq,
       endSeq: page.endSeq,
-      rows: page.entries.map((entry) => Object.assign({ seq: entry.seqEnd }, entry)),
+      rows: page.entries.map((entry) => {
+        const { origin: _origin, ...wire } = entry;
+        return Object.assign({ seq: entry.seqEnd }, wire);
+      }),
     };
   }
 

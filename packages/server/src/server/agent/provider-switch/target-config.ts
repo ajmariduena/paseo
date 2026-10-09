@@ -72,16 +72,32 @@ function isPlanningMode(mode: AgentMode | undefined): boolean {
   return mode?.colorTier === "planning";
 }
 
+// Provider options that narrow what the mode alone would allow; the runtime honors them over
+// the mode preset, so the switch has to as well.
+const SANDBOX_OVERRIDE_LEVELS: Record<string, Record<string, PermissionLevel>> = {
+  codex: { "read-only": 1, "workspace-write": 2, "danger-full-access": 3 },
+};
+
+function overrideLevel(source: SwitchSource): PermissionLevel | null {
+  const sandbox = source.config.providerOptions?.sandbox_mode;
+  if (typeof sandbox !== "string") return null;
+  return SANDBOX_OVERRIDE_LEVELS[source.driver]?.[sandbox] ?? null;
+}
+
 function effectivePolicy(source: SwitchSource): EffectivePolicy {
   const mode = source.modes.find((candidate) => candidate.id === source.config.modeId);
   const planning = isPlanningMode(mode) || source.config.featureValues?.plan_mode === true;
-  return { planning, level: modePermissionLevel(mode) };
+  const modeLevel = modePermissionLevel(mode);
+  const override = overrideLevel(source);
+  if (modeLevel === null) return { planning, level: override };
+  if (override === null) return { planning, level: modeLevel };
+  return { planning, level: override < modeLevel ? override : modeLevel };
 }
 
-/** A request field wins; otherwise the source value carries only within the same driver. */
-function inherited<T>(requested: T | undefined, sameDriver: boolean, sourceValue: T): T {
+/** A request field wins; otherwise the source value carries only within the same alias. */
+function inherited<T>(requested: T | undefined, sameAlias: boolean, sourceValue: T): T {
   if (requested !== undefined) return requested;
-  return sameDriver ? sourceValue : (null as T);
+  return sameAlias ? sourceValue : (null as T);
 }
 
 function defaultModelId(models: readonly AgentModelDefinition[]): string | null {
@@ -174,12 +190,8 @@ function resolveModel(
   | { ok: true; model: AgentModelDefinition | null }
   | { ok: false; rejection: TargetConfigRejection } {
   const { source, target, request } = input;
-  const sameDriver = source.driver === target.driver;
-  const requested = inherited<string | null>(
-    request.model,
-    sameDriver,
-    source.config.model ?? null,
-  );
+  const sameAlias = source.provider === target.provider;
+  const requested = inherited<string | null>(request.model, sameAlias, source.config.model ?? null);
   const modelId = requested ?? defaultModelId(target.models);
   if (modelId === null) return { ok: true, model: null };
   const model = findModel(target.models, modelId);
@@ -192,10 +204,10 @@ function resolveThinking(
   model: AgentModelDefinition | null,
 ): { thinkingOptionId: string | null; dropped: string | null } {
   const { source, target, request } = input;
-  const sameDriver = source.driver === target.driver;
+  const sameAlias = source.provider === target.provider;
   const requested = inherited<string | null>(
     request.thinkingOptionId,
-    sameDriver,
+    sameAlias,
     source.config.thinkingOptionId ?? null,
   );
   if (requested === null) return { thinkingOptionId: null, dropped: null };

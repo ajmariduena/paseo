@@ -167,10 +167,15 @@ export class AgentQueueStore {
   async enqueue(agentId: string, input: NewQueueEntry, now: string): Promise<AgentQueueEntry> {
     const promptFile = input.prompt === null ? null : await this.writePrompt(agentId, input.prompt);
     const preview = input.prompt === null ? null : previewPrompt(input.prompt);
-    return await this.mutate(agentId, (file) => {
-      const existing = file.entries.find((entry) => entry.id === input.id);
+    const owned = await this.mutate(agentId, (file) => {
+      // A message id stays owned while queued or claimed; a resend answers with that entry.
+      const existing =
+        file.entries.find((entry) => entry.id === input.id) ??
+        file.claims.find((claim) => claim.entry.id === input.id)?.entry;
       if (existing) return existing;
-      if (file.entries.length >= MAX_ENTRIES_PER_AGENT) throw new QueueFullError(agentId);
+      if (file.entries.length + file.claims.length >= MAX_ENTRIES_PER_AGENT) {
+        throw new QueueFullError(agentId);
+      }
       const position = Math.max(0, ...file.entries.map((entry) => entry.position)) + 1;
       const entry: AgentQueueEntry = {
         id: input.id,
@@ -186,6 +191,10 @@ export class AgentQueueStore {
       file.entries.push(entry);
       return entry;
     });
+    if (promptFile && owned.promptFile !== promptFile) {
+      await this.discard(agentId, { ...owned, promptFile });
+    }
+    return owned;
   }
 
   /** Removes and returns the next entry in delivery order, unless the queue is held. */
@@ -206,6 +215,8 @@ export class AgentQueueStore {
    */
   async claimNext(agentId: string, attemptId: string, now: string): Promise<DequeuedEntry | null> {
     const entry = await this.mutate(agentId, (file) => {
+      const retried = file.claims.find((claim) => claim.attemptId === attemptId);
+      if (retried) return retried.entry;
       if (file.held) return null;
       const [next] = inDeliveryOrder(file.entries);
       if (!next) return null;

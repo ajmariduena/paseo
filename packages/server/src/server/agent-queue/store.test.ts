@@ -284,3 +284,30 @@ test("queue files written before claims existed still load", async () => {
   await store.load();
   expect(store.claims("agent-1")).toEqual([]);
 });
+
+test("retrying a claim returns the same claim and an unknown claim keeps its message id owned", async () => {
+  const store = new AgentQueueStore(root);
+  await store.enqueue("agent-1", userMessage("a"), NOW);
+  await store.enqueue("agent-1", userMessage("b"), NOW);
+
+  const first = await store.claimNext("agent-1", "attempt-1", NOW);
+  const retried = await store.claimNext("agent-1", "attempt-1", NOW);
+  expect(retried?.entry).toEqual(first?.entry);
+  expect(store.claims("agent-1").map((claim) => claim.entry.id)).toEqual(["a"]);
+  expect(store.peek("agent-1")?.entries.map((entry) => entry.id)).toEqual(["b"]);
+
+  await store.settleClaim("agent-1", "attempt-1", "unknown");
+  const reloaded = new AgentQueueStore(root);
+  await reloaded.load();
+  const again = await reloaded.enqueue("agent-1", userMessage("a"), NOW);
+  expect(again).toEqual(first?.entry);
+  expect(reloaded.peek("agent-1")?.entries.map((entry) => entry.id)).toEqual(["b"]);
+  expect(await reloaded.claimNext("agent-1", "attempt-1", NOW)).toMatchObject({
+    entry: { id: "a" },
+  });
+  expect((await reloaded.claimNext("agent-1", "attempt-2", NOW))?.entry.id).toBe("b");
+  expect(reloaded.claims("agent-1").map((claim) => claim.attemptId)).toEqual([
+    "attempt-1",
+    "attempt-2",
+  ]);
+});

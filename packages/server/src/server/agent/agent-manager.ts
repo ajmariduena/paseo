@@ -80,6 +80,14 @@ import {
 } from "./provider-switch/seed.js";
 import type { SegmentSnapshot, SegmentSnapshotStore } from "./provider-switch/snapshot-store.js";
 import { StaleAgentHandleError } from "./provider-switch/stale-handle-error.js";
+import { SwitchRecoveryPendingError } from "./provider-switch/recovery-pending-error.js";
+import {
+  buildConfigOverrides,
+  buildSessionConfig,
+  extractAttention,
+  extractTimestamps,
+  toAgentPersistenceHandle,
+} from "../persistence-hooks.js";
 import type { StoredAgentRecord, AgentStorage, RestartCancelledWork } from "./agent-storage.js";
 import type { AgentOwner } from "./agent-owner.js";
 import {
@@ -126,7 +134,6 @@ import {
   type ProviderSubagentStoreEvent,
 } from "./provider-subagents/store.js";
 import { withTimeout } from "../../utils/promise-timeout.js";
-import { extractAttention } from "../persistence-hooks.js";
 
 const RELOAD_SESSION_CLOSE_TIMEOUT_MS = 3_000;
 const INTERRUPT_SESSION_TIMEOUT_MS = 2_000;
@@ -413,6 +420,14 @@ export interface StoredAgentRestoreState {
   updatedAt: Date;
   lastUserMessageAt: Date | null;
   attention: AttentionState;
+  switchState: SwitchStateFields;
+}
+
+/** What a loader read before asking for a restore; the restore re-reads and rejects a change. */
+export interface AgentRestoreExpectation {
+  provider: string;
+  incarnationId: string | null;
+  sessionId: string | null;
 }
 
 export interface CreateAgentOptions {
@@ -515,6 +530,20 @@ function switchStateOf(source: SwitchStateFields): SwitchStateFields {
     pendingProviderSwitch: source.pendingProviderSwitch,
     switchOperations: source.switchOperations,
   };
+}
+
+function assertRestoreExpectation(
+  agentId: string,
+  expected: AgentRestoreExpectation,
+  actual: AgentRestoreExpectation,
+): void {
+  const unchanged =
+    actual.provider === expected.provider &&
+    actual.incarnationId === expected.incarnationId &&
+    actual.sessionId === expected.sessionId;
+  if (!unchanged) {
+    throw new StaleAgentHandleError(agentId, expected.sessionId ?? "", actual.sessionId);
+  }
 }
 
 /** A loader that read the record before a switch committed must not bring the old session back. */
@@ -902,6 +931,7 @@ export class AgentManager {
   private readonly registry?: AgentStorage;
   private readonly durableTimelineStore?: AgentTimelineStore;
   private readonly segmentSnapshots?: Pick<SegmentSnapshotStore, "read">;
+  private readonly switchRecoveryPending = new Set<string>();
   private readonly promptAnnotations: PromptAnnotationStore;
   /** Messages waiting for an agent's running turn to end. */
   readonly messageQueue: AgentQueueRunner;
@@ -1464,6 +1494,85 @@ export class AgentManager {
     return this.trackAgentRegistrationOperation(this.createAgentInternal(config, agentId, options));
   }
 
+  /**
+   * Brings a stored agent back inside its lifecycle lane: the record is re-read there, compared
+   * with what the loader saw, and a never-accepted incarnation binds a fresh session to its
+   * reserved id instead of resuming a transcript that does not exist.
+   */
+  restoreAgent(agentId: string, expected: AgentRestoreExpectation): Promise<ManagedAgent> {
+    const resolvedAgentId = validateAgentId(agentId, "restoreAgent");
+    return this.trackAgentRegistrationOperation(
+      this.runLifecycleMutation(resolvedAgentId, () =>
+        this.restoreAgentInternal(resolvedAgentId, expected),
+      ),
+    );
+  }
+
+  private async restoreAgentInternal(
+    agentId: string,
+    expected: AgentRestoreExpectation,
+  ): Promise<ManagedAgent> {
+    this.assertNotQuarantined(agentId);
+    const record = this.registry ? await this.registry.get(agentId) : null;
+    if (!record) {
+      throw new Error(`Agent not found: ${agentId}`);
+    }
+    const validProviders = this.getRegisteredProviderIds();
+    const incarnation = activeIncarnation(record);
+    const handle = toAgentPersistenceHandle(
+      validProviders,
+      record.persistence ?? incarnation?.persistence ?? null,
+    );
+    assertRestoreExpectation(agentId, expected, {
+      provider: record.provider,
+      incarnationId: incarnation?.id ?? null,
+      sessionId: handle?.sessionId ?? null,
+    });
+    const restore = {
+      ...extractTimestamps(record),
+      attention: extractAttention(record),
+    };
+    const resumable =
+      handle !== null && (incarnation === null || incarnation.firstAcceptedAt !== null);
+    if (handle && resumable) {
+      return this.resumeAgentFromPersistenceInternal(
+        handle,
+        buildConfigOverrides(record),
+        agentId,
+        restore,
+        record.archivedAt ? { purpose: "history" } : undefined,
+      );
+    }
+    const config = buildSessionConfig(record, { validProviders });
+    if (!config) {
+      throw new Error(`Agent ${agentId} references unavailable provider '${record.provider}'`);
+    }
+    return this.createAgentInternal(config, agentId, {
+      labels: record.labels,
+      workspaceId: record.workspaceId,
+      owner: record.owner,
+      restore: {
+        createdAt: restore.createdAt,
+        updatedAt: restore.updatedAt,
+        lastUserMessageAt: restore.lastUserMessageAt,
+        attention: restore.attention,
+        switchState: switchStateOf(record),
+      },
+      ...(handle ? { reservedSessionId: handle.sessionId } : {}),
+    });
+  }
+
+  /** Boot found switch operations it could not settle for these agents; nothing may load them. */
+  quarantineForSwitchRecovery(agentIds: Iterable<string>): void {
+    for (const agentId of agentIds) this.switchRecoveryPending.add(agentId);
+  }
+
+  private assertNotQuarantined(agentId: string): void {
+    if (this.switchRecoveryPending.has(agentId)) {
+      throw new SwitchRecoveryPendingError(agentId);
+    }
+  }
+
   private async createAgentInternal(
     config: AgentSessionConfig,
     agentId: string | undefined,
@@ -1471,6 +1580,7 @@ export class AgentManager {
   ): Promise<ManagedAgent> {
     this.assertAcceptingAgentRegistrations();
     const resolvedAgentId = validateAgentId(agentId ?? this.idFactory(), "createAgent");
+    this.assertNotQuarantined(resolvedAgentId);
     if (this.pluginLifecycle && !config.internal) {
       const request = await this.pluginLifecycle.before("agent.create", {
         config,
@@ -1515,7 +1625,9 @@ export class AgentManager {
     const createOptions = this.buildCreateSessionOptions(options);
     const session = await client.createSession(providerLaunchConfig, launchContext, createOptions);
     await this.requireExternalMcpSupport(session, storedConfig);
-    const restoreOptions = options.restore ? { ...options.restore, restoring: true } : undefined;
+    const restoreOptions = options.restore
+      ? { ...options.restore, ...options.restore.switchState, restoring: true }
+      : undefined;
     const agent = await this.registerSession(session, storedConfig, resolvedAgentId, {
       labels: options.labels,
       initialTitle: options.initialTitle,
@@ -1599,6 +1711,7 @@ export class AgentManager {
       agentId ?? this.idFactory(),
       "resumeAgentFromPersistence",
     );
+    this.assertNotQuarantined(resolvedAgentId);
     const metadata = (handle.metadata ?? {}) as Partial<AgentSessionConfig>;
     const mergedConfig = {
       ...metadata,
@@ -1764,11 +1877,13 @@ export class AgentManager {
     options?: { rehydrateFromDisk?: boolean },
   ): Promise<ManagedAgent> {
     this.assertAcceptingAgentRegistrations();
+    this.assertNotQuarantined(agentId);
     let existing = this.requireSessionAgent(agentId);
     if (this.hasInFlightRun(agentId)) {
       await this.cancelAgentRunBefore(agentId, "reload");
       existing = this.requireSessionAgent(agentId);
     }
+    const switchState = await this.fenceReloadAgainstRecord(agentId, existing);
     const rehydrateFromDisk = options?.rehydrateFromDisk ?? false;
     const preservedHistoryPrimed = existing.historyPrimed;
     const preservedLastUsage = existing.lastUsage;
@@ -1846,6 +1961,7 @@ export class AgentManager {
         lastError: preservedLastError,
         attention: preservedAttention,
         restoring: true,
+        ...switchState,
       });
     } catch (error) {
       if (closedExisting) {
@@ -1868,6 +1984,18 @@ export class AgentManager {
         }
       }
     }
+  }
+
+  /** A reload resumes the live handle, so the record must still name it as the active one. */
+  private async fenceReloadAgainstRecord(
+    agentId: string,
+    existing: LiveManagedAgent,
+  ): Promise<SwitchStateFields> {
+    const record = this.registry ? await this.registry.get(agentId) : null;
+    if (record && existing.persistence) {
+      assertHandleMatchesActiveIncarnation(record, existing.persistence);
+    }
+    return switchStateOf(record ?? existing);
   }
 
   private async closeReloadedSession(session: AgentSession, agentId: string): Promise<void> {

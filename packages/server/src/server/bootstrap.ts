@@ -1098,16 +1098,16 @@ export async function createPaseoDaemon(
   );
   await agentStorage.initialize();
   logger.info({ elapsed: elapsed() }, "Agent storage initialized");
-  // Before any boot sender: a switch the restart cut must be settled on disk first.
-  await reconcileProviderSwitchesAtBoot({
+  // Before any boot sender: a switch the restart cut must be settled on disk first. An agent
+  // whose settlement could not be written stays off limits to every loader until the next boot.
+  const switchRecovery = await reconcileProviderSwitchesAtBoot({
     storage: agentStorage,
     snapshots: segmentSnapshots,
     handoffs,
     logger,
     now: () => new Date().toISOString(),
-  }).catch((error: unknown) =>
-    logger.error({ err: error }, "Failed to reconcile provider switches after restart"),
-  );
+  });
+  agentManager.quarantineForSwitchRecovery(switchRecovery.recoveryFailed.map((e) => e.agentId));
   agentManager.messageQueue.setFallbackDeliverer(
     createRestoredEntryDeliverer({
       agentManager,

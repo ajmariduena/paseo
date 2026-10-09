@@ -1,8 +1,8 @@
-import { readdir, readFile, rm, stat } from "node:fs/promises";
+import { readdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 
-import { writeJsonFileAtomic } from "../../atomic-file.js";
+import { encodeJsonFile, writeJsonFileCreateOnce } from "../../atomic-file.js";
 import type { AgentTimelineItem } from "../agent-sdk-types.js";
 import type { AgentTimelineRow } from "../agent-timeline-store-types.js";
 import type { ProviderSubagentDescriptor } from "../provider-subagents/store.js";
@@ -114,8 +114,9 @@ function toSnapshotRows(
   }));
 }
 
-function byteSize(value: unknown): number {
-  return Buffer.byteLength(JSON.stringify(value), "utf8");
+/** Measures the encoding the store writes, so caps bound the file and not a compact estimate. */
+function encodedSize(value: unknown): number {
+  return Buffer.byteLength(encodeJsonFile(value), "utf8");
 }
 
 interface Trimmed {
@@ -123,40 +124,76 @@ interface Trimmed {
   droppedRanges: SnapshotRowRange[];
 }
 
-/** Drops the oldest rows until the serialized rows fit the cap; indices stay as sealed. */
-function trimOldest(rows: readonly SnapshotRow[], cap: number): Trimmed {
-  let total = rows.reduce((sum, row) => sum + byteSize(row), 0);
-  let dropped = 0;
-  while (total > cap && dropped < rows.length) {
-    total -= byteSize(rows[dropped]);
-    dropped += 1;
+/**
+ * Drops the oldest rows until `measure` fits the cap; indices stay as sealed. Size grows with
+ * the row count, so the smallest sufficient drop is found by bisection over full encodings.
+ */
+function trimOldest(
+  rows: readonly SnapshotRow[],
+  cap: number,
+  measure: (trimmed: Trimmed) => number,
+): Trimmed {
+  const trimmedBy = (dropped: number): Trimmed => ({
+    rows: rows.slice(dropped),
+    droppedRanges: dropped > 0 ? [{ fromRowIndex: 0, toRowIndex: dropped - 1 }] : [],
+  });
+  if (measure(trimmedBy(0)) <= cap) return trimmedBy(0);
+  let low = 1;
+  let high = rows.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (measure(trimmedBy(middle)) <= cap) {
+      high = middle;
+    } else {
+      low = middle + 1;
+    }
   }
-  const kept = rows.slice(dropped);
-  const droppedRanges: SnapshotRowRange[] =
-    dropped > 0 ? [{ fromRowIndex: 0, toRowIndex: dropped - 1 }] : [];
-  return { rows: kept, droppedRanges };
+  return trimmedBy(low);
 }
+
+type ChildPane = SegmentSnapshot["childPanes"][number];
 
 function buildChildPanes(
   input: SealSnapshotInput,
 ): Pick<SegmentSnapshot, "childPanes" | "childPanesNotice"> {
   const identity = { segmentId: input.segmentId, incarnationId: input.incarnationId };
-  const panes = input.childPanes.map((pane, index) => {
+  const panes = input.childPanes.map((pane, index): ChildPane => {
     if (index >= CHILD_PANE_COUNT_CAP) {
       return { descriptor: pane.descriptor, rows: null, droppedRanges: [] };
     }
-    const trimmed = trimOldest(toSnapshotRows(pane.rows, identity), CHILD_PANE_BYTE_CAP);
+    const trimmed = trimOldest(
+      toSnapshotRows(pane.rows, identity),
+      CHILD_PANE_BYTE_CAP,
+      (candidate) => encodedSize({ descriptor: pane.descriptor, ...candidate }),
+    );
     return { descriptor: pane.descriptor, ...trimmed };
   });
   const notice = input.childPanes.length > CHILD_PANE_COUNT_CAP ? ("too_many" as const) : null;
   return { childPanes: panes, childPanesNotice: notice };
 }
 
-/** Applies the seal-time caps. Pure, so the same input always seals the same file. */
+export class SnapshotTooLargeError extends Error {
+  constructor(
+    readonly agentId: string,
+    readonly incarnationId: string,
+    readonly bytes: number,
+  ) {
+    super(
+      `Snapshot ${incarnationId} of agent ${agentId} is ${bytes} bytes with no rows left to drop`,
+    );
+    this.name = "SnapshotTooLargeError";
+  }
+}
+
+/**
+ * Applies the seal-time caps to the exact encoding that will be written. Pure, so the same input
+ * always seals the same file. Child panes give way before the parent transcript: first their
+ * rows, then their descriptors; only then are the oldest parent rows dropped.
+ */
 export function buildSegmentSnapshot(input: SealSnapshotInput): SegmentSnapshot {
   const identity = { segmentId: input.segmentId, incarnationId: input.incarnationId };
   const rows = toSnapshotRows(input.rows, identity);
-  let snapshot: SegmentSnapshot = {
+  const base: SegmentSnapshot = {
     version: 1,
     agentId: input.agentId,
     segmentId: input.segmentId,
@@ -169,43 +206,68 @@ export function buildSegmentSnapshot(input: SealSnapshotInput): SegmentSnapshot 
     coverage: "complete",
     droppedRanges: [],
   };
-  if (byteSize(snapshot) <= SNAPSHOT_BYTE_CAP) {
-    return snapshot;
+  const candidates: SegmentSnapshot[] = [
+    base,
+    {
+      ...base,
+      childPanes: base.childPanes.map((pane) => ({ ...pane, rows: null, droppedRanges: [] })),
+      childPanesNotice: "over_cap",
+    },
+    { ...base, childPanes: [], childPanesNotice: "over_cap" },
+  ];
+  for (const candidate of candidates) {
+    if (encodedSize(candidate) <= SNAPSHOT_BYTE_CAP) return candidate;
   }
-  // Child panes go first: the parent transcript is what the handoff and the chat read.
-  snapshot = {
-    ...snapshot,
-    childPanes: snapshot.childPanes.map((pane) => ({ ...pane, rows: null, droppedRanges: [] })),
-    childPanesNotice: "over_cap",
-  };
-  if (byteSize(snapshot) <= SNAPSHOT_BYTE_CAP) {
-    return snapshot;
-  }
-  const overhead = byteSize({ ...snapshot, rows: [] });
-  const trimmed = trimOldest(rows, SNAPSHOT_BYTE_CAP - overhead);
-  return {
-    ...snapshot,
+  const bare = candidates[candidates.length - 1];
+  const trimmed = trimOldest(rows, SNAPSHOT_BYTE_CAP, (attempt) =>
+    encodedSize({ ...bare, rows: attempt.rows, droppedRanges: attempt.droppedRanges }),
+  );
+  const sealed: SegmentSnapshot = {
+    ...bare,
     rows: trimmed.rows,
     droppedRanges: trimmed.droppedRanges,
     coverage: trimmed.droppedRanges.length > 0 ? "truncated" : "complete",
   };
+  const bytes = encodedSize(sealed);
+  if (bytes > SNAPSHOT_BYTE_CAP) {
+    throw new SnapshotTooLargeError(input.agentId, input.incarnationId, bytes);
+  }
+  return sealed;
 }
 
 /**
  * Sealed retired history: `{directory}/{agentId}/{incarnationId}.json`, written once and never
- * rewritten. Every method is one atomic write or one read.
+ * rewritten. Sealing is serialized per incarnation in this process and published create-once
+ * on disk, so two sealers of one incarnation see exactly one winner.
  */
 export class SegmentSnapshotStore {
+  private readonly tails = new Map<string, Promise<unknown>>();
+
   constructor(private readonly directory: string) {}
 
-  async seal(input: SealSnapshotInput): Promise<SegmentSnapshot> {
-    const filePath = this.filePath(input.agentId, input.incarnationId);
-    if (await exists(filePath)) {
-      throw new SnapshotAlreadySealedError(input.agentId, input.incarnationId);
-    }
-    const snapshot = buildSegmentSnapshot(input);
-    await writeJsonFileAtomic(filePath, snapshot);
-    return snapshot;
+  seal(input: SealSnapshotInput): Promise<SegmentSnapshot> {
+    const key = `${input.agentId}/${input.incarnationId}`;
+    const previous = this.tails.get(key) ?? Promise.resolve();
+    const result = previous
+      .catch(() => undefined)
+      .then(async () => {
+        const snapshot = buildSegmentSnapshot(input);
+        const created = await writeJsonFileCreateOnce(
+          this.filePath(input.agentId, input.incarnationId),
+          snapshot,
+        );
+        if (!created) {
+          throw new SnapshotAlreadySealedError(input.agentId, input.incarnationId);
+        }
+        return snapshot;
+      });
+    this.tails.set(key, result);
+    void result
+      .finally(() => {
+        if (this.tails.get(key) === result) this.tails.delete(key);
+      })
+      .catch(() => undefined);
+    return result;
   }
 
   async read(agentId: string, incarnationId: string): Promise<SegmentSnapshot | null> {
@@ -255,16 +317,6 @@ export async function readJson(filePath: string): Promise<unknown> {
     return JSON.parse(await readFile(filePath, "utf8"));
   } catch (error) {
     if (isNotFound(error)) return null;
-    throw error;
-  }
-}
-
-async function exists(filePath: string): Promise<boolean> {
-  try {
-    await stat(filePath);
-    return true;
-  } catch (error) {
-    if (isNotFound(error)) return false;
     throw error;
   }
 }

@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -11,6 +11,7 @@ import {
   SegmentSnapshotStore,
   SNAPSHOT_BYTE_CAP,
   SnapshotAlreadySealedError,
+  SnapshotTooLargeError,
   type SealSnapshotInput,
 } from "./snapshot-store.js";
 
@@ -185,4 +186,57 @@ test("deleting an agent's snapshots removes the directory", async () => {
   expect(await store.listIncarnations("agent-1")).toEqual(["inc-a2"]);
   await store.deleteAgent("agent-1");
   expect(await store.listAgents()).toEqual([]);
+});
+
+test("concurrent seals of one incarnation publish exactly one file", async () => {
+  const store = new SegmentSnapshotStore(root);
+  const other = new SegmentSnapshotStore(root);
+
+  const results = await Promise.allSettled([
+    store.seal(sealInput({ rows: [row(1, "first")] })),
+    other.seal(sealInput({ rows: [row(1, "second")] })),
+  ]);
+
+  const fulfilled = results.filter((result) => result.status === "fulfilled");
+  const rejected = results.filter((result) => result.status === "rejected");
+  expect(fulfilled).toHaveLength(1);
+  expect(rejected).toHaveLength(1);
+  expect(rejected[0].status === "rejected" && rejected[0].reason).toBeInstanceOf(
+    SnapshotAlreadySealedError,
+  );
+  const onDisk = JSON.parse(readFileSync(join(root, "agent-1", "inc-a1.json"), "utf8"));
+  expect(fulfilled[0].status === "fulfilled" && fulfilled[0].value).toEqual(onDisk);
+});
+
+test("the 8 MiB cap bounds the file as written, with many small rows", async () => {
+  const store = new SegmentSnapshotStore(root);
+  const rows = Array.from({ length: 40_000 }, (_, index) =>
+    row(index + 1, `assistant line ${index} ${"x".repeat(160)}`),
+  );
+
+  const sealed = await store.seal(sealInput({ rows }));
+
+  expect(statSync(join(root, "agent-1", "inc-a1.json")).size).toBeLessThanOrEqual(
+    SNAPSHOT_BYTE_CAP,
+  );
+  expect(sealed.coverage).toBe("truncated");
+  expect(sealed.rows.length).toBeGreaterThan(10_000);
+  expect(sealed.droppedRanges).toEqual([
+    { fromRowIndex: 0, toRowIndex: 40_000 - sealed.rows.length - 1 },
+  ]);
+});
+
+test("descriptors that alone exceed the cap drop the child panes, and a bare envelope over the cap refuses to seal", () => {
+  const hugeDescriptor = { ...descriptor("c1"), description: "d".repeat(9 * 1024 * 1024) };
+
+  const sealed = buildSegmentSnapshot(
+    sealInput({ rows: [row(1, "parent")], childPanes: [{ descriptor: hugeDescriptor, rows: [] }] }),
+  );
+  expect(sealed.childPanes).toEqual([]);
+  expect(sealed.childPanesNotice).toBe("over_cap");
+  expect(sealed.rows).toHaveLength(1);
+
+  expect(() =>
+    buildSegmentSnapshot(sealInput({ rows: [], model: "m".repeat(9 * 1024 * 1024) })),
+  ).toThrow(SnapshotTooLargeError);
 });

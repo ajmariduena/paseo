@@ -9,6 +9,8 @@ export class HandoffInputError extends Error {
 
 export interface RowIdentity {
   segmentId: string;
+  /** Absent for rows of the live (single-incarnation) timeline. */
+  incarnationId?: string;
   rowIndex: number;
 }
 
@@ -52,6 +54,7 @@ export interface EnvelopeMetadata {
 
 export interface CoverageRange {
   segmentId: string;
+  incarnationId?: string;
   fromRowIndex: number;
   toRowIndex: number;
 }

@@ -664,12 +664,10 @@ class ProviderImportHarness {
       createAgent: async () => {
         throw new Error("Stored provider imports must resume their persisted session");
       },
-      resumeAgentFromPersistence: async (
-        _handle: unknown,
-        _overrides: unknown,
-        _agentId?: string,
-        _options?: unknown,
-      ) => {
+      restoreAgent: async (_agentId: string, expected: { sessionId: string | null }) => {
+        if (expected.sessionId === null) {
+          throw new Error("Stored provider imports must resume their persisted session");
+        }
         this.resumeAttempts += 1;
         if (this.resumeError) {
           this.activeAgent = this.snapshot;
