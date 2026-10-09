@@ -3,6 +3,13 @@ import { pluginSettings } from "./plugin-settings";
 
 export const fr: TranslationResources = {
   handoff: {
+    location: "Dossier de destination",
+    busy: {
+      loading: "Chargement...",
+      preparing: "Préparation...",
+      moving: "Déplacement...",
+      cancelling: "Annulation...",
+    },
     title: "Déplacer le workspace vers un autre hôte",
     destination: "Hôte de destination",
     chooseHost: "Choisir un hôte",

@@ -3,6 +3,13 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ptBR: TranslationResources = {
   handoff: {
+    location: "Diretório de destino",
+    busy: {
+      loading: "Carregando...",
+      preparing: "Preparando...",
+      moving: "Movendo...",
+      cancelling: "Cancelando...",
+    },
     title: "Mover workspace para outro host",
     destination: "Host de destino",
     chooseHost: "Escolha um host",

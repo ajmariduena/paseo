@@ -3,6 +3,13 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ar: TranslationResources = {
   handoff: {
+    location: "مجلد الوجهة",
+    busy: {
+      loading: "جارٍ التحميل...",
+      preparing: "جارٍ التحضير...",
+      moving: "جارٍ النقل...",
+      cancelling: "جارٍ الإلغاء...",
+    },
     title: "نقل مساحة العمل إلى مضيف آخر",
     destination: "المضيف الوجهة",
     chooseHost: "اختر مضيفًا",

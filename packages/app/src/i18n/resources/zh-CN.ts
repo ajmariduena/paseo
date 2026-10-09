@@ -3,6 +3,13 @@ import { pluginSettings } from "./plugin-settings";
 
 export const zhCN: TranslationResources = {
   handoff: {
+    location: "目标目录",
+    busy: {
+      loading: "正在加载...",
+      preparing: "正在准备...",
+      moving: "正在移动...",
+      cancelling: "正在取消...",
+    },
     title: "将工作区移动到另一台主机",
     destination: "目标主机",
     chooseHost: "选择主机",

@@ -3,6 +3,13 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ja: TranslationResources = {
   handoff: {
+    location: "移動先ディレクトリ",
+    busy: {
+      loading: "読み込み中...",
+      preparing: "準備中...",
+      moving: "移動中...",
+      cancelling: "キャンセル中...",
+    },
     title: "ワークスペースを別のホストに移動",
     destination: "移動先ホスト",
     chooseHost: "ホストを選択",

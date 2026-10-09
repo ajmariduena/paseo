@@ -3,6 +3,13 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ru: TranslationResources = {
   handoff: {
+    location: "Целевая папка",
+    busy: {
+      loading: "Загрузка...",
+      preparing: "Подготовка...",
+      moving: "Перенос...",
+      cancelling: "Отмена...",
+    },
     title: "Перенести рабочую область на другой хост",
     destination: "Целевой хост",
     chooseHost: "Выберите хост",

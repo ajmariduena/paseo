@@ -3,6 +3,13 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ko: TranslationResources = {
   handoff: {
+    location: "대상 디렉터리",
+    busy: {
+      loading: "불러오는 중...",
+      preparing: "준비 중...",
+      moving: "이동 중...",
+      cancelling: "취소 중...",
+    },
     title: "다른 호스트로 워크스페이스 이동",
     destination: "대상 호스트",
     chooseHost: "호스트 선택",

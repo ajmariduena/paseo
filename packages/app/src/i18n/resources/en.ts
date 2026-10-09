@@ -1,5 +1,12 @@
 export const en = {
   handoff: {
+    location: "Destination directory",
+    busy: {
+      loading: "Loading...",
+      preparing: "Preparing...",
+      moving: "Moving...",
+      cancelling: "Cancelling...",
+    },
     title: "Move workspace to another host",
     destination: "Destination host",
     chooseHost: "Choose a host",

@@ -127,6 +127,7 @@ test.describe("workspace handoff", () => {
       await expect(page.getByTestId("handoff-status")).toHaveText(
         "Workspace moved. Continue on the destination host.",
       );
+      await expect(page.getByTestId("handoff-close-notice")).toHaveCount(0);
       const active = await host.destinationClient.handoffGetDestinationStatus({ transferId });
       expect(active.error).toBeNull();
       expect(active.result?.state).toBe("active");
@@ -181,6 +182,7 @@ test.describe("workspace handoff", () => {
       await expect(page.getByTestId("handoff-status")).toHaveText(
         "Transfer cancelled. The source can be used again.",
       );
+      await expect(page.getByTestId("handoff-close-notice")).toHaveCount(0);
       const cancelled = await host.destinationClient.handoffGetDestinationStatus({ transferId });
       expect(cancelled.result?.state).toBe("cancelled");
       expect(await readFile(path.join(host.workspace.repoPath, "prior-work.txt"), "utf8")).toBe(
