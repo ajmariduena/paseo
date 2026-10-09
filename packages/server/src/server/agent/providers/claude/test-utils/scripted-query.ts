@@ -44,14 +44,20 @@ export function createFrameFeed() {
 export type FrameFeed = ReturnType<typeof createFrameFeed>;
 
 export interface ScriptedQueryBehavior {
+  /** The CLI's answer to cancel_async_message; defaults to "no longer queued". */
   cancelAsyncMessage?: (uuid: string) => Promise<boolean>;
   failToStart?: Error;
 }
 
-/** A query factory port whose stream is the feed and whose prompt pushes are recorded. */
+/**
+ * A query factory port whose stream is the feed and whose prompt pushes are recorded. Shutdown
+ * (`return`/`close`) ends the feed the way a retired CLI process ends its stream.
+ */
 export function createScriptedQueryFactory(feed: FrameFeed, behavior: ScriptedQueryBehavior = {}) {
   const promptUuids: string[] = [];
-  const cancelled: string[] = [];
+  const withdrawals: string[] = [];
+  const interrupts: string[] = [];
+  const interruptWaiters: Array<(uuid: string) => void> = [];
   const queryFactory = vi.fn();
   queryFactory.mockImplementation(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
     if (behavior.failToStart) {
@@ -65,9 +71,13 @@ export function createScriptedQueryFactory(feed: FrameFeed, behavior: ScriptedQu
     })();
     return {
       next: () => feed.next(),
-      interrupt: async () => undefined,
-      return: async () => undefined,
-      close: () => undefined,
+      interrupt: async () => {
+        const uuid = promptUuids[promptUuids.length - 1] ?? "";
+        interrupts.push(uuid);
+        for (const waiter of interruptWaiters.splice(0)) waiter(uuid);
+      },
+      return: async () => feed.end(),
+      close: () => feed.end(),
       setPermissionMode: async () => undefined,
       setModel: async () => undefined,
       getContextUsage: async () => undefined,
@@ -75,7 +85,7 @@ export function createScriptedQueryFactory(feed: FrameFeed, behavior: ScriptedQu
       supportedCommands: async () => [],
       rewindFiles: async () => ({ canRewind: true }),
       cancelAsyncMessage: async (uuid: string) => {
-        cancelled.push(uuid);
+        withdrawals.push(uuid);
         return behavior.cancelAsyncMessage ? behavior.cancelAsyncMessage(uuid) : false;
       },
       [Symbol.asyncIterator]() {
@@ -85,12 +95,20 @@ export function createScriptedQueryFactory(feed: FrameFeed, behavior: ScriptedQu
   });
   return {
     queryFactory,
-    submittedUuid: () => {
-      const uuid = promptUuids[0];
-      if (!uuid) throw new Error("the adapter has not pushed a prompt yet");
+    /** Uuid of the n-th prompt the adapter pushed (0-based); the first by default. */
+    submittedUuid: (index = 0) => {
+      const uuid = promptUuids[index];
+      if (!uuid) throw new Error(`the adapter has not pushed prompt #${index} yet`);
       return uuid;
     },
-    cancelled,
+    /** Latest prompt uuid at the time of each native interrupt the CLI received. */
+    interrupts,
+    /** Resolves when the CLI receives its next native interrupt. */
+    nextInterrupt: () =>
+      new Promise<string>((resolve) => {
+        interruptWaiters.push(resolve);
+      }),
+    withdrawals,
   };
 }
 

@@ -2,34 +2,33 @@ import { expect, test } from "vitest";
 
 import type { AgentSessionConfig } from "../agent-sdk-types.js";
 import { CodexAppServerAgentSession } from "./codex-app-server-agent.js";
+import { createFakeCodexAppServer } from "./codex/test-utils/fake-app-server.js";
 import { createTestLogger } from "../../../test-utils/test-logger.js";
-import { asInternals } from "../../test-utils/class-mocks.js";
 
-interface CodexSpeedModel {
-  id: string;
-  model?: string;
-  isDefault?: boolean;
-  serviceTiers?: Array<{ id: string; name: string; description: string }>;
-}
-
-function createSession(config: Partial<AgentSessionConfig> = {}) {
-  const session = new CodexAppServerAgentSession(
-    { provider: "codex", cwd: "/tmp/codex-transition-test", modeId: "auto", ...config },
-    null,
-    createTestLogger(),
-    () => {
-      throw new Error("Test session cannot spawn Codex app-server");
-    },
-  );
-  asInternals<{ speedModels: CodexSpeedModel[] }>(session).speedModels = [
-    {
-      id: "gpt-5.4",
-      model: "gpt-5.4",
-      isDefault: true,
-      serviceTiers: [{ id: "fast", name: "Fast", description: "Priority processing" }],
-    },
-    { id: "gpt-5.4-mini", model: "gpt-5.4-mini" },
-  ];
+async function createConnectedSession(): Promise<CodexAppServerAgentSession> {
+  const appServer = createFakeCodexAppServer({
+    "model/list": () => ({
+      data: [
+        {
+          id: "gpt-5.4",
+          isDefault: true,
+          defaultReasoningEffort: "medium",
+          serviceTiers: [{ id: "fast", name: "Fast", description: "Priority processing" }],
+        },
+        { id: "gpt-5.4-mini", defaultReasoningEffort: "medium" },
+      ],
+    }),
+  });
+  const config: AgentSessionConfig = {
+    provider: "codex",
+    cwd: "/workspace/project",
+    modeId: "auto",
+    model: "gpt-5.4",
+  };
+  const session = new CodexAppServerAgentSession(config, null, createTestLogger(), async () => {
+    return appServer.child;
+  });
+  await session.connect();
   return session;
 }
 
@@ -78,7 +77,11 @@ test.each([
         'Invalid Codex mode "yolo". Valid modes are: read-only, auto, auto-review, full-access',
     },
   ],
-])("classifies %s", (_label, change, expected) => {
-  const session = createSession({ model: "gpt-5.4" });
-  expect(session.planModelTransition?.(change)).toEqual(expected);
+])("classifies %s", async (_label, change, expected) => {
+  const session = await createConnectedSession();
+  try {
+    expect(session.planModelTransition(change)).toEqual(expected);
+  } finally {
+    await session.close();
+  }
 });

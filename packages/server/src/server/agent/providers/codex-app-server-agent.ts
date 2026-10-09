@@ -344,6 +344,21 @@ function shouldPromoteThreadResponseToAutoReview(params: {
   );
 }
 
+interface ForegroundAttempt {
+  turnId: string;
+  nativeTurnId: string | null;
+}
+
+function classifyLostTurnStart(
+  error: unknown,
+  attempt: ForegroundAttempt | null,
+): AgentSubmissionOutcome {
+  if (error instanceof CodexAppServerClientClosedError) {
+    return "unsent";
+  }
+  return attempt?.nativeTurnId ? "accepted" : "unknown";
+}
+
 function validateCodexMode(modeId: string): void {
   if (!(modeId in MODE_PRESETS)) {
     const validModes = Object.keys(MODE_PRESETS).join(", ");
@@ -3472,6 +3487,12 @@ export class CodexAppServerAgentSession implements AgentSession {
     resolve: () => void;
     cancelRequested: boolean;
   } | null = null;
+  /**
+   * The latest foreground submission and the native turn Codex acknowledged for it. Unlike the
+   * active-turn fields, completion, termination and close do not clear it: acceptance is a fact
+   * about the attempt and must outlive the turn.
+   */
+  private foregroundAttempt: ForegroundAttempt | null = null;
   private client: CodexAppServerClient | null = null;
   private threadRollbackAvailable = true;
   private readonly subscribers = new Set<(event: AgentStreamEvent) => void>();
@@ -4396,6 +4417,8 @@ export class CodexAppServerAgentSession implements AgentSession {
 
       const turnStart = await this.buildTurnStartParams(effectivePrompt, options);
       turnId = this.createTurnId();
+      const attempt: ForegroundAttempt = { turnId, nativeTurnId: null };
+      this.foregroundAttempt = attempt;
       this.activeForegroundTurnId = turnId;
       this.activeClientMessageId = options?.clientMessageId ?? null;
       this.currentTurnId = null;
@@ -4423,12 +4446,18 @@ export class CodexAppServerAgentSession implements AgentSession {
         throw new Error("Codex turn start was interrupted before reaching Codex");
       }
       submission = "unknown";
-      await this.client.request("turn/start", turnStart.params, TURN_START_TIMEOUT_MS);
+      const response = toObjectRecord(
+        await this.client.request("turn/start", turnStart.params, TURN_START_TIMEOUT_MS),
+      );
       submission = "accepted";
+      const acknowledgedTurnId = nonEmptyString(toObjectRecord(response?.turn)?.id);
+      if (acknowledgedTurnId) {
+        attempt.nativeTurnId = acknowledgedTurnId;
+      }
       return { turnId, submission: Promise.resolve(submission) };
     } catch (error) {
       if (submission === "unknown") {
-        submission = this.classifyLostTurnStart(error, turnId);
+        submission = classifyLostTurnStart(error, this.foregroundAttempt);
       }
       this.pendingForegroundTurnIdentification?.resolve(null);
       this.pendingForegroundTurnIdentification = null;
@@ -4441,14 +4470,6 @@ export class CodexAppServerAgentSession implements AgentSession {
       }
       pendingStart.resolve();
     }
-  }
-
-  private classifyLostTurnStart(error: unknown, turnId: string | null): AgentSubmissionOutcome {
-    if (error instanceof CodexAppServerClientClosedError) {
-      return "unsent";
-    }
-    const rootTurnStarted = this.currentTurnId !== null && this.activeForegroundTurnId === turnId;
-    return rootTurnStarted ? "accepted" : "unknown";
   }
 
   async steerActiveTurn(
@@ -6181,6 +6202,9 @@ export class CodexAppServerAgentSession implements AgentSession {
       return;
     }
     this.currentTurnId = parsed.turnId;
+    if (this.foregroundAttempt && this.foregroundAttempt.turnId === this.activeForegroundTurnId) {
+      this.foregroundAttempt.nativeTurnId = parsed.turnId;
+    }
     const pendingIdentification = this.pendingForegroundTurnIdentification;
     if (
       pendingIdentification &&

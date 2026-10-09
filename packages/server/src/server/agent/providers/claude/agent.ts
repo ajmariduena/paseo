@@ -2341,11 +2341,9 @@ class ClaudeAgentSession implements AgentSession {
         provider: "claude",
         reason: "Interrupted",
       });
-      void this.interruptActiveTurn(pending)
-        .catch((error) => {
-          this.logger.warn({ err: error }, "Failed to interrupt during cancel");
-        })
-        .finally(() => this.settleSubmission(pending, "unknown"));
+      void this.interruptActiveTurn().catch((error) => {
+        this.logger.warn({ err: error }, "Failed to interrupt during cancel");
+      });
     };
     this.cancelCurrentTurn = requestCancel;
 
@@ -2393,7 +2391,8 @@ class ClaudeAgentSession implements AgentSession {
 
   /**
    * The CLI acknowledges a pushed message by uuid: a command_lifecycle beyond `queued`, or the
-   * user-message replay once it is consumed. Frames about anything else are not evidence.
+   * user-message replay once it is consumed; its `cancelled` lifecycle is the only withdrawal
+   * proof. Frames about anything else are not evidence.
    */
   private observeSubmissionEvidence(message: SDKMessage): void {
     const pending = this.pendingSubmission;
@@ -3820,10 +3819,7 @@ class ClaudeAgentSession implements AgentSession {
     if (event.type === "turn_failed" || event.type === "turn_canceled") {
       this.flushPendingToolCalls();
     }
-    // A cancel settles its own submission after trying to withdraw the message.
-    if (event.type !== "turn_canceled") {
-      this.settleActiveSubmission("unknown");
-    }
+    this.settleActiveSubmission("unknown");
     this.notifySubscribers(event);
     this.activeForegroundTurnId = null;
     this.activeForegroundQuery = null;
@@ -4255,7 +4251,7 @@ class ClaudeAgentSession implements AgentSession {
     return true;
   }
 
-  private async interruptActiveTurn(withdrawal?: PendingClaudeSubmission): Promise<void> {
+  private async interruptActiveTurn(): Promise<void> {
     const queryToInterrupt = this.query;
     if (!queryToInterrupt || typeof queryToInterrupt.interrupt !== "function") {
       this.logger.trace(
@@ -4270,7 +4266,7 @@ class ClaudeAgentSession implements AgentSession {
       return;
     }
     this.pendingInterruptAbort = true;
-    await this.discardQueuedSteers(queryToInterrupt, withdrawal);
+    await this.discardQueuedSteers(queryToInterrupt);
     try {
       await this.awaitWithTimeout(
         queryToInterrupt.interrupt(),
@@ -4285,14 +4281,11 @@ class ClaudeAgentSession implements AgentSession {
    * Interrupt means interrupt: a steer Claude never read dies with the turn instead of resuming it.
    * A steer already dequeued cannot be recalled, and does not need to be — the interrupt kills it.
    */
-  private async discardQueuedSteers(
-    query: Query,
-    withdrawal?: PendingClaudeSubmission,
-  ): Promise<void> {
+  private async discardQueuedSteers(query: Query): Promise<void> {
     const uuids = [...this.queuedSteerUuids];
     this.queuedSteerUuids.clear();
     this.permissionClearingSteerUuids.clear();
-    if (uuids.length === 0 && !withdrawal?.uuid) return;
+    if (uuids.length === 0) return;
     // The SDK runtime supports this, but its public Query type has not caught up. Keep the
     // compatibility escape hatch inside the Claude adapter.
     const cancelAsyncMessage = (
@@ -4307,15 +4300,6 @@ class ClaudeAgentSession implements AgentSession {
       } catch (error) {
         this.logger.warn({ err: error }, "Failed to discard a queued Claude steer");
       }
-    }
-    if (!withdrawal?.uuid) return;
-    // Only a confirmed removal from the queue proves the prompt was never read.
-    try {
-      if (await cancelAsyncMessage.call(query, withdrawal.uuid)) {
-        this.settleSubmission(withdrawal, "unsent");
-      }
-    } catch (error) {
-      this.logger.warn({ err: error }, "Failed to withdraw the interrupted Claude prompt");
     }
   }
 

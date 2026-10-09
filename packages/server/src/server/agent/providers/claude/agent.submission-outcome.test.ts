@@ -97,25 +97,48 @@ test("a query that fails before the push leaves the prompt unsent and still retu
   await session.close();
 });
 
-test("a confirmed withdrawal on interrupt proves the prompt was never read", async () => {
+test("Stop reaches the CLI without a withdrawal round trip, and A's cleanup never interrupts B", async () => {
   const feed = createFrameFeed();
   const { session, query } = await createScriptedClaudeSession(feed, {
-    cancelAsyncMessage: async () => true,
+    cancelAsyncMessage: () => new Promise<boolean>(() => undefined),
   });
 
-  const started = await session.startTurn("hello");
+  const first = await session.startTurn("first");
+  feed.push(initFrame());
+  feed.push(lifecycleFrame(query.submittedUuid(0), "started"));
+  await feed.drained();
+  expect(await first.submission).toBe("accepted");
+
+  const nativeInterrupt = query.nextInterrupt();
   await session.interrupt();
-  expect(await started.submission).toBe("unsent");
-  expect(query.cancelled).toEqual([query.submittedUuid()]);
+  expect(await nativeInterrupt).toBe(query.submittedUuid(0));
+
+  const second = await session.startTurn("second");
+  feed.push(lifecycleFrame(query.submittedUuid(1), "started"));
+  await feed.drained();
+  expect(await second.submission).toBe("accepted");
+  expect(await first.submission).toBe("accepted");
+  expect(query.interrupts).toEqual([query.submittedUuid(0)]);
+  expect(query.withdrawals).toEqual([]);
 
   await session.close();
 });
 
-test("an interrupt whose withdrawal is refused leaves the outcome unknown", async () => {
+test("a cancelled lifecycle frame for the submitted uuid proves the prompt was never read", async () => {
   const feed = createFrameFeed();
-  const { session } = await createScriptedClaudeSession(feed, {
-    cancelAsyncMessage: async () => false,
-  });
+  const { session, query } = await createScriptedClaudeSession(feed);
+
+  const started = await session.startTurn("hello");
+  feed.push(lifecycleFrame(query.submittedUuid(), "cancelled"));
+  await feed.drained();
+  expect(await started.submission).toBe("unsent");
+
+  await session.close();
+});
+
+test("an interrupt before any evidence settles unknown and leaves the turn canceled", async () => {
+  const feed = createFrameFeed();
+  const { session, query } = await createScriptedClaudeSession(feed);
   const events: AgentStreamEvent[] = [];
   session.subscribe((event) => events.push(event));
 
@@ -123,6 +146,7 @@ test("an interrupt whose withdrawal is refused leaves the outcome unknown", asyn
   await session.interrupt();
   expect(await started.submission).toBe("unknown");
   expect(events.some((event) => event.type === "turn_canceled")).toBe(true);
+  expect(query.withdrawals).toEqual([]);
 
   await session.close();
 });
