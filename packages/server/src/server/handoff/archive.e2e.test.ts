@@ -79,6 +79,128 @@ async function stopHost(host: Host): Promise<void> {
   await host.daemon.close();
 }
 
+test.skipIf(process.platform === "win32")(
+  "activates an explicit context export without installing a native session",
+  async () => {
+    const source = await startHost("source", true);
+    let destination = await startHost("destination", true);
+    const origin = source.daemon.daemon;
+    const cwd = path.join(root, "workspace");
+    await mkdir(cwd);
+    const created = await source.client.createWorkspace({
+      source: { kind: "directory", path: cwd },
+    });
+    if (!created.workspace) throw new Error("Missing source workspace");
+    const sourceAgentId = randomUUID();
+    const sessionId = randomUUID();
+    const project = claudeProjectDirSync(cwd, { configDir: path.join(root, "source", "claude") });
+    await mkdir(project, { recursive: true });
+    const transcript =
+      JSON.stringify({
+        type: "user",
+        sessionId,
+        message: { role: "user", content: "Remember the export token: previous-only-token" },
+      }) + "\n";
+    await writeFile(path.join(project, `${sessionId}.jsonl`), transcript);
+    const timestamp = new Date().toISOString();
+    await origin.agentStorage.upsert(
+      parseStoredAgentRecord({
+        id: sourceAgentId,
+        provider: "claude",
+        cwd,
+        workspaceId: created.workspace.id,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        lastStatus: "closed",
+        persistence: { provider: "claude", sessionId },
+      }),
+    );
+    const transferId = randomUUID();
+    const request = {
+      transferId,
+      sourceServerId: origin.getServerId(),
+      sourceWorkspaceId: created.workspace.id,
+      sourceAgentIds: [sourceAgentId],
+      destinationParent: root,
+      continuationMode: "context" as const,
+    };
+    const reserved = await destination.daemon.daemon.handoffDestination.reserve(request);
+    expect(reserved.continuationMode).toBe("context");
+    await expect(
+      destination.daemon.daemon.handoffDestination.reserve({
+        ...request,
+        continuationMode: "native",
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    const prepared = await origin.handoffSource.prepare({
+      transferId,
+      workspaceId: created.workspace.id,
+      agentIds: [sourceAgentId],
+      destinationServerId: destination.daemon.daemon.getServerId(),
+      reservationId: reserved.reservationId,
+    });
+    await destination.daemon.daemon.handoffDestination.bindSource({
+      transferId,
+      manifest: prepared.manifest,
+      publicKey: prepared.source.publicKey,
+    });
+    await transferHandoffArchive({
+      source: source.client,
+      destination: destination.client,
+      transferId,
+      manifest: prepared.manifest,
+    });
+    // Context mode must not inspect or launch the destination native importer.
+    await writeFile(
+      path.join(root, "destination", "claude-version.cjs"),
+      "throw new Error('Native importer must not be used');\n",
+    );
+    const staged = await destination.daemon.daemon.handoffDestination.stage(transferId);
+    expect(staged.claudeRuntime).toBeNull();
+    expect(staged.preparedConversations).toEqual([{ sourceAgentId, title: null, mode: "context" }]);
+    expect((await destination.client.fetchAgents()).entries).toEqual([]);
+    const receipt = await origin.handoffSource.release(transferId);
+    const stagedContext = path.join(
+      staged.stagingCwd,
+      `handoff-context-${staged.reservationId}`,
+      staged.agentMappings[0].destinationAgentId,
+      "timeline.json",
+    );
+    await writeFile(stagedContext, "modified context");
+    await expect(
+      destination.daemon.daemon.handoffDestination.acceptRelease(transferId, receipt),
+    ).rejects.toMatchObject({ code: "source_changed" });
+    expect(destination.daemon.daemon.handoffDestination.status(transferId).state).toBe("staged");
+    await destination.daemon.daemon.handoffDestination.stage(transferId);
+    expect(await readFile(stagedContext, "utf8")).toContain("previous-only-token");
+    await destination.daemon.daemon.handoffDestination.acceptRelease(transferId, receipt);
+    await stopHost(destination);
+    destination = await startHost("destination", true);
+    const active = await destination.daemon.daemon.handoffDestination.activate(transferId);
+    const agentId = active.agentMappings[0].destinationAgentId;
+    const record = await destination.daemon.daemon.agentStorage.get(agentId);
+    expect(record?.persistence).toBeNull();
+    expect(record?.handoffContext).toMatchObject({ sourceAgentId, sourceCwd: cwd, pending: true });
+    expect(record?.labels["paseo.handoff-mode"]).toBe("context");
+    if (!record?.handoffContext) throw new Error("Missing continuation context");
+    const contextDirectory = path.join(active.destinationCwd, record.handoffContext.directory);
+    expect(await readFile(path.join(contextDirectory, "native", "transcript.jsonl"), "utf8")).toBe(
+      transcript,
+    );
+    expect(await readFile(path.join(contextDirectory, "timeline.json"), "utf8")).toContain(
+      "previous-only-token",
+    );
+    await expect(
+      readdir(path.join(root, "destination", "claude", "projects")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await stopHost(destination);
+    destination = await startHost("destination", true);
+    expect(await destination.daemon.daemon.agentStorage.get(agentId)).toEqual(record);
+    expect(await destination.daemon.daemon.handoffDestination.activate(transferId)).toEqual(active);
+  },
+  30_000,
+);
+
 test.skipIf(process.platform === "win32").each([
   { kind: "directory", hasGit: false, subdirEntries: [], prepare: async (_cwd: string) => {} },
   {
@@ -199,6 +321,7 @@ test.skipIf(process.platform === "win32").each([
       {
         sourceAgentId: "00000000-0000-4000-8000-000000000301",
         title: "Conversation to continue",
+        mode: "native",
         sessionId,
       },
     ]);

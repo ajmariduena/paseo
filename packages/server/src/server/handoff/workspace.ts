@@ -895,9 +895,14 @@ export async function readWorkspaceFromArchive(
 }
 
 export async function restoreWorkspaceFromArchive(
-  input: WorkspaceArchiveContentsInput & { destination: string },
+  input: WorkspaceArchiveContentsInput & {
+    destination: string;
+    additionalFiles?: WorkspaceManifest["files"];
+  },
 ): Promise<WorkspaceManifest> {
   const manifest = await readWorkspaceFromArchive(input);
+  manifest.files.push(...(input.additionalFiles ?? []));
+  validateManifest(manifest, input.limits ?? WORKSPACE_SNAPSHOT_LIMITS);
   return restoreWorkspaceContents({
     manifest,
     blobs: input.archive.blobsDirectory,
@@ -906,9 +911,14 @@ export async function restoreWorkspaceFromArchive(
 }
 
 export async function verifyWorkspaceFromArchive(
-  input: WorkspaceArchiveContentsInput & { cwd: string },
+  input: WorkspaceArchiveContentsInput & {
+    cwd: string;
+    additionalFiles?: WorkspaceManifest["files"];
+  },
 ): Promise<void> {
   const manifest = await readWorkspaceFromArchive(input);
+  manifest.files.push(...(input.additionalFiles ?? []));
+  validateManifest(manifest, input.limits ?? WORKSPACE_SNAPSHOT_LIMITS);
   const cwd = await realpath(input.cwd);
   await verifyWorkspaceContents({
     cwd,

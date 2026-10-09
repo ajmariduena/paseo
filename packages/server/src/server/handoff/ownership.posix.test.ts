@@ -20,6 +20,7 @@ import { captureClaudeSession } from "../agent/providers/claude/handoff.js";
 import { claudeProjectDirSync } from "../agent/providers/claude/project-dir.js";
 import { captureWorkspace } from "./workspace.js";
 import { HandoffSource } from "./source.js";
+import { writeHandoffHistory } from "./history.js";
 
 const test = platformTest.skipIf(process.platform === "win32");
 let root: string;
@@ -141,6 +142,9 @@ async function nativeDestinationFixture(
     write?: typeof writeJournal;
     agentIds?: string[];
     publication?: HandoffPublication;
+    continuationMode?: "native" | "context";
+    includeHistory?: boolean;
+    contextCollision?: boolean;
   } = {},
 ) {
   const transferId = randomUUID();
@@ -162,6 +166,7 @@ async function nativeDestinationFixture(
     sourceWorkspaceId: "source-workspace",
     sourceAgentIds: input.agentIds ?? ["source-agent"],
     destinationParent: root,
+    continuationMode: input.continuationMode,
   });
   const source = await ownership.prepare({
     id: transferId,
@@ -191,7 +196,26 @@ async function nativeDestinationFixture(
     artifactDirectory: sessionDirectory,
   });
   const workspaceDirectory = path.join(root, "workspace-capture");
+  if (input.contextCollision)
+    await writeFile(
+      path.join(cwd, `handoff-context-${reservation.reservationId}`),
+      "Existing user file",
+    );
   await captureWorkspace({ cwd, artifactDirectory: workspaceDirectory });
+  const historyPath = path.join(root, "history.json");
+  if (input.includeHistory)
+    await writeHandoffHistory(historyPath, {
+      version: 1,
+      sourceAgentId: "source-agent",
+      epoch: transferId,
+      rows: [
+        {
+          seq: 1,
+          timestamp: new Date().toISOString(),
+          item: { type: "user_message", text: "continue the previous work" },
+        },
+      ],
+    });
   const manifest = await packHandoffArchive({
     store,
     transferId,
@@ -204,6 +228,7 @@ async function nativeDestinationFixture(
         sourceAgentId: "source-agent",
         title: "Imported conversation",
         artifactDirectory: sessionDirectory,
+        historyPath: input.includeHistory ? historyPath : undefined,
       },
     ],
   });
@@ -225,6 +250,29 @@ async function nativeDestinationFixture(
     claudeHome,
   };
 }
+
+test("context export refuses missing readable history without creating a native session", async () => {
+  const { destination, transferId, claudeHome, reservation } = await nativeDestinationFixture({
+    continuationMode: "context",
+  });
+  await expect(destination.stage(transferId)).rejects.toThrow("requires complete captured history");
+  expect(destination.status(transferId).state).toBe("receiving");
+  await expect(readdir(claudeHome)).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(readdir(reservation.stagingCwd)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test("context export refuses collision with existing workspace content", async () => {
+  const { destination, transferId, reservation } = await nativeDestinationFixture({
+    continuationMode: "context",
+    includeHistory: true,
+    contextCollision: true,
+  });
+  await expect(destination.stage(transferId)).rejects.toMatchObject({ code: "invalid_artifact" });
+  expect(
+    await readFile(path.join(cwd, `handoff-context-${reservation.reservationId}`), "utf8"),
+  ).toBe("Existing user file");
+  await expect(readdir(reservation.stagingCwd)).rejects.toMatchObject({ code: "ENOENT" });
+});
 
 test("stages native conversations under reserved identities and recovers them after restart", async () => {
   const { destination, transferId, options, reservation, manifest, importedPath, transcript } =
@@ -253,6 +301,53 @@ test("stages native conversations under reserved identities and recovers them af
   await expect(recovered.cancel(transferId)).rejects.toMatchObject({ code: "invalid_state" });
   expect(await readFile(importedPath, "utf8")).toBe(transcript);
 });
+
+test.each(["native", "context"] as const)(
+  "%s context publication recovers after interruption",
+  async (continuationMode) => {
+    let failOnce = true;
+    const installed: string[] = [];
+    const fixture = await nativeDestinationFixture({
+      continuationMode,
+      includeHistory: true,
+      publication: {
+        async install(input) {
+          installed.push(input.record.agentMappings[0].destinationAgentId);
+          if (failOnce) {
+            failOnce = false;
+            throw new Error("interrupted publication");
+          }
+        },
+        async publish() {},
+      },
+    });
+    const { destination, transferId, reservation, options, manifest } = fixture;
+    await destination.stage(transferId);
+    await ownership.markReady(transferId, manifest.entrypoint.sha256);
+    const receipt = await ownership.release(
+      transferId,
+      {
+        version: 1,
+        transferId,
+        sourceServerId,
+        destinationServerId: options.serverId,
+        reservationId: reservation.reservationId,
+        manifestDigest: manifest.entrypoint.sha256,
+      },
+      async () => {},
+    );
+    await destination.acceptRelease(transferId, receipt);
+    await expect(destination.activate(transferId)).rejects.toThrow("interrupted publication");
+    const recovered = new HandoffDestination(options);
+    await recovered.initialize();
+    await recovered.recoverActivations();
+    expect(recovered.status(transferId).state).toBe("active");
+    expect(installed).toEqual([
+      reservation.agentMappings[0].destinationAgentId,
+      reservation.agentMappings[0].destinationAgentId,
+    ]);
+  },
+);
 
 test.each([
   "before records",

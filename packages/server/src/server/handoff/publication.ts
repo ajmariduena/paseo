@@ -10,6 +10,7 @@ import type { AgentManager } from "../agent/agent-manager.js";
 import type { DestinationHandoffStatus } from "./destination.js";
 import type { HandoffBundle } from "./bundle.js";
 import type { WorkspaceManifest } from "./workspace.js";
+import { handoffContextDirectory } from "./context.js";
 
 export interface HandoffPublicationInput {
   record: DestinationHandoffStatus;
@@ -62,6 +63,26 @@ export function createHandoffPublication(stores: PublicationStores): HandoffPubl
           (item) => item.sourceAgentId === mapping.sourceAgentId,
         );
         if (!conversation) throw new Error("Handoff conversation is not prepared");
+        const exported = bundle.conversations.find(
+          (item) => item.sourceAgentId === mapping.sourceAgentId,
+        );
+        if (!exported) throw new Error("Captured conversation is missing");
+        if (conversation.mode === "context" && !exported.history)
+          throw new Error("Captured history is missing");
+        const handoffContext =
+          conversation.mode === "context"
+            ? {
+                sourceServerId: record.sourceServerId,
+                sourceAgentId: mapping.sourceAgentId,
+                sourceCwd: bundle.sourceCwd,
+                directory: handoffContextDirectory(
+                  record.reservationId,
+                  mapping.destinationAgentId,
+                ),
+                history: exported.history,
+                pending: true,
+              }
+            : undefined;
         await stores.agents.installHandoffRecord(
           parseStoredAgentRecord({
             id: mapping.destinationAgentId,
@@ -71,19 +92,23 @@ export function createHandoffPublication(stores: PublicationStores): HandoffPubl
             title: conversation.title,
             createdAt: timestamp,
             updatedAt: timestamp,
-            labels: {},
+            labels: { "paseo.handoff-mode": conversation.mode },
             lastStatus: "closed",
             archivedAt: null,
             config: {},
-            persistence: {
-              provider: "claude",
-              sessionId: conversation.sessionId,
-              nativeHandle: conversation.sessionId,
-              metadata: {
-                cwd: record.destinationCwd,
-                claudeProjectDirName: `paseo-handoff-${mapping.destinationAgentId}`,
-              },
-            },
+            ...(handoffContext ? { handoffContext } : {}),
+            persistence:
+              conversation.mode === "native"
+                ? {
+                    provider: "claude",
+                    sessionId: conversation.sessionId,
+                    nativeHandle: conversation.sessionId,
+                    metadata: {
+                      cwd: record.destinationCwd,
+                      claudeProjectDirName: `paseo-handoff-${mapping.destinationAgentId}`,
+                    },
+                  }
+                : null,
           }),
         );
       }

@@ -23,6 +23,7 @@ import { ClaudeAgentClient, resolveClaudeCodeVersion } from "./agent.js";
 import { claudeConfigDir, claudeTranscriptPathSync } from "./project-dir.js";
 import { collectSessionTurnEvents } from "../test-utils/session-stream-adapter.js";
 import type { AgentStreamEvent } from "../../agent-sdk-types.js";
+import { ensureAgentLoaded } from "../../agent-loading.js";
 
 class Pushable<T> implements AsyncIterable<T> {
   private queue: T[] = [];
@@ -331,6 +332,130 @@ test("native handoff resumes in another provider home and returns without select
     expect(readFileSync(sourcePath)).toEqual(sourceBytes);
   } finally {
     for (const session of sessions) await session.close();
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+}, 180_000);
+
+test("context-export handoff continues a real turn in a new session with the prior conversation", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "claude-context-handoff-"));
+  const sourceCwd = path.join(root, "workspace");
+  mkdirSync(sourceCwd);
+  const hosts: TestPaseoDaemon[] = [];
+  const clients: DaemonClient[] = [];
+  const logger = pino({ level: "warn" });
+  async function startHost(name: string) {
+    const home = path.join(root, name);
+    const configDir = path.join(home, "claude");
+    mkdirSync(configDir, { recursive: true });
+    symlinkSync(
+      path.join(claudeConfigDir(process.env), ".credentials.json"),
+      path.join(configDir, ".credentials.json"),
+    );
+    const runtimeSettings = { env: { CLAUDE_CONFIG_DIR: configDir } };
+    const host = await createTestPaseoDaemon({
+      paseoHomeRoot: home,
+      cleanup: false,
+      mcpEnabled: false,
+      agentProviderSettings: { claude: runtimeSettings },
+      agentClients: { claude: new ClaudeAgentClient({ logger, runtimeSettings }) },
+    });
+    hosts.push(host);
+    const client = new DaemonClient({
+      url: `ws://127.0.0.1:${host.port}/ws`,
+      appVersion: "0.11.1",
+    });
+    clients.push(client);
+    await client.connect();
+    return { daemon: host.daemon, client };
+  }
+  try {
+    const source = await startHost("source");
+    const destination = await startHost("destination");
+    const origin = source.daemon;
+    const target = destination.daemon;
+    const created = await source.client.createWorkspace({
+      source: { kind: "directory", path: sourceCwd },
+    });
+    if (!created.workspace) throw new Error("Source workspace creation failed");
+    const workspaceId = created.workspace.id;
+    const agent = await origin.agentManager.createAgent(
+      { provider: "claude", model: "haiku", modeId: "bypassPermissions", cwd: sourceCwd },
+      undefined,
+      { workspaceId },
+    );
+    const marker = randomUUID();
+    const first = await origin.agentManager.runAgent(
+      agent.id,
+      `Remember the transfer token at the end of this historical note. ${"Context detail. ".repeat(160)} Transfer token: ${marker}. Reply with exactly ACK. Do not repeat the token, write files or run tools.`,
+    );
+    expect(first.finalText.trim()).toBe("ACK");
+    const transferId = randomUUID();
+    const reserved = await target.handoffDestination.reserve({
+      transferId,
+      sourceServerId: origin.getServerId(),
+      sourceWorkspaceId: workspaceId,
+      sourceAgentIds: [agent.id],
+      destinationParent: root,
+      continuationMode: "context",
+    });
+    const prepared = await origin.handoffSource.prepare({
+      transferId,
+      workspaceId,
+      agentIds: [agent.id],
+      destinationServerId: target.getServerId(),
+      reservationId: reserved.reservationId,
+    });
+    await target.handoffDestination.bindSource({
+      transferId,
+      publicKey: prepared.source.publicKey,
+      manifest: prepared.manifest,
+    });
+    await transferHandoffArchive({
+      source: source.client,
+      destination: destination.client,
+      transferId,
+      manifest: prepared.manifest,
+    });
+    await target.handoffDestination.stage(transferId);
+    const receipt = await origin.handoffSource.release(transferId);
+    await target.handoffDestination.acceptRelease(transferId, receipt);
+    const active = await target.handoffDestination.activate(transferId);
+    const importedId = active.agentMappings[0].destinationAgentId;
+    const imported = await target.agentStorage.get(importedId);
+    if (!imported?.handoffContext) throw new Error("Destination context is missing");
+    expect(imported.persistence).toBeNull();
+    expect(imported.labels["paseo.handoff-mode"]).toBe("context");
+    await target.agentStorage.upsert({
+      ...imported,
+      config: { model: "haiku", modeId: "bypassPermissions" },
+    });
+    await ensureAgentLoaded(importedId, {
+      agentManager: target.agentManager,
+      agentStorage: target.agentStorage,
+      logger,
+    });
+    const continued = await target.agentManager.runAgent(
+      importedId,
+      "Read the original transcript file in the exported context to verify the transfer token, write only that token into continued.txt in the current workspace, then reply with it.",
+    );
+    expect(continued.sessionId).not.toBe(first.sessionId);
+    expect(continued.finalText).toContain(marker);
+    expect(readFileSync(path.join(active.destinationCwd, "continued.txt"), "utf8").trim()).toBe(
+      marker,
+    );
+    expect(continued.timeline).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: "tool_call" })]),
+    );
+    await target.agentManager.closeAgent(importedId);
+    await target.agentStorage.flush();
+    expect((await target.agentStorage.get(importedId))?.handoffContext?.pending).toBe(false);
+    await expect(source.client.sendMessage(agent.id, "Continue on the old host")).rejects.toThrow(
+      "held by handoff",
+    );
+    expect(origin.agentManager.getAgent(agent.id)).toBeNull();
+  } finally {
+    for (const client of clients) await client.close();
+    for (const host of hosts) await host.close();
     rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }, 180_000);

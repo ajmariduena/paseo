@@ -8,9 +8,11 @@ import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { withWorktreeCleanupReservation } from "../worktree-use-lock.js";
 import { HandoffOwnership } from "../handoff/ownership.js";
+import { handoffContextDirectory, contextExcerpt } from "../handoff/context.js";
+import type { HandoffHistory } from "../handoff/history.js";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import {
@@ -542,6 +544,122 @@ class TestAgentSession implements AgentSession {
 
   async close(): Promise<void> {}
 }
+
+test("context-export continuation retries failed turns and persists delivery only after success", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-handoff-context-"));
+  const storageDirectory = join(workdir, "agents");
+  const storage = new AgentStorage(storageDirectory, logger);
+  const prompts: AgentPromptInput[] = [];
+  const outcomes = ["turn_failed", "turn_completed", "turn_completed"] as const;
+  const client = new (class extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      return new (class extends TestAgentSession {
+        override async startTurn(prompt: AgentPromptInput = "") {
+          const outcome = outcomes[prompts.length];
+          prompts.push(prompt);
+          const turnId = `context-turn-${prompts.length}`;
+          setTimeout(
+            () =>
+              this.pushEvent({
+                type: outcome,
+                provider: "codex",
+                turnId,
+                error: "interrupted continuation",
+              }),
+            0,
+          );
+          return { turnId };
+        }
+      })(config);
+    }
+  })();
+  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    await manager.flush();
+    const stored = await storage.get(agent.id);
+    if (!stored) throw new Error("Missing agent record");
+    const sourceAgentId = randomUUID();
+    const directory = handoffContextDirectory(randomUUID(), agent.id);
+    mkdirSync(join(workdir, directory), { recursive: true });
+    const history: HandoffHistory = {
+      version: 1,
+      sourceAgentId,
+      epoch: randomUUID(),
+      rows: [
+        {
+          seq: 1,
+          timestamp: new Date().toISOString(),
+          item: { type: "user_message", text: "Prior-only export token" },
+        },
+      ],
+    };
+    const bytes = Buffer.from(JSON.stringify(history));
+    writeFileSync(join(workdir, directory, "timeline.json"), bytes);
+    await storage.upsert({
+      ...stored,
+      handoffContext: {
+        sourceServerId: "old-host",
+        sourceAgentId,
+        sourceCwd: "/old/workspace",
+        directory,
+        history: { size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") },
+        pending: true,
+      },
+    });
+    writeFileSync(join(workdir, directory, "timeline.json"), "changed history");
+    await expect(manager.runAgent(agent.id, "Continue with changed history")).rejects.toThrow(
+      "context changed",
+    );
+    expect(prompts).toEqual([]);
+    expect((await storage.get(agent.id))?.handoffContext?.pending).toBe(true);
+    writeFileSync(join(workdir, directory, "timeline.json"), bytes);
+    await expect(manager.runAgent(agent.id, "Continue the work")).rejects.toThrow(
+      "interrupted continuation",
+    );
+    expect(prompts[0]).toContain("Prior-only export token");
+    expect((await storage.get(agent.id))?.handoffContext?.pending).toBe(true);
+    await manager.runAgent(agent.id, "Retry the work");
+    expect(prompts[1]).toContain("Prior-only export token");
+    await manager.flush();
+    await storage.flush();
+    expect((await storage.get(agent.id))?.handoffContext?.pending).toBe(false);
+    await manager.runAgent(agent.id, "Next user request");
+    expect(prompts[2]).toBe("Next user request");
+    await manager.closeAgent(agent.id);
+    expect(
+      (await new AgentStorage(storageDirectory, logger).get(agent.id))?.handoffContext?.pending,
+    ).toBe(false);
+  } finally {
+    await Promise.all(manager.listAgents().map((agent) => manager.closeAgent(agent.id)));
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("context export bounds Unicode excerpts while retaining the original request and latest work", () => {
+  const history: HandoffHistory = {
+    version: 1,
+    sourceAgentId: randomUUID(),
+    epoch: randomUUID(),
+    rows: Array.from({ length: 30 }, (_, index) => ({
+      seq: index + 1,
+      timestamp: new Date().toISOString(),
+      item: { type: "user_message", text: `${index}: ${"中".repeat(10_000)}` },
+    })),
+  };
+  const excerpt = contextExcerpt(history);
+  expect(Buffer.byteLength(excerpt)).toBeLessThanOrEqual(24_000);
+  expect(JSON.parse(excerpt)).toMatchObject({
+    totalRows: 30,
+    rows: expect.arrayContaining([
+      expect.objectContaining({ seq: 1, shortened: true }),
+      expect.objectContaining({ seq: 30, shortened: true }),
+    ]),
+  });
+  expect(history.rows[0].item).toEqual({ type: "user_message", text: `0: ${"中".repeat(10_000)}` });
+});
 
 class ResumeTrackingTestAgentClient extends TestAgentClient {
   private readonly retryStarted = deferred<void>();

@@ -31,6 +31,7 @@ import { resolveClaudeCodeVersion } from "../agent/providers/claude/agent.js";
 import { claudeConfigDir } from "../agent/providers/claude/project-dir.js";
 
 import type { HandoffPublication } from "./publication.js";
+import { handoffContextFiles } from "./context.js";
 
 const ReservationSchema = z.object({
   transferId: HandoffTransferIdSchema,
@@ -38,6 +39,7 @@ const ReservationSchema = z.object({
   sourceWorkspaceId: z.string().min(1),
   sourceAgentIds: z.array(z.string().min(1)).max(1000),
   destinationParent: z.string().min(1),
+  continuationMode: z.enum(["native", "context"]).default("native"),
 });
 const BindingSchema = z.object({
   publicKey: z.string().min(1).max(1024),
@@ -47,11 +49,19 @@ const ClaudeRuntimeSchema = z.object({
   configDir: z.string().min(1),
   cliVersion: z.string().regex(/^2\.1\.\d+$/),
 });
-const PreparedConversationSchema = z.object({
-  sourceAgentId: z.string().min(1),
-  title: z.string().max(4096).nullable(),
-  sessionId: z.string().uuid(),
-});
+const PreparedConversationSchema = z.discriminatedUnion("mode", [
+  z.object({
+    sourceAgentId: z.string().min(1),
+    title: z.string().max(4096).nullable(),
+    mode: z.literal("native").default("native"),
+    sessionId: z.string().uuid(),
+  }),
+  z.object({
+    sourceAgentId: z.string().min(1),
+    title: z.string().max(4096).nullable(),
+    mode: z.literal("context"),
+  }),
+]);
 const RecordSchema = ReservationSchema.extend({
   reservationId: HandoffTransferIdSchema,
   workspaceId: z.string().regex(/^wks_[a-f0-9]{16}$/),
@@ -83,7 +93,7 @@ const JournalSchema = z.object({
   records: z.array(RecordSchema).max(10_000),
 });
 export type DestinationHandoffStatus = z.infer<typeof RecordSchema>;
-type ReservationInput = z.infer<typeof ReservationSchema>;
+type ReservationInput = z.input<typeof ReservationSchema>;
 type SourceBinding = z.infer<typeof BindingSchema>;
 interface BindSourceInput extends SourceBinding {
   transferId: string;
@@ -284,7 +294,11 @@ export class HandoffDestination {
       await this.assertContainer(record);
       return this.options.archives.withVerifiedArchive(transferId, async (archive) => {
         const content = await this.readBundle(record, archive);
-        if (record.sourceAgentIds.length > 0 && record.claudeRuntime === null) {
+        if (
+          record.continuationMode === "native" &&
+          record.sourceAgentIds.length > 0 &&
+          record.claudeRuntime === null
+        ) {
           if (!this.options.resolveClaudeRuntime)
             fail(
               "unprepared_conversations",
@@ -312,9 +326,25 @@ export class HandoffDestination {
           archive,
           entrypoint: content.bundle.workspace,
           destination: record.stagingCwd,
+          additionalFiles:
+            record.continuationMode === "context"
+              ? handoffContextFiles({
+                  content,
+                  reservationId: record.reservationId,
+                  agentMappings: record.agentMappings,
+                })
+              : [],
         });
         const preparedConversations: DestinationHandoffStatus["preparedConversations"] = [];
         for (const conversation of content.bundle.conversations) {
+          if (record.continuationMode === "context") {
+            preparedConversations.push({
+              sourceAgentId: conversation.sourceAgentId,
+              title: conversation.title,
+              mode: "context",
+            });
+            continue;
+          }
           const mapping = record.agentMappings.find(
             (item) => item.sourceAgentId === conversation.sourceAgentId,
           );
@@ -332,6 +362,7 @@ export class HandoffDestination {
           preparedConversations.push({
             sourceAgentId: conversation.sourceAgentId,
             title: conversation.title,
+            mode: "native",
             sessionId: handle.sessionId,
           });
         }
@@ -580,6 +611,14 @@ export class HandoffDestination {
   }
 
   private validateConversationRecords(record: DestinationHandoffStatus): void {
+    if (record.continuationMode === "context" && record.claudeRuntime !== null)
+      fail("storage_uncertain", "Context export cannot contain a native runtime installation");
+    if (
+      record.preparedConversations.some(
+        (conversation) => conversation.mode !== record.continuationMode,
+      )
+    )
+      fail("storage_uncertain", "Prepared continuation mode differs from the reservation");
     if (record.claudeRuntime && !path.isAbsolute(record.claudeRuntime.configDir))
       fail("storage_uncertain", "Invalid Claude destination directory");
     const preparedIds = record.preparedConversations.map((item) => item.sourceAgentId).sort();
@@ -591,7 +630,7 @@ export class HandoffDestination {
     if (["staged", "released", "activating", "active"].includes(record.state)) {
       if (
         JSON.stringify(preparedIds) !== JSON.stringify([...record.sourceAgentIds].sort()) ||
-        (preparedIds.length > 0 && !record.claudeRuntime)
+        (preparedIds.length > 0 && record.continuationMode === "native" && !record.claudeRuntime)
       )
         fail("storage_uncertain", "Destination conversation installation is incomplete");
     }
@@ -649,15 +688,29 @@ export class HandoffDestination {
       archive,
       entrypoint: content.bundle.workspace,
       cwd: record.stagingCwd,
+      additionalFiles:
+        record.continuationMode === "context"
+          ? handoffContextFiles({
+              content,
+              reservationId: record.reservationId,
+              agentMappings: record.agentMappings,
+            })
+          : [],
     });
     for (const mapping of record.agentMappings) {
       const manifest = content.sessions.get(mapping.sourceAgentId);
       const prepared = record.preparedConversations.find(
         (item) => item.sourceAgentId === mapping.sourceAgentId,
       );
+      if (record.continuationMode === "context") {
+        if (prepared?.mode !== "context")
+          fail("unprepared_conversations", "Context export is not prepared");
+        continue;
+      }
       if (
         !manifest ||
         !prepared ||
+        prepared.mode !== "native" ||
         prepared.sessionId !== manifest.sessionId ||
         !record.claudeRuntime
       )

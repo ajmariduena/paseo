@@ -106,6 +106,7 @@ import {
   type PromptAnnotation,
 } from "./prompt-annotations.js";
 import { prependRestartNote } from "../restart/background-note.js";
+import { prependHandoffContext } from "../handoff/context.js";
 import { AgentQueueRunner } from "../agent-queue/runner.js";
 import { AgentQueueStore } from "../agent-queue/store.js";
 import {
@@ -913,6 +914,7 @@ export class AgentManager {
     string,
     { turnId: string; work: RestartCancelledWork[] }
   >();
+  private readonly handoffContextTurns = new Map<string, string>();
   private readonly idleBackendTimers = new Map<
     string,
     { session: AgentSession; timer: NodeJS.Timeout }
@@ -2970,17 +2972,23 @@ export class AgentManager {
   }): Promise<string> {
     const { agent, agentId, pendingRun, prompt, options } = params;
     try {
+      const context = (await this.registry?.get(agentId))?.handoffContext;
+      let submitted = prompt;
+      if (context?.pending) {
+        submitted = await prependHandoffContext({ cwd: agent.cwd, context, prompt });
+      }
       if (pendingRun.settled) {
         throw new Error(`Agent ${agentId} run was canceled before its turn started`);
       }
       if (this.agents.get(agentId)?.session !== agent.session) {
         throw new Error(`Agent ${agentId} runtime changed before its turn started`);
       }
-      const result = await agent.session.startTurn(prompt, options);
+      const result = await agent.session.startTurn(submitted, options);
       if (pendingRun.settled) {
         this.runs.abandonTurn(agentId, result.turnId);
         throw new Error(`Agent ${agentId} run was canceled before its turn started`);
       }
+      if (context?.pending) this.handoffContextTurns.set(agentId, result.turnId);
       return result.turnId;
     } catch (error) {
       if (pendingRun.settled) {
@@ -3183,7 +3191,15 @@ export class AgentManager {
     return pending && pending.length > 0 ? pending : null;
   }
 
-  private settleRestartNote(agentId: string, turnId: string | undefined, completed: boolean): void {
+  private settleTurnNotes(agentId: string, turnId: string | undefined, completed: boolean): void {
+    if (turnId && this.handoffContextTurns.get(agentId) === turnId) {
+      this.handoffContextTurns.delete(agentId);
+      if (completed && this.registry) {
+        void this.registry.completeHandoffContext(agentId).catch((error: unknown) => {
+          this.logger.warn({ err: error, agentId }, "Failed to mark handoff context delivered");
+        });
+      }
+    }
     const carried = this.restartNoteTurns.get(agentId);
     if (!carried || carried.turnId !== turnId) return;
     this.restartNoteTurns.delete(agentId);
@@ -5256,7 +5272,7 @@ export class AgentManager {
       "agent.manager.turn.completed",
     );
     if (terminalDisposition === "stale") return;
-    this.settleRestartNote(agent.id, eventTurnId, true);
+    this.settleTurnNotes(agent.id, eventTurnId, true);
     if (event.usage) {
       agent.lastUsage = { ...agent.lastUsage, ...event.usage };
     }
@@ -5307,7 +5323,7 @@ export class AgentManager {
       "handleStreamEvent: turn_failed",
     );
     if (terminalDisposition === "stale") return;
-    this.settleRestartNote(agent.id, eventTurnId, false);
+    this.settleTurnNotes(agent.id, eventTurnId, false);
     if (!isForegroundEvent && !agent.activeForegroundTurnId) {
       agent.lifecycle = "error";
     }
@@ -5351,7 +5367,7 @@ export class AgentManager {
       "agent.manager.turn.canceled",
     );
     if (terminalDisposition === "stale") return;
-    this.settleRestartNote(agent.id, eventTurnId, false);
+    this.settleTurnNotes(agent.id, eventTurnId, false);
     if (!isForegroundEvent && !agent.activeForegroundTurnId && !agent.pendingReplacement) {
       agent.lifecycle = "idle";
     }

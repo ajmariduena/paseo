@@ -35,6 +35,10 @@ export async function readHandoffHistory(
   sourceAgentId: string,
 ): Promise<HandoffHistory> {
   const bytes = await readBoundedFile(file, HANDOFF_HISTORY_MAX_BYTES);
+  return parseHandoffHistory(bytes, sourceAgentId);
+}
+
+export function parseHandoffHistory(bytes: Buffer, sourceAgentId: string): HandoffHistory {
   const history = HandoffHistorySchema.parse(JSON.parse(bytes.toString("utf8")));
   if (
     history.sourceAgentId !== sourceAgentId ||

@@ -11,6 +11,7 @@ import { toStoredAgentRecord } from "./agent-projections.js";
 import type { ManagedAgent } from "./agent-manager.js";
 import type { AgentSessionConfig } from "./agent-sdk-types.js";
 import { AgentOwnerSchema, daemonExecutionKey, type DaemonAgentOwner } from "./agent-owner.js";
+import { HandoffContextSchema } from "../handoff/context.js";
 
 const SERIALIZABLE_CONFIG_SCHEMA = z
   .object({
@@ -92,6 +93,7 @@ const STORED_AGENT_SCHEMA = z.object({
     .optional(),
   /** Background work a restart cancelled, told to the agent's next turn once it completes. */
   pendingRestartNote: z.array(RestartCancelledWorkSchema).optional(),
+  handoffContext: HandoffContextSchema.optional(),
 });
 
 export type SerializableAgentConfig = Pick<
@@ -357,7 +359,16 @@ export class AgentStorage {
       if (existing?.pendingRestartNote) {
         record.pendingRestartNote = existing.pendingRestartNote;
       }
+      if (existing?.handoffContext) record.handoffContext = existing.handoffContext;
       return record;
+    });
+  }
+
+  async completeHandoffContext(agentId: string): Promise<void> {
+    await this.load();
+    await this.queueRecordMutation(agentId, (existing) => {
+      if (!existing?.handoffContext) throw new Error(`Agent ${agentId} has no handoff context`);
+      return { ...existing, handoffContext: { ...existing.handoffContext, pending: false } };
     });
   }
 

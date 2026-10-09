@@ -227,7 +227,8 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   reservations, stable identity mappings, private workspace staging and signed release acceptance.
   Bootstrap owns the destination journal and shares one archive store with WebSocket transport.
   `bundle.ts` binds workspace and native conversation artifacts to one signed digest and requires
-  exactly the reserved conversation set. Preparation journals the current host's Claude location
+  exactly the reserved conversation set. The reservation fixes native or context-export continuation;
+  retries cannot change that choice. Native preparation journals the current host's Claude location
   before installing under the reserved agent IDs; retries retain that location across configuration
   changes. Cancellation removes only the transfer's inactive sessions after source cancellation.
   Activation publishes the reserved project, workspace and closed agent IDs after source release.
@@ -240,6 +241,17 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   Missing, corrupt or foreign destination journals prevent startup. The final checkout move uses
   an identity-checked POSIX rename; atomic no-replace behavior against external filesystem writers
   remains an acceptance gap.
+- Context export uses the captured Claude timeline and original provider artifacts without invoking
+  the destination's native importer. It places verified copies inside the new workspace so a sandboxed
+  session can read them, refusing path collisions and changed bytes before activation. The imported
+  agent has no source persistence handle. Its first turn receives a bounded, explicitly historical
+  excerpt and paths to the complete files; failure keeps that context pending, and success persists
+  delivery across restart. Tests cover missing history, collisions, damaged context, publication
+  recovery and bounded Unicode excerpts. A real two-daemon Claude test starts a new session and
+  recovers a prior-only token from exported files to write in the destination workspace. Reservation
+  status and agent labels expose the mode; the app's preflight and conversation display remain open.
+  Source decoding still uses the tested Claude codec; other providers and incompatible source
+  formats are not yet exportable. External attachments are reported as unavailable, not transported.
 - `utils/tree-kill.test.ts`, `managed-processes.test.ts` and `bootstrap-managed-processes.test.ts`
   cover observed descendant termination, helper retention and awaited startup recovery. The
   coordinator still needs launch-time ownership and durable uncertain-stop recovery.
@@ -258,9 +270,8 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   Compaction, external attachments, file checkpoints, rewind/fork namespace handling and cross-OS
   evidence remain open before enabling native handoff.
 - Client cutover orchestration, source retirement/tombstones, automation dispositions and the app
-  flow remain unimplemented. The composite
-  archive currently supports native Claude conversations; other codecs and explicit context-export
-  continuation remain open. Complete handoff is not advertised.
+  flow remain unimplemented. The composite archive currently captures Claude conversations;
+  other provider codecs remain open. Complete handoff is not advertised.
 
 Keep feature code in `server/handoff`, provider transport in provider-owned codecs and orchestration
 in the client coordinator. Use dotted `workspace.handoff.*.request/response` RPCs. Follow the
