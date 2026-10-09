@@ -24,6 +24,15 @@ A terminal's synthetic close event and its shell's exit do not prove that all de
 Awaited terminal stops now reject missing PTY exit confirmation and retain the session for retry;
 the coordinator still needs process-tree and previously closed terminal coverage.
 
+The shared POSIX terminator now tracks observed descendants through graceful and forced stop,
+including children that outlive their parent. Concurrent callers share the stop, and failed stops
+retain observed identities for retry with the same runtime handle. Linux uses kernel start ticks;
+macOS still uses the second-resolution `ps` start identity. Read/signal failures cannot certify
+exit. Real-process tests cover a detached child surviving its parent's graceful exit.
+This tracking begins at stop and is in memory: processes orphaned earlier, daemon restart, PTYs
+and Windows still need the coordinator's launch-time inventory and stronger identity/containment
+evidence before source release.
+
 The managed-helper ledger covers registered helper PIDs, not every writer or its descendants.
 Recovery retains records after termination timeout or uncertain exit inspection, and unreadable
 records prevent a complete inventory. A real-helper regression proves retention across registry
