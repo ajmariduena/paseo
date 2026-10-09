@@ -6,6 +6,7 @@ import type {
   VoiceMessagesItem,
 } from "../../voice-orchestrator/messages/messages-call.js";
 import type { VoiceOrchestrator } from "../../voice-orchestrator/orchestrator.js";
+import type { CourierChannel } from "../../voice-orchestrator/fleet/remote-fleet.js";
 
 const MAX_AUDIO_SLICE_BYTES = 64 * 1024;
 const MAX_LOGGED_EVENTS = 50;
@@ -22,7 +23,11 @@ export type VoiceMessagesRequest = Extract<
       | "voice.call.log_events.request"
       | "voice.live.connect.request"
       | "voice.live.end.request"
-      | "voice.call.set_mute.request";
+      | "voice.call.set_mute.request"
+      | "voice.fleet.digest.request"
+      | "voice.fleet.sync.request"
+      | "voice.tools.invoke.request"
+      | "voice.courier.result.request";
   }
 >;
 
@@ -30,6 +35,9 @@ export function isVoiceMessagesRequest(msg: SessionInboundMessage): msg is Voice
   return (
     msg.type.startsWith("voice.messages.") ||
     msg.type.startsWith("voice.live.") ||
+    msg.type.startsWith("voice.fleet.") ||
+    msg.type === "voice.tools.invoke.request" ||
+    msg.type === "voice.courier.result.request" ||
     msg.type === "voice.call.log_events.request" ||
     msg.type === "voice.call.set_mute.request"
   );
@@ -43,11 +51,17 @@ function isVoiceMessagesUpdate(message: SessionOutboundMessage): boolean {
   return message.type === "voice.messages.update";
 }
 
+function isCourierExecute(message: SessionOutboundMessage): boolean {
+  return message.type === "voice.courier.execute";
+}
+
 /** Per-session side of messages mode: RPCs plus pushing outbox updates to this client. */
 export class VoiceMessagesSessionHandler {
   private boundCall: VoiceMessagesCall | null = null;
   // Updates belong to the socket that last spoke for the call; a reconnect's next request moves them.
   private updates: { owner: OwnedOperation; source: object } | null = null;
+  // The socket that last synced the fleet carries the call's actions to the other hosts.
+  private courier: { owner: OwnedOperation; source: object } | null = null;
   private readonly listener = (item: VoiceMessagesItem) => {
     if (!this.boundCall) return;
     this.updates?.owner.emit({
@@ -91,6 +105,23 @@ export class VoiceMessagesSessionHandler {
         this.options.orchestrator?.setCallMuted(msg.muted);
         this.emit({ type: "voice.call.set_mute.response", payload: { requestId: msg.requestId } });
         return;
+      case "voice.fleet.digest.request":
+        return this.handleFleetDigest(msg);
+      case "voice.fleet.sync.request":
+        return this.handleFleetSync(msg);
+      case "voice.tools.invoke.request":
+        return this.handleToolsInvoke(msg);
+      case "voice.courier.result.request":
+        this.options.orchestrator?.settleCourier({
+          operationId: msg.operationId,
+          result: msg.result,
+          error: msg.error,
+        });
+        this.emit({
+          type: "voice.courier.result.response",
+          payload: { requestId: msg.requestId },
+        });
+        return;
     }
   }
 
@@ -98,6 +129,108 @@ export class VoiceMessagesSessionHandler {
     this.boundCall?.clearListener(this.listener);
     this.boundCall = null;
     this.releaseUpdates();
+    this.releaseCourier();
+  }
+
+  private releaseCourier(): void {
+    const courier = this.courier;
+    this.courier = null;
+    void courier?.owner.release().catch((error: unknown) => {
+      this.options.logger.warn({ err: error }, "Failed to release the voice courier");
+    });
+  }
+
+  private claimCourier(): CourierChannel | null {
+    const source = this.options.delivery.currentSource;
+    if (!source) return null;
+    if (this.courier?.source !== source) {
+      this.releaseCourier();
+      const owner = this.options.delivery.operation(isCourierExecute, () => {
+        if (this.courier?.owner === owner) this.courier = null;
+      });
+      this.courier = { owner, source };
+    }
+    const owner = this.courier.owner;
+    return (request) =>
+      owner.emit({
+        type: "voice.courier.execute",
+        payload: {
+          operationId: request.operationId,
+          serverId: request.serverId,
+          tool: request.tool,
+          args: request.args,
+          language: request.language,
+        },
+      });
+  }
+
+  private async handleFleetDigest(
+    msg: Extract<VoiceMessagesRequest, { type: "voice.fleet.digest.request" }>,
+  ): Promise<void> {
+    try {
+      const orchestrator = this.requireOrchestrator();
+      if (msg.language) orchestrator.setPreferredLanguage(msg.language);
+      const digest = await orchestrator.fleetDigest();
+      this.emit({
+        type: "voice.fleet.digest.response",
+        payload: { requestId: msg.requestId, digest, error: null },
+      });
+    } catch (error) {
+      this.emit({
+        type: "voice.fleet.digest.response",
+        payload: { requestId: msg.requestId, digest: null, error: getErrorMessage(error) },
+      });
+    }
+  }
+
+  private async handleFleetSync(
+    msg: Extract<VoiceMessagesRequest, { type: "voice.fleet.sync.request" }>,
+  ): Promise<void> {
+    const active =
+      this.options.orchestrator?.updateRemoteFleet({
+        hosts: msg.hosts,
+        appState: msg.appState ?? null,
+        selfLabel: msg.selfLabel ?? null,
+        channel: this.claimCourier(),
+      }) ?? false;
+    if (!active) this.releaseCourier();
+    this.emit({
+      type: "voice.fleet.sync.response",
+      payload: { requestId: msg.requestId, active },
+    });
+  }
+
+  private async handleToolsInvoke(
+    msg: Extract<VoiceMessagesRequest, { type: "voice.tools.invoke.request" }>,
+  ): Promise<void> {
+    try {
+      const orchestrator = this.requireOrchestrator();
+      if (msg.language) orchestrator.setPreferredLanguage(msg.language);
+      const result = await orchestrator.invokeTool({
+        operationId: msg.operationId,
+        tool: msg.tool,
+        args: msg.args,
+      });
+      this.emit({
+        type: "voice.tools.invoke.response",
+        payload: {
+          requestId: msg.requestId,
+          operationId: msg.operationId,
+          result,
+          error: null,
+        },
+      });
+    } catch (error) {
+      this.emit({
+        type: "voice.tools.invoke.response",
+        payload: {
+          requestId: msg.requestId,
+          operationId: msg.operationId,
+          result: null,
+          error: getErrorMessage(error),
+        },
+      });
+    }
   }
 
   private releaseUpdates(): void {

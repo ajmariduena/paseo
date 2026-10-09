@@ -2988,6 +2988,8 @@ export class Session {
       }
       this.voiceOrchestrator.setPreferredLanguage(request.language ?? null);
       this.voiceOrchestrator.setPreferredAgentModes(request.agentModes);
+      this.voiceOrchestrator.setPreferredAgentDefaults(request.agentDefaults);
+      this.voiceOrchestrator.noteCallStarting();
       const agentId = await this.voiceOrchestrator.ensureAgent();
       this.emit({
         type: "voice.orchestrator.start.response",

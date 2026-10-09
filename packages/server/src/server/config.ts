@@ -1,5 +1,6 @@
 import { configurationEnvironment } from "./config-environment.js";
 import type { GptLiveEngineConfig } from "./voice-orchestrator/orchestrator.js";
+import type { FastLlmConfig } from "./voice-orchestrator/fast-brain/llm-client.js";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -447,6 +448,54 @@ function resolveVoiceLiveConfig(
   };
 }
 
+const DEFAULT_CEREBRAS_BASE_URL = "https://api.cerebras.ai/v1";
+const DEFAULT_CEREBRAS_ROUTER_MODEL = "qwen-3.8-27b";
+const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
+const DEFAULT_OPENAI_ROUTER_MODEL = "gpt-6-luna";
+
+function routerEndpoints(
+  env: NodeJS.ProcessEnv,
+  providers: ReturnType<typeof loadPersistedConfig>["providers"],
+): Record<"cerebras" | "openai", { apiKey: string | undefined; baseUrl: string; model: string }> {
+  const cerebras = providers?.cerebras;
+  const openai = providers?.openai;
+  return {
+    cerebras: {
+      apiKey: cerebras?.apiKey ?? env.CEREBRAS_API_KEY?.trim(),
+      baseUrl: cerebras?.baseUrl ?? DEFAULT_CEREBRAS_BASE_URL,
+      model: DEFAULT_CEREBRAS_ROUTER_MODEL,
+    },
+    openai: {
+      apiKey: openai?.apiKey ?? env.OPENAI_API_KEY?.trim(),
+      baseUrl: openai?.baseUrl ?? DEFAULT_OPENAI_BASE_URL,
+      model: DEFAULT_OPENAI_ROUTER_MODEL,
+    },
+  };
+}
+
+/** The call's fast brain: Cerebras when there is a key, else OpenAI, else the llm agent. */
+function resolveVoiceRouterConfig(
+  env: NodeJS.ProcessEnv,
+  persisted: ReturnType<typeof loadPersistedConfig>,
+): FastLlmConfig | null {
+  const router = persisted.features?.voiceMode?.router;
+  if (router?.provider === "off") return null;
+  const endpoints = routerEndpoints(env, persisted.providers);
+  const provider =
+    router?.provider ??
+    (["cerebras", "openai"] as const).find((name) => Boolean(endpoints[name].apiKey));
+  if (!provider) return null;
+  const endpoint = endpoints[provider];
+  if (!endpoint.apiKey) return null;
+  return {
+    provider,
+    baseUrl: endpoint.baseUrl,
+    apiKey: endpoint.apiKey,
+    model: router?.model ?? endpoint.model,
+    reasoningEffort: router?.reasoningEffort ?? "none",
+  };
+}
+
 function resolveCorsAllowedOrigins(
   env: NodeJS.ProcessEnv,
   persisted: ReturnType<typeof loadPersistedConfig>,
@@ -693,6 +742,7 @@ export function resolveConfigFromPersisted(
     voiceLlmModel: voiceLlm.model,
     voiceLlmThinking: voiceLlm.thinking,
     voiceLive: resolveVoiceLiveConfig(env, persisted),
+    voiceRouter: resolveVoiceRouterConfig(env, persisted),
     voiceLanguage: resolveVoiceLanguage(persisted),
     agentProviderSettings: extractAgentProviderSettings(providerOverrides),
     providerCatalogRefreshTimeoutMs: persisted.agents?.catalogRefreshTimeoutMs,

@@ -1941,6 +1941,8 @@ export class VoiceAssistantWebSocketServer {
         voiceLiveWebrtc: this.voiceOrchestrator?.webrtc.available ?? false,
         // COMPAT(voiceCallMute): added in v0.11.0, remove gate after 2027-10-03.
         voiceCallMute: Boolean(this.voiceOrchestrator),
+        // COMPAT(voiceFleet): added in v0.11.1, remove gate after 2027-10-09.
+        voiceFleet: Boolean(this.voiceOrchestrator),
         // COMPAT(serverMessageQueue): added in v0.11.0, remove gate after 2027-10-04.
         serverMessageQueue: true,
         // COMPAT(restartContinuation): added in v0.11.0, remove gate after 2027-10-04.

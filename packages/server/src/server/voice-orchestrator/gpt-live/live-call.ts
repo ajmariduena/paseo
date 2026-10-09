@@ -2,12 +2,10 @@ import { v4 as uuidv4 } from "uuid";
 import type pino from "pino";
 import type { SessionOutboundMessage } from "../../messages.js";
 import type { GptLiveEngineConfig, VoiceOrchestrator } from "../orchestrator.js";
-import {
-  buildLiveFleetSnapshot,
-  buildLiveGreeting,
-  buildLiveInstructions,
-  buildLiveResume,
-} from "../prompt.js";
+import { buildLiveGreeting, buildLiveInstructions, buildLiveResume } from "../prompt.js";
+import type { RoutePlan, RouteResult } from "../fast-brain/router.js";
+import { LiveFleetSnapshot } from "./live-fleet-snapshot.js";
+import { RequestTracker } from "./request-tracker.js";
 import {
   GPT_LIVE_SAMPLE_RATE,
   GptLiveConnection,
@@ -34,6 +32,10 @@ const BARGE_IN_MIN_WORDS = 3;
 const GREETING_FALLBACK_MS = 6_000;
 // An update GPT-Live never starts saying within this long counts as not heard.
 const ANNOUNCEMENT_SPEECH_TIMEOUT_MS = 20_000;
+// A pause this long in the user's speech starts planning the likely request before GPT-Live
+// delegates; the plan only runs if the request turns out the same.
+const SPECULATE_AFTER_MS = 120;
+const SPECULATE_MIN_WORDS = 2;
 
 export interface GptLiveCallOptions {
   engine: GptLiveEngineConfig;
@@ -64,7 +66,11 @@ export class GptLiveCall {
   private gapTimer: ReturnType<typeof setTimeout> | null = null;
 
   private userTurn = "";
-  private sinceLastDelegation = "";
+  private readonly requests: RequestTracker;
+  private speculation: { text: string; plan: Promise<RoutePlan | null> } | null = null;
+  private speculateTimer: ReturnType<typeof setTimeout> | null = null;
+  private resultAppendedAt: number | null = null;
+  private readonly snapshot: LiveFleetSnapshot;
   private assistantTurn = "";
   private readonly history: string[] = [];
   private unconfirmedSpeechTimer: ReturnType<typeof setTimeout> | null = null;
@@ -87,6 +93,11 @@ export class GptLiveCall {
 
   constructor(private readonly options: GptLiveCallOptions) {
     this.connection = options.createConnection?.() ?? new GptLiveConnection();
+    this.requests = new RequestTracker({ filterEcho: !options.sidebandSessionId });
+    this.snapshot = new LiveFleetSnapshot({
+      describe: () => options.orchestrator.fleetView(),
+      append: (text) => this.connection.append("thinking", text, null),
+    });
   }
 
   get isClosed(): boolean {
@@ -132,10 +143,13 @@ export class GptLiveCall {
         });
       },
       onFleetChanged: () => void this.pushFleetSnapshot(),
+      noteEvent: (text, detail) => this.transcript?.record("status", text, detail),
     });
     this.unregister = orchestrator.registerLiveCall(this);
     const fleet = await orchestrator.describeFleet().catch(() => []);
-    this.connection.append("thinking", buildLiveFleetSnapshot(fleet), null);
+    await this.snapshot.sendFull().catch((error: unknown) => {
+      this.options.logger.warn({ err: error }, "Failed to send the fleet snapshot");
+    });
     const greeting =
       previous.length > 0
         ? buildLiveResume(orchestrator.language)
@@ -157,9 +171,10 @@ export class GptLiveCall {
   }
 
   private async pushFleetSnapshot(): Promise<void> {
-    const fleet = await this.options.orchestrator.describeFleet().catch(() => null);
-    if (!fleet || this.closed) return;
-    this.connection.append("thinking", buildLiveFleetSnapshot(fleet), null);
+    if (this.closed) return;
+    await this.snapshot.sendChanges().catch((error: unknown) => {
+      this.options.logger.debug({ err: error }, "Failed to send a fleet update");
+    });
   }
 
   setInputMuted(muted: boolean): void {
@@ -187,6 +202,8 @@ export class GptLiveCall {
     if (this.assistantIdleTimer) clearTimeout(this.assistantIdleTimer);
     if (this.greetingTimer) clearTimeout(this.greetingTimer);
     if (this.unconfirmedSpeechTimer) clearTimeout(this.unconfirmedSpeechTimer);
+    if (this.speculateTimer) clearTimeout(this.speculateTimer);
+    this.speculation = null;
     this.outbox.close();
     this.settleAnnouncements(false);
     void this.transcript?.close();
@@ -213,6 +230,13 @@ export class GptLiveCall {
         return;
       case "session.output_transcript.delta": {
         const delta = (event as { delta: string }).delta;
+        this.requests.noteAssistant(delta, Date.now());
+        if (this.resultAppendedAt !== null) {
+          this.transcript?.record("status", "result_speech_started", {
+            afterAppendMs: Date.now() - this.resultAppendedAt,
+          });
+          this.resultAppendedAt = null;
+        }
         this.assistantTurn += delta;
         this.recentAssistantText = `${this.recentAssistantText}${delta}`.slice(-600);
         this.floor.noteAssistantText();
@@ -287,6 +311,8 @@ export class GptLiveCall {
   }
 
   private handleUserSpeech(delta: string): void {
+    this.requests.noteUser(delta, Date.now());
+    this.scheduleSpeculation();
     this.userTurn += delta;
     if (
       !this.userSpeakingSignalled &&
@@ -304,7 +330,6 @@ export class GptLiveCall {
     }
     if (this.unconfirmedSpeechTimer) clearTimeout(this.unconfirmedSpeechTimer);
     this.unconfirmedSpeechTimer = null;
-    this.sinceLastDelegation += delta;
     this.floor.noteUserSpeech();
     const relaysAudio = !this.options.sidebandSessionId;
     if (!this.userSpeakingSignalled) {
@@ -381,24 +406,63 @@ export class GptLiveCall {
       this.history.splice(0, this.history.length - HISTORY_LIMIT);
   }
 
+  private scheduleSpeculation(): void {
+    if (this.speculateTimer) clearTimeout(this.speculateTimer);
+    this.speculateTimer = setTimeout(() => {
+      this.speculateTimer = null;
+      this.speculate();
+    }, SPECULATE_AFTER_MS);
+  }
+
+  private speculate(): void {
+    if (this.closed) return;
+    const text = this.requests.peek();
+    if (text.split(/\s+/).filter(Boolean).length < SPECULATE_MIN_WORDS) return;
+    if (this.speculation?.text === text) return;
+    const history = [...this.history];
+    this.speculation = {
+      text,
+      plan: this.options.orchestrator.planDelegation({ request: text, history }).catch(() => null),
+    };
+  }
+
   private async handleDelegation(delegationId: string): Promise<void> {
+    const receivedAt = Date.now();
+    if (this.speculateTimer) clearTimeout(this.speculateTimer);
+    this.speculateTimer = null;
+    const request = this.requests.take();
     this.commitUserTurn();
-    const request = this.sinceLastDelegation.trim();
-    this.sinceLastDelegation = "";
+    const speculation = this.speculation;
+    this.speculation = null;
     this.pendingDelegations += 1;
-    this.transcript?.record("delegation", request);
+    this.transcript?.record("delegation", request, {
+      speculated: speculation?.text === request,
+    });
     try {
+      const plan = speculation?.text === request ? await speculation.plan : null;
+      let timings: RouteResult | null = null;
       const result = await this.options.orchestrator.runDelegation({
         request,
         history: [...this.history],
+        plan,
+        onTimings: (route) => {
+          timings = route;
+        },
       });
-      this.transcript?.record("result", result);
+      const route = timings as RouteResult | null;
+      this.transcript?.record("result", result, {
+        ms: Date.now() - receivedAt,
+        ...(route ? { kind: route.kind, ...route.timings } : { brain: "agent" }),
+      });
       if (this.closed) {
         // The call switched to messages mode while the agent worked; say it there.
         this.options.orchestrator.deliverLateReply(result);
         return;
       }
-      this.outbox.push("result", () => this.connection.append("commentary", result, delegationId));
+      this.outbox.push("result", () => {
+        this.connection.append("commentary", result, delegationId);
+        this.resultAppendedAt = Date.now();
+      });
     } catch (error) {
       this.options.logger.warn({ err: error }, "GPT-Live delegation failed");
       if (this.closed) return;

@@ -207,6 +207,8 @@ export interface PaseoToolHostDependencies {
    */
   resolveSpeakHandler?: (callerAgentId: string) => VoiceSpeakHandler | null;
   resolveCallerContext?: (callerAgentId: string) => VoiceCallerContext | null;
+  /** The caller's context when no agent is calling, e.g. the voice call's own tools. */
+  callerContext?: VoiceCallerContext;
   enableVoiceTools?: boolean;
   voiceOnly?: boolean;
   logger: Logger;
@@ -812,7 +814,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       pullRequestWatches: null,
       logger: childLogger,
     });
-  const callerContext = callerAgentId ? (resolveCallerContext?.(callerAgentId) ?? null) : null;
+  const callerContext = callerAgentId
+    ? (resolveCallerContext?.(callerAgentId) ?? null)
+    : (options.callerContext ?? null);
 
   const parseToolInput = async (tool: PaseoToolDefinition, input: unknown): Promise<unknown> => {
     const inputSchema = tool.inputSchema;

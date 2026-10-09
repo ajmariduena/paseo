@@ -13,3 +13,8 @@ export function isSpokenApproval(transcript: string): boolean {
   if (REFUSAL_PATTERN.test(text)) return false;
   return APPROVAL_PATTERNS.some((pattern) => pattern.test(text));
 }
+
+/** True when a fresh transcript says no, cancel or wait. */
+export function isSpokenRefusal(transcript: string): boolean {
+  return REFUSAL_PATTERN.test(transcript.toLowerCase().trim());
+}

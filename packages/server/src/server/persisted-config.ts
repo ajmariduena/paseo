@@ -79,11 +79,19 @@ const ElevenLabsProviderSchema = z
   })
   .strict();
 
+const CerebrasProviderSchema = z
+  .object({
+    apiKey: z.string().trim().min(1).optional(),
+    baseUrl: z.string().trim().min(1).optional(),
+  })
+  .strict();
+
 const ProvidersSchema = z
   .object({
     openai: OpenAiProviderSchema.optional(),
     local: LocalSpeechProviderSchema.optional(),
     elevenlabs: ElevenLabsProviderSchema.optional(),
+    cerebras: CerebrasProviderSchema.optional(),
   })
   .strict();
 
@@ -142,6 +150,15 @@ const FeatureVoiceModeSchema = z
         provider: z.string().optional(),
         model: z.string().min(1).optional(),
         thinking: z.string().trim().min(1).optional(),
+      })
+      .strict()
+      .optional(),
+    /** The fast model that turns a call's requests into actions; "off" uses the llm agent. */
+    router: z
+      .object({
+        provider: z.enum(["cerebras", "openai", "off"]).optional(),
+        model: z.string().trim().min(1).optional(),
+        reasoningEffort: z.string().trim().min(1).optional(),
       })
       .strict()
       .optional(),
