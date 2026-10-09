@@ -59,6 +59,15 @@ const systemClock: FileEditorClock = {
   },
 };
 
+export class FileEditorSaveError extends Error {
+  constructor(
+    readonly path: string,
+    readonly detail: string | null,
+  ) {
+    super(`Unsaved changes in ${path}${detail ? `: ${detail}` : ""}`);
+  }
+}
+
 export class FileEditorModel {
   private readonly session: FileEditorSession;
   private readonly clock: FileEditorClock;
@@ -75,6 +84,9 @@ export class FileEditorModel {
   private persistedContent: string;
   private hasBom: boolean;
   private unsubscribeObservationSource: (() => void) | null = null;
+  private ownerReadOnly: boolean;
+  private readonly saveBarriers = new Set<object>();
+  private readonly pendingWrites = new Set<Promise<void>>();
 
   constructor(input: {
     file: FileEditorFile;
@@ -84,6 +96,7 @@ export class FileEditorModel {
   }) {
     this.session = input.session;
     this.clock = input.clock ?? systemClock;
+    this.ownerReadOnly = input.readOnly ?? false;
     this.persistedContent = input.file.content;
     this.hasBom = input.file.hasBom;
     this.observed = { status: "ready", file: input.file };
@@ -124,10 +137,50 @@ export class FileEditorModel {
   }
 
   setReadOnly(readOnly: boolean): void {
+    this.ownerReadOnly = readOnly;
+    this.updateReadOnly();
+  }
+
+  private updateReadOnly(): void {
+    const readOnly = this.ownerReadOnly || this.saveBarriers.size > 0;
     if (this.disposed || this.snapshot.readOnly === readOnly) return;
     this.clearAutosave();
     this.setSnapshot({ ...this.snapshot, readOnly });
     if (!readOnly && this.snapshot.status === "dirty") this.scheduleAutosave();
+  }
+
+  /** Hold edits until the caller has captured the saved files or abandoned preparation. */
+  acquireSaveBarrier() {
+    const token = {};
+    this.saveBarriers.add(token);
+    this.updateReadOnly();
+    return {
+      flush: async (signal?: AbortSignal): Promise<void> => {
+        signal?.throwIfAborted();
+        await Promise.all(this.pendingWrites);
+        signal?.throwIfAborted();
+        if (!this.saveBarriers.has(token) || this.disposed) {
+          throw new FileEditorSaveError(this.snapshot.version.path, null);
+        }
+        if (!this.snapshot.modified) return;
+        if (
+          this.ownerReadOnly ||
+          this.snapshot.status === "conflict" ||
+          this.snapshot.observedVersion.status !== "ready"
+        ) {
+          throw new FileEditorSaveError(this.snapshot.version.path, this.snapshot.error);
+        }
+        await this.performWrite(this.snapshot.observedVersion);
+        signal?.throwIfAborted();
+        if (this.disposed || this.snapshot.modified || this.snapshot.status === "error") {
+          throw new FileEditorSaveError(this.snapshot.version.path, this.snapshot.error);
+        }
+      },
+      release: () => {
+        if (!this.saveBarriers.delete(token)) return;
+        this.updateReadOnly();
+      },
+    };
   }
 
   edit(content: string): void {
@@ -225,7 +278,13 @@ export class FileEditorModel {
     };
   }
 
-  private async performWrite(
+  private performWrite(expectedVersion: Extract<FileVersion, { status: "ready" }>): Promise<void> {
+    const pending = this.writeFile(expectedVersion);
+    this.pendingWrites.add(pending);
+    return pending.finally(() => this.pendingWrites.delete(pending));
+  }
+
+  private async writeFile(
     expectedVersion: Extract<FileVersion, { status: "ready" }>,
   ): Promise<void> {
     this.clearAutosave();

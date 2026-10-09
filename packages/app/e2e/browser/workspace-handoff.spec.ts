@@ -4,6 +4,8 @@ import { expect, test } from "../support/fixtures";
 import { pressDirectNewTabShortcut } from "../support/helpers/launcher";
 import { openFileExplorer, openFileFromExplorer } from "../support/helpers/file-explorer";
 import { openChangesPanel } from "../support/helpers/workspace-tabs";
+import { installDaemonWebSocketGate } from "../support/helpers/daemon-websocket-gate";
+import { wsRoutePatternForPort } from "../support/helpers/daemon-port";
 import { composerLocator } from "../support/helpers/composer";
 import { waitForSettledPosition } from "../support/helpers/sheet-layout";
 import {
@@ -229,6 +231,103 @@ test.describe("workspace handoff", () => {
         `workspace-deck-entry-${host.destination.serverId}:${active.result.workspaceId}`,
       );
       await expect(destinationWorkspace.getByTestId("workspace-header-title")).toBeVisible();
+    } finally {
+      await host.close();
+    }
+  });
+
+  test("resolves an unsaved file conflict and waits for its save before capturing the workspace", async ({
+    page,
+  }, testInfo) => {
+    test.setTimeout(120_000);
+    const host = await hosts(page);
+    const filePath = path.join(host.workspace.repoPath, "prior-work.txt");
+    const editor = page
+      .getByTestId("file-source-editor")
+      .filter({ visible: true })
+      .locator(".cm-content");
+    try {
+      const gate = await installDaemonWebSocketGate(
+        page,
+        wsRoutePatternForPort(host.source.endpoint.split(":").at(-1)!),
+      );
+      await page.reload();
+      await openFileExplorer(page);
+      await openFileFromExplorer(page, "prior-work.txt");
+      // Delay the real write so the disk change reliably wins its revision check.
+      gate.holdNextClientRequest("fs.file.write.request");
+      await editor.fill("local work to preserve\n");
+      await gate.waitForHeldClientRequest();
+      await writeFile(filePath, "external work\n");
+      gate.releaseHeldClientRequest();
+      await expect(page.getByTestId("file-conflict-alert")).toBeVisible();
+      await openHandoff(page);
+      await page.getByTestId("handoff-host-trigger").click();
+      await page.getByTestId(`handoff-host-${host.destination.serverId}`).click();
+      await page.getByTestId("handoff-parent").fill(host.destinationParent);
+      await page.getByTestId("handoff-submit").click();
+      await expect(page.getByTestId("handoff-unsaved-files")).toContainText("prior-work.txt");
+      await page.getByTestId("handoff-submit").click();
+      await expect(page.getByTestId("handoff-error")).toHaveText(
+        "Save or resolve changes in prior-work.txt, then resume the transfer.",
+      );
+      expect(
+        (await host.sourceClient.handoffFindSource({ workspaceId: host.workspace.workspaceId }))
+          .result,
+      ).toBeNull();
+      expect(
+        (
+          await host.destinationClient.handoffListDestination({
+            sourceServerId: host.source.serverId,
+            sourceWorkspaceId: host.workspace.workspaceId,
+          })
+        ).result?.transfers,
+      ).toEqual([]);
+      expect(await readFile(filePath, "utf8")).toBe("external work\n");
+      await page.screenshot({ path: testInfo.outputPath("handoff-unsaved-file-error.png") });
+      await page
+        .getByTestId("handoff-sheet")
+        .getByRole("button", { name: "Close", exact: true })
+        .click();
+      await expect(editor).toBeEditable();
+      await expect(editor).toContainText("local work to preserve");
+      await page.getByRole("button", { name: "Overwrite", exact: true }).click();
+      await expect.poll(() => readFile(filePath, "utf8")).toBe("local work to preserve\n");
+      await expect(page.getByLabel("Editor status clean")).toBeVisible();
+      gate.holdNextClientRequest("fs.file.write.request");
+      await editor.fill("saved before the move\n");
+      await gate.waitForHeldClientRequest();
+      await openHandoff(page);
+      await page.getByTestId("handoff-host-trigger").click();
+      await page.getByTestId(`handoff-host-${host.destination.serverId}`).click();
+      await page.getByTestId("handoff-parent").fill(host.destinationParent);
+      await page.getByTestId("handoff-submit").click();
+      await expect(page.getByTestId("handoff-submit")).toHaveText("Prepare transfer");
+      await page.getByTestId("handoff-submit").click();
+      await expect(editor).not.toBeEditable();
+      expect(
+        (await host.sourceClient.handoffFindSource({ workspaceId: host.workspace.workspaceId }))
+          .result,
+      ).toBeNull();
+      gate.releaseHeldClientRequest();
+      await expect(page.getByTestId("handoff-submit")).toHaveText("Move workspace", {
+        timeout: 30_000,
+      });
+      await page.getByTestId("handoff-submit").click();
+      await expect(page.getByTestId("handoff-submit")).toHaveText("Open destination", {
+        timeout: 30_000,
+      });
+      const transferId = await savedTransfer(
+        page,
+        host.source.serverId,
+        host.workspace.workspaceId,
+      );
+      const destination = await host.destinationClient.handoffGetDestinationStatus({ transferId });
+      expect(destination.result?.state).toBe("active");
+      if (!destination.result) throw new Error("Missing destination record");
+      expect(
+        await readFile(path.join(destination.result.destinationCwd, "prior-work.txt"), "utf8"),
+      ).toBe("saved before the move\n");
     } finally {
       await host.close();
     }

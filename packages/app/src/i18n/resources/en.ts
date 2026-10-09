@@ -1,5 +1,8 @@
 export const en = {
   handoff: {
+    unsavedFiles: "Unsaved files in this app",
+    saveBeforePrepare: "Preparation saves these files first. Resolve any conflicts before moving.",
+    unsavedFileError: "Save or resolve changes in {{path}}, then resume the transfer.",
     sourceHeld: "This workspace is read-only while the move to {{host}} is prepared.",
     sourceReleased: "Continue on {{host}}. This source workspace is read-only.",
     reviewTransfer: "Review transfer",

@@ -3,7 +3,12 @@ import type {
   HandoffDestinationSnapshot,
   HandoffSourceSnapshot,
 } from "@getpaseo/protocol/handoff-control";
-import { handoffFormActions, openHandoffForm, type HandoffFormPorts } from "./form-model";
+import {
+  HandoffFilesNotSavedError,
+  handoffFormActions,
+  openHandoffForm,
+  type HandoffFormPorts,
+} from "./form-model";
 import { createHandoffPersistence, restoreHandoffRecord } from "./persistence";
 import { HandoffReviewChangedError } from "@getpaseo/client/internal/workspace-handoff";
 
@@ -23,6 +28,7 @@ const emptyReview = {
   },
   stoppedWork: { agentIds: [], terminals: [], setupOperations: 0 },
   conversationBytes: 0,
+  unsavedFiles: [],
 };
 const destination: HandoffDestinationSnapshot = {
   transferId,
@@ -102,6 +108,57 @@ async function reviewedForm(ports: HandoffFormPorts) {
 }
 
 describe("handoff form recovery", () => {
+  it("discards only the new local intent when the form closes before editor preparation finishes", async () => {
+    const { ports, persistence } = fixture();
+    const saving = deferred();
+    const entered = deferred();
+    ports.prepare = async () => {
+      entered.resolve();
+      await saving.promise;
+      throw new HandoffFilesNotSavedError("Saving was interrupted");
+    };
+    const model = await reviewedForm(ports);
+    const preparing = model.prepare();
+    await entered.promise;
+    expect((await persistence.load(origin))?.intent).toBe("prepare");
+    model.close();
+    saving.resolve();
+    await preparing;
+    expect(await persistence.load(origin)).toBeNull();
+  });
+
+  it("returns a new transfer to review after a local save failure, but retains an existing transfer", async () => {
+    const { ports, persistence } = fixture();
+    ports.prepare = async () => {
+      throw new HandoffFilesNotSavedError("Resolve file.ts");
+    };
+    const model = await reviewedForm(ports);
+    await model.prepare();
+    expect(model.getState()).toMatchObject({ kind: "editing", error: "Resolve file.ts" });
+    expect(await persistence.load(origin)).toBeNull();
+    const record = {
+      version: 1 as const,
+      ...origin,
+      transferId,
+      destinationServerId: "destination",
+      destinationLabel: "VPS",
+      destinationParent: "/projects",
+      continuationMode: "native" as const,
+      intent: "prepare" as const,
+      snapshot: null,
+    };
+    await persistence.save(record);
+    const recovered = openHandoffForm(origin, ports);
+    await recovered.load();
+    await recovered.retry();
+    expect(recovered.getState()).toMatchObject({
+      kind: "transfer",
+      record,
+      run: { status: "error", message: "Resolve file.ts" },
+    });
+    expect(await persistence.load(origin)).toEqual(record);
+  });
+
   it("recovers a chosen destination-only reservation without starting work and keeps lookup failures retryable", async () => {
     const { ports, calls, persistence } = fixture();
     ports.listDestination = async () => {

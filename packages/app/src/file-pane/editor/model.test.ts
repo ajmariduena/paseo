@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { FileVersion, FileWriteResult } from "@getpaseo/protocol/messages";
+import { createFileEditorRegistry } from "./registry";
 import {
   FileEditorModel,
   getFileConflictCallout,
@@ -129,6 +130,139 @@ function observeVersion(model: FileEditorModel, version: FileEditorObservation):
 }
 
 describe("FileEditorModel", () => {
+  test("leaves conflicting or failed saves recoverable and never prepares the workspace", async () => {
+    const registry = createFileEditorRegistry();
+    const workspace = { serverId: "source", workspaceId: "workspace" };
+    const { model, session } = makeModel();
+    const other = makeModel();
+    const unregister = registry.register(workspace, model);
+    const unregisterOther = registry.register({ ...workspace, serverId: "another" }, other.model);
+    model.edit("local work");
+    other.model.edit("another host");
+    observeFile(model, { content: "external work", hasBom: false, version: ready("newer", 13) });
+    expect(registry.unsavedPaths(workspace)).toEqual(["file.ts"]);
+    let preparations = 0;
+    const prepare = async () => ++preparations;
+    await expect(
+      registry.withSavedEditors(workspace, new AbortController().signal, prepare),
+    ).rejects.toThrow("Unsaved changes in file.ts");
+    expect(preparations).toBe(0);
+    expect(session.writes).toEqual([]);
+    expect(model.getSnapshot()).toMatchObject({
+      readOnly: false,
+      status: "conflict",
+      content: "local work",
+    });
+    expect(other.model.getSnapshot()).toMatchObject({ readOnly: false, content: "another host" });
+    await model.reload();
+    model.edit("resolved work");
+    session.nextWrite = new Error("disk full");
+    await expect(
+      registry.withSavedEditors(workspace, new AbortController().signal, prepare),
+    ).rejects.toThrow("disk full");
+    expect(preparations).toBe(0);
+    expect(model.getSnapshot()).toMatchObject({
+      readOnly: false,
+      modified: true,
+      content: "resolved work",
+    });
+    session.nextWrite = null;
+    expect(await registry.withSavedEditors(workspace, new AbortController().signal, prepare)).toBe(
+      1,
+    );
+    expect(registry.unsavedPaths(workspace)).toEqual([]);
+    expect(other.session.writes).toEqual([]);
+    unregister();
+    unregisterOther();
+  });
+
+  test("includes a newly mounted editor while saving and restores controls when preparation fails", async () => {
+    const registry = createFileEditorRegistry();
+    const workspace = { serverId: "source", workspaceId: "workspace" };
+    const first = makeModel();
+    first.model.edit("first");
+    first.session.holdNextWrite();
+    const unregisterFirst = registry.register(workspace, first.model);
+    const preparing = registry.withSavedEditors(
+      workspace,
+      new AbortController().signal,
+      async () => {
+        expect(first.model.getSnapshot().readOnly).toBe(true);
+        expect(second.model.getSnapshot()).toMatchObject({
+          readOnly: true,
+          status: "clean",
+          content: "second",
+        });
+        throw new Error("Destination disconnected");
+      },
+    );
+    const failed = expect(preparing).rejects.toThrow("Destination disconnected");
+    await Promise.resolve();
+    const second = makeModel();
+    second.model.edit("second");
+    const unregisterSecond = registry.register(workspace, second.model);
+    second.model.edit("too late");
+    first.session.finishHeldWrite({ status: "written", modifiedAt: "newer", size: 5 });
+    await failed;
+    expect(second.session.writes.map((write) => write.content)).toEqual(["second"]);
+    expect(first.model.getSnapshot().readOnly).toBe(false);
+    expect(second.model.getSnapshot().readOnly).toBe(false);
+    unregisterFirst();
+    unregisterSecond();
+  });
+
+  test("does not prepare after closing the form during an in-flight save", async () => {
+    const registry = createFileEditorRegistry();
+    const workspace = { serverId: "source", workspaceId: "workspace" };
+    const { model, session } = makeModel();
+    const unregister = registry.register(workspace, model);
+    session.holdNextWrite();
+    model.edit("local work");
+    const abort = new AbortController();
+    let prepared = false;
+    const preparing = registry.withSavedEditors(workspace, abort.signal, async () => {
+      prepared = true;
+    });
+    const aborted = expect(preparing).rejects.toThrow("closed");
+    await Promise.resolve();
+    abort.abort(new Error("closed"));
+    session.finishHeldWrite({ status: "written", modifiedAt: "newer", size: 10 });
+    await aborted;
+    expect(prepared).toBe(false);
+    expect(model.getSnapshot()).toMatchObject({
+      readOnly: false,
+      modified: false,
+      content: "local work",
+    });
+    unregister();
+  });
+
+  test("saves the latest buffer before handoff while blocking further edits", async () => {
+    const { model, session } = makeModel();
+    session.holdNextWrite();
+    model.edit("first save");
+    const saving = model.save();
+    model.edit("latest local work");
+    const barrier = model.acquireSaveBarrier();
+    const flushed = barrier.flush();
+    model.edit("too late");
+    expect(model.getSnapshot()).toMatchObject({ readOnly: true, content: "latest local work" });
+    expect(session.writes.map((write) => write.content)).toEqual(["first save"]);
+    session.finishHeldWrite({ status: "written", modifiedAt: "newer", size: 10 });
+    await saving;
+    await flushed;
+    expect(session.writes.map((write) => write.content)).toEqual([
+      "first save",
+      "latest local work",
+    ]);
+    expect(model.getSnapshot()).toMatchObject({ readOnly: true, status: "clean", modified: false });
+    model.setReadOnly(true);
+    barrier.release();
+    expect(model.getSnapshot().readOnly).toBe(true);
+    model.setReadOnly(false);
+    expect(model.getSnapshot().readOnly).toBe(false);
+  });
+
   test("holds a dirty buffer without writing until ownership is restored", async () => {
     const { model, session, clock } = makeModel();
     model.edit("unsaved before handoff");

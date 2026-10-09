@@ -286,6 +286,18 @@ function ReviewWorkspace({ state }: { state: Extract<HandoffFormState, { kind: "
           ) : null}
         </View>
       </Field>
+      {state.preview.unsavedFiles.length > 0 ? (
+        <Field label={t("handoff.unsavedFiles")}>
+          <View style={styles.status} testID="handoff-unsaved-files">
+            {state.preview.unsavedFiles.map((file) => (
+              <Text key={file} selectable style={styles.path}>
+                {file}
+              </Text>
+            ))}
+            <Text style={styles.text}>{t("handoff.saveBeforePrepare")}</Text>
+          </View>
+        </Field>
+      ) : null}
       <Field label={t("handoff.workToStop")}>
         <View style={styles.status} testID="handoff-stopped-work-review">
           <Text style={styles.text}>

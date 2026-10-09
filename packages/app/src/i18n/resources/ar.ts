@@ -3,6 +3,9 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ar: TranslationResources = {
   handoff: {
+    unsavedFiles: "ملفات غير محفوظة في هذا التطبيق",
+    saveBeforePrepare: "يحفظ التحضير هذه الملفات أولاً. حلّ التعارضات قبل النقل.",
+    unsavedFileError: "احفظ التغييرات في {{path}} أو حلّ التعارضات، ثم استأنف النقل.",
     sourceHeld: "مساحة العمل للقراءة فقط أثناء التحضير للنقل إلى {{host}}.",
     sourceReleased: "تابع على {{host}}. مساحة العمل المصدر للقراءة فقط.",
     reviewTransfer: "مراجعة النقل",

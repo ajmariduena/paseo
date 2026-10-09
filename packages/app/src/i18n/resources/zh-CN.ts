@@ -3,6 +3,9 @@ import { pluginSettings } from "./plugin-settings";
 
 export const zhCN: TranslationResources = {
   handoff: {
+    unsavedFiles: "此应用中尚未保存的文件",
+    saveBeforePrepare: "准备时会先保存这些文件。请在迁移前解决冲突。",
+    unsavedFileError: "请保存 {{path}} 的更改或解决冲突，然后继续迁移。",
     sourceHeld: "正在准备迁移到 {{host}}，此工作区为只读。",
     sourceReleased: "请在 {{host}} 上继续。源工作区为只读。",
     reviewTransfer: "查看迁移",

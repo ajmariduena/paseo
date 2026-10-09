@@ -3,6 +3,9 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ja: TranslationResources = {
   handoff: {
+    unsavedFiles: "このアプリの未保存ファイル",
+    saveBeforePrepare: "準備時にまずこれらのファイルを保存します。移動前に競合を解決してください。",
+    unsavedFileError: "{{path}} の変更を保存するか競合を解決してから、転送を再開してください。",
     sourceHeld: "{{host}} への移動準備中、このワークスペースは読み取り専用です。",
     sourceReleased: "{{host}} で続けてください。移動元のワークスペースは読み取り専用です。",
     reviewTransfer: "移動を確認",

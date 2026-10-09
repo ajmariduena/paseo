@@ -3,6 +3,10 @@ import { pluginSettings } from "./plugin-settings";
 
 export const es: TranslationResources = {
   handoff: {
+    unsavedFiles: "Archivos sin guardar en esta app",
+    saveBeforePrepare:
+      "La preparación guarda estos archivos primero. Resuelve los conflictos antes de trasladar.",
+    unsavedFileError: "Guarda o resuelve los cambios de {{path}} y reanuda el traslado.",
     sourceHeld: "Este workspace es de solo lectura mientras se prepara el traslado a {{host}}.",
     sourceReleased: "Continúa en {{host}}. Este workspace de origen es de solo lectura.",
     reviewTransfer: "Revisar traslado",

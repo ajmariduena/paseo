@@ -3,6 +3,11 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ru: TranslationResources = {
   handoff: {
+    unsavedFiles: "Несохранённые файлы в этом приложении",
+    saveBeforePrepare:
+      "При подготовке сначала сохраняются эти файлы. Разрешите конфликты перед переносом.",
+    unsavedFileError:
+      "Сохраните изменения в {{path}} или разрешите конфликты, затем возобновите перенос.",
     sourceHeld: "Рабочая область доступна только для чтения, пока готовится перенос на {{host}}.",
     sourceReleased: "Продолжите на {{host}}. Исходная рабочая область доступна только для чтения.",
     reviewTransfer: "Посмотреть перенос",

@@ -3,6 +3,11 @@ import { pluginSettings } from "./plugin-settings";
 
 export const fr: TranslationResources = {
   handoff: {
+    unsavedFiles: "Fichiers non enregistrés dans cette application",
+    saveBeforePrepare:
+      "La préparation enregistre ces fichiers en premier. Résolvez les conflits avant le transfert.",
+    unsavedFileError:
+      "Enregistrez ou résolvez les modifications de {{path}}, puis reprenez le transfert.",
     sourceHeld:
       "Cet espace est en lecture seule pendant la préparation du transfert vers {{host}}.",
     sourceReleased: "Continuez sur {{host}}. Cet espace source est en lecture seule.",

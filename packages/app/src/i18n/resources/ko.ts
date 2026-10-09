@@ -3,6 +3,10 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ko: TranslationResources = {
   handoff: {
+    unsavedFiles: "이 앱의 저장되지 않은 파일",
+    saveBeforePrepare:
+      "준비 과정에서 이 파일들을 먼저 저장합니다. 이동하기 전에 충돌을 해결하세요.",
+    unsavedFileError: "{{path}}의 변경 사항을 저장하거나 충돌을 해결한 후 전송을 재개하세요.",
     sourceHeld: "{{host}}로 이동을 준비하는 동안 이 작업 공간은 읽기 전용입니다.",
     sourceReleased: "{{host}}에서 계속하세요. 원본 작업 공간은 읽기 전용입니다.",
     reviewTransfer: "이동 확인",

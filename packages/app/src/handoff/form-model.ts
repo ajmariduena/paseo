@@ -25,6 +25,7 @@ export interface HandoffReviewPreview extends HandoffDestinationPreview {
   workspace: NonNullable<HandoffSourcePreview["workspace"]>;
   stoppedWork: NonNullable<HandoffSourcePreview["stoppedWork"]>;
   conversationBytes: number;
+  unsavedFiles: string[];
 }
 export type HandoffFormState =
   | { kind: "loading" }
@@ -45,6 +46,9 @@ interface OperationOptions {
   signal: AbortSignal;
   onProgress: (progress: WorkspaceHandoffProgress) => void;
 }
+/** Editor saving failed before any host handoff mutation was attempted. */
+export class HandoffFilesNotSavedError extends Error {}
+
 export interface HandoffFormPorts {
   load(origin: HandoffOrigin): Promise<HandoffRecord | null>;
   save(record: HandoffRecord): Promise<void>;
@@ -121,6 +125,7 @@ export function openHandoffForm(origin: HandoffOrigin, ports: HandoffFormPorts) 
 
   async function run(record: HandoffRecord) {
     if (closed || (state.kind === "transfer" && state.run.status === "running")) return;
+    const fromReview = state.kind === "review";
     publish({ kind: "transfer", record, run: { status: "running", progress: null } });
     try {
       // Persist intent before any RPC: a lost release reply must reopen as forward recovery.
@@ -140,7 +145,11 @@ export function openHandoffForm(origin: HandoffOrigin, ports: HandoffFormPorts) 
       await ports.save(completed);
       publish({ kind: "transfer", record: completed, run: { status: "idle" } });
     } catch (error) {
-      if (!closed && record.intent === "prepare" && error instanceof HandoffReviewChangedError) {
+      if (
+        record.intent === "prepare" &&
+        ((!closed && error instanceof HandoffReviewChangedError) ||
+          (fromReview && error instanceof HandoffFilesNotSavedError))
+      ) {
         try {
           await ports.discard(origin);
           publish({

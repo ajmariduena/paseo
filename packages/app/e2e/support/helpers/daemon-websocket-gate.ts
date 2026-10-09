@@ -294,7 +294,7 @@ function recordClientRequest(
   directoryStarts.total[directory] += 1;
 }
 
-export async function installDaemonWebSocketGate(page: Page) {
+export async function installDaemonWebSocketGate(page: Page, pattern = daemonWsRoutePattern()) {
   let acceptingConnections = true;
   let reconnectWithFreshClient = false;
   let suppressAgentStream = false;
@@ -445,7 +445,7 @@ export async function installDaemonWebSocketGate(page: Page) {
     return true;
   };
 
-  await page.routeWebSocket(daemonWsRoutePattern(), (ws) => {
+  await page.routeWebSocket(pattern, (ws) => {
     if (!acceptingConnections) {
       blockedConnectionCount += 1;
       for (const resolve of blockedConnectionWaiters) resolve();

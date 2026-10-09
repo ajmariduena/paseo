@@ -1,3 +1,5 @@
+import { FileEditorSaveError } from "@/file-pane/editor/model";
+import { workspaceFileEditors } from "@/file-pane/editor/registry";
 import { i18n } from "@/i18n/i18next";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { randomUUID } from "expo-crypto";
@@ -7,7 +9,7 @@ import {
   prepareWorkspaceHandoff,
 } from "@getpaseo/client/internal/workspace-handoff";
 import { getHostRuntimeStore, isHostRuntimeConnected } from "@/runtime/host-runtime";
-import type { HandoffFormPorts } from "./form-model";
+import { HandoffFilesNotSavedError, type HandoffFormPorts } from "./form-model";
 import {
   createHandoffPersistence,
   restoreHandoffRecord,
@@ -129,17 +131,49 @@ export const handoffFormPorts: HandoffFormPorts = {
     });
     if (preview.error) throw new Error(preview.error.message);
     if (!preview.result) throw new Error("Destination preview is missing");
-    return { ...preview.result, workspace, stoppedWork, conversationBytes };
+    return {
+      ...preview.result,
+      workspace,
+      stoppedWork,
+      conversationBytes,
+      unsavedFiles: workspaceFileEditors.unsavedPaths({
+        serverId: record.sourceServerId,
+        workspaceId: record.workspaceId,
+      }),
+    };
   },
-  prepare: (record, options) =>
-    prepareWorkspaceHandoff({
-      ...connections(record),
-      ...options,
-      workspaceId: record.workspaceId,
-      destinationParent: record.destinationParent,
-      continuationMode: record.continuationMode,
-      expectedAgentIds: record.reviewedAgentIds,
-    }),
+  async prepare(record, options) {
+    let handoffStarted = false;
+    try {
+      return await workspaceFileEditors.withSavedEditors(
+        { serverId: record.sourceServerId, workspaceId: record.workspaceId },
+        options.signal,
+        () => {
+          handoffStarted = true;
+          return prepareWorkspaceHandoff({
+            ...connections(record),
+            ...options,
+            workspaceId: record.workspaceId,
+            destinationParent: record.destinationParent,
+            continuationMode: record.continuationMode,
+            expectedAgentIds: record.reviewedAgentIds,
+          });
+        },
+      );
+    } catch (error) {
+      if (error instanceof FileEditorSaveError) {
+        throw new HandoffFilesNotSavedError(
+          i18n.t("handoff.unsavedFileError", { path: error.path }) +
+            (error.detail ? ` ${error.detail}` : ""),
+          { cause: error },
+        );
+      }
+      if (!handoffStarted && options.signal.aborted) {
+        throw new HandoffFilesNotSavedError(i18n.t("handoff.paused"), { cause: error });
+      }
+      throw error;
+    }
+  },
   activate: (record, options) =>
     activateWorkspaceHandoff({
       ...options,

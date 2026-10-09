@@ -35,6 +35,7 @@ import { FileMarkdownPreview } from "./markdown-preview";
 import { FileEditorModel, getFileConflictCallout, type FileConflictCallout } from "./editor/model";
 import { createFileObservationSource } from "./editor/observation-source";
 import { FileEditorView } from "./editor/view";
+import { workspaceFileEditors } from "./editor/registry";
 import { FileSourceView } from "./source/view";
 import type { FileConflictAlertState } from "./conflict-alert";
 import type { LiveFileModel } from "./live-file/model";
@@ -302,6 +303,7 @@ export function FilePane({
   return (
     <FilePanePresentation
       serverId={serverId}
+      workspaceId={workspaceId}
       client={client}
       readTarget={readTarget}
       preview={preview}
@@ -344,6 +346,7 @@ function isEditableTextFile(input: {
 
 function FilePanePresentation({
   serverId,
+  workspaceId,
   client,
   readTarget,
   preview,
@@ -366,6 +369,7 @@ function FilePanePresentation({
   imagePreviewUri,
 }: {
   serverId: string;
+  workspaceId: string;
   client: DaemonClient | null;
   readTarget: { cwd: string; path: string } | null;
   preview: ExplorerFile | null;
@@ -406,6 +410,8 @@ function FilePanePresentation({
       <EditableFilePane
         key={`${serverId}:${readTarget.cwd}:${readTarget.path}`}
         client={client}
+        serverId={serverId}
+        workspaceId={workspaceId}
         readOnly={readOnly}
         cwd={readTarget.cwd}
         path={readTarget.path}
@@ -470,6 +476,8 @@ function FilePanePresentation({
 
 function EditableFilePane({
   client,
+  serverId,
+  workspaceId,
   readOnly,
   cwd,
   path,
@@ -486,6 +494,8 @@ function EditableFilePane({
   navigationRevision,
 }: {
   client: DaemonClient;
+  serverId: string;
+  workspaceId: string;
   readOnly: boolean;
   cwd: string;
   path: string;
@@ -532,6 +542,10 @@ function EditableFilePane({
     });
   });
   useLayoutEffect(() => model.setReadOnly(readOnly), [model, readOnly]);
+  useLayoutEffect(
+    () => workspaceFileEditors.register({ serverId, workspaceId }, model),
+    [model, serverId, workspaceId],
+  );
   useEffect(() => {
     const source = createFileObservationSource(liveFile);
     model.connectFileObservations(source);

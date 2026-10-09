@@ -329,11 +329,16 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   branch switching, script execution and setup launch controls are disabled. Deferred file and branch
   confirmations recheck ownership before dispatch. A queued script restart is discarded when the
   source is held and does not run automatically after cancellation. File reads, diffs and existing PR
-  links remain available. Server admission remains authoritative for races. Unsaved editor buffers
-  remain memory-only; their preflight disposition, persistence and transfer are still open. Other
-  workspace mutation surfaces need inventory. Source retirement still needs tombstones to replace
-  broad path fences.
-  Fourteen form cases cover unavailable modes, inventory changes, lost replies, storage failures,
+  links remain available. Server admission remains authoritative for races. Review lists unsaved files
+  in the current app instance without saving them. Preparation holds those editors, waits for pending
+  writes and saves their latest buffers before requesting a destination reservation or source stop.
+  A conflict or failed write leaves the local content editable and names the file to resolve. A new
+  transfer returns to review; recovery retains an existing transfer's identity. Closing the form during
+  saving prevents subsequent preparation. Successfully saved bytes enter the normal workspace capture.
+  Unresolved editor buffers remain memory-only; crash persistence, other connected clients' buffers
+  and unsent conversation draft transfer remain open. Other workspace mutation surfaces need inventory.
+  Source retirement still needs tombstones to replace broad path fences.
+  Sixteen form cases cover unavailable modes, inventory changes, lost replies, storage failures,
   duplicate submissions, closing during work, cancellation recovery and host journals advancing
   past local state, including destination lookup and selection failures. Reconstructed records retain
   the reserved mode and reject mismatched host, workspace, reservation, conversation set or digest;
@@ -345,7 +350,7 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   verifies both scope filters and excludes completed cancellation.
   The network suite covers matching/mismatched Claude versions, missing source
   history and workflow artifacts without starting a provider turn during review. The feature
-  gate is checked on both hosts before preparation; only isolated test daemons advertise it. Five
+  gate is checked on both hosts before preparation; only isolated test daemons advertise it. Six
   browser cases use real isolated daemons with directory or Git workspaces: desktop preparation/reload
   verifies bytes and destination navigation after a real activation conflict and source shutdown;
   compact recovery deletes the local transfer record, reloads the same identity and context mode
@@ -358,8 +363,12 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   draft across reload and creates a real terminal afterward. The Git workspace case verifies read-only
   file editing after reload, live file reads, hidden file mutation actions, disabled commit and script
   launch controls, then real file saves and script execution after cancellation. The editor model's
-  32 cases include held dirty buffers, conflicts and already-admitted saves; the script menu's 11
-  cases include discarding a queued restart. These recovery fixtures contain no conversations. The new source
+  36 cases include held dirty buffers, conflicts, already-admitted saves, workspace isolation and
+  awaiting the latest buffer before capture; the script menu's 11 cases include discarding a queued
+  restart. A browser case delays a real file write, forces a revision conflict and verifies a visible
+  error with no destination reservation or source fence. After resolving it, preparation waits for
+  another delayed write and the activated destination contains the saved bytes. These recovery
+  fixtures contain no conversations. The new source
   conversation UI assertions still need a passing real-provider run: the latest native attempt failed
   with an invalid Claude OAuth refresh token; context mode timed out waiting for the initial reply.
   Two additional real-provider browser cases use
@@ -378,6 +387,7 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   [source ownership and UI results](../qa-evidence/handoff-source-state.txt),
   [source launch controls results](../qa-evidence/handoff-source-controls.txt),
   [source file, Git and script results](../qa-evidence/handoff-source-mutations.txt),
+  [save-before-handoff results](../qa-evidence/handoff-editor-save.txt),
   [real-provider browser results](../qa-evidence/handoff-app-real.txt),
   [recovery app results](../qa-evidence/handoff-app.txt)
   and [review](../qa-evidence/handoff-review-compact.png), [pending transfers](../qa-evidence/handoff-existing-transfers.png), [desktop](../qa-evidence/handoff-app-desktop.png) / [compact](../qa-evidence/handoff-app-compact.png)
@@ -386,7 +396,8 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   tombstone; automatic discovery of that cancellation intent remains open, as does unfinished cleanup
   after the destination journal already says cancelled. Reopening recovery when the source workspace
   is unavailable, pinned-key client persistence,
-  complete omitted-path access and integration/resource dispositions, unsaved editor/draft transfer,
+  complete omitted-path access and integration/resource dispositions, editor crash persistence,
+  other connected clients' unsaved buffers and conversation draft transfer,
   complete source mutation affordances and native-platform evidence remain open. Review does not bind approval to a resource digest or
   revalidate reviewed exclusions before preparation; final transfer size is not shown separately.
 - Source retirement/tombstones and automation dispositions remain unimplemented.
