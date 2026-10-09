@@ -1,5 +1,12 @@
 export const en = {
   handoff: {
+    history: "Previous conversation",
+    historyConnect: "Connect to the destination host to read this history.",
+    historyUnavailable: "Transferred history is unavailable.",
+    historyOrigin: "Read-only history from {{host}}",
+    historyNotice: "Files and linked resources refer to the source host and may be unavailable.",
+    continuedNative: "Native session continued",
+    continuedContext: "New session with exported history",
     cancelPending: "Cancellation is incomplete. Resume to finish cancelling this transfer.",
     pendingTransfers: "Unfinished transfers",
     chooseTransfer: "Choose a transfer to resume",

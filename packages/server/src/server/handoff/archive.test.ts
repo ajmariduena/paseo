@@ -125,6 +125,30 @@ test("refuses changed local capture bytes and keeps them unavailable until repai
   });
 });
 
+test("reads verified history metadata with bounded bytes and detects later corruption", async () => {
+  const id = randomUUID();
+  await store.begin({ id, manifest });
+  await expect(store.readVerifiedBlob(id, blob, 1024)).rejects.toMatchObject({
+    code: "invalid_state",
+  });
+  await store.writeChunk({ id, sha256: blob.sha256, offset: 0, data: content });
+  await store.seal(id);
+  expect(await store.readVerifiedBlob(id, blob, 1024)).toEqual(content);
+  await expect(store.readVerifiedBlob(id, blob, 1)).rejects.toMatchObject({
+    code: "limit_exceeded",
+  });
+  await expect(
+    store.readVerifiedBlob(id, { ...blob, size: blob.size + 1 }, 1024),
+  ).rejects.toMatchObject({ code: "integrity_mismatch" });
+  await expect(
+    store.readVerifiedBlob(id, { sha256: "f".repeat(64), size: 1 }, 1024),
+  ).rejects.toMatchObject({ code: "not_found" });
+  await writeFile(path.join(root, id, "blobs", blob.sha256), Buffer.alloc(blob.size));
+  await expect(store.readVerifiedBlob(id, blob, 1024)).rejects.toMatchObject({
+    code: "integrity_mismatch",
+  });
+});
+
 test("resumes a partially received artifact after reconstructing the store", async () => {
   const id = randomUUID();
   await store.begin({ id, manifest });

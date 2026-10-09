@@ -3,6 +3,13 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ko: TranslationResources = {
   handoff: {
+    history: "이전 대화",
+    historyConnect: "이 기록을 읽으려면 대상 호스트에 연결하세요.",
+    historyUnavailable: "전송된 기록을 사용할 수 없습니다.",
+    historyOrigin: "{{host}}의 읽기 전용 기록",
+    historyNotice: "파일과 연결된 리소스는 원본 호스트에 속하며 사용할 수 없을 수 있습니다.",
+    continuedNative: "네이티브 세션 계속",
+    continuedContext: "내보낸 기록을 사용하는 새 세션",
     cancelPending: "취소가 완료되지 않았습니다. 재개하여 이 전송의 취소를 완료하세요.",
     pendingTransfers: "완료되지 않은 전송",
     chooseTransfer: "재개할 전송 선택",

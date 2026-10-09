@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
@@ -14,6 +14,29 @@ interface HistoryEvidence {
   token: string;
   destination: { destinationCwd: string; reservationId: string };
   importedId: string;
+}
+
+async function inspectPreviousConversation(
+  page: Page,
+  token: string,
+  archiveManifest: string,
+  screenshotPath: string,
+) {
+  const bytes = await readFile(archiveManifest);
+  await writeFile(archiveManifest, Buffer.alloc(bytes.length));
+  await page.getByTestId("handoff-history-open").click();
+  const sheet = page.getByTestId("handoff-history-sheet");
+  const content = page.getByTestId("handoff-history-content");
+  await expect(content).toContainText("Blob checksum differs from the manifest");
+  await expect(content.getByTestId("handoff-history-retry")).toBeVisible();
+  await writeFile(archiveManifest, bytes);
+  await content.getByTestId("handoff-history-retry").click();
+  await expect(content).toContainText("Read-only history from Source laptop");
+  await expect(content.getByTestId("user-message").filter({ hasText: token })).toBeVisible();
+  await expect(content.getByRole("textbox", { name: "Message agent..." })).toHaveCount(0);
+  await page.screenshot({ path: screenshotPath });
+  await sheet.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(sheet).not.toBeVisible();
 }
 
 async function continueConversation(
@@ -66,6 +89,7 @@ test.describe("real conversation handoff through the app", () => {
   for (const scenario of [
     {
       mode: "native",
+      historyViewport: { width: 1280, height: 720 },
       label: "Keep native sessions",
       prompt:
         "Use the Write tool to create continued.txt in the current workspace containing only the transfer token from our earlier conversation, then reply with the token. Do not write to the old workspace.",
@@ -77,6 +101,7 @@ test.describe("real conversation handoff through the app", () => {
     },
     {
       mode: "context",
+      historyViewport: { width: 390, height: 844 },
       label: "Continue with exported history",
       prompt:
         "Read the original transcript file in the exported context to find the transfer token. Use the Write tool to create continued.txt in the current workspace containing only that token, then reply with it. Do not write to the old workspace.",
@@ -188,6 +213,27 @@ test.describe("real conversation handoff through the app", () => {
           await expect(tab).toBeVisible({ timeout: 30_000 });
           await tab.click();
           await scenario.verifyHistory({ page, token, destination, importedId });
+          await page.setViewportSize(scenario.historyViewport);
+          await expect(page.getByTestId("handoff-provenance")).toContainText(
+            scenario.mode === "native"
+              ? "Native session continued"
+              : "New session with exported history",
+          );
+          if (!destination.manifestDigest) throw new Error("Missing transferred manifest digest");
+          await inspectPreviousConversation(
+            page,
+            token,
+            path.join(
+              host.destination.paseoHome,
+              "handoff",
+              "archives",
+              transferId,
+              "blobs",
+              destination.manifestDigest,
+            ),
+            testInfo.outputPath(`handoff-real-${scenario.mode}-history.png`),
+          );
+          await page.setViewportSize({ width: 1280, height: 720 });
           const imported = await host.destinationClient.fetchAgent(importedId);
           expect(imported?.agent.labels["paseo.handoff-mode"]).toBe(scenario.mode);
           expect(imported?.agent.persistence?.sessionId ?? null).toBe(

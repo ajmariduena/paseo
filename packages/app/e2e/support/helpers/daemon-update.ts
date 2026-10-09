@@ -3,6 +3,7 @@ import path from "node:path";
 import { killProcessTree } from "./spawn-node";
 
 export interface OutdatedDaemon {
+  paseoHome: string;
   endpoint: string;
   label: string;
   serverId: string;
@@ -10,6 +11,7 @@ export interface OutdatedDaemon {
 }
 
 interface OutdatedDaemonReadyMessage {
+  paseoHome: string;
   type: "ready";
   endpoint: string;
   serverId: string;
@@ -64,6 +66,7 @@ export async function startTestDaemon(options?: TestDaemonOptions): Promise<Outd
   try {
     const ready = await waitForDaemon(child, stderr);
     return {
+      paseoHome: ready.paseoHome,
       endpoint: ready.endpoint,
       label: options?.desktopManaged === true ? "outdated Desktop host" : "outdated host",
       serverId: ready.serverId,

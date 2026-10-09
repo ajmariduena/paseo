@@ -30,6 +30,7 @@ async function main(): Promise<void> {
 
   process.send?.({
     type: "ready",
+    paseoHome: daemon.paseoHome,
     endpoint: `127.0.0.1:${daemon.port}`,
     serverId,
   });

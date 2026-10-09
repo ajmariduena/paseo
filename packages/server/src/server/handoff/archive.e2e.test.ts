@@ -82,6 +82,48 @@ async function stopHost(host: Host): Promise<void> {
   await host.daemon.close();
 }
 
+async function expectExportedHistory(
+  client: DaemonClient,
+  agentId: string,
+  sourceAgentId: string,
+  cwd: string,
+) {
+  const history = await client.handoffGetConversationHistory({ agentId, limit: 1 });
+  expect(history.error).toBeNull();
+  if (!history.result) throw new Error("Missing transferred conversation history");
+  expect(history.result).toMatchObject({
+    mode: "context",
+    sourceAgentId,
+    sourceCwd: await realpath(cwd),
+    timeline: { hasOlder: true, hasNewer: false },
+  });
+  expect(history.result.timeline.entries).toHaveLength(1);
+  expect(JSON.stringify(history.result.timeline.entries)).toContain("Last source note");
+  const startCursor = history.result.timeline.startCursor;
+  if (!startCursor) throw new Error("Missing history cursor");
+  const older = await client.handoffGetConversationHistory({
+    agentId,
+    cursor: startCursor,
+    limit: 1,
+  });
+  expect(older.error).toBeNull();
+  expect(older.result?.timeline.entries).toHaveLength(1);
+  expect(JSON.stringify(older.result?.timeline.entries)).toContain("previous-only-token");
+  const middleCursor = older.result?.timeline.startCursor;
+  if (!middleCursor) throw new Error("Missing middle history cursor");
+  const first = await client.handoffGetConversationHistory({
+    agentId,
+    cursor: middleCursor,
+    limit: 1,
+  });
+  expect(first.result?.timeline.hasOlder).toBe(false);
+  expect(first.result?.timeline.epoch).toBe(history.result.timeline.epoch);
+  expect(JSON.stringify(first.result?.timeline.entries)).toContain("First source note");
+  expect((await client.handoffGetConversationHistory({ agentId: randomUUID() })).error?.code).toBe(
+    "not_found",
+  );
+}
+
 test.skipIf(process.platform === "win32")(
   "discovers destination-only reservations in bounded pages after restart",
   async () => {
@@ -402,11 +444,16 @@ test.skipIf(process.platform === "win32")(
     const project = claudeProjectDirSync(cwd, { configDir: path.join(root, "source", "claude") });
     await mkdir(project, { recursive: true });
     const transcript =
-      JSON.stringify({
-        type: "user",
-        sessionId,
-        message: { role: "user", content: "Remember the export token: previous-only-token" },
-      }) + "\n";
+      ["First source note", "Remember the export token: previous-only-token", "Last source note"]
+        .map((content) =>
+          JSON.stringify({
+            type: "user",
+            uuid: randomUUID(),
+            sessionId,
+            message: { role: "user", content },
+          }),
+        )
+        .join("\n") + "\n";
     await writeFile(path.join(project, `${sessionId}.jsonl`), transcript);
     const timestamp = new Date().toISOString();
     await origin.agentStorage.upsert(
@@ -570,6 +617,13 @@ test.skipIf(process.platform === "win32")(
       "throw new Error('Native importer must not be used');\n",
     );
     const staged = await destination.daemon.daemon.handoffDestination.stage(transferId);
+    expect(
+      (
+        await destination.client.handoffGetConversationHistory({
+          agentId: staged.agentMappings[0].destinationAgentId,
+        })
+      ).error?.code,
+    ).toBe("not_found");
     expect(staged.claudeRuntime).toBeNull();
     expect(staged.preparedConversations).toEqual([{ sourceAgentId, title: null, mode: "context" }]);
     expect((await destination.client.fetchAgents()).entries).toEqual([]);
@@ -615,6 +669,10 @@ test.skipIf(process.platform === "win32")(
     destination = await startHost("destination", true);
     expect(await destination.daemon.daemon.agentStorage.get(agentId)).toEqual(record);
     expect(await destination.daemon.daemon.handoffDestination.activate(transferId)).toEqual(active);
+    await rm(contextDirectory, { recursive: true });
+    await stopHost(source);
+    await expectExportedHistory(destination.client, agentId, sourceAgentId, cwd);
+    expect((await destination.daemon.daemon.agentStorage.get(agentId))?.persistence).toBeNull();
   },
   30_000,
 );

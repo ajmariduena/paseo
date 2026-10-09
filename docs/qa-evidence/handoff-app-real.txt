@@ -10,8 +10,8 @@ token must be written to continued.txt in the destination, with no such file in 
 prompts are refused after preparation and after destination continuation.
 Native: the original user message is visible and the provider session ID remains the same.
 Context export: the historical token is beyond the supplied excerpt; the new session reads exported
-files and receives a different provider session ID. This proves exported-file fidelity and a real
-continued turn, not a destination UI for browsing imported history. That UI remains an open gate.
+files and receives a different provider session ID. This run covers exported-file fidelity and a real
+continued turn. The later destination history UI results are recorded in handoff-history.txt.
 Actual MacBook/VPS, Electron, native iOS/Android and other provider evidence remain pending.
 
 Browser environment used temporary Chromium, native libraries and fonts under /tmp:

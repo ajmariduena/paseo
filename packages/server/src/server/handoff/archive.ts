@@ -232,6 +232,27 @@ export class HandoffArchiveStore {
     });
   }
 
+  /** History reads verify their own bytes without rehashing the entire workspace per page. */
+  async readVerifiedBlob(id: string, expected: HandoffBlob, maxBytes: number): Promise<Buffer> {
+    return this.serialize(id, async () => {
+      const record = await this.readRecord(id);
+      if (record.state !== "verified") fail("invalid_state", "Handoff archive is not verified");
+      const blob = this.findBlob(record, expected.sha256);
+      if (blob.size !== expected.size) fail("integrity_mismatch", "Handoff blob size differs");
+      if (blob.size > maxBytes) fail("limit_exceeded", "Handoff metadata exceeds its byte limit");
+      const bytes = await readBoundedFile(
+        path.join(this.location(id), "blobs", blob.sha256),
+        maxBytes,
+      );
+      if (
+        bytes.length !== blob.size ||
+        createHash("sha256").update(bytes).digest("hex") !== blob.sha256
+      )
+        fail("integrity_mismatch", "Blob checksum differs from the manifest", blob.sha256);
+      return bytes;
+    });
+  }
+
   async writeChunk(input: ChunkInput): Promise<number> {
     if (
       !Number.isSafeInteger(input.offset) ||

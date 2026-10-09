@@ -2798,6 +2798,25 @@ export class DaemonClient {
     );
   }
 
+  handoffGetConversationHistory(
+    options: Omit<
+      Extract<
+        SessionInboundMessage,
+        { type: "workspace.handoff.get_conversation_history.request" }
+      >,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.get_conversation_history.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.get_conversation_history.response">(
+      {
+        requestId,
+        message: { type: "workspace.handoff.get_conversation_history.request", ...input },
+        timeout: 30000,
+      },
+    );
+  }
+
   handoffListDestination(
     options: Omit<
       Extract<SessionInboundMessage, { type: "workspace.handoff.list_destination.request" }>,

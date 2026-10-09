@@ -6,6 +6,14 @@ import {
   HandoffTransferIdSchema,
 } from "./handoff.js";
 
+export const HandoffGetConversationHistoryRequestSchema = z.object({
+  type: z.literal("workspace.handoff.get_conversation_history.request"),
+  requestId: z.string(),
+  agentId: z.string().min(1),
+  cursor: z.object({ epoch: z.string().uuid(), seq: z.number().int().positive() }).optional(),
+  limit: z.number().int().min(1).max(200).optional(),
+});
+
 const HandoffConversationIdentitySchema = z.object({
   agentId: z.string().min(1),
   title: z.string().max(4096).nullable(),

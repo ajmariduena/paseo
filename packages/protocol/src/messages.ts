@@ -1,4 +1,5 @@
 import {
+  HandoffGetConversationHistoryRequestSchema,
   HandoffListDestinationRequestSchema,
   HandoffFindSourceRequestSchema,
   HandoffPreviewSourceRequestSchema,
@@ -31,6 +32,7 @@ import {
   HandoffCancelDestinationResponseSchema,
 } from "./handoff-control.js";
 import {
+  HandoffErrorSchema,
   HandoffArchiveBeginRequestSchema,
   HandoffArchiveBeginResponseSchema,
   HandoffArchiveStatusRequestSchema,
@@ -3799,6 +3801,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   HandoffArchiveReadChunkRequestSchema,
   HandoffArchiveSealRequestSchema,
   HandoffArchiveResetBlobRequestSchema,
+  HandoffGetConversationHistoryRequestSchema,
   HandoffListDestinationRequestSchema,
   HandoffFindSourceRequestSchema,
   HandoffPreviewSourceRequestSchema,
@@ -5150,6 +5153,31 @@ export const FetchAgentTimelineResponseMessageSchema = z.object({
     mergeWindow: z.boolean().optional(),
     entries: z.array(AgentTimelineEntryPayloadSchema),
     error: z.string().nullable(),
+  }),
+});
+
+export const HandoffGetConversationHistoryResponseSchema = z.object({
+  type: z.literal("workspace.handoff.get_conversation_history.response"),
+  payload: z.object({
+    requestId: z.string(),
+    result: z
+      .object({
+        mode: z.enum(["native", "context"]),
+        provider: AgentProviderSchema,
+        sourceServerId: z.string(),
+        sourceWorkspaceId: z.string(),
+        sourceAgentId: z.string(),
+        sourceCwd: z.string(),
+        title: z.string().nullable(),
+        timeline: FetchAgentTimelineResponseMessageSchema.shape.payload.omit({
+          requestId: true,
+          agentId: true,
+          agent: true,
+          error: true,
+        }),
+      })
+      .nullable(),
+    error: HandoffErrorSchema.nullable(),
   }),
 });
 
@@ -7897,6 +7925,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   HandoffArchiveReadChunkResponseSchema,
   HandoffArchiveSealResponseSchema,
   HandoffArchiveResetBlobResponseSchema,
+  HandoffGetConversationHistoryResponseSchema,
   HandoffListDestinationResponseSchema,
   HandoffFindSourceResponseSchema,
   HandoffPreviewSourceResponseSchema,

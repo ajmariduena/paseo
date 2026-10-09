@@ -3,6 +3,13 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ar: TranslationResources = {
   handoff: {
+    history: "المحادثة السابقة",
+    historyConnect: "اتصل بالمضيف الوجهة لقراءة هذا السجل.",
+    historyUnavailable: "السجل المنقول غير متاح.",
+    historyOrigin: "سجل للقراءة فقط من {{host}}",
+    historyNotice: "الملفات والموارد المرتبطة تخص المضيف المصدر وقد لا تكون متاحة.",
+    continuedNative: "تمت متابعة الجلسة الأصلية",
+    continuedContext: "جلسة جديدة بسجل مُصدَّر",
     cancelPending: "الإلغاء غير مكتمل. استأنف لإنهاء إلغاء عملية النقل هذه.",
     pendingTransfers: "عمليات نقل غير مكتملة",
     chooseTransfer: "اختر عملية نقل لاستئنافها",

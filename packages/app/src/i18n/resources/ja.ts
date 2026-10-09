@@ -3,6 +3,13 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ja: TranslationResources = {
   handoff: {
+    history: "以前の会話",
+    historyConnect: "履歴を読むには転送先ホストに接続してください。",
+    historyUnavailable: "転送した履歴を利用できません。",
+    historyOrigin: "{{host}} の読み取り専用履歴",
+    historyNotice: "ファイルとリンク先のリソースは転送元ホストに属し、利用できない場合があります。",
+    continuedNative: "ネイティブセッションを継続",
+    continuedContext: "エクスポートした履歴を使う新しいセッション",
     cancelPending: "キャンセルが完了していません。再開してこの転送のキャンセルを完了してください。",
     pendingTransfers: "未完了の転送",
     chooseTransfer: "再開する転送を選択",

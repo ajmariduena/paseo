@@ -62,6 +62,62 @@ async function compileInlineSchema(sourceSchema: string): Promise<GeneratedSchem
 }
 
 describe("WS outbound zod-aot validation", () => {
+  it("preserves transferred history and rejects malformed nested entries", () => {
+    const epoch = "00000000-0000-4000-8000-000000000001";
+    const entry = {
+      provider: "claude",
+      item: { type: "user_message", text: "Previous conversation", messageId: "original" },
+      timestamp: "2026-10-09T00:00:00.000Z",
+      seqStart: 1,
+      seqEnd: 1,
+      sourceSeqRanges: [{ startSeq: 1, endSeq: 1 }],
+      collapsed: [],
+    };
+    const envelope = (entries: unknown[]) => ({
+      type: "session",
+      message: {
+        type: "workspace.handoff.get_conversation_history.response",
+        payload: {
+          requestId: "history",
+          result: {
+            mode: "context",
+            provider: "claude",
+            sourceServerId: "source",
+            sourceWorkspaceId: "workspace",
+            sourceAgentId: "original-agent",
+            sourceCwd: "/original/workspace",
+            title: null,
+            timeline: {
+              direction: "tail",
+              projection: "projected",
+              epoch,
+              reset: false,
+              staleCursor: false,
+              gap: false,
+              window: { minSeq: 1, maxSeq: 1, nextSeq: 2 },
+              startCursor: { epoch, seq: 1 },
+              endCursor: { epoch, seq: 1 },
+              hasOlder: false,
+              hasNewer: false,
+              entries,
+            },
+          },
+          error: null,
+        },
+      },
+    });
+    const message = envelope([entry]);
+    expect(GeneratedWSOutboundMessageSchema.safeParse(message)).toEqual({
+      success: true,
+      data: message,
+    });
+    expect(
+      GeneratedWSOutboundMessageSchema.safeParse(
+        envelope([{ ...entry, item: { ...entry.item, text: 42 } }]),
+      ).success,
+    ).toBe(false);
+  });
+
   it("validates handoff activation snapshots without losing continuation mode or correlation", () => {
     const result = {
       transferId: "00000000-0000-4000-8000-000000000001",
@@ -107,6 +163,7 @@ describe("WS outbound zod-aot validation", () => {
   });
 
   it.each([
+    "get_conversation_history",
     "list_destination",
     "find_source",
     "cancel_source",

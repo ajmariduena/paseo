@@ -11,7 +11,7 @@ import {
 import type { HandoffArchiveStore, VerifiedHandoffArchive } from "./archive.js";
 import { readBoundedFile, writeJournal } from "./artifacts.js";
 import { workspaceArchiveFiles } from "./workspace.js";
-import { HANDOFF_HISTORY_MAX_BYTES, readHandoffHistory } from "./history.js";
+import { HANDOFF_HISTORY_MAX_BYTES, readHandoffHistory, parseHandoffHistory } from "./history.js";
 import {
   readClaudeSessionArchive,
   readClaudeSessionManifest,
@@ -158,16 +158,7 @@ export async function readHandoffBundle(
     4 * 1024 * 1024,
   );
   const bundle = parseBundle(JSON.parse(bytes.toString("utf8")));
-  if (
-    bundle.sourceServerId !== expected.sourceServerId ||
-    bundle.sourceWorkspaceId !== expected.sourceWorkspaceId
-  )
-    reject("invalid_artifact", "Handoff belongs to a different source workspace");
-  const sourceAgentIds = bundle.conversations
-    .map((conversation) => conversation.sourceAgentId)
-    .sort();
-  if (JSON.stringify(sourceAgentIds) !== JSON.stringify([...expected.sourceAgentIds].sort()))
-    reject("conversation_mismatch", "Handoff does not contain exactly the reserved conversations");
+  assertBundleIdentity(bundle, expected);
   const inventory = new Map(archive.manifest.blobs.map((blob) => [blob.sha256, blob.size]));
   requireBlob(bundle.workspace);
   const sessions = new Map<string, ClaudeSessionArchive>();
@@ -199,4 +190,49 @@ export async function readHandoffBundle(
     if (inventory.get(blob.sha256) !== blob.size)
       reject("invalid_artifact", "Handoff references content outside its verified archive");
   }
+}
+
+function assertBundleIdentity(bundle: HandoffBundle, expected: HandoffBundleExpectation): void {
+  if (
+    bundle.sourceServerId !== expected.sourceServerId ||
+    bundle.sourceWorkspaceId !== expected.sourceWorkspaceId
+  )
+    reject("invalid_artifact", "Handoff belongs to a different source workspace");
+  const sourceAgentIds = bundle.conversations
+    .map((conversation) => conversation.sourceAgentId)
+    .sort();
+  if (JSON.stringify(sourceAgentIds) !== JSON.stringify([...expected.sourceAgentIds].sort()))
+    reject("conversation_mismatch", "Handoff does not contain exactly the reserved conversations");
+}
+
+export async function readTransferredConversation(input: {
+  store: HandoffArchiveStore;
+  transferId: string;
+  entrypoint: HandoffBlob;
+  expected: HandoffBundleExpectation;
+  sourceAgentId: string;
+}) {
+  if (input.entrypoint.sha256 !== input.expected.manifestDigest)
+    reject("invalid_artifact", "Archive differs from the destination reservation");
+  const bytes = await input.store.readVerifiedBlob(
+    input.transferId,
+    input.entrypoint,
+    4 * 1024 * 1024,
+  );
+  const bundle = parseBundle(JSON.parse(bytes.toString("utf8")));
+  assertBundleIdentity(bundle, input.expected);
+  const conversation = bundle.conversations.find(
+    (item) => item.sourceAgentId === input.sourceAgentId,
+  );
+  if (!conversation?.history)
+    reject("invalid_artifact", "This transfer does not contain readable history");
+  const history = parseHandoffHistory(
+    await input.store.readVerifiedBlob(
+      input.transferId,
+      conversation.history,
+      HANDOFF_HISTORY_MAX_BYTES,
+    ),
+    input.sourceAgentId,
+  );
+  return { bundle, conversation, history };
 }

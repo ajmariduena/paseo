@@ -3,6 +3,13 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ru: TranslationResources = {
   handoff: {
+    history: "Предыдущий разговор",
+    historyConnect: "Подключитесь к целевому хосту, чтобы прочитать историю.",
+    historyUnavailable: "Перенесённая история недоступна.",
+    historyOrigin: "История с {{host}} только для чтения",
+    historyNotice: "Файлы и связанные ресурсы относятся к исходному хосту и могут быть недоступны.",
+    continuedNative: "Исходная сессия продолжена",
+    continuedContext: "Новая сессия с экспортированной историей",
     cancelPending: "Отмена не завершена. Продолжите, чтобы завершить отмену этого переноса.",
     pendingTransfers: "Незавершённые переносы",
     chooseTransfer: "Выберите перенос для продолжения",

@@ -215,6 +215,11 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   released source without loading a provider, including after source restart or deletion of the
   original transcript. Cursors remain stable across restart; corrupt, foreign, incomplete and
   oversized history fails explicitly. Native artifacts remain the unabridged provider copy.
+  Activated destinations serve paginated previous-conversation history from their private verified
+  archive. Reading it never starts a provider and does not depend on the source or editable exported
+  files. A network regression restarts the destination, stops the source, removes those workspace
+  copies and reads three pages with stable cursors. Staged and unknown conversations are refused.
+  Each read verifies the requested metadata and history blobs, without rehashing the workspace.
   `packages/client/src/workspace-handoff.ts` coordinates inspection, reservation, source preparation,
   transfer, staging, signed release and activation through correlated `workspace.handoff.*` RPCs.
   Retry reuses the hosts' journals and transfer ID. A network regression loses the release reply,
@@ -269,7 +274,10 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   now exports its history while native installation still refuses its automation state.
   The app shows native/context availability and reasons for each conversation, using read-only
   source-artifact and destination-version inspection. The chosen mode still applies to the whole
-  workspace; mixed per-conversation choices and provenance display remain open.
+  workspace; mixed per-conversation choices remain open. Destination conversations identify native
+  continuation versus a new session with exported history and open a read-only previous conversation
+  with its source host and path. Historical links retain source authority and may be unavailable;
+  they must not resolve against the destination's workspace by accident.
   Source decoding still uses the tested Claude codec; other providers and incompatible source
   formats are not yet exportable. External attachments are reported as unavailable, not transported.
 - `utils/tree-kill.test.ts`, `managed-processes.test.ts` and `bootstrap-managed-processes.test.ts`
@@ -319,9 +327,13 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   shows the original message and retains the provider session ID; context export starts a new session
   and reads a prior-only token beyond the supplied excerpt from the exported files. Both approve the
   destination Write permission through the UI, verify the destination file and absent source file,
-  and refuse source prompts before and after continuation. Context history is verified in the exported
-  files; displaying that history and its provenance in the destination conversation remains open.
-  See the [real-provider browser results](../qa-evidence/handoff-app-real.txt),
+  and refuse source prompts before and after continuation. Both modes also open the previous
+  conversation in the destination UI. Corrupting the private archive produces a visible error;
+  restoring the bytes and choosing Retry reveals the original message and source provenance without
+  a composer or replaying a turn. The context-export case exercises that sheet at compact width;
+  its first run exposed missing pane context across the portal, now covered by the regression.
+  See the [history results](../qa-evidence/handoff-history.txt),
+  [real-provider browser results](../qa-evidence/handoff-app-real.txt),
   [recovery app results](../qa-evidence/handoff-app.txt)
   and [review](../qa-evidence/handoff-review-compact.png), [pending transfers](../qa-evidence/handoff-existing-transfers.png), [desktop](../qa-evidence/handoff-app-desktop.png) / [compact](../qa-evidence/handoff-app-compact.png)
   screenshots. Recovery without local state currently requires both paired hosts online. Destination

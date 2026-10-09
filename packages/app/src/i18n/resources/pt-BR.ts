@@ -3,6 +3,14 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ptBR: TranslationResources = {
   handoff: {
+    history: "Conversa anterior",
+    historyConnect: "Conecte o host de destino para ler este histórico.",
+    historyUnavailable: "O histórico transferido está indisponível.",
+    historyOrigin: "Histórico somente leitura de {{host}}",
+    historyNotice:
+      "Os arquivos e recursos vinculados pertencem ao host de origem e podem estar indisponíveis.",
+    continuedNative: "Sessão nativa preservada",
+    continuedContext: "Nova sessão com histórico exportado",
     cancelPending:
       "O cancelamento está incompleto. Retome para concluir o cancelamento desta transferência.",
     pendingTransfers: "Transferências pendentes",

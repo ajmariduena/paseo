@@ -3,6 +3,13 @@ import { pluginSettings } from "./plugin-settings";
 
 export const zhCN: TranslationResources = {
   handoff: {
+    history: "之前的对话",
+    historyConnect: "请连接目标主机以查看此历史记录。",
+    historyUnavailable: "转移的历史记录不可用。",
+    historyOrigin: "来自 {{host}} 的只读历史记录",
+    historyNotice: "文件和链接资源属于源主机，可能无法使用。",
+    continuedNative: "继续原生会话",
+    continuedContext: "使用导出历史记录的新会话",
     cancelPending: "取消尚未完成。请继续以完成取消此传输。",
     pendingTransfers: "未完成的传输",
     chooseTransfer: "选择要继续的传输",

@@ -19,7 +19,13 @@ import {
   restoreWorkspaceFromArchive,
   verifyWorkspaceFromArchive,
 } from "./workspace.js";
-import { readHandoffBundle, type VerifiedHandoffBundle } from "./bundle.js";
+import {
+  readHandoffBundle,
+  readTransferredConversation,
+  type VerifiedHandoffBundle,
+} from "./bundle.js";
+import { fetchHandoffHistory } from "./history.js";
+import type { SessionInboundMessage } from "@getpaseo/protocol/messages";
 import {
   installClaudeSessionArchive,
   verifyClaudeSessionInstallation,
@@ -102,6 +108,10 @@ const JournalSchema = z.object({
 export type DestinationHandoffStatus = z.infer<typeof RecordSchema>;
 type ReservationInput = z.input<typeof ReservationSchema>;
 type SourceBinding = z.infer<typeof BindingSchema>;
+type ConversationHistoryRequest = Extract<
+  SessionInboundMessage,
+  { type: "workspace.handoff.get_conversation_history.request" }
+>;
 interface BindSourceInput extends SourceBinding {
   transferId: string;
 }
@@ -637,6 +647,57 @@ export class HandoffDestination {
   status(transferId: string): DestinationHandoffStatus {
     this.assertHealthy();
     return structuredClone(this.requireRecord(transferId));
+  }
+
+  async fetchConversationHistory(input: ConversationHistoryRequest) {
+    this.assertHealthy();
+    const transferId = this.identityOwners.get(input.agentId);
+    const record = transferId ? this.records.get(transferId) : undefined;
+    const mapping = record?.agentMappings.find((item) => item.destinationAgentId === input.agentId);
+    if (!record || record.state !== "active" || !record.binding || !mapping)
+      fail("not_found", "No active transfer contains this destination conversation");
+    const { bundle, conversation, history } = await readTransferredConversation({
+      store: this.options.archives,
+      transferId: record.transferId,
+      entrypoint: record.binding.manifest.entrypoint,
+      sourceAgentId: mapping.sourceAgentId,
+      expected: {
+        sourceServerId: record.sourceServerId,
+        sourceWorkspaceId: record.sourceWorkspaceId,
+        sourceAgentIds: record.sourceAgentIds,
+        manifestDigest: record.binding.manifest.entrypoint.sha256,
+      },
+    });
+    const { rows, startSeq, endSeq, ...page } = fetchHandoffHistory(history, {
+      direction: input.cursor ? "before" : "tail",
+      cursor: input.cursor,
+      limit: input.limit ?? 100,
+    });
+    return {
+      mode: record.continuationMode,
+      provider: conversation.provider,
+      sourceServerId: record.sourceServerId,
+      sourceWorkspaceId: record.sourceWorkspaceId,
+      sourceAgentId: mapping.sourceAgentId,
+      sourceCwd: bundle.sourceCwd,
+      title: conversation.title,
+      timeline: {
+        ...page,
+        projection: "projected" as const,
+        startCursor: startSeq === null ? null : { epoch: page.epoch, seq: startSeq },
+        endCursor: endSeq === null ? null : { epoch: page.epoch, seq: endSeq },
+        entries: rows.map((row) => ({
+          provider: conversation.provider,
+          item: row.item,
+          timestamp: row.timestamp,
+          seqStart: row.seqStart,
+          seqEnd: row.seqEnd,
+          sourceSeqRanges: row.sourceSeqRanges,
+          collapsed: row.collapsed,
+          turnId: row.turnId,
+        })),
+      },
+    };
   }
 
   list(input: {
