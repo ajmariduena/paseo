@@ -41,7 +41,7 @@ test("handoff chunks reject oversized data, unsafe offsets and path-shaped trans
   ).toBe(false);
 });
 
-test("handoff activation requires a bound release receipt and reservation requires an explicit mode", () => {
+test("handoff activation accepts a receipt or a retry using the destination's saved release", () => {
   const transferId = "00000000-0000-4000-8000-000000000001";
   const message = {
     type: "workspace.handoff.activate_destination.request",
@@ -58,18 +58,28 @@ test("handoff activation requires a bound release receipt and reservation requir
     },
   };
   expect(SessionInboundMessageSchema.parse(message)).toEqual(message);
+  const retry = {
+    type: message.type,
+    requestId: message.requestId,
+    transferId,
+  };
+  expect(SessionInboundMessageSchema.parse(retry)).toEqual(retry);
   for (const receipt of [
-    undefined,
+    null,
+    {},
     { ...message.receipt, reservationId: "../../outside" },
     { ...message.receipt, manifestDigest: "not-a-digest" },
     { ...message.receipt, signature: "" },
   ]) {
     expect(SessionInboundMessageSchema.safeParse({ ...message, receipt }).success).toBe(false);
   }
+});
+
+test("handoff reservation requires an explicit continuation mode", () => {
   const reserve = {
     type: "workspace.handoff.reserve_destination.request",
     requestId: "reserve",
-    transferId,
+    transferId: "00000000-0000-4000-8000-000000000001",
     sourceServerId: "source",
     sourceWorkspaceId: "workspace",
     sourceAgentIds: [],
