@@ -1293,6 +1293,7 @@ export async function createPaseoDaemon(
     providerSnapshotManager,
     readDaemonConfig: () => ({ metadataGeneration: daemonConfigStore.get().metadataGeneration }),
     gitMutation: createGitMutationService({
+      handoffOwnership,
       workspaceGitService,
       logger,
     }),
@@ -1976,6 +1977,7 @@ export async function createPaseoDaemon(
               agentStop,
               noteStore,
               hostMetricsSampler,
+              handoffOwnership,
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();

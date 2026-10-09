@@ -1,4 +1,5 @@
 import type { HandoffArchiveStore } from "./handoff/archive.js";
+import type { HandoffOwnership } from "./handoff/ownership.js";
 import { dispatchHandoffArchiveMessage } from "./handoff/rpc.js";
 import { searchTimeline } from "./agent/chat-search/index.js";
 import type { BrowserToolsBroker } from "./browser-tools/broker.js";
@@ -560,6 +561,7 @@ export interface SessionOptions {
   directorySync?: DirectorySyncService;
   workspaceLabelService?: WorkspaceLabelService;
   handoffArchiveStore?: HandoffArchiveStore;
+  handoffOwnership?: HandoffOwnership;
   readAloud?: ReadAloudService;
   voiceOrchestrator?: VoiceOrchestrator | null;
   delegations?: Pick<DelegationService, "stopAll" | "disposeQueuedWake"> | null;
@@ -1024,6 +1026,7 @@ export class Session {
       sessionId: this.sessionId,
     });
     this.workspaceFilesSession = new WorkspaceFilesSession({
+      handoffOwnership: options.handoffOwnership,
       host: {
         emit: (msg, source) => this.emitForSource(msg, source),
         emitBinary: (frame, source) => this.emitBinaryForFileTransfer(frame, source),
@@ -1055,6 +1058,7 @@ export class Session {
     this.renameCurrentBranch = renameCurrentBranch ?? renameCurrentBranchDefault;
     this.workspaceGitService = workspaceGitService;
     this.gitMutation = createGitMutationService({
+      handoffOwnership: options.handoffOwnership,
       workspaceGitService: this.workspaceGitService,
       logger: this.sessionLogger,
     });
@@ -1085,6 +1089,7 @@ export class Session {
       },
     });
     this.checkoutSession = new CheckoutSession({
+      handoffOwnership: options.handoffOwnership,
       host: {
         emit: (msg) => this.emit(msg),
         emitWorkspaceUpdateForCwd: (cwd) => this.emitWorkspaceUpdateForCwd(cwd),

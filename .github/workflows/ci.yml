@@ -234,6 +234,9 @@ jobs:
           npx vitest run \
             packages/server/src/server/agent/agent-manager.test.ts \
             packages/server/src/server/bootstrap.smoke.test.ts \
+            packages/server/src/server/session/files/workspace-files-session.test.ts \
+            packages/server/src/server/session/git-mutation/git-mutation-service.test.ts \
+            packages/server/src/server/session/checkout/checkout-session.test.ts \
             packages/server/src/terminal/terminal.test.ts \
             packages/server/src/terminal/terminal-manager.test.ts \
             packages/server/src/terminal/worker-terminal-manager.test.ts \

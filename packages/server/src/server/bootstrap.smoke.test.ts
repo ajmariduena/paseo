@@ -63,6 +63,7 @@ describe("paseo daemon bootstrap", () => {
     const cwd = path.join(root, "workspace");
     await mkdir(paseoHome);
     await mkdir(cwd);
+    await writeFile(path.join(cwd, "notes.txt"), "source content");
     const ownership = new HandoffOwnership({
       directory: path.join(paseoHome, "handoff-ownership"),
       sourceServerId: getOrCreateServerId(paseoHome),
@@ -86,6 +87,28 @@ describe("paseo daemon bootstrap", () => {
         `Workspace is held by handoff ${transferId}`,
       );
       expect((await client.fetchAgents()).entries).toEqual([]);
+      const error = `Workspace is held by handoff ${transferId} (preparing)`;
+      expect(
+        await client.createFileEntry({ cwd, parentPath: ".", name: "blocked.txt", kind: "file" }),
+      ).toMatchObject({ success: false, error });
+      expect(
+        await client.writeFile({
+          cwd,
+          path: "notes.txt",
+          content: "blocked",
+          expectedModifiedAt: new Date(0).toISOString(),
+        }),
+      ).toEqual({ status: "error", error });
+      expect(await client.checkoutSwitchBranch(cwd, "blocked-branch")).toMatchObject({
+        success: false,
+        error: { message: error },
+      });
+      expect(await client.checkoutCommit(cwd, { message: "blocked commit" })).toMatchObject({
+        success: false,
+        error: { message: error },
+      });
+      expect(await readFile(path.join(cwd, "notes.txt"), "utf8")).toBe("source content");
+      await expect(access(path.join(cwd, "blocked.txt"))).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await client.close();
       await daemon.close();

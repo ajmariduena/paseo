@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { pino } from "pino";
 import { afterEach, describe, expect, test } from "vitest";
 import type {
@@ -10,6 +11,7 @@ import type {
   WorkspaceGitService,
 } from "../../workspace-git-service.js";
 import { createGitMutationService } from "./git-mutation-service.js";
+import { HandoffOwnership } from "../../handoff/ownership.js";
 
 // The production module reads only WorkspaceGitService.{validateBranchRef,getSnapshot,
 // hasLocalBranch,invalidateForge}. The fake below implements exactly that slice as an
@@ -64,6 +66,91 @@ function buildService(gitOptions: FakeGitOptions = {}) {
 }
 
 const tempRepos: string[] = [];
+
+async function handoffOwnershipFor(cwd: string) {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "handoff-git-ledger-")));
+  tempRepos.push(home);
+  const ownership = new HandoffOwnership({
+    directory: join(home, "ownership"),
+    sourceServerId: "source",
+  });
+  await ownership.initialize();
+  const id = randomUUID();
+  const prepare = () =>
+    ownership.prepare({
+      id,
+      cwd,
+      workspaceId: "workspace",
+      agentIds: [],
+      destinationServerId: "target",
+      reservationId: randomUUID(),
+    });
+  return { ownership, id, prepare };
+}
+
+test("handoff gates branch checkout and creation without changing Git refs", async () => {
+  const cwd = initRepo("feature");
+  const { ownership, id, prepare } = await handoffOwnershipFor(cwd);
+  const { git } = createFakeGit({ resolution: { kind: "local", name: "feature" } });
+  const service = createGitMutationService({
+    workspaceGitService: git,
+    logger,
+    handoffOwnership: ownership,
+  });
+  await prepare();
+  await expect(service.checkoutExistingBranch(cwd, "feature")).rejects.toMatchObject({
+    code: "fenced",
+  });
+  await expect(
+    service.createBranchFromBase({ cwd, baseBranch: "main", newBranchName: "not-created" }),
+  ).rejects.toMatchObject({ code: "fenced" });
+  expect(headBranch(cwd)).toBe("main");
+  expect(
+    execFileSync("git", ["for-each-ref", "--format=%(refname:short)", "refs/heads"], { cwd })
+      .toString()
+      .trim()
+      .split("\n"),
+  ).toEqual(["feature", "main"]);
+  await ownership.cancel(id);
+  await service.checkoutExistingBranch(cwd, "feature");
+  expect(headBranch(cwd)).toBe("feature");
+});
+
+test("handoff waits for admitted branch mutations through Git execution and refresh", async () => {
+  const cwd = initRepo("feature");
+  const { ownership, id, prepare } = await handoffOwnershipFor(cwd);
+  const { git } = createFakeGit({ resolution: { kind: "local", name: "feature" } });
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const service = createGitMutationService({
+    handoffOwnership: ownership,
+    logger,
+    workspaceGitService: {
+      ...git,
+      getSnapshot: async (...args) => {
+        entered.resolve();
+        await release.promise;
+        return git.getSnapshot(...args);
+      },
+    },
+  });
+  const switching = service.checkoutExistingBranch(cwd, "feature");
+  try {
+    await entered.promise;
+    await prepare();
+    await expect(ownership.markReady(id, "a".repeat(64))).rejects.toMatchObject({
+      code: "invalid_state",
+    });
+    release.resolve();
+    await switching;
+    await ownership.drain(id);
+    expect(headBranch(cwd)).toBe("feature");
+    expect((await ownership.markReady(id, "a".repeat(64))).state).toBe("ready");
+  } finally {
+    release.resolve();
+    await switching;
+  }
+});
 
 function initRepo(extraBranch?: string): string {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "git-mutation-")));

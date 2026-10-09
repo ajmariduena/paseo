@@ -138,8 +138,16 @@ remain available. Tests cover denied prompts, cancellation before provider admis
 admitted turns and commands. Flush event and persistence queues after runtime shutdown and before
 capturing conversation data; finishing an RPC alone does not prove those writes have settled.
 
+The shared boot ledger also gates file-editor/explorer mutations and checkout commands. Reads
+remain available; denied writes use the existing correlated error responses. Tests hold an admitted
+file write or branch change across preparation, then verify draining and cancellation. A merge
+requested from a sibling worktree must acquire a lease for the actual target checkout as well as
+the caller's directory. The two-worktree regression verifies that a fenced base stays unchanged.
+
 These tests do not establish the complete ownership promise: draft catalog runtimes, terminals,
-scripts, file/Git mutations, runtime termination and destination activation still need integration.
+scripts, background workspace mutations (including auto-naming, archive/recovery and worktree
+creation), shared Git metadata ownership, runtime termination and destination activation still need
+integration.
 Source history needs a readable path that does not reopen a fenced native runtime. Source release
 explicitly refuses Windows until durable directory updates
 have an implementation there; archive staging alone does not satisfy that requirement.
