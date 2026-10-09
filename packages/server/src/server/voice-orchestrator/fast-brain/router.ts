@@ -10,12 +10,8 @@ import {
   mentionsApproval,
 } from "../spoken-approval.js";
 import type { FleetHost, FleetTarget, FleetView } from "../fleet/fleet-view.js";
-import type {
-  FastLlmClient,
-  FastLlmCompletion,
-  FastLlmMessage,
-  FastLlmToolCall,
-} from "./llm-client.js";
+import type { FastLlm } from "./fast-brain.js";
+import type { FastLlmCompletion, FastLlmMessage, FastLlmToolCall } from "./llm-client.js";
 import { ROUTER_SYSTEM_PROMPT, ROUTER_TOOLS, buildRouterRequest } from "./router-prompt.js";
 
 export interface RouterExecutor {
@@ -110,7 +106,7 @@ export class VoiceRouter {
 
   constructor(
     private readonly options: {
-      llm: FastLlmClient;
+      llm: Pick<FastLlm, "complete">;
       executor: RouterExecutor;
       logger: pino.Logger;
       now?: () => number;

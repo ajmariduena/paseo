@@ -18,6 +18,10 @@ import type {
   VoiceFleetHostState,
   VoiceToolResult,
 } from "@getpaseo/protocol/voice-fleet/types";
+import type {
+  VoiceCommandsModel,
+  VoiceCommandsSettings,
+} from "@getpaseo/protocol/voice-commands/rpc-schemas";
 import type { z } from "zod";
 import type { SessionEventSubscription } from "@getpaseo/protocol/messages";
 import type { ClientCapability } from "@getpaseo/protocol/client-capabilities";
@@ -1117,6 +1121,8 @@ const VOICE_ORCHESTRATOR_START_TIMEOUT_MS = 60_000;
 // Messages mode retries on a weak link, so a lost request must fail fast instead of waiting a minute.
 const VOICE_MESSAGES_TIMEOUT_MS = 12_000;
 const VOICE_FLEET_DIGEST_TIMEOUT_MS = 5_000;
+const VOICE_COMMANDS_TIMEOUT_MS = 10_000;
+const VOICE_COMMANDS_TEST_TIMEOUT_MS = 20_000;
 // Creating a worktree and an agent on another host can take most of a minute.
 const VOICE_FLEET_TOOL_TIMEOUT_MS = 60_000;
 const VOICE_FLEET_SYNC_TIMEOUT_MS = 4_000;
@@ -2329,6 +2335,61 @@ export class DaemonClient {
       message: { type: "voice.call.log_events.request", events },
       timeout: VOICE_MESSAGES_TIMEOUT_MS,
     });
+  }
+
+  async getVoiceCommandsSettings(): Promise<VoiceCommandsSettings> {
+    const response =
+      await this.sendNamespacedCorrelatedSessionRequest<"voice.commands.get_settings.response">({
+        message: { type: "voice.commands.get_settings.request" },
+        timeout: VOICE_COMMANDS_TIMEOUT_MS,
+      });
+    return requireVoiceCommandsSettings(response);
+  }
+
+  async setVoiceCommandsModel(params: {
+    selection?: VoiceCommandsModel | null;
+    backup?: VoiceCommandsModel | null;
+    customBaseUrl?: string;
+  }): Promise<VoiceCommandsSettings> {
+    const response =
+      await this.sendNamespacedCorrelatedSessionRequest<"voice.commands.set_model.response">({
+        message: { type: "voice.commands.set_model.request", ...params },
+        timeout: VOICE_COMMANDS_TIMEOUT_MS,
+      });
+    return requireVoiceCommandsSettings(response);
+  }
+
+  async setVoiceCommandsKey(params: {
+    provider: string;
+    apiKey: string | null;
+  }): Promise<VoiceCommandsSettings> {
+    const response =
+      await this.sendNamespacedCorrelatedSessionRequest<"voice.commands.set_key.response">({
+        message: { type: "voice.commands.set_key.request", ...params },
+        timeout: VOICE_COMMANDS_TIMEOUT_MS,
+      });
+    return requireVoiceCommandsSettings(response);
+  }
+
+  async testVoiceCommandsModel(target: "selection" | "backup"): Promise<{
+    ok: boolean;
+    roundTripMs: number | null;
+    model: VoiceCommandsModel | null;
+    error: string | null;
+    settings: VoiceCommandsSettings | null;
+  }> {
+    const response =
+      await this.sendNamespacedCorrelatedSessionRequest<"voice.commands.test_model.response">({
+        message: { type: "voice.commands.test_model.request", target },
+        timeout: VOICE_COMMANDS_TEST_TIMEOUT_MS,
+      });
+    return {
+      ok: response.ok,
+      roundTripMs: response.roundTripMs,
+      model: response.model,
+      error: response.error,
+      settings: response.settings,
+    };
   }
 
   async getVoiceFleetDigest(params: {
@@ -7750,4 +7811,14 @@ function resolveAgentConfig(options: CreateAgentRequestOptions): AgentSessionCon
     provider: merged.provider,
     cwd: merged.cwd,
   };
+}
+
+function requireVoiceCommandsSettings(response: {
+  settings: VoiceCommandsSettings | null;
+  error: string | null;
+}): VoiceCommandsSettings {
+  if (response.error || !response.settings) {
+    throw new Error(response.error ?? "Voice commands are unavailable on this host");
+  }
+  return response.settings;
 }

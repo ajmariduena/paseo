@@ -104,6 +104,16 @@ import {
   VoiceToolsInvokeResponseSchema,
 } from "./voice-fleet/rpc-schemas.js";
 import {
+  VoiceCommandsGetSettingsRequestSchema,
+  VoiceCommandsGetSettingsResponseSchema,
+  VoiceCommandsSetKeyRequestSchema,
+  VoiceCommandsSetKeyResponseSchema,
+  VoiceCommandsSetModelRequestSchema,
+  VoiceCommandsSetModelResponseSchema,
+  VoiceCommandsTestModelRequestSchema,
+  VoiceCommandsTestModelResponseSchema,
+} from "./voice-commands/rpc-schemas.js";
+import {
   LoopRunRequestSchema,
   LoopListRequestSchema,
   LoopInspectRequestSchema,
@@ -3750,6 +3760,10 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   VoiceFleetSyncRequestSchema,
   VoiceToolsInvokeRequestSchema,
   VoiceCourierResultRequestSchema,
+  VoiceCommandsGetSettingsRequestSchema,
+  VoiceCommandsSetModelRequestSchema,
+  VoiceCommandsSetKeyRequestSchema,
+  VoiceCommandsTestModelRequestSchema,
   FileExplorerRequestSchema,
   FileSubscribeRequestSchema,
   FileUnsubscribeRequestSchema,
@@ -4118,6 +4132,8 @@ export const ServerInfoStatusPayloadSchema = z
         voiceFleet: z.boolean().optional(),
         // COMPAT(dictionary): added in v0.11.1, remove gate after 2027-10-09.
         dictionary: z.boolean().optional(),
+        // COMPAT(voiceCommands): added in v0.11.1, remove gate after 2027-10-09.
+        voiceCommands: z.boolean().optional(),
         // COMPAT(serverMessageQueue): added in v0.11.0, remove gate after 2027-10-04.
         serverMessageQueue: z.boolean().optional(),
         // COMPAT(restartContinuation): added in v0.11.0, remove gate after 2027-10-04.
@@ -7758,6 +7774,10 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   VoiceCourierExecuteMessageSchema,
   VoiceToolsInvokeResponseSchema,
   VoiceCourierResultResponseSchema,
+  VoiceCommandsGetSettingsResponseSchema,
+  VoiceCommandsSetModelResponseSchema,
+  VoiceCommandsSetKeyResponseSchema,
+  VoiceCommandsTestModelResponseSchema,
   SendAgentMessageResponseMessageSchema,
   SetVoiceModeResponseMessageSchema,
   DaemonGetStatusResponseSchema,

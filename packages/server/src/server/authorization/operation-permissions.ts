@@ -223,6 +223,11 @@ const INBOUND_PERMISSION = {
   // Archives and creates workspaces on behalf of the call, like the workspace RPCs.
   "voice.tools.invoke.request": "workspace.manage",
   "voice.courier.result.request": "workspace.write",
+  "voice.commands.get_settings.request": "daemon.read",
+  // Stores provider API keys and changes what answers on calls, like the daemon config.
+  "voice.commands.set_model.request": "daemon.manage",
+  "voice.commands.set_key.request": "daemon.manage",
+  "voice.commands.test_model.request": "daemon.read",
   start_workspace_script_request: "workspace.write",
   stash_list_request: "workspace.read",
   stash_pop_request: "workspace.write",
@@ -492,6 +497,10 @@ const OUTBOUND_PERMISSION = {
   "voice.live.end.response": "workspace.write",
   "voice.call.set_mute.response": "workspace.write",
   "voice.fleet.digest.response": "workspace.write",
+  "voice.commands.get_settings.response": "daemon.read",
+  "voice.commands.set_model.response": "daemon.manage",
+  "voice.commands.set_key.response": "daemon.manage",
+  "voice.commands.test_model.response": "daemon.read",
   "voice.fleet.sync.response": "workspace.write",
   "voice.courier.execute": "workspace.write",
   "voice.tools.invoke.response": "workspace.manage",

@@ -131,6 +131,17 @@ Speech recognition mishears names and jargon: product names, people, model names
 
 Voice calls also know a built-in list of model, provider and developer terms, plus the host's own names (hosts, projects, workspaces, agents, models), with no setup.
 
+## Voice commands
+
+On a voice call, a fast model turns what you say into actions: message an agent, start one, approve a permission, read status. It also writes the short per-agent summaries the call speaks. Choose it per host in **Settings → Voice → Voice commands**:
+
+- **Model**: Cerebras, Groq, SambaNova, OpenAI or Google models picked for sub-second tool calling, any OpenAI-compatible endpoint, or **Agent only** to send every request to the agent (slower).
+- **API key**: one per provider, stored in the host's `config.json` (`providers.<id>.apiKey`) and never sent back to the app. `CEREBRAS_API_KEY`, `GROQ_API_KEY`, `SAMBANOVA_API_KEY`, `OPENAI_API_KEY` and `GEMINI_API_KEY` work too.
+- **Backup**: answers when the model fails, stalls or has no key. It defaults to OpenAI, whose key voice calls already need.
+- **Test** sends one real request with the voice tools and shows the round trip.
+
+Changes apply to the next request without restarting the daemon. With no choice saved, Paseo uses the first provider with a key, in the order Cerebras, Groq, OpenAI. The setting lives under `features.voiceMode.router`.
+
 ## Environment Variables
 
 - `PASEO_VOICE_LLM_PROVIDER`, voice agent provider override

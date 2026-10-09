@@ -6,6 +6,7 @@ import { StyleSheet } from "react-native-unistyles";
 import type { AgentProvider } from "@getpaseo/protocol/agent-types";
 import { CombinedModelSelector } from "@/components/combined-model-selector";
 import { DictionarySection } from "@/dictionary/settings-section";
+import { VoiceCommandsSection } from "@/voice-commands/settings-section";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { Button } from "@/components/ui/button";
 import { FormTextInput } from "@/components/ui/form-field";
@@ -100,6 +101,7 @@ export function VoicePage({ serverId }: { serverId: string }) {
     <View>
       <DictationSettingsSection serverId={serverId} />
       <DictionarySection key={serverId} serverId={serverId} />
+      <VoiceCommandsSection key={serverId} serverId={serverId} />
       <SettingsSection
         title={t("settings.readAloud.title")}
         info={t("settings.readAloud.description")}

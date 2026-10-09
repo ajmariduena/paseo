@@ -1945,6 +1945,8 @@ export class VoiceAssistantWebSocketServer {
         voiceFleet: Boolean(this.voiceOrchestrator),
         // COMPAT(dictionary): added in v0.11.1, remove gate after 2027-10-09.
         dictionary: true,
+        // COMPAT(voiceCommands): added in v0.11.1, remove gate after 2027-10-09.
+        voiceCommands: Boolean(this.voiceOrchestrator?.commands),
         // COMPAT(serverMessageQueue): added in v0.11.0, remove gate after 2027-10-04.
         serverMessageQueue: true,
         // COMPAT(restartContinuation): added in v0.11.0, remove gate after 2027-10-04.
