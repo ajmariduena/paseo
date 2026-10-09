@@ -13,6 +13,7 @@ import {
 import type { GitMutationService } from "./session/git-mutation/git-mutation-service.js";
 import type { WorkspaceGitService } from "./workspace-git-service.js";
 import type { PersistedWorkspaceRecord, WorkspaceRegistry } from "./workspace-registry.js";
+import type { HandoffMutationScope, HandoffOwnership } from "./handoff/ownership.js";
 import {
   generateBranchNameFromFirstAgentContext,
   type GeneratedWorkspaceName,
@@ -24,6 +25,7 @@ type WorkspaceNameGenerator = typeof generateBranchNameFromFirstAgentContext;
 type CurrentSelection = GenerateBranchNameFromFirstAgentContextOptions["currentSelection"] | null;
 
 interface WorkspaceAutoNameOptions {
+  handoffOwnership?: HandoffOwnership;
   agentManager: AgentManager;
   workspaceRegistry: Pick<WorkspaceRegistry, "update">;
   workspaceGitService: WorkspaceGitService;
@@ -43,6 +45,7 @@ interface ScheduleContext {
 }
 
 export class WorkspaceAutoName {
+  private readonly handoffOwnership: HandoffOwnership | undefined;
   private readonly agentManager: AgentManager;
   private readonly workspaceRegistry: Pick<WorkspaceRegistry, "update">;
   private readonly workspaceGitService: WorkspaceGitService;
@@ -56,6 +59,7 @@ export class WorkspaceAutoName {
   private readonly recentGenerations = new Map<string, Promise<GeneratedWorkspaceName | null>>();
 
   constructor(options: WorkspaceAutoNameOptions) {
+    this.handoffOwnership = options.handoffOwnership;
     this.agentManager = options.agentManager;
     this.workspaceRegistry = options.workspaceRegistry;
     this.workspaceGitService = options.workspaceGitService;
@@ -83,7 +87,8 @@ export class WorkspaceAutoName {
           currentSelection: context.currentSelection ?? null,
         }),
       {
-        cwd: input.workspace.cwd,
+        cwd: input.workspace.worktreeRoot ?? input.workspace.cwd,
+        workspaceId: input.workspace.workspaceId,
         message: "Failed to auto-name worktree branch",
       },
     );
@@ -103,7 +108,11 @@ export class WorkspaceAutoName {
           ...input,
           currentSelection: context.currentSelection ?? null,
         }),
-      { cwd: input.cwd, message: "Failed to auto-name directory workspace title" },
+      {
+        cwd: input.cwd,
+        workspaceId: input.workspaceId,
+        message: "Failed to auto-name directory workspace title",
+      },
     );
   }
 
@@ -133,7 +142,7 @@ export class WorkspaceAutoName {
           title,
         );
       },
-      { cwd: input.cwd, message: "Failed to auto-name agent title" },
+      { cwd: input.cwd, agentId: input.agentId, message: "Failed to auto-name agent title" },
     );
   }
 
@@ -266,10 +275,19 @@ export class WorkspaceAutoName {
     return generation;
   }
 
-  private schedule(run: () => Promise<void>, context: { cwd: string; message: string }): void {
+  private schedule(
+    run: () => Promise<void>,
+    context: HandoffMutationScope & { message: string },
+  ): void {
     setTimeout(() => {
-      void run().catch((error) => {
-        this.logger.warn({ err: error, cwd: context.cwd }, context.message);
+      const { message, ...scope } = context;
+      // Admission belongs at execution: a timer queued before preparation must not
+      // rename the branch or consume its pending marker after the fence is up.
+      const operation = this.handoffOwnership
+        ? this.handoffOwnership.withMutation(scope, run)
+        : run();
+      void operation.catch((error) => {
+        this.logger.warn({ err: error, cwd: scope.cwd }, message);
       });
     }, 0);
   }

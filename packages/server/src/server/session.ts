@@ -1314,6 +1314,7 @@ export class Session {
     this.serviceProxyPublicBaseUrl = serviceProxyPublicBaseUrl ?? null;
     this.resolveScriptHealth = resolveScriptHealth ?? null;
     this.workspaceScripts = createWorkspaceScriptsService({
+      handoffOwnership: options.handoffOwnership,
       serviceProxy: this.serviceProxy,
       scriptRuntimeStore: this.scriptRuntimeStore,
       terminalManager: this.terminalManager,

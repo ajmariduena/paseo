@@ -192,8 +192,8 @@ jobs:
 
   # native-recursive.ts serves darwin and win32, but windows-latest above is the only
   # runner that exercises it. macOS — the platform the reported watcher bug was on —
-  # otherwise has no server-test coverage. Scoped to the observer/watcher suites to
-  # bound runtime.
+  # otherwise has no server-test coverage. Keep observation and handoff contracts
+  # scoped here to bound runtime.
   server-tests-macos:
     name: server-tests (macos-14, file observation)
     needs: changes
@@ -235,6 +235,8 @@ jobs:
           npx vitest run --config packages/server/vitest.config.ts \
             packages/server/src/server/agent/agent-manager.test.ts \
             packages/server/src/server/bootstrap.smoke.test.ts \
+            packages/server/src/server/workspace-auto-name.test.ts \
+            packages/server/src/server/session/workspace-scripts/workspace-scripts-service.test.ts \
             packages/server/src/server/session/files/workspace-files-session.test.ts \
             packages/server/src/server/session/git-mutation/git-mutation-service.test.ts \
             packages/server/src/server/session/checkout/checkout-session.test.ts \

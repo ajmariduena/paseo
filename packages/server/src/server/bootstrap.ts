@@ -1288,6 +1288,7 @@ export async function createPaseoDaemon(
     wsServer?.broadcast(wrapSessionMessage(message));
   };
   const workspaceAutoName = new WorkspaceAutoName({
+    handoffOwnership,
     agentManager,
     workspaceRegistry,
     workspaceGitService,
@@ -1620,6 +1621,7 @@ export async function createPaseoDaemon(
       return workspace;
     },
     workspaceScripts: createWorkspaceScriptsService({
+      handoffOwnership,
       serviceProxy,
       scriptRuntimeStore,
       terminalManager,

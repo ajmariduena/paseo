@@ -153,8 +153,17 @@ real terminal input and rejection over the daemon connection. A worker exit cann
 its child processes stopped; uncertain admissions remain held until coordinator recovery proves
 quiescence. That recovery and complete process-tree shutdown are still pending.
 
+Scheduled workspace/agent naming now takes an admission when its callback runs, before consuming
+the pending branch-name marker or generating a title. An admitted operation drains through its
+Git change and metadata write. Real-worktree tests cover blocked naming, cancellation, generation
+failure and shared-checkout subdirectories. Named workspace scripts also take admission before
+port allocation and launch, through terminal/runtime registration. Both their RPC and tool entry
+points use the boot ledger. The real WebSocket boot test proves a fenced service cannot execute
+its port allocator; unit coverage keeps script listing and stopping available. Setup/teardown
+hooks and complete process-tree shutdown still need coordinator integration.
+
 These tests do not establish the complete ownership promise: draft catalog runtimes,
-scripts, background workspace mutations (including auto-naming, archive/recovery and worktree
+setup/teardown hooks, background workspace mutations (including provisioning, archive/recovery and worktree
 creation), shared Git metadata ownership, runtime termination and destination activation still need
 integration.
 Source history needs a readable path that does not reopen a fenced native runtime. Source release

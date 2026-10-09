@@ -18,6 +18,12 @@ import { createTestAgentClients } from "./test-utils/fake-agent-client.js";
 import { DaemonClient } from "./test-utils/daemon-client.js";
 import { HandoffOwnership } from "./handoff/ownership.js";
 import { getOrCreateServerId } from "./server-id.js";
+import {
+  createPersistedProjectRecord,
+  createPersistedWorkspaceRecord,
+  FileBackedProjectRegistry,
+  FileBackedWorkspaceRegistry,
+} from "./workspace-registry.js";
 import { isPlatform } from "../test-utils/platform.js";
 import { findFreePort } from "./service-proxy.js";
 import {
@@ -64,6 +70,56 @@ describe("paseo daemon bootstrap", () => {
     await mkdir(paseoHome);
     await mkdir(cwd);
     await writeFile(path.join(cwd, "notes.txt"), "source content");
+    // Port allocation executes before terminal creation. A terminal-only fence
+    // would still let this pre-launch process mutate the source workspace.
+    const portScript = path.join(cwd, isPlatform("win32") ? "port.cmd" : "port");
+    await writeFile(
+      portScript,
+      isPlatform("win32")
+        ? "@echo off\r\necho unsafe> blocked-port-script.txt\r\necho 32123\r\n"
+        : "#!/bin/sh\nprintf unsafe > blocked-port-script.txt\nprintf '32123\\n'\n",
+      { mode: 0o755 },
+    );
+    await writeFile(
+      path.join(cwd, "paseo.json"),
+      JSON.stringify({
+        worktree: { servicePorts: { portScript } },
+        scripts: { app: { type: "service", command: "echo should-not-run" } },
+      }),
+    );
+    const registryLogger = pino({ level: "silent" });
+    const projects = new FileBackedProjectRegistry(
+      path.join(paseoHome, "projects", "projects.json"),
+      registryLogger,
+    );
+    const workspaces = new FileBackedWorkspaceRegistry(
+      path.join(paseoHome, "projects", "workspaces.json"),
+      registryLogger,
+    );
+    await projects.initialize();
+    await workspaces.initialize();
+    const now = new Date().toISOString();
+    await projects.upsert(
+      createPersistedProjectRecord({
+        projectId: "handoff-project",
+        rootPath: cwd,
+        kind: "non_git",
+        displayName: "Handoff",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+    await workspaces.upsert(
+      createPersistedWorkspaceRecord({
+        workspaceId: "moved-workspace",
+        projectId: "handoff-project",
+        cwd,
+        kind: "directory",
+        displayName: "Handoff",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
     const ownership = new HandoffOwnership({
       directory: path.join(paseoHome, "handoff-ownership"),
       sourceServerId: getOrCreateServerId(paseoHome),
@@ -88,6 +144,18 @@ describe("paseo daemon bootstrap", () => {
       );
       expect((await client.fetchAgents()).entries).toEqual([]);
       const error = `Workspace is held by handoff ${transferId} (preparing)`;
+      expect(await client.startWorkspaceScript("moved-workspace", "app", "handoff-script")).toEqual(
+        {
+          requestId: "handoff-script",
+          workspaceId: "moved-workspace",
+          scriptName: "app",
+          terminalId: null,
+          error,
+        },
+      );
+      await expect(access(path.join(cwd, "blocked-port-script.txt"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
       expect(
         await client.createFileEntry({ cwd, parentPath: ".", name: "blocked.txt", kind: "file" }),
       ).toMatchObject({ success: false, error });

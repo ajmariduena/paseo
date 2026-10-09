@@ -27,6 +27,7 @@ import {
 } from "../../script-status-projection.js";
 import { deriveProjectServiceSlug, deriveProjectSlug } from "../../workspace-git-metadata.js";
 import type { PaseoServicePortAllocation } from "@getpaseo/protocol/paseo-config-schema";
+import type { HandoffOwnership } from "../../handoff/ownership.js";
 
 type WorkspaceScriptsPayload = WorkspaceDescriptorPayload["scripts"];
 
@@ -54,6 +55,7 @@ export interface WorkspaceScriptsService {
 type WorkspaceScriptsGitSource = Pick<WorkspaceGitService, "peekSnapshot">;
 
 export function createWorkspaceScriptsService(deps: {
+  handoffOwnership?: HandoffOwnership;
   serviceProxy: ServiceProxySubsystem | null;
   scriptRuntimeStore: WorkspaceScriptRuntimeStore | null;
   terminalManager: TerminalManager | null;
@@ -175,28 +177,36 @@ export function createWorkspaceScriptsService(deps: {
   async function launchProcess(input: { workspaceId: string; scriptName: string }) {
     const available = requireAvailable();
     const workspace = await getWorkspace(input.workspaceId);
-    await assertAutomationAllowed(workspace.workspaceId);
-    const project = await projectRegistry.get(workspace.projectId);
-    const gitMetadata = resolveGitMetadata(workspace, project);
-    const result = await spawnWorkspaceScript({
-      repoRoot: workspace.cwd,
+    const release = await deps.handoffOwnership?.acquireMutation({
+      cwd: workspace.cwd,
       workspaceId: workspace.workspaceId,
-      projectSlug: gitMetadata.projectSlug,
-      branchName: gitMetadata.currentBranch,
-      scriptName: input.scriptName,
-      daemonPort: getDaemonTcpPort?.() ?? null,
-      daemonListenHost: getDaemonTcpHost?.() ?? null,
-      serviceProxyPublicBaseUrl,
-      serviceProxy: available.serviceProxy,
-      runtimeStore: available.runtimeStore,
-      terminalManager: available.terminalManager,
-      globalServicePorts,
-      logger,
-      onLifecycleChanged: () => {
-        void emitStatusUpdate(workspace.workspaceId, workspace.cwd);
-      },
     });
-    return { workspace, project, terminalId: result.terminalId };
+    try {
+      await assertAutomationAllowed(workspace.workspaceId);
+      const project = await projectRegistry.get(workspace.projectId);
+      const gitMetadata = resolveGitMetadata(workspace, project);
+      const result = await spawnWorkspaceScript({
+        repoRoot: workspace.cwd,
+        workspaceId: workspace.workspaceId,
+        projectSlug: gitMetadata.projectSlug,
+        branchName: gitMetadata.currentBranch,
+        scriptName: input.scriptName,
+        daemonPort: getDaemonTcpPort?.() ?? null,
+        daemonListenHost: getDaemonTcpHost?.() ?? null,
+        serviceProxyPublicBaseUrl,
+        serviceProxy: available.serviceProxy,
+        runtimeStore: available.runtimeStore,
+        terminalManager: available.terminalManager,
+        globalServicePorts,
+        logger,
+        onLifecycleChanged: () => {
+          void emitStatusUpdate(workspace.workspaceId, workspace.cwd);
+        },
+      });
+      return { workspace, project, terminalId: result.terminalId };
+    } finally {
+      release?.();
+    }
   }
 
   async function launch(input: {
