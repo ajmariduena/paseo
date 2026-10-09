@@ -713,11 +713,13 @@ export type AgentModelTransitionPlan =
   | { kind: "reject"; reason: string };
 
 /**
- * What still depends on a live runtime. `background_work` ends on its own; the other two never
- * end without the process, so a caller must not wait on them.
+ * What still depends on a live runtime. `background_work` ends on its own. Session crons end only
+ * when every one is a one-shot (`recurring: false`); `null` means the CLI did not say. The last
+ * two never end without the process, so a caller must not wait on them.
  */
 export type AgentRuntimeHold =
-  | { kind: "background_work"; taskIds: string[]; cronCount: number }
+  | { kind: "background_work"; taskIds: string[] }
+  | { kind: "session_crons"; count: number; recurring: boolean | null }
   | { kind: "inventory_unknown" }
   | { kind: "session_permissions" };
 

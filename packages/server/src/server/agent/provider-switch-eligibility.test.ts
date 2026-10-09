@@ -15,6 +15,7 @@ import {
   type ProviderSwitchWorkFacts,
 } from "./provider-switch-eligibility.js";
 import { createTestAgentClients } from "../test-utils/fake-agent-client.js";
+import { ClaudeRuntimeResidency } from "./providers/claude/runtime-residency.js";
 import {
   createFrameFeed,
   createScriptedClaudeSession,
@@ -156,7 +157,8 @@ test("a probe that cannot answer is reported, not waited on", async () => {
 
 test("typed provider holds are preferred over the boolean probe and keep their nature", async () => {
   const holds: AgentRuntimeHold[] = [
-    { kind: "background_work", taskIds: ["shell-1"], cronCount: 1 },
+    { kind: "background_work", taskIds: ["shell-1"] },
+    { kind: "session_crons", count: 1, recurring: false },
     { kind: "inventory_unknown" },
     { kind: "session_permissions" },
   ];
@@ -168,7 +170,7 @@ test("typed provider holds are preferred over the boolean probe and keep their n
   const blockers = await collectProviderSwitchBlockers(quietFacts(), session);
 
   expect(blockers).toEqual(holds.map((hold) => ({ kind: "provider_runtime_hold", hold })));
-  expect(blockers.map(isWaitableProviderSwitchBlocker)).toEqual([true, false, false]);
+  expect(blockers.map(isWaitableProviderSwitchBlocker)).toEqual([true, true, false, false]);
   expect(
     await collectProviderSwitchBlockers(quietFacts(), { describeRuntimeHolds: async () => [] }),
   ).toEqual([]);
@@ -180,10 +182,37 @@ test.each<[string, ProviderSwitchBlocker, boolean]>([
   ["running provider subagents", { kind: "provider_subagents_running", count: 1 }, true],
   ["a replacement reservation", { kind: "replacement_reserved" }, true],
   ["an unreleased runtime", { kind: "runtime_release_unproven", state: "failed" }, false],
+  [
+    "a recurring session cron",
+    { kind: "provider_runtime_hold", hold: { kind: "session_crons", count: 1, recurring: true } },
+    false,
+  ],
+  [
+    "a cron whose schedule kind is unknown",
+    { kind: "provider_runtime_hold", hold: { kind: "session_crons", count: 1, recurring: null } },
+    false,
+  ],
   ["an unexplained provider refusal", { kind: "provider_background_work" }, false],
   ["an unverifiable provider", { kind: "provider_background_unverified", reason: "x" }, false],
 ])("%s is %s", (_label, blocker, waitable) => {
   expect(isWaitableProviderSwitchBlocker(blocker)).toBe(waitable);
+});
+
+test("a recurring Claude cron is never offered as finite work to wait for", async () => {
+  const residency = new ClaudeRuntimeResidency();
+  residency.observeStopHook({
+    hook_event_name: "Stop",
+    background_tasks: [],
+    session_crons: [{ id: "repeat", schedule: "* * * * *", recurring: true, prompt: "poll" }],
+  });
+  const session = { describeRuntimeHolds: async () => residency.holds() };
+
+  const blockers = await collectProviderSwitchBlockers(quietFacts(), session);
+
+  expect(blockers).toEqual([
+    { kind: "provider_runtime_hold", hold: { kind: "session_crons", count: 1, recurring: true } },
+  ]);
+  expect(blockers.map(isWaitableProviderSwitchBlocker)).toEqual([false]);
 });
 
 test("a Claude runtime reports what still holds it instead of a bare refusal", async () => {
@@ -208,10 +237,7 @@ test("a Claude runtime reports what still holds it instead of a bare refusal", a
     });
     await feed.drained();
     expect(await collectProviderSwitchBlockers(quietFacts(), session)).toEqual([
-      {
-        kind: "provider_runtime_hold",
-        hold: { kind: "background_work", taskIds: ["shell-1"], cronCount: 0 },
-      },
+      { kind: "provider_runtime_hold", hold: { kind: "background_work", taskIds: ["shell-1"] } },
       { kind: "provider_runtime_hold", hold: { kind: "inventory_unknown" } },
     ]);
   } finally {

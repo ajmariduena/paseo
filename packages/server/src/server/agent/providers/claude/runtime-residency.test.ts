@@ -3,11 +3,14 @@ import { describe, expect, it } from "vitest";
 
 import { ClaudeRuntimeResidency } from "./runtime-residency.js";
 
-function stopHook(backgroundTaskIds: string[], cronCount = 0) {
+function stopHook(backgroundTaskIds: string[], cronCount = 0, recurring?: boolean) {
   return {
     hook_event_name: "Stop",
     background_tasks: backgroundTaskIds.map((id) => ({ id, type: "shell", status: "running" })),
-    session_crons: Array.from({ length: cronCount }, (_, index) => ({ id: `cron-${index}` })),
+    session_crons: Array.from({ length: cronCount }, (_, index) => ({
+      id: `cron-${index}`,
+      ...(recurring === undefined ? {} : { schedule: "* * * * *", recurring, prompt: "poll" }),
+    })),
   };
 }
 
@@ -71,10 +74,17 @@ describe("ClaudeRuntimeResidency", () => {
     const residency = new ClaudeRuntimeResidency();
     expect(residency.holds()).toEqual([{ kind: "inventory_unknown" }]);
 
-    residency.observeStopHook(stopHook(["shell-1"], 1));
+    residency.observeStopHook(stopHook(["shell-1"], 1, true));
     expect(residency.holds()).toEqual([
-      { kind: "background_work", taskIds: ["shell-1"], cronCount: 1 },
+      { kind: "background_work", taskIds: ["shell-1"] },
+      { kind: "session_crons", count: 1, recurring: true },
     ]);
+
+    residency.observeStopHook(stopHook([], 2, false));
+    expect(residency.holds()).toEqual([{ kind: "session_crons", count: 2, recurring: false }]);
+
+    residency.observeStopHook(stopHook([], 1));
+    expect(residency.holds()).toEqual([{ kind: "session_crons", count: 1, recurring: null }]);
 
     residency.observeStopHook(stopHook([]));
     residency.observePermissionUpdates([{ destination: "session" }]);
@@ -83,7 +93,7 @@ describe("ClaudeRuntimeResidency", () => {
     residency.reset();
     residency.observeMessage(tasksChanged(["monitor-1"]));
     expect(residency.holds()).toEqual([
-      { kind: "background_work", taskIds: ["monitor-1"], cronCount: 0 },
+      { kind: "background_work", taskIds: ["monitor-1"] },
       { kind: "inventory_unknown" },
     ]);
   });

@@ -112,13 +112,24 @@ export async function collectProviderSwitchBlockers(
   return blockers;
 }
 
+function isFiniteRuntimeHold(hold: AgentRuntimeHold): boolean {
+  switch (hold.kind) {
+    case "background_work":
+      return true;
+    case "session_crons":
+      return hold.recurring === false;
+    default:
+      return false;
+  }
+}
+
 /** Whether the blocker ends on its own, so a caller may wait for it instead of refusing. */
 export function isWaitableProviderSwitchBlocker(blocker: ProviderSwitchBlocker): boolean {
   switch (blocker.kind) {
     case "runtime_release_unproven":
       return blocker.state === "pending";
     case "provider_runtime_hold":
-      return blocker.hold.kind === "background_work";
+      return isFiniteRuntimeHold(blocker.hold);
     case "provider_background_work":
     case "provider_background_unverified":
       return false;
