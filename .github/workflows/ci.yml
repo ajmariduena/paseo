@@ -227,6 +227,8 @@ jobs:
             packages/server/src/server/handoff/workspace.test.ts \
             packages/server/src/server/handoff/workspace.posix.test.ts \
             packages/server/src/server/handoff/archive.test.ts \
+            packages/server/src/server/handoff/ownership.test.ts \
+            packages/server/src/server/handoff/ownership.posix.test.ts \
             packages/server/src/server/handoff/archive.e2e.test.ts \
             --bail=1 --maxWorkers=1
 

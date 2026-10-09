@@ -116,6 +116,15 @@ in the existing Linux/Windows server integration job and the macOS server job. L
 Linux only until those CI jobs pass. Staging cleanup, host-wide disk quotas and the ownership
 transaction are still pending; the daemon does not advertise the complete handoff capability.
 
+`ownership.ts` now supplies an isolated source ledger and mutation leases. Its real-disk tests
+cover recovering fences, draining admitted operations, cancel/release races, failures before and
+after journal writes, and destination/content-bound signed release receipts. The signing key is
+transfer-specific and stays in the source journal; the destination must pin the public key from
+its authenticated source preflight. These tests do not establish the complete ownership promise:
+bootstrap, runtime termination, all mutation entry points and destination activation are not yet
+wired to the ledger. Source release explicitly refuses Windows until durable directory updates
+have an implementation there; archive staging alone does not satisfy that requirement.
+
 Before the workspace slice is complete, cover directories without Git. Directory-entry durability
 belongs in the transaction's ready/commit boundary. Linux tests do not establish macOS or Windows
 behavior. Path collision checks include index-only entries and directory segments. External Git

@@ -13,9 +13,10 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test as platformTest } from "vitest";
 import { captureWorkspace, restoreWorkspace } from "./workspace.js";
 
+const test = platformTest.skipIf(process.platform === "win32");
 const exec = promisify(execFile);
 let root: string;
 let source: string;

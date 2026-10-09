@@ -1,0 +1,371 @@
+import { createPrivateKey, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
+import { mkdir, realpath } from "node:fs/promises";
+import path from "node:path";
+import { z } from "zod";
+import { HandoffDigestSchema, HandoffTransferIdSchema } from "@getpaseo/protocol/handoff";
+import { readBoundedFile, syncDirectory, writeJournal } from "./artifacts.js";
+
+const SourceSchema = z.object({
+  id: HandoffTransferIdSchema,
+  workspaceId: z.string().min(1),
+  cwd: z.string().min(1),
+  agentIds: z.array(z.string().min(1)).max(1000),
+  destinationServerId: z.string().min(1),
+  reservationId: HandoffTransferIdSchema,
+});
+const RecordSchema = SourceSchema.extend({
+  state: z.enum(["preparing", "ready", "released", "cancelled"]),
+  manifestDigest: HandoffDigestSchema.nullable(),
+  privateKey: z.string().min(1).max(1024),
+  publicKey: z.string().min(1).max(1024),
+});
+const JournalSchema = z.object({
+  version: z.literal(1),
+  sourceServerId: z.string().min(1),
+  records: z.array(RecordSchema).max(10_000),
+});
+const BindingSchema = z.object({
+  version: z.literal(1),
+  transferId: HandoffTransferIdSchema,
+  sourceServerId: z.string().min(1),
+  destinationServerId: z.string().min(1),
+  reservationId: HandoffTransferIdSchema,
+  manifestDigest: HandoffDigestSchema,
+});
+const ReceiptSchema = BindingSchema.extend({ signature: z.string().min(1).max(1024) });
+
+type SourceInput = z.infer<typeof SourceSchema>;
+type SourceRecord = z.infer<typeof RecordSchema>;
+type ReleaseBinding = z.infer<typeof BindingSchema>;
+export type HandoffReleaseReceipt = z.infer<typeof ReceiptSchema>;
+export type SourceHandoffStatus = Omit<SourceRecord, "privateKey">;
+
+export interface HandoffMutationScope {
+  cwd: string;
+  workspaceId?: string;
+  agentId?: string;
+}
+interface Mutation {
+  scope: HandoffMutationScope;
+  done: Promise<void>;
+}
+
+export class HandoffOwnershipError extends Error {
+  constructor(
+    readonly code:
+      | "fenced"
+      | "conflict"
+      | "invalid_state"
+      | "not_found"
+      | "storage_uncertain"
+      | "unsupported_host",
+    message: string,
+  ) {
+    super(message);
+    this.name = "HandoffOwnershipError";
+  }
+}
+
+function reject(code: HandoffOwnershipError["code"], message: string): never {
+  throw new HandoffOwnershipError(code, message);
+}
+function overlaps(left: string, right: string): boolean {
+  const within = (parent: string, child: string) => {
+    const relative = path.relative(parent, child);
+    return (
+      relative === "" ||
+      (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`))
+    );
+  };
+  return within(left, right) || within(right, left);
+}
+function protects(record: SourceRecord, scope: HandoffMutationScope): boolean {
+  return (
+    record.state !== "cancelled" &&
+    (record.workspaceId === scope.workspaceId ||
+      record.agentIds.includes(scope.agentId ?? "") ||
+      overlaps(record.cwd, scope.cwd))
+  );
+}
+function publicStatus(record: SourceRecord): SourceHandoffStatus {
+  const { privateKey: _key, ...status } = record;
+  return structuredClone(status);
+}
+
+/** Load before any runtime, queue, or automation can resume. One instance owns all write leases. */
+export class HandoffOwnership {
+  private readonly records = new Map<string, SourceRecord>();
+  private readonly mutations = new Set<Mutation>();
+  private tail: Promise<unknown> = Promise.resolve();
+  private initialized = false;
+  private uncertain = false;
+  private readonly journalPath: string;
+
+  constructor(
+    private readonly options: {
+      directory: string;
+      sourceServerId: string;
+      write?: typeof writeJournal;
+    },
+  ) {
+    this.journalPath = path.join(options.directory, "ownership.json");
+  }
+
+  async initialize(): Promise<void> {
+    if (this.initialized) return;
+    let created = false;
+    try {
+      await mkdir(this.options.directory, { mode: 0o700 });
+      created = true;
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+    }
+    if (created) {
+      await this.persist();
+      await syncDirectory(path.dirname(this.options.directory));
+    } else {
+      const bytes = await readBoundedFile(this.journalPath, 20 * 1024 * 1024);
+      const journal = JournalSchema.parse(JSON.parse(bytes.toString("utf8")));
+      if (journal.sourceServerId !== this.options.sourceServerId)
+        reject("storage_uncertain", "Ownership journal belongs to another host");
+      const loaded = new Map<string, SourceRecord>();
+      for (const record of journal.records) {
+        if (
+          loaded.has(record.id) ||
+          !path.isAbsolute(record.cwd) ||
+          ((record.state === "released" || record.state === "ready") &&
+            record.manifestDigest === null)
+        )
+          reject("storage_uncertain", "Invalid ownership journal");
+        const publicKey = createPublicKey(
+          createPrivateKey({
+            key: Buffer.from(record.privateKey, "base64"),
+            format: "der",
+            type: "pkcs8",
+          }),
+        )
+          .export({ type: "spki", format: "der" })
+          .toString("base64");
+        if (publicKey !== record.publicKey)
+          reject("storage_uncertain", "Invalid handoff signing key");
+        loaded.set(record.id, record);
+      }
+      for (const [id, record] of loaded) this.records.set(id, record);
+    }
+    this.initialized = true;
+  }
+
+  async prepare(input: SourceInput): Promise<SourceHandoffStatus> {
+    const parsed = SourceSchema.parse(input);
+    const source = {
+      ...parsed,
+      cwd: await realpath(parsed.cwd),
+      agentIds: [...new Set(parsed.agentIds)].sort(),
+    };
+    return this.serialize(async () => {
+      const existing = this.records.get(source.id);
+      if (existing) {
+        if (JSON.stringify(SourceSchema.parse(existing)) !== JSON.stringify(source))
+          reject("conflict", "Transfer ID is already bound to another source or destination");
+        return publicStatus(existing);
+      }
+      if (this.records.size >= 10_000)
+        reject("invalid_state", "Ownership journal reached its transfer limit");
+      this.assertAllowed({ cwd: source.cwd, workspaceId: source.workspaceId });
+      for (const agentId of source.agentIds) this.assertAllowed({ cwd: source.cwd, agentId });
+      const keys = generateKeyPairSync("ed25519");
+      const record: SourceRecord = {
+        ...source,
+        state: "preparing",
+        manifestDigest: null,
+        privateKey: keys.privateKey.export({ type: "pkcs8", format: "der" }).toString("base64"),
+        publicKey: keys.publicKey.export({ type: "spki", format: "der" }).toString("base64"),
+      };
+      // Fence synchronously before awaiting durability; a failed write stays fenced in memory.
+      this.records.set(record.id, record);
+      await this.persist();
+      return publicStatus(record);
+    });
+  }
+
+  async withMutation<T>(scope: HandoffMutationScope, operation: () => Promise<T>): Promise<T> {
+    const canonical = { ...scope, cwd: await realpath(scope.cwd) };
+    this.assertAllowed(canonical);
+    let finish: () => void = () => {};
+    const done = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const mutation = { scope: canonical, done };
+    this.mutations.add(mutation);
+    try {
+      return await operation();
+    } finally {
+      this.mutations.delete(mutation);
+      finish();
+    }
+  }
+
+  async drain(id: string): Promise<void> {
+    const record = this.requireRecord(id);
+    if (record.state === "cancelled") reject("invalid_state", "Cancelled handoff is not fenced");
+    await Promise.all(
+      [...this.mutations]
+        .filter((mutation) => protects(record, mutation.scope))
+        .map((mutation) => mutation.done),
+    );
+  }
+
+  markReady(id: string, manifestDigest: string): Promise<SourceHandoffStatus> {
+    HandoffDigestSchema.parse(manifestDigest);
+    return this.serialize(async () => {
+      const record = this.requireRecord(id);
+      if (record.state === "cancelled" || record.state === "released")
+        reject("invalid_state", "Handoff cannot prepare in its current state");
+      if (record.manifestDigest !== null && record.manifestDigest !== manifestDigest)
+        reject("conflict", "Prepared handoff content cannot change");
+      this.assertDrained(record);
+      const ready: SourceRecord = { ...record, state: "ready", manifestDigest };
+      this.records.set(id, ready);
+      await this.persist();
+      return publicStatus(ready);
+    });
+  }
+
+  release(
+    id: string,
+    expected: ReleaseBinding,
+    verifyStoppedSource: () => Promise<void>,
+  ): Promise<HandoffReleaseReceipt> {
+    const binding = BindingSchema.parse(expected);
+    return this.serialize(async () => {
+      const record = this.requireRecord(id);
+      if (process.platform === "win32")
+        reject("unsupported_host", "Durable handoff release is not supported on Windows yet");
+      if (record.state !== "ready" && record.state !== "released")
+        reject("invalid_state", "Handoff is not ready for release");
+      const actual = BindingSchema.parse({
+        version: 1,
+        transferId: record.id,
+        sourceServerId: this.options.sourceServerId,
+        destinationServerId: record.destinationServerId,
+        reservationId: record.reservationId,
+        manifestDigest: record.manifestDigest,
+      });
+      if (JSON.stringify(actual) !== JSON.stringify(binding))
+        reject("conflict", "Release does not match the prepared destination and content");
+      this.assertDrained(record);
+      if (record.state !== "released") {
+        await verifyStoppedSource();
+        this.records.set(id, { ...record, state: "released" });
+        await this.persist();
+      }
+      const signature = sign(
+        null,
+        Buffer.from(JSON.stringify(actual)),
+        createPrivateKey({
+          key: Buffer.from(record.privateKey, "base64"),
+          format: "der",
+          type: "pkcs8",
+        }),
+      ).toString("base64");
+      return { ...actual, signature };
+    });
+  }
+
+  cancel(id: string): Promise<SourceHandoffStatus> {
+    return this.serialize(async () => {
+      const record = this.requireRecord(id);
+      if (record.state === "released")
+        reject(
+          "invalid_state",
+          "Released ownership cannot return through cancellation; start a new handoff",
+        );
+      const cancelled: SourceRecord = { ...record, state: "cancelled" };
+      // Keep the live fence until cancellation is durable.
+      await this.persistWith(cancelled);
+      this.records.set(id, cancelled);
+      return publicStatus(cancelled);
+    });
+  }
+
+  status(id: string): SourceHandoffStatus {
+    return publicStatus(this.requireRecord(id));
+  }
+
+  private assertHealthy(): void {
+    if (!this.initialized || this.uncertain)
+      reject(
+        "storage_uncertain",
+        "Handoff ownership is unavailable until its journal is recovered",
+      );
+  }
+  private assertAllowed(scope: HandoffMutationScope): void {
+    this.assertHealthy();
+    const fence = [...this.records.values()].find((record) => protects(record, scope));
+    if (fence) reject("fenced", `Workspace is held by handoff ${fence.id} (${fence.state})`);
+  }
+  private requireRecord(id: string): SourceRecord {
+    this.assertHealthy();
+    const record = this.records.get(id);
+    if (!record) reject("not_found", "Handoff ownership record not found");
+    return record;
+  }
+  private assertDrained(record: SourceRecord): void {
+    if ([...this.mutations].some((mutation) => protects(record, mutation.scope)))
+      reject("invalid_state", "Workspace mutations are still running");
+  }
+  private async persistWith(replacement?: SourceRecord): Promise<void> {
+    const records = [...this.records.values()].map((record) =>
+      record.id === replacement?.id ? replacement : record,
+    );
+    try {
+      const journal = JournalSchema.parse({
+        version: 1,
+        sourceServerId: this.options.sourceServerId,
+        records,
+      });
+      if (Buffer.byteLength(JSON.stringify(journal)) > 20 * 1024 * 1024)
+        reject("invalid_state", "Ownership journal exceeds its byte limit");
+      await (this.options.write ?? writeJournal)(this.journalPath, journal);
+    } catch (error) {
+      this.uncertain = true;
+      throw error;
+    }
+  }
+  private persist(): Promise<void> {
+    return this.persistWith();
+  }
+  private serialize<T>(operation: () => Promise<T>): Promise<T> {
+    const next = this.tail.then(() => {
+      this.assertHealthy();
+      return operation();
+    });
+    this.tail = next.catch(() => undefined);
+    return next;
+  }
+}
+
+/** The expected key and binding come from the authenticated source preflight, never the receipt. */
+export function verifyHandoffRelease(
+  receipt: unknown,
+  expected: ReleaseBinding,
+  publicKey: string,
+): boolean {
+  const parsed = ReceiptSchema.safeParse(receipt);
+  if (!parsed.success) return false;
+  const signature = Buffer.from(parsed.data.signature, "base64");
+  if (signature.length !== 64 || signature.toString("base64") !== parsed.data.signature)
+    return false;
+  const binding = BindingSchema.parse(parsed.data);
+  if (JSON.stringify(binding) !== JSON.stringify(BindingSchema.parse(expected))) return false;
+  try {
+    return verify(
+      null,
+      Buffer.from(JSON.stringify(binding)),
+      createPublicKey({ key: Buffer.from(publicKey, "base64"), format: "der", type: "spki" }),
+      signature,
+    );
+  } catch {
+    return false;
+  }
+}
