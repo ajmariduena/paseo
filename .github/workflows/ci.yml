@@ -237,6 +237,8 @@ jobs:
             packages/server/src/server/agent/agent-manager.test.ts \
             packages/server/src/server/agent/mcp-server.test.ts \
             packages/server/src/server/bootstrap.smoke.test.ts \
+            packages/server/src/server/bootstrap-managed-processes.test.ts \
+            packages/server/src/server/managed-processes/managed-processes.test.ts \
             packages/server/src/server/workspace-auto-name.test.ts \
             packages/server/src/server/workspace-reconciliation-service.test.ts \
             packages/server/src/server/worktree-storage.test.ts \

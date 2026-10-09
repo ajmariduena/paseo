@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import pino from "pino";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import type {
   ManagedProcessRecord,
@@ -26,11 +26,12 @@ afterEach(async () => {
 });
 
 describe("daemon managed process bootstrap", () => {
-  test("reaps stale helper process records during daemon bootstrap", async () => {
+  test("handoff recovery runs during bootstrap and drains before daemon shutdown finishes", async () => {
     tempRoot = await mkdtemp(path.join(os.tmpdir(), "paseo-managed-bootstrap-"));
     staticDir = await mkdtemp(path.join(os.tmpdir(), "paseo-static-"));
     const paseoHome = path.join(tempRoot, ".paseo");
-    const managedProcesses = new FakeManagedProcesses();
+    const finishRecovery = Promise.withResolvers<void>();
+    const managedProcesses = new FakeManagedProcesses(finishRecovery.promise);
     const daemon = await createPaseoDaemon(
       {
         listen: "127.0.0.1:0",
@@ -49,16 +50,42 @@ describe("daemon managed process bootstrap", () => {
       pino({ level: "silent" }),
     );
 
+    const resourcesStopped = Promise.withResolvers<void>();
+    const stopProxy = daemon.serviceProxy.stopStandalone.bind(daemon.serviceProxy);
+    const proxyStop = vi
+      .spyOn(daemon.serviceProxy, "stopStandalone")
+      .mockImplementation(async () => {
+        await stopProxy();
+        resourcesStopped.resolve();
+      });
+    let stopped = false;
+    const stopping = daemon.stop().then(() => {
+      stopped = true;
+      return undefined;
+    });
     try {
       expect(managedProcesses.reapCount).toBe(1);
+      expect(managedProcesses.reapFinished).toBe(false);
+      await resourcesStopped.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(stopped).toBe(false);
+      finishRecovery.resolve();
+      await stopping;
+      expect(managedProcesses.reapFinished).toBe(true);
+      expect(stopped).toBe(true);
     } finally {
-      await daemon.stop().catch(() => undefined);
+      finishRecovery.resolve();
+      await stopping;
+      proxyStop.mockRestore();
     }
   });
 });
 
 class FakeManagedProcesses implements ManagedProcessRegistry {
   reapCount = 0;
+  reapFinished = false;
+
+  constructor(private readonly finishRecovery: Promise<void>) {}
 
   async record(input: ManagedProcessRecordInput): Promise<ManagedProcessRecord> {
     return {
@@ -78,6 +105,8 @@ class FakeManagedProcesses implements ManagedProcessRegistry {
 
   async reapStale(): Promise<ManagedProcessReapResult> {
     this.reapCount += 1;
+    await this.finishRecovery;
+    this.reapFinished = true;
     return {
       checked: 1,
       dead: 0,

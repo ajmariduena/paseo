@@ -745,7 +745,10 @@ export async function createPaseoDaemon(
   // Reconcile the helper-process ledger in the background so it never blocks the
   // daemon from coming up; terminating a live leftover can take a few seconds.
   // Best-effort, so a failure is logged here rather than crashing startup.
-  void reconcileManagedProcessLedger(managedProcesses, logger).catch((error) => {
+  const managedProcessReconciliation = reconcileManagedProcessLedger(
+    managedProcesses,
+    logger,
+  ).catch((error) => {
     logger.warn({ err: error }, "Failed to reconcile managed helper process ledger");
   });
   let relayRuntime: RelayRuntime | null = null;
@@ -2059,6 +2062,7 @@ export async function createPaseoDaemon(
         httpServer.closeAllConnections();
         await new Promise<void>((resolve) => httpServer.close(() => resolve()));
       }
+      await managedProcessReconciliation;
       throw error;
     }
   };
@@ -2120,6 +2124,8 @@ export async function createPaseoDaemon(
     if (listenTarget.type === "socket" && existsSync(listenTarget.path)) {
       unlinkSync(listenTarget.path);
     }
+    // Recovery also owns ledger writes; do not let them outlive shutdown.
+    await managedProcessReconciliation;
   };
 
   return {

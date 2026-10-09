@@ -24,6 +24,12 @@ A terminal's synthetic close event and its shell's exit do not prove that all de
 Awaited terminal stops now reject missing PTY exit confirmation and retain the session for retry;
 the coordinator still needs process-tree and previously closed terminal coverage.
 
+The managed-helper ledger covers registered helper PIDs, not every writer or its descendants.
+Recovery retains records after termination timeout or uncertain exit inspection, and unreadable
+records prevent a complete inventory. A real-helper regression proves retention across registry
+restart and removal after confirmed exit. This evidence does not replace the coordinator's full
+process-tree inventory.
+
 Credentials, permission grants, absolute launch paths, host MCP configuration, sockets, browser
 sessions, process IDs, installed dependencies, and ignored files do not migrate automatically.
 Use destination credentials and permissions. Inventory unavailable integrations and interrupted
@@ -203,11 +209,12 @@ Sibling reads and writes must settle even when one fails. Real Git and registry 
 placement, absent members, partial admission and pending cleanup/publication. The boot test proves
 the shared ledger prevents background changes to persisted source records.
 
-Daemon shutdown awaits reconciliation before releasing its state. Stopping watches alone leaves
-Git reads and registry writes in flight; they can recreate files during test cleanup or race a
-subsequent daemon. A held real-registry reconciliation and a daemon shutdown gate reproduce the
-early return. The [macOS job passed on `2390b2f44`](https://github.com/ajmariduena/paseo/actions/runs/37901477285/job/113725335021)
-after this shutdown fix; newer mutation gates still need their own CI evidence.
+Daemon shutdown awaits workspace reconciliation and background managed-helper recovery before
+releasing its state. Stopping watches alone leaves Git reads and registry writes in flight; they
+can recreate files during test cleanup or race a subsequent daemon. Held reconciliation and helper
+recovery regressions reproduce the early return. The [macOS job passed on `08eed1128`](https://github.com/ajmariduena/paseo/actions/runs/37905242577/job/113737292319),
+including the storage and reconciliation mutation gates. Helper-recovery changes still need fresh
+CI evidence.
 
 Workspace archive acquires all target identities and backing/source paths before stopping setup,
 archiving agents or executing teardown. It holds admission through directory removal and final
