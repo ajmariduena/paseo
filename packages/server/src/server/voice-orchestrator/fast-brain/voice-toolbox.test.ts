@@ -43,6 +43,7 @@ class MemoryCatalog implements PaseoToolCatalog {
   readonly createdWorkspaces: Record<string, unknown>[] = [];
   readonly createdAgents: Record<string, unknown>[] = [];
   readonly notes: Record<string, unknown>[] = [];
+  readonly sentPrompts: Record<string, unknown>[] = [];
   agentResult: Record<string, unknown> = { agentId: "created-agent", status: "running" };
   modelFailure = false;
   workspaceFailure = false;
@@ -90,6 +91,10 @@ class MemoryCatalog implements PaseoToolCatalog {
           return { isError: true, content: [{ type: "text", text: "Agent launch failed" }] };
         this.createdAgents.push(structuredClone(args));
         result = this.agentResult;
+        break;
+      case "send_agent_prompt":
+        this.sentPrompts.push(structuredClone(args));
+        result = { success: true, status: "running", disposition: "started" };
         break;
       case "create_note":
         this.notes.push(structuredClone(args));
@@ -348,5 +353,45 @@ describe("VoiceToolbox agent creation", () => {
     });
     expect(result.ok).toBe(false);
     expect(catalog.notes).toEqual([{ title: "Primera nota" }]);
+  });
+});
+
+describe("VoiceToolbox repeated messages", () => {
+  it("does not send the same instruction twice when the user repeats it", async () => {
+    const { toolbox, catalog } = await setup();
+    const first = await toolbox.execute({
+      operationId: "send-1",
+      tool: "send_message",
+      args: {
+        agentId: "agent-a",
+        message: "Revisa los canales privados de Slack y que también se indexen",
+      },
+    });
+    const again = await toolbox.execute({
+      operationId: "send-2",
+      tool: "send_message",
+      args: {
+        agentId: "agent-a",
+        message: "Revisa también los canales privados de Slack para que se indexen",
+      },
+    });
+    expect(first.ok).toBe(true);
+    expect(again.text).toContain("was not sent again");
+    expect(catalog.sentPrompts).toHaveLength(1);
+  });
+
+  it("sends a different instruction to the same agent", async () => {
+    const { toolbox, catalog } = await setup();
+    await toolbox.execute({
+      operationId: "send-3",
+      tool: "send_message",
+      args: { agentId: "agent-a", message: "Revisa el PR" },
+    });
+    await toolbox.execute({
+      operationId: "send-4",
+      tool: "send_message",
+      args: { agentId: "agent-a", message: "Revisa los tests y el PR" },
+    });
+    expect(catalog.sentPrompts).toHaveLength(2);
   });
 });

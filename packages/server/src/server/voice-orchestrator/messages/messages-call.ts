@@ -258,6 +258,7 @@ export class VoiceMessagesCall {
         const result = await stt.transcribeClip(
           { audio: audio.data, mimeType: audio.mimeType },
           this.options.orchestrator.language ?? undefined,
+          { keyterms: this.options.orchestrator.speechKeyterms() },
         );
         if (result.text.trim()) return result.text.trim();
       } catch (error) {

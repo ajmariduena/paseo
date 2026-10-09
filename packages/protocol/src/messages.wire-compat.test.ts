@@ -770,6 +770,19 @@ test("quick prompts remain optional and survive config responses and patches", (
   expect(MutableDaemonConfigPatchSchema.safeParse({ quickPromptUndoMs: -1 }).success).toBe(false);
 });
 
+test("the dictionary is optional in config responses and patches", () => {
+  const legacy = { mcp: { injectIntoAgents: false } };
+  expect(MutableDaemonConfigSchema.parse(legacy).dictionary).toBeUndefined();
+  const dictionary = { words: ["Zentrix"], replacements: [{ from: "Hello", to: "Jelou" }] };
+  const current = { ...legacy, dictionary };
+  expect(MutableDaemonConfigSchema.parse(current).dictionary).toEqual(dictionary);
+  expect(MutableDaemonConfigPatchSchema.parse({ dictionary })).toEqual({ dictionary });
+  const oldConfigSchema = MutableDaemonConfigSchema.omit({ dictionary: true });
+  expect(oldConfigSchema.safeParse(current).success).toBe(true);
+  const legacyInfo = { status: "server_info", serverId: "host", features: { voiceFleet: true } };
+  expect(ServerInfoStatusPayloadSchema.parse(legacyInfo).features?.dictionary).toBeUndefined();
+});
+
 test("quick prompt capability is optional and discarded by older feature schemas", () => {
   const legacy = { status: "server_info", serverId: "host" };
   expect(ServerInfoStatusPayloadSchema.safeParse(legacy).success).toBe(true);

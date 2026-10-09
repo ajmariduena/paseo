@@ -119,6 +119,16 @@ export class FleetView {
     }
   }
 
+  /** Names the user may say: hosts, projects, workspaces and agents. */
+  names(): string[] {
+    return [
+      ...this.hosts.map((host) => host.label),
+      ...this.projects.map((target) => target.project.name),
+      ...this.workspaces.map((target) => target.workspace.title),
+      ...this.agents.map((target) => target.agent.title),
+    ].filter((name) => name.length <= 48);
+  }
+
   get isMultiHost(): boolean {
     return this.hosts.length > 1;
   }

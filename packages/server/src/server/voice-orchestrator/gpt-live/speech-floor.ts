@@ -8,14 +8,18 @@ const FLUSH_INTERVAL_MS = 200;
 
 export type FloorPriority = "result" | "urgent" | "routine";
 
-/** How long both sides must be quiet before each kind of update may speak, and the longest it waits. */
-const RULES: Record<FloorPriority, { quietMs: number; maxWaitMs: number }> = {
+/**
+ * How long both sides must be quiet before each kind of update may speak, the longest it
+ * waits for that, and how long the user must have been silent no matter what: an update
+ * never starts while the user is talking, even after its wait runs out.
+ */
+const RULES: Record<FloorPriority, { quietMs: number; maxWaitMs: number; userSilentMs: number }> = {
   // The answer the user is waiting for: the next short pause.
-  result: { quietMs: 400, maxWaitMs: 12_000 },
-  // Permission requests and failures: the next real pause.
-  urgent: { quietMs: 700, maxWaitMs: 20_000 },
-  // Finished work and progress: a settled silence, never mid-exchange.
-  routine: { quietMs: 2_000, maxWaitMs: 60_000 },
+  result: { quietMs: 400, maxWaitMs: 12_000, userSilentMs: 0 },
+  // Permission requests and failures: a real pause in the conversation.
+  urgent: { quietMs: 2_500, maxWaitMs: 30_000, userSilentMs: 1_500 },
+  // Results of work the user asked for: a settled silence, never mid-exchange.
+  routine: { quietMs: 5_000, maxWaitMs: 120_000, userSilentMs: 3_000 },
 };
 
 /**
@@ -48,6 +52,11 @@ export class SpeechFloor {
 
   isUserSpeaking(): boolean {
     return this.now() - this.userSpeechAt < USER_GRACE_MS;
+  }
+
+  /** Milliseconds since the user last spoke, counting the grace for a mid-sentence pause. */
+  userQuietForMs(): number {
+    return this.now() - (this.userSpeechAt + USER_GRACE_MS);
   }
 
   /** Milliseconds both sides have been quiet; zero or less while someone is talking. */
@@ -128,6 +137,7 @@ export class FloorQueue {
 
   private isDue(item: Held): boolean {
     const rule = RULES[item.priority];
+    if (this.floor.userQuietForMs() < rule.userSilentMs) return false;
     if (this.now() - item.queuedAt >= rule.maxWaitMs) return true;
     if (item.priority === "routine" && this.options.isAwaitingResult()) return false;
     return this.floor.quietForMs() >= rule.quietMs;

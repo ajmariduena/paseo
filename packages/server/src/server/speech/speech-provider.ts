@@ -61,9 +61,15 @@ export interface SpeechToTextProvider {
     logger: pino.Logger;
     language?: string;
     prompt?: string;
+    /** Words to bias recognition towards, for providers that take a keyterm list. */
+    keyterms?: readonly string[];
   }): StreamingTranscriptionSession;
   /** Transcribes a whole recorded clip in any container the provider accepts. */
-  transcribeClip?(clip: SpeechClip, language?: string): Promise<TranscriptionResult>;
+  transcribeClip?(
+    clip: SpeechClip,
+    language?: string,
+    options?: { keyterms?: readonly string[] },
+  ): Promise<TranscriptionResult>;
 }
 
 export interface SpeechStreamResult {

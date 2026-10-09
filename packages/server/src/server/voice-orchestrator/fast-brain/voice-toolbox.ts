@@ -37,6 +37,11 @@ const DELIVERY_WORDS: Record<string, string> = {
   restarted: "it stopped what it was doing and started on this",
 };
 
+// The same instruction to the same agent this soon is the user repeating a request whose
+// confirmation they didn't hear yet, not a new one.
+const REPEAT_WINDOW_MS = 120_000;
+const REPEAT_SIMILARITY = 0.6;
+
 // A courier retry of the same operation must not act twice.
 const OPERATION_TTL_MS = 10 * 60 * 1000;
 const READ_DETAIL_MAX = 6_000;
@@ -54,6 +59,7 @@ export class VoiceToolError extends Error {
  * host running the call and, through the phone, for every other host.
  */
 export class VoiceToolbox {
+  private recentSends: Array<{ agentId: string; words: Set<string>; at: number }> = [];
   private readonly operations = new Map<
     string,
     { at: number; fingerprint: string; result: Promise<VoiceToolResult> }
@@ -91,6 +97,26 @@ export class VoiceToolbox {
     return result;
   }
 
+  /** Names of the available providers and their models, for the call's vocabulary. */
+  async modelNames(): Promise<string[]> {
+    const listed = (await this.callCatalog("list_providers", {})) as {
+      providers?: Array<{ id: string; label: string; enabled: boolean; status: string }>;
+    };
+    const available = (listed.providers ?? []).filter(
+      (provider) => provider.enabled && provider.status === "available",
+    );
+    const names = available.map((provider) => provider.label);
+    await Promise.all(
+      available.map(async (provider) => {
+        const models = (await this.callCatalog("list_models", { provider: provider.id }).catch(
+          () => null,
+        )) as { models?: Array<{ label: string }> } | null;
+        for (const model of models?.models ?? []) names.push(model.label);
+      }),
+    );
+    return names;
+  }
+
   /**
    * Provider snapshots load lazily and the first listing can take seconds; a call warms them
    * so the first agent created by voice doesn't wait.
@@ -99,6 +125,23 @@ export class VoiceToolbox {
     void this.callCatalog("list_providers", {}).catch((error: unknown) => {
       this.options.logger.debug({ err: error }, "Voice tools prewarm failed");
     });
+  }
+
+  /** Milliseconds since a near-identical message went to this agent, or null. */
+  private findRecentSend(agentId: string, message: string): number | null {
+    const now = Date.now();
+    const words = messageWords(message);
+    for (const sent of this.recentSends) {
+      if (sent.agentId !== agentId || now - sent.at > REPEAT_WINDOW_MS) continue;
+      if (similarity(words, sent.words) >= REPEAT_SIMILARITY) return now - sent.at;
+    }
+    return null;
+  }
+
+  private rememberSend(agentId: string, message: string): void {
+    const now = Date.now();
+    this.recentSends = this.recentSends.filter((sent) => now - sent.at <= REPEAT_WINDOW_MS);
+    this.recentSends.push({ agentId, words: messageWords(message), at: now });
   }
 
   private pruneOperations(): void {
@@ -182,6 +225,14 @@ export class VoiceToolbox {
     operationId: string;
   }): Promise<VoiceToolResult> {
     const name = await this.agentName(params.agentId);
+    const repeated = this.findRecentSend(params.agentId, params.message);
+    if (repeated !== null) {
+      // The user asked again because the first confirmation was slow; the agent already has it.
+      return {
+        ok: true,
+        text: `${name} already got this message ${Math.max(1, Math.round(repeated / 1000))} seconds ago, so it was not sent again.`,
+      };
+    }
     const wasRunning = this.options.agentManager.getAgent(params.agentId)?.lifecycle === "running";
     const result = (await this.callCatalog("send_agent_prompt", {
       agentId: params.agentId,
@@ -191,6 +242,7 @@ export class VoiceToolbox {
       delivery: params.interrupt ? "restart" : "auto",
       clientRequestId: params.operationId,
     })) as { disposition?: string } | string;
+    this.rememberSend(params.agentId, params.message);
     const disposition = typeof result === "object" ? result.disposition : undefined;
     const how =
       (disposition ? DELIVERY_WORDS[disposition] : undefined) ??
@@ -476,6 +528,29 @@ export class VoiceToolbox {
     const health = summarizeHostHealth(await this.options.hostMetrics());
     return { ok: true, text: `${formatHostHealth(this.options.hostLabel(), health)}.` };
   }
+}
+
+function messageWords(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/\p{Diacritic}/gu, "")
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter((word) => word.length > 2),
+  );
+}
+
+/**
+ * Shared words over the longer message: a rephrasing of the same request scores high, a new
+ * request that reuses a few words does not. Short messages only match when equal.
+ */
+function similarity(left: Set<string>, right: Set<string>): number {
+  let shared = 0;
+  for (const word of left) if (right.has(word)) shared += 1;
+  const larger = Math.max(left.size, right.size);
+  if (Math.min(left.size, right.size) < 3) return shared === larger ? 1 : 0;
+  return shared / larger;
 }
 
 function cleanTitle(raw: string): string {

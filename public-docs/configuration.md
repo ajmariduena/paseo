@@ -100,7 +100,7 @@ Relative paths are resolved against `PASEO_HOME`. Existing worktrees remain wher
 
 ## Voice
 
-Voice is configured through `features.dictation` and `features.voiceMode`, with provider credentials under `providers`.
+Voice is configured through `features.dictation`, `features.voiceMode` and `features.dictionary` (words and replacements for speech recognition), with provider credentials under `providers`.
 
 For voice philosophy, architecture, and complete local/OpenAI setup examples, see [Voice docs](/docs/voice).
 

@@ -1367,7 +1367,7 @@ export class Session {
         stt,
         voice,
         voiceBridge,
-        dictation,
+        dictation: { ...dictation, dictionary: () => this.daemonConfigStore.get().dictionary },
         orchestrator: this.voiceOrchestrator,
       },
       this.delivery,

@@ -1,5 +1,14 @@
 import { QuickPromptSchema } from "./quick-prompt.js";
 export { QuickPromptSchema, validateQuickPrompts, type QuickPrompt } from "./quick-prompt.js";
+import { DictionarySchema } from "./dictionary.js";
+export {
+  DICTIONARY_LIMITS,
+  DictionarySchema,
+  DictionaryReplacementSchema,
+  validateDictionary,
+  type Dictionary,
+  type DictionaryReplacement,
+} from "./dictionary.js";
 import { AgentMessageSchema } from "./agent-message.js";
 import { PluginRegistryIdentitySchema } from "./plugin-registry.js";
 import { AgentProfileSchema, AgentSkillSelectionSchema } from "./agent-profile.js";
@@ -278,6 +287,8 @@ export const MutableDaemonConfigSchema = z
     plugins: z.record(PluginIdSchema, PluginSourceSchema).optional(),
     // COMPAT(dictationSelection): added in v0.11.0; absent on older daemons, remove optional after 2027-10-04.
     dictation: MutableDictationConfigSchema.optional(),
+    // COMPAT(dictionary): added in v0.11.1; absent on older daemons, remove optional after 2027-10-09.
+    dictionary: DictionarySchema.optional(),
   })
   .passthrough();
 
@@ -303,6 +314,7 @@ export const MutableDaemonConfigPatchSchema = z
     pluginsEnabled: z.boolean().optional(),
     plugins: z.record(PluginIdSchema, PluginSourceSchema).optional(),
     dictation: MutableDictationConfigSchema.optional(),
+    dictionary: DictionarySchema.optional(),
   })
   .partial()
   .passthrough();
@@ -4104,6 +4116,8 @@ export const ServerInfoStatusPayloadSchema = z
         voiceCallMute: z.boolean().optional(),
         // COMPAT(voiceFleet): added in v0.11.1, remove gate after 2027-10-09.
         voiceFleet: z.boolean().optional(),
+        // COMPAT(dictionary): added in v0.11.1, remove gate after 2027-10-09.
+        dictionary: z.boolean().optional(),
         // COMPAT(serverMessageQueue): added in v0.11.0, remove gate after 2027-10-04.
         serverMessageQueue: z.boolean().optional(),
         // COMPAT(restartContinuation): added in v0.11.0, remove gate after 2027-10-04.
