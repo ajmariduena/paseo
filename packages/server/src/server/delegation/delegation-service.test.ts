@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { existsSync } from "node:fs";
 import { afterEach, expect, test, vi } from "vitest";
 
 import {
@@ -285,6 +286,42 @@ test("parent archive disposes pending wakes", async () => {
   ]);
   expect(await deliveryStates(current)).toEqual(["disposed"]);
   expect(host.session(parentId).startPrompts).toEqual(["parent work"]);
+});
+
+test("host cleanup waits for registration writes before removing its directory", async () => {
+  const host = createControlledHost();
+  let enter = () => {};
+  let release = () => {};
+  const entered = new Promise<void>((resolve) => (enter = resolve));
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  let writeSettled = false;
+  const applySnapshot = host.agentStorage.applySnapshot.bind(host.agentStorage);
+  // Hold a real registration write across teardown, as a queued wake can do.
+  const delayed = vi
+    .spyOn(host.agentStorage, "applySnapshot")
+    .mockImplementationOnce(async (value) => {
+      enter();
+      await gate;
+      try {
+        await applySnapshot(value);
+      } finally {
+        writeSettled = true;
+      }
+    });
+  const creating = host.createAgent({ steerable: false }).catch((error: unknown) => error);
+  try {
+    await entered;
+    const cleaned = host.cleanup().then(() => ({ writeSettled, exists: existsSync(host.root) }));
+    release();
+    const [, atCleanup] = await Promise.all([creating, cleaned]);
+    expect(atCleanup).toEqual({ writeSettled: true, exists: false });
+    expect(existsSync(host.root)).toBe(false);
+  } finally {
+    release();
+    await creating;
+    delayed.mockRestore();
+    await host.cleanup();
+  }
 });
 
 test("user Stop of the spawning turn stops its cohort", async () => {

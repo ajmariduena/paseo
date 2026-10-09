@@ -328,9 +328,14 @@ export function createControlledHost(): ControlledHost {
       return session;
     },
     async cleanup() {
-      for (const agentId of sessions.keys()) {
-        await agentManager.closeAgent(agentId).catch(() => undefined);
+      // Queued wakes can resume sessions while teardown closes their previous runtime.
+      // Freeze registration before taking the snapshot, then drain before deleting storage.
+      agentManager.prepareForShutdown();
+      for (const agent of agentManager.listAgents()) {
+        await agentManager.closeAgent(agent.id).catch(() => undefined);
       }
+      await agentManager.flushForShutdown();
+      await agentStorage.flush();
       rmSync(root, { recursive: true, force: true });
     },
   };
