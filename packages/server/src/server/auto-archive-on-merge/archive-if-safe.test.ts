@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -16,6 +17,7 @@ import type { WorkspaceGitRuntimeSnapshot } from "../workspace-git-service.js";
 import { createWorktree, type WorktreeConfig } from "../../utils/worktree.js";
 import type { ForgeService } from "../../../services/forge-service.js";
 import type { StoredAgentRecord } from "../agent/agent-storage.js";
+import { HandoffOwnership } from "../handoff/ownership.js";
 
 const CWD = "/tmp/paseo/worktrees/repo/branch";
 const PASEO_HOME = "/tmp/paseo";
@@ -500,6 +502,56 @@ describe("archiveIfSafe", () => {
       expect.objectContaining({
         scope: { kind: "workspace", workspaceId: "ws-merged-worktree" },
       }),
+    );
+  });
+
+  test("handoff blocks automatic archive after merge and cancellation permits retry", async () => {
+    const { tempDir, repoDir } = createGitRepo();
+    const paseoHome = path.join(tempDir, ".paseo");
+    const worktree = await createPaseoOwnedWorktree(repoDir, paseoHome, "handoff-merge");
+    const workspaceId = "handoff-auto-archive";
+    const archivedWorkspaceIds = new Set<string>();
+    const harness = createRealOutcomeHarness({
+      paseoHome,
+      repoDir,
+      worktreePath: worktree.worktreePath,
+      activeWorkspaces: [{ workspaceId, cwd: worktree.worktreePath, kind: "worktree" }],
+      archivedWorkspaceIds,
+    });
+    const ownership = new HandoffOwnership({
+      directory: path.join(tempDir, "ownership"),
+      sourceServerId: "source-host",
+    });
+    await ownership.initialize();
+    harness.options.handoffOwnership = ownership;
+    const transferId = randomUUID();
+    await ownership.prepare({
+      id: transferId,
+      cwd: worktree.worktreePath,
+      workspaceId,
+      agentIds: [],
+      destinationServerId: "destination-host",
+      reservationId: randomUUID(),
+    });
+    const input = {
+      workspaceId,
+      snapshot: { ...createSnapshot(), cwd: worktree.worktreePath },
+      options: harness.options,
+      log: harness.log,
+    };
+
+    await archiveIfSafe(input);
+    expect([...archivedWorkspaceIds]).toEqual([]);
+    expect(existsSync(worktree.worktreePath)).toBe(true);
+    expect(await harness.options.getAutoArchivedChangeRequestUrl(workspaceId)).toBe(null);
+    expect(harness.options.emitWorkspaceUpdatesForWorkspaceIds).not.toHaveBeenCalled();
+
+    await ownership.cancel(transferId);
+    await archiveIfSafe(input);
+    expect([...archivedWorkspaceIds]).toEqual([workspaceId]);
+    expect(existsSync(worktree.worktreePath)).toBe(false);
+    expect(await harness.options.getAutoArchivedChangeRequestUrl(workspaceId)).toBe(
+      input.snapshot.forge.pullRequest!.url,
     );
   });
 

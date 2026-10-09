@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -19,6 +20,11 @@ import {
   resolveWorkspaceIdAtPath,
 } from "./workspace-archive-service.js";
 import { WorkspaceAutomationBlockedError } from "./workspace-automation-gate.js";
+import { HandoffOwnership } from "./handoff/ownership.js";
+import {
+  createPersistedWorkspaceRecord,
+  FileBackedWorkspaceRegistry,
+} from "./workspace-registry.js";
 
 const cleanupPaths: string[] = [];
 
@@ -187,6 +193,277 @@ function assertArchiveResult(
   expect(result.archivedWorkspaceIds).toEqual(expected.archivedWorkspaceIds);
   expect(result.removedDirectory).toBe(expected.removedDirectory);
 }
+
+async function handoffArchiveFixture() {
+  const { tempDir, repoDir } = createGitRepo();
+  writeFileSync(
+    path.join(repoDir, "paseo.json"),
+    JSON.stringify({
+      worktree: {
+        teardown: [
+          "node -e \"require('node:fs').writeFileSync(process.env.PASEO_SOURCE_CHECKOUT_PATH + '/handoff-teardown.txt', 'ran')\"",
+        ],
+      },
+    }),
+  );
+  for (const name of ["selected", "sibling"]) {
+    mkdirSync(path.join(repoDir, name));
+    writeFileSync(path.join(repoDir, name, "notes.txt"), "retained content");
+  }
+  execFileSync("git", ["add", "."], { cwd: repoDir, stdio: "pipe" });
+  execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "archive fixture"], {
+    cwd: repoDir,
+    stdio: "pipe",
+  });
+  const paseoHome = path.join(tempDir, ".paseo");
+  const worktree = await createPaseoOwnedWorktree(repoDir, paseoHome, "handoff-archive");
+  const cwd = worktree.worktreePath;
+  const workspace = createPersistedWorkspaceRecord({
+    workspaceId: "handoff-archive-workspace",
+    projectId: "handoff-archive-project",
+    cwd,
+    kind: "worktree",
+    worktreeRoot: cwd,
+    mainRepoRoot: repoDir,
+    isPaseoOwnedWorktree: true,
+    displayName: "Handoff archive",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+  const registryPath = path.join(tempDir, "workspaces.json");
+  const registry = new FileBackedWorkspaceRegistry(registryPath, createLogger());
+  await registry.initialize();
+  await registry.upsert(workspace);
+  const ownership = new HandoffOwnership({
+    directory: path.join(tempDir, "ownership"),
+    sourceServerId: "source-host",
+  });
+  await ownership.initialize();
+  const deps = createArchiveDeps({ paseoHome, activeWorkspaces: [workspace] });
+  deps.handoffOwnership = ownership;
+  deps.getWorkspace = (id) => registry.get(id);
+  deps.listActiveWorkspaces = async () =>
+    (await registry.list()).filter((record) => !record.archivedAt);
+  deps.archiveWorkspaceRecord = async (id) => {
+    await registry.archive(id, new Date().toISOString());
+  };
+  deps.stopWorkspaceSetup = vi.fn(async () => {});
+  const transfer = {
+    id: randomUUID(),
+    cwd,
+    workspaceId: workspace.workspaceId,
+    agentIds: [],
+    destinationServerId: "destination-host",
+    reservationId: randomUUID(),
+  };
+  return { tempDir, repoDir, cwd, workspace, registryPath, registry, deps, ownership, transfer };
+}
+
+test("handoff refuses archive before stopping runtimes, persisting records or running teardown", async () => {
+  const { repoDir, cwd, workspace, registry, deps, ownership, transfer } =
+    await handoffArchiveFixture();
+  await ownership.prepare(transfer);
+  const request = {
+    scope: { kind: "workspace" as const, workspaceId: workspace.workspaceId },
+    requestId: "handoff-archive",
+  };
+
+  await expect(archiveByScope(deps, request)).rejects.toMatchObject({ code: "fenced" });
+  expect(deps.stopWorkspaceSetup).not.toHaveBeenCalled();
+  expect(deps.killTerminalsForWorkspace).not.toHaveBeenCalled();
+  expect(deps.markWorkspaceArchiving).not.toHaveBeenCalled();
+  expect(await registry.get(workspace.workspaceId)).toEqual(workspace);
+  expect(readFileSync(path.join(cwd, "selected", "notes.txt"), "utf8")).toBe("retained content");
+  expect(existsSync(path.join(repoDir, "handoff-teardown.txt"))).toBe(false);
+
+  await ownership.cancel(transfer.id);
+  expect(await archiveByScope(deps, request)).toEqual({
+    archivedAgentIds: [],
+    archivedWorkspaceIds: [workspace.workspaceId],
+    removedDirectory: true,
+  });
+  expect(readFileSync(path.join(repoDir, "handoff-teardown.txt"), "utf8")).toBe("ran");
+  expect(existsSync(cwd)).toBe(false);
+  expect((await registry.get(workspace.workspaceId))?.archivedAt).toEqual(expect.any(String));
+});
+
+test.each(["sibling", "source repository"] as const)(
+  "handoff protects the %s from worktree archive effects",
+  async (scope) => {
+    const { repoDir, cwd, workspace, registry, deps, ownership, transfer } =
+      await handoffArchiveFixture();
+    await ownership.prepare({
+      ...transfer,
+      workspaceId: "other-workspace",
+      cwd: scope === "sibling" ? path.join(cwd, "sibling") : repoDir,
+    });
+    await expect(
+      archiveByScope(deps, {
+        scope: { kind: "workspace", workspaceId: workspace.workspaceId },
+        requestId: "handoff-archive-shared",
+      }),
+    ).rejects.toMatchObject({ code: "fenced" });
+    expect(await registry.get(workspace.workspaceId)).toEqual(workspace);
+    expect(deps.stopWorkspaceSetup).not.toHaveBeenCalled();
+    expect(existsSync(cwd)).toBe(true);
+    expect(existsSync(path.join(repoDir, "handoff-teardown.txt"))).toBe(false);
+
+    // If a later scope denied admission, earlier admissions must not leak.
+    await ownership.cancel(transfer.id);
+    const next = { ...transfer, id: randomUUID() };
+    await ownership.prepare(next);
+    expect((await ownership.markReady(next.id, "a".repeat(64))).state).toBe("ready");
+  },
+);
+
+test("handoff checks every workspace identity before archiving a shared worktree", async () => {
+  const { tempDir, cwd, workspace, registry, deps, ownership, transfer } =
+    await handoffArchiveFixture();
+  const sibling = {
+    ...workspace,
+    workspaceId: "sibling-workspace",
+    cwd: path.join(cwd, "sibling"),
+  };
+  await registry.upsert(sibling);
+  const elsewhere = path.join(tempDir, "elsewhere");
+  mkdirSync(elsewhere);
+  await ownership.prepare({ ...transfer, cwd: elsewhere, workspaceId: sibling.workspaceId });
+  await expect(
+    archiveByScope(deps, {
+      scope: { kind: "worktree", targetPath: cwd },
+      requestId: "handoff-all-workspaces",
+    }),
+  ).rejects.toMatchObject({ code: "fenced" });
+  expect(await registry.get(workspace.workspaceId)).toEqual(workspace);
+  expect(await registry.get(sibling.workspaceId)).toEqual(sibling);
+  expect(deps.stopWorkspaceSetup).not.toHaveBeenCalled();
+  expect(deps.killTerminalsForWorkspace).not.toHaveBeenCalled();
+  expect(existsSync(cwd)).toBe(true);
+  await ownership.cancel(transfer.id);
+  const next = { ...transfer, id: randomUUID() };
+  await ownership.prepare(next);
+  expect((await ownership.markReady(next.id, "a".repeat(64))).state).toBe("ready");
+});
+
+test("handoff rejects deletion retries for an archived workspace by identity", async () => {
+  const { tempDir, cwd, workspace, registry, deps, ownership, transfer } =
+    await handoffArchiveFixture();
+  await registry.archive(workspace.workspaceId, "2026-10-09T00:00:00.000Z");
+  const archived = await registry.get(workspace.workspaceId);
+  const elsewhere = path.join(tempDir, "elsewhere");
+  mkdirSync(elsewhere);
+  await ownership.prepare({ ...transfer, cwd: elsewhere });
+  await expect(
+    archiveByScope(deps, {
+      scope: { kind: "workspace", workspaceId: workspace.workspaceId },
+      requestId: "handoff-archive-retry",
+    }),
+  ).rejects.toMatchObject({ code: "fenced" });
+  expect(await registry.get(workspace.workspaceId)).toEqual(archived);
+  expect(deps.stopWorkspaceSetup).not.toHaveBeenCalled();
+  expect(existsSync(cwd)).toBe(true);
+});
+
+test("handoff protects a worktree path even when no active workspace record remains", async () => {
+  const { cwd, workspace, registry, deps, ownership, transfer } = await handoffArchiveFixture();
+  await registry.remove(workspace.workspaceId);
+  await ownership.prepare(transfer);
+  await expect(
+    archiveByScope(deps, {
+      scope: { kind: "worktree", targetPath: cwd },
+      requestId: "handoff-orphan-worktree",
+    }),
+  ).rejects.toMatchObject({ code: "fenced" });
+  expect(existsSync(cwd)).toBe(true);
+  expect(deps.stopWorkspaceSetup).not.toHaveBeenCalled();
+});
+
+function deferred() {
+  let resolve: () => void = () => {};
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+test("handoff drains an admitted archive through deletion and the final workspace update", async () => {
+  const { repoDir, cwd, workspace, registryPath, deps, ownership, transfer } =
+    await handoffArchiveFixture();
+  const stopEntered = deferred();
+  const finishStop = deferred();
+  const updateEntered = deferred();
+  const finishUpdate = deferred();
+  deps.stopWorkspaceSetup = async () => {
+    stopEntered.resolve();
+    await finishStop.promise;
+  };
+  let updates = 0;
+  deps.emitWorkspaceUpdatesForWorkspaceIds = async () => {
+    updates++;
+    if (updates === 2) {
+      updateEntered.resolve();
+      await finishUpdate.promise;
+    }
+  };
+  const archiving = archiveByScope(deps, {
+    scope: { kind: "workspace", workspaceId: workspace.workspaceId },
+    requestId: "handoff-admitted-archive",
+  });
+  await stopEntered.promise;
+  await ownership.prepare(transfer);
+  try {
+    await expect(ownership.markReady(transfer.id, "a".repeat(64))).rejects.toMatchObject({
+      code: "invalid_state",
+    });
+    finishStop.resolve();
+    await updateEntered.promise;
+    const persisted = new FileBackedWorkspaceRegistry(registryPath, createLogger());
+    await persisted.initialize();
+    expect((await persisted.get(workspace.workspaceId))?.archivedAt).toEqual(expect.any(String));
+    expect(readFileSync(path.join(repoDir, "handoff-teardown.txt"), "utf8")).toBe("ran");
+    expect(existsSync(cwd)).toBe(false);
+    await expect(ownership.markReady(transfer.id, "a".repeat(64))).rejects.toMatchObject({
+      code: "invalid_state",
+    });
+  } finally {
+    finishStop.resolve();
+    finishUpdate.resolve();
+    await archiving;
+  }
+  expect(await archiving).toEqual({
+    archivedAgentIds: [],
+    archivedWorkspaceIds: [workspace.workspaceId],
+    removedDirectory: true,
+  });
+  await ownership.drain(transfer.id);
+  expect((await ownership.markReady(transfer.id, "a".repeat(64))).state).toBe("ready");
+});
+
+test("handoff releases archive admission when publishing its final update fails", async () => {
+  const { workspace, deps, ownership, transfer } = await handoffArchiveFixture();
+  const stopEntered = deferred();
+  const finishStop = deferred();
+  deps.stopWorkspaceSetup = async () => {
+    stopEntered.resolve();
+    await finishStop.promise;
+  };
+  let updates = 0;
+  deps.emitWorkspaceUpdatesForWorkspaceIds = async () => {
+    updates++;
+    if (updates === 2) throw new Error("workspace update failed");
+  };
+  const archiving = archiveByScope(deps, {
+    scope: { kind: "workspace", workspaceId: workspace.workspaceId },
+    requestId: "handoff-failed-archive-update",
+  });
+  const failed = expect(archiving).rejects.toThrow("workspace update failed");
+  await stopEntered.promise;
+  await ownership.prepare(transfer);
+  finishStop.resolve();
+  await failed;
+  await ownership.drain(transfer.id);
+  expect((await ownership.markReady(transfer.id, "a".repeat(64))).state).toBe("ready");
+});
 
 describe("archiveByScope", () => {
   test("workspace scope archives the record and removes the directory on last reference", async () => {

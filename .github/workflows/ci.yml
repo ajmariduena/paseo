@@ -234,8 +234,12 @@ jobs:
             --bail=1 --maxWorkers=1
           npx vitest run --config packages/server/vitest.config.ts \
             packages/server/src/server/agent/agent-manager.test.ts \
+            packages/server/src/server/agent/mcp-server.test.ts \
             packages/server/src/server/bootstrap.smoke.test.ts \
             packages/server/src/server/workspace-auto-name.test.ts \
+            packages/server/src/server/workspace-archive-service.test.ts \
+            packages/server/src/server/auto-archive-on-merge/archive-if-safe.test.ts \
+            packages/server/src/server/session.workspaces.test.ts \
             packages/server/src/server/session/workspace-provisioning/workspace-provisioning-service.test.ts \
             packages/server/src/server/session/workspace-scripts/workspace-scripts-service.test.ts \
             packages/server/src/server/session/files/workspace-files-session.test.ts \

@@ -155,6 +155,25 @@ describe("paseo daemon bootstrap", () => {
         workspace: null,
         error,
       });
+      expect(
+        await client.archiveWorkspace("moved-workspace", "handoff-archive-workspace"),
+      ).toMatchObject({
+        requestId: "handoff-archive-workspace",
+        workspaceId: "moved-workspace",
+        archivedAt: null,
+        error,
+      });
+      await expect(client.removeProject("handoff-project")).rejects.toThrow(error);
+      expect(
+        await client.archivePaseoWorktree(
+          { workspaceId: "moved-workspace", worktreePath: cwd },
+          "handoff-archive-worktree",
+        ),
+      ).toMatchObject({
+        requestId: "handoff-archive-worktree",
+        success: false,
+        error: { message: error },
+      });
       const persisted = new FileBackedWorkspaceRegistry(
         path.join(paseoHome, "projects", "workspaces.json"),
         registryLogger,
@@ -163,6 +182,7 @@ describe("paseo daemon bootstrap", () => {
       expect((await persisted.list()).map((workspace) => workspace.workspaceId)).toEqual([
         "moved-workspace",
       ]);
+      expect((await persisted.get("moved-workspace"))?.archivedAt).toBe(null);
       expect(await client.startWorkspaceScript("moved-workspace", "app", "handoff-script")).toEqual(
         {
           requestId: "handoff-script",

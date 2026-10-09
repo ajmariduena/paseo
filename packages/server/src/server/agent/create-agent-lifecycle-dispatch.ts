@@ -16,8 +16,10 @@ import type {
 } from "../messages.js";
 import type { AgentManager, AgentSubscriber, SubscribeOptions } from "./agent-manager.js";
 import type { AgentStorage } from "./agent-storage.js";
+import type { HandoffOwnership } from "../handoff/ownership.js";
 
 interface CreateAgentLifecycleDispatchDependencies {
+  handoffOwnership?: HandoffOwnership;
   paseoHome: string;
   worktreesRoot?: string;
   agentManager: AgentManager;
@@ -200,6 +202,7 @@ export class CreateAgentLifecycleDispatch {
 
     await archiveByScope(
       {
+        handoffOwnership: this.dependencies.handoffOwnership,
         paseoHome: this.dependencies.paseoHome,
         paseoWorktreesBaseRoot: this.dependencies.worktreesRoot,
         github: this.dependencies.github,

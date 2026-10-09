@@ -888,6 +888,7 @@ export class Session {
     WorkspaceUpdatesSubscriptionState
   >();
   private readonly handoffArchiveStore: HandoffArchiveStore | undefined;
+  private readonly handoffOwnership: HandoffOwnership | undefined;
   private readonly workspaceLabelService: WorkspaceLabelService | null;
   private readonly readAloud: ReadAloudService | undefined;
   private readonly voiceOrchestrator: VoiceOrchestrator | null | undefined;
@@ -1042,6 +1043,7 @@ export class Session {
     this.workspaceRegistry = workspaceRegistry;
     this.directorySync = resolveDirectorySync(directorySync);
     this.handoffArchiveStore = options.handoffArchiveStore;
+    this.handoffOwnership = options.handoffOwnership;
     this.workspaceLabelService = resolveWorkspaceLabelService(workspaceLabelService);
     this.readAloud = readAloud;
     this.voiceOrchestrator = voiceOrchestrator;
@@ -1282,6 +1284,7 @@ export class Session {
       logger: this.sessionLogger,
     });
     this.createAgentLifecycleDispatch = new CreateAgentLifecycleDispatch({
+      handoffOwnership: options.handoffOwnership,
       paseoHome: this.paseoHome,
       worktreesRoot: this.worktreesRoot,
       agentManager: this.agentManager,
@@ -4285,6 +4288,7 @@ export class Session {
   ): Promise<void> {
     const { projectId, requestId } = request;
     this.sessionLogger.info({ projectId, requestId }, "session: project.remove.request");
+    const releases: Array<() => void> = [];
 
     try {
       const project = await this.projectRegistry.get(projectId);
@@ -4292,6 +4296,19 @@ export class Session {
       const projectWorkspaces = (await this.workspaceRegistry.list()).filter(
         (workspace) => workspace.projectId === resolvedProjectId,
       );
+      if (this.handoffOwnership) {
+        for (const workspace of projectWorkspaces) {
+          releases.push(
+            await this.handoffOwnership.acquireMutation({
+              cwd: workspace.worktreeRoot ?? workspace.cwd,
+              workspaceId: workspace.workspaceId,
+            }),
+          );
+        }
+        if (project) {
+          releases.push(await this.handoffOwnership.acquireMutation({ cwd: project.rootPath }));
+        }
+      }
       const activeWorkspaceIds = projectWorkspaces
         .filter((workspace) => !workspace.archivedAt)
         .map((workspace) => workspace.workspaceId);
@@ -4376,6 +4393,8 @@ export class Session {
           error: getErrorMessageOr(error, "Failed to remove project"),
         },
       });
+    } finally {
+      for (const release of releases.toReversed()) release();
     }
   }
 
@@ -5958,6 +5977,7 @@ export class Session {
   ): Promise<void> {
     return handleWorktreeArchiveRequest(
       {
+        handoffOwnership: this.handoffOwnership,
         paseoHome: this.paseoHome,
         paseoWorktreesBaseRoot: this.worktreesRoot,
         github: this.github,
@@ -8194,6 +8214,7 @@ export class Session {
 
       await archiveByScope(
         {
+          handoffOwnership: this.handoffOwnership,
           paseoHome: this.paseoHome,
           paseoWorktreesBaseRoot: this.worktreesRoot,
           github: this.github,

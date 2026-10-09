@@ -170,8 +170,17 @@ creating directories, and worktree registration checks its source and backing di
 records is fenced too. The boot test rejects workspace creation and adoption over the real connection.
 These guards do not cover worktree filesystem creation/reconstruction or asynchronous plugin hooks.
 
+Workspace archive acquires all target identities and backing/source paths before stopping setup,
+archiving agents or executing teardown. It holds admission through directory removal and final
+updates, including failure. Real-worktree tests cover shared directories, archived-record retries,
+orphan paths and cancellation. The same ledger reaches RPCs, agent tools, merge automation,
+schedules and creation cleanup. Project removal also fences its workspaces before archiving any.
+Real registry tests hold removal writes across preparation, and the boot test covers both archive
+RPCs and project removal. Archive remains best-effort shutdown; its success cannot certify source
+quiescence. Plugin callbacks, storage cleanup and shared Git metadata still need integration.
+
 These tests do not establish the complete ownership promise: draft catalog runtimes,
-setup/teardown hooks, background workspace mutations (including archive/recovery and worktree
+setup/teardown hooks, background workspace mutations (including recovery, storage cleanup and worktree
 creation), shared Git metadata ownership, runtime termination and destination activation still need
 integration.
 Source history needs a readable path that does not reopen a fenced native runtime. Source release

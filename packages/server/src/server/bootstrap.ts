@@ -1308,6 +1308,7 @@ export async function createPaseoDaemon(
   });
 
   setupAutoArchiveOnMerge({
+    handoffOwnership,
     paseoHome: config.paseoHome,
     paseoWorktreesBaseRoot: config.worktreesRoot,
     daemonConfigStore,
@@ -1398,6 +1399,7 @@ export async function createPaseoDaemon(
   const archiveWorkspaceByIdExternal = (workspaceId: string, requestId: string) =>
     archiveByScope(
       {
+        handoffOwnership,
         paseoHome: config.paseoHome,
         paseoWorktreesBaseRoot: config.worktreesRoot,
         github,
@@ -1421,6 +1423,7 @@ export async function createPaseoDaemon(
       { scope: { kind: "workspace", workspaceId }, requestId },
     );
   const hubAgentLifecycle = new CreateAgentLifecycleDispatch({
+    handoffOwnership,
     paseoHome: config.paseoHome,
     worktreesRoot: config.worktreesRoot,
     agentManager,
@@ -1519,6 +1522,7 @@ export async function createPaseoDaemon(
   const archiveScheduleWorkspaceExternal = async (workspaceId: string) => {
     await archiveByScope(
       {
+        handoffOwnership,
         paseoHome: config.paseoHome,
         paseoWorktreesBaseRoot: config.worktreesRoot,
         github,
@@ -1596,6 +1600,7 @@ export async function createPaseoDaemon(
   const createAgentToolHostDependencies = (
     runtime: PaseoToolRuntimeContext,
   ): PaseoToolHostDependencies => ({
+    handoffOwnership,
     agentManager,
     agentStorage,
     terminalManager,

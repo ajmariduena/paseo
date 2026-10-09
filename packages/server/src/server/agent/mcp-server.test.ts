@@ -58,6 +58,8 @@ import type {
 } from "@getpaseo/protocol/schedule/types";
 import type { ScheduleService } from "../schedule/service.js";
 import { NoteStore } from "../notes/store.js";
+import { HandoffOwnership } from "../handoff/ownership.js";
+import { createNoopWorkspaceGitService } from "../test-utils/workspace-git-service-stub.js";
 import type { WorkspaceGitService } from "../workspace-git-service.js";
 import {
   createPaseoWorktree as createPaseoWorktreeService,
@@ -3108,6 +3110,56 @@ describe("create_agent MCP tool", () => {
       ]);
     } finally {
       await removeTempDir(tempDir);
+    }
+  });
+
+  it("handoff blocks the archive_workspace tool before it changes workspace state", async () => {
+    const { agentManager, agentStorage } = createTestDeps();
+    const cwd = await mkdtemp(join(tmpdir(), "paseo-handoff-archive-tool-"));
+    try {
+      const ownership = new HandoffOwnership({
+        directory: join(cwd, "ownership"),
+        sourceServerId: "source-host",
+      });
+      await ownership.initialize();
+      const workspaceId = "handoff-tool-workspace";
+      const transferId = randomUUID();
+      await ownership.prepare({
+        id: transferId,
+        cwd,
+        workspaceId,
+        agentIds: [],
+        destinationServerId: "destination-host",
+        reservationId: randomUUID(),
+      });
+      const archiveWorkspaceRecord = vi.fn(async () => {});
+      const markWorkspaceArchiving = vi.fn();
+      const server = await createAgentMcpServer({
+        handoffOwnership: ownership,
+        agentManager,
+        agentStorage,
+        providerSnapshotManager: createOpenCodeManager().manager,
+        github: createGitHubServiceStub(),
+        workspaceGitService: createNoopWorkspaceGitService(),
+        findWorkspaceIdForCwd: async () => workspaceId,
+        listActiveWorkspaces: async () => [{ workspaceId, cwd, kind: "directory" }],
+        archiveWorkspaceRecord,
+        emitWorkspaceUpdatesForWorkspaceIds: async () => {},
+        markWorkspaceArchiving,
+        clearWorkspaceArchiving: () => {},
+        logger,
+      });
+      const tool = registeredTool(server, "archive_workspace");
+      await expect(tool.handler({ workspaceId })).rejects.toThrow(
+        `Workspace is held by handoff ${transferId}`,
+      );
+      expect(archiveWorkspaceRecord).not.toHaveBeenCalled();
+      expect(markWorkspaceArchiving).not.toHaveBeenCalled();
+      await ownership.cancel(transferId);
+      await tool.handler({ workspaceId });
+      expect(archiveWorkspaceRecord).toHaveBeenCalledExactlyOnceWith(workspaceId);
+    } finally {
+      await removeTempDir(cwd);
     }
   });
 

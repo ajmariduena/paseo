@@ -16,8 +16,10 @@ import type { ForgeService } from "../../services/forge-service.js";
 import type { TerminalManager } from "../../terminal/terminal-manager.js";
 import { isPaseoOwnedWorktreeCwd } from "../../utils/worktree.js";
 import type { WorkspaceArchiveContext } from "../workspace-registry.js";
+import type { HandoffOwnership } from "../handoff/ownership.js";
 
 export interface AutoArchiveArchiveOptions {
+  handoffOwnership?: HandoffOwnership;
   paseoHome: string;
   paseoWorktreesBaseRoot?: string;
   daemonConfigStore: DaemonConfigStore;
@@ -85,6 +87,7 @@ export async function archiveIfSafe(input: {
 
     await deps.archiveByScope(
       {
+        handoffOwnership: options.handoffOwnership,
         paseoHome: options.paseoHome,
         paseoWorktreesBaseRoot: options.paseoWorktreesBaseRoot,
         github: options.github,

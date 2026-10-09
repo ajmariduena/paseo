@@ -21,6 +21,7 @@ import type {
 import { createRealpathAwarePathMatcher } from "../utils/path.js";
 import { runWithGitCommandPriority } from "../utils/run-git-command.js";
 import { WorkspaceAutomationBlockedError } from "./workspace-automation-gate.js";
+import type { HandoffOwnership } from "./handoff/ownership.js";
 
 export type ActiveWorkspaceRef = Pick<
   PersistedWorkspaceRecord,
@@ -28,6 +29,7 @@ export type ActiveWorkspaceRef = Pick<
 >;
 
 export interface ArchiveDependencies {
+  handoffOwnership?: HandoffOwnership;
   paseoHome?: string;
   // Base directory that may hold worktrees across repositories.
   paseoWorktreesBaseRoot?: string;
@@ -132,6 +134,40 @@ async function archiveByScopeWithPriority(
   request: ArchiveByScopeRequest,
 ): Promise<ArchiveResult> {
   const target = await resolveArchiveTarget(dependencies, request.scope);
+  const releases: Array<() => void> = [];
+  try {
+    if (dependencies.handoffOwnership && target.backing) {
+      // An archived record can still own a directory. Include its identity even
+      // on retry, and acquire every scope before stopping or changing anything.
+      const workspaceIds =
+        target.setupWorkspaceIds.length > 0 ? target.setupWorkspaceIds : [undefined];
+      for (const workspaceId of workspaceIds) {
+        releases.push(
+          await dependencies.handoffOwnership.acquireMutation({
+            cwd: target.backing.path,
+            workspaceId,
+          }),
+        );
+      }
+      if (target.backing.mainRepoRoot) {
+        releases.push(
+          await dependencies.handoffOwnership.acquireMutation({
+            cwd: target.backing.mainRepoRoot,
+          }),
+        );
+      }
+    }
+    return await archiveResolvedTarget(dependencies, request, target);
+  } finally {
+    for (const release of releases.toReversed()) release();
+  }
+}
+
+async function archiveResolvedTarget(
+  dependencies: ArchiveDependencies,
+  request: ArchiveByScopeRequest,
+  target: ArchiveTarget,
+): Promise<ArchiveResult> {
   const targetWorkspaceIds = target.workspaceIds;
 
   await stopWorkspaceSetups(dependencies, target.setupWorkspaceIds, request.requestId);
