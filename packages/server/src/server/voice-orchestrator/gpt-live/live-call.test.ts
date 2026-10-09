@@ -5,6 +5,7 @@ import type { SessionOutboundMessage } from "../../messages.js";
 import type { VoiceOrchestrator } from "../orchestrator.js";
 import { GptLiveCall } from "./live-call.js";
 import { GptLiveConnection, createGptLiveWebrtcSession } from "./live-connection.js";
+import { FleetView } from "../fleet/fleet-view.js";
 
 type LiveMessage = Record<string, unknown>;
 
@@ -89,6 +90,35 @@ function createOrchestratorStub(history: string[] = []) {
   const stub = {
     language: "es",
     describeFleet: async () => [{ workspace: "auth", title: "Login fix", status: "working" }],
+    fleetView: async () =>
+      new FleetView([
+        {
+          serverId: null,
+          label: "MacBook",
+          online: true,
+          lastSeenAt: null,
+          supportsTools: true,
+          digest: {
+            generatedAt: new Date().toISOString(),
+            agents: [
+              {
+                agentId: "agent-1",
+                title: "Login fix",
+                workspaceId: "ws-1",
+                workspace: "auth",
+                provider: "claude",
+                status: "working",
+                now: "running the login tests",
+                updatedAt: new Date().toISOString(),
+              },
+            ],
+            workspaces: [],
+            projects: [],
+            sessions: [],
+          },
+        },
+      ]),
+    planDelegation: async () => null,
     attachCall: (call: { announce?: (lines: string[], options?: AnnounceOptions) => void }) => {
       announce = call.announce;
       return () => {
@@ -159,7 +189,7 @@ describe("GptLiveCall", () => {
       "auth · Login fix: working",
     );
     expect(findMessage(live, "session.thinking.append")?.content).toContain(
-      "auth · Login fix: working",
+      'auth · "Login fix" (claude) — working | now: running the login tests',
     );
   });
 
@@ -218,6 +248,32 @@ describe("GptLiveCall", () => {
     expect(stub.utterances).toContain("¿Cómo va auth?");
     expect(findMessage(live, "session.commentary.append", "item_1")?.content).toBe(
       "Auth sigue trabajando en el login.",
+    );
+  });
+
+  it("keeps the start of a request the user began while the assistant was still talking", async () => {
+    const { live, stub } = await startCall();
+    live.socket().send(
+      JSON.stringify({
+        type: "session.output_audio.delta",
+        delta: Buffer.alloc(16000 * 2 * 2).toString("base64"),
+      }),
+    );
+    const send = (delta: string) =>
+      live.socket().send(JSON.stringify({ type: "session.input_transcript.delta", delta }));
+    send("Oye, pero");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    send(" en orquestación, ¿cuáles son las recomendaciones?");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    live.socket().send(
+      JSON.stringify({
+        type: "session.delegation.created",
+        delegation: { id: "item_2", type: "delegation", target: "client" },
+      }),
+    );
+    await waitFor(() => stub.calls.length > 0);
+    expect(stub.calls[0]?.request).toBe(
+      "Oye, pero en orquestación, ¿cuáles son las recomendaciones?",
     );
   });
 

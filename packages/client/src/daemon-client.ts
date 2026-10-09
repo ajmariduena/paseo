@@ -8,7 +8,16 @@ import {
   type TimelineSubscription,
 } from "./connection/index.js";
 import { CreationClient } from "./creation/index.js";
-import type { CreationSnapshot, VoiceMessagesItem } from "@getpaseo/protocol/messages";
+import type {
+  CreationSnapshot,
+  VoiceMessagesItem,
+  VoiceOrchestratorStartRequest,
+} from "@getpaseo/protocol/messages";
+import type {
+  VoiceFleetDigest,
+  VoiceFleetHostState,
+  VoiceToolResult,
+} from "@getpaseo/protocol/voice-fleet/types";
 import type { z } from "zod";
 import type { SessionEventSubscription } from "@getpaseo/protocol/messages";
 import type { ClientCapability } from "@getpaseo/protocol/client-capabilities";
@@ -1107,6 +1116,10 @@ const READ_ALOUD_SYNTHESIZE_TIMEOUT_MS = 90_000;
 const VOICE_ORCHESTRATOR_START_TIMEOUT_MS = 60_000;
 // Messages mode retries on a weak link, so a lost request must fail fast instead of waiting a minute.
 const VOICE_MESSAGES_TIMEOUT_MS = 12_000;
+const VOICE_FLEET_DIGEST_TIMEOUT_MS = 5_000;
+// Creating a worktree and an agent on another host can take most of a minute.
+const VOICE_FLEET_TOOL_TIMEOUT_MS = 60_000;
+const VOICE_FLEET_SYNC_TIMEOUT_MS = 4_000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 const DEFAULT_LIVENESS_TIMEOUT_MS = 5000;
 const LIVENESS_HEARTBEAT_INTERVAL_MS = 10_000;
@@ -2175,6 +2188,7 @@ export class DaemonClient {
   async startVoiceOrchestrator(params: {
     language?: string;
     agentModes?: Record<string, string>;
+    agentDefaults?: VoiceOrchestratorStartRequest["agentDefaults"];
     requestId?: string;
   }): Promise<{ agentId: string; language: string | null }> {
     const response =
@@ -2184,6 +2198,7 @@ export class DaemonClient {
           type: "voice.orchestrator.start.request",
           ...(params.language ? { language: params.language } : {}),
           ...(params.agentModes ? { agentModes: params.agentModes } : {}),
+          ...(params.agentDefaults ? { agentDefaults: params.agentDefaults } : {}),
         },
         timeout: VOICE_ORCHESTRATOR_START_TIMEOUT_MS,
       });
@@ -2313,6 +2328,79 @@ export class DaemonClient {
     await this.sendNamespacedCorrelatedSessionRequest<"voice.call.log_events.response">({
       message: { type: "voice.call.log_events.request", events },
       timeout: VOICE_MESSAGES_TIMEOUT_MS,
+    });
+  }
+
+  async getVoiceFleetDigest(params: {
+    language?: string;
+    timeoutMs?: number;
+  }): Promise<VoiceFleetDigest | null> {
+    const response =
+      await this.sendNamespacedCorrelatedSessionRequest<"voice.fleet.digest.response">({
+        message: {
+          type: "voice.fleet.digest.request",
+          ...(params.language ? { language: params.language } : {}),
+        },
+        timeout: params.timeoutMs ?? VOICE_FLEET_DIGEST_TIMEOUT_MS,
+      });
+    if (response.error) {
+      throw new Error(response.error);
+    }
+    return response.digest;
+  }
+
+  async syncVoiceFleet(params: {
+    hosts: VoiceFleetHostState[];
+    selfLabel?: string;
+    appState?: string;
+  }): Promise<{ active: boolean }> {
+    const response = await this.sendNamespacedCorrelatedSessionRequest<"voice.fleet.sync.response">(
+      {
+        message: {
+          type: "voice.fleet.sync.request",
+          hosts: params.hosts,
+          ...(params.selfLabel ? { selfLabel: params.selfLabel } : {}),
+          ...(params.appState ? { appState: params.appState } : {}),
+        },
+        timeout: VOICE_FLEET_SYNC_TIMEOUT_MS,
+      },
+    );
+    return { active: response.active };
+  }
+
+  async invokeVoiceTool(params: {
+    operationId: string;
+    tool: string;
+    args: Record<string, unknown>;
+    language?: string;
+  }): Promise<{ result: VoiceToolResult | null; error: string | null }> {
+    const response =
+      await this.sendNamespacedCorrelatedSessionRequest<"voice.tools.invoke.response">({
+        message: {
+          type: "voice.tools.invoke.request",
+          operationId: params.operationId,
+          tool: params.tool,
+          args: params.args,
+          ...(params.language ? { language: params.language } : {}),
+        },
+        timeout: VOICE_FLEET_TOOL_TIMEOUT_MS,
+      });
+    return { result: response.result, error: response.error };
+  }
+
+  async sendVoiceCourierResult(params: {
+    operationId: string;
+    result: VoiceToolResult | null;
+    error: string | null;
+  }): Promise<void> {
+    await this.sendNamespacedCorrelatedSessionRequest<"voice.courier.result.response">({
+      message: {
+        type: "voice.courier.result.request",
+        operationId: params.operationId,
+        result: params.result,
+        error: params.error,
+      },
+      timeout: VOICE_FLEET_SYNC_TIMEOUT_MS,
     });
   }
 

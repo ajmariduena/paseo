@@ -28,7 +28,15 @@ export class LiveWebrtcHub {
     const { orchestrator, logger } = this.options;
     const engine = orchestrator.liveEngine;
     if (!engine) throw new Error("GPT-Live is not configured on this host.");
-    await orchestrator.ensureAgent();
+    orchestrator.noteCallStarting();
+    if (orchestrator.hasFastBrain) {
+      // The fast brain answers on its own; the agent is only needed for escalated work.
+      void orchestrator.ensureAgent().catch((error: unknown) => {
+        logger.warn({ err: error }, "Voice agent unavailable; escalated requests will fail");
+      });
+    } else {
+      await orchestrator.ensureAgent();
+    }
     this.endAll();
     const history = orchestrator.takeRecentHistory("messages");
     const createSession = this.options.createSession ?? createGptLiveWebrtcSession;

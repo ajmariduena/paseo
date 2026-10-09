@@ -84,6 +84,17 @@ import {
   HostMetricsGetResponseSchema,
 } from "./host-metrics/rpc-schemas.js";
 import {
+  VoiceCourierExecuteMessageSchema,
+  VoiceCourierResultRequestSchema,
+  VoiceCourierResultResponseSchema,
+  VoiceFleetDigestRequestSchema,
+  VoiceFleetDigestResponseSchema,
+  VoiceFleetSyncRequestSchema,
+  VoiceFleetSyncResponseSchema,
+  VoiceToolsInvokeRequestSchema,
+  VoiceToolsInvokeResponseSchema,
+} from "./voice-fleet/rpc-schemas.js";
+import {
   LoopRunRequestSchema,
   LoopListRequestSchema,
   LoopInspectRequestSchema,
@@ -2933,6 +2944,14 @@ export const VoiceOrchestratorStartRequestSchema = z.object({
   language: z.string().optional(),
   /** The user's chosen mode per provider id, for agents the voice assistant creates. */
   agentModes: z.record(z.string(), z.string()).optional(),
+  /** The user's preferred provider, and model and thinking per provider, for new agents. */
+  agentDefaults: z
+    .object({
+      provider: z.string().optional(),
+      models: z.record(z.string(), z.string()).optional(),
+      thinking: z.record(z.string(), z.string()).optional(),
+    })
+    .optional(),
   requestId: z.string(),
 });
 
@@ -3715,6 +3734,10 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   VoiceLiveConnectRequestSchema,
   VoiceLiveEndRequestSchema,
   VoiceCallSetMuteRequestSchema,
+  VoiceFleetDigestRequestSchema,
+  VoiceFleetSyncRequestSchema,
+  VoiceToolsInvokeRequestSchema,
+  VoiceCourierResultRequestSchema,
   FileExplorerRequestSchema,
   FileSubscribeRequestSchema,
   FileUnsubscribeRequestSchema,
@@ -4079,6 +4102,8 @@ export const ServerInfoStatusPayloadSchema = z
         voiceLiveWebrtc: z.boolean().optional(),
         // COMPAT(voiceCallMute): added in v0.11.0, remove gate after 2027-10-03.
         voiceCallMute: z.boolean().optional(),
+        // COMPAT(voiceFleet): added in v0.11.1, remove gate after 2027-10-09.
+        voiceFleet: z.boolean().optional(),
         // COMPAT(serverMessageQueue): added in v0.11.0, remove gate after 2027-10-04.
         serverMessageQueue: z.boolean().optional(),
         // COMPAT(restartContinuation): added in v0.11.0, remove gate after 2027-10-04.
@@ -7714,6 +7739,11 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   VoiceLiveConnectResponseSchema,
   VoiceLiveEndResponseSchema,
   VoiceCallSetMuteResponseSchema,
+  VoiceFleetDigestResponseSchema,
+  VoiceFleetSyncResponseSchema,
+  VoiceCourierExecuteMessageSchema,
+  VoiceToolsInvokeResponseSchema,
+  VoiceCourierResultResponseSchema,
   SendAgentMessageResponseMessageSchema,
   SetVoiceModeResponseMessageSchema,
   DaemonGetStatusResponseSchema,

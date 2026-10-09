@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { AppState } from "react-native";
 import { useTranslation } from "react-i18next";
+import type { VoiceOrchestratorStartRequest } from "@getpaseo/protocol/messages";
 import {
   useLiveWebrtcController,
   useLiveWebrtcSnapshot,
@@ -22,6 +23,7 @@ import {
   stopVoiceCallEventLog,
 } from "@/voice-chat/call-event-log";
 import { ConnectionQuality } from "@/voice-chat/connection-quality";
+import { startFleetCourier } from "@/voice-chat/fleet-courier";
 import { useGlobalVoiceStore, type GlobalVoiceMode } from "@/voice-chat/global-voice-store";
 import { createHostVoiceMessagesTransport } from "@/voice-chat/messages/host-transport";
 import { stopReadAloud } from "@/read-aloud/player";
@@ -57,24 +59,48 @@ function isConnected(serverId: string): boolean {
   return isHostRuntimeConnected(getHostRuntimeStore().getSnapshot(serverId));
 }
 
-function resolveTargetServerId(): string | null {
-  const active = getLastWorkspaceSelection()?.serverId ?? null;
-  if (active && isConnected(active) && supportsVoiceOrchestrator(active)) return active;
-  for (const host of getHostRuntimeStore().getHosts()) {
-    if (isConnected(host.serverId) && supportsVoiceOrchestrator(host.serverId)) {
-      return host.serverId;
-    }
-  }
-  return null;
+function canDirectLiveCall(serverId: string): boolean {
+  return isConnected(serverId) && supportsLiveWebrtc(serverId);
 }
 
-async function loadPreferredAgentModes(): Promise<Record<string, string>> {
+function canRunVoiceCall(serverId: string): boolean {
+  return isConnected(serverId) && supportsVoiceOrchestrator(serverId);
+}
+
+/** The call runs on a host that reaches GPT-Live itself; the others join through the phone. */
+function resolveTargetServerId(): string | null {
+  const active = getLastWorkspaceSelection()?.serverId ?? null;
+  const hosts = getHostRuntimeStore().getHosts();
+  if (active && canDirectLiveCall(active)) return active;
+  const liveHost = hosts.find((host) => canDirectLiveCall(host.serverId));
+  if (liveHost) return liveHost.serverId;
+  if (active && canRunVoiceCall(active)) return active;
+  return hosts.find((host) => canRunVoiceCall(host.serverId))?.serverId ?? null;
+}
+
+interface VoiceAgentPreferences {
+  agentModes: Record<string, string>;
+  agentDefaults: NonNullable<VoiceOrchestratorStartRequest["agentDefaults"]>;
+}
+
+async function loadVoiceAgentPreferences(): Promise<VoiceAgentPreferences> {
   const preferences = await createAgentPreferencesService.load().catch(() => null);
-  const modes: Record<string, string> = {};
+  const agentModes: Record<string, string> = {};
+  const models: Record<string, string> = {};
+  const thinking: Record<string, string> = {};
   for (const [provider, prefs] of Object.entries(preferences?.providerPreferences ?? {})) {
-    if (prefs.mode) modes[provider] = prefs.mode;
+    if (prefs.mode) agentModes[provider] = prefs.mode;
+    const model = prefs.model?.trim();
+    if (!model) continue;
+    models[provider] = model;
+    const thinkingOptionId = prefs.thinkingByModel?.[model]?.trim();
+    if (thinkingOptionId) thinking[provider] = thinkingOptionId;
   }
-  return modes;
+  const provider = preferences?.provider?.trim();
+  return {
+    agentModes,
+    agentDefaults: { ...(provider ? { provider } : {}), models, thinking },
+  };
 }
 
 // The host's voice language, learned when the call starts; the UI language is only a fallback.
@@ -376,9 +402,11 @@ export function useGlobalVoice(): GlobalVoice {
     void (async () => {
       let callStarted = false;
       try {
+        const { agentModes, agentDefaults } = await loadVoiceAgentPreferences();
         const { agentId, language } = await client.startVoiceOrchestrator({
           language: appI18n.language,
-          agentModes: await loadPreferredAgentModes(),
+          agentModes,
+          agentDefaults,
         });
         if (language) voiceLanguages.set(serverId, language);
         useGlobalVoiceStore.getState().setOrchestratorAgentId(serverId, agentId);
@@ -511,6 +539,11 @@ export function useGlobalVoiceSupervisor(call: GlobalVoice): void {
     });
     return () => subscription.remove();
   }, [call.isActive]);
+
+  useEffect(() => {
+    if (!callServerId) return;
+    return startFleetCourier({ serverId: callServerId, language: callLanguage(callServerId) });
+  }, [callServerId]);
 
   useEffect(() => {
     if (!call.isActive || !callServerId || !runtime || !messagesController) return;

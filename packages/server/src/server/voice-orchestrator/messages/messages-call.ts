@@ -234,6 +234,7 @@ export class VoiceMessagesCall {
         const reply = await this.options.orchestrator.runDelegation({
           request: transcript,
           history: [...this.history],
+          audience: "speech",
         });
         this.pushHistory(`Assistant: ${reply}`);
         await this.addSpokenItem("reply", reply, utteranceId);

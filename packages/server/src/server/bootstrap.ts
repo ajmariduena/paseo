@@ -146,6 +146,7 @@ import { describeDictationStt } from "./speech/dictation-selection.js";
 import type { ReadAloudConfig } from "./speech/read-aloud/config.js";
 import { ReadAloudService } from "./speech/read-aloud/service.js";
 import { VoiceOrchestrator, type GptLiveEngineConfig } from "./voice-orchestrator/orchestrator.js";
+import type { FastLlmConfig } from "./voice-orchestrator/fast-brain/llm-client.js";
 import { AgentManager } from "./agent/agent-manager.js";
 import { AgentStorage } from "./agent/agent-storage.js";
 import { attachAgentStoragePersistence } from "./persistence-hooks.js";
@@ -475,6 +476,7 @@ export interface PaseoDaemonConfig {
   voiceLlmModel?: string | null;
   voiceLlmThinking?: string | null;
   voiceLive?: GptLiveEngineConfig | null;
+  voiceRouter?: FastLlmConfig | null;
   voiceLanguage?: string | null;
   dictationFinalTimeoutMs?: number;
   downloadTokenTtlMs?: number;
@@ -1648,6 +1650,7 @@ export async function createPaseoDaemon(
     voiceOnly: runtime.voiceOnly,
     resolveSpeakHandler: (agentId) => wsServer?.resolveVoiceSpeakHandler(agentId) ?? null,
     resolveCallerContext: (agentId) => wsServer?.resolveVoiceCallerContext(agentId) ?? null,
+    callerContext: runtime.callerContext,
     logger,
   });
   const createAgentToolCatalog = (runtime: PaseoToolRuntimeContext) =>
@@ -1809,6 +1812,11 @@ export async function createPaseoDaemon(
     language: config.voiceLanguage,
     live: config.voiceLive,
     speech: speechService,
+    projectRegistry,
+    router: config.voiceRouter,
+    createToolCatalog: async (callerContext) =>
+      createAgentToolCatalog({ callerContext, transport: "native" }),
+    hostMetrics: () => hostMetricsSampler.getSnapshot(),
     logger,
   });
 
