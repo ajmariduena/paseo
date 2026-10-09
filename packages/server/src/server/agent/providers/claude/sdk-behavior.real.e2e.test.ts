@@ -3,6 +3,10 @@
  */
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, realpathSync, symlinkSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { transferHandoffArchive } from "@getpaseo/client/internal/daemon-client";
+import { createTestPaseoDaemon, type TestPaseoDaemon } from "../../../test-utils/paseo-daemon.js";
+import { DaemonClient } from "../../../test-utils/daemon-client.js";
 import pino from "pino";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -327,6 +331,161 @@ test("native handoff resumes in another provider home and returns without select
     expect(readFileSync(sourcePath)).toEqual(sourceBytes);
   } finally {
     for (const session of sessions) await session.close();
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+}, 180_000);
+
+test("native handoff stops the source daemon runtime and continues a real turn at the destination", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "claude-daemon-handoff-"));
+  const sourceCwd = path.join(root, "workspace");
+  mkdirSync(sourceCwd);
+  execFileSync("git", ["init", "--initial-branch=main"], { cwd: sourceCwd });
+  execFileSync(
+    "git",
+    [
+      "-c",
+      "user.name=Handoff Test",
+      "-c",
+      "user.email=handoff@example.test",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "Initial workspace",
+    ],
+    { cwd: sourceCwd },
+  );
+  const hosts: TestPaseoDaemon[] = [];
+  const clients: DaemonClient[] = [];
+  async function startHost(name: string) {
+    const home = path.join(root, name);
+    const configDir = path.join(home, "claude");
+    mkdirSync(configDir, { recursive: true });
+    symlinkSync(
+      path.join(claudeConfigDir(process.env), ".credentials.json"),
+      path.join(configDir, ".credentials.json"),
+    );
+    const runtimeSettings = { env: { CLAUDE_CONFIG_DIR: configDir } };
+    const host = await createTestPaseoDaemon({
+      paseoHomeRoot: home,
+      cleanup: false,
+      mcpEnabled: false,
+      agentProviderSettings: { claude: runtimeSettings },
+      agentClients: {
+        claude: new ClaudeAgentClient({ logger: pino({ level: "warn" }), runtimeSettings }),
+      },
+    });
+    hosts.push(host);
+    const client = new DaemonClient({
+      url: `ws://127.0.0.1:${host.port}/ws`,
+      appVersion: "0.11.1",
+    });
+    clients.push(client);
+    await client.connect();
+    return { host, client, configDir };
+  }
+  try {
+    const source = await startHost("source");
+    const destination = await startHost("destination");
+    const origin = source.host.daemon;
+    const target = destination.host.daemon;
+    const created = await source.client.createWorkspace({
+      source: { kind: "directory", path: sourceCwd },
+    });
+    if (!created.workspace) throw new Error("Source workspace creation failed");
+    const workspaceId = created.workspace.id;
+    const agent = await origin.agentManager.createAgent(
+      { provider: "claude", model: "haiku", modeId: "bypassPermissions", cwd: sourceCwd },
+      undefined,
+      { workspaceId, initialTitle: "Native handoff conversation" },
+    );
+    const marker = randomUUID();
+    const first = await origin.agentManager.runAgent(
+      agent.id,
+      `Remember this transfer token: ${marker}. Reply with the token. Do not write files or run tools.`,
+    );
+    expect(first.finalText).toContain(marker);
+    const inventory = await origin.handoffSource.inspect(workspaceId);
+    expect(inventory.agentIds).toEqual([agent.id]);
+    const transferId = randomUUID();
+    const reserved = await target.handoffDestination.reserve({
+      transferId,
+      sourceServerId: origin.getServerId(),
+      sourceWorkspaceId: workspaceId,
+      sourceAgentIds: inventory.agentIds,
+      destinationParent: root,
+    });
+    const prepared = await origin.handoffSource.prepare({
+      transferId,
+      workspaceId,
+      agentIds: inventory.agentIds,
+      destinationServerId: target.getServerId(),
+      reservationId: reserved.reservationId,
+    });
+    expect(prepared.source.state).toBe("ready");
+    expect(origin.agentManager.getAgent(agent.id)).toBeNull();
+    const stopped = await origin.agentStorage.get(agent.id);
+    expect(stopped?.lastStatus).toBe("closed");
+    const sourcePath = claudeTranscriptPathSync({
+      cwd: sourceCwd,
+      sessionId: first.sessionId,
+      configDir: source.configDir,
+    });
+    const sourceBytes = readFileSync(sourcePath);
+    await target.handoffDestination.bindSource({
+      transferId,
+      publicKey: prepared.source.publicKey,
+      manifest: prepared.manifest,
+    });
+    await transferHandoffArchive({
+      source: source.client,
+      destination: destination.client,
+      transferId,
+      manifest: prepared.manifest,
+    });
+    await target.handoffDestination.stage(transferId);
+    expect((await destination.client.fetchAgents()).entries).toEqual([]);
+    const receipt = await origin.handoffSource.release(transferId);
+    await target.handoffDestination.acceptRelease(transferId, receipt);
+    const active = await target.handoffDestination.activate(transferId);
+    const importedId = active.agentMappings[0].destinationAgentId;
+    const imported = await target.agentStorage.get(importedId);
+    if (!imported?.persistence) throw new Error("Destination conversation was not installed");
+    expect(imported.persistence.sessionId).toBe(first.sessionId);
+    await expect(
+      source.client.sendMessage(agent.id, "Continue in the old workspace"),
+    ).rejects.toThrow("held by handoff");
+    await expect(
+      origin.agentManager.resumeAgentFromPersistence(
+        imported.persistence,
+        { cwd: sourceCwd },
+        agent.id,
+        { workspaceId },
+      ),
+    ).rejects.toMatchObject({ code: "fenced" });
+    await target.agentManager.resumeAgentFromPersistence(
+      imported.persistence,
+      {
+        provider: "claude",
+        model: "haiku",
+        modeId: "bypassPermissions",
+        cwd: active.destinationCwd,
+      },
+      importedId,
+      { workspaceId: active.workspaceId },
+    );
+    const continued = await target.agentManager.runAgent(
+      importedId,
+      `We moved to ${active.destinationCwd}. Write only the transfer token from the prior conversation into continued.txt in this directory, then reply with that token.`,
+    );
+    expect(continued.finalText).toContain(marker);
+    expect(readFileSync(path.join(active.destinationCwd, "continued.txt"), "utf8").trim()).toBe(
+      marker,
+    );
+    await target.agentManager.closeAgent(importedId);
+    expect(readFileSync(sourcePath)).toEqual(sourceBytes);
+  } finally {
+    for (const client of clients) await client.close();
+    for (const host of hosts) await host.close();
     rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }, 180_000);

@@ -152,7 +152,7 @@ import {
   type ResolvedProviderLaunch,
 } from "../../provider-launch-config.js";
 import { withTimeout } from "../../../../utils/promise-timeout.js";
-import { terminateWithTreeKill } from "../../../../utils/tree-kill.js";
+import { terminateWithTreeKill, type ProcessTerminator } from "../../../../utils/tree-kill.js";
 import { execCommand } from "../../../../utils/spawn.js";
 import { composeSystemPromptParts } from "../../system-prompt.js";
 
@@ -427,6 +427,7 @@ interface ClaudeAgentClientOptions {
   resolveBinary?: () => Promise<string>;
   resolveVersion?: (signal?: AbortSignal) => Promise<string>;
   rewindSdk?: ClaudeRewindSdk;
+  processTerminator?: ProcessTerminator;
 }
 
 interface ClaudeAgentSessionOptions {
@@ -440,6 +441,7 @@ interface ClaudeAgentSessionOptions {
   queryFactory?: ClaudeQueryFactory;
   resolveBinary: () => Promise<string>;
   rewindSdk?: ClaudeRewindSdk;
+  processTerminator?: ProcessTerminator;
 }
 
 type ClaudeThinkingEffort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -1543,6 +1545,7 @@ export class ClaudeAgentClient implements AgentClient {
   private readonly logger: Logger;
   private readonly runtimeSettings?: ProviderRuntimeSettings;
   private readonly queryFactory?: ClaudeQueryFactory;
+  private readonly processTerminator: ProcessTerminator;
   private readonly resolveBinary: () => Promise<string>;
   private readonly resolveVersion: (signal?: AbortSignal) => Promise<string>;
   private readonly rewindSdk: ClaudeRewindSdk;
@@ -1552,6 +1555,7 @@ export class ClaudeAgentClient implements AgentClient {
     this.logger = options.logger.child({ module: "agent", provider: "claude" });
     this.runtimeSettings = options.runtimeSettings;
     this.queryFactory = options.queryFactory;
+    this.processTerminator = options.processTerminator ?? terminateWithTreeKill;
     this.resolveBinary = options.resolveBinary ?? (() => resolveClaudeBinary(this.runtimeSettings));
     this.resolveVersion =
       options.resolveVersion ??
@@ -1579,6 +1583,7 @@ export class ClaudeAgentClient implements AgentClient {
       queryFactory: this.queryFactory,
       resolveBinary: this.resolveBinary,
       rewindSdk: this.rewindSdk,
+      processTerminator: this.processTerminator,
     });
   }
 
@@ -1608,6 +1613,7 @@ export class ClaudeAgentClient implements AgentClient {
       queryFactory: this.queryFactory,
       resolveBinary: this.resolveBinary,
       rewindSdk: this.rewindSdk,
+      processTerminator: this.processTerminator,
     });
   }
 
@@ -2105,6 +2111,7 @@ class ClaudeAgentSession implements AgentSession {
   private readonly persistSession?: boolean;
   private readonly logger: Logger;
   private readonly queryFactory?: ClaudeQueryFactory;
+  private readonly processTerminator: ProcessTerminator;
   private readonly resolveBinary: () => Promise<string>;
   private query: Query | null = null;
   private readonly harnessEnvironment: Record<string, string>;
@@ -2206,6 +2213,7 @@ class ClaudeAgentSession implements AgentSession {
     this.persistSession = options.persistSession;
     this.logger = options.logger.child({ agentId: this.agentId });
     this.queryFactory = options.queryFactory;
+    this.processTerminator = options.processTerminator ?? terminateWithTreeKill;
     this.resolveBinary = options.resolveBinary;
     this.rewindSdk = options.rewindSdk ?? realClaudeRewindSdk;
     this.contextUsage = new ClaudeContextUsageState(
@@ -2834,28 +2842,23 @@ class ClaudeAgentSession implements AgentSession {
     this.taskProtocolSource.reset();
     this.runtimeResidency.reset();
     this.backgroundTasks = [];
-    this.input?.end();
-    this.query?.close?.();
-    await this.awaitWithTimeout(this.query?.interrupt?.(), "close query interrupt");
-    await this.awaitWithTimeout(this.query?.return?.(), "close query return");
-    this.query = null;
-    this.input = null;
-    // Terminate the entire process tree (claude + MCP children) to prevent
-    // orphan accumulation. The SDK's internal cleanup may only kill the
-    // direct child process.
+    // Capture and stop the tree while the SDK still owns its root. Closing the query first
+    // can reap that root before its MCP descendants have been inventoried.
     if (this.childProcess) {
-      const result = await terminateWithTreeKill(this.childProcess, {
+      const result = await this.processTerminator(this.childProcess, {
         gracefulTimeoutMs: 2_000,
         forceTimeoutMs: 2_000,
       });
       if (result === "kill-timeout") {
-        this.logger.warn(
-          { pid: this.childProcess.pid, agentId: this.agentId },
-          "Claude process tree did not report exit after SIGKILL",
-        );
+        throw new Error("Claude process tree exit is unconfirmed; retry closing this runtime");
       }
       this.childProcess = null;
     }
+    this.input?.end();
+    this.query?.close?.();
+    await this.awaitWithTimeout(this.query?.return?.(), "close query return");
+    this.query = null;
+    this.input = null;
     if (this.persistSession === false && this.claudeSessionId) {
       // Claude Code currently ignores --no-session-persistence outside --print mode
       // (see `claude --help`), so the SDK's persistSession=false is silently dropped

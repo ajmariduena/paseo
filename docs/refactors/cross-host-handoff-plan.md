@@ -210,7 +210,13 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   admission draining, cancel/release races, signed receipts and loading fences before providers.
   Admission is wired through agent operations, files/Git, terminal creation/input/resize, scripts,
   setup, provisioning, worktree lifecycle, reconciliation and storage cleanup. Their owning test
-  files carry the regressions. This is not evidence of a complete source stop coordinator.
+  files carry the regressions. `source.ts` now coordinates fencing, setup/provider/terminal stop,
+  admission draining, a durable closed-record checkpoint, workspace/native capture and release
+  revalidation. It rereads the agent inventory strictly instead of silently skipping damaged records.
+  Failed cleanup leaves the transfer preparing and fenced; a successful retry captures only after
+  stop confirmation. Archived, delegated and non-Claude conversations are currently refused.
+  Error-reporting barriers for background event failures, launch-time provider configuration and
+  complete resource dispositions remain open.
 - `destination.ts`, `ownership.posix.test.ts` and `archive.e2e.test.ts` cover durable destination
   reservations, stable identity mappings, private workspace staging and signed release acceptance.
   Bootstrap owns the destination journal and shares one archive store with WebSocket transport.
@@ -224,7 +230,7 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   after failures before, during and after publication, including lost journal acknowledgements.
   Repeated activation preserves later agent edits. Two-daemon tests publish fixture conversations,
   retain Git/directory workspace identity and recover the same IDs after restart. They use a
-  version-only launcher; they do not establish real provider continuation or strict source stop.
+  version-only launcher; native provider continuation has separate evidence below.
   Missing, corrupt or foreign destination journals prevent startup. The final checkout move uses
   an identity-checked POSIX rename; atomic no-replace behavior against external filesystem writers
   remains an acceptance gap.
@@ -236,11 +242,15 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   inactive retries, corruption/limit refusals, source edits and exact-namespace history loading.
   `sdk-behavior.real.e2e.test.ts` proves a real Claude Code 2.1.295 round trip on Linux with two isolated
   configuration directories and three workspace paths: prior-only tokens survive, destination edits
-  occur there and the original transcript remains unchanged. This is provider evidence, not a
-  two-daemon cutover. Compaction, external attachments, file checkpoints, rewind/fork namespace
-  handling and cross-OS evidence remain open before enabling native handoff.
-- Source preparation, client cutover orchestration, readable moved history, automation dispositions
-  and the app flow remain unimplemented. The composite
+  occur there and the original transcript remains unchanged. A second real test uses two isolated
+  daemons and a Git workspace: source preparation closes the actual runtime, the client transfers
+  the archive, signed release permits destination activation and a continued native turn recalls
+  the prior-only token and writes it in the new checkout. A source prompt over WebSocket and a
+  direct resume are both refused after release; the original transcript remains unchanged.
+  Compaction, external attachments, file checkpoints, rewind/fork namespace handling and cross-OS
+  evidence remain open before enabling native handoff.
+- Client cutover orchestration, readable moved history, automation dispositions and the app flow
+  remain unimplemented. The composite
   archive currently supports native Claude conversations; other codecs and explicit context-export
   continuation remain open. Complete handoff is not advertised.
 

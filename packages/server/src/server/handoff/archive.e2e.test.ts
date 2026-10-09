@@ -15,16 +15,10 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { HANDOFF_CHUNK_BYTES } from "@getpaseo/protocol/handoff";
 import { DaemonClient } from "../test-utils/daemon-client.js";
 import { createTestPaseoDaemon, type TestPaseoDaemon } from "../test-utils/paseo-daemon.js";
-import { packHandoffArchive, readHandoffBundle } from "./bundle.js";
-import { captureClaudeSession } from "../agent/providers/claude/handoff.js";
 import { claudeProjectDirSync } from "../agent/providers/claude/project-dir.js";
 import { HandoffArchiveStore } from "./archive.js";
-import {
-  captureWorkspace,
-  packWorkspaceArchive,
-  restoreWorkspaceArchive,
-  verifyWorkspaceFromArchive,
-} from "./workspace.js";
+import { parseStoredAgentRecord } from "../agent/agent-storage.js";
+import { captureWorkspace, packWorkspaceArchive, restoreWorkspaceArchive } from "./workspace.js";
 
 const exec = promisify(execFile);
 
@@ -112,34 +106,28 @@ test.skipIf(process.platform === "win32").each([
 ])(
   "transfers native conversation artifacts and activates a $kind workspace across real daemon restarts",
   async ({ prepare, hasGit, subdirEntries }) => {
-    const source = await startHost("source");
+    let source = await startHost("source", true);
     let destination = await startHost("destination", true);
-    const sourceDaemon = source.daemon.daemon;
+    let sourceDaemon = source.daemon.daemon;
     const transferId = randomUUID();
     const cwd = path.join(root, "workspace");
     await mkdir(cwd);
     await mkdir(path.join(cwd, "subdir"));
     await writeFile(path.join(cwd, "work.txt"), "work in progress\n");
     await prepare(cwd);
+    const created = await source.client.createWorkspace({
+      source: { kind: "directory", path: cwd },
+    });
+    if (!created.workspace) throw new Error(created.error?.message ?? "Workspace creation failed");
     const request = {
       transferId,
       sourceServerId: sourceDaemon.getServerId(),
-      sourceWorkspaceId: "source-workspace",
+      sourceWorkspaceId: created.workspace.id,
       sourceAgentIds: ["source-agent"],
       destinationParent: root,
     };
     const reserved = await destination.daemon.daemon.handoffDestination.reserve(request);
-    const prepared = await sourceDaemon.handoffOwnership.prepare({
-      id: transferId,
-      cwd,
-      workspaceId: request.sourceWorkspaceId,
-      agentIds: request.sourceAgentIds,
-      destinationServerId: destination.daemon.daemon.getServerId(),
-      reservationId: reserved.reservationId,
-    });
-    const artifactDirectory = path.join(root, "snapshot");
-    await captureWorkspace({ cwd, artifactDirectory });
-    const sourceConfigDir = path.join(root, "source-claude");
+    const sourceConfigDir = path.join(root, "source", "claude");
     const sessionId = randomUUID();
     const project = claudeProjectDirSync(cwd, { configDir: sourceConfigDir });
     await mkdir(project, { recursive: true });
@@ -150,32 +138,35 @@ test.skipIf(process.platform === "win32").each([
         message: { role: "user", content: "Complete the work from our prior conversation" },
       }) + "\n";
     await writeFile(path.join(project, `${sessionId}.jsonl`), transcript);
-    const sessionDirectory = path.join(root, "session-capture");
-    await captureClaudeSession({
-      handle: { provider: "claude", sessionId },
-      cwd,
-      configDir: sourceConfigDir,
-      cliVersion: "2.1.295",
-      artifactDirectory: sessionDirectory,
-    });
-    const manifest = await packHandoffArchive({
-      workspaceDirectory: artifactDirectory,
-      store: sourceDaemon.handoffArchives,
+    const timestamp = new Date().toISOString();
+    await sourceDaemon.agentStorage.upsert(
+      parseStoredAgentRecord({
+        id: "source-agent",
+        provider: "claude",
+        cwd,
+        workspaceId: request.sourceWorkspaceId,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        title: "Conversation to continue",
+        lastStatus: "closed",
+        persistence: { provider: "claude", sessionId, metadata: { cwd } },
+      }),
+    );
+    const sourceRequest = {
       transferId,
-      sourceServerId: request.sourceServerId,
-      sourceWorkspaceId: request.sourceWorkspaceId,
-      sourceCwd: cwd,
-      conversations: [
-        {
-          sourceAgentId: "source-agent",
-          title: "Conversation to continue",
-          artifactDirectory: sessionDirectory,
-        },
-      ],
-    });
-    await rm(artifactDirectory, { recursive: true });
-    await rm(sessionDirectory, { recursive: true });
-    const binding = { transferId, publicKey: prepared.publicKey, manifest };
+      workspaceId: request.sourceWorkspaceId,
+      agentIds: request.sourceAgentIds,
+      destinationServerId: destination.daemon.daemon.getServerId(),
+      reservationId: reserved.reservationId,
+    };
+    const prepared = await sourceDaemon.handoffSource.prepare(sourceRequest);
+    const manifest = prepared.manifest;
+    expect(prepared.source.state).toBe("ready");
+    await stopHost(source);
+    source = await startHost("source", true);
+    sourceDaemon = source.daemon.daemon;
+    expect(await sourceDaemon.handoffSource.prepare(sourceRequest)).toEqual(prepared);
+    const binding = { transferId, publicKey: prepared.source.publicKey, manifest };
     const receiving = await destination.daemon.daemon.handoffDestination.bindSource(binding);
     await stopHost(destination);
     destination = await startHost("destination", true);
@@ -204,26 +195,32 @@ test.skipIf(process.platform === "win32").each([
     );
     expect(await readdir(path.join(staged.stagingCwd, "subdir"))).toEqual(subdirEntries);
     expect((await readdir(staged.stagingCwd)).includes(".git")).toBe(hasGit);
-    await sourceDaemon.handoffOwnership.markReady(transferId, manifest.entrypoint.sha256);
-    const receipt = await sourceDaemon.handoffOwnership.release(
-      transferId,
-      {
-        version: 1,
-        transferId,
-        sourceServerId: request.sourceServerId,
-        destinationServerId: destination.daemon.daemon.getServerId(),
-        reservationId: reserved.reservationId,
-        manifestDigest: manifest.entrypoint.sha256,
-      },
-      () =>
-        sourceDaemon.handoffArchives.withVerifiedArchive(transferId, async (archive) => {
-          const content = await readHandoffBundle(archive, {
-            ...request,
-            manifestDigest: manifest.entrypoint.sha256,
-          });
-          await verifyWorkspaceFromArchive({ archive, entrypoint: content.bundle.workspace, cwd });
-        }),
+    await writeFile(path.join(cwd, "work.txt"), "changed after preparation\n");
+    await expect(sourceDaemon.handoffSource.release(transferId)).rejects.toMatchObject({
+      code: "source_changed",
+    });
+    await writeFile(path.join(cwd, "work.txt"), "work in progress\n");
+    const sourceTranscript = path.join(project, `${sessionId}.jsonl`);
+    await writeFile(
+      sourceTranscript,
+      transcript +
+        JSON.stringify({
+          type: "user",
+          sessionId,
+          message: { role: "user", content: "New source turn" },
+        }) +
+        "\n",
     );
+    await expect(sourceDaemon.handoffSource.release(transferId)).rejects.toMatchObject({
+      code: "source_changed",
+    });
+    expect(sourceDaemon.handoffOwnership.status(transferId).state).toBe("ready");
+    await expect(
+      sourceDaemon.handoffOwnership.withMutation({ cwd }, async () => {}),
+    ).rejects.toMatchObject({ code: "fenced" });
+    await writeFile(sourceTranscript, transcript);
+    const receipt = await sourceDaemon.handoffSource.release(transferId);
+    expect(await sourceDaemon.handoffSource.release(transferId)).toEqual(receipt);
     const released = await destination.daemon.daemon.handoffDestination.acceptRelease(
       transferId,
       receipt,

@@ -19,6 +19,7 @@ import { HandoffOwnership } from "./handoff/ownership.js";
 import { HandoffArchiveStore } from "./handoff/archive.js";
 import { createHandoffPublication } from "./handoff/publication.js";
 import { createHandoffDestination, type HandoffDestination } from "./handoff/destination.js";
+import { HandoffSource } from "./handoff/source.js";
 
 export type ListenTarget =
   | { type: "tcp"; host: string; port: number }
@@ -513,6 +514,7 @@ export interface PaseoDaemon {
   handoffOwnership: HandoffOwnership;
   handoffArchives: HandoffArchiveStore;
   handoffDestination: HandoffDestination;
+  handoffSource: HandoffSource;
   agentManager: AgentManager;
   agentStorage: AgentStorage;
   terminalManager: TerminalManager;
@@ -1629,6 +1631,19 @@ export async function createPaseoDaemon(
   });
   logger.info({ elapsed: elapsed() }, "Schedule service initialized");
   await handoffDestination.recoverActivations();
+  const handoffSource = new HandoffSource({
+    directory: path.join(config.paseoHome, "handoff", "source"),
+    serverId,
+    ownership: handoffOwnership,
+    archives: handoffArchives,
+    workspaces: workspaceRegistry,
+    agents: agentStorage,
+    agentManager,
+    terminals: terminalManager,
+    setup: workspaceSetupRuntime,
+    getProviderRuntimeSettings: (provider) =>
+      providerSnapshotManager.getProviderRuntimeSettings(provider),
+  });
   logger.info({ elapsed: elapsed() }, "Loading persisted agent registry");
   const persistedRecords = await agentStorage.list();
   logger.info(
@@ -2122,6 +2137,7 @@ export async function createPaseoDaemon(
     wsServer?.prepareForShutdown();
     agentManager.prepareForShutdown();
     await handoffDestination.dispose();
+    await handoffSource.dispose();
     await restartRecovery
       .prepareForShutdown()
       .catch((error: unknown) => logger.error({ err: error }, "Failed to record restart intents"));
@@ -2171,6 +2187,7 @@ export async function createPaseoDaemon(
     handoffOwnership,
     handoffArchives,
     handoffDestination,
+    handoffSource,
     agentManager,
     agentStorage,
     terminalManager,

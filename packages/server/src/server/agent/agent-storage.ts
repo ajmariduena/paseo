@@ -107,6 +107,10 @@ export type SerializableAgentConfig = Pick<
 >;
 
 export type StoredAgentRecord = z.infer<typeof STORED_AGENT_SCHEMA>;
+interface StoredAgentFile {
+  record: StoredAgentRecord;
+  filePath: string;
+}
 export type RestartCancelledWork = z.infer<typeof RestartCancelledWorkSchema>;
 export type AgentCreationRequest = NonNullable<StoredAgentRecord["creation"]>;
 export function parseStoredAgentRecord(value: unknown): StoredAgentRecord {
@@ -170,6 +174,31 @@ export class AgentStorage {
     );
   }
 
+  async listByWorkspaceForHandoff(workspaceId: string): Promise<StoredAgentRecord[]> {
+    await this.load();
+    await Promise.all(this.pendingWrites.values());
+    // A sidebar can omit damaged records; a handoff cannot certify an incomplete inventory.
+    const files = await this.readDiskRecords({ requireComplete: true });
+    const records = files
+      .map((file) => file.record)
+      .filter((record) => record.workspaceId === workspaceId);
+    const expected = await this.listByWorkspace(workspaceId);
+    const byId = new Map(records.map((record) => [record.id, record]));
+    if (
+      byId.size !== records.length ||
+      expected.length !== records.length ||
+      expected.some(
+        (record) =>
+          !isDeepStrictEqual(
+            parseStoredAgentRecord(JSON.parse(JSON.stringify(record))),
+            byId.get(record.id),
+          ),
+      )
+    )
+      throw new Error("Handoff agent inventory differs from persisted storage");
+    return records;
+  }
+
   async findByDaemonExecution(owner: DaemonAgentOwner): Promise<StoredAgentRecord | null> {
     await this.load();
     const agentId = this.daemonAgentIdsByExecution.get(daemonExecutionKey(owner));
@@ -193,6 +222,27 @@ export class AgentStorage {
   async upsert(record: StoredAgentRecord): Promise<void> {
     await this.load();
     await this.queueRecordWrite(record);
+  }
+
+  async checkpointClosedAgent(agentId: string): Promise<StoredAgentRecord> {
+    await this.load();
+    await this.queueRecordMutation(
+      agentId,
+      (record) => {
+        if (!record || record.lastStatus !== "closed")
+          throw new Error("Handoff requires a persisted closed agent");
+        return record;
+      },
+      async () => {
+        const record = this.cache.get(agentId);
+        if (!record) throw new Error("Handoff agent disappeared during persistence");
+        await syncFilePublication(this.buildRecordPath(record), path.dirname(this.baseDir));
+      },
+    );
+    const record = await this.get(agentId);
+    if (!record || record.lastStatus !== "closed")
+      throw new Error("Handoff agent changed during persistence");
+    return structuredClone(record);
   }
 
   private queueRecordWrite(record: StoredAgentRecord): Promise<void> {
@@ -423,7 +473,19 @@ export class AgentStorage {
   }
 
   private async scanDisk(): Promise<StoredAgentRecord[]> {
+    const loaded = await this.readDiskRecords({ requireComplete: false });
     const records: StoredAgentRecord[] = [];
+    for (const { record, filePath } of loaded) {
+      records.push(record);
+      this.cache.set(record.id, record);
+      this.indexOwner(record);
+      this.pathById.set(record.id, filePath);
+      this.addIndexedPath(record.id, filePath);
+    }
+    return records;
+  }
+
+  private async readDiskRecords(options: { requireComplete: boolean }): Promise<StoredAgentFile[]> {
     let entries: Dirent[] = [];
     try {
       entries = await fs.readdir(this.baseDir, { withFileTypes: true });
@@ -449,7 +511,8 @@ export class AgentStorage {
           return files
             .filter((file) => file.isFile() && file.name.endsWith(".json"))
             .map((file) => path.join(projectDir, file.name));
-        } catch {
+        } catch (error) {
+          if (options.requireComplete) throw error;
           return [];
         }
       }),
@@ -458,30 +521,24 @@ export class AgentStorage {
     const allFilePaths = [...rootRecordPaths, ...projectFileLists.flat()];
     const loaded = await Promise.all(
       allFilePaths.map(async (filePath) => {
-        const record = await this.readRecordFile(filePath);
+        const record = await this.readRecordFile(filePath, options);
         return record ? { record, filePath } : null;
       }),
     );
 
-    for (const item of loaded) {
-      if (!item) continue;
-      const { record, filePath } = item;
-      records.push(record);
-      this.cache.set(record.id, record);
-      this.indexOwner(record);
-      this.pathById.set(record.id, filePath);
-      this.addIndexedPath(record.id, filePath);
-    }
-
-    return records;
+    return loaded.filter((item) => item !== null);
   }
 
-  private async readRecordFile(filePath: string): Promise<StoredAgentRecord | null> {
+  private async readRecordFile(
+    filePath: string,
+    options: { requireComplete: boolean },
+  ): Promise<StoredAgentRecord | null> {
     try {
       const content = await fs.readFile(filePath, "utf8");
       const parsed = JSON.parse(content);
       return parseStoredAgentRecord(parsed);
     } catch (error) {
+      if (options.requireComplete) throw error;
       this.logger.error({ err: error, filePath }, "Skipping invalid agent record");
       return null;
     }

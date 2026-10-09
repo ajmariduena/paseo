@@ -11771,6 +11771,49 @@ test("concurrent explicit closes tear down the runtime once", async () => {
   }
 });
 
+test("closing persists provider events emitted during shutdown before the closed snapshot", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-close-events-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const client = new (class extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      return new (class extends TestAgentSession {
+        override async close(): Promise<void> {
+          this.pushEvent({
+            type: "mode_changed",
+            provider: "codex",
+            currentModeId: "build",
+            availableModes: [],
+          });
+          this.pushEvent({
+            type: "thinking_option_changed",
+            provider: "codex",
+            thinkingOptionId: "high",
+          });
+        }
+      })(config);
+    }
+  })();
+  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+  try {
+    const agent = await manager.createAgent(
+      { provider: "codex", cwd: workdir, modeId: "plan", thinkingOptionId: "low" },
+      undefined,
+      { workspaceId: undefined },
+    );
+    await manager.closeAgent(agent.id);
+    await storage.flush();
+    expect(await storage.get(agent.id)).toMatchObject({
+      lastStatus: "closed",
+      config: { modeId: "build", thinkingOptionId: "high" },
+    });
+    expect(manager.getAgent(agent.id)).toBeNull();
+  } finally {
+    await manager.flush();
+    await storage.flush();
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
 test("provider close failure retains the runtime for cleanup instead of allowing another writer", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-close-failure-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);

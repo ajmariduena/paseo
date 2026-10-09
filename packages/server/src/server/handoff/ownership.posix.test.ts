@@ -7,7 +7,11 @@ import { HandoffOwnership, verifyHandoffRelease } from "./ownership.js";
 import { writeJournal } from "./artifacts.js";
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import { AgentStorage, type StoredAgentRecord } from "../agent/agent-storage.js";
-import { FileBackedProjectRegistry, FileBackedWorkspaceRegistry } from "../workspace-registry.js";
+import {
+  FileBackedProjectRegistry,
+  FileBackedWorkspaceRegistry,
+  createPersistedWorkspaceRecord,
+} from "../workspace-registry.js";
 import { createHandoffPublication, type HandoffPublication } from "./publication.js";
 import { HandoffDestination } from "./destination.js";
 import { HandoffArchiveStore } from "./archive.js";
@@ -15,6 +19,7 @@ import { packHandoffArchive, readHandoffBundle } from "./bundle.js";
 import { captureClaudeSession } from "../agent/providers/claude/handoff.js";
 import { claudeProjectDirSync } from "../agent/providers/claude/project-dir.js";
 import { captureWorkspace } from "./workspace.js";
+import { HandoffSource } from "./source.js";
 
 const test = platformTest.skipIf(process.platform === "win32");
 let root: string;
@@ -33,6 +38,62 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   await rm(root, { recursive: true, force: true });
+});
+
+test("source preparation keeps ownership fenced after uncertain cleanup and retries before capture", async () => {
+  const transferId = randomUUID();
+  const workspace = createPersistedWorkspaceRecord({
+    workspaceId: "source-workspace",
+    projectId: "source-project",
+    cwd,
+    kind: "directory",
+    displayName: "Source",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+  const captures = path.join(root, "source-captures");
+  let stopFails = true;
+  const failure = new Error("setup exit is unconfirmed");
+  const source = new HandoffSource({
+    directory: captures,
+    serverId: sourceServerId,
+    ownership,
+    archives: new HandoffArchiveStore(path.join(root, "source-archives")),
+    workspaces: { get: async () => workspace, list: async () => [workspace] },
+    agents: new AgentStorage(path.join(root, "agents"), createTestLogger()),
+    agentManager: { getAgent: () => null, listAgents: () => [], closeAgent: async () => {} },
+    terminals: {
+      listDirectories: () => [],
+      getTerminals: async () => [],
+      killTerminalAndWait: async () => {},
+    },
+    setup: {
+      stop: async () => {
+        if (stopFails) throw failure;
+      },
+    },
+    getProviderRuntimeSettings: () => undefined,
+  });
+  const request = {
+    transferId,
+    workspaceId: workspace.workspaceId,
+    agentIds: [],
+    destinationServerId: "destination",
+    reservationId: randomUUID(),
+  };
+  await expect(source.prepare(request)).rejects.toMatchObject({ errors: [failure] });
+  expect(ownership.status(transferId).state).toBe("preparing");
+  await expect(readdir(captures)).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(ownership.withMutation({ cwd }, async () => {})).rejects.toMatchObject({
+    code: "fenced",
+  });
+  stopFails = false;
+  const prepared = await source.prepare(request);
+  expect(prepared.source.state).toBe("ready");
+  expect(await source.prepare(request)).toEqual(prepared);
+  const receipt = await source.release(transferId);
+  expect(receipt.manifestDigest).toBe(prepared.manifest.entrypoint.sha256);
+  await source.dispose();
 });
 
 test("reserves stable destination identities across restart without dropping unprepared conversations", async () => {

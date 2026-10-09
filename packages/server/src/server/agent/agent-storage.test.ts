@@ -475,6 +475,64 @@ describe("AgentStorage", () => {
     ]);
   });
 
+  test("handoff inventory refuses damaged records instead of silently omitting them", async () => {
+    await storage.applySnapshot(
+      createManagedAgent({ id: "handoff-agent", workspaceId: "workspace-1", lifecycle: "closed" }),
+    );
+    await expect(storage.listByWorkspaceForHandoff("workspace-1")).resolves.toMatchObject([
+      { id: "handoff-agent" },
+    ]);
+    const damaged = path.join(storagePath, "damaged.json");
+    await fs.writeFile(damaged, "{");
+    await expect(storage.listByWorkspaceForHandoff("workspace-1")).rejects.toThrow();
+    const reloaded = new AgentStorage(storagePath, logger);
+    await expect(reloaded.listByWorkspace("workspace-1")).resolves.toMatchObject([
+      { id: "handoff-agent" },
+    ]);
+    await expect(reloaded.listByWorkspaceForHandoff("workspace-1")).rejects.toThrow();
+    await fs.rm(damaged);
+    await expect(reloaded.listByWorkspaceForHandoff("workspace-1")).resolves.toMatchObject([
+      { id: "handoff-agent" },
+    ]);
+  });
+
+  test("handoff inventory refuses a record lost after it was loaded", async () => {
+    await storage.applySnapshot(
+      createManagedAgent({ id: "handoff-agent", workspaceId: "workspace-1", lifecycle: "closed" }),
+    );
+    await fs.rm(storagePath, { recursive: true });
+    await expect(storage.listByWorkspaceForHandoff("workspace-1")).rejects.toThrow(
+      "inventory differs from persisted storage",
+    );
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "handoff checkpoint requires closed state and reports failed writes",
+    async () => {
+      await storage.applySnapshot(
+        createManagedAgent({ id: "handoff-agent", workspaceId: "workspace-1" }),
+      );
+      await expect(storage.checkpointClosedAgent("handoff-agent")).rejects.toThrow(
+        "requires a persisted closed agent",
+      );
+      await storage.applySnapshot(
+        createManagedAgent({
+          id: "handoff-agent",
+          workspaceId: "workspace-1",
+          lifecycle: "closed",
+        }),
+      );
+      await fs.rm(storagePath, { recursive: true });
+      await fs.writeFile(storagePath, "blocked storage directory");
+      await expect(storage.checkpointClosedAgent("handoff-agent")).rejects.toThrow();
+      await fs.rm(storagePath);
+      await expect(storage.checkpointClosedAgent("handoff-agent")).resolves.toMatchObject({
+        id: "handoff-agent",
+        lastStatus: "closed",
+      });
+    },
+  );
+
   test("internal flag is persisted and reloaded", async () => {
     await storage.applySnapshot(
       createManagedAgent({
