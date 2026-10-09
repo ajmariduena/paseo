@@ -321,9 +321,12 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   does not depend on local transfer storage. The source banner opens preparation/recovery or checks both hosts before navigating to
   the original activated destination. Removing the destination host leaves an actionable error.
   Existing source conversations hide their composer and fork controls while held; cancellation
-  restores them. File, draft and other workspace mutation affordances still need the same treatment;
-  server admission remains authoritative. Source retirement still needs tombstones to replace broad
-  path fences.
+  restores them. Source drafts retain their unsent text but hide the composer, reject drops and
+  pause automatic submission. Agent, terminal and profile launchers, keyboard shortcuts and session
+  import follow the same ownership projection, including after reload. Pending terminal creation is
+  discarded when ownership is held. File, Git, script and other workspace mutation affordances still
+  need the same treatment; server admission remains authoritative. Source retirement still needs
+  tombstones to replace broad path fences.
   Fourteen form cases cover unavailable modes, inventory changes, lost replies, storage failures,
   duplicate submissions, closing during work, cancellation recovery and host journals advancing
   past local state, including destination lookup and selection failures. Reconstructed records retain
@@ -344,7 +347,10 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   Destination-only recovery selects one of two reservations, preserves its original mode without
   preparing work until Resume, then reconstructs and finishes an interrupted source cancellation.
   The source link case removes the destination host, checks its visible error, reconnects and opens
-  the same activated workspace. These recovery fixtures contain no conversations. The new source
+  the same activated workspace. After release and reload, it also verifies disabled agent, terminal
+  and profile launchers through the menu and keyboard. Compact cancellation restores an unsent
+  draft across reload and creates a real terminal afterward. These recovery fixtures contain no
+  conversations. The new source
   conversation UI assertions still need a passing real-provider run: the latest native attempt failed
   with an invalid Claude OAuth refresh token; context mode timed out waiting for the initial reply.
   Two additional real-provider browser cases use
@@ -361,6 +367,7 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   See the [history results](../qa-evidence/handoff-history.txt),
   [preflight results](../qa-evidence/handoff-preflight.txt),
   [source ownership and UI results](../qa-evidence/handoff-source-state.txt),
+  [source launch controls results](../qa-evidence/handoff-source-controls.txt),
   [real-provider browser results](../qa-evidence/handoff-app-real.txt),
   [recovery app results](../qa-evidence/handoff-app.txt)
   and [review](../qa-evidence/handoff-review-compact.png), [pending transfers](../qa-evidence/handoff-existing-transfers.png), [desktop](../qa-evidence/handoff-app-desktop.png) / [compact](../qa-evidence/handoff-app-compact.png)

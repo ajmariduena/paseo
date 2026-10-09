@@ -4,6 +4,7 @@ import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { TerminalProfile } from "@getpaseo/protocol/messages";
 import { resolveTerminalProfileLaunch } from "@getpaseo/protocol/terminal-profiles";
 import type { WorkspaceDescriptor } from "@/stores/session-store";
+import { useSourceHandoffReadOnly } from "@/handoff/state";
 import { useTranslation } from "react-i18next";
 import { useReplicaQuery } from "@/data/query";
 import { workspaceTerminalsPushRoute } from "@/data/push-router";
@@ -63,6 +64,7 @@ export function useWorkspaceTerminals(input: UseWorkspaceTerminalsInput) {
     onTerminalCreateFailed,
   } = input;
   const { t } = useTranslation();
+  const isHandoffReadOnly = useSourceHandoffReadOnly(normalizedServerId, normalizedWorkspaceId);
   const queryClient = useQueryClient();
   const [pendingCreateInput, setPendingCreateInput] = useState<PendingTerminalCreateInput | null>(
     null,
@@ -193,6 +195,11 @@ export function useWorkspaceTerminals(input: UseWorkspaceTerminalsInput) {
       return;
     }
 
+    if (isHandoffReadOnly) {
+      setPendingCreateInput(null);
+      return;
+    }
+
     if (canCreateNow && !createMutation.isPending) {
       const pendingInput = pendingCreateInput;
       setPendingCreateInput(null);
@@ -206,6 +213,7 @@ export function useWorkspaceTerminals(input: UseWorkspaceTerminalsInput) {
     }
   }, [
     canCreateNow,
+    isHandoffReadOnly,
     createMutation,
     hasHydratedWorkspaces,
     isMissingWorkspaceDirectory,
@@ -215,7 +223,7 @@ export function useWorkspaceTerminals(input: UseWorkspaceTerminalsInput) {
 
   const createTerminal = useCallback(
     (createInput: PendingTerminalCreateInput) => {
-      if (createMutation.isPending || pendingCreateInput) {
+      if (isHandoffReadOnly || createMutation.isPending || pendingCreateInput) {
         return;
       }
 
@@ -234,6 +242,7 @@ export function useWorkspaceTerminals(input: UseWorkspaceTerminalsInput) {
     },
     [
       canCreateNow,
+      isHandoffReadOnly,
       createMutation,
       hasHydratedWorkspaces,
       isMissingWorkspaceDirectory,

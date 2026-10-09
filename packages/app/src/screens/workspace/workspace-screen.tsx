@@ -1,5 +1,6 @@
 import { HandoffSheet } from "@/handoff/sheet";
 import { SourceHandoff } from "@/handoff/source";
+import { useSourceHandoffReadOnly } from "@/handoff/state";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { WebLinkOpenInAppProvider } from "@/web-links/context";
 import type { JsonValue } from "@getpaseo/protocol/agent-types";
@@ -971,6 +972,7 @@ interface WorkspaceHeaderTitleBarProps {
   showWorkspaceSetup: boolean;
   showCreateBrowserTab: boolean;
   isMobile: boolean;
+  createAgentDisabled: boolean;
   createTerminalDisabled: boolean;
   importAgentDisabled: boolean;
   copyPathDisabled: boolean;
@@ -1001,6 +1003,7 @@ export function WorkspaceHeaderTitleBar({
   showWorkspaceSetup,
   showCreateBrowserTab,
   isMobile,
+  createAgentDisabled,
   createTerminalDisabled,
   importAgentDisabled,
   copyPathDisabled,
@@ -1040,6 +1043,7 @@ export function WorkspaceHeaderTitleBar({
             currentBranchName={currentBranchName}
             showWorkspaceSetup={showWorkspaceSetup}
             showCreateBrowserTab={showCreateBrowserTab}
+            createAgentDisabled={createAgentDisabled}
             createTerminalDisabled={createTerminalDisabled}
             importAgentDisabled={importAgentDisabled}
             copyPathDisabled={copyPathDisabled}
@@ -1323,6 +1327,7 @@ const PENDING_NEW_TAB_LAUNCHER: NewTabLauncher = {
   showChanges: false,
   showPullRequest: false,
   showBrowser: false,
+  agentDisabled: true,
   terminalDisabled: true,
   launch: noop,
 };
@@ -1403,6 +1408,7 @@ export function PendingWorkspaceFrame({
                   showWorkspaceSetup={false}
                   showCreateBrowserTab={false}
                   isMobile={isMobile}
+                  createAgentDisabled
                   createTerminalDisabled
                   importAgentDisabled
                   copyPathDisabled
@@ -1724,6 +1730,7 @@ function WorkspaceScreenContent({
     [workspaceId],
   );
   const workspaceDescriptor = useWorkspace(normalizedServerId, normalizedWorkspaceId);
+  const isHandoffReadOnly = useSourceHandoffReadOnly(normalizedServerId, normalizedWorkspaceId);
   useEffect(() => {
     if (!normalizedServerId || !normalizedWorkspaceId || workspaceDescriptor) return;
     void getHostRuntimeStore()
@@ -1756,10 +1763,15 @@ function WorkspaceScreenContent({
   const openHandoffSheet = useCallback(() => setIsHandoffSheetVisible(true), []);
   const closeHandoffSheet = useCallback(() => setIsHandoffSheetVisible(false), []);
   const [isImportSheetVisible, setIsImportSheetVisible] = useState(false);
-  const canOpenImportSheet = [client, isConnected, workspaceDirectory].every(Boolean);
+  const canOpenImportSheet = [client, isConnected, workspaceDirectory, !isHandoffReadOnly].every(
+    Boolean,
+  );
   const openImportSheet = useCallback(() => {
-    setIsImportSheetVisible(true);
-  }, []);
+    if (canOpenImportSheet) setIsImportSheetVisible(true);
+  }, [canOpenImportSheet]);
+  useEffect(() => {
+    if (isHandoffReadOnly) setIsImportSheetVisible(false);
+  }, [isHandoffReadOnly]);
   const closeImportSheet = useCallback(() => {
     setIsImportSheetVisible(false);
   }, []);
@@ -2175,7 +2187,7 @@ function WorkspaceScreenContent({
       focus?: boolean;
       paneId?: string | null;
     }) {
-      if (!persistenceKey) {
+      if (!persistenceKey || isHandoffReadOnly) {
         return null;
       }
 
@@ -2193,7 +2205,7 @@ function WorkspaceScreenContent({
       }
       return openWorkspaceTabFocused(persistenceKey, target, placement);
     },
-    [openWorkspaceTabFocused, openWorkspaceTabInBackground, persistenceKey],
+    [isHandoffReadOnly, openWorkspaceTabFocused, openWorkspaceTabInBackground, persistenceKey],
   );
 
   useLayoutEffect(() => {
@@ -2629,6 +2641,7 @@ function WorkspaceScreenContent({
         return;
       }
       if (selection.kind === "agent") {
+        if (isHandoffReadOnly) return;
         openTarget({
           kind: "draft",
           draftId: generateDraftId(),
@@ -2652,6 +2665,7 @@ function WorkspaceScreenContent({
     [
       createRemoteBrowserTab,
       createTerminal,
+      isHandoffReadOnly,
       createWorkspaceTab,
       persistenceKey,
       replaceWorkspaceTabTarget,
@@ -4064,8 +4078,9 @@ function WorkspaceScreenContent({
     ],
   );
   const createTerminalDisabled = useMemo(
-    () => createTerminalMutation.isPending || pendingTerminalCreateInput !== null,
-    [createTerminalMutation.isPending, pendingTerminalCreateInput],
+    () =>
+      isHandoffReadOnly || createTerminalMutation.isPending || pendingTerminalCreateInput !== null,
+    [isHandoffReadOnly, createTerminalMutation.isPending, pendingTerminalCreateInput],
   );
   const showCreateBrowserTab = useCanCreateBrowserTab(normalizedServerId);
   const newTabLauncher = useMemo<NewTabLauncher>(
@@ -4073,11 +4088,13 @@ function WorkspaceScreenContent({
       showChanges: isGitCheckout,
       showPullRequest: hasPullRequest,
       showBrowser: showCreateBrowserTab,
+      agentDisabled: isHandoffReadOnly,
       terminalDisabled: createTerminalDisabled,
       launch: launchWorkspaceTab,
     }),
     [
       createTerminalDisabled,
+      isHandoffReadOnly,
       hasPullRequest,
       isGitCheckout,
       launchWorkspaceTab,
@@ -4116,6 +4133,7 @@ function WorkspaceScreenContent({
                   showWorkspaceSetup={showWorkspaceSetup}
                   showCreateBrowserTab={showCreateBrowserTab}
                   isMobile={isMobile}
+                  createAgentDisabled={isHandoffReadOnly}
                   createTerminalDisabled={createTerminalDisabled}
                   importAgentDisabled={!canOpenImportSheet}
                   copyPathDisabled={!workspaceDirectory}
@@ -4145,6 +4163,7 @@ function WorkspaceScreenContent({
       supportsHandoff,
       openHandoffSheet,
       createTerminalDisabled,
+      isHandoffReadOnly,
       currentBranchName,
       handleCopyBranchName,
       handleCopyWorkspacePath,

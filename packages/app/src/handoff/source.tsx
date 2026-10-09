@@ -6,13 +6,10 @@ import { Button } from "@/components/ui/button";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useHosts } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
-import { useWorkspaceFields } from "@/stores/session-store-hooks";
 import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
 import { readSourceHandoffRecord } from "./runtime";
 
-export function useSourceHandoff(serverId: string, workspaceId: string) {
-  return useWorkspaceFields(serverId, workspaceId, (workspace) => workspace.handoff);
-}
+import { useSourceHandoff } from "./state";
 
 export function SourceHandoff({
   serverId,

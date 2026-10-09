@@ -2,6 +2,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef } from "react";
 import { Keyboard, ScrollView, StyleSheet as RNStyleSheet, Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
+import { useSourceHandoffReadOnly } from "@/handoff/state";
 import { ComposerDock } from "@/composer/dock";
 import { useContainerWidthBelow } from "@/hooks/use-container-width";
 import invariant from "tiny-invariant";
@@ -330,6 +331,7 @@ export function WorkspaceDraftAgentTab({
 }: WorkspaceDraftAgentTabProps) {
   const { t } = useTranslation();
   const client = useHostRuntimeClient(serverId);
+  const isHandoffReadOnly = useSourceHandoffReadOnly(serverId, workspaceId);
   const workspaceFields = useWorkspaceFields(serverId, workspaceId, (w) => ({
     workspaceDirectory: w.workspaceDirectory,
     id: w.id,
@@ -522,7 +524,7 @@ export function WorkspaceDraftAgentTab({
   );
   useAgentControlCommandCenterActions({
     sourceId: `draft:${serverId}:${tabId}`,
-    enabled: isPaneFocused && !isSubmitting,
+    enabled: isPaneFocused && !isSubmitting && !isHandoffReadOnly,
     controls: {
       serverId,
       ownerKey: tabId,
@@ -550,13 +552,14 @@ export function WorkspaceDraftAgentTab({
       },
     },
   });
-  const isReadyForPendingAutoSubmit = Boolean(
-    pendingAutoSubmit &&
-    draftInput.isHydrated &&
-    draftWorkingDirectory &&
-    client &&
+  const isReadyForPendingAutoSubmit = [
+    pendingAutoSubmit,
+    !isHandoffReadOnly,
+    draftInput.isHydrated,
+    draftWorkingDirectory,
+    client,
     !composerState.isModelLoading,
-  );
+  ].every(Boolean);
   const autoSubmitKeyRef = useRef<string | null>(null);
   useEffect(() => {
     if (!isReadyForPendingAutoSubmit) {
@@ -653,42 +656,44 @@ export function WorkspaceDraftAgentTab({
   );
 
   return (
-    <FileDropZone style={styles.container}>
+    <FileDropZone style={styles.container} disabled={isHandoffReadOnly}>
       <ComposerDock>
         {dockContent}
-        <View style={animatedStaticStyles.inputAreaWrapper} onLayout={onInputAreaLayout}>
-          {importPillPress ? (
-            <View style={styles.importPillRow}>
-              <View style={styles.importPillContent}>
-                <ComposerImportPill onPress={importPillPress} />
+        {isHandoffReadOnly ? null : (
+          <View style={animatedStaticStyles.inputAreaWrapper} onLayout={onInputAreaLayout}>
+            {importPillPress ? (
+              <View style={styles.importPillRow}>
+                <View style={styles.importPillContent}>
+                  <ComposerImportPill onPress={importPillPress} />
+                </View>
               </View>
-            </View>
-          ) : null}
-          <Composer
-            agentId={tabId}
-            serverId={serverId}
-            workspaceId={workspaceId}
-            isPaneFocused={isPaneFocused}
-            onSubmitMessage={handleCreateFromInput}
-            isSubmitLoading={isSubmitting}
-            blurOnSubmit={true}
-            textSource={draftInput.textSource}
-            onChangeText={draftInput.editText}
-            textReplacement={draftInput.textReplacement}
-            attachments={draftInput.attachments}
-            attachmentScopeKeys={attachmentScopeKeys}
-            onOpenWorkspaceAttachment={handleOpenWorkspaceAttachment}
-            onChangeAttachments={draftInput.setAttachments}
-            cwd={composerState.workingDir}
-            clearDraft={draftInput.clear}
-            autoFocus={shouldAutoFocusWorkspaceDraftComposer({ isPaneFocused, isSubmitting })}
-            autoFocusKey={String(draftInput.attachmentFocusRequestId)}
-            onFocusInput={handleFocusInputCallback}
-            commandDraft={composerState.commandDraft}
-            agentControls={composerAgentControls}
-            isCompactLayout={isCompactComposerLayout}
-          />
-        </View>
+            ) : null}
+            <Composer
+              agentId={tabId}
+              serverId={serverId}
+              workspaceId={workspaceId}
+              isPaneFocused={isPaneFocused}
+              onSubmitMessage={handleCreateFromInput}
+              isSubmitLoading={isSubmitting}
+              blurOnSubmit={true}
+              textSource={draftInput.textSource}
+              onChangeText={draftInput.editText}
+              textReplacement={draftInput.textReplacement}
+              attachments={draftInput.attachments}
+              attachmentScopeKeys={attachmentScopeKeys}
+              onOpenWorkspaceAttachment={handleOpenWorkspaceAttachment}
+              onChangeAttachments={draftInput.setAttachments}
+              cwd={composerState.workingDir}
+              clearDraft={draftInput.clear}
+              autoFocus={shouldAutoFocusWorkspaceDraftComposer({ isPaneFocused, isSubmitting })}
+              autoFocusKey={String(draftInput.attachmentFocusRequestId)}
+              onFocusInput={handleFocusInputCallback}
+              commandDraft={composerState.commandDraft}
+              agentControls={composerAgentControls}
+              isCompactLayout={isCompactComposerLayout}
+            />
+          </View>
+        )}
       </ComposerDock>
     </FileDropZone>
   );

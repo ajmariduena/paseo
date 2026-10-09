@@ -22,7 +22,7 @@ import { shallow, useShallow } from "zustand/shallow";
 import { useStoreWithEqualityFn } from "zustand/traditional";
 import { AgentStreamView, type AgentStreamViewHandle } from "@/agent-stream/view";
 import { ConversationHandoff } from "@/handoff/history";
-import { useSourceHandoff } from "@/handoff/source";
+import { useSourceHandoffReadOnly } from "@/handoff/state";
 import { ArchivedAgentCallout } from "@/components/archived-agent-callout";
 import { ComposerDock } from "@/composer/dock";
 import { FileDropZone } from "@/components/file-drop/file-drop-zone";
@@ -1185,8 +1185,7 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
     rows: subagentRows,
   });
   const hasPluginComposerPills = useHasPluginComposerPills(serverId, workspaceId, agentId);
-  const sourceHandoff = useSourceHandoff(serverId, workspaceId);
-  const isHandoffReadOnly = Boolean(sourceHandoff && sourceHandoff.state !== "cancelled");
+  const isHandoffReadOnly = useSourceHandoffReadOnly(serverId, workspaceId);
   const hasActiveComposer =
     !agentState.archivedAt && !isArchivingCurrentAgent && !isHandoffReadOnly;
   const hasVisibleAgentTracks = hasAgentTracks({

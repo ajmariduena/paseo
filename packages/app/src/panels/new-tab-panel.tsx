@@ -36,7 +36,7 @@ const LAUNCHER_ICON_SIZE = ICON_SIZE.md;
 const LAUNCHER_MAX_WIDTH = 380;
 const EDIT_PROFILES_HIT_SIZE = ICON_SIZE.xs + SPACING[2];
 const ROW_DATA_SET = { newTabLauncherRow: "true" };
-const ROW_SELECTOR = '[data-new-tab-launcher-row="true"]';
+const ROW_SELECTOR = '[data-new-tab-launcher-row="true"]:not([aria-disabled="true"])';
 function LauncherIcon({
   Icon,
   color = "",
@@ -89,6 +89,7 @@ function EditProfilesButton({ label, onPress }: { label: string; onPress: () => 
 
 function LauncherRow({ item }: { item: WorkspaceTabLaunchItem }) {
   const { tabId } = usePaneContext();
+  const accessibilityState = useMemo(() => ({ disabled: item.disabled }), [item.disabled]);
   const handlePress = useCallback(() => {
     item.launch({ kind: "replace", tabId });
   }, [item, tabId]);
@@ -99,8 +100,9 @@ function LauncherRow({ item }: { item: WorkspaceTabLaunchItem }) {
       accessibilityLabel={item.label}
       dataSet={ROW_DATA_SET}
       disabled={item.disabled}
+      accessibilityState={accessibilityState}
       onPress={handlePress}
-      style={rowStyle}
+      style={item.disabled ? [styles.row, styles.rowDisabled] : rowStyle}
       tabIndex={-1}
       testID={`workspace-new-tab-${item.id}`}
     >
@@ -306,6 +308,7 @@ const styles = StyleSheet.create((theme) => ({
     outlineColor: "transparent",
     backgroundColor: theme.colors.surface1,
   },
+  rowDisabled: { opacity: theme.opacity[50] },
   rowHovered: { backgroundColor: theme.colors.surface2 },
   rowFocused: { borderColor: theme.colors.borderAccent },
   rowPressed: { opacity: 0.85 },

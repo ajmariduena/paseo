@@ -1,6 +1,8 @@
 import { mkdir, readFile, rm, rmdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, test } from "../support/fixtures";
+import { pressDirectNewTabShortcut } from "../support/helpers/launcher";
+import { composerLocator } from "../support/helpers/composer";
 import { waitForSettledPosition } from "../support/helpers/sheet-layout";
 import {
   handoffHosts as hosts,
@@ -264,6 +266,24 @@ test.describe("workspace handoff", () => {
       await expect(page.getByTestId("handoff-source-state")).toContainText(
         "Continue on Destination VPS",
       );
+      await page.reload();
+      await expect(page.getByTestId("workspace-new-tab-agent")).toBeDisabled();
+      await expect(page.getByTestId("workspace-new-tab-terminal")).toBeDisabled();
+      await expect(page.getByTestId("workspace-new-tab-terminal-profile:claude")).toBeDisabled();
+      await pressDirectNewTabShortcut(page, "a");
+      await pressDirectNewTabShortcut(page, "t");
+      await expect(page.getByTestId("workspace-new-tab-panel")).toBeVisible();
+      await expect(composerLocator(page)).toHaveCount(0);
+      expect((await host.sourceClient.listTerminals(host.workspace.repoPath)).terminals).toEqual(
+        [],
+      );
+      await page.getByTestId("workspace-new-tab-button").filter({ visible: true }).first().click();
+      await expect(page.getByTestId("workspace-new-tab-menu-agent")).toBeDisabled();
+      await expect(page.getByTestId("workspace-new-tab-menu-terminal")).toBeDisabled();
+      await expect(
+        page.getByTestId("workspace-new-tab-menu-terminal-profile:claude"),
+      ).toBeDisabled();
+      await page.keyboard.press("Escape");
       await page.screenshot({ path: testInfo.outputPath("handoff-source-desktop.png") });
       await page.setViewportSize({ width: 390, height: 844 });
       await expect(page.getByTestId("handoff-source-open")).toBeInViewport({ ratio: 1 });
@@ -282,6 +302,8 @@ test.describe("workspace handoff", () => {
     await page.setViewportSize({ width: 390, height: 844 });
     const host = await hosts(page);
     try {
+      await page.getByTestId("workspace-new-tab-agent").click();
+      await composerLocator(page).fill("Keep this unsent source draft");
       await openHandoff(page);
       await page.getByTestId("handoff-host-trigger").click();
       await page.getByTestId(`handoff-host-${host.destination.serverId}`).click();
@@ -318,6 +340,15 @@ test.describe("workspace handoff", () => {
       await expect(page.getByTestId("handoff-source-state")).toContainText(
         "read-only while the move to Destination VPS is prepared",
       );
+      await expect(composerLocator(page)).toHaveCount(0);
+      await page.getByTestId("workspace-header-menu-trigger").click();
+      await expect(page.getByTestId("workspace-header-new-agent")).toBeDisabled();
+      await expect(page.getByTestId("workspace-header-new-terminal")).toBeDisabled();
+      await expect(page.getByTestId("workspace-header-import-agent")).toBeDisabled();
+      await page
+        .getByRole("button", { name: "Bottom sheet backdrop", exact: true })
+        .click({ position: { x: 8, y: 8 } });
+      await expect(page.getByTestId("workspace-header-menu")).toHaveCount(0);
       await page.getByTestId("handoff-source-open").click();
       await expect(page.getByText("Continue with exported history", { exact: true })).toBeVisible();
       expect(await savedTransfer(page, host.source.serverId, host.workspace.workspaceId)).toBe(
@@ -341,6 +372,19 @@ test.describe("workspace handoff", () => {
       );
       await forgetTransfer(page, host.source.serverId, host.workspace.workspaceId);
       await page.reload();
+      await expect(composerLocator(page)).toHaveValue("Keep this unsent source draft");
+      await expect(composerLocator(page)).toBeEditable();
+      await page.getByTestId("workspace-header-menu-trigger").click();
+      await expect(page.getByTestId("workspace-header-new-agent")).toBeEnabled();
+      await expect(page.getByTestId("workspace-header-new-terminal")).toBeEnabled();
+      await expect(page.getByTestId("workspace-header-import-agent")).toBeEnabled();
+      await page.getByTestId("workspace-header-new-terminal").click();
+      await expect
+        .poll(
+          async () =>
+            (await host.sourceClient.listTerminals(host.workspace.repoPath)).terminals.length,
+        )
+        .toBe(1);
       await openHandoff(page);
       await expect(page.getByTestId("handoff-parent")).toBeEditable();
     } finally {
