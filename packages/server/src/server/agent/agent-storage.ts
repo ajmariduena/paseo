@@ -9,6 +9,13 @@ import { toStoredAgentRecord } from "./agent-projections.js";
 import type { ManagedAgent } from "./agent-manager.js";
 import type { AgentSessionConfig } from "./agent-sdk-types.js";
 import { AgentOwnerSchema, daemonExecutionKey, type DaemonAgentOwner } from "./agent-owner.js";
+import {
+  PendingProviderSwitchSchema,
+  ProviderSegmentSchema,
+  SwitchOperationSchema,
+  retainSwitchOperations,
+  type ProviderSwitchRecordState,
+} from "./provider-switch/record.js";
 
 const SERIALIZABLE_CONFIG_SCHEMA = z
   .object({
@@ -89,6 +96,10 @@ const STORED_AGENT_SCHEMA = z.object({
     .optional(),
   /** Background work a restart cancelled, told to the agent's next turn once it completes. */
   pendingRestartNote: z.array(RestartCancelledWorkSchema).optional(),
+  /** Provider segments of a switched agent; absent means one implicit segment. */
+  providerSegments: z.array(ProviderSegmentSchema).optional(),
+  pendingProviderSwitch: PendingProviderSwitchSchema.nullable().optional(),
+  switchOperations: z.array(SwitchOperationSchema).optional(),
 });
 
 export type SerializableAgentConfig = Pick<
@@ -108,6 +119,25 @@ export type RestartCancelledWork = z.infer<typeof RestartCancelledWorkSchema>;
 export type AgentCreationRequest = NonNullable<StoredAgentRecord["creation"]>;
 export function parseStoredAgentRecord(value: unknown): StoredAgentRecord {
   return STORED_AGENT_SCHEMA.parse(value);
+}
+
+// A managed agent built before the switch state was read carries none of it; the record stays
+// authoritative until the manager projects its own copy.
+function preserveSwitchState(
+  record: StoredAgentRecord,
+  agent: ManagedAgent,
+  existing: StoredAgentRecord | null,
+): void {
+  if (!existing) return;
+  if (agent.providerSegments === undefined && existing.providerSegments) {
+    record.providerSegments = existing.providerSegments;
+  }
+  if (agent.pendingProviderSwitch === undefined && existing.pendingProviderSwitch) {
+    record.pendingProviderSwitch = existing.pendingProviderSwitch;
+  }
+  if (agent.switchOperations === undefined && existing.switchOperations) {
+    record.switchOperations = existing.switchOperations;
+  }
 }
 
 export class AgentStorage {
@@ -281,8 +311,50 @@ export class AgentStorage {
       if (existing?.pendingRestartNote) {
         record.pendingRestartNote = existing.pendingRestartNote;
       }
+      preserveSwitchState(record, agent, existing);
       return record;
     });
+  }
+
+  /**
+   * One atomic write of the switch state (segments, pending switch, operations). The mutator
+   * sees the record's current state and returns the next; operations are capped by retention.
+   */
+  async mutateProviderSwitchState(
+    agentId: string,
+    mutate: (
+      state: ProviderSwitchRecordState,
+      record: StoredAgentRecord,
+    ) => ProviderSwitchRecordState,
+  ): Promise<StoredAgentRecord> {
+    await this.load();
+    let written: StoredAgentRecord | null = null;
+    await this.queueRecordMutation(agentId, (existing) => {
+      if (!existing) {
+        throw new Error(`Agent ${agentId} not found`);
+      }
+      const next = mutate(
+        {
+          providerSegments: existing.providerSegments,
+          pendingProviderSwitch: existing.pendingProviderSwitch,
+          switchOperations: existing.switchOperations,
+        },
+        existing,
+      );
+      written = {
+        ...existing,
+        providerSegments: next.providerSegments,
+        pendingProviderSwitch: next.pendingProviderSwitch,
+        switchOperations: next.switchOperations
+          ? retainSwitchOperations(next.switchOperations)
+          : undefined,
+      };
+      return written;
+    });
+    if (!written) {
+      throw new Error(`Agent ${agentId} is being deleted`);
+    }
+    return written;
   }
 
   /** Adds work to the agent's pending restart note; entries dedupe by id. */

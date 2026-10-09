@@ -1,12 +1,13 @@
 import { expect, test } from "vitest";
 
 import { readTurnSubmissionOutcome, type AgentSessionConfig } from "../agent-sdk-types.js";
-import { CodexAppServerAgentSession } from "./codex-app-server-agent.js";
+import { CodexAppServerAgentClient, CodexAppServerAgentSession } from "./codex-app-server-agent.js";
 import {
   createFakeCodexAppServer,
   type FakeCodexAppServer,
 } from "./codex/test-utils/fake-app-server.js";
 import { createTestLogger } from "../../../test-utils/test-logger.js";
+import { asInternals } from "../../test-utils/class-mocks.js";
 
 interface JsonRpcFailure {
   __jsonRpcError: { code: number; message: string };
@@ -149,4 +150,34 @@ test("a closed session refuses to start with an unsent tag", async () => {
   await session.close();
 
   expect(readTurnSubmissionOutcome(await failure(session.startTurn("hello")))).toBe("unsent");
+});
+
+test("a reserved thread id opens the thread thread/start already created instead of a new one", async () => {
+  const appServer = createFakeCodexAppServer({
+    "thread/loaded/list": () => ({ data: [] }),
+    "thread/resume": () => ({ thread: { id: "thread-reserved" } }),
+  });
+  const client = new CodexAppServerAgentClient(createTestLogger(), undefined, {});
+  const internals = asInternals<{
+    goalsEnabledPromise: Promise<boolean> | null;
+    autoReviewEnabledPromise: Promise<boolean> | null;
+    spawnAppServer: () => Promise<unknown>;
+  }>(client);
+  internals.goalsEnabledPromise = Promise.resolve(false);
+  internals.autoReviewEnabledPromise = Promise.resolve(false);
+  internals.spawnAppServer = async () => appServer.child;
+
+  const session = await client.createSession(
+    { provider: "codex", cwd: "/workspace/project", modeId: "auto", model: "gpt-5.4" },
+    undefined,
+    { reservedSessionId: "thread-reserved" },
+  );
+  const started = await session.startTurn("hello");
+
+  expect(await started.submission).toBe("accepted");
+  const methods = appServer.requests().map((request) => request.method);
+  expect(methods).toContain("thread/resume");
+  expect(methods).not.toContain("thread/start");
+  expect(session.describePersistence()?.sessionId).toBe("thread-reserved");
+  await session.close();
 });

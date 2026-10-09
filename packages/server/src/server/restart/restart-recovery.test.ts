@@ -88,6 +88,93 @@ test.each<[string, Parameters<typeof decideContinuation>[0], ContinuationDecisio
     { enabled: true, cut: CUT, record: { ...RECORD, persistence: null } },
     { continue: false, reason: "no_persistence" },
   ],
+  [
+    "a scheduled provider switch",
+    {
+      enabled: true,
+      cut: CUT,
+      record: {
+        ...RECORD,
+        pendingProviderSwitch: {
+          operationId: "op-1",
+          clientOperationId: "client-1",
+          fingerprint: "fp",
+          provider: "codex",
+          model: null,
+          modeId: null,
+          thinkingOptionId: null,
+          requestedAt: "2026-10-04T11:58:00.000Z",
+          requestedBy: "user",
+        },
+      },
+    },
+    { continue: false, reason: "switch_pending" },
+  ],
+  [
+    "a switch operation the restart cut",
+    {
+      enabled: true,
+      cut: CUT,
+      record: {
+        ...RECORD,
+        switchOperations: [
+          {
+            operationId: "op-1",
+            clientOperationId: "client-1",
+            fingerprint: "fp",
+            phase: "allocated",
+            sourceSegmentId: "seg-a",
+            targetSegmentId: null,
+            sealedSnapshotId: null,
+            allocatedHandle: null,
+            result: null,
+            error: null,
+            updatedAt: "2026-10-04T11:59:30.000Z",
+          },
+        ],
+      },
+    },
+    { continue: false, reason: "switch_pending" },
+  ],
+  [
+    "an unresolved submission on the active incarnation",
+    {
+      enabled: true,
+      cut: CUT,
+      record: {
+        ...RECORD,
+        providerSegments: [
+          {
+            id: "seg-a",
+            provider: "claude",
+            model: null,
+            modeId: null,
+            thinkingOptionId: null,
+            incarnations: [
+              {
+                id: "inc-a1",
+                persistence: { provider: "claude", sessionId: "session-1" },
+                startedAt: "2026-10-04T11:00:00.000Z",
+                endedAt: null,
+                reason: "switch",
+                snapshotId: null,
+                rowCount: null,
+                coverage: null,
+                firstAcceptedAt: "2026-10-04T11:30:00.000Z",
+                unresolvedAttemptId: "attempt-9",
+              },
+            ],
+            startedAt: "2026-10-04T11:00:00.000Z",
+            endedAt: null,
+            handoffId: null,
+            requestedBy: "user",
+            operationId: "op-0",
+          },
+        ],
+      },
+    },
+    { continue: false, reason: "unresolved_attempt" },
+  ],
 ])("%s decides %j", (_label, input, expected) => {
   expect(decideContinuation(input)).toEqual(expected);
 });

@@ -26,6 +26,17 @@ Reload releases the old runtime before resuming its durable session: an idle pro
 still own an exclusive writer. A close failure retains that runtime for cleanup and blocks the
 replacement. Once closure succeeds, a failed resume leaves the durable agent closed and retryable.
 
+An agent that switched provider keeps one id and one chat made of provider segments, each a list
+of incarnations (native sessions). The record names the active incarnation; a resume inside the
+lifecycle lane rejects a handle that is no longer it, and the loader re-reads the record once. An
+incarnation that never accepted a turn restores fresh under its reserved id instead of resuming a
+transcript that does not exist. Retired history lives in sealed snapshots and is seeded into the
+in-memory timeline only when the store has no state for the agent (cold registration) or right
+after a destructive rebuild wipes it; a retained store is already complete, so closing and
+reopening keeps every row and the epoch. The seeder emits the divider at each segment boundary,
+because notification rows never come back from provider replay. See
+[data-model.md](data-model.md#segment-snapshot-store).
+
 An idle agent releases its runtime after `agents.idleRuntimeTimeoutMs` (default two hours; `0`
 disables it) when its provider opts in and confirms nothing depends on the live process. The agent
 becomes `closed`, not archived, and the next open or prompt resumes the same agent and provider

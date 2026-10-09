@@ -576,3 +576,94 @@ describe("AgentStorage", () => {
     expect(after.some((r) => r.id === agentId)).toBe(false);
   });
 });
+
+describe("AgentStorage provider switch state", () => {
+  let tmpDir: string;
+  let storage: AgentStorage;
+  const logger = createTestLogger();
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(path.join(os.tmpdir(), "agent-registry-switch-"));
+    storage = new AgentStorage(path.join(tmpDir, "agents"), logger);
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const segment = {
+    id: "seg-a",
+    provider: "claude",
+    model: null,
+    modeId: null,
+    thinkingOptionId: null,
+    incarnations: [],
+    startedAt: "2026-10-09T10:00:00.000Z",
+    endedAt: null,
+    handoffId: null,
+    requestedBy: "user" as const,
+    operationId: "op-1",
+  };
+
+  test("a snapshot flush from a manager that never read the switch state keeps it", async () => {
+    await storage.applySnapshot(createManagedAgent({ id: "agent-1", cwd: "/tmp/project" }));
+    await storage.mutateProviderSwitchState("agent-1", () => ({
+      providerSegments: [segment],
+      pendingProviderSwitch: null,
+      switchOperations: [],
+    }));
+
+    await storage.applySnapshot(createManagedAgent({ id: "agent-1", cwd: "/tmp/project" }));
+
+    const record = await storage.get("agent-1");
+    expect(record?.providerSegments).toEqual([segment]);
+    expect(record?.switchOperations).toEqual([]);
+    const reloaded = new AgentStorage(path.join(tmpDir, "agents"), logger);
+    expect((await reloaded.get("agent-1"))?.providerSegments).toEqual([segment]);
+  });
+
+  test("a manager that carries the switch state projects its own copy", async () => {
+    await storage.applySnapshot(createManagedAgent({ id: "agent-1", cwd: "/tmp/project" }));
+    await storage.mutateProviderSwitchState("agent-1", () => ({ providerSegments: [segment] }));
+
+    await storage.applySnapshot({
+      ...createManagedAgent({ id: "agent-1", cwd: "/tmp/project" }),
+      providerSegments: [{ ...segment, id: "seg-b" }],
+    });
+
+    expect((await storage.get("agent-1"))?.providerSegments?.map((entry) => entry.id)).toEqual([
+      "seg-b",
+    ]);
+  });
+
+  test("the switch state mutator writes once and caps settled operations", async () => {
+    await storage.applySnapshot(createManagedAgent({ id: "agent-1", cwd: "/tmp/project" }));
+    const operation = (index: number, phase: "done" | "sealed") => ({
+      operationId: `op-${index}`,
+      clientOperationId: `client-${index}`,
+      fingerprint: "fp",
+      phase,
+      sourceSegmentId: "seg-a",
+      targetSegmentId: null,
+      sealedSnapshotId: null,
+      allocatedHandle: null,
+      result: null,
+      error: null,
+      updatedAt: "2026-10-09T10:00:00.000Z",
+    });
+
+    const settled = Array.from({ length: 25 }, (_, index) => operation(index + 1, "done"));
+    const written = await storage.mutateProviderSwitchState("agent-1", (state) => ({
+      ...state,
+      switchOperations: [operation(0, "sealed"), ...settled],
+    }));
+
+    expect(written.switchOperations?.map((entry) => entry.operationId)).toEqual([
+      "op-0",
+      ...Array.from({ length: 19 }, (_, index) => `op-${index + 7}`),
+    ]);
+    await expect(storage.mutateProviderSwitchState("missing", (state) => state)).rejects.toThrow(
+      "Agent missing not found",
+    );
+  });
+});

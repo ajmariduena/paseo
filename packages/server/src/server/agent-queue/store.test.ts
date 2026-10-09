@@ -217,3 +217,70 @@ test("a restart drops process-bound system entries and holds the rest", async ()
   });
   expect(store.peek("agent-2")).toBeNull();
 });
+
+test("a claim keeps the entry and its prompt until the submission outcome settles", async () => {
+  const store = new AgentQueueStore(root);
+  await store.enqueue("agent-1", userMessage("m1"), NOW);
+  await store.enqueue("agent-1", userMessage("m2"), NOW);
+
+  const claimed = await store.claimNext("agent-1", "attempt-1", NOW);
+  expect(claimed?.entry.id).toBe("m1");
+  expect(claimed?.prompt).toBe("text of m1");
+  expect(store.claims("agent-1")).toEqual([
+    { entry: claimed?.entry, attemptId: "attempt-1", claimedAt: NOW, outcome: null },
+  ]);
+  expect(store.peek("agent-1")?.entries.map((entry) => entry.id)).toEqual(["m2"]);
+  expect(readdirSync(join(root, "agent-1"))).toHaveLength(2);
+
+  // A restart reads the claim back; the sidecar is still referenced and survives the sweep.
+  const reloaded = new AgentQueueStore(root);
+  await reloaded.load();
+  expect(reloaded.claims("agent-1").map((claim) => claim.entry.id)).toEqual(["m1"]);
+  expect(readdirSync(join(root, "agent-1"))).toHaveLength(2);
+
+  await reloaded.settleClaim("agent-1", "attempt-1", "accepted");
+  expect(reloaded.claims("agent-1")).toEqual([]);
+  expect(readdirSync(join(root, "agent-1"))).toHaveLength(1);
+});
+
+test("an unsent outcome restores the entry with its payload and holds the queue", async () => {
+  const store = new AgentQueueStore(root);
+  await store.enqueue("agent-1", userMessage("m1"), NOW);
+  const claimed = await store.claimNext("agent-1", "attempt-1", NOW);
+
+  await store.settleClaim("agent-1", "attempt-1", "unsent");
+
+  expect(store.claims("agent-1")).toEqual([]);
+  expect(store.peek("agent-1")).toMatchObject({ held: true, heldReason: "failure" });
+  expect(await store.dequeueNext("agent-1")).toBeNull();
+  await store.resume("agent-1");
+  const back = await store.dequeueNext("agent-1");
+  expect(back?.entry).toEqual(claimed?.entry);
+  expect(back?.prompt).toBe("text of m1");
+});
+
+test("an unknown outcome keeps the claim so nothing replays it on its own", async () => {
+  const store = new AgentQueueStore(root);
+  await store.enqueue("agent-1", userMessage("m1"), NOW);
+  await store.claimNext("agent-1", "attempt-1", NOW);
+
+  await store.settleClaim("agent-1", "attempt-1", "unknown");
+
+  expect(store.claims("agent-1")).toMatchObject([{ attemptId: "attempt-1", outcome: "unknown" }]);
+  expect(await store.dequeueNext("agent-1")).toBeNull();
+  expect(readQueueFile("agent-1")).toMatchObject({
+    entries: [],
+    claims: [{ attemptId: "attempt-1" }],
+  });
+  expect(await store.settleClaim("agent-1", "missing", "accepted")).toBeNull();
+});
+
+test("queue files written before claims existed still load", async () => {
+  writeFileSync(
+    join(root, "agent-1.json"),
+    JSON.stringify({ version: 1, agentId: "agent-1", held: false, heldReason: null, entries: [] }),
+  );
+  const store = new AgentQueueStore(root);
+  await store.load();
+  expect(store.claims("agent-1")).toEqual([]);
+});

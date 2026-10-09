@@ -10,6 +10,7 @@ import type {
 import { dispatchAgentMessage, type MessageDisposition } from "../agent/message-dispatch.js";
 import type { DelegationService } from "../delegation/delegation-service.js";
 import type { MessageReceipts } from "../message-receipts/index.js";
+import { activeIncarnation, hasUnsettledSwitch } from "../agent/provider-switch/record.js";
 import { cancelledWorkFromTasks, restartCancelledWorkNote } from "./background-note.js";
 import type { CutRun, RestartIntentStore } from "./restart-intent-store.js";
 
@@ -24,7 +25,9 @@ export type ContinuationDeclineReason =
   | "newer_prompt"
   | "stop_requested"
   | "out_of_band"
-  | "no_persistence";
+  | "no_persistence"
+  | "switch_pending"
+  | "unresolved_attempt";
 
 export type ContinuationDecision =
   | { continue: true }
@@ -46,6 +49,10 @@ export function decideContinuation(input: {
   }
   if (cut.stopRequested) return { continue: false, reason: "stop_requested" };
   if (cut.outOfBand) return { continue: false, reason: "out_of_band" };
+  if (hasUnsettledSwitch(record)) return { continue: false, reason: "switch_pending" };
+  if (activeIncarnation(record)?.unresolvedAttemptId) {
+    return { continue: false, reason: "unresolved_attempt" };
+  }
   if (!record.persistence) return { continue: false, reason: "no_persistence" };
   return { continue: true };
 }

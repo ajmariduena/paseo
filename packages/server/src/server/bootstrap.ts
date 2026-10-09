@@ -163,6 +163,9 @@ import { ScheduleService } from "./schedule/service.js";
 import { DelegationService } from "./delegation/delegation-service.js";
 import { DelegationStore } from "./delegation/delegation-store.js";
 import { PullRequestWatchStore } from "./pull-request-watch/watch-store.js";
+import { reconcileProviderSwitchesAtBoot } from "./agent/provider-switch/boot-reconciliation.js";
+import { HandoffStore } from "./agent/provider-switch/handoff-store.js";
+import { SegmentSnapshotStore } from "./agent/provider-switch/snapshot-store.js";
 import { PullRequestWatcher } from "./pull-request-watch/watcher.js";
 import { PromptAnnotationStore } from "./agent/prompt-annotations.js";
 import { AgentQueueStore } from "./agent-queue/store.js";
@@ -1034,11 +1037,16 @@ export async function createPaseoDaemon(
     if (git) configureGitProcessPolicy(git);
   });
   const initialAgentManagerState = providerSnapshotManager.getAgentManagerProviderState();
+  const segmentSnapshots = new SegmentSnapshotStore(
+    path.join(config.paseoHome, "context", "segments"),
+  );
+  const handoffs = new HandoffStore(path.join(config.paseoHome, "context", "handoffs"));
   const agentManager = new AgentManager({
     pluginLifecycle: pluginRuntime,
     clients: initialAgentManagerState.clients,
     providerDefinitions: initialAgentManagerState.providerDefinitions,
     registry: agentStorage,
+    segmentSnapshots,
     promptAnnotations: new PromptAnnotationStore(path.join(config.paseoHome, "prompt-annotations")),
     messageQueueStore: new AgentQueueStore(path.join(config.paseoHome, "agent-queues")),
     idleRuntimeTimeoutMs: config.idleRuntimeTimeoutMs,
@@ -1090,6 +1098,16 @@ export async function createPaseoDaemon(
   );
   await agentStorage.initialize();
   logger.info({ elapsed: elapsed() }, "Agent storage initialized");
+  // Before any boot sender: a switch the restart cut must be settled on disk first.
+  await reconcileProviderSwitchesAtBoot({
+    storage: agentStorage,
+    snapshots: segmentSnapshots,
+    handoffs,
+    logger,
+    now: () => new Date().toISOString(),
+  }).catch((error: unknown) =>
+    logger.error({ err: error }, "Failed to reconcile provider switches after restart"),
+  );
   agentManager.messageQueue.setFallbackDeliverer(
     createRestoredEntryDeliverer({
       agentManager,

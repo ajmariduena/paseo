@@ -11,6 +11,8 @@ import {
   isStoredAgentProviderAvailable,
   toAgentPersistenceHandle,
 } from "../persistence-hooks.js";
+import { activeIncarnation } from "./provider-switch/record.js";
+import { StaleAgentHandleError } from "./provider-switch/stale-handle-error.js";
 
 interface PendingAgentInitialization {
   promise: Promise<ManagedAgent>;
@@ -60,6 +62,62 @@ export async function ensureUnarchivedAgentLoaded(
   return agent;
 }
 
+async function loadFromRecord(agentId: string, deps: EnsureAgentLoadedDeps): Promise<ManagedAgent> {
+  const record = await deps.agentStorage.get(agentId);
+  if (!record) {
+    throw new Error(`Agent not found: ${agentId}`);
+  }
+
+  const validProviders = deps.validProviders ?? deps.agentManager.getRegisteredProviderIds();
+  if (!isStoredAgentProviderAvailable(record, validProviders)) {
+    throw new Error(`Agent ${agentId} references unavailable provider '${record.provider}'`);
+  }
+
+  const incarnation = activeIncarnation(record);
+  const handle = toAgentPersistenceHandle(
+    validProviders,
+    record.persistence ?? incarnation?.persistence ?? null,
+  );
+  // A native session allocated for a switch but never prompted has no transcript to resume.
+  const resumable = handle && (incarnation === null || incarnation.firstAcceptedAt !== null);
+
+  if (handle && resumable) {
+    const snapshot = await deps.agentManager.resumeAgentFromPersistence(
+      handle,
+      buildConfigOverrides(record),
+      agentId,
+      { ...extractTimestamps(record), attention: extractAttention(record) },
+      record.archivedAt ? { purpose: "history" } : undefined,
+    );
+    deps.logger.info({ agentId, provider: record.provider }, "Agent resumed from persistence");
+    return snapshot;
+  }
+  const config = buildSessionConfig(record, {
+    validProviders,
+  });
+  if (!config) {
+    throw new Error(`Agent ${agentId} references unavailable provider '${record.provider}'`);
+  }
+  const timestamps = extractTimestamps(record);
+  const snapshot = await deps.agentManager.createAgent(config, agentId, {
+    labels: record.labels,
+    workspaceId: record.workspaceId,
+    owner: record.owner,
+    restore: {
+      createdAt: timestamps.createdAt,
+      updatedAt: timestamps.updatedAt,
+      lastUserMessageAt: timestamps.lastUserMessageAt,
+      attention: extractAttention(record),
+    },
+    ...(handle ? { reservedSessionId: handle.sessionId } : {}),
+  });
+  deps.logger.info(
+    { agentId, provider: record.provider, reserved: Boolean(handle) },
+    "Agent created from stored config",
+  );
+  return snapshot;
+}
+
 export async function ensureAgentLoaded(
   agentId: string,
   deps: EnsureAgentLoadedDeps,
@@ -93,48 +151,15 @@ export async function ensureAgentLoaded(
     broadcastTimeline: deps.broadcastTimeline === true,
   };
   const initPromise = (async () => {
-    const record = await deps.agentStorage.get(agentId);
-    if (!record) {
-      throw new Error(`Agent not found: ${agentId}`);
-    }
-
-    const validProviders = deps.validProviders ?? deps.agentManager.getRegisteredProviderIds();
-    if (!isStoredAgentProviderAvailable(record, validProviders)) {
-      throw new Error(`Agent ${agentId} references unavailable provider '${record.provider}'`);
-    }
-
-    const handle = toAgentPersistenceHandle(validProviders, record.persistence);
-
     let snapshot: ManagedAgent;
-    if (handle) {
-      snapshot = await deps.agentManager.resumeAgentFromPersistence(
-        handle,
-        buildConfigOverrides(record),
-        agentId,
-        { ...extractTimestamps(record), attention: extractAttention(record) },
-        record.archivedAt ? { purpose: "history" } : undefined,
-      );
-      deps.logger.info({ agentId, provider: record.provider }, "Agent resumed from persistence");
-    } else {
-      const config = buildSessionConfig(record, {
-        validProviders,
-      });
-      if (!config) {
-        throw new Error(`Agent ${agentId} references unavailable provider '${record.provider}'`);
-      }
-      const timestamps = extractTimestamps(record);
-      snapshot = await deps.agentManager.createAgent(config, agentId, {
-        labels: record.labels,
-        workspaceId: record.workspaceId,
-        owner: record.owner,
-        restore: {
-          createdAt: timestamps.createdAt,
-          updatedAt: timestamps.updatedAt,
-          lastUserMessageAt: timestamps.lastUserMessageAt,
-          attention: extractAttention(record),
-        },
-      });
-      deps.logger.info({ agentId, provider: record.provider }, "Agent created from stored config");
+    try {
+      snapshot = await loadFromRecord(agentId, deps);
+    } catch (error) {
+      // A switch committed between the record read and the resume; the record now says which
+      // session is active, so one more read is the whole retry.
+      if (!(error instanceof StaleAgentHandleError)) throw error;
+      deps.logger.info({ agentId }, "Agent handle changed during load; retrying");
+      snapshot = await loadFromRecord(agentId, deps);
     }
 
     await deps.agentManager.hydrateTimelineFromProvider(agentId, {

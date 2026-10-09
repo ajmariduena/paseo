@@ -7358,9 +7358,13 @@ export class CodexAppServerAgentClient implements AgentClient {
     const sessionConfig: AgentSessionConfig = { ...config, provider: CODEX_PROVIDER };
     const goalsEnabled = await this.resolveGoalsEnabled();
     const autoReviewEnabled = await this.resolveAutoReviewEnabled();
+    // thread/start already created the reserved thread server-side, so binding means resuming it.
+    const reserved = options?.reservedSessionId
+      ? { sessionId: options.reservedSessionId, metadata: { cwd: sessionConfig.cwd } }
+      : null;
     const session = new CodexAppServerAgentSession(
       sessionConfig,
-      null,
+      reserved,
       this.logger,
       () =>
         this.spawnAppServer(launchContext?.env, { goalsEnabled, agentId: launchContext?.agentId }),

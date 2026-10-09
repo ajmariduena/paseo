@@ -672,6 +672,11 @@ export interface AgentCreateSessionOptions {
    * Defaults to true. Providers that cannot honor false should no-op.
    */
   persistSession?: boolean;
+  /**
+   * A native session id allocated earlier but never prompted. The provider binds its fresh
+   * session to it instead of resuming a transcript that does not exist yet.
+   */
+  reservedSessionId?: string;
 }
 
 /** What a resumed session is for: driving the agent, or reading what it already did. */

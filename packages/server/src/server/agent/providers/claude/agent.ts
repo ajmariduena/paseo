@@ -427,6 +427,7 @@ interface ClaudeAgentSessionOptions {
   agentId?: string;
   launchEnv?: Record<string, string>;
   persistSession?: boolean;
+  reservedSessionId?: string;
   logger: Logger;
   queryFactory?: ClaudeQueryFactory;
   resolveBinary: () => Promise<string>;
@@ -1586,6 +1587,7 @@ export class ClaudeAgentClient implements AgentClient {
       agentId: launchContext?.agentId,
       launchEnv: launchContext?.env,
       persistSession: options?.persistSession,
+      reservedSessionId: options?.reservedSessionId,
       logger: this.logger,
       queryFactory: this.queryFactory,
       resolveBinary: this.resolveBinary,
@@ -2213,6 +2215,10 @@ class ClaudeAgentSession implements AgentSession {
       this.claudeSessionId = handle.sessionId;
       this.persistence = handle;
       this.loadPersistedHistory(handle.sessionId);
+    } else if (options.reservedSessionId) {
+      this.claudeSessionId = options.reservedSessionId;
+      this.pendingFreshSessionId = options.reservedSessionId;
+      this.persistence = null;
     } else {
       this.claudeSessionId = null;
       this.persistence = null;
