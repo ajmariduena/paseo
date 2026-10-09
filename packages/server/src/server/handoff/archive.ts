@@ -60,6 +60,9 @@ interface BeginInput {
   id: string;
   manifest: HandoffArchiveManifest;
 }
+interface LocalArchiveInput extends BeginInput {
+  files: ReadonlyMap<string, string>;
+}
 interface ChunkInput {
   id: string;
   sha256: string;
@@ -151,6 +154,77 @@ export class HandoffArchiveStore {
 
   async status(id: string): Promise<HandoffArchiveStatus> {
     return this.serialize(id, async () => this.progress(await this.readRecord(id)));
+  }
+
+  /** Server-owned capture files; this operation is deliberately absent from the wire API. */
+  async importLocal(input: LocalArchiveInput): Promise<HandoffArchiveStatus> {
+    const manifest = canonicalManifest(input.manifest, this.limits);
+    const files = new Map(input.files);
+    if (
+      files.size !== manifest.blobs.length ||
+      manifest.blobs.some((blob) => !files.has(blob.sha256))
+    )
+      fail("invalid_manifest", "Local files do not match the archive inventory");
+    const status = await this.begin({ id: input.id, manifest });
+    const received = new Map(status.blobs.map((blob) => [blob.sha256, blob.receivedBytes]));
+    for (const blob of manifest.blobs) {
+      const file = await open(files.get(blob.sha256)!, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const stat = await file.stat();
+        if (!stat.isFile() || stat.size !== blob.size)
+          fail("integrity_mismatch", "Captured file differs from its inventory", blob.sha256);
+        let offset = 0;
+        for await (const data of file.createReadStream({
+          autoClose: false,
+          highWaterMark: HANDOFF_CHUNK_BYTES,
+        })) {
+          if (offset + data.length > blob.size)
+            fail("integrity_mismatch", "Captured file grew during import", blob.sha256);
+          // Replaying the prefix validates an earlier attempt instead of trusting its offset.
+          // A crash may leave a partial chunk. Separate its replay from the new suffix.
+          const split = (received.get(blob.sha256) ?? 0) - offset;
+          if (split > 0 && split < data.length) {
+            await this.writeChunk({
+              id: input.id,
+              sha256: blob.sha256,
+              offset,
+              data: data.subarray(0, split),
+            });
+            await this.writeChunk({
+              id: input.id,
+              sha256: blob.sha256,
+              offset: offset + split,
+              data: data.subarray(split),
+            });
+          } else {
+            await this.writeChunk({ id: input.id, sha256: blob.sha256, offset, data });
+          }
+          offset += data.length;
+        }
+        if (offset !== blob.size)
+          fail("integrity_mismatch", "Captured file shortened during import", blob.sha256);
+      } finally {
+        await file.close();
+      }
+    }
+    return this.seal(input.id);
+  }
+
+  /** Keep the archive immutable while a server-side consumer materializes verified content. */
+  async withVerifiedArchive<T>(
+    id: string,
+    consume: (archive: { manifest: HandoffArchiveManifest; blobsDirectory: string }) => Promise<T>,
+  ): Promise<T> {
+    return this.serialize(id, async () => {
+      const record = await this.readRecord(id);
+      if (record.state !== "verified")
+        fail("invalid_state", "Verify the archive before restoring it");
+      for (const blob of record.manifest.blobs) await this.verifyBlob(id, blob);
+      return consume({
+        manifest: record.manifest,
+        blobsDirectory: path.join(this.location(id), "blobs"),
+      });
+    });
   }
 
   async writeChunk(input: ChunkInput): Promise<number> {

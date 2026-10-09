@@ -21,6 +21,72 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
+test("imports a captured local artifact and resumes an interrupted import without serving partial bytes", async () => {
+  const id = randomUUID();
+  const localFile = path.join(root, "captured");
+  const bytes = Buffer.alloc(HANDOFF_CHUNK_BYTES + 173, 42);
+  const localBlob = {
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    size: bytes.length,
+  };
+  const localManifest = { version: 1 as const, entrypoint: localBlob, blobs: [localBlob] };
+  await writeFile(localFile, bytes);
+  await store.begin({ id, manifest: localManifest });
+  await store.writeChunk({
+    id,
+    sha256: localBlob.sha256,
+    offset: 0,
+    data: bytes.subarray(0, 13),
+  });
+  const restarted = new HandoffArchiveStore(root);
+  await restarted.importLocal({
+    id,
+    manifest: localManifest,
+    files: new Map([[localBlob.sha256, localFile]]),
+  });
+  expect(await restarted.status(id)).toEqual({
+    id,
+    state: "verified",
+    blobs: [{ ...localBlob, receivedBytes: bytes.length }],
+  });
+  expect(await readFile(path.join(root, id, "blobs", localBlob.sha256))).toEqual(bytes);
+  await restarted.importLocal({
+    id,
+    manifest: localManifest,
+    files: new Map([[localBlob.sha256, localFile]]),
+  });
+  expect(await readFile(localFile)).toEqual(bytes);
+});
+
+test("refuses changed local capture bytes and keeps them unavailable until repaired", async () => {
+  const id = randomUUID();
+  const localFile = path.join(root, "capture");
+  await writeFile(localFile, Buffer.alloc(content.length, 42));
+  await expect(
+    store.importLocal({ id, manifest, files: new Map([[blob.sha256, localFile]]) }),
+  ).rejects.toMatchObject({
+    code: "integrity_mismatch",
+  });
+  await expect(store.withVerifiedArchive(id, async () => "restored")).rejects.toMatchObject({
+    code: "invalid_state",
+  });
+  await expect(
+    store.readChunk({ id, sha256: blob.sha256, offset: 0, length: content.length }),
+  ).rejects.toMatchObject({ code: "invalid_state" });
+  await store.resetBlob(id, blob.sha256);
+  await writeFile(localFile, content);
+  await store.importLocal({ id, manifest, files: new Map([[blob.sha256, localFile]]) });
+  expect(
+    await store.withVerifiedArchive(id, async ({ blobsDirectory }) =>
+      readFile(path.join(blobsDirectory, blob.sha256)),
+    ),
+  ).toEqual(content);
+  await writeFile(path.join(root, id, "blobs", blob.sha256), Buffer.alloc(content.length));
+  await expect(store.withVerifiedArchive(id, async () => "restored")).rejects.toMatchObject({
+    code: "integrity_mismatch",
+  });
+});
+
 test("resumes a partially received artifact after reconstructing the store", async () => {
   const id = randomUUID();
   await store.begin({ id, manifest });

@@ -6,13 +6,19 @@ import {
 import { WebSocket, type RawData } from "ws";
 import { WSOutboundMessageSchema } from "@getpaseo/protocol/messages";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { HANDOFF_CHUNK_BYTES } from "@getpaseo/protocol/handoff";
 import { DaemonClient } from "../test-utils/daemon-client.js";
 import { createTestPaseoDaemon, type TestPaseoDaemon } from "../test-utils/paseo-daemon.js";
+import { HandoffArchiveStore } from "./archive.js";
+import { captureWorkspace, packWorkspaceArchive, restoreWorkspaceArchive } from "./workspace.js";
+
+const exec = promisify(execFile);
 
 interface Host {
   daemon: TestPaseoDaemon;
@@ -55,6 +61,108 @@ async function stopHost(host: Host): Promise<void> {
   await host.client.close();
   await host.daemon.close();
 }
+
+async function transferCapturedWorkspace(cwd: string) {
+  const artifactDirectory = path.join(root, "snapshot");
+  const destinationPath = path.join(root, "restored");
+  const transferId = randomUUID();
+  const snapshot = await captureWorkspace({ cwd, artifactDirectory });
+  const sourceStore = new HandoffArchiveStore(
+    path.join(root, "source", ".paseo", "handoff", "archives"),
+  );
+  const manifest = await packWorkspaceArchive({
+    artifactDirectory,
+    store: sourceStore,
+    transferId,
+  });
+  await rm(artifactDirectory, { recursive: true });
+  // Boot from the durable server-side import; the client never seeds source bytes.
+  const source = await startHost("source");
+  const destination = await startHost("destination");
+  const transferred = await transferHandoffArchive({
+    source: source.client,
+    destination: destination.client,
+    transferId,
+    manifest,
+  });
+  expect(transferred.state).toBe("verified");
+  expect((await destination.client.fetchAgents()).entries).toEqual([]);
+  await stopHost(destination);
+  // A reconstructed store restores directly from received blobs after daemon shutdown.
+  const destinationStore = new HandoffArchiveStore(
+    path.join(destination.daemon.paseoHome, "handoff", "archives"),
+  );
+  expect(
+    await restoreWorkspaceArchive({
+      store: destinationStore,
+      transferId,
+      destination: destinationPath,
+    }),
+  ).toEqual(snapshot);
+  return { destinationPath, manifest };
+}
+
+test("transfers a captured Git workspace through two daemons and restores its staged and working bytes", async () => {
+  const cwd = path.join(root, "workspace");
+  await mkdir(cwd);
+  async function git(...args: string[]) {
+    return (
+      await exec("git", args, {
+        cwd,
+        env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
+      })
+    ).stdout;
+  }
+  await git("init", "--initial-branch=work");
+  await git("config", "core.autocrlf", "false");
+  await writeFile(path.join(cwd, "tracked"), "committed\n");
+  await writeFile(path.join(cwd, ".gitignore"), ".env\n");
+  await git("add", ".");
+  await git(
+    "-c",
+    "user.name=Handoff Test",
+    "-c",
+    "user.email=handoff@example.com",
+    "commit",
+    "-m",
+    "local history",
+  );
+  await writeFile(path.join(cwd, "tracked"), "staged\n");
+  await git("add", "tracked");
+  await writeFile(path.join(cwd, "tracked"), "working\n");
+  await writeFile(path.join(cwd, ".env"), "SOURCE_ONLY=1\n");
+  const binary = Buffer.alloc(HANDOFF_CHUNK_BYTES + 17, 173);
+  await writeFile(path.join(cwd, "binary"), binary);
+  await writeFile(path.join(cwd, "same-binary"), binary);
+  const originalStatus = await git("status", "--porcelain=v1", "-z");
+  const originalHead = await git("rev-parse", "HEAD");
+  const { destinationPath, manifest } = await transferCapturedWorkspace(cwd);
+  expect(new Set(manifest.blobs.map((blob) => blob.sha256)).size).toBe(manifest.blobs.length);
+  expect(await readFile(path.join(destinationPath, "tracked"), "utf8")).toBe("working\n");
+  expect((await exec("git", ["show", ":tracked"], { cwd: destinationPath })).stdout).toBe(
+    "staged\n",
+  );
+  expect(await readFile(path.join(destinationPath, "binary"))).toEqual(binary);
+  expect(await readFile(path.join(destinationPath, "same-binary"))).toEqual(binary);
+  await expect(readFile(path.join(destinationPath, ".env"))).rejects.toMatchObject({
+    code: "ENOENT",
+  });
+  expect(
+    (await exec("git", ["status", "--porcelain=v1", "-z"], { cwd: destinationPath })).stdout,
+  ).toBe(originalStatus);
+  expect((await exec("git", ["rev-parse", "HEAD"], { cwd: destinationPath })).stdout).toBe(
+    originalHead,
+  );
+  expect(await git("status", "--porcelain=v1", "-z")).toBe(originalStatus);
+}, 30_000);
+
+test("transfers an empty non-Git workspace with its manifest as the only archive blob", async () => {
+  const cwd = path.join(root, "empty-workspace");
+  await mkdir(cwd);
+  const { destinationPath, manifest } = await transferCapturedWorkspace(cwd);
+  expect(manifest.blobs).toEqual([manifest.entrypoint]);
+  expect(await readdir(destinationPath)).toEqual([]);
+}, 30_000);
 
 test("streams bounded chunks between two real daemons and resumes after destination restart", async () => {
   const source = await startHost("source");

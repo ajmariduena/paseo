@@ -1,6 +1,15 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  writeFile,
+  lstat,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -9,9 +18,11 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import {
   captureWorkspace,
   restoreWorkspace,
+  restoreWorkspaceArchive,
   verifyCapturedWorkspace,
   WORKSPACE_SNAPSHOT_LIMITS,
 } from "./workspace.js";
+import { HandoffArchiveStore } from "./archive.js";
 
 const exec = promisify(execFile);
 let root: string;
@@ -51,6 +62,134 @@ beforeEach(async () => {
 afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
+
+test("moves a non-Git directory with local ignores and empty directories without creating a repository", async () => {
+  await rm(path.join(source, ".git"), { recursive: true });
+  await mkdir(path.join(source, "empty"));
+  await mkdir(path.join(source, "nested"));
+  await mkdir(path.join(source, "ignored"));
+  const binary = Buffer.from([0, 255, 13, 10, 128]);
+  await writeFile(path.join(source, "nested", "file.bin"), binary);
+  await writeFile(path.join(source, "ignored", "local-cache"), "not transferred");
+  await writeFile(path.join(source, ".env"), "LOCAL_SECRET=not-transferred\n");
+
+  const manifest = await captureWorkspace({ cwd: source, artifactDirectory: artifact });
+  expect(manifest.git).toBeNull();
+  await verifyCapturedWorkspace({ cwd: source, artifactDirectory: artifact });
+  await restoreWorkspace({ artifactDirectory: artifact, destination });
+
+  expect(await readFile(path.join(destination, "tracked.txt"), "utf8")).toBe("committed\n");
+  expect(await readFile(path.join(destination, "nested", "file.bin"))).toEqual(binary);
+  expect((await lstat(path.join(destination, "empty"))).isDirectory()).toBe(true);
+  await expect(lstat(path.join(destination, "ignored"))).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(lstat(path.join(destination, ".env"))).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(lstat(path.join(destination, ".git"))).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(lstat(path.join(source, ".git"))).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await readFile(path.join(source, "nested", "file.bin"))).toEqual(binary);
+});
+
+test("restores an entirely empty non-Git workspace", async () => {
+  await rm(source, { recursive: true });
+  await mkdir(source);
+  expect(await captureWorkspace({ cwd: source, artifactDirectory: artifact })).toEqual({
+    version: 1,
+    git: null,
+    files: [],
+  });
+  await verifyCapturedWorkspace({ cwd: source, artifactDirectory: artifact });
+  await restoreWorkspace({ artifactDirectory: artifact, destination });
+  expect(await readdir(destination)).toEqual([]);
+});
+
+test("honors nested ignore rules and negation in a non-Git workspace", async () => {
+  await rm(path.join(source, ".git"), { recursive: true });
+  await writeFile(path.join(source, ".gitignore"), "cache/\n*.log\n!keep.log\n");
+  await mkdir(path.join(source, "cache"));
+  await mkdir(path.join(source, "nested"));
+  await writeFile(path.join(source, "nested", ".gitignore"), "*.tmp\n!keep.tmp\n");
+  for (const name of ["drop.log", "keep.log", "drop.tmp", "keep.tmp"]) {
+    await writeFile(path.join(source, "nested", name), name);
+  }
+  const manifest = await captureWorkspace({ cwd: source, artifactDirectory: artifact });
+  expect(manifest.files.map((entry) => entry.path)).toEqual([
+    ".gitignore",
+    "nested",
+    "nested/.gitignore",
+    "nested/keep.log",
+    "nested/keep.tmp",
+    "tracked.txt",
+  ]);
+  // Changes inside omitted paths do not invalidate the captured workspace.
+  await writeFile(path.join(source, "cache", "later"), "ignored");
+  await writeFile(path.join(source, "nested", "drop.log"), "changed ignored file");
+  await verifyCapturedWorkspace({ cwd: source, artifactDirectory: artifact });
+  await restoreWorkspace({ artifactDirectory: artifact, destination });
+  expect(await readFile(path.join(destination, "nested", "keep.tmp"), "utf8")).toBe("keep.tmp");
+  await expect(lstat(path.join(destination, "cache"))).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test.each([
+  ["file edit", async () => writeFile(path.join(source, "tracked.txt"), "changed")],
+  ["file deletion", async () => rm(path.join(source, "tracked.txt"))],
+  ["new empty directory", async () => mkdir(path.join(source, "new-directory"))],
+  ["changed ignore rules", async () => writeFile(path.join(source, ".gitignore"), "tracked.txt\n")],
+  [
+    "new Git repository",
+    async () => {
+      await git(source, "init", "--initial-branch=new");
+    },
+  ],
+])("refuses release of a non-Git snapshot after %s", async (_description, change) => {
+  await rm(path.join(source, ".git"), { recursive: true });
+  await captureWorkspace({ cwd: source, artifactDirectory: artifact });
+  await change();
+  await expect(
+    verifyCapturedWorkspace({ cwd: source, artifactDirectory: artifact }),
+  ).rejects.toMatchObject({
+    code: "source_changed",
+  });
+});
+
+test("counts empty non-Git directories against capture and receiver limits", async () => {
+  await rm(source, { recursive: true });
+  await mkdir(path.join(source, "one", "two"), { recursive: true });
+  const limits = { ...WORKSPACE_SNAPSHOT_LIMITS, maxFiles: 1 };
+  await expect(
+    captureWorkspace({ cwd: source, artifactDirectory: artifact, limits }),
+  ).rejects.toMatchObject({
+    code: "limit_exceeded",
+  });
+  await expect(lstat(artifact)).rejects.toMatchObject({ code: "ENOENT" });
+  await captureWorkspace({ cwd: source, artifactDirectory: artifact });
+  await expect(
+    restoreWorkspace({ artifactDirectory: artifact, destination, limits }),
+  ).rejects.toMatchObject({
+    code: "limit_exceeded",
+  });
+  await expect(lstat(destination)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test.each(["file", "symlink"] as const)(
+  "rejects a non-Git directory beneath a %s before restoring any files",
+  async (kind) => {
+    await rm(path.join(source, ".git"), { recursive: true });
+    const manifest = await captureWorkspace({ cwd: source, artifactDirectory: artifact });
+    if (kind === "symlink") manifest.files.push({ kind, path: "parent", target: "inside" });
+    else {
+      const file = manifest.files.find((entry) => entry.kind === "file");
+      if (!file) throw new Error("Expected a file fixture");
+      manifest.files.push({ ...file, path: "parent" });
+    }
+    manifest.files.push({ kind: "directory", path: "parent/nested" });
+    await writeFile(path.join(artifact, "manifest.json"), JSON.stringify(manifest));
+    await expect(
+      restoreWorkspace({ artifactDirectory: artifact, destination }),
+    ).rejects.toMatchObject({
+      code: "invalid_artifact",
+    });
+    await expect(lstat(destination)).rejects.toMatchObject({ code: "ENOENT" });
+  },
+);
 
 test("moves local history and staged, unstaged and untracked bytes without changing the source", async () => {
   await writeFile(path.join(source, "tracked.txt"), "staged\n");
@@ -126,6 +265,7 @@ test.each([
 
 test("rejects an incoming index with portable path collisions before publishing the checkout", async () => {
   const manifest = await captureWorkspace({ cwd: source, artifactDirectory: artifact });
+  if (!manifest.git) throw new Error("Expected a Git snapshot fixture");
   const hash = (await git(source, "rev-parse", "HEAD:tracked.txt")).trim();
   await git(source, "update-index", "--add", "--cacheinfo", `100644,${hash},case-file`);
   await git(source, "update-index", "--add", "--cacheinfo", `100644,${hash},CASE-FILE`);
@@ -151,6 +291,27 @@ test("rejects an incoming index with portable path collisions before publishing 
   await expect(readFile(path.join(destination, "tracked.txt"))).rejects.toMatchObject({
     code: "ENOENT",
   });
+});
+
+test("rejects workspace references outside the verified archive inventory before creating a destination", async () => {
+  await captureWorkspace({ cwd: source, artifactDirectory: artifact });
+  const manifestPath = path.join(artifact, "manifest.json");
+  const bytes = await readFile(manifestPath);
+  const entrypoint = {
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    size: bytes.length,
+  };
+  const store = new HandoffArchiveStore(path.join(root, "archives"));
+  const transferId = randomUUID();
+  await store.importLocal({
+    id: transferId,
+    manifest: { version: 1, entrypoint, blobs: [entrypoint] },
+    files: new Map([[entrypoint.sha256, manifestPath]]),
+  });
+  await expect(restoreWorkspaceArchive({ store, transferId, destination })).rejects.toMatchObject({
+    code: "invalid_artifact",
+  });
+  await expect(lstat(destination)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 test("restores staged binaries, renames, staged deletions and unstaged deletions", async () => {

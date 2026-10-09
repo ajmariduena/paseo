@@ -15,29 +15,17 @@ a new transfer into a fresh checkout, rather than overwriting files changed on t
 Host identity, workspace identity, agent identity, and provider session identity are separate.
 Keep explicit source-to-destination mappings.
 
-Paseo owns agent processes, terminals, scripts, queues, and automation. It cannot freeze an
-external editor or an unrelated process. Stop owned writers before capture, detect changes during
-capture, and tell the user that source edits after capture do not synchronize. A timeout while
-stopping is not proof that a writer stopped. Do not activate the destination after that timeout.
-Keep writers in the stop inventory even if a best-effort terminal close removes them from the UI.
-A terminal's synthetic close event and its shell's exit do not prove that all descendants exited.
-Awaited terminal stops now reject missing PTY exit confirmation and retain the session for retry;
-the coordinator still needs process-tree and previously closed terminal coverage.
+Stop transferred conversation runtimes and known Paseo-owned writers before capture. Keep the
+source admission fence until destination ownership is durable. An uncertain stop, missing worker
+acknowledgement, unreadable inventory, or persistence failure cannot certify readiness. Keep the
+identity and stop result of each owned launch through retry and daemon restart; root process exit
+alone does not prove that observed descendants stopped.
 
-The shared POSIX terminator now tracks observed descendants through graceful and forced stop,
-including children that outlive their parent. Concurrent callers share the stop, and failed stops
-retain observed identities for retry with the same runtime handle. Linux uses kernel start ticks;
-macOS still uses the second-resolution `ps` start identity. Read/signal failures cannot certify
-exit. Real-process tests cover a detached child surviving its parent's graceful exit.
-This tracking begins at stop and is in memory: processes orphaned earlier, daemon restart, PTYs
-and Windows still need the coordinator's launch-time inventory and stronger identity/containment
-evidence before source release.
-
-The managed-helper ledger covers registered helper PIDs, not every writer or its descendants.
-Recovery retains records after termination timeout or uncertain exit inspection, and unreadable
-records prevent a complete inventory. A real-helper regression proves retention across registry
-restart and removal after confirmed exit. This evidence does not replace the coordinator's full
-process-tree inventory.
+This is a managed-resource contract. Paseo cannot freeze unrelated editors or prove that a process
+it never observed did not daemonize. Detect changes during capture, recheck before release, and tell
+the user that later source edits do not synchronize. Do not expand handoff into a general OS process
+supervisor. The existing POSIX terminator retains observed descendants in memory; launch-time and
+restart recovery still need integration into source preparation.
 
 Credentials, permission grants, absolute launch paths, host MCP configuration, sockets, browser
 sessions, process IDs, installed dependencies, and ignored files do not migrate automatically.
@@ -85,12 +73,14 @@ collisions on the target, Windows reserved names, symlink escapes, special devic
 metadata, and file/directory collisions before materializing. Enforce file-count, per-file,
 aggregate-byte, and chunk limits at the receiver, regardless of sender claims.
 
-Directories without Git and unborn repositories need explicit snapshot support. Shallow/partial
-clones, sparse checkouts, submodules, LFS, intent-to-add, conflicts, and in-progress Git operations
-need either fidelity tests or a visible preflight refusal with a resolution. Do not report a
-lossy copy as success. Ignored files (including `.env` and dependencies) are omitted and listed as
-a limitation before moving; tracked secrets remain tracked data, not automatically redacted code.
-Git configuration, hooks, and credential-bearing remotes are not copied.
+Keep non-Git workspaces as directories, including empty directories; do not create a repository
+or run setup when restoring them. Evaluate their local and nested `.gitignore` files without
+inheriting host-wide Git exclusions. Preserve unborn Git branches and their staged contents.
+Shallow/partial clones, sparse checkouts, submodules, LFS, intent-to-add, conflicts, and in-progress
+Git operations need either fidelity tests or a visible preflight refusal with a resolution.
+Ignored files (including `.env` and dependencies) are omitted and listed before moving; tracked
+secrets remain tracked data. Do not copy Git configuration or hooks. Transfer usable remote URLs
+only after removing embedded credentials; validate this separately from file fidelity.
 
 ## Provider evidence
 
@@ -120,167 +110,108 @@ watches require explicit dispositions; no host-scoped IDs or authority transfer 
 
 ## Delivery gates
 
-Implementation is complete only when all rows have direct evidence in the PR. A passing primitive
-test does not prove a daemon, provider, UI, or cross-platform contract.
+Finish one usable transfer before adding more standalone admission checks. Keep the complete
+handoff capability unadvertised until all four gates have direct evidence. Primitive tests and
+archive transport tests do not establish conversation ownership or provider continuity.
 
-The workspace snapshot implementation lives in `packages/server/src/server/handoff/workspace.ts`.
-Its neighboring tests cover Git-backed checkouts, exact file restoration and source rechecks.
-`archive.ts` provides bounded, checksummed staging with persistent receive offsets. Archive RPCs
-and `packages/client/src/handoff-transfer.ts` now connect two hosts through the ordinary client
-transport, with one chunk in flight. No ownership changes or agent starts occur in this layer.
+### 1. Usable transfer
 
-`archive.e2e.test.ts` runs two isolated daemons and verifies destination restart, a dropped reply
-after a committed write, pause/resume, invalid encoding and corruption recovery. These tests run
-in the existing Linux/Windows server integration job and the macOS server job. Local evidence is
-Linux only until those CI jobs pass. Staging cleanup, host-wide disk quotas and the ownership
-transaction are still pending; the daemon does not advertise the complete handoff capability.
+Connect source preparation, archive transport, private destination staging, signed release and
+idempotent activation. Start with a Git workspace and a Claude conversation, using two isolated
+provider homes. Persist the source/destination host IDs, pinned source key, reservation, digest,
+chosen mode and stable workspace/agent/session mappings before side effects.
 
-`ownership.ts` supplies the source ledger and mutation leases. Its real-disk tests
-cover recovering fences, draining admitted operations, cancel/release races, failures before and
-after journal writes, and destination/content-bound signed release receipts. The signing key is
-transfer-specific and stays in the source journal; the destination must pin the public key from
-its authenticated source preflight. Bootstrap loads the ledger before constructing providers or
-starting queues and automation. Agent creation, resume, import and reload hold leases through
-registration, including a changed working directory during reload. Boot tests exercise a persisted
-fence through the real WebSocket connection and reject missing or corrupt journals. Missing
-working directories retain their path fences without blocking unrelated archived history.
+Cancel setup and long-running operations before draining their admission leases. Stop each owned
+runtime, drain events and use an error-reporting persistence barrier before exporting history.
+Capture workspace and provider artifacts into the source archive. Recheck both before release;
+changes require a fresh preparation, never activation with a stale digest.
 
-Existing-runtime prompts, steering/replacement, settings, permission responses and rewind now
-respect the fence. Turn admission holds its lease until the accepted turn and its waiter are
-published; it does not hold the lease for the whole foreground turn, which handoff must stop after
-draining admissions. Out-of-band commands hold their leases until they finish. Stop and close
-remain available. Tests cover denied prompts, cancellation before provider admission, and draining
-admitted turns and commands. Flush event and persistence queues after runtime shutdown and before
-capturing conversation data; finishing an RPC alone does not prove those writes have settled.
+Destination preparation must restore privately without running hooks, setup, MCP servers or turns.
+Install provider artifacts and closed agent records under preallocated IDs. Journal each activation
+step so a restart or lost reply cannot duplicate a workspace or conversation. After release, recovery
+moves forward. Keep source history readable without reopening its fenced provider runtime. Retire
+the source transfer with agent tombstones and a moved destination reference; permanent broad path
+fences must not prevent unrelated future work or exhaust the journal.
 
-The shared boot ledger also gates file-editor/explorer mutations and checkout commands. Reads
-remain available; denied writes use the existing correlated error responses. Tests hold an admitted
-file write or branch change across preparation, then verify draining and cancellation. A merge
-requested from a sibling worktree must acquire a lease for the actual target checkout as well as
-the caller's directory. The two-worktree regression verifies that a fenced base stays unchanged.
+Evidence: real two-daemon cutover, a real continued turn using information found only in the prior
+conversation, a destination file edit, source prompt refusal and source history after restart.
+Exercise cancel, a dropped release reply and interruption at every journal transition. A file-backed
+test provider can prove transaction recovery; it does not prove native provider compatibility.
 
-The production terminal worker now shares the boot ledger. Creation holds an admission until the
-worker finishes creating and registering the terminal, even after a caller timeout or an early
-conpty error. A late terminal remains visible to shutdown. Input and resize check a bound canonical
-scope synchronously and hold leases until worker acknowledgement, without filesystem I/O per
-keystroke. Read and stop operations remain available. Tests cover late replies, cancelled fences,
-real terminal input and rejection over the daemon connection. A worker exit cannot certify that
-its child processes stopped; uncertain admissions remain held until coordinator recovery proves
-quiescence. That recovery and complete process-tree shutdown are still pending.
+### 2. Fidelity and return
 
-Scheduled workspace/agent naming now takes an admission when its callback runs, before consuming
-the pending branch-name marker or generating a title. An admitted operation drains through its
-Git change and metadata write. Real-worktree tests cover blocked naming, cancellation, generation
-failure and shared-checkout subdirectories. Named workspace scripts also take admission before
-port allocation and launch, through terminal/runtime registration. Both their RPC and tool entry
-points use the boot ledger. The real WebSocket boot test proves a fenced service cannot execute
-its port allocator; unit coverage keeps script listing and stopping available. Complete process-tree
-shutdown still needs coordinator integration.
+Prove native resume for each enabled provider with two isolated homes and different absolute paths.
+Cover version incompatibility, native session-ID collisions, compaction, attachments, interrupted
+tools, provider restart and a return transfer into a fresh checkout. Use destination credentials
+and permission policy. Existing import methods that start a runtime or allocate fresh random IDs
+cannot serve as an idempotent inactive installation step.
 
-Workspace setup and agent setup continuations take admission before runtime metadata, commands or
-automatic terminals. They retain it through their final workspace or timeline publication, including
-failure. Run setup fences the provenance update and runtime registration too. Agent continuations
-use the shared cancellable setup runtime; multiple runs for one workspace remain in its stop
-inventory. After installing the fence, cancel registered setup runs before waiting for their leases
-to drain; waiting for long-running commands first can prevent preparation from finishing. Tests cover
-shared paths and identities, delayed continuations, cancellation of a real command, final writes in
-flight and persisted provenance through the real RPC. These tests do not prove descendant-process
-quiescence after shell exit; the coordinator still needs that proof.
+For every unsupported native path, preserve available history and attachments, show the explicit
+context-export mode, and prove the next turn receives the bounded brief and can access the complete
+transcript. Report unavailable raw tool output or provider artifacts. Never silently truncate the
+only surviving history, replay pending tool calls or restore provider automation accidentally.
 
-Workspace provisioning takes admission at its public boundary, through project/workspace writes
-and failed-import rollback. Internal composition keeps that admission if a fence arrives while
-I/O is pending. Tests use real registries and hold both final writes and rollback across preparation;
-the source cannot become ready before they finish. Scratch creation checks workspace identity before
-creating directories, and worktree registration checks its source and backing directory. Unarchiving
-records is fenced too. The boot test rejects workspace creation and adoption over the real connection.
-Asynchronous plugin hooks still need their own admission boundaries.
+Workspace evidence includes Git/worktree history and index state, non-Git and unborn workspaces,
+binary bytes, executable modes, symlinks, ignored paths, portable names, receiver limits and source
+change detection. Verify sanitized remotes and forge behavior independently.
 
-Fresh worktree creation fences the caller's identity, backing checkout, shared repository and
-destination directory before Git can fetch, create branches or run setup. Admission covers generated
-and collision-suffixed paths and lasts through registration or rollback teardown. If preparation
-arrives before registration takes its own admission, creation fails and drains its cleanup before
-the source can become ready. Real Git/registry tests cover these races, partial admission failure and
-cancel/retry. Both workspace-creation RPCs reject before changing refs in the real boot test.
+### 3. Recovery and resource coverage
 
-Archived-worktree recovery fences the selected backing directory and source repository before Git
-can prune or reconstruct anything. Reconstruction runs inside provisioning's unarchive admission,
-so preparation cannot split filesystem recovery from record publication. Real Git/registry tests
-hold reconstruction and the final write across preparation, and verify cleanup when the restored
-branch lacks the selected subdirectory. Recovery inspection stays readable under a fence. A real
-WebSocket regression proves the boot ledger reaches reconstruction, including a stale worktree
-registration that must remain untouched when the request is denied.
+Resolve the complete conversation set, including archived agents and same-workspace descendants.
+Include or explicitly refuse other writers sharing the checkout. Give cross-workspace children and
+open delegations a stated disposition. Transfer queued messages held, invalidate pending approvals,
+and remap schedules and heartbeats into a paused state. State what happens to goals and PR watches.
+Do not transport source host IDs or authority as if they belonged to the destination.
 
-Automatic workspace reconciliation admits project and member identities, including missing or
-archived members, before changing shared metadata or archiving missing directories. Persisted and
-newly discovered backing roots are fenced too. Unrelated projects keep converging; cancellation
-allows the next pass to retry. Admissions last through runtime cleanup and final publication.
-Sibling reads and writes must settle even when one fails. Real Git and registry tests cover legacy
-placement, absent members, partial admission and pending cleanup/publication. The boot test proves
-the shared ledger prevents background changes to persisted source records.
+Verify the finite resource inventory used by the coordinator: provider runtimes, terminals, setup,
+teardown, scripts, queues, automation, plugin callbacks and shared Git metadata. New mutation entry
+points need an explicit classification. An uncertain terminal worker exit needs recoverable stop
+state, not an admission lease that can wait forever without explanation. Recovery must preserve
+known process identities after owner exit and must not kill a reused PID or unrelated shared server.
 
-Daemon shutdown awaits workspace reconciliation and background managed-helper recovery before
-releasing its state. Stopping watches alone leaves Git reads and registry writes in flight; they
-can recreate files during test cleanup or race a subsequent daemon. Held reconciliation and helper
-recovery regressions reproduce the early return. The [macOS job passed on `08eed1128`](https://github.com/ajmariduena/paseo/actions/runs/37905242577/job/113737292319),
-including the storage and reconciliation mutation gates. Helper-recovery changes still need fresh
-CI evidence.
+Enforce destination reservations, host-wide disk quotas and staging cleanup. Test malformed manifests,
+missing/corrupt journals, replayed or mismatched receipts, destination collisions, full disks,
+transient disconnects and concurrent cancel/release. Keep memory and chunk sizes bounded.
 
-Workspace archive acquires all target identities and backing/source paths before stopping setup,
-archiving agents or executing teardown. It holds admission through directory removal and final
-updates, including failure. Real-worktree tests cover shared directories, archived-record retries,
-orphan paths and cancellation. The same ledger reaches RPCs, agent tools, merge automation,
-schedules and creation cleanup. Project removal also fences its workspaces before archiving any.
-Real registry tests hold removal writes across preparation, and the boot test covers both archive
-RPCs and project removal. Archive remains best-effort shutdown; its success cannot certify source
-quiescence. Plugin callbacks and shared Git metadata still need integration.
+### 4. App and delivery evidence
 
-Manual and automatic storage cleanup admit the target paths, archived workspace identities and
-source repository before teardown or deletion. Git pruning separately admits every registered
-worktree, including missing directories and checkouts outside managed storage. A fence retains
-those stale registrations until cancellation. Storage inspection disables Git's optional index
-writes. Real-worktree tests cover unchanged index bytes, cancel/retry, shared paths, stale entries
-and teardown/removal checks held across preparation. Daemon shutdown awaits an in-flight sweep;
-its WebSocket cleanup and automatic-sweep context both receive the boot ledger. Teardown descendants
-still need coordinator stop inventory and confirmed process-tree termination.
+Provide the workspace action, paired-host picker and capability gate on both hosts. Preflight shows
+provider mode and reason per conversation, omitted files/integrations, stopped work and transfer size.
+Keep progress and actionable errors visible. Support retry, cancellation before release and recovery
+from daemon journals after reopening the app. Navigate to the destination and show the source's moved
+state. Follow the existing forms and routing contracts.
 
-These tests do not establish the complete ownership promise: draft catalog runtimes,
-standalone teardown hooks, remaining background workspace mutations,
-shared Git metadata ownership, runtime termination and destination activation still need
-integration.
-Source history needs a readable path that does not reopen a fenced native runtime. Source release
-explicitly refuses Windows until durable directory updates
-have an implementation there; archive staging alone does not satisfy that requirement.
+Required evidence: a real MacBook → Linux VPS → MacBook round trip, both native and context-export
+continuation, browser/Electron and native iOS/Android flows, client/daemon version drift, and the
+existing CI matrix. Windows paths and archive staging remain tested; source release stays explicitly
+unavailable there until durable directory updates are implemented. Run focused tests locally and
+full suites in CI. The PR needs raw results plus typecheck, lint and formatting checks.
 
-Before the workspace slice is complete, cover directories without Git. Directory-entry durability
-belongs in the transaction's ready/commit boundary. Linux tests do not establish macOS or Windows
-behavior. Path collision checks include index-only entries and directory segments. External Git
-attribute rules require moving into `.gitattributes` before capture or restore: Git reads them
-outside the checkout, and the handoff does not transport host configuration. Attribute-location
-discovery requires a Git version supporting `GIT_ATTR_SYSTEM` and `GIT_ATTR_GLOBAL`; unsupported
-Git versions get an explicit update request. See [Git attributes](https://git-scm.com/docs/gitattributes)
-and [Git logical variables](https://git-scm.com/docs/git-var).
+## Current evidence and integration gaps
 
-Git bundle and patch generation now uses the shared Git scheduler's bounded file sink. It applies
-backpressure while writing and keeps stdout out of daemon memory. The existing real-process Git
-suite covers full binary output, byte ceilings, failed commands, and occupied output paths.
+- `server/handoff/workspace.ts` and its neighboring tests cover Git and directory snapshots,
+  restoration and source rechecks. `packWorkspaceArchive` registers the manifest as an archive blob,
+  including an empty workspace; restoration consumes only referenced blobs in the verified inventory.
+- `archive.ts`, `archive.test.ts` and `archive.e2e.test.ts` cover persistent receive offsets,
+  checksums, local capture import, and real two-daemon transport. The client coordinator in
+  `packages/client/src/handoff-transfer.ts` holds one chunk in flight. Capture/restore tests now use
+  the server archive and network path; they still do not activate a workspace or conversation.
+- `ownership.ts`, `ownership.test.ts` and `bootstrap.test.ts` cover durable source fences,
+  admission draining, cancel/release races, signed receipts and loading fences before providers.
+  Admission is wired through agent operations, files/Git, terminal creation/input/resize, scripts,
+  setup, provisioning, worktree lifecycle, reconciliation and storage cleanup. Their owning test
+  files carry the regressions. This is not evidence of a complete source stop coordinator.
+- `utils/tree-kill.test.ts`, `managed-processes.test.ts` and `bootstrap-managed-processes.test.ts`
+  cover observed descendant termination, helper retention and awaited startup recovery. The
+  coordinator still needs launch-time ownership and durable uncertain-stop recovery.
+- Source preparation, destination reservations/activation, native codecs, exported conversation
+  history, readable moved history, automation dispositions and the app flow remain unimplemented.
+  Complete handoff is not advertised. Cross-platform and real-provider acceptance remain open.
 
-| Requirement                                    | Required evidence                                                                                               | State   |
-| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------- |
-| Bounded, resumable, integrity-checked transfer | Archive unit + two-daemon tests pass on Linux; CI platforms, aggregate disk quota and lifecycle cleanup pending | Partial |
-| Workspace fidelity                             | Real Git repos/worktrees; binary, staged/unstaged, rename/delete, untracked, modes, symlinks; source unchanged  | Pending |
-| Ownership never overlaps                       | Fault injection at each persistence boundary; cancel/release race; lost replies; daemon restart                 | Pending |
-| Every mutation respects the fence              | Prompts, native resume, scripts, terminals, file/Git mutations, queue, automation and delegation tests          | Pending |
-| Native sessions                                | Real provider resume on two isolated homes, history continuity and next turn; incompatible version rejection    | Pending |
-| Explicit context continuation                  | Complete preserved history, visible mode, destination provider/config mapping and next turn                     | Pending |
-| Multi-agent/workspace relationships            | Descendants, cross-workspace children, shared checkout writers, archive and return transfer tests               | Pending |
-| Existing trust boundaries                      | Existing semantic permissions, no transferred credentials/grants, target/manifest-bound release, replay tests   | Pending |
-| Client and app                                 | Capability gate, host picker, preflight, progress, cancel, retry, reconnect, destination navigation             | Pending |
-| Protocol compatibility                         | Pure optional extensions, old/new client parsing and feature negotiation                                        | Pending |
-| Real network                                   | Archive transport passes two-daemon restart/drop/retry tests on Linux; full cutover still pending               | Partial |
-| Platform coverage                              | Linux and macOS transfer both directions; Windows path behavior; native app and browser UI evidence             | Pending |
-| Delivery                                       | Typecheck, lint, formatting, focused tests, PR with raw evidence, CI results                                    | Pending |
-
-Keep feature code in `server/handoff`, with provider-owned native codecs and a client coordinator.
-Use dotted `workspace.handoff.*.request/response` RPCs. Follow the existing
+Keep feature code in `server/handoff`, provider transport in provider-owned codecs and orchestration
+in the client coordinator. Use dotted `workspace.handoff.*.request/response` RPCs. Follow the
 [permission](../permissions.md), [protocol](../protocol-compatibility.md), and
-[testing](../testing.md) contracts.
+[testing](../testing.md) contracts. Directory-entry durability belongs at the transaction's ready and
+activation boundaries. External Git attributes require an explicit resolution before transfer; see
+[Git attributes](https://git-scm.com/docs/gitattributes) and
+[Git logical variables](https://git-scm.com/docs/git-var).

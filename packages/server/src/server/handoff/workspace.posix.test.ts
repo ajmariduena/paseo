@@ -36,19 +36,23 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-test("preserves executable files and internal relative symlinks", async () => {
-  await writeFile(path.join(source, "script.sh"), "#!/bin/sh\nexit 0\n");
-  await chmod(path.join(source, "script.sh"), 0o755);
-  await mkdir(path.join(source, "nested"));
-  await symlink("../script.sh", path.join(source, "nested", "script"));
-  await captureWorkspace({ cwd: source, artifactDirectory });
-  await restoreWorkspace({ artifactDirectory, destination });
-  expect((await lstat(path.join(destination, "script.sh"))).mode & 0o111).toBe(0o111);
-  expect(await readlink(path.join(destination, "nested", "script"))).toBe("../script.sh");
-  expect(await readFile(path.join(destination, "nested", "script"), "utf8")).toBe(
-    "#!/bin/sh\nexit 0\n",
-  );
-});
+test.each(["Git", "non-Git"])(
+  "preserves executable files and internal relative symlinks in %s workspaces",
+  async (kind) => {
+    if (kind === "non-Git") await rm(path.join(source, ".git"), { recursive: true });
+    await writeFile(path.join(source, "script.sh"), "#!/bin/sh\nexit 0\n");
+    await chmod(path.join(source, "script.sh"), 0o755);
+    await mkdir(path.join(source, "nested"));
+    await symlink("../script.sh", path.join(source, "nested", "script"));
+    await captureWorkspace({ cwd: source, artifactDirectory });
+    await restoreWorkspace({ artifactDirectory, destination });
+    expect((await lstat(path.join(destination, "script.sh"))).mode & 0o111).toBe(0o111);
+    expect(await readlink(path.join(destination, "nested", "script"))).toBe("../script.sh");
+    expect(await readFile(path.join(destination, "nested", "script"), "utf8")).toBe(
+      "#!/bin/sh\nexit 0\n",
+    );
+  },
+);
 
 test("allows a relative symlink to the workspace root", async () => {
   await mkdir(path.join(source, "nested"));
@@ -67,14 +71,18 @@ test("rejects symlink chains whose lexical paths appear safe but resolve outside
   });
 });
 
-test("does not follow absolute symlinks or copy their target bytes", async () => {
-  await writeFile(path.join(root, "private"), "outside bytes");
-  await symlink(path.join(root, "private"), path.join(source, "link"));
-  await expect(captureWorkspace({ cwd: source, artifactDirectory })).rejects.toMatchObject({
-    code: "unsupported_workspace",
-  });
-  expect(await readFile(path.join(root, "private"), "utf8")).toBe("outside bytes");
-});
+test.each(["Git", "non-Git"])(
+  "does not follow absolute symlinks or copy their target bytes in %s workspaces",
+  async (kind) => {
+    if (kind === "non-Git") await rm(path.join(source, ".git"), { recursive: true });
+    await writeFile(path.join(root, "private"), "outside bytes");
+    await symlink(path.join(root, "private"), path.join(source, "link"));
+    await expect(captureWorkspace({ cwd: source, artifactDirectory })).rejects.toMatchObject({
+      code: "unsupported_workspace",
+    });
+    expect(await readFile(path.join(root, "private"), "utf8")).toBe("outside bytes");
+  },
+);
 
 test("does not follow a destination symlink to an existing directory", async () => {
   await writeFile(path.join(source, "file"), "transferred");
@@ -105,9 +113,10 @@ test.each(["git~1/config", ".g\u200cit/config", ".gi\u034ft/config"])(
 );
 
 // macOS rejects invalid UTF-8 at file creation. Linux can retain these untracked names.
-test.skipIf(process.platform !== "linux")(
-  "refuses undecodable filenames instead of silently treating them as deleted",
-  async () => {
+test.skipIf(process.platform !== "linux").each(["Git", "non-Git"])(
+  "refuses undecodable filenames instead of silently treating them as deleted in %s workspaces",
+  async (kind) => {
+    if (kind === "non-Git") await rm(path.join(source, ".git"), { recursive: true });
     const bytes = Buffer.concat([Buffer.from(`${source}/`), Buffer.from([0xff])]);
     await writeFile(bytes, "keep this file");
     await expect(captureWorkspace({ cwd: source, artifactDirectory })).rejects.toMatchObject({

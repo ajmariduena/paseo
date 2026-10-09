@@ -4,7 +4,9 @@ import {
   chmod,
   lstat,
   mkdir,
+  mkdtemp,
   open,
+  readdir,
   readlink,
   realpath,
   rename,
@@ -16,9 +18,11 @@ import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { readBoundedFile } from "./artifacts.js";
+import type { HandoffArchiveStore } from "./archive.js";
 import {
   HandoffBlobSchema as BlobSchema,
   HandoffDigestSchema as DigestSchema,
+  type HandoffArchiveManifest,
 } from "@getpaseo/protocol/handoff";
 import {
   createRunGitCommand,
@@ -40,21 +44,24 @@ const FileSchema = z.discriminatedUnion("kind", [
     blob: BlobSchema,
   }),
   z.object({ kind: z.literal("symlink"), path: z.string(), target: z.string() }),
+  z.object({ kind: z.literal("directory"), path: z.string() }),
 ]);
 const ManifestSchema = z.object({
   version: z.literal(1),
-  git: z.object({
-    objectFormat: z.enum(["sha1", "sha256"]),
-    normalization: GitNormalizationSchema,
-    head: z
-      .string()
-      .regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/)
-      .nullable(),
-    branch: z.string().nullable(),
-    bundle: BlobSchema.nullable(),
-    indexPatch: BlobSchema,
-    indexFingerprint: DigestSchema,
-  }),
+  git: z
+    .object({
+      objectFormat: z.enum(["sha1", "sha256"]),
+      normalization: GitNormalizationSchema,
+      head: z
+        .string()
+        .regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/)
+        .nullable(),
+      branch: z.string().nullable(),
+      bundle: BlobSchema.nullable(),
+      indexPatch: BlobSchema,
+      indexFingerprint: DigestSchema,
+    })
+    .nullable(),
   files: z.array(FileSchema),
 });
 
@@ -106,6 +113,7 @@ interface RestoreInput {
 }
 
 interface GitState {
+  kind: "git";
   objectFormat: "sha1" | "sha256";
   normalization: z.infer<typeof GitNormalizationSchema>;
   head: string | null;
@@ -113,6 +121,13 @@ interface GitState {
   paths: string[];
   index: string;
 }
+
+interface DirectoryState {
+  kind: "directory";
+  paths: string[];
+}
+
+type WorkspaceState = GitState | DirectoryState;
 
 interface BlobCapture {
   directory: string;
@@ -160,7 +175,11 @@ function validatePath(value: string): void {
   if (invalid) reject("unsupported_workspace", `Path is not portable between hosts: ${value}`);
 }
 
-function validatePaths(values: readonly string[], code: ErrorCode): void {
+function validatePaths(
+  values: readonly string[],
+  code: ErrorCode,
+  directories = new Set<string>(),
+): void {
   const paths = new Set<string>();
   const spelling = new Map<string, string>();
   for (const value of values) {
@@ -183,7 +202,9 @@ function validatePaths(values: readonly string[], code: ErrorCode): void {
     const segments = value.split("/");
     segments.pop();
     while (segments.length > 0) {
-      if (paths.has(segments.join("/"))) reject(code, `File is also a parent directory: ${value}`);
+      const parent = segments.join("/");
+      if (paths.has(parent) && !directories.has(parent))
+        reject(code, `File is also a parent directory: ${value}`);
       segments.pop();
     }
   }
@@ -193,6 +214,9 @@ function validateFiles(files: readonly WorkspaceFile[]): void {
   validatePaths(
     files.map((file) => file.path),
     "invalid_artifact",
+    new Set(
+      files.filter((file) => file.kind === "directory").map((file) => portablePathKey(file.path)),
+    ),
   );
   const links = new Map<string, string>();
   for (const file of files) {
@@ -322,7 +346,76 @@ async function getGitState(cwd: string, limits: WorkspaceSnapshotLimits): Promis
     autocrlf: autocrlf.stdout.trim() || "false",
     eol: isNativeEol ? nativeEol : configuredEol,
   });
-  return { objectFormat, normalization, head: refs.trim() || null, branch, paths, index };
+  return {
+    kind: "git",
+    objectFormat,
+    normalization,
+    head: refs.trim() || null,
+    branch,
+    paths,
+    index,
+  };
+}
+
+async function getWorkspaceState(
+  cwd: string,
+  limits: WorkspaceSnapshotLimits,
+  scratchParent: string,
+): Promise<WorkspaceState> {
+  const probe = await git(["rev-parse", "--show-toplevel"], {
+    cwd,
+    acceptExitCodes: [0, 128],
+    envOverlay: { LC_ALL: "C", GIT_OPTIONAL_LOCKS: "0" },
+  });
+  if (probe.exitCode === 0) return getGitState(cwd, limits);
+  if (!probe.stderr.includes("not a git repository")) {
+    reject("unsupported_workspace", `Cannot inspect workspace Git state: ${probe.stderr.trim()}`);
+  }
+  const scratchRoot = await realpath(scratchParent);
+  if (isWithin(cwd, scratchRoot))
+    reject("unsupported_workspace", "Store the handoff artifact outside the source workspace");
+  const scratch = await mkdtemp(path.join(scratchRoot, ".handoff-ignore-"));
+  try {
+    // Query Git's ignore engine without adding a repository to the source or
+    // inheriting another host's global exclude rules. No index is populated.
+    await runRestoreGit(scratch, ["init", "--bare", "--template=", "--quiet"]);
+    const ignoredText = await runRestoreGit(cwd, [
+      `--git-dir=${scratch}`,
+      `--work-tree=${cwd}`,
+      "ls-files",
+      "--others",
+      "--ignored",
+      "--exclude-standard",
+      "--directory",
+      "-z",
+    ]);
+    const ignored = new Set(ignoredText.split("\0").filter(Boolean));
+    const paths: string[] = [];
+    const directories = [""];
+    for (const directory of directories) {
+      const absolute = path.join(cwd, directory);
+      if (!isWithin(cwd, await realpath(absolute)))
+        reject("source_changed", "Directory left the workspace during enumeration");
+      for (const entry of await readdir(absolute, { withFileTypes: true, encoding: "buffer" })) {
+        let name: string;
+        try {
+          name = new TextDecoder("utf-8", { fatal: true }).decode(entry.name);
+        } catch {
+          reject("unsupported_workspace", "Workspace contains non-UTF-8 filenames");
+        }
+        const relative = directory ? `${directory}/${name}` : name;
+        if (ignored.has(relative) || ignored.has(`${relative}/`)) continue;
+        validatePath(relative);
+        paths.push(relative);
+        if (paths.length > limits.maxFiles)
+          reject("limit_exceeded", "Workspace contains too many files or directories");
+        if (entry.isDirectory()) directories.push(relative);
+      }
+    }
+    return { kind: "directory", paths: paths.sort() };
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
 }
 
 async function validateGitCapture(cwd: string, paths: string[]): Promise<void> {
@@ -518,8 +611,11 @@ async function captureGitArtifact(input: GitArtifactInput): Promise<Blob> {
 }
 
 function manifestBlobs(manifest: WorkspaceManifest): Blob[] {
-  const blobs = [manifest.git.indexPatch];
-  if (manifest.git.bundle) blobs.push(manifest.git.bundle);
+  const blobs: Blob[] = [];
+  if (manifest.git) {
+    blobs.push(manifest.git.indexPatch);
+    if (manifest.git.bundle) blobs.push(manifest.git.bundle);
+  }
   for (const file of manifest.files) {
     if (file.kind === "file") blobs.push(file.blob);
   }
@@ -530,7 +626,7 @@ function validateManifest(manifest: WorkspaceManifest, limits: WorkspaceSnapshot
   if (manifest.files.length > limits.maxFiles)
     reject("limit_exceeded", "Workspace contains too many files");
   validateFiles(manifest.files);
-  if ((manifest.git.head === null) !== (manifest.git.bundle === null))
+  if (manifest.git && (manifest.git.head === null) !== (manifest.git.bundle === null))
     reject("invalid_artifact", "History bundle does not match HEAD");
   let total = 0;
   for (const blob of manifestBlobs(manifest)) {
@@ -548,8 +644,8 @@ export async function captureWorkspace(input: CaptureInput): Promise<WorkspaceMa
   const parent = await realpath(path.dirname(artifact));
   if (isWithin(cwd, path.join(parent, path.basename(artifact))))
     reject("unsupported_workspace", "Store the handoff artifact outside the source workspace");
-  const before = await getGitState(cwd, limits);
-  await validateGitCapture(cwd, before.paths);
+  const before = await getWorkspaceState(cwd, limits, parent);
+  if (before.kind === "git") await validateGitCapture(cwd, before.paths);
   await mkdir(artifact, { mode: 0o700 });
   try {
     const blobs = path.join(artifact, "blobs");
@@ -559,32 +655,44 @@ export async function captureWorkspace(input: CaptureInput): Promise<WorkspaceMa
       maxFileBytes: limits.maxFileBytes,
       remainingBytes: limits.maxTotalBytes,
     };
-    const patchPath = path.join(artifact, "index.patch");
-    const indexPatch = await captureGitArtifact({
-      cwd,
-      outputPath: patchPath,
-      capture,
-      args: [
-        "diff",
-        "--cached",
-        "--binary",
-        "--full-index",
-        "--no-color",
-        "--src-prefix=a/",
-        "--dst-prefix=b/",
-        "--no-ext-diff",
-        "--no-textconv",
-      ],
-    });
-    let bundle: Blob | null = null;
-    if (before.head) {
-      const bundlePath = path.join(artifact, "history.bundle");
-      bundle = await captureGitArtifact({
+    let gitManifest: WorkspaceManifest["git"] = null;
+    if (before.kind === "git") {
+      const patchPath = path.join(artifact, "index.patch");
+      const indexPatch = await captureGitArtifact({
         cwd,
-        outputPath: bundlePath,
+        outputPath: patchPath,
         capture,
-        args: ["bundle", "create", "-", "HEAD"],
+        args: [
+          "diff",
+          "--cached",
+          "--binary",
+          "--full-index",
+          "--no-color",
+          "--src-prefix=a/",
+          "--dst-prefix=b/",
+          "--no-ext-diff",
+          "--no-textconv",
+        ],
       });
+      let bundle: Blob | null = null;
+      if (before.head) {
+        const bundlePath = path.join(artifact, "history.bundle");
+        bundle = await captureGitArtifact({
+          cwd,
+          outputPath: bundlePath,
+          capture,
+          args: ["bundle", "create", "-", "HEAD"],
+        });
+      }
+      gitManifest = {
+        objectFormat: before.objectFormat,
+        normalization: before.normalization,
+        head: before.head,
+        branch: before.branch,
+        bundle,
+        indexPatch,
+        indexFingerprint: createHash("sha256").update(before.index).digest("hex"),
+      };
     }
     const files: WorkspaceFile[] = [];
     for (const filePath of before.paths) {
@@ -604,31 +712,25 @@ export async function captureWorkspace(input: CaptureInput): Promise<WorkspaceMa
       } else if (stat.isFile()) {
         const blob = await copyBlob(absolute, capture);
         files.push({ kind: "file", path: filePath, executable: (stat.mode & 0o111) !== 0, blob });
+      } else if (stat.isDirectory() && before.kind === "directory") {
+        files.push({ kind: "directory", path: filePath });
       } else {
         reject("unsupported_workspace", `Cannot transfer directory or special file: ${filePath}`);
       }
     }
-    const after = await getGitState(cwd, limits);
+    const after = await getWorkspaceState(cwd, limits, parent);
     if (JSON.stringify(before) !== JSON.stringify(after))
-      reject("source_changed", "Git state changed while capturing the workspace");
+      reject("source_changed", "Workspace state changed during capture");
     const manifest: WorkspaceManifest = {
       version: 1,
-      git: {
-        objectFormat: before.objectFormat,
-        normalization: before.normalization,
-        head: before.head,
-        branch: before.branch,
-        bundle,
-        indexPatch,
-        indexFingerprint: createHash("sha256").update(before.index).digest("hex"),
-      },
+      git: gitManifest,
       files,
     };
     validateManifest(manifest, limits);
     await verifySourceFiles(cwd, manifest);
-    const finalState = await getGitState(cwd, limits);
+    const finalState = await getWorkspaceState(cwd, limits, parent);
     if (JSON.stringify(before) !== JSON.stringify(finalState))
-      reject("source_changed", "Git state changed while verifying capture");
+      reject("source_changed", "Workspace state changed while verifying capture");
     const json = JSON.stringify(manifest);
     if (Buffer.byteLength(json) > limits.maxManifestBytes)
       reject("limit_exceeded", "Workspace manifest exceeds handoff limit");
@@ -684,9 +786,13 @@ async function readManifest(
   } finally {
     await handle.close();
   }
+  return parseManifest(Buffer.concat(chunks), limits);
+}
+
+function parseManifest(bytes: Buffer, limits: WorkspaceSnapshotLimits): WorkspaceManifest {
   let value: unknown;
   try {
-    value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    value = JSON.parse(bytes.toString("utf8"));
   } catch (error) {
     if (error instanceof SyntaxError)
       reject("invalid_artifact", "Malformed workspace manifest JSON");
@@ -699,10 +805,81 @@ async function readManifest(
   return manifest;
 }
 
+interface WorkspaceArchiveInput {
+  store: HandoffArchiveStore;
+  transferId: string;
+  limits?: WorkspaceSnapshotLimits;
+}
+
+/** Register a stopped source's capture as a durable, self-contained transfer archive. */
+export async function packWorkspaceArchive(
+  input: WorkspaceArchiveInput & { artifactDirectory: string },
+): Promise<HandoffArchiveManifest> {
+  const limits = input.limits ?? WORKSPACE_SNAPSHOT_LIMITS;
+  const manifestPath = path.join(input.artifactDirectory, "manifest.json");
+  const bytes = await readBoundedFile(manifestPath, limits.maxManifestBytes);
+  const workspace = parseManifest(bytes, limits);
+  const entrypoint = {
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    size: bytes.length,
+  };
+  const blobs = new Map<string, Blob>();
+  const files = new Map<string, string>();
+  for (const blob of manifestBlobs(workspace)) {
+    const previous = blobs.get(blob.sha256);
+    if (previous && previous.size !== blob.size)
+      reject("invalid_artifact", "Conflicting sizes for a workspace blob");
+    blobs.set(blob.sha256, blob);
+    files.set(blob.sha256, path.join(input.artifactDirectory, "blobs", blob.sha256));
+  }
+  blobs.set(entrypoint.sha256, entrypoint);
+  files.set(entrypoint.sha256, manifestPath);
+  const manifest: HandoffArchiveManifest = { version: 1, entrypoint, blobs: [...blobs.values()] };
+  await input.store.importLocal({ id: input.transferId, manifest, files });
+  return manifest;
+}
+
+/** Materialize private staging only. Workspace publication and agent activation are separate. */
+export async function restoreWorkspaceArchive(
+  input: WorkspaceArchiveInput & { destination: string },
+): Promise<WorkspaceManifest> {
+  const limits = input.limits ?? WORKSPACE_SNAPSHOT_LIMITS;
+  return input.store.withVerifiedArchive(input.transferId, async ({ manifest, blobsDirectory }) => {
+    if (manifest.entrypoint.size > limits.maxManifestBytes)
+      reject("limit_exceeded", "Workspace manifest exceeds handoff limit");
+    const workspace = parseManifest(
+      await readBoundedFile(
+        path.join(blobsDirectory, manifest.entrypoint.sha256),
+        limits.maxManifestBytes,
+      ),
+      limits,
+    );
+    const inventory = new Map(manifest.blobs.map((blob) => [blob.sha256, blob.size]));
+    for (const blob of manifestBlobs(workspace)) {
+      if (inventory.get(blob.sha256) !== blob.size)
+        reject("invalid_artifact", "Workspace references a blob outside its archive inventory");
+    }
+    return restoreWorkspaceContents({
+      manifest: workspace,
+      blobs: blobsDirectory,
+      destination: input.destination,
+    });
+  });
+}
+
 export async function restoreWorkspace(input: RestoreInput): Promise<WorkspaceManifest> {
   const limits = input.limits ?? WORKSPACE_SNAPSHOT_LIMITS;
   const manifest = await readManifest(input.artifactDirectory, limits);
   const blobs = path.join(input.artifactDirectory, "blobs");
+  return restoreWorkspaceContents({ manifest, blobs, destination: input.destination });
+}
+
+async function restoreWorkspaceContents(input: {
+  manifest: WorkspaceManifest;
+  blobs: string;
+  destination: string;
+}): Promise<WorkspaceManifest> {
+  const { manifest, blobs } = input;
   for (const blob of manifestBlobs(manifest)) await verifyBlob(path.join(blobs, blob.sha256), blob);
   try {
     await mkdir(input.destination, { mode: 0o700 });
@@ -713,60 +890,68 @@ export async function restoreWorkspace(input: RestoreInput): Promise<WorkspaceMa
   }
   try {
     // No checkout: smudge filters, repository hooks and source Git config must not execute.
-    await runRestoreGit(input.destination, [
-      "init",
-      "--template=",
-      `--object-format=${manifest.git.objectFormat}`,
-    ]);
-    await validateExternalAttributes(input.destination);
-    await runRestoreGit(input.destination, [
-      "config",
-      "core.autocrlf",
-      manifest.git.normalization.autocrlf,
-    ]);
-    await runRestoreGit(input.destination, ["config", "core.eol", manifest.git.normalization.eol]);
-    if (manifest.git.branch) {
+    if (manifest.git) {
       await runRestoreGit(input.destination, [
-        "check-ref-format",
-        `refs/heads/${manifest.git.branch}`,
+        "init",
+        "--template=",
+        `--object-format=${manifest.git.objectFormat}`,
+      ]);
+      await validateExternalAttributes(input.destination);
+      await runRestoreGit(input.destination, [
+        "config",
+        "core.autocrlf",
+        manifest.git.normalization.autocrlf,
       ]);
       await runRestoreGit(input.destination, [
-        "symbolic-ref",
-        "HEAD",
-        `refs/heads/${manifest.git.branch}`,
+        "config",
+        "core.eol",
+        manifest.git.normalization.eol,
       ]);
-    }
-    if (manifest.git.bundle && manifest.git.head) {
-      await runRestoreGit(input.destination, [
-        "fetch",
-        "--no-tags",
-        "--",
-        path.resolve(blobs, manifest.git.bundle.sha256),
-        "HEAD",
-      ]);
-      const fetched = (await runRestoreGit(input.destination, ["rev-parse", "FETCH_HEAD"])).trim();
-      if (fetched !== manifest.git.head)
-        reject("invalid_artifact", "Bundle HEAD differs from the manifest");
       if (manifest.git.branch) {
-        await runRestoreGit(input.destination, ["update-ref", "HEAD", fetched]);
-      } else {
-        await runRestoreGit(input.destination, ["update-ref", "--no-deref", "HEAD", fetched]);
+        await runRestoreGit(input.destination, [
+          "check-ref-format",
+          `refs/heads/${manifest.git.branch}`,
+        ]);
+        await runRestoreGit(input.destination, [
+          "symbolic-ref",
+          "HEAD",
+          `refs/heads/${manifest.git.branch}`,
+        ]);
       }
-      await runRestoreGit(input.destination, ["read-tree", "HEAD"]);
+      if (manifest.git.bundle && manifest.git.head) {
+        await runRestoreGit(input.destination, [
+          "fetch",
+          "--no-tags",
+          "--",
+          path.resolve(blobs, manifest.git.bundle.sha256),
+          "HEAD",
+        ]);
+        const fetched = (
+          await runRestoreGit(input.destination, ["rev-parse", "FETCH_HEAD"])
+        ).trim();
+        if (fetched !== manifest.git.head)
+          reject("invalid_artifact", "Bundle HEAD differs from the manifest");
+        if (manifest.git.branch) {
+          await runRestoreGit(input.destination, ["update-ref", "HEAD", fetched]);
+        } else {
+          await runRestoreGit(input.destination, ["update-ref", "--no-deref", "HEAD", fetched]);
+        }
+        await runRestoreGit(input.destination, ["read-tree", "HEAD"]);
+      }
+      if (manifest.git.indexPatch.size > 0) {
+        await runRestoreGit(input.destination, [
+          "apply",
+          "--cached",
+          "--binary",
+          "--",
+          path.resolve(blobs, manifest.git.indexPatch.sha256),
+        ]);
+      }
+      const index = await runRestoreGit(input.destination, ["ls-files", "--stage", "-z"]);
+      validateIndex(index, "invalid_artifact");
+      if (createHash("sha256").update(index).digest("hex") !== manifest.git.indexFingerprint)
+        reject("invalid_artifact", "Restored index differs from the source");
     }
-    if (manifest.git.indexPatch.size > 0) {
-      await runRestoreGit(input.destination, [
-        "apply",
-        "--cached",
-        "--binary",
-        "--",
-        path.resolve(blobs, manifest.git.indexPatch.sha256),
-      ]);
-    }
-    const index = await runRestoreGit(input.destination, ["ls-files", "--stage", "-z"]);
-    validateIndex(index, "invalid_artifact");
-    if (createHash("sha256").update(index).digest("hex") !== manifest.git.indexFingerprint)
-      reject("invalid_artifact", "Restored index differs from the source");
     for (const file of manifest.files)
       await restoreFile({ destination: input.destination, blobs, file });
     return manifest;
@@ -787,6 +972,8 @@ async function verifySourceFiles(cwd: string, manifest: WorkspaceManifest): Prom
       if (file.kind === "symlink") {
         if (!stat.isSymbolicLink() || (await readlink(absolute)) !== file.target)
           reject("source_changed", `Symlink changed: ${file.path}`);
+      } else if (file.kind === "directory") {
+        if (!stat.isDirectory()) reject("source_changed", `Directory changed: ${file.path}`);
       } else {
         if (!stat.isFile() || ((stat.mode & 0o111) !== 0) !== file.executable)
           reject("source_changed", `File type or permissions changed: ${file.path}`);
@@ -804,15 +991,23 @@ export async function verifyCapturedWorkspace(input: CaptureInput): Promise<void
   const limits = input.limits ?? WORKSPACE_SNAPSHOT_LIMITS;
   const cwd = await realpath(input.cwd);
   const manifest = await readManifest(input.artifactDirectory, limits);
-  const state = await getGitState(cwd, limits);
-  const index = createHash("sha256").update(state.index).digest("hex");
-  if (
-    state.head !== manifest.git.head ||
-    state.branch !== manifest.git.branch ||
-    JSON.stringify(state.normalization) !== JSON.stringify(manifest.git.normalization) ||
-    index !== manifest.git.indexFingerprint
-  ) {
-    reject("source_changed", "Git state changed after capture");
+  const state = await getWorkspaceState(
+    cwd,
+    limits,
+    path.dirname(path.resolve(input.artifactDirectory)),
+  );
+  if ((state.kind === "git") !== (manifest.git !== null))
+    reject("source_changed", "Workspace Git ownership changed after capture");
+  if (state.kind === "git" && manifest.git) {
+    const index = createHash("sha256").update(state.index).digest("hex");
+    if (
+      state.head !== manifest.git.head ||
+      state.branch !== manifest.git.branch ||
+      JSON.stringify(state.normalization) !== JSON.stringify(manifest.git.normalization) ||
+      index !== manifest.git.indexFingerprint
+    ) {
+      reject("source_changed", "Git state changed after capture");
+    }
   }
   const capturedPaths = new Set(manifest.files.map((file) => file.path));
   for (const candidate of state.paths) {
@@ -825,7 +1020,7 @@ export async function verifyCapturedWorkspace(input: CaptureInput): Promise<void
     }
     reject("source_changed", `File appeared after capture: ${candidate}`);
   }
-  await validateGitCapture(cwd, state.paths);
+  if (state.kind === "git") await validateGitCapture(cwd, state.paths);
   await verifySourceFiles(cwd, manifest);
 }
 
@@ -837,6 +1032,10 @@ interface RestoreFileInput {
 
 async function restoreFile({ destination, blobs, file }: RestoreFileInput): Promise<void> {
   const target = path.join(destination, file.path);
+  if (file.kind === "directory") {
+    await mkdir(target, { recursive: true, mode: 0o700 });
+    return;
+  }
   await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
   if (file.kind === "symlink") {
     await symlink(file.target, target);
