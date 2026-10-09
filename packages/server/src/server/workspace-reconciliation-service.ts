@@ -16,6 +16,11 @@ import {
 } from "./workspace-registry-model.js";
 import { workspaceIdsForProjects } from "./workspace-directory.js";
 import { deriveProjectKey } from "./project-key.js";
+import {
+  HandoffOwnershipError,
+  type HandoffMutationScope,
+  type HandoffOwnership,
+} from "./handoff/ownership.js";
 
 const DEFAULT_RESCAN_INTERVAL_MS = 5 * 60_000;
 const DEFAULT_DEBOUNCE_MS = 100;
@@ -103,6 +108,7 @@ export interface WorkspaceReconciliationServiceOptions {
   clock?: ReconciliationClock;
   rescanIntervalMs?: number;
   debounceMs?: number;
+  handoffOwnership?: HandoffOwnership;
 }
 
 interface ProjectReconciliationInput {
@@ -111,11 +117,17 @@ interface ProjectReconciliationInput {
   currentGit: ProjectCheckoutLitePayload;
   readCheckout: (cwd: string) => Promise<ProjectCheckoutLitePayload>;
   changes: ReconciliationChange[];
+  releases: Array<() => void>;
 }
 
 interface CachedCheckoutRead {
   cwd: string;
   checkout: Promise<ProjectCheckoutLitePayload>;
+}
+
+interface ReconciliationPassInput {
+  mode: "metadata" | "full";
+  publish: boolean;
 }
 
 type DirectoryState = "directory" | "missing" | "unreadable";
@@ -134,6 +146,7 @@ export class WorkspaceReconciliationService {
   private readonly clock: ReconciliationClock;
   private readonly rescanIntervalMs: number;
   private readonly debounceMs: number;
+  private readonly handoffOwnership: HandoffOwnership | undefined;
   private readonly watchers: Array<{ rootPath: string; watcher: ProjectRootWatcher }> = [];
   private unsubscribeRegistry: (() => void) | null = null;
   private rescanTimer: ReconciliationTimer | null = null;
@@ -159,6 +172,7 @@ export class WorkspaceReconciliationService {
     this.clock = options.clock ?? systemClock;
     this.rescanIntervalMs = options.rescanIntervalMs ?? DEFAULT_RESCAN_INTERVAL_MS;
     this.debounceMs = options.debounceMs ?? DEFAULT_DEBOUNCE_MS;
+    this.handoffOwnership = options.handoffOwnership;
   }
 
   start(): Promise<void> {
@@ -222,16 +236,75 @@ export class WorkspaceReconciliationService {
   /** Reconciles mutable Git facts only; never archives missing records. */
   reconcileGitMetadata(): Promise<ReconciliationResult> {
     if (this.disposed) return Promise.resolve({ changesApplied: [], durationMs: 0 });
-    return this.track(() => this.reconcileGitMetadataOnce());
+    return this.track(() => this.runReconciliation({ mode: "metadata", publish: false }));
   }
 
-  private async reconcileGitMetadataOnce(): Promise<ReconciliationResult> {
+  private async runReconciliation(input: ReconciliationPassInput): Promise<ReconciliationResult> {
+    if (this.disposed) return { changesApplied: [], durationMs: 0 };
+    const releases: Array<() => void> = [];
+    try {
+      const result =
+        input.mode === "full"
+          ? await this.reconcileOnce(releases)
+          : await this.reconcileGitMetadataOnce(releases);
+      if (input.publish) await this.publishReconciliation(result);
+      return result;
+    } finally {
+      for (const release of releases) release();
+    }
+  }
+
+  private async admitScopes(
+    scopes: HandoffMutationScope[],
+    releases: Array<() => void>,
+  ): Promise<boolean> {
+    if (!this.handoffOwnership) return true;
+    const acquired: Array<() => void> = [];
+    try {
+      for (const scope of scopes) acquired.push(await this.handoffOwnership.acquireMutation(scope));
+    } catch (error) {
+      for (const release of acquired) release();
+      if (error instanceof HandoffOwnershipError && error.code === "fenced") return false;
+      throw error;
+    }
+    releases.push(...acquired);
+    return true;
+  }
+
+  private async admitProjects(
+    projects: PersistedProjectRecord[],
+    workspaces: PersistedWorkspaceRecord[],
+    releases: Array<() => void>,
+  ): Promise<PersistedProjectRecord[]> {
+    const scopesByProject = new Map<string, HandoffMutationScope[]>();
+    for (const workspace of workspaces) {
+      const scopes = scopesByProject.get(workspace.projectId) ?? [];
+      scopes.push({ cwd: workspace.cwd, workspaceId: workspace.workspaceId });
+      if (workspace.worktreeRoot) scopes.push({ cwd: workspace.worktreeRoot });
+      if (workspace.mainRepoRoot) scopes.push({ cwd: workspace.mainRepoRoot });
+      scopesByProject.set(workspace.projectId, scopes);
+    }
+    const admitted: PersistedProjectRecord[] = [];
+    for (const project of projects) {
+      if (project.archivedAt) continue;
+      // Project metadata is shared by every member, including missing and archived
+      // workspaces. Their identities still protect it when their paths have changed.
+      const scopes = [{ cwd: project.rootPath }, ...(scopesByProject.get(project.projectId) ?? [])];
+      if (await this.admitScopes(scopes, releases)) admitted.push(project);
+    }
+    return admitted;
+  }
+
+  private async reconcileGitMetadataOnce(
+    releases: Array<() => void>,
+  ): Promise<ReconciliationResult> {
     const start = Date.now();
     const changes: ReconciliationChange[] = [];
     const [projects, workspaces] = await Promise.all([
       this.projectRegistry.list(),
       this.workspaceRegistry.list(),
     ]);
+    const admittedProjects = await this.admitProjects(projects, workspaces, releases);
     const workspacesByProject = new Map<string, PersistedWorkspaceRecord[]>();
     for (const workspace of workspaces) {
       if (workspace.archivedAt || this.inspectDirectory(workspace.cwd) !== "directory") continue;
@@ -240,11 +313,12 @@ export class WorkspaceReconciliationService {
       workspacesByProject.set(workspace.projectId, siblings);
     }
     await this.reconcileGitMetadataForProjects(
-      projects.filter(
+      admittedProjects.filter(
         (project) => !project.archivedAt && this.inspectDirectory(project.rootPath) === "directory",
       ),
       workspacesByProject,
       changes,
+      releases,
     );
     if (changes.length > 0) this.onChanges?.(changes);
     return { changesApplied: changes, durationMs: Date.now() - start };
@@ -252,17 +326,17 @@ export class WorkspaceReconciliationService {
 
   runOnce(): Promise<ReconciliationResult> {
     if (this.disposed) return Promise.resolve({ changesApplied: [], durationMs: 0 });
-    return this.track(() => this.reconcileOnce());
+    return this.track(() => this.runReconciliation({ mode: "full", publish: false }));
   }
 
-  private async reconcileOnce(): Promise<ReconciliationResult> {
+  private async reconcileOnce(releases: Array<() => void>): Promise<ReconciliationResult> {
     const start = Date.now();
     const changes: ReconciliationChange[] = [];
 
     const allProjects = await this.projectRegistry.list();
     const allWorkspaces = await this.workspaceRegistry.list();
 
-    const activeProjects = allProjects.filter((p) => !p.archivedAt);
+    const activeProjects = await this.admitProjects(allProjects, allWorkspaces, releases);
     const activeWorkspaces = allWorkspaces.filter((w) => !w.archivedAt);
     const workspaceDirectoryStates = activeWorkspaces.map((workspace) => ({
       workspace,
@@ -296,7 +370,7 @@ export class WorkspaceReconciliationService {
           state === "missing" && reachableProjectIds.has(workspace.projectId),
       )
       .map(({ workspace }) => workspace);
-    await Promise.all(
+    await settleReconciliationWork(
       missingWorkspaces.map(async (workspace) => {
         const timestamp = new Date().toISOString();
         await this.workspaceRegistry.archive(workspace.workspaceId, timestamp);
@@ -324,6 +398,7 @@ export class WorkspaceReconciliationService {
       activeProjects.filter((project) => reachableProjectIds.has(project.projectId)),
       workspacesByProject,
       changes,
+      releases,
     );
 
     if (changes.length > 0 && this.onChanges) {
@@ -349,6 +424,7 @@ export class WorkspaceReconciliationService {
     projectsToReconcile: PersistedProjectRecord[],
     workspacesByProject: Map<string, PersistedWorkspaceRecord[]>,
     changes: ReconciliationChange[],
+    releases: Array<() => void>,
   ): Promise<void> {
     projectsToReconcile = projectsToReconcile.filter(isReconciledProject);
     const checkoutReads: CachedCheckoutRead[] = [];
@@ -359,33 +435,22 @@ export class WorkspaceReconciliationService {
       checkoutReads.push({ cwd, checkout });
       return checkout;
     };
-    const roots: Array<{ rootPath: string; projects: PersistedProjectRecord[] }> = [];
-    for (const project of projectsToReconcile) {
-      const root = roots.find((candidate) =>
-        areEquivalentPaths(candidate.rootPath, project.rootPath),
-      );
-      if (root) root.projects.push(project);
-      else roots.push({ rootPath: project.rootPath, projects: [project] });
-    }
     await Promise.all(
-      roots.map(async ({ rootPath, projects }) => {
+      projectsToReconcile.map(async (project) => {
         try {
-          const rootGit = await readCheckout(rootPath);
-          await Promise.all(
-            projects.map((project) =>
-              this.reconcileProject({
-                project,
-                siblings: workspacesByProject.get(project.projectId) ?? [],
-                currentGit: rootGit,
-                readCheckout,
-                changes,
-              }),
-            ),
-          );
+          const rootGit = await readCheckout(project.rootPath);
+          await this.reconcileProject({
+            project,
+            siblings: workspacesByProject.get(project.projectId) ?? [],
+            currentGit: rootGit,
+            readCheckout,
+            changes,
+            releases,
+          });
         } catch (error) {
           this.logger.warn(
-            { err: error, rootPath },
-            "Skipped workspace reconciliation after Git read failed",
+            { err: error, rootPath: project.rootPath },
+            "Workspace metadata reconciliation failed",
           );
         }
       }),
@@ -393,13 +458,21 @@ export class WorkspaceReconciliationService {
   }
 
   private async reconcileProject(input: ProjectReconciliationInput): Promise<void> {
-    const { project, siblings, currentGit, readCheckout, changes } = input;
-    const workspaceCheckouts = await Promise.all(
+    const { project, siblings, currentGit, readCheckout, changes, releases } = input;
+    const workspaceCheckouts = await settleReconciliationWork(
       siblings.map(async (workspace) => ({
         workspace,
         checkout: await readCheckout(workspace.cwd),
       })),
     );
+    // Git may reveal a backing checkout outside the persisted placement. Admit it
+    // before publishing either the project or any workspace's new placement.
+    const scopes: HandoffMutationScope[] = [];
+    for (const checkout of [currentGit, ...workspaceCheckouts.map((entry) => entry.checkout)]) {
+      if (checkout.worktreeRoot) scopes.push({ cwd: checkout.worktreeRoot });
+      if (checkout.mainRepoRoot) scopes.push({ cwd: checkout.mainRepoRoot });
+    }
+    if (!(await this.admitScopes(scopes, releases))) return;
     const projectUpdates: Partial<Pick<PersistedProjectRecord, "kind" | "projectKey">> = {};
     const mappedKind = deriveProjectKind(currentGit);
     const projectKey = deriveProjectKey({
@@ -432,7 +505,7 @@ export class WorkspaceReconciliationService {
       });
     }
 
-    await Promise.all(
+    await settleReconciliationWork(
       workspaceCheckouts.map(async ({ workspace, checkout: wsGit }) => {
         const timestamp = new Date().toISOString();
         const update = reconcileWorkspacePlacement({
@@ -536,24 +609,7 @@ export class WorkspaceReconciliationService {
     this.reconciling = true;
     try {
       await this.syncProjectRootWatches();
-      const result = mode === "full" ? await this.runOnce() : await this.reconcileGitMetadata();
-      const workspaceIds = new Set<string>();
-      const projectIds = new Set<string>();
-      for (const change of result.changesApplied) {
-        if (change.kind === "workspace_updated" || change.kind === "workspace_archived") {
-          workspaceIds.add(change.workspaceId);
-        }
-        if (change.kind === "project_updated") projectIds.add(change.projectId);
-      }
-      if (projectIds.size > 0) {
-        const workspaces = await this.workspaceRegistry.list();
-        for (const workspaceId of workspaceIdsForProjects(workspaces, projectIds)) {
-          workspaceIds.add(workspaceId);
-        }
-      }
-      if (!this.disposed && workspaceIds.size > 0) {
-        await this.onWorkspacesChanged?.(Array.from(workspaceIds));
-      }
+      await this.runReconciliation({ mode, publish: true });
     } catch (error) {
       if (!this.disposed) {
         this.logger.warn({ err: error }, "Workspace reconciliation failed");
@@ -565,6 +621,26 @@ export class WorkspaceReconciliationService {
         this.reconcileQueuedMode = null;
         void this.reconcileObservedGitMetadata(queuedMode);
       }
+    }
+  }
+
+  private async publishReconciliation(result: ReconciliationResult): Promise<void> {
+    const workspaceIds = new Set<string>();
+    const projectIds = new Set<string>();
+    for (const change of result.changesApplied) {
+      if (change.kind === "workspace_updated" || change.kind === "workspace_archived") {
+        workspaceIds.add(change.workspaceId);
+      }
+      if (change.kind === "project_updated") projectIds.add(change.projectId);
+    }
+    if (projectIds.size > 0) {
+      const workspaces = await this.workspaceRegistry.list();
+      for (const workspaceId of workspaceIdsForProjects(workspaces, projectIds)) {
+        workspaceIds.add(workspaceId);
+      }
+    }
+    if (!this.disposed && workspaceIds.size > 0) {
+      await this.onWorkspacesChanged?.(Array.from(workspaceIds));
     }
   }
 
@@ -595,6 +671,20 @@ export class WorkspaceReconciliationService {
       return "unreadable";
     }
   }
+}
+
+async function settleReconciliationWork<T>(work: Promise<T>[]): Promise<T[]> {
+  // Promise.all rejects before sibling writes finish, releasing their admissions
+  // while they can still change the frozen source.
+  const results = await Promise.allSettled(work);
+  const values: T[] = [];
+  const failures: unknown[] = [];
+  for (const result of results) {
+    if (result.status === "fulfilled") values.push(result.value);
+    else failures.push(result.reason);
+  }
+  if (failures.length > 0) throw failures[0];
+  return values;
 }
 
 function isMissingPathError(error: unknown): boolean {

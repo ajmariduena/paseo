@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ProjectCheckoutLitePayload } from "@getpaseo/protocol/messages";
@@ -7,6 +8,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { createTestLogger } from "../test-utils/test-logger.js";
 import { areEquivalentPaths } from "../utils/path.js";
 import { deriveProjectKey } from "./project-key.js";
+import { HandoffOwnership } from "./handoff/ownership.js";
 import {
   createPersistedProjectRecord,
   createPersistedWorkspaceRecord,
@@ -70,10 +72,25 @@ class ObservedProjectRegistry extends FileBackedProjectRegistry {
 
 class ObservedWorkspaceRegistry extends FileBackedWorkspaceRegistry {
   private nextRead: ReturnType<typeof createGate> | null = null;
+  private nextWrite: ReturnType<typeof createGate> | null = null;
   private nextError: Error | null = null;
 
   holdNextRead(): Gate {
     return (this.nextRead = createGate());
+  }
+
+  holdNextWrite(): Gate {
+    return (this.nextWrite = createGate());
+  }
+
+  override async update(
+    workspaceId: string,
+    updater: (record: PersistedWorkspaceRecord) => PersistedWorkspaceRecord,
+  ): Promise<PersistedWorkspaceRecord | null> {
+    const pending = this.nextWrite;
+    this.nextWrite = null;
+    await pending?.arrive();
+    return super.update(workspaceId, updater);
   }
 
   failNextRead(error: Error): void {
@@ -160,9 +177,13 @@ interface RootWatch {
 
 /** One public behavioral seam for the complete observed-placement lifecycle. */
 class ObservedPlacements {
-  private readonly home = mkdtempSync(path.join(tmpdir(), "observed-placement-"));
-  private readonly projects: ObservedProjectRegistry;
-  private readonly workspaces: ObservedWorkspaceRegistry;
+  readonly home = mkdtempSync(path.join(tmpdir(), "observed-placement-"));
+  readonly projects: ObservedProjectRegistry;
+  readonly workspaces: ObservedWorkspaceRegistry;
+  readonly ownership = new HandoffOwnership({
+    directory: path.join(this.home, "handoff"),
+    sourceServerId: "source",
+  });
   private readonly clock = new TestClock();
   private readonly watches: RootWatch[] = [];
   private readonly checkoutByCwd = new Map<string, ProjectCheckoutLitePayload>();
@@ -175,6 +196,10 @@ class ObservedPlacements {
   private readonly service: WorkspaceReconciliationService;
   private started = false;
   private checkoutReadCount = 0;
+  private nextPublication: ReturnType<typeof createGate> | null = null;
+  readonly archivedWorkspaces: string[] = [];
+  private readonly archiveGates = new Map<string, ReturnType<typeof createGate>>();
+  private readonly archiveFailures = new Set<string>();
 
   constructor(private readonly specs: ProjectSpec[]) {
     cleanupPaths.push(this.home);
@@ -192,6 +217,7 @@ class ObservedPlacements {
       return { close: () => (watch.closed = true) };
     };
     this.service = new WorkspaceReconciliationService({
+      handoffOwnership: this.ownership,
       projectRegistry: this.projects,
       workspaceRegistry: this.workspaces,
       workspaceGitService: { getCheckout: async (cwd) => this.readCheckout(cwd) },
@@ -209,14 +235,23 @@ class ObservedPlacements {
         );
       },
       onWorkspacesChanged: async (workspaceIds) => {
+        const pending = this.nextPublication;
+        this.nextPublication = null;
+        await pending?.arrive();
         this.workspaceEvents.push(workspaceIds);
         this.workspaceEventWaiters.shift()?.();
+      },
+      onWorkspaceArchived: async (workspaceId) => {
+        this.archivedWorkspaces.push(workspaceId);
+        await this.archiveGates.get(workspaceId)?.arrive();
+        if (this.archiveFailures.has(workspaceId)) throw new Error("Runtime cleanup failed");
       },
     });
   }
 
   async start(): Promise<void> {
     if (!this.started) {
+      await this.ownership.initialize();
       for (const spec of this.specs) await this.seed(spec);
       this.started = true;
     }
@@ -272,6 +307,35 @@ class ObservedPlacements {
 
   holdNextReconciliation(): Gate {
     return this.workspaces.holdNextRead();
+  }
+
+  holdNextPublication(): Gate {
+    return (this.nextPublication = createGate());
+  }
+
+  holdArchive(workspaceId: string): Gate {
+    const pending = createGate();
+    this.archiveGates.set(workspaceId, pending);
+    return pending;
+  }
+
+  failArchive(workspaceId: string): void {
+    this.archiveFailures.add(workspaceId);
+  }
+
+  async prepareHandoff(input: { cwd: string; workspaceId: string }): Promise<string> {
+    const cwd = path.join(this.home, input.cwd);
+    mkdirSync(cwd, { recursive: true });
+    const id = randomUUID();
+    await this.ownership.prepare({
+      id,
+      cwd,
+      workspaceId: input.workspaceId,
+      agentIds: [],
+      destinationServerId: "target",
+      reservationId: randomUUID(),
+    });
+    return id;
   }
 
   async advanceBy(elapsedMs: number): Promise<void> {
@@ -399,6 +463,212 @@ class ObservedPlacements {
 }
 
 describe("observed workspace placement", () => {
+  test("handoff preserves fenced project and workspace metadata while other projects reconcile", async () => {
+    const observed = new ObservedPlacements([
+      { id: "frozen", root: "source", workspaces: [{ id: "moving", cwd: "linked/src" }] },
+      { id: "free", root: "free", workspaces: [{ id: "staying", cwd: "free" }] },
+    ]);
+    await observed.start();
+    const projectBefore = await observed.projects.get("frozen");
+    const workspaceBefore = await observed.placement("moving");
+    observed.makeProjectGit("frozen");
+    observed.makeProjectGit("free");
+    const id = randomUUID();
+    mkdirSync(path.join(observed.home, "different-checkout"));
+    await observed.ownership.prepare({
+      id,
+      cwd: path.join(observed.home, "different-checkout"),
+      workspaceId: "moving",
+      agentIds: [],
+      destinationServerId: "target",
+      reservationId: randomUUID(),
+    });
+    try {
+      observed.change("source", ".git");
+      await observed.advanceBy(DEBOUNCE_MS);
+      const reloadedProjects = new FileBackedProjectRegistry(
+        path.join(observed.home, "projects.json"),
+        createTestLogger(),
+      );
+      const reloadedWorkspaces = new FileBackedWorkspaceRegistry(
+        path.join(observed.home, "workspaces.json"),
+        createTestLogger(),
+      );
+      expect(await reloadedProjects.get("frozen")).toEqual(projectBefore);
+      expect(await reloadedWorkspaces.get("moving")).toEqual(workspaceBefore);
+      expect(await observed.placement("staying")).toMatchObject({ kind: "local_checkout" });
+      expect(observed.workspaceBatches).toEqual([["staying"]]);
+
+      await observed.ownership.cancel(id);
+      observed.change("source", ".git");
+      await observed.advanceBy(DEBOUNCE_MS);
+      expect(await observed.projects.get("frozen")).toMatchObject({ kind: "git" });
+      expect(observed.workspaceBatches).toEqual([["staying"], ["moving"]]);
+    } finally {
+      await observed.dispose();
+    }
+  });
+
+  test.each([
+    { name: "project root", fence: "source", worktreeRoot: null, mainRepoRoot: null },
+    {
+      name: "backing sibling",
+      fence: "linked/sibling",
+      worktreeRoot: "linked",
+      mainRepoRoot: null,
+    },
+    { name: "shared repository", fence: "main", worktreeRoot: "linked", mainRepoRoot: "main" },
+  ])(
+    "handoff protects metadata through the $name",
+    async ({ fence, worktreeRoot, mainRepoRoot }) => {
+      const observed = new ObservedPlacements([
+        { id: "project", root: "source", workspaces: [{ id: "moving", cwd: "linked/src" }] },
+      ]);
+      await observed.start();
+      await observed.workspaces.update("moving", (record) => ({
+        ...record,
+        worktreeRoot: worktreeRoot && path.join(observed.home, worktreeRoot),
+        mainRepoRoot: mainRepoRoot && path.join(observed.home, mainRepoRoot),
+      }));
+      const projectBefore = await observed.projects.get("project");
+      const workspaceBefore = await observed.placement("moving");
+      observed.makeProjectGit("project");
+      const id = await observed.prepareHandoff({ cwd: fence, workspaceId: "another-workspace" });
+      try {
+        observed.change("source", ".git");
+        await observed.advanceBy(DEBOUNCE_MS);
+        expect(await observed.projects.get("project")).toEqual(projectBefore);
+        expect(await observed.placement("moving")).toEqual(workspaceBefore);
+        expect(observed.workspaceBatches).toEqual([]);
+        // Fence a previously admitted scope to detect leases leaked by rejection
+        // of a later backing/root scope, which the original fence cannot see.
+        await observed.ownership.cancel(id);
+        const projectTransfer = await observed.prepareHandoff({
+          cwd: "source",
+          workspaceId: "moving",
+        });
+        expect((await observed.ownership.markReady(projectTransfer, "a".repeat(64))).state).toBe(
+          "ready",
+        );
+      } finally {
+        await observed.dispose();
+      }
+    },
+  );
+
+  test.each([false, true])(
+    "handoff protects an absent member's identity, archived=%s",
+    async (archived) => {
+      const observed = new ObservedPlacements([
+        { id: "project", root: "source", workspaces: [{ id: "moving", cwd: "linked/src" }] },
+        { id: "free", root: "free", workspaces: [{ id: "staying", cwd: "free/child" }] },
+      ]);
+      await observed.start();
+      if (archived) await observed.workspaces.archive("moving", TIMESTAMP);
+      await observed.deleteWorkspaceDirectory("moving");
+      await observed.deleteWorkspaceDirectory("staying");
+      observed.makeProjectGit("project");
+      const projectBefore = await observed.projects.get("project");
+      const workspaceBefore = await observed.placement("moving");
+      const id = await observed.prepareHandoff({ cwd: "elsewhere", workspaceId: "moving" });
+      try {
+        await observed.advanceBy(RESCAN_INTERVAL_MS);
+        expect(await observed.projects.get("project")).toEqual(projectBefore);
+        expect(await observed.placement("moving")).toEqual(workspaceBefore);
+        expect(observed.archivedWorkspaces).toEqual(["staying"]);
+        expect(await observed.placement("staying")).toMatchObject({
+          archivedAt: expect.any(String),
+        });
+        expect(observed.workspaceBatches).toEqual([["staying"]]);
+        await observed.ownership.cancel(id);
+        await observed.advanceBy(RESCAN_INTERVAL_MS);
+        expect(await observed.projects.get("project")).toMatchObject({ kind: "git" });
+        expect(await observed.placement("moving")).toMatchObject({
+          archivedAt: expect.any(String),
+        });
+      } finally {
+        await observed.dispose();
+      }
+    },
+  );
+
+  test("handoff drains admitted metadata through disk persistence and final publication", async () => {
+    const observed = new ObservedPlacements([
+      { id: "project", root: "source", workspaces: [{ id: "moving", cwd: "source" }] },
+    ]);
+    await observed.start();
+    observed.makeProjectGit("project");
+    const write = observed.workspaces.holdNextWrite();
+    const publication = observed.holdNextPublication();
+    observed.change("source", ".git");
+    const advancing = observed.advanceBy(DEBOUNCE_MS);
+    try {
+      await write.started;
+      const id = await observed.prepareHandoff({ cwd: "source", workspaceId: "moving" });
+      await expect(observed.ownership.markReady(id, "a".repeat(64))).rejects.toMatchObject({
+        code: "invalid_state",
+      });
+      write.release();
+      await publication.started;
+      const reloaded = new FileBackedWorkspaceRegistry(
+        path.join(observed.home, "workspaces.json"),
+        createTestLogger(),
+      );
+      expect(await reloaded.get("moving")).toMatchObject({
+        kind: "local_checkout",
+        branch: "main",
+      });
+      await expect(observed.ownership.markReady(id, "a".repeat(64))).rejects.toMatchObject({
+        code: "invalid_state",
+      });
+      publication.release();
+      await advancing;
+      await observed.ownership.drain(id);
+      expect((await observed.ownership.markReady(id, "a".repeat(64))).state).toBe("ready");
+      expect(observed.workspaceBatches).toEqual([["moving"]]);
+    } finally {
+      write.release();
+      publication.release();
+      await advancing;
+      await observed.dispose();
+    }
+  });
+
+  test("handoff keeps sibling archive cleanup admitted after another cleanup fails", async () => {
+    const observed = new ObservedPlacements([
+      {
+        id: "project",
+        root: "source",
+        workspaces: [
+          { id: "failing", cwd: "linked/one" },
+          { id: "moving", cwd: "linked/two" },
+        ],
+      },
+    ]);
+    await observed.start();
+    await observed.deleteWorkspaceDirectory("failing");
+    await observed.deleteWorkspaceDirectory("moving");
+    observed.failArchive("failing");
+    const cleanup = observed.holdArchive("moving");
+    const advancing = observed.advanceBy(RESCAN_INTERVAL_MS);
+    try {
+      await cleanup.started;
+      const id = await observed.prepareHandoff({ cwd: "elsewhere", workspaceId: "moving" });
+      await expect(observed.ownership.markReady(id, "a".repeat(64))).rejects.toMatchObject({
+        code: "invalid_state",
+      });
+      cleanup.release();
+      await advancing;
+      await observed.ownership.drain(id);
+      expect((await observed.ownership.markReady(id, "a".repeat(64))).state).toBe("ready");
+      expect(await observed.placement("moving")).toMatchObject({ archivedAt: expect.any(String) });
+    } finally {
+      cleanup.release();
+      await advancing;
+      await observed.dispose();
+    }
+  });
+
   test("installs and publishes a new project before add resolves without Git feedback", async () => {
     const observed = new ObservedPlacements([]);
     await observed.start();

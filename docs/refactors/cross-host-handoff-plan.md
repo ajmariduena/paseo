@@ -195,10 +195,18 @@ branch lacks the selected subdirectory. Recovery inspection stays readable under
 WebSocket regression proves the boot ledger reaches reconstruction, including a stale worktree
 registration that must remain untouched when the request is denied.
 
-Daemon shutdown now awaits workspace reconciliation before releasing its state. Stopping watches
-alone leaves admitted Git reads and registry writes in flight; they can recreate files during test
-cleanup or race a subsequent daemon. A held real-registry reconciliation and a daemon shutdown gate
-reproduce the early return. The macOS cleanup failure still needs confirmation from the next CI run.
+Automatic workspace reconciliation admits project and member identities, including missing or
+archived members, before changing shared metadata or archiving missing directories. Persisted and
+newly discovered backing roots are fenced too. Unrelated projects keep converging; cancellation
+allows the next pass to retry. Admissions last through runtime cleanup and final publication.
+Sibling reads and writes must settle even when one fails. Real Git and registry tests cover legacy
+placement, absent members, partial admission and pending cleanup/publication. The boot test proves
+the shared ledger prevents background changes to persisted source records.
+
+Daemon shutdown awaits reconciliation before releasing its state. Stopping watches alone leaves
+Git reads and registry writes in flight; they can recreate files during test cleanup or race a
+subsequent daemon. A held real-registry reconciliation and a daemon shutdown gate reproduce the
+early return. The macOS cleanup failure still needs confirmation from the next CI run.
 
 Workspace archive acquires all target identities and backing/source paths before stopping setup,
 archiving agents or executing teardown. It holds admission through directory removal and final

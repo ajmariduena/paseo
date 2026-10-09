@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,6 +9,8 @@ import { afterEach, describe, expect, test } from "vitest";
 import {
   createPersistedProjectRecord,
   createPersistedWorkspaceRecord,
+  FileBackedProjectRegistry,
+  FileBackedWorkspaceRegistry,
 } from "./workspace-registry.js";
 import type {
   PersistedProjectRecord,
@@ -20,6 +23,9 @@ import {
   WorkspaceReconciliationService,
 } from "./workspace-reconciliation-service.js";
 import { deriveProjectKey } from "./project-key.js";
+import { createTestLogger as createRealTestLogger } from "../test-utils/test-logger.js";
+import { HandoffOwnership } from "./handoff/ownership.js";
+import { WorkspaceGitServiceImpl } from "./workspace-git-service.js";
 
 function canonicalLocalProjectKey(rootPath: string): string {
   return deriveProjectKey({
@@ -239,6 +245,180 @@ describe("WorkspaceReconciliationService", () => {
       rmSync(dir, { recursive: true, force: true });
     }
     tempDirs.length = 0;
+  });
+
+  test.each(["backing sibling", "main repository"])(
+    "handoff protects a %s discovered by real Git before updating legacy placement",
+    async (fenceScope) => {
+      const repo = createTempGitRepo("reconcile-handoff-main-");
+      const root = realpathSync(mkdtempSync(path.join(tmpdir(), "reconcile-handoff-linked-")));
+      tempDirs.push(repo, root);
+      const linked = path.join(root, "linked");
+      execFileSync("git", ["worktree", "add", "-b", "feature", linked], {
+        cwd: repo,
+        stdio: "ignore",
+      });
+      const cwd = path.join(linked, "src");
+      const sibling = path.join(linked, "sibling");
+      mkdirSync(cwd);
+      mkdirSync(sibling);
+      const logger = createRealTestLogger();
+      const projectFile = path.join(root, "projects.json");
+      const workspaceFile = path.join(root, "workspaces.json");
+      const projects = new FileBackedProjectRegistry(projectFile, logger);
+      const workspaces = new FileBackedWorkspaceRegistry(workspaceFile, logger);
+      const project = createPersistedProjectRecord({
+        projectId: "project",
+        rootPath: cwd,
+        kind: "non_git",
+        displayName: "Project",
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+      const workspace = createPersistedWorkspaceRecord({
+        workspaceId: "moving",
+        projectId: "project",
+        cwd,
+        kind: "directory",
+        displayName: "Workspace",
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+      await projects.upsert(project);
+      await workspaces.upsert(workspace);
+      const ownership = new HandoffOwnership({
+        directory: path.join(root, "ownership"),
+        sourceServerId: "source",
+      });
+      await ownership.initialize();
+      const id = randomUUID();
+      const fenceCwd = fenceScope === "main repository" ? repo : sibling;
+      await ownership.prepare({
+        id,
+        cwd: fenceCwd,
+        workspaceId: "another-workspace",
+        agentIds: [],
+        destinationServerId: "target",
+        reservationId: randomUUID(),
+      });
+      const git = new WorkspaceGitServiceImpl({ logger, paseoHome: path.join(root, "home") });
+      const service = new WorkspaceReconciliationService({
+        projectRegistry: projects,
+        workspaceRegistry: workspaces,
+        logger,
+        workspaceGitService: git,
+        handoffOwnership: ownership,
+      });
+      try {
+        expect((await service.runOnce()).changesApplied).toEqual([]);
+        expect(await new FileBackedProjectRegistry(projectFile, logger).get("project")).toEqual(
+          project,
+        );
+        expect(await new FileBackedWorkspaceRegistry(workspaceFile, logger).get("moving")).toEqual(
+          workspace,
+        );
+        await ownership.cancel(id);
+        const result = await service.reconcileGitMetadata();
+        expect(result.changesApplied.map((change) => change.kind)).toEqual([
+          "project_updated",
+          "workspace_updated",
+        ]);
+        expect(
+          await new FileBackedProjectRegistry(projectFile, logger).get("project"),
+        ).toMatchObject({ kind: "git" });
+        expect(
+          await new FileBackedWorkspaceRegistry(workspaceFile, logger).get("moving"),
+        ).toMatchObject({
+          kind: "worktree",
+          worktreeRoot: linked,
+          mainRepoRoot: repo,
+          branch: "feature",
+        });
+      } finally {
+        await service.dispose();
+        await git.dispose();
+      }
+    },
+  );
+
+  test("handoff drains sibling Git reads when one checkout read fails", async () => {
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), "reconcile-handoff-read-")));
+    tempDirs.push(root);
+    const { projects, workspaces, projectRegistry, workspaceRegistry } = createTestRegistries();
+    projects.set(
+      "project",
+      createPersistedProjectRecord({
+        projectId: "project",
+        rootPath: root,
+        kind: "non_git",
+        displayName: "Project",
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      }),
+    );
+    for (const workspaceId of ["failing", "held"]) {
+      const cwd = path.join(root, workspaceId);
+      mkdirSync(cwd);
+      workspaces.set(
+        workspaceId,
+        createPersistedWorkspaceRecord({
+          workspaceId,
+          projectId: "project",
+          cwd,
+          kind: "directory",
+          displayName: workspaceId,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        }),
+      );
+    }
+    const ownership = new HandoffOwnership({
+      directory: path.join(root, "ownership"),
+      sourceServerId: "source",
+    });
+    await ownership.initialize();
+    const read = deferred();
+    const finish = deferred();
+    const service = new WorkspaceReconciliationService({
+      projectRegistry,
+      workspaceRegistry,
+      logger: createTestLogger(),
+      handoffOwnership: ownership,
+      workspaceGitService: {
+        getCheckout: async (cwd) => {
+          if (cwd === path.join(root, "failing")) throw new Error("Git unavailable");
+          if (cwd === path.join(root, "held")) {
+            read.resolve();
+            await finish.promise;
+          }
+          return createCheckout(cwd);
+        },
+      },
+    });
+    const reconciliation = service.reconcileGitMetadata();
+    try {
+      await read.promise;
+      const id = randomUUID();
+      await ownership.prepare({
+        id,
+        cwd: root,
+        workspaceId: "held",
+        agentIds: [],
+        destinationServerId: "target",
+        reservationId: randomUUID(),
+      });
+      await expect(ownership.markReady(id, "a".repeat(64))).rejects.toMatchObject({
+        code: "invalid_state",
+      });
+      finish.resolve();
+      expect((await reconciliation).changesApplied).toEqual([]);
+      await ownership.drain(id);
+      expect((await ownership.markReady(id, "a".repeat(64))).state).toBe("ready");
+    } finally {
+      finish.resolve();
+      await reconciliation;
+      await service.dispose();
+    }
   });
 
   test("preserves workspace archival that lands during boot reconciliation", async () => {

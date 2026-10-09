@@ -252,6 +252,24 @@ describe("paseo daemon bootstrap", () => {
       });
       expect(await readFile(path.join(cwd, "notes.txt"), "utf8")).toBe("source content");
       await expect(access(path.join(cwd, "blocked.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+      await client.close();
+      // Shutdown drains the boot reconciliation, so this observes its persisted
+      // result even when the background pass starts after the RPC assertions.
+      await daemon.daemon.stop();
+      const reloadedProjects = new FileBackedProjectRegistry(
+        path.join(paseoHome, "projects", "projects.json"),
+        registryLogger,
+      );
+      const reloadedWorkspaces = new FileBackedWorkspaceRegistry(
+        path.join(paseoHome, "projects", "workspaces.json"),
+        registryLogger,
+      );
+      expect(await reloadedProjects.get("handoff-project")).toEqual(
+        await projects.get("handoff-project"),
+      );
+      expect(await reloadedWorkspaces.get("moved-workspace")).toEqual(
+        await workspaces.get("moved-workspace"),
+      );
     } finally {
       await client.close();
       await daemon.close();

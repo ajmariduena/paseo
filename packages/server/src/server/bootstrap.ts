@@ -1183,6 +1183,7 @@ export async function createPaseoDaemon(
   };
   const workspaceReconciliation = new WorkspaceReconciliationService({
     serverId,
+    handoffOwnership,
     projectRegistry,
     workspaceRegistry,
     logger,
