@@ -560,7 +560,6 @@ export class VoiceAssistantWebSocketServer {
   private readonly creationService: CreationService;
   private readonly projectRegistry: ProjectRegistry;
   private readonly workspaceRegistry: WorkspaceRegistry;
-  private readonly handoffArchiveStore: HandoffArchiveStore;
   private readonly handoffOwnership: HandoffOwnership | undefined;
   private readonly workspaceLabelService: WorkspaceLabelService | null;
   private readonly noteStore: NoteStore | undefined;
@@ -654,6 +653,7 @@ export class VoiceAssistantWebSocketServer {
     mcpBaseUrl: string | null,
     wsConfig: WebSocketServerConfig,
     workspaceAutoName: WorkspaceAutoName,
+    private readonly handoffArchiveStore: HandoffArchiveStore,
     auth?: DaemonAuthConfig,
     speech?: SpeechService | null,
     terminalManager?: TerminalManager | null,
@@ -728,7 +728,6 @@ export class VoiceAssistantWebSocketServer {
     );
     this.projectRegistry = projectRegistry ?? createNoopProjectRegistry();
     this.workspaceRegistry = workspaceRegistry ?? createNoopWorkspaceRegistry();
-    this.handoffArchiveStore = new HandoffArchiveStore(join(paseoHome, "handoff", "archives"));
     this.workspaceLabelService = workspaceLabelService ?? null;
     this.noteStore = noteStore;
     this.hostMetricsSampler = hostMetricsSampler;

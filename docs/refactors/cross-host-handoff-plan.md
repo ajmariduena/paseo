@@ -54,7 +54,9 @@ both sides and resume missing bytes. A future direct daemon transport must use t
    workspace and agent mappings once. Keep agents idle until the user continues; any automatic
    continuation must have a durable idempotency key. Show the old and new locations in history.
 
-Before release, cancellation unfreezes the source after discarding the inactive destination.
+Before release, cancellation must durably win the source's cancel/release race before discarding
+the inactive destination. A lost release reply must not let destination cleanup destroy the only
+prepared copy while the source is irrevocably fenced.
 After release, a lost acknowledgement leaves the source fenced: query/retry the same transfer,
 never infer rollback from a timeout. Returning ownership requires a new handoff. Journals load
 before agent resume, schedules, queues, delegation wakes, or public mutations at daemon boot.
@@ -201,10 +203,16 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   Admission is wired through agent operations, files/Git, terminal creation/input/resize, scripts,
   setup, provisioning, worktree lifecycle, reconciliation and storage cleanup. Their owning test
   files carry the regressions. This is not evidence of a complete source stop coordinator.
+- `destination.ts`, `ownership.posix.test.ts` and `archive.e2e.test.ts` cover durable destination
+  reservations, stable identity mappings, private workspace staging and signed release acceptance.
+  Bootstrap owns the destination journal and shares one archive store with WebSocket transport.
+  Two-daemon tests recover reservations and receipts after restart; missing, corrupt or foreign
+  destination journals prevent startup. Preparation currently refuses transfers with conversations
+  until their artifacts can be installed; it does not publish a workspace or activate an agent.
 - `utils/tree-kill.test.ts`, `managed-processes.test.ts` and `bootstrap-managed-processes.test.ts`
   cover observed descendant termination, helper retention and awaited startup recovery. The
   coordinator still needs launch-time ownership and durable uncertain-stop recovery.
-- Source preparation, destination reservations/activation, native codecs, exported conversation
+- Source preparation, destination activation, native codecs, exported conversation
   history, readable moved history, automation dispositions and the app flow remain unimplemented.
   Complete handoff is not advertised. Cross-platform and real-provider acceptance remain open.
 

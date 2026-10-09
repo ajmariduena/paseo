@@ -16,7 +16,12 @@ import { HANDOFF_CHUNK_BYTES } from "@getpaseo/protocol/handoff";
 import { DaemonClient } from "../test-utils/daemon-client.js";
 import { createTestPaseoDaemon, type TestPaseoDaemon } from "../test-utils/paseo-daemon.js";
 import { HandoffArchiveStore } from "./archive.js";
-import { captureWorkspace, packWorkspaceArchive, restoreWorkspaceArchive } from "./workspace.js";
+import {
+  captureWorkspace,
+  packWorkspaceArchive,
+  restoreWorkspaceArchive,
+  verifyWorkspaceArchive,
+} from "./workspace.js";
 
 const exec = promisify(execFile);
 
@@ -61,6 +66,116 @@ async function stopHost(host: Host): Promise<void> {
   await host.client.close();
   await host.daemon.close();
 }
+
+test.skipIf(process.platform === "win32")(
+  "recovers a destination reservation and signed release across real daemon restarts",
+  async () => {
+    const source = await startHost("source");
+    let destination = await startHost("destination");
+    const sourceDaemon = source.daemon.daemon;
+    const transferId = randomUUID();
+    const cwd = path.join(root, "workspace");
+    await mkdir(cwd);
+    await mkdir(path.join(cwd, "empty"));
+    await writeFile(path.join(cwd, "work.txt"), "work in progress\n");
+    const request = {
+      transferId,
+      sourceServerId: sourceDaemon.getServerId(),
+      sourceWorkspaceId: "source-workspace",
+      sourceAgentIds: [],
+      destinationParent: root,
+    };
+    const reserved = await destination.daemon.daemon.handoffDestination.reserve(request);
+    const prepared = await sourceDaemon.handoffOwnership.prepare({
+      id: transferId,
+      cwd,
+      workspaceId: request.sourceWorkspaceId,
+      agentIds: [],
+      destinationServerId: destination.daemon.daemon.getServerId(),
+      reservationId: reserved.reservationId,
+    });
+    const artifactDirectory = path.join(root, "snapshot");
+    await captureWorkspace({ cwd, artifactDirectory });
+    const manifest = await packWorkspaceArchive({
+      artifactDirectory,
+      store: sourceDaemon.handoffArchives,
+      transferId,
+    });
+    await rm(artifactDirectory, { recursive: true });
+    const binding = { transferId, publicKey: prepared.publicKey, manifest };
+    const receiving = await destination.daemon.daemon.handoffDestination.bindSource(binding);
+    await stopHost(destination);
+    destination = await startHost("destination");
+    expect(await destination.daemon.daemon.handoffDestination.reserve(request)).toEqual(receiving);
+    await transferHandoffArchive({
+      source: source.client,
+      destination: destination.client,
+      transferId,
+      manifest,
+    });
+    const staged = await destination.daemon.daemon.handoffDestination.stage(transferId);
+    expect(await readFile(path.join(staged.stagingCwd, "work.txt"), "utf8")).toBe(
+      "work in progress\n",
+    );
+    expect(await readdir(path.join(staged.stagingCwd, "empty"))).toEqual([]);
+    await expect(readFile(path.join(staged.stagingCwd, ".git"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await sourceDaemon.handoffOwnership.markReady(transferId, manifest.entrypoint.sha256);
+    const receipt = await sourceDaemon.handoffOwnership.release(
+      transferId,
+      {
+        version: 1,
+        transferId,
+        sourceServerId: request.sourceServerId,
+        destinationServerId: destination.daemon.daemon.getServerId(),
+        reservationId: reserved.reservationId,
+        manifestDigest: manifest.entrypoint.sha256,
+      },
+      () => verifyWorkspaceArchive({ store: sourceDaemon.handoffArchives, transferId, cwd }),
+    );
+    const released = await destination.daemon.daemon.handoffDestination.acceptRelease(
+      transferId,
+      receipt,
+    );
+    await stopHost(destination);
+    destination = await startHost("destination");
+    expect(
+      await destination.daemon.daemon.handoffDestination.acceptRelease(transferId, receipt),
+    ).toEqual(released);
+    await expect(
+      destination.daemon.daemon.handoffDestination.cancel(transferId),
+    ).rejects.toMatchObject({ code: "invalid_state" });
+    await expect(
+      sourceDaemon.handoffOwnership.withMutation({ cwd }, async () => {}),
+    ).rejects.toMatchObject({ code: "fenced" });
+    // Preparation must remain private until conversation installation and publication are complete.
+    await expect(readdir(reserved.destinationCwd)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await destination.client.fetchAgents()).entries).toEqual([]);
+  },
+  30_000,
+);
+
+test.each(["missing", "corrupt", "foreign"])(
+  "refuses daemon startup with a %s destination journal",
+  async (damage) => {
+    const destination = await startHost("destination");
+    const journal = path.join(
+      destination.daemon.paseoHome,
+      "handoff-destination",
+      "destination.json",
+    );
+    await stopHost(destination);
+    if (damage === "missing") await rm(journal);
+    else if (damage === "corrupt") await writeFile(journal, "{");
+    else
+      await writeFile(
+        journal,
+        JSON.stringify({ version: 1, serverId: "another-host", records: [] }),
+      );
+    await expect(startHost("destination")).rejects.toThrow();
+  },
+);
 
 async function transferCapturedWorkspace(cwd: string) {
   const artifactDirectory = path.join(root, "snapshot");

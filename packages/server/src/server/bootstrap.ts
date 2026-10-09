@@ -16,6 +16,8 @@ import { startWorktreeStorageSweeper } from "./worktree-storage-sweeper.js";
 import { resolvePaseoWorktreesBaseRoot } from "../utils/worktree.js";
 import { HtmlRenderStore } from "./agent/html-render/store.js";
 import { HandoffOwnership } from "./handoff/ownership.js";
+import { HandoffArchiveStore } from "./handoff/archive.js";
+import { HandoffDestination } from "./handoff/destination.js";
 
 export type ListenTarget =
   | { type: "tcp"; host: string; port: number }
@@ -507,6 +509,9 @@ export interface PaseoDaemonConfig {
 
 export interface PaseoDaemon {
   config: PaseoDaemonConfig;
+  handoffOwnership: HandoffOwnership;
+  handoffArchives: HandoffArchiveStore;
+  handoffDestination: HandoffDestination;
   agentManager: AgentManager;
   agentStorage: AgentStorage;
   terminalManager: TerminalManager;
@@ -693,6 +698,15 @@ export async function createPaseoDaemon(
   });
   // A damaged ledger must stop boot before providers, queues or automation can resume writers.
   await handoffOwnership.initialize();
+  const handoffArchives = new HandoffArchiveStore(
+    path.join(config.paseoHome, "handoff", "archives"),
+  );
+  const handoffDestination = new HandoffDestination({
+    directory: path.join(config.paseoHome, "handoff-destination"),
+    serverId,
+    archives: handoffArchives,
+  });
+  await handoffDestination.initialize();
   const obsoleteTimelineDirectory = path.join(config.paseoHome, "agent-timelines");
   await rm(obsoleteTimelineDirectory, { recursive: true, force: true }).catch((error) => {
     logger.warn(
@@ -1936,6 +1950,7 @@ export async function createPaseoDaemon(
                 startPaused: true,
               },
               workspaceAutoName,
+              handoffArchives,
               daemonAuth,
               speechService,
               terminalManager,
@@ -2084,6 +2099,7 @@ export async function createPaseoDaemon(
     // Freeze both ingress and registration before taking the agent closure snapshot.
     wsServer?.prepareForShutdown();
     agentManager.prepareForShutdown();
+    await handoffDestination.dispose();
     await restartRecovery
       .prepareForShutdown()
       .catch((error: unknown) => logger.error({ err: error }, "Failed to record restart intents"));
@@ -2130,6 +2146,9 @@ export async function createPaseoDaemon(
 
   return {
     config,
+    handoffOwnership,
+    handoffArchives,
+    handoffDestination,
     agentManager,
     agentStorage,
     terminalManager,

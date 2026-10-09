@@ -809,6 +809,7 @@ interface WorkspaceArchiveInput {
   store: HandoffArchiveStore;
   transferId: string;
   limits?: WorkspaceSnapshotLimits;
+  expectedManifestDigest?: string;
 }
 
 /** Register a stopped source's capture as a durable, self-contained transfer archive. */
@@ -845,6 +846,8 @@ export async function restoreWorkspaceArchive(
 ): Promise<WorkspaceManifest> {
   const limits = input.limits ?? WORKSPACE_SNAPSHOT_LIMITS;
   return input.store.withVerifiedArchive(input.transferId, async ({ manifest, blobsDirectory }) => {
+    if (input.expectedManifestDigest && manifest.entrypoint.sha256 !== input.expectedManifestDigest)
+      reject("invalid_artifact", "Archive differs from the reserved workspace content");
     if (manifest.entrypoint.size > limits.maxManifestBytes)
       reject("limit_exceeded", "Workspace manifest exceeds handoff limit");
     const workspace = parseManifest(
@@ -991,11 +994,50 @@ export async function verifyCapturedWorkspace(input: CaptureInput): Promise<void
   const limits = input.limits ?? WORKSPACE_SNAPSHOT_LIMITS;
   const cwd = await realpath(input.cwd);
   const manifest = await readManifest(input.artifactDirectory, limits);
-  const state = await getWorkspaceState(
+  await verifyWorkspaceContents({
     cwd,
+    manifest,
     limits,
-    path.dirname(path.resolve(input.artifactDirectory)),
-  );
+    scratchParent: path.dirname(path.resolve(input.artifactDirectory)),
+  });
+}
+
+export async function verifyWorkspaceArchive(
+  input: WorkspaceArchiveInput & { cwd: string },
+): Promise<void> {
+  const limits = input.limits ?? WORKSPACE_SNAPSHOT_LIMITS;
+  const cwd = await realpath(input.cwd);
+  return input.store.withVerifiedArchive(input.transferId, async ({ manifest, blobsDirectory }) => {
+    if (input.expectedManifestDigest && manifest.entrypoint.sha256 !== input.expectedManifestDigest)
+      reject("invalid_artifact", "Archive differs from the reserved workspace content");
+    const bytes = await readBoundedFile(
+      path.join(blobsDirectory, manifest.entrypoint.sha256),
+      limits.maxManifestBytes,
+    );
+    const workspace = parseManifest(bytes, limits);
+    await verifyWorkspaceContents({
+      cwd,
+      manifest: workspace,
+      limits,
+      scratchParent: path.dirname(cwd),
+    });
+  });
+}
+
+interface VerifyWorkspaceContentsInput {
+  cwd: string;
+  manifest: WorkspaceManifest;
+  limits: WorkspaceSnapshotLimits;
+  scratchParent: string;
+}
+
+async function verifyWorkspaceContents({
+  cwd,
+  manifest,
+  limits,
+  scratchParent,
+}: VerifyWorkspaceContentsInput): Promise<void> {
+  const state = await getWorkspaceState(cwd, limits, scratchParent);
   if ((state.kind === "git") !== (manifest.git !== null))
     reject("source_changed", "Workspace Git ownership changed after capture");
   if (state.kind === "git" && manifest.git) {
