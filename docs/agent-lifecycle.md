@@ -35,7 +35,11 @@ archive, replacement, reload, workspace teardown, or daemon shutdown.
 A provider opts in with `idleBackendEvictionEligible` and answers `canEvictIdleBackend()`
 immediately before the close, inside the agent's lifecycle queue. It returns `false` while work
 needs the process, and a rejection also retains the runtime: when in doubt, stay resident.
-Providers that do not opt in stay resident indefinitely. Claude opts in and releases only when the
+Providers that do not opt in stay resident indefinitely. Switching an agent's provider asks a
+narrower question through `AgentManager.getProviderSwitchBlockers`: only live work counts (turns,
+runs, permissions, out-of-band commands, running provider subagents, a replacement reservation
+another operation holds), then `canEvictIdleBackend()` when the provider defines it. The eviction
+opt-in, timeout and handle checks are not part of it. Claude opts in and releases only when the
 last Stop hook in the current CLI process reported empty `background_tasks` and `session_crons`,
 no later `background_tasks_changed` added a task, and the session holds no session-scoped
 permission grant. Neither signal is sent at process start, and older CLIs never send them, so a

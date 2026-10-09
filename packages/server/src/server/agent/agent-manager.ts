@@ -61,6 +61,11 @@ import {
   type ListImportableSessionsOptions,
 } from "./agent-sdk-types.js";
 import { buildArchivedAgentRecord, type ArchivedStoredAgentRecord } from "./agent-archive.js";
+import {
+  collectProviderSwitchBlockers,
+  type ProviderSwitchBlocker,
+  type ProviderSwitchEligibilityOptions,
+} from "./provider-switch-eligibility.js";
 import type { StoredAgentRecord, AgentStorage, RestartCancelledWork } from "./agent-storage.js";
 import type { AgentOwner } from "./agent-owner.js";
 import {
@@ -1903,6 +1908,35 @@ export class AgentManager {
     if (!existing) return;
     clearTimeout(existing.timer);
     this.idleBackendTimers.delete(agentId);
+  }
+
+  /** Blockers for switching this agent's provider; an agent without a live runtime has none. */
+  async getProviderSwitchBlockers(
+    agentId: string,
+    options?: ProviderSwitchEligibilityOptions,
+  ): Promise<ProviderSwitchBlocker[]> {
+    const agent = this.agents.get(agentId);
+    if (!agent) {
+      return [];
+    }
+    const runningProviderSubagents = this.providerSubagents
+      .list(agentId)
+      .filter((subagent) => subagent.status === "running");
+    return collectProviderSwitchBlockers(
+      {
+        lifecycle: agent.lifecycle,
+        activeForegroundTurnId: agent.activeForegroundTurnId,
+        activeTurnId: agent.activeTurnId,
+        pendingReplacement: agent.pendingReplacement,
+        pendingPermissionCount: agent.pendingPermissions.size,
+        inFlightPermissionResponseCount: agent.inFlightPermissionResponses.size,
+        hasRun: this.runs.hasRun(agentId),
+        hasInFlightOutOfBand: this.inFlightOutOfBand.has(agentId),
+        runningProviderSubagentCount: runningProviderSubagents.length,
+      },
+      agent.session,
+      options,
+    );
   }
 
   private isIdleBackendEvictionCandidate(agent: ActiveManagedAgent): boolean {
