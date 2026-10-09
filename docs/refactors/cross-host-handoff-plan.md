@@ -91,8 +91,14 @@ handle is not a portable session. Each native adapter must own its exported arti
 compatibility, destination path rewriting, session-ID collision handling, and read-back validation.
 Do not copy a provider's whole home directory or databases shared with unrelated sessions.
 
-- Claude stores transcripts locally; native resume can use a transcript path. Background Bash and
-  monitors are not resumed. Source: [Claude sessions](https://code.claude.com/docs/en/sessions).
+- Claude's native codec preserves the raw session transcript and scoped sidechain artifacts.
+  Each import gets its own `CLAUDE_CODE_PROJECT_DIR_NAME` under the destination's configuration
+  directory. Keep that namespace in the persistence handle: a return trip retains the native
+  session ID, so searching all project directories could select the stale source copy. Current
+  native import requires matching 2.1.x versions at least 2.1.295; workflow artifacts are preserved
+  but refused for native activation until automation dispositions are implemented. Credentials and
+  source launch configuration are excluded. Sources: [cross-host resume](https://code.claude.com/docs/en/agent-sdk/sessions#resume-across-hosts)
+  and [session storage](https://code.claude.com/docs/en/agent-sdk/session-storage).
 - Codex app-server exposes thread read/resume/fork and durable history. The public API alone does
   not establish a portable cross-host export contract. Verify the installed schema and a real
   two-home resume before advertising native transport. Source:
@@ -212,9 +218,17 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
 - `utils/tree-kill.test.ts`, `managed-processes.test.ts` and `bootstrap-managed-processes.test.ts`
   cover observed descendant termination, helper retention and awaited startup recovery. The
   coordinator still needs launch-time ownership and durable uncertain-stop recovery.
-- Source preparation, destination activation, native codecs, exported conversation
-  history, readable moved history, automation dispositions and the app flow remain unimplemented.
-  Complete handoff is not advertised. Cross-platform and real-provider acceptance remain open.
+- `agent/providers/claude/handoff.ts` captures bounded raw transcripts and sidechains, detects source
+  changes and installs under stable import IDs without a runtime. The existing history suite proves
+  inactive retries, corruption/limit refusals, source edits and exact-namespace history loading.
+  `sdk-behavior.real.e2e.test.ts` proves a real Claude Code 2.1.295 round trip on Linux with two isolated
+  configuration directories and three workspace paths: prior-only tokens survive, destination edits
+  occur there and the original transcript remains unchanged. This is provider evidence, not a
+  two-daemon cutover. Compaction, external attachments, file checkpoints, rewind/fork namespace
+  handling and cross-OS evidence remain open before enabling native handoff.
+- Source preparation, destination activation, the composite conversation archive, readable moved
+  history, automation dispositions and the app flow remain unimplemented. Other native codecs and
+  explicit context-export continuation remain open. Complete handoff is not advertised.
 
 Keep feature code in `server/handoff`, provider transport in provider-owned codecs and orchestration
 in the client coordinator. Use dotted `workspace.handoff.*.request/response` RPCs. Follow the

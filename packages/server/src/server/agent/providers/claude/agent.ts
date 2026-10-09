@@ -85,7 +85,12 @@ import {
   type ClaudeRewindSdk,
 } from "./rewind.js";
 import { normalizeProviderReplayTimestamp } from "../../provider-history-timestamps.js";
-import { claudeConfigDir, claudeProjectDirSync, claudeTranscriptPathSync } from "./project-dir.js";
+import {
+  claudeConfigDir,
+  claudeProjectDirSync,
+  claudeTranscriptPathSync,
+  validateClaudeProjectDirName,
+} from "./project-dir.js";
 import { THINKING_APPLIES_NEXT_TURN_NOTICE } from "../../provider-notices.js";
 import {
   isProviderImageMarkdown,
@@ -2103,6 +2108,7 @@ class ClaudeAgentSession implements AgentSession {
   private readonly resolveBinary: () => Promise<string>;
   private query: Query | null = null;
   private readonly harnessEnvironment: Record<string, string>;
+  private readonly projectDirName: string | undefined;
   private readonly usageSessionKey = randomUUID();
   private childProcess: ChildProcess | null = null;
   private input: AsyncMessageInput<SDKUserMessage> | null = null;
@@ -2193,6 +2199,9 @@ class ClaudeAgentSession implements AgentSession {
     this.agentId = options.agentId;
     this.defaults = options.defaults;
     this.runtimeSettings = options.runtimeSettings;
+    const projectDirName = options.handle?.metadata?.claudeProjectDirName;
+    this.projectDirName =
+      projectDirName === undefined ? undefined : validateClaudeProjectDirName(projectDirName);
     this.harnessEnvironment = this.buildSdkEnv();
     this.persistSession = options.persistSession;
     this.logger = options.logger.child({ agentId: this.agentId });
@@ -2789,7 +2798,10 @@ class ClaudeAgentSession implements AgentSession {
       provider: "claude",
       sessionId: this.claudeSessionId,
       nativeHandle: this.claudeSessionId,
-      metadata: { ...persistedConfig },
+      metadata: {
+        ...persistedConfig,
+        ...(this.projectDirName === undefined ? {} : { claudeProjectDirName: this.projectDirName }),
+      },
     };
     return this.persistence;
   }
@@ -3405,7 +3417,7 @@ class ClaudeAgentSession implements AgentSession {
   }
 
   private buildSdkEnv() {
-    return createProviderEnv({
+    const env = createProviderEnv({
       baseEnv: process.env,
       runtimeSettings: this.runtimeSettings,
       overlays: [
@@ -3415,6 +3427,11 @@ class ClaudeAgentSession implements AgentSession {
         { CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1" },
       ],
     });
+    if (this.projectDirName !== undefined) {
+      env.CLAUDE_CONFIG_DIR = claudeConfigDir(env);
+      env.CLAUDE_CODE_PROJECT_DIR_NAME = this.projectDirName;
+    }
+    return env;
   }
 
   private async buildOptions(permissionMode: PermissionMode): Promise<ClaudeOptions> {
@@ -5125,6 +5142,9 @@ class ClaudeAgentSession implements AgentSession {
       this.taskState.reset();
       historyPath = this.resolveHistoryPath(sessionId);
       if (!historyPath || !fs.existsSync(historyPath)) {
+        if (this.projectDirName !== undefined) {
+          throw new Error("Imported Claude transcript is missing; refusing to resume another copy");
+        }
         this.logger.info(
           { sessionId, cwd: this.config.cwd, historyPath },
           "No Claude transcript to load history from",
@@ -5142,6 +5162,7 @@ class ClaudeAgentSession implements AgentSession {
         { err: error, sessionId, historyPath },
         "Failed to load Claude history from transcript",
       );
+      if (this.projectDirName !== undefined) throw error;
     }
   }
 
@@ -5314,6 +5335,7 @@ class ClaudeAgentSession implements AgentSession {
       cwd,
       sessionId,
       configDir: claudeConfigDir(this.harnessEnvironment),
+      projectDirName: this.projectDirName,
     });
   }
 
