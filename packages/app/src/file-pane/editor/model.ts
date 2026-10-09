@@ -4,6 +4,7 @@ export type FileEditorStatus = "clean" | "dirty" | "saving" | "conflict" | "erro
 export type FileLineSeparator = "\n" | "\r\n" | "\r";
 
 export interface FileEditorSnapshot {
+  readOnly: boolean;
   status: FileEditorStatus;
   content: string;
   lineSeparator: FileLineSeparator;
@@ -79,6 +80,7 @@ export class FileEditorModel {
     file: FileEditorFile;
     session: FileEditorSession;
     clock?: FileEditorClock;
+    readOnly?: boolean;
   }) {
     this.session = input.session;
     this.clock = input.clock ?? systemClock;
@@ -86,6 +88,7 @@ export class FileEditorModel {
     this.hasBom = input.file.hasBom;
     this.observed = { status: "ready", file: input.file };
     this.snapshot = {
+      readOnly: input.readOnly ?? false,
       status: "clean",
       content: input.file.content,
       lineSeparator: detectLineSeparator(input.file.content),
@@ -120,8 +123,15 @@ export class FileEditorModel {
     this.refreshObservation = null;
   }
 
+  setReadOnly(readOnly: boolean): void {
+    if (this.disposed || this.snapshot.readOnly === readOnly) return;
+    this.clearAutosave();
+    this.setSnapshot({ ...this.snapshot, readOnly });
+    if (!readOnly && this.snapshot.status === "dirty") this.scheduleAutosave();
+  }
+
   edit(content: string): void {
-    if (this.disposed || content === this.snapshot.content) return;
+    if (this.disposed || this.snapshot.readOnly || content === this.snapshot.content) return;
     this.reloadRequested = false;
     const modified = content !== this.persistedContent;
     let status: FileEditorStatus = modified ? "dirty" : "clean";
@@ -134,7 +144,11 @@ export class FileEditorModel {
   }
 
   async save(): Promise<void> {
-    if (this.disposed || (this.snapshot.status !== "dirty" && this.snapshot.status !== "error")) {
+    if (
+      this.disposed ||
+      this.snapshot.readOnly ||
+      (this.snapshot.status !== "dirty" && this.snapshot.status !== "error")
+    ) {
       return;
     }
     if (this.snapshot.observedVersion.status !== "ready") {
@@ -176,7 +190,7 @@ export class FileEditorModel {
   }
 
   async overwrite(): Promise<void> {
-    if (this.disposed || this.snapshot.status !== "conflict") return;
+    if (this.disposed || this.snapshot.readOnly || this.snapshot.status !== "conflict") return;
     if (this.snapshot.observedVersion.status !== "ready") return;
     await this.performWrite(this.snapshot.observedVersion);
   }
@@ -292,6 +306,7 @@ export class FileEditorModel {
     this.hasBom = file.hasBom;
     this.observed = { status: "ready", file };
     this.setSnapshot({
+      readOnly: this.snapshot.readOnly,
       status: "clean",
       content: file.content,
       lineSeparator: detectLineSeparator(file.content),
@@ -340,6 +355,7 @@ export class FileEditorModel {
 
   private scheduleAutosave(): void {
     this.clearAutosave();
+    if (this.snapshot.readOnly) return;
     this.autosave = this.clock.setTimeout(() => {
       this.autosave = null;
       void this.save();
@@ -362,7 +378,7 @@ export function getFileConflictCallout(snapshot: FileEditorSnapshot): FileConfli
   if (snapshot.status !== "conflict") return null;
   switch (snapshot.observedVersion.status) {
     case "ready":
-      return { kind: "changed", canOverwrite: snapshot.modified };
+      return { kind: "changed", canOverwrite: snapshot.modified && !snapshot.readOnly };
     case "missing":
       return { kind: "deleted" };
     case "error":

@@ -18,7 +18,11 @@ export async function openHandoff(page: Page) {
 
 export async function handoffHosts(
   page: Page,
-  options: { git?: boolean; claudeConfigDirs?: { source: string; destination: string } } = {},
+  options: {
+    git?: boolean;
+    repo?: Parameters<typeof seedWorkspace>[0]["repo"];
+    claudeConfigDirs?: { source: string; destination: string };
+  } = {},
 ) {
   const cleanupSteps: (() => Promise<unknown>)[] = [];
   async function close() {
@@ -50,6 +54,7 @@ export async function handoffHosts(
     const workspace = await seedWorkspace({
       repoPrefix: "handoff-browser-",
       git: options.git ?? false,
+      repo: options.repo,
       port: sourcePort,
     });
     cleanupSteps.push(() => workspace.cleanup());

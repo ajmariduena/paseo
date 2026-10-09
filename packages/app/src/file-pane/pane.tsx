@@ -1,8 +1,10 @@
+import { useSourceHandoffReadOnly } from "@/handoff/state";
 import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import React, {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -221,17 +223,20 @@ function FilePreviewBody({
 
 export function FilePane({
   serverId,
+  workspaceId,
   workspaceRoot,
   location,
   navigationRevision,
 }: {
   serverId: string;
+  workspaceId: string;
   workspaceRoot: string;
   location: WorkspaceFileLocation;
   navigationRevision: number;
 }) {
   const { t } = useTranslation();
   const isMobile = useIsCompactFormFactor();
+  const readOnly = useSourceHandoffReadOnly(serverId, workspaceId);
   const [previewMode, setPreviewMode] = useState<"preview" | "source">("preview");
 
   const client = useSessionStore((state) => state.sessions[serverId]?.client ?? null);
@@ -309,6 +314,7 @@ export function FilePane({
       onPreviewModeChange={canTogglePreviewMode ? setPreviewMode : undefined}
       lineCount={lineCount}
       editable={editable}
+      readOnly={readOnly}
       disconnectedMessage={t("workspace.terminal.hostDisconnected")}
       errorMessage={errorMessage}
       isLoading={isLoading}
@@ -350,6 +356,7 @@ function FilePanePresentation({
   onPreviewModeChange,
   lineCount,
   editable,
+  readOnly,
   disconnectedMessage,
   errorMessage,
   isLoading,
@@ -371,6 +378,7 @@ function FilePanePresentation({
   onPreviewModeChange?: (mode: "preview" | "source") => void;
   lineCount?: number;
   editable: boolean;
+  readOnly: boolean;
   disconnectedMessage: string;
   errorMessage: string | null;
   isLoading: boolean;
@@ -398,6 +406,7 @@ function FilePanePresentation({
       <EditableFilePane
         key={`${serverId}:${readTarget.cwd}:${readTarget.path}`}
         client={client}
+        readOnly={readOnly}
         cwd={readTarget.cwd}
         path={readTarget.path}
         preview={preview as TextExplorerFile}
@@ -461,6 +470,7 @@ function FilePanePresentation({
 
 function EditableFilePane({
   client,
+  readOnly,
   cwd,
   path,
   preview,
@@ -476,6 +486,7 @@ function EditableFilePane({
   navigationRevision,
 }: {
   client: DaemonClient;
+  readOnly: boolean;
   cwd: string;
   path: string;
   preview: TextExplorerFile;
@@ -517,8 +528,10 @@ function EditableFilePane({
         },
       },
       session,
+      readOnly,
     });
   });
+  useLayoutEffect(() => model.setReadOnly(readOnly), [model, readOnly]);
   useEffect(() => {
     const source = createFileObservationSource(liveFile);
     model.connectFileObservations(source);

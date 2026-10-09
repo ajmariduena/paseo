@@ -2,6 +2,8 @@ import { mkdir, readFile, rm, rmdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, test } from "../support/fixtures";
 import { pressDirectNewTabShortcut } from "../support/helpers/launcher";
+import { openFileExplorer, openFileFromExplorer } from "../support/helpers/file-explorer";
+import { openChangesPanel } from "../support/helpers/workspace-tabs";
 import { composerLocator } from "../support/helpers/composer";
 import { waitForSettledPosition } from "../support/helpers/sheet-layout";
 import {
@@ -227,6 +229,117 @@ test.describe("workspace handoff", () => {
         `workspace-deck-entry-${host.destination.serverId}:${active.result.workspaceId}`,
       );
       await expect(destinationWorkspace.getByTestId("workspace-header-title")).toBeVisible();
+    } finally {
+      await host.close();
+    }
+  });
+
+  test("keeps source files readable while editing, Git and scripts are held until cancellation", async ({
+    page,
+  }, testInfo) => {
+    test.setTimeout(120_000);
+    const host = await hosts(page, {
+      git: true,
+      repo: {
+        withRemote: false,
+        files: [{ path: "file.ts", content: "export const value = 1;\n" }],
+        paseoConfig: {
+          scripts: {
+            check: {
+              type: "task",
+              command: "node -e \"require('fs').writeFileSync('script-ran.txt', 'ran')\"",
+            },
+          },
+        },
+      },
+    });
+    const editor = page
+      .getByTestId("file-source-editor")
+      .filter({ visible: true })
+      .locator(".cm-content");
+    try {
+      await openFileExplorer(page);
+      await openFileFromExplorer(page, "file.ts");
+      await editor.fill("export const value = 2;\n");
+      await expect
+        .poll(() => readFile(path.join(host.workspace.repoPath, "file.ts"), "utf8"))
+        .toBe("export const value = 2;\n");
+      await openHandoff(page);
+      await page.getByTestId("handoff-host-trigger").click();
+      await page.getByTestId(`handoff-host-${host.destination.serverId}`).click();
+      await page.getByTestId("handoff-parent").fill(host.destinationParent);
+      await page.getByTestId("handoff-submit").click();
+      await expect(page.getByTestId("handoff-submit")).toHaveText("Prepare transfer");
+      await page.getByTestId("handoff-submit").click();
+      await expect(page.getByTestId("handoff-submit")).toHaveText("Move workspace", {
+        timeout: 30_000,
+      });
+      await page
+        .getByTestId("handoff-sheet")
+        .getByRole("button", { name: "Close", exact: true })
+        .click();
+      await expect(editor).not.toBeEditable();
+      await expect(editor).toContainText("export const value = 2;");
+      await editor.press("ControlOrMeta+s");
+      await page.reload();
+      await expect(editor).not.toBeEditable();
+      await expect(editor).toContainText("export const value = 2;");
+      await writeFile(path.join(host.workspace.repoPath, "file.ts"), "export const value = 7;\n");
+      await expect(editor).toContainText("export const value = 7;");
+      await expect(editor).not.toBeEditable();
+      await openFileExplorer(page);
+      await expect(page.getByTestId("files-new-file")).toHaveCount(0);
+      await expect(page.getByTestId("files-new-folder")).toHaveCount(0);
+      await page
+        .getByTestId("file-explorer-tree-scroll")
+        .getByText("file.ts", { exact: true })
+        .click({ button: "right" });
+      await expect(page.getByText("Rename", { exact: true })).toHaveCount(0);
+      await expect(page.getByText("Duplicate", { exact: true })).toHaveCount(0);
+      await expect(page.getByText("Delete", { exact: true })).toHaveCount(0);
+      await expect(page.getByText("Copy path", { exact: true })).toBeVisible();
+      await page.keyboard.press("Escape");
+      await openChangesPanel(page);
+      await expect(page.getByTestId("diff-file-0")).toBeVisible();
+      await expect(page.getByTestId("diff-file-0-revert")).toHaveCount(0);
+      await expect(
+        page.getByTestId("changes-primary-cta").filter({ visible: true }).first(),
+      ).toBeDisabled();
+      await page.getByTestId("workspace-scripts-button").click();
+      await expect(page.getByTestId("workspace-scripts-start-check")).toBeDisabled();
+      await page.keyboard.press("Escape");
+      await page.screenshot({ path: testInfo.outputPath("handoff-source-mutations-held.png") });
+      await page.getByTestId("handoff-source-open").click();
+      await page.getByTestId("handoff-cancel").click();
+      await expect(page.getByTestId("handoff-status")).toHaveText(
+        "Transfer cancelled. The source can be used again.",
+      );
+      await page
+        .getByTestId("handoff-sheet")
+        .getByRole("button", { name: "Close", exact: true })
+        .click();
+      await expect(
+        page.getByTestId("changes-primary-cta").filter({ visible: true }).first(),
+      ).toBeEnabled();
+      await openFileExplorer(page);
+      await expect(page.getByTestId("files-new-file")).toBeVisible();
+      await openFileFromExplorer(page, "file.ts");
+      await expect(editor).toBeEditable();
+      await editor.fill("export const value = 3;\n");
+      await expect
+        .poll(() => readFile(path.join(host.workspace.repoPath, "file.ts"), "utf8"))
+        .toBe("export const value = 3;\n");
+      await page.getByTestId("workspace-scripts-button").click();
+      await page.getByTestId("workspace-scripts-start-check").click();
+      await expect
+        .poll(async () => {
+          try {
+            return await readFile(path.join(host.workspace.repoPath, "script-ran.txt"), "utf8");
+          } catch {
+            return null;
+          }
+        })
+        .toBe("ran");
     } finally {
       await host.close();
     }

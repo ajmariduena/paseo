@@ -1,3 +1,4 @@
+import { useSourceHandoffReadOnly } from "@/handoff/state";
 import { useState, useCallback, useEffect, useMemo, type ReactElement } from "react";
 import { Info } from "lucide-react-native";
 import { withUnistyles } from "react-native-unistyles";
@@ -189,6 +190,7 @@ function deriveGitActionsState(args: DeriveGitActionsStateArgs): DerivedGitActio
 
 interface UseGitActionsInput {
   serverId: string;
+  workspaceId: string | null | undefined;
   cwd: string;
   icons: {
     commit: ReactElement;
@@ -312,7 +314,13 @@ function useWorkspaceScreenArchiveController({
   };
 }
 
-export function useGitActions({ serverId, cwd, icons }: UseGitActionsInput): UseGitActionsResult {
+export function useGitActions({
+  serverId,
+  workspaceId,
+  cwd,
+  icons,
+}: UseGitActionsInput): UseGitActionsResult {
+  const isHandoffReadOnly = useSourceHandoffReadOnly(serverId, workspaceId);
   const { t } = useTranslation();
   const toast = useToast();
   const activeWorkspaceSelection = useActiveWorkspaceSelection();
@@ -656,7 +664,7 @@ export function useGitActions({ serverId, cwd, icons }: UseGitActionsInput): Use
     baseRefLabel,
   });
   const {
-    actionsDisabled,
+    actionsDisabled: unavailable,
     aheadCount,
     behindBaseCount,
     aheadOfOrigin,
@@ -667,6 +675,7 @@ export function useGitActions({ serverId, cwd, icons }: UseGitActionsInput): Use
     isOnBaseBranch,
     shouldPromoteArchive,
   } = derived;
+  const actionsDisabled = unavailable || isHandoffReadOnly;
 
   const handlePrAction = useCallback(() => {
     if (prStatus?.url) {
@@ -730,7 +739,10 @@ export function useGitActions({ serverId, cwd, icons }: UseGitActionsInput): Use
           handler: handlePullAndPush,
         },
         pr: {
-          disabled: isActionDisabled(actionsDisabled, prCreateStatus),
+          disabled: isActionDisabled(
+            hasPullRequest ? unavailable : actionsDisabled,
+            prCreateStatus,
+          ),
           status: hasPullRequest ? "idle" : prCreateStatus,
           icon: prIcon,
           handler: handlePrAction,
@@ -790,7 +802,8 @@ export function useGitActions({ serverId, cwd, icons }: UseGitActionsInput): Use
           handler: handleMergeFromBase,
         },
         "archive-workspace": {
-          disabled: !archiveController.canArchive || archiveController.isArchiving,
+          disabled:
+            isHandoffReadOnly || !archiveController.canArchive || archiveController.isArchiving,
           status: archiveController.isArchiving ? "pending" : "idle",
           icon: icons.archive,
           handler: handleArchiveWorkspace,
@@ -799,6 +812,7 @@ export function useGitActions({ serverId, cwd, icons }: UseGitActionsInput): Use
     };
   }, [
     isGit,
+    isHandoffReadOnly,
     hasRemote,
     hasPullRequest,
     prStatus?.url,
@@ -822,6 +836,7 @@ export function useGitActions({ serverId, cwd, icons }: UseGitActionsInput): Use
     baseRefLabel,
     shouldPromoteArchive,
     actionsDisabled,
+    unavailable,
     commitStatus,
     pullStatus,
     pushStatus,

@@ -56,6 +56,7 @@ import type {
   ExplorerEntry,
 } from "@/stores/session-store";
 import { useSessionStore } from "@/stores/session-store";
+import { useSourceHandoffReadOnly, getSourceHandoffReadOnly } from "@/handoff/state";
 import { FileActionsContextMenuContent } from "@/components/file-actions-menu";
 import { ContextMenu, ContextMenuTrigger, useContextMenu } from "@/components/ui/context-menu";
 import { useFileDownload } from "@/hooks/use-file-download";
@@ -415,6 +416,7 @@ export function FileExplorerPane({
 }: FileExplorerPaneProps) {
   const { t } = useTranslation();
   const isCompact = useIsCompactFormFactor();
+  const isHandoffReadOnly = useSourceHandoffReadOnly(serverId, workspaceId);
 
   const normalizedWorkspaceRoot = useMemo(() => workspaceRoot.trim(), [workspaceRoot]);
   const workspaceStateKey = useMemo(
@@ -455,14 +457,19 @@ export function FileExplorerPane({
     workspaceDirectory: normalizedWorkspaceRoot,
   });
   // COMPAT(fsEntryOps): added in v0.3.0, remove gate after 2027-02-08.
-  const fsEntryOpsEnabled = useSessionStore(
+  const fsEntryOpsSupported = useSessionStore(
     (state) => state.sessions[serverId]?.serverInfo?.features?.fsEntryOps === true,
   );
   // COMPAT(fsEntryDuplicate): added in v0.3.0, remove gate after 2027-02-09.
-  const fsEntryDuplicateEnabled = useSessionStore(
+  const fsEntryDuplicateSupported = useSessionStore(
     (state) => state.sessions[serverId]?.serverInfo?.features?.fsEntryDuplicate === true,
   );
+  const fsEntryOpsEnabled = fsEntryOpsSupported && !isHandoffReadOnly;
+  const fsEntryDuplicateEnabled = fsEntryDuplicateSupported && !isHandoffReadOnly;
   const [pendingEdit, setPendingEdit] = useState<ExplorerPendingEdit | null>(null);
+  useEffect(() => {
+    if (isHandoffReadOnly) setPendingEdit(null);
+  }, [isHandoffReadOnly]);
   const downloadFile = useFileDownload({
     serverId,
     workspaceId,
@@ -640,7 +647,7 @@ export function FileExplorerPane({
 
   const handleNewEntry = useCallback(
     (parentPath: string, kind: "file" | "directory") => {
-      if (!workspaceStateKey) {
+      if (!workspaceStateKey || getSourceHandoffReadOnly(serverId, workspaceId)) {
         return;
       }
       if (parentPath !== ".") {
@@ -660,16 +667,27 @@ export function FileExplorerPane({
       }
       setPendingEdit({ type: "create", parentPath, kind });
     },
-    [directories, requestDirectoryListing, setExpandedPathsForWorkspace, workspaceStateKey],
+    [
+      directories,
+      requestDirectoryListing,
+      setExpandedPathsForWorkspace,
+      workspaceStateKey,
+      serverId,
+      workspaceId,
+    ],
   );
 
   const handleEditCancel = useCallback(() => {
     setPendingEdit(null);
   }, []);
 
-  const handleRenameEntry = useCallback((entry: ExplorerEntry) => {
-    setPendingEdit({ type: "rename", entry });
-  }, []);
+  const handleRenameEntry = useCallback(
+    (entry: ExplorerEntry) => {
+      if (getSourceHandoffReadOnly(serverId, workspaceId)) return;
+      setPendingEdit({ type: "rename", entry });
+    },
+    [serverId, workspaceId],
+  );
 
   const handleDraftCommit = useCallback(
     async (name: string) => {

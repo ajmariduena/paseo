@@ -1,3 +1,4 @@
+import { getSourceHandoffReadOnly } from "@/handoff/state";
 import { useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -255,7 +256,7 @@ export function useFileExplorerActions(params: { serverId: string } & FileExplor
 
   const createEntry = useCallback(
     async (input: { parentPath: string; name: string; kind: "file" | "directory" }) => {
-      if (!client || !normalizedWorkspaceRoot) {
+      if (!client || !normalizedWorkspaceRoot || getSourceHandoffReadOnly(serverId, workspaceId)) {
         return null;
       }
       const payload = await client.createFileEntry({
@@ -270,12 +271,12 @@ export function useFileExplorerActions(params: { serverId: string } & FileExplor
       }
       return payload;
     },
-    [client, normalizedWorkspaceRoot, requestDirectoryListing],
+    [client, normalizedWorkspaceRoot, requestDirectoryListing, serverId, workspaceId],
   );
 
   const renameEntry = useCallback(
     async (input: { path: string; name: string }) => {
-      if (!client || !normalizedWorkspaceRoot) {
+      if (!client || !normalizedWorkspaceRoot || getSourceHandoffReadOnly(serverId, workspaceId)) {
         return null;
       }
       const payload = await client.renameFileEntry({
@@ -290,12 +291,12 @@ export function useFileExplorerActions(params: { serverId: string } & FileExplor
       }
       return payload;
     },
-    [client, normalizedWorkspaceRoot, requestDirectoryListing],
+    [client, normalizedWorkspaceRoot, requestDirectoryListing, serverId, workspaceId],
   );
 
   const duplicateEntry = useCallback(
     async (path: string) => {
-      if (!client || !normalizedWorkspaceRoot) {
+      if (!client || !normalizedWorkspaceRoot || getSourceHandoffReadOnly(serverId, workspaceId)) {
         return null;
       }
       const payload = await client.duplicateFileEntry({ cwd: normalizedWorkspaceRoot, path });
@@ -307,12 +308,12 @@ export function useFileExplorerActions(params: { serverId: string } & FileExplor
       }
       return payload;
     },
-    [client, normalizedWorkspaceRoot, requestDirectoryListing],
+    [client, normalizedWorkspaceRoot, requestDirectoryListing, serverId, workspaceId],
   );
 
   const deleteEntry = useCallback(
     async (path: string) => {
-      if (!client || !normalizedWorkspaceRoot) {
+      if (!client || !normalizedWorkspaceRoot || getSourceHandoffReadOnly(serverId, workspaceId)) {
         return null;
       }
       const payload = await client.deleteFileEntry({ cwd: normalizedWorkspaceRoot, path });
@@ -324,7 +325,7 @@ export function useFileExplorerActions(params: { serverId: string } & FileExplor
       }
       return payload;
     },
-    [client, normalizedWorkspaceRoot, requestDirectoryListing],
+    [client, normalizedWorkspaceRoot, requestDirectoryListing, serverId, workspaceId],
   );
 
   const selectExplorerEntry = useCallback(

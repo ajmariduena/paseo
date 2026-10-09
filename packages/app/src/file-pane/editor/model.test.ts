@@ -129,6 +129,80 @@ function observeVersion(model: FileEditorModel, version: FileEditorObservation):
 }
 
 describe("FileEditorModel", () => {
+  test("holds a dirty buffer without writing until ownership is restored", async () => {
+    const { model, session, clock } = makeModel();
+    model.edit("unsaved before handoff");
+    const resumeAutosave = model.suspendAutosave();
+    model.setReadOnly(true);
+    resumeAutosave();
+    clock.fire();
+    await model.save();
+    observeFile(model, { content: "one", hasBom: false, version: ready() });
+    clock.fire();
+    model.edit("blocked edit");
+    expect(session.writes).toEqual([]);
+    expect(model.getSnapshot()).toMatchObject({
+      readOnly: true,
+      status: "dirty",
+      modified: true,
+      content: "unsaved before handoff",
+    });
+    model.setReadOnly(false);
+    clock.fire();
+    await Promise.resolve();
+    expect(session.writes.map((write) => write.content)).toEqual(["unsaved before handoff"]);
+    expect(model.getSnapshot()).toMatchObject({
+      readOnly: false,
+      status: "clean",
+      modified: false,
+    });
+  });
+
+  test("blocks conflict overwrite while held and keeps read-only after reloading disk content", async () => {
+    const { model, session, clock } = makeModel();
+    model.edit("local");
+    observeFile(model, { content: "external", hasBom: false, version: ready("newer", 8) });
+    model.setReadOnly(true);
+    expect(getFileConflictCallout(model.getSnapshot())).toEqual({
+      kind: "changed",
+      canOverwrite: false,
+    });
+    await model.overwrite();
+    expect(session.writes).toEqual([]);
+    expect(model.getSnapshot()).toMatchObject({ status: "conflict", content: "local" });
+    await model.reload();
+    model.edit("blocked");
+    clock.fire();
+    expect(model.getSnapshot()).toMatchObject({
+      readOnly: true,
+      status: "clean",
+      content: "external",
+    });
+    expect(session.writes).toEqual([]);
+  });
+
+  test("settles an admitted save without rescheduling a dirty buffer while held", async () => {
+    const { model, session, clock } = makeModel();
+    session.holdNextWrite();
+    model.edit("admitted");
+    const saving = model.save();
+    model.edit("still local");
+    model.setReadOnly(true);
+    session.finishHeldWrite({ status: "written", modifiedAt: "newer", size: 8 });
+    await saving;
+    clock.fire();
+    expect(session.writes.map((write) => write.content)).toEqual(["admitted"]);
+    expect(model.getSnapshot()).toMatchObject({
+      readOnly: true,
+      status: "dirty",
+      content: "still local",
+    });
+    model.setReadOnly(false);
+    clock.fire();
+    await Promise.resolve();
+    expect(session.writes.map((write) => write.content)).toEqual(["admitted", "still local"]);
+  });
+
   test("tracks whether the current buffer differs from persisted content", async () => {
     const { model } = makeModel();
 

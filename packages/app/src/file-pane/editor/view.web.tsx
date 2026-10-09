@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { FileFind, FileFindModel } from "../find/index.web";
 import { Annotation, Compartment, EditorState, Transaction } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
@@ -24,6 +24,11 @@ const languageCompartment = new Compartment();
 const wrappingCompartment = new Compartment();
 const themeCompartment = new Compartment();
 const vimCompartment = new Compartment();
+const readOnlyCompartment = new Compartment();
+
+function readOnlyExtensions(readOnly: boolean) {
+  return [EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)];
+}
 
 function wrappingForFile(filename: string) {
   return isRenderedMarkdownFile(filename) ? EditorView.lineWrapping : [];
@@ -43,7 +48,14 @@ export function FileEditorView({
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const snapshot = useSyncExternalStore(model.subscribe, model.getSnapshot, model.getSnapshot);
-  const initial = useRef({ filename, model, theme, vimEnabled, content: snapshot.content });
+  const initial = useRef({
+    filename,
+    model,
+    theme,
+    vimEnabled,
+    content: snapshot.content,
+    readOnly: snapshot.readOnly,
+  });
   const onCursorChangeRef = useRef(onCursorChange);
   onCursorChangeRef.current = onCursorChange;
 
@@ -57,6 +69,15 @@ export function FileEditorView({
         extensions: [
           vimCompartment.of(values.vimEnabled ? vim() : []),
           find.extension,
+          readOnlyCompartment.of(readOnlyExtensions(values.readOnly)),
+          EditorView.contentAttributes.of({ tabindex: "0" }),
+          EditorState.transactionFilter.of((transaction) =>
+            transaction.docChanged &&
+            transaction.startState.readOnly &&
+            !transaction.annotation(remoteUpdate)
+              ? []
+              : transaction,
+          ),
           ...editorBaseExtensions(() => void values.model.save()),
           languageCompartment.of(getLanguageForFile(values.filename)?.extension ?? []),
           wrappingCompartment.of(wrappingForFile(values.filename)),
@@ -85,6 +106,12 @@ export function FileEditorView({
       viewRef.current = null;
     };
   }, [find]);
+
+  useLayoutEffect(() => {
+    viewRef.current?.dispatch({
+      effects: readOnlyCompartment.reconfigure(readOnlyExtensions(snapshot.readOnly)),
+    });
+  }, [snapshot.readOnly]);
 
   useEffect(() => {
     const view = viewRef.current;

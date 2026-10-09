@@ -1,3 +1,4 @@
+import { useSourceHandoffReadOnly } from "@/handoff/state";
 import { useCallback, useMemo, useRef } from "react";
 import { Text, View } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
@@ -36,6 +37,7 @@ export function BranchSwitcher({
 }: BranchSwitcherProps) {
   const { t } = useTranslation();
   const anchorRef = useRef<View>(null);
+  const readOnly = useSourceHandoffReadOnly(serverId, workspaceId);
   const client = useHostRuntimeClient(serverId);
   const isConnected = useHostRuntimeIsConnected(serverId);
   const toast = useToast();
@@ -83,6 +85,7 @@ export function BranchSwitcher({
         <TooltipTrigger asChild>
           <ToolbarLabelSelectTrigger
             testID={testID}
+            disabled={readOnly}
             label={currentBranchName}
             open={isOpen}
             onPress={handleOpen}

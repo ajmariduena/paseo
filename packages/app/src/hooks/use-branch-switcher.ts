@@ -1,4 +1,5 @@
-import { useState, useCallback, useMemo } from "react";
+import { getSourceHandoffReadOnly, useSourceHandoffReadOnly } from "@/handoff/state";
+import { useState, useCallback, useMemo, useEffect } from "react";
 import { useQuery, type QueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
@@ -40,7 +41,17 @@ export function useBranchSwitcher({
   queryClient,
 }: UseBranchSwitcherInput): UseBranchSwitcherResult {
   const { t } = useTranslation();
-  const [isOpen, setIsOpen] = useState(false);
+  const [isOpen, setOpen] = useState(false);
+  const readOnly = useSourceHandoffReadOnly(normalizedServerId, normalizedWorkspaceId);
+  const setIsOpen = useCallback(
+    (open: boolean) => {
+      setOpen(open && !getSourceHandoffReadOnly(normalizedServerId, normalizedWorkspaceId));
+    },
+    [normalizedServerId, normalizedWorkspaceId],
+  );
+  useEffect(() => {
+    if (readOnly) setOpen(false);
+  }, [readOnly]);
 
   // Git operations are bound to the workspace directory; the opaque workspace id is
   // used only for query cache identity below, never as a cwd.
@@ -103,7 +114,8 @@ export function useBranchSwitcher({
           confirmLabel: t("branchSwitcher.restore"),
           cancelLabel: t("branchSwitcher.later"),
         });
-        if (!shouldRestore) return;
+        if (!shouldRestore || getSourceHandoffReadOnly(normalizedServerId, normalizedWorkspaceId))
+          return;
         const popPayload = await operations.popStash(targetStash.index);
         if (popPayload.error) {
           toast.error(popPayload.error.message);
@@ -115,7 +127,7 @@ export function useBranchSwitcher({
         // Non-critical — user can still restore on next branch switch
       }
     },
-    [operations, invalidateStashAndCheckout, toast, t],
+    [operations, invalidateStashAndCheckout, toast, t, normalizedServerId, normalizedWorkspaceId],
   );
 
   const stashAndSwitch = useCallback(
@@ -127,7 +139,8 @@ export function useBranchSwitcher({
         confirmLabel: t("branchSwitcher.stashAndSwitch"),
         cancelLabel: t("common.actions.cancel"),
       });
-      if (!shouldStash) return;
+      if (!shouldStash || getSourceHandoffReadOnly(normalizedServerId, normalizedWorkspaceId))
+        return;
 
       try {
         const stashPayload = await operations.saveStash(currentBranchName ?? undefined);
@@ -136,6 +149,7 @@ export function useBranchSwitcher({
           return;
         }
         await invalidateStashAndCheckout();
+        if (getSourceHandoffReadOnly(normalizedServerId, normalizedWorkspaceId)) return;
         const switchPayload = await operations.switchBranch(branchId);
         if (switchPayload.error) {
           toast.error(switchPayload.error.message);
@@ -146,12 +160,24 @@ export function useBranchSwitcher({
         toast.error(err instanceof Error ? err.message : t("branchSwitcher.failedToStash"));
       }
     },
-    [operations, currentBranchName, invalidateStashAndCheckout, toast, t],
+    [
+      operations,
+      currentBranchName,
+      invalidateStashAndCheckout,
+      toast,
+      t,
+      normalizedServerId,
+      normalizedWorkspaceId,
+    ],
   );
 
   const handleBranchSelect = useCallback(
     (branchId: string) => {
-      if (branchId === currentBranchName) return;
+      if (
+        branchId === currentBranchName ||
+        getSourceHandoffReadOnly(normalizedServerId, normalizedWorkspaceId)
+      )
+        return;
 
       void (async () => {
         if (!operations) return;
@@ -176,6 +202,8 @@ export function useBranchSwitcher({
     },
     [
       operations,
+      normalizedServerId,
+      normalizedWorkspaceId,
       currentBranchName,
       invalidateStashAndCheckout,
       maybeRestoreStashForBranch,

@@ -1,0 +1,306 @@
+Source file, Git and script controls validation — 2026-10-09
+
+Linux browser with real isolated daemons and a Git workspace; no provider turns.
+Physical MacBook/VPS, Electron and native clients are not covered here.
+The browser case checks held state across reload, live file reads, disabled mutation controls,
+and actual file saves and script execution after cancellation.
+Unsaved editor buffers are retained only in memory; persistence and transfer remain open.
+
+
+Editor regression before implementation (expected failure)
+$ cd packages/app && npx vitest run src/file-pane/editor/model.test.ts --bail=1
+
+RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+
+ ❯ |unit| src/file-pane/editor/model.test.ts (30 tests | 1 failed) 8ms
+     × holds a dirty buffer without writing until ownership is restored 5ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |unit| src/file-pane/editor/model.test.ts > FileEditorModel > holds a dirty buffer without writing until ownership is restored
+TypeError: model.setReadOnly is not a function
+ ❯ src/file-pane/editor/model.test.ts:136:11
+    134|     model.edit("unsaved before handoff");
+    135|     const resumeAutosave = model.suspendAutosave();
+    136|     model.setReadOnly(true);
+       |           ^
+    137|     resumeAutosave();
+    138|     clock.fire();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed (30)
+   Start at  19:58:16
+   Duration  252ms (transform 105ms, setup 60ms, import 68ms, tests 8ms, environment 0ms)
+
+
+Browser regression before UI wiring (expected failure)
+$ npm run test:e2e --workspace=@getpaseo/app -- e2e/browser/workspace-handoff.spec.ts --grep 'keeps source files'
+
+> @getpaseo/app@0.11.0-beta.36 test:e2e
+> playwright test --project=browser e2e/browser/workspace-handoff.spec.ts --grep keeps source files
+
+[metro] Starting project at /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+[metro] Using src/app as the root directory for Expo Router.
+[metro] Experimental Expo Autolinking module resolver is enabled.
+[metro] React Compiler enabled
+[metro] Starting Metro Bundler
+[metro] Waiting on http://localhost:42039
+[metro] Logs for your project will appear below.
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] | (node:474824) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[metro] | (Use `node --trace-warnings ...` to show where the warning was created)
+[metro] Web Bundled 3660ms packages/app/index.ts (5627 modules)
+[metro] Web packages/app/index.ts ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.9% (5627/5627)
+[e2e] Metro warmed on port 42039
+
+Running 1 test using 1 worker
+
+(node:474848) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:474848) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[e2e] Worker 0 daemon started on port 43625, home: /tmp/paseo-e2e-worker-0-Jb5Zcj
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 352ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 86ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro] Web Bundled 337ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 7ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 311ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 6ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 237ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 18ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[e2e] Worker 0 daemon stopped
+  ✘  1 [browser] › e2e/browser/workspace-handoff.spec.ts:237:7 › workspace handoff › keeps source files readable while editing, Git and scripts are held until cancellation (44.1s)
+[e2e] Metro stopped
+
+
+  1) [browser] › e2e/browser/workspace-handoff.spec.ts:237:7 › workspace handoff › keeps source files readable while editing, Git and scripts are held until cancellation
+
+    Error: expect(locator).not.toBeEditable() failed
+
+    Locator:  getByTestId('file-source-editor').filter({ visible: true }).locator('.cm-content')
+    Expected: not editable
+    Received: editable
+    Timeout:  10000ms
+
+    Call log:
+      - Expect "not toBeEditable" with timeout 10000ms
+      - waiting for getByTestId('file-source-editor').filter({ visible: true }).locator('.cm-content')
+        14 × locator resolved to <div translate="no" role="textbox" autocorrect="off" spellcheck="false" class="cm-content" autocapitalize="off" aria-multiline="true" contenteditable="true" writingsuggestions="false">…</div>
+           - unexpected value "editable"
+
+
+      279 |         .getByRole("button", { name: "Close", exact: true })
+      280 |         .click();
+    > 281 |       await expect(editor).not.toBeEditable();
+          |                                ^
+      282 |       await expect(editor).toContainText("export const value = 2;");
+      283 |       await editor.press("ControlOrMeta+s");
+      284 |       await openFileExplorer(page);
+        at /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app/e2e/browser/workspace-handoff.spec.ts:281:32
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    test-results/workspace-handoff-workspac-04e24-are-held-until-cancellation-browser/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #2: browser-console (text/plain) ────────────────────────────────────────────────────
+    [console:info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+    [console:log] Running application "main" with appParams:
+     {rootTag: #root, hydrate: undefined}
+    Development-level warnings: ON.
+    Performance optimizations: OFF.
+    [co...
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #3: video (video/webm) ──────────────────────────────────────────────────────────────
+    test-results/workspace-handoff-workspac-04e24-are-held-until-cancellation-browser/video.webm
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: test-results/workspace-handoff-workspac-04e24-are-held-until-cancellation-browser/error-context.md
+
+    attachment #5: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results/workspace-handoff-workspac-04e24-are-held-until-cancellation-browser/trace.zip
+    Usage:
+
+        npx playwright show-trace test-results/workspace-handoff-workspac-04e24-are-held-until-cancellation-browser/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  1 failed
+    [browser] › e2e/browser/workspace-handoff.spec.ts:237:7 › workspace handoff › keeps source files readable while editing, Git and scripts are held until cancellation
+npm error Lifecycle script `test:e2e` failed with error:
+npm error code 1
+npm error path /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+npm error workspace @getpaseo/app@0.11.0-beta.36
+npm error location /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+npm error command failed
+npm error command sh -c playwright test --project=browser e2e/browser/workspace-handoff.spec.ts --grep 'keeps source files'
+
+
+Editor model: 32 passed
+$ cd packages/app && npx vitest run src/file-pane/editor/model.test.ts --bail=1
+
+RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+
+
+ Test Files  1 passed (1)
+      Tests  32 passed (32)
+   Start at  20:00:18
+   Duration  211ms (transform 74ms, setup 43ms, import 55ms, tests 9ms, environment 0ms)
+
+
+Script menu: 11 passed
+$ cd packages/app && npx vitest run src/screens/workspace/workspace-scripts-button.test.tsx --bail=1
+
+RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+
+
+ Test Files  1 passed (1)
+      Tests  11 passed (11)
+   Start at  20:05:19
+   Duration  3.70s (transform 1.87s, setup 45ms, import 2.71s, tests 190ms, environment 629ms)
+
+
+Browser: 1 passed
+$ npm run test:e2e --workspace=@getpaseo/app -- e2e/browser/workspace-handoff.spec.ts --grep 'keeps source files'
+
+> @getpaseo/app@0.11.0-beta.36 test:e2e
+> playwright test --project=browser e2e/browser/workspace-handoff.spec.ts --grep keeps source files
+
+[metro] Starting project at /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+[metro] Using src/app as the root directory for Expo Router.
+[metro] Experimental Expo Autolinking module resolver is enabled.
+[metro] React Compiler enabled
+[metro] Starting Metro Bundler
+[metro] Waiting on http://localhost:44291
+[metro] Logs for your project will appear below.
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] | (node:477788) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[metro] | (Use `node --trace-warnings ...` to show where the warning was created)
+[metro] | (node:477789) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[metro] | (Use `node --trace-warnings ...` to show where the warning was created)
+[metro] | (node:477782) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[metro] | (Use `node --trace-warnings ...` to show where the warning was created)
+[metro] Web packages/app/index.ts ▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░ 90.9% (4798/5033)
+[metro] Web Bundled 6059ms packages/app/index.ts (5628 modules)
+[e2e] Metro warmed on port 44291
+
+Running 1 test using 1 worker
+
+(node:477806) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:477806) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[e2e] Worker 0 daemon started on port 44887, home: /tmp/paseo-e2e-worker-0-gf2x8f
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 295ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 217ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (2 modules)
+[metro] Web Bundled 278ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 30ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 306ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 8ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 256ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 18ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 321ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 7ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+  ✓  1 [browser] › e2e/browser/workspace-handoff.spec.ts:237:7 › workspace handoff › keeps source files readable while editing, Git and scripts are held until cancellation (44.0s)
+[e2e] Worker 0 daemon stopped
+[e2e] Metro stopped
+
+  1 passed (1.2m)
+
+
+Typecheck: passed
+$ npm run typecheck
+
+> paseo@0.11.1 typecheck
+> npm run typecheck --workspaces --if-present
+
+
+> @getpaseo/builtin-plugins@0.11.1 typecheck
+> tsgo -p tsconfig.json --noEmit
+
+
+> @getpaseo/expo-two-way-audio@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/highlight@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/plugin@0.11.1 typecheck
+> tsgo --noEmit && tsgo -p tsconfig.examples.json --noEmit
+
+
+> @getpaseo/protocol@0.11.1 pretypecheck
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/client@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/server@0.11.1 typecheck
+> tsgo -p tsconfig.server.typecheck.json --noEmit
+
+
+> @getpaseo/app@0.11.0-beta.36 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/relay@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/website@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/desktop@0.11.1 typecheck
+> tsgo --noEmit -p tsconfig.json
+
+
+> @getpaseo/cli@0.11.1 typecheck
+> tsgo --noEmit
+
+
+Lint: passed
+$ npm run lint
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 1.7s on 5024 files with 177 rules using 4 threads.
