@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Writable } from "node:stream";
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import pino from "pino";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createTestLogger } from "../../test-utils/test-logger.js";
@@ -220,6 +222,92 @@ describe("ScheduleStore", () => {
       "Later edit",
     );
   });
+
+  test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "recovers a known outcome after its writer process is killed before final publication",
+    async () => {
+      const schedule = await createRunningSchedule();
+      const candidate = {
+        ...schedule,
+        status: "completed" as const,
+        nextRunAt: null,
+        lastRunAt: schedule.createdAt,
+        runs: [
+          {
+            ...schedule.runs[0],
+            status: "succeeded" as const,
+            endedAt: schedule.createdAt,
+            output: "Result from the terminated writer",
+          },
+        ],
+      };
+      const script = `
+        import { chmod } from 'node:fs/promises';
+        import pino from 'pino';
+        import { ScheduleStore } from ${JSON.stringify(new URL("./store.ts", import.meta.url).href)};
+        const [directory, serialized] = process.argv.slice(1);
+        const candidate = JSON.parse(serialized);
+        const store = new ScheduleStore(directory, pino({ level: 'silent' }));
+        await store.get(candidate.id);
+        // The intent subdirectory stays writable; the final record cannot be replaced.
+        await chmod(directory, 0o500);
+        try {
+          await store.update(candidate.id, () => candidate, { durable: true });
+          process.exit(1);
+        } catch (error) {
+          if (error.code !== 'EACCES') throw error;
+          process.send({ code: error.code });
+          setInterval(() => {}, 1000);
+        }
+      `;
+      const child = spawn(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          "--input-type=module",
+          "-e",
+          script,
+          tempDir,
+          JSON.stringify(candidate),
+        ],
+        { stdio: ["ignore", "ignore", "pipe", "ipc"] },
+      );
+      let stderr = "";
+      child.stderr?.setEncoding("utf8");
+      child.stderr?.on("data", (data: string) => {
+        stderr += data;
+      });
+      const exited = once(child, "exit");
+      try {
+        const ready = Promise.race([
+          once(child, "message", { signal: AbortSignal.timeout(10_000) }),
+          exited.then(() => {
+            throw new Error(`Writer exited before the fault: ${stderr}`);
+          }),
+        ]);
+        expect(await ready).toEqual([{ code: "EACCES" }, undefined]);
+        expect(JSON.parse(await readFile(join(tempDir, `${schedule.id}.json`), "utf8"))).toEqual(
+          schedule,
+        );
+        expect(child.kill("SIGKILL")).toBe(true);
+        expect(await exited).toEqual([null, "SIGKILL"]);
+        await chmod(tempDir, 0o700);
+        const recovered = new ScheduleStore(tempDir, createTestLogger());
+        expect(await recovered.listForHandoff()).toEqual([candidate]);
+        expect(await readdir(join(tempDir, ".pending"))).toEqual([]);
+        await recovered.update(schedule.id, (record) => ({ ...record, name: "After recovery" }));
+        expect((await new ScheduleStore(tempDir, createTestLogger()).get(schedule.id))?.name).toBe(
+          "After recovery",
+        );
+      } finally {
+        child.kill("SIGKILL");
+        await exited;
+        await chmod(tempDir, 0o700);
+      }
+    },
+    15_000,
+  );
 
   test
     .skipIf(process.platform === "win32" || process.getuid?.() === 0)

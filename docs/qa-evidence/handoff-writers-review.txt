@@ -101,7 +101,7 @@ POSIX acknowledgement includes intent publication, final-record publication and 
 an empty recovery directory is synchronized after restart before allowing newer writes.
 Conflicting, malformed, mismatched or non-regular recovery records refuse progress and remain retryable.
 
-Current validation: 27 store cases, 89 service cases and two isolated two-daemon cases pass (118 total).
+Current validation: 28 store cases, 89 service cases and two isolated two-daemon cases pass (119 total).
 The added store cases cover restart before final publication, failed intent/file synchronization,
 failed removal/retirement acknowledgement, external changes and damaged metadata. Service startup
 repairs known success and actual execution failure behind a recovered source fence without a second
@@ -110,13 +110,182 @@ failure, verify the source stays preparing and its disk record still says runnin
 daemons, recover the original cancellation reason, finish preparation, restart again and activate
 with the job's files, readable history and paused schedule intact.
 
+The added process regression launches a separate Node process running the real ScheduleStore.
+Filesystem permissions leave its repair directory writable while refusing the final record write.
+After observing EACCES, the test sends SIGKILL and verifies signal termination, then recovers the exact
+output from disk with a new store and accepts a later mutation. Against the pre-fix store at
+0a0d2a108, this same test fails because the recovered run is still running with null output; against
+4a125621c it passes. No shared memory or storage mock provides the recovered output.
+
 These tests use real files, ownership journals, scheduler/manager services and local WebSocket RPCs.
-Provider turns are controlled fixtures. Daemon restart uses fresh in-process daemon instances; this
-is not power-loss testing or authenticated provider continuity. A failure before the repair record
+Provider turns are controlled fixtures. Network daemon restart uses fresh in-process instances;
+the separate writer-kill case covers actual process death. Neither is power-loss testing or
+authenticated provider continuity. A failure before the repair record
 becomes durable can still lose the only known result. Pre-dispatch durability and reconciliation of
 unknown run outcomes remain open. Other schedule writes retain their existing durability contract.
 Server-stack build, root typecheck and lint passed. No browser suite was repeated for this storage
 change; the production capability remains unadvertised.
+
+
+Actual writer-process termination (raw command output):
+
+Pre-fix store (0a0d2a108): npx vitest run src/server/schedule/store.test.ts -t "writer process is killed" --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/schedule/store.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  override existing env vars with { override: true }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: 🔐 encrypt with Dotenvx: https://dotenvx.com
+
+ ❯ src/server/schedule/store.test.ts (28 tests | 1 failed | 27 skipped) 422ms
+     × recovers a known outcome after its writer process is killed before final publication 420ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/schedule/store.test.ts > ScheduleStore > recovers a known outcome after its writer process is killed before final publication
+AssertionError: expected [ { id: '8fe2fe2f', …(13) } ] to deeply equal [ { id: '8fe2fe2f', …(13) } ]
+
+- Expected
++ Received
+
+@@ -5,29 +5,29 @@
+        "type": "every",
+      },
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "expiresAt": null,
+      "id": "8fe2fe2f",
+-     "lastRunAt": "2026-01-01T00:00:00.000Z",
++     "lastRunAt": null,
+      "maxRuns": 1,
+      "name": null,
+-     "nextRunAt": null,
++     "nextRunAt": "2026-01-01T00:00:00.000Z",
+      "pausedAt": null,
+      "prompt": "Continue",
+      "runs": [
+        {
+          "agentId": null,
+-         "endedAt": "2026-01-01T00:00:00.000Z",
++         "endedAt": null,
+          "error": null,
+          "id": "run",
+-         "output": "Result from the terminated writer",
++         "output": null,
+          "scheduledFor": "2026-01-01T00:00:00.000Z",
+          "startedAt": "2026-01-01T00:00:00.000Z",
+-         "status": "succeeded",
++         "status": "running",
+        },
+      ],
+-     "status": "completed",
++     "status": "active",
+      "target": {
+        "config": {
+          "cwd": "/tmp/schedule-store-test-uqOsee",
+          "provider": "claude",
+        },
+
+ ❯ src/server/schedule/store.test.ts:297:50
+    295|         await chmod(tempDir, 0o700);
+    296|         const recovered = new ScheduleStore(tempDir, createTestLogger(…
+    297|         expect(await recovered.listForHandoff()).toEqual([candidate]);
+       |                                                  ^
+    298|         expect(await readdir(join(tempDir, ".pending"))).toEqual([]);
+    299|         await recovered.update(schedule.id, (record) => ({ ...record, …
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 27 skipped (28)
+   Start at  16:28:53
+   Duration  828ms (transform 186ms, setup 49ms, import 243ms, tests 422ms, environment 0ms)
+
+
+
+Current store (4a125621c): same selected case
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 27 skipped (28)
+   Start at  16:29:13
+   Duration  657ms (transform 163ms, setup 38ms, import 223ms, tests 306ms, environment 0ms)
+
+
+
+npm run typecheck
+
+> paseo@0.11.1 typecheck
+> npm run typecheck --workspaces --if-present
+
+
+> @getpaseo/builtin-plugins@0.11.1 typecheck
+> tsgo -p tsconfig.json --noEmit
+
+
+> @getpaseo/expo-two-way-audio@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/highlight@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/plugin@0.11.1 typecheck
+> tsgo --noEmit && tsgo -p tsconfig.examples.json --noEmit
+
+
+> @getpaseo/protocol@0.11.1 pretypecheck
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/client@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/server@0.11.1 typecheck
+> tsgo -p tsconfig.server.typecheck.json --noEmit
+
+
+> @getpaseo/app@0.11.0-beta.36 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/relay@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/website@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/desktop@0.11.1 typecheck
+> tsgo --noEmit -p tsconfig.json
+
+
+> @getpaseo/cli@0.11.1 typecheck
+> tsgo --noEmit
+
+
+
+npm run lint
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 2.1s on 5035 files with 177 rules using 4 threads.
 
 
 Outcome restart regression and verification (raw command output):
