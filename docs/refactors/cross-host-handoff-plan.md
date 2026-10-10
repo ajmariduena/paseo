@@ -448,11 +448,14 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
 - `utils/tree-kill.test.ts`, `managed-processes.test.ts` and `bootstrap-managed-processes.test.ts`
   cover observed descendant termination, helper retention and awaited startup recovery. A real
   process regression found that an exited root could leave a detached child alive while termination
-  reported success. Claude POSIX closure now requires an observed tree or an earlier confirmed stop
-  for that handle. Exit during the first inspection cannot authorize signalling a replacement PID.
-  The source keeps unconfirmed closure pending, and its error no longer claims all background work
-  died. See [process proof evidence](../qa-evidence/handoff-checkpoint-recovery.txt). The coordinator
-  still needs launch-time ownership and durable uncertain-stop recovery; this refusal is not repair.
+  reported success. Claude POSIX queries now use the existing managed-process ledger, excluding
+  credential-bearing SDK arguments. Shutdown durably observes the tree while its owner still
+  matches; startup can finish that interrupted stop after the owner exits. Launch-only snapshots,
+  interrupted inspections and failed publication cannot certify closure. A new OS boot clears old
+  process identities without signalling current PIDs. See the [store contract](../data-model.md#managed-process-store)
+  and [process proof evidence](../qa-evidence/handoff-checkpoint-recovery.txt). The spawn-to-ledger
+  gap, descendants that escape before observation, stronger macOS birth identity, complete writer
+  coverage and conversation-generation recovery remain open. This is not full crash-stop proof.
 - `agent/providers/claude/handoff.ts` captures bounded raw transcripts and sidechains, detects source
   changes and installs under stable import IDs without a runtime. The existing history suite proves
   inactive retries, corruption/limit refusals, source edits and exact-namespace history loading.

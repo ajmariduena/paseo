@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { once } from "node:events";
@@ -16,7 +17,10 @@ import {
 } from "./managed-processes.js";
 import { spawnProcess } from "../../utils/spawn.js";
 import {
+  captureProcessTree,
+  readLinuxProcessEntry,
   terminateWithTreeKill,
+  type ProcessTreeEntry,
   type ProcessTerminator,
   type TreeKillTarget,
 } from "../../utils/tree-kill.js";
@@ -31,6 +35,245 @@ afterEach(async () => {
 });
 
 describe("managed process registry", () => {
+  test.runIf(process.platform === "linux")(
+    "a fresh registry stops a real detached descendant after the recorded owner dies",
+    async () => {
+      tempHome = await mkdtemp(path.join(tmpdir(), "paseo-managed-orphan-"));
+      const owner = spawn(
+        process.execPath,
+        [
+          "-e",
+          `
+      const { spawn } = require('node:child_process');
+      const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
+      child.unref();
+      process.stdout.write(String(child.pid) + String.fromCharCode(10));
+      setInterval(() => {}, 1000);
+    `,
+        ],
+        { stdio: ["ignore", "pipe", "ignore"] },
+      );
+      let descendantPid: number | null = null;
+      const exited = once(owner, "exit");
+      try {
+        const [output] = await Promise.race([
+          once(owner.stdout!, "data"),
+          exited.then(() => {
+            throw new Error("Owner exited before reporting its child");
+          }),
+        ]);
+        descendantPid = Number(String(output).trim());
+        const options = {
+          paseoHome: tempHome,
+          processTable: createSystemManagedProcessTable(),
+          terminateProcess: terminateWithTreeKill,
+          logger: createTestLogger(),
+        };
+        const registry = createManagedProcessRegistry({
+          ...options,
+          terminateProcess: (child, stopOptions) =>
+            terminateWithTreeKill(child, {
+              ...stopOptions,
+              onTreeObserved: async (tree) => {
+                await stopOptions.onTreeObserved!(tree);
+                throw new Error("Shutdown interrupted after its durable inventory");
+              },
+            }),
+        });
+        const checkpoint = await captureProcessTree(owner);
+        expect(checkpoint.entries.map((entry) => entry.pid)).toContain(descendantPid);
+        const record = await registry.record({
+          owner: { provider: "claude", kind: "query" },
+          pid: owner.pid!,
+          command: process.execPath,
+          args: [],
+          processTree: checkpoint,
+        });
+        await expect(registry.stop(record.id)).rejects.toThrow("termination timed out");
+        owner.kill("SIGKILL");
+        await exited;
+        expect(() => process.kill(descendantPid!, 0)).not.toThrow();
+        const restarted = createManagedProcessRegistry(options);
+        expect(await restarted.reapStale()).toMatchObject({
+          checked: 1,
+          removed: 1,
+          terminated: 1,
+          errors: [],
+        });
+        expect(await restarted.list()).toEqual([]);
+        const stat = await readLinuxProcessEntry(descendantPid!);
+        expect(stat === null || stat.exited).toBe(true);
+      } finally {
+        owner.kill("SIGKILL");
+        await exited;
+        if (descendantPid) {
+          try {
+            process.kill(descendantPid, "SIGKILL");
+          } catch {
+            // The fixture may already have been reaped.
+          }
+        }
+      }
+    },
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "a launch checkpoint cannot certify an unexpected root exit",
+    async () => {
+      tempHome = await mkdtemp(path.join(tmpdir(), "paseo-managed-unexpected-exit-"));
+      const signals: number[] = [];
+      const registry = createManagedProcessRegistry({
+        paseoHome: tempHome,
+        processTable: new FakeProcessTable([]),
+        terminateProcess: terminateWithTreeKill,
+        logger: createTestLogger(),
+        processTree: {
+          bootId: async () => "boot",
+          list: async () => [],
+          signal: (pid) => {
+            signals.push(pid);
+          },
+        },
+      });
+      const record = await registry.record({
+        owner: { provider: "claude", kind: "query" },
+        pid: 4101,
+        command: "claude",
+        args: [],
+        processTree: {
+          bootId: "boot",
+          entries: [{ pid: 4101, parentPid: 1, startedAt: "owner", exited: false }],
+        },
+      });
+      await expect(registry.remove(record.id)).rejects.toThrow("Incomplete process inspection");
+      await expect(registry.stop(record.id)).rejects.toThrow("termination timed out");
+      await expect(registry.stop(record.id)).rejects.toThrow("Incomplete process inspection");
+      expect(signals).toEqual([]);
+      expect(await registry.list()).toEqual([
+        { ...record, tree: { ...record.tree, inspectionPending: true } },
+      ]);
+    },
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "cold recovery stops a recorded child after its owner disappeared",
+    async () => {
+      tempHome = await mkdtemp(path.join(tmpdir(), "paseo-managed-tree-"));
+      const root = { pid: 4101, parentPid: 1, startedAt: "owner", exited: false };
+      const child = { pid: 4102, parentPid: 1, startedAt: "child", exited: false };
+      let entries: ProcessTreeEntry[] = [root, child];
+      let interrupted = true;
+      const signals: number[] = [];
+      const options = {
+        paseoHome: tempHome,
+        processTable: new FakeProcessTable([]),
+        terminateProcess: terminateWithTreeKill,
+        logger: createTestLogger(),
+        processTree: {
+          bootId: async () => "boot",
+          list: async () => entries,
+          signal: (pid: number) => {
+            if (interrupted) {
+              entries = [child];
+              throw new Error("Shutdown interrupted after inventory");
+            }
+            signals.push(pid);
+            entries = [];
+          },
+        },
+      };
+      const registry = createManagedProcessRegistry(options);
+      const record = await registry.record({
+        owner: { provider: "claude", kind: "query" },
+        pid: root.pid,
+        command: "claude",
+        args: [],
+        processTree: { bootId: "boot", entries: [root, child] },
+      });
+      await expect(registry.stop(record.id)).rejects.toThrow("termination timed out");
+      await expect(registry.remove(record.id)).rejects.toThrow("still running");
+      interrupted = false;
+      const restarted = createManagedProcessRegistry(options);
+      expect(await restarted.reapStale()).toEqual({
+        checked: 1,
+        dead: 0,
+        mismatched: 0,
+        removed: 1,
+        terminated: 1,
+        errors: [],
+      });
+      expect(signals).toEqual([4102]);
+      expect(await restarted.list()).toEqual([]);
+    },
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "failed tree publication sends no signals and cold recovery retains its inspection obligation",
+    async () => {
+      tempHome = await mkdtemp(path.join(tmpdir(), "paseo-managed-tree-publication-"));
+      const root = { pid: 4101, parentPid: 1, startedAt: "owner", exited: false };
+      const child = { pid: 4102, parentPid: 4101, startedAt: "child", exited: false };
+      let boot = "boot";
+      let publications = 0;
+      let inspections = 0;
+      const signals: number[] = [];
+      const options = {
+        paseoHome: tempHome,
+        processTable: new FakeProcessTable([]),
+        terminateProcess: terminateWithTreeKill,
+        logger: createTestLogger(),
+        processTree: {
+          bootId: async () => boot,
+          list: async () => {
+            inspections++;
+            return [root, child];
+          },
+          signal: (pid: number) => {
+            signals.push(pid);
+          },
+        },
+      };
+      const registry = createManagedProcessRegistry({
+        ...options,
+        syncPublication: async (filePath) => {
+          publications++;
+          if (publications === 3) {
+            // Model a failed complete publication whose rename never became durable.
+            const record = JSON.parse(await readFile(filePath, "utf8"));
+            record.tree = {
+              checkpoint: { bootId: "boot", entries: [root] },
+              inspectionPending: true,
+              state: "running",
+            };
+            await writeFile(filePath, JSON.stringify(record));
+            throw new Error("Publication failed");
+          }
+        },
+      });
+      const record = await registry.record({
+        owner: { provider: "claude", kind: "query" },
+        pid: root.pid,
+        command: "claude",
+        args: [],
+        processTree: { bootId: "boot", entries: [root] },
+      });
+      await expect(registry.stop(record.id)).rejects.toThrow("termination timed out");
+      expect(signals).toEqual([]);
+      expect(inspections).toBe(1);
+      const restarted = createManagedProcessRegistry(options);
+      await expect(restarted.stop(record.id)).rejects.toThrow("Incomplete process inspection");
+      expect(signals).toEqual([]);
+      expect(inspections).toBe(1);
+      expect((await restarted.list()).map((entry) => entry.id)).toEqual([record.id]);
+      // A new boot proves the previous processes are gone without touching current PIDs.
+      boot = "new-boot";
+      await restarted.stop(record.id);
+      expect(signals).toEqual([]);
+      expect(inspections).toBe(1);
+      expect(await restarted.list()).toEqual([]);
+    },
+  );
+
   test("handoff recovery recognizes the captured identity when executable paths are quoted", async () => {
     tempHome = await mkdtemp(path.join(tmpdir(), "paseo-managed-quoted-"));
     const command = path.join(tempHome, "Program Files", "node.exe");

@@ -87,6 +87,10 @@ class FakeManagedProcesses implements ManagedProcessRegistry {
 
   constructor(private readonly finishRecovery: Promise<void>) {}
 
+  async stop(): Promise<void> {
+    throw new Error("No tracked process tree in this fixture");
+  }
+
   async record(input: ManagedProcessRecordInput): Promise<ManagedProcessRecord> {
     return {
       id: "unused",

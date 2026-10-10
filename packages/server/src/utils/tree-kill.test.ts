@@ -139,6 +139,67 @@ afterEach(async () => {
 });
 
 describe("terminateWithTreeKill", () => {
+  test("restores a persisted tree after the original owner exited", async () => {
+    const entry = { pid: 102, parentPid: 1, startedAt: "child", exited: false };
+    const checkpoint = {
+      bootId: "same-boot",
+      entries: [{ pid: 101, parentPid: 1, startedAt: "owner", exited: false }, entry],
+    };
+    let alive = true;
+    const signals: number[] = [];
+    const published: unknown[] = [];
+    expect(
+      await terminateWithTreeKill(
+        { pid: 101, exitCode: 0, kill: () => true },
+        {
+          requireTreeProof: true,
+          initialTree: checkpoint,
+          gracefulTimeoutMs: 0,
+          forceTimeoutMs: 0,
+          onTreeObserved: async (tree) => {
+            published.push(tree);
+          },
+          processTree: {
+            bootId: async () => "same-boot",
+            list: async () => (alive ? [entry] : []),
+            signal: (pid) => {
+              signals.push(pid);
+              alive = false;
+            },
+          },
+        },
+      ),
+    ).toBe("terminated");
+    expect(signals).toEqual([102]);
+    expect(published).toContainEqual(checkpoint);
+  });
+
+  test("a different boot never signals PIDs from a persisted tree", async () => {
+    const checkpoint = {
+      bootId: "previous-boot",
+      entries: [{ pid: 101, parentPid: 1, startedAt: "owner", exited: false }],
+    };
+    expect(
+      await terminateWithTreeKill(
+        { pid: 101, kill: () => true },
+        {
+          requireTreeProof: true,
+          initialTree: checkpoint,
+          gracefulTimeoutMs: 0,
+          processTree: {
+            bootId: async () => "current-boot",
+            list: async () => {
+              throw new Error("Old boot must not inspect new PIDs");
+            },
+            signal: () => {
+              throw new Error("Old boot must not signal new PIDs");
+            },
+          },
+        },
+      ),
+    ).toBe("already-exited");
+  });
+
   test.runIf(process.platform !== "win32")(
     "strict termination refuses an exited owner with an unobserved surviving child",
     async () => {

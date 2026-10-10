@@ -1,3 +1,49 @@
+Persistent observed process trees — Linux, 2026-10-10
+Baseline: c38370f10 (plan-machine-handoff-macbook-vps)
+
+Claude POSIX queries now register with the existing managed-process store. Their ledger excludes
+SDK arguments and OS command lines, which may contain inline MCP credentials. A launch snapshot
+is marked running and cannot certify an unexpected root exit. Before stopping, the registry
+synchronizes an inspection obligation, verifies the root's birth identity, and publishes the
+observed closing tree before signals. Subsequent observations retain previously known identities.
+
+The real-process regression creates a Node owner and detached child. It interrupts shutdown after
+publishing the closing inventory, kills the owner, then creates a fresh registry. Startup recovery
+stops the recorded child and removes the record. A separate provider test exercises production
+Claude process launch/registration/close with a harmless Node executable and verifies that a
+sentinel command argument never enters the ledger. This is not an authenticated Claude turn.
+
+Deterministic cases cover launch-only root exit, a failed inventory publication with no signals,
+cold recovery retaining its unresolved obligation, a different boot without inspecting or
+signalling current PIDs, restored trees, and the existing concurrent/reused-PID stop behavior.
+A failed publication retains its candidate for in-memory retry; a cold unresolved observation is
+not cleared by a smaller current inventory. Unknown conversation outcomes remain separate.
+
+87 cases pass in the five affected suites; two platform-only cases are skipped on Linux. Server/CLI
+builds, root typecheck, lint and formatting pass. The first
+real-descendant fixture timed out because its generated script contained a literal newline inside
+a quoted string. The fixture now emits the delimiter with String.fromCharCode and fails immediately
+if its owner exits before reporting the child. An existing concurrency assertion also exposed an
+unnecessary await before process inspection; the final run includes its corrected ordering.
+
+Remaining: the spawn-to-ledger gap, descendants escaping before observation, stronger macOS birth
+identity, remaining writer surfaces, and semantic recovery of an interrupted conversation generation.
+The production handoff capability remains unadvertised. No main daemon was restarted. The physical
+MacBook/VPS trial and fresh authenticated provider validation remain outstanding.
+
+$ npx vitest run src/utils/tree-kill.test.ts src/server/managed-processes/managed-processes.test.ts src/server/agent/providers/claude/agent.spawn.test.ts src/server/bootstrap-managed-processes.test.ts src/server/agent/providers/opencode-server-manager.test.ts --bail=1
+
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  5 passed (5)
+      Tests  87 passed | 2 skipped (89)
+   Start at  06:41:07
+   Duration  16.51s (transform 9.58s, setup 179ms, import 12.80s, tests 2.28s, environment 1ms)
+
+
+
 Process shutdown proof — Linux, 2026-10-10
 Baseline: c5832f85e (plan-machine-handoff-macbook-vps)
 

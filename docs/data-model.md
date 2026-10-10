@@ -697,6 +697,23 @@ Every `watch_pull_request` watch in one file; each `PullRequestWatchStore` metho
 
 ---
 
+## Managed Process Store
+
+Keep OS process ownership in `runtime/managed-processes/`, alongside the existing helper records.
+Claude POSIX queries record a bounded tree with a boot identity and process birth identities;
+SDK arguments and command lines are excluded because they can contain inline credentials.
+A launch snapshot does not certify closure: the owner must still match when shutdown first
+observes its tree. Persist that closing inventory before sending signals. Startup recovery can
+then finish an interrupted stop even if the original owner has exited.
+
+Publish an inspection obligation before reading the process table, and synchronize the complete
+inventory before acknowledging it. A failed publication retains its exact candidate in memory for
+retry. After a crash, an unresolved inspection cannot be cleared from a smaller current process
+list; retain the record. A different OS boot proves the prior processes are gone without signalling
+reused PIDs. Process exit does not repair a conversation's unresolved persistence obligations.
+The [handoff boundary](refactors/cross-host-handoff-plan.md#boundary) tracks the remaining launch
+and process-coverage gaps.
+
 ## Restart Intents
 
 **Path:** `$PASEO_HOME/runtime/restart-intents.json`

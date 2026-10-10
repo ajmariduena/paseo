@@ -1,3 +1,10 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import {
+  createManagedProcessRegistry,
+  createSystemManagedProcessTable,
+} from "../../../managed-processes/managed-processes.js";
 import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
 import type {
@@ -651,6 +658,59 @@ describe("Claude spawn override", () => {
       expect(result.value.return).toHaveBeenCalledTimes(1);
     }
   });
+
+  test.runIf(process.platform !== "win32")(
+    "registers a real Claude process durably and removes it only after shutdown",
+    async () => {
+      const home = await mkdtemp(path.join(tmpdir(), "paseo-claude-ledger-"));
+      const registry = createManagedProcessRegistry({
+        paseoHome: home,
+        processTable: createSystemManagedProcessTable(),
+        terminateProcess: terminateWithTreeKill,
+        logger: createTestLogger(),
+      });
+      const query = createQueryMock([]);
+      const session = await new ClaudeAgentClient({
+        logger: createTestLogger(),
+        resolveBinary: async () => process.execPath,
+        managedProcesses: registry,
+        queryFactory: ({ options }) => {
+          if (!options.spawnClaudeCodeProcess) throw new Error("Missing launcher");
+          options.spawnClaudeCodeProcess({
+            command: process.execPath,
+            args: ["-e", "setInterval(() => {}, 1000)", "inline-secret-must-not-be-recorded"],
+            cwd: process.cwd(),
+            env: {},
+            signal: new AbortController().signal,
+          });
+          return query;
+        },
+      }).createSession({ provider: "claude", cwd: process.cwd() }, { agentId: "ledger-agent" });
+      try {
+        await session.listCommands();
+        const records = await registry.list();
+        expect(records).toHaveLength(1);
+        expect(records[0]).toMatchObject({
+          owner: { provider: "claude", kind: "query" },
+          metadata: { agentId: "ledger-agent", cwd: process.cwd() },
+          tree: { inspectionPending: false, checkpoint: { bootId: expect.any(String) } },
+          args: [],
+          identity: { commandLine: null, startedAt: null },
+        });
+        const file = await readFile(
+          path.join(home, "runtime", "managed-processes", `${records[0]!.id}.json`),
+          "utf8",
+        );
+        expect(file).not.toContain("inline-secret-must-not-be-recorded");
+        await session.close();
+        expect(await registry.list()).toEqual([]);
+        expect(query.close).toHaveBeenCalledTimes(1);
+      } finally {
+        await session.close();
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
 
   test("retains a runtime whose exit is uncertain and retries cleanup before closing its query", async () => {
     const query = createQueryMock([]);

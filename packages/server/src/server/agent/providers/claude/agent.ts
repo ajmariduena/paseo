@@ -158,7 +158,15 @@ import {
   type ResolvedProviderLaunch,
 } from "../../provider-launch-config.js";
 import { withTimeout } from "../../../../utils/promise-timeout.js";
-import { terminateWithTreeKill, type ProcessTerminator } from "../../../../utils/tree-kill.js";
+import {
+  captureProcessTree,
+  terminateWithTreeKill,
+  type ProcessTerminator,
+} from "../../../../utils/tree-kill.js";
+import type {
+  ManagedProcessRegistry,
+  ManagedProcessRecord,
+} from "../../../managed-processes/managed-processes.js";
 import { execCommand } from "../../../../utils/spawn.js";
 import { composeSystemPromptParts } from "../../system-prompt.js";
 
@@ -434,6 +442,7 @@ interface ClaudeAgentClientOptions {
   resolveVersion?: (signal?: AbortSignal) => Promise<string>;
   rewindSdk?: ClaudeRewindSdk;
   processTerminator?: ProcessTerminator;
+  managedProcesses?: ManagedProcessRegistry;
 }
 
 interface ClaudeAgentSessionOptions {
@@ -448,6 +457,7 @@ interface ClaudeAgentSessionOptions {
   resolveBinary: () => Promise<string>;
   rewindSdk?: ClaudeRewindSdk;
   processTerminator?: ProcessTerminator;
+  managedProcesses?: ManagedProcessRegistry;
 }
 
 type ClaudeThinkingEffort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -1553,6 +1563,7 @@ export class ClaudeAgentClient implements AgentClient {
   private readonly runtimeSettings?: ProviderRuntimeSettings;
   private readonly queryFactory?: ClaudeQueryFactory;
   private readonly processTerminator: ProcessTerminator;
+  private readonly managedProcesses?: ManagedProcessRegistry;
   private readonly resolveBinary: () => Promise<string>;
   private readonly resolveVersion: (signal?: AbortSignal) => Promise<string>;
   private readonly rewindSdk: ClaudeRewindSdk;
@@ -1563,6 +1574,7 @@ export class ClaudeAgentClient implements AgentClient {
     this.runtimeSettings = options.runtimeSettings;
     this.queryFactory = options.queryFactory;
     this.processTerminator = options.processTerminator ?? terminateWithTreeKill;
+    this.managedProcesses = options.managedProcesses;
     this.resolveBinary = options.resolveBinary ?? (() => resolveClaudeBinary(this.runtimeSettings));
     this.resolveVersion =
       options.resolveVersion ??
@@ -1591,6 +1603,7 @@ export class ClaudeAgentClient implements AgentClient {
       resolveBinary: this.resolveBinary,
       rewindSdk: this.rewindSdk,
       processTerminator: this.processTerminator,
+      managedProcesses: this.managedProcesses,
     });
   }
 
@@ -1621,6 +1634,7 @@ export class ClaudeAgentClient implements AgentClient {
       resolveBinary: this.resolveBinary,
       rewindSdk: this.rewindSdk,
       processTerminator: this.processTerminator,
+      managedProcesses: this.managedProcesses,
     });
   }
 
@@ -2111,6 +2125,7 @@ interface ClaudeQueryResources {
   query: Query;
   input: AsyncMessageInput<SDKUserMessage>;
   child: ChildProcess | null;
+  managedProcess: Promise<ManagedProcessRecord> | null;
   pump: Promise<void> | null;
   shutdown: Promise<void> | null;
   stopping: Promise<void> | null;
@@ -2140,6 +2155,7 @@ class ClaudeAgentSession implements AgentSession {
   private readonly logger: Logger;
   private readonly queryFactory?: ClaudeQueryFactory;
   private readonly processTerminator: ProcessTerminator;
+  private readonly managedProcesses?: ManagedProcessRegistry;
   private readonly resolveBinary: () => Promise<string>;
   private query: Query | null = null;
   private readonly harnessEnvironment: Record<string, string>;
@@ -2252,6 +2268,7 @@ class ClaudeAgentSession implements AgentSession {
     this.logger = options.logger.child({ agentId: this.agentId });
     this.queryFactory = options.queryFactory;
     this.processTerminator = options.processTerminator ?? terminateWithTreeKill;
+    this.managedProcesses = options.managedProcesses;
     this.resolveBinary = options.resolveBinary;
     this.rewindSdk = options.rewindSdk ?? realClaudeRewindSdk;
     this.contextUsage = new ClaudeContextUsageState(
@@ -3427,7 +3444,9 @@ class ClaudeAgentSession implements AgentSession {
     if (this.closed) throw new Error("Claude session is closed");
     if (this.queryOpening) return this.queryOpening;
     if (this.query && !this.queryRestartNeeded) {
-      return this.query;
+      const query = this.query;
+      await this.queryResources.get(query)?.managedProcess;
+      return query;
     }
     const opening = this.openQuery(launchMode);
     this.queryOpening = opening;
@@ -3475,6 +3494,7 @@ class ClaudeAgentSession implements AgentSession {
     this.mainTurnInFlight = false;
     let resource: ClaudeQueryResources | null = null;
     let spawnedChild: ChildProcess | null = null;
+    let managedProcess: Promise<ManagedProcessRecord> | null = null;
     this.query = claudeQuery(
       { prompt: input.iterable, options },
       {
@@ -3484,8 +3504,15 @@ class ClaudeAgentSession implements AgentSession {
         onChildProcess: (child) => {
           spawnedChild = child;
           this.childProcess = child;
+          if (this.managedProcesses && process.platform !== "win32") {
+            managedProcess = this.recordQueryProcess(child, this.managedProcesses);
+            void managedProcess.catch((err) =>
+              this.logger.error({ err }, "Claude process registration failed"),
+            );
+          }
           if (resource) {
             resource.child = child;
+            resource.managedProcess = managedProcess;
             resource.requiresNaturalDrain = true;
           }
           child.once("exit", (code, signal) => this.handleRuntimeExit(child, code, signal));
@@ -3497,6 +3524,7 @@ class ClaudeAgentSession implements AgentSession {
       query: this.query,
       input,
       child: spawnedChild,
+      managedProcess,
       pump: null,
       shutdown: null,
       stopping: null,
@@ -3506,6 +3534,7 @@ class ClaudeAgentSession implements AgentSession {
       requiresNaturalDrain: spawnedChild !== null,
     };
     this.queryResources.set(this.query, resource);
+    await managedProcess;
     const fastMode = this.resolveFastModeSetting();
     if (fastMode !== null) {
       await this.query.applyFlagSettings({ fastMode });
@@ -3516,6 +3545,22 @@ class ClaudeAgentSession implements AgentSession {
     // control plane can cause those calls to wait behind supportedModels().
     if (this.closed) throw new Error("Claude session is closed");
     return this.query;
+  }
+
+  private async recordQueryProcess(
+    child: ChildProcess,
+    registry: ManagedProcessRegistry,
+  ): Promise<ManagedProcessRecord> {
+    const processTree = await captureProcessTree(child);
+    return registry.record({
+      owner: { provider: "claude", kind: "query" },
+      pid: child.pid!,
+      command: child.spawnfile,
+      // SDK arguments can contain inline MCP credentials. Recovery uses birth identity.
+      args: [],
+      metadata: { agentId: this.agentId, cwd: this.config.cwd },
+      processTree,
+    });
   }
 
   private async awaitWithTimeout(
@@ -4192,7 +4237,11 @@ class ClaudeAgentSession implements AgentSession {
   private async finishStoppingQueryWriter(resource: ClaudeQueryResources): Promise<void> {
     resource.callbacks.abort.abort();
     // Inventory descendants before the SDK can reap their root process.
-    if (resource.child) {
+    if (resource.managedProcess && this.managedProcesses) {
+      const record = await resource.managedProcess;
+      await this.managedProcesses.stop(record.id);
+      resource.child = null;
+    } else if (resource.child) {
       const result = await this.processTerminator(resource.child, {
         requireTreeProof: process.platform !== "win32",
         gracefulTimeoutMs: 2_000,

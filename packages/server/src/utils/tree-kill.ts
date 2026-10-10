@@ -1,4 +1,5 @@
 import treeKill from "tree-kill";
+import { z } from "zod";
 import { setTimeout as delay } from "node:timers/promises";
 import { readFile } from "node:fs/promises";
 import { execCommand } from "./spawn.js";
@@ -10,7 +11,30 @@ export interface ProcessTreeEntry {
   exited: boolean;
 }
 
+export const ProcessTreeCheckpointSchema = z
+  .object({
+    bootId: z.string().min(1),
+    entries: z
+      .array(
+        z.object({
+          pid: z.number().int().positive(),
+          parentPid: z.number().int().nonnegative(),
+          startedAt: z.string().min(1),
+          exited: z.boolean(),
+        }),
+      )
+      .min(1)
+      .max(4096),
+  })
+  .refine(
+    (tree) => new Set(tree.entries.map((entry) => entry.pid)).size === tree.entries.length,
+    "Process checkpoint contains duplicate PIDs",
+  );
+
+export type ProcessTreeCheckpoint = z.infer<typeof ProcessTreeCheckpointSchema>;
+
 export interface ProcessTreeAccess {
+  bootId?(): Promise<string>;
   list(): Promise<ProcessTreeEntry[]>;
   signal(pid: number, signal: NodeJS.Signals): void;
 }
@@ -32,6 +56,10 @@ export interface TreeKillTarget {
 export interface TerminateWithTreeKillOptions {
   /** Root exit without an observed tree cannot certify managed writer shutdown. */
   requireTreeProof?: boolean;
+  initialTree?: ProcessTreeCheckpoint;
+  requireLiveRoot?: boolean;
+  beforeTreeInspection?: () => Promise<void>;
+  onTreeObserved?: (tree: ProcessTreeCheckpoint) => Promise<void>;
   gracefulSignal?: NodeJS.Signals;
   forceSignal?: NodeJS.Signals;
   gracefulTimeoutMs: number;
@@ -61,7 +89,7 @@ export async function terminateWithTreeKill(
   const active = activeTreeStops.get(child);
   if (active) return active;
   if (confirmedProcessTrees.has(child)) return "already-exited";
-  if (isProcessExited(child) && !pendingProcessTrees.has(child)) {
+  if (isProcessExited(child) && !pendingProcessTrees.has(child) && !options.initialTree) {
     if (options.requireTreeProof) {
       pendingProcessTrees.set(child, new Map());
       return "kill-timeout";
@@ -103,7 +131,10 @@ async function terminateTrackedProcessTree(
   options: TerminateWithTreeKillOptions,
 ): Promise<TerminateWithTreeKillResult> {
   const previous = pendingProcessTrees.get(child);
-  const tracked = previous ?? new Map<number, ProcessTreeEntry>();
+  const tracked =
+    previous ?? new Map(options.initialTree?.entries.map((entry) => [entry.pid, entry]));
+  let bootId: string | null = null;
+  let needsLiveRoot = options.requireLiveRoot === true;
   const access = options.processTree ?? {
     list: () => listPosixProcesses([rootPid, ...tracked.keys()]),
     signal: (pid: number, signal: NodeJS.Signals) => {
@@ -112,38 +143,34 @@ async function terminateTrackedProcessTree(
   };
   pendingProcessTrees.set(child, tracked);
 
-  function refresh(snapshot: ProcessTreeEntry[]): ProcessTreeEntry[] {
-    const current = new Map(snapshot.map((entry) => [entry.pid, entry]));
-    const remaining = new Map<number, ProcessTreeEntry>();
-    for (const entry of tracked.values()) {
-      const present = current.get(entry.pid);
-      // Do not signal a PID whose start identity changed. A zombie cannot
-      // execute code; its still-running descendants remain tracked separately.
-      if (present && present.startedAt === entry.startedAt && !present.exited) {
-        remaining.set(present.pid, present);
+  async function inspect(): Promise<ProcessTreeEntry[]> {
+    if (options.beforeTreeInspection) await options.beforeTreeInspection();
+    const snapshot = await access.list();
+    if (needsLiveRoot) {
+      const root = snapshot.find((entry) => entry.pid === rootPid);
+      if (
+        !root ||
+        root.exited ||
+        root.startedAt !== tracked.get(rootPid)?.startedAt ||
+        isProcessExited(child)
+      ) {
+        throw new Error("Process exited before its closing inventory");
       }
+      needsLiveRoot = false;
     }
-    // Refresh descendants during the grace period, including descendants of a
-    // remembered child after the original owner has exited and it is reparented.
-    const children = new Map<number, ProcessTreeEntry[]>();
-    for (const entry of snapshot) {
-      const siblings = children.get(entry.parentPid) ?? [];
-      siblings.push(entry);
-      children.set(entry.parentPid, siblings);
-    }
-    for (const entry of remaining.values()) {
-      for (const descendant of children.get(entry.pid) ?? []) {
-        if (!descendant.exited && !remaining.has(descendant.pid)) {
-          tracked.set(descendant.pid, descendant);
-          remaining.set(descendant.pid, descendant);
-        }
-      }
-    }
-    return [...remaining.values()];
+    const remaining = refreshProcessTree(tracked, snapshot);
+    await publish();
+    return remaining;
   }
 
-  async function inspect(): Promise<ProcessTreeEntry[]> {
-    return refresh(await access.list());
+  async function publish(): Promise<void> {
+    if (options.onTreeObserved && bootId) {
+      const checkpoint = ProcessTreeCheckpointSchema.parse({
+        bootId,
+        entries: [...tracked.values()],
+      });
+      await options.onTreeObserved(checkpoint);
+    }
   }
 
   async function stopPhase(signal: NodeJS.Signals, timeoutMs: number): Promise<boolean> {
@@ -171,8 +198,17 @@ async function terminateTrackedProcessTree(
     return (await inspect()).length === 0;
   }
 
-  try {
+  async function initialize(): Promise<TerminateWithTreeKillResult | null> {
+    if (options.initialTree || options.onTreeObserved) {
+      bootId = await (access.bootId ?? readProcessBootId)();
+      if (options.initialTree && options.initialTree.bootId !== bootId) {
+        pendingProcessTrees.delete(child);
+        confirmedProcessTrees.add(child);
+        return "already-exited";
+      }
+    }
     if (tracked.size === 0) {
+      if (options.beforeTreeInspection) await options.beforeTreeInspection();
       const snapshot = await access.list();
       const root = snapshot.find((entry) => entry.pid === rootPid);
       if (!root || root.exited || isProcessExited(child)) {
@@ -183,8 +219,15 @@ async function terminateTrackedProcessTree(
         return "already-exited";
       }
       tracked.set(root.pid, root);
-      refresh(snapshot);
+      refreshProcessTree(tracked, snapshot);
+      await publish();
     }
+    return null;
+  }
+
+  try {
+    const initialResult = await initialize();
+    if (initialResult) return initialResult;
     if (await stopPhase(options.gracefulSignal ?? "SIGTERM", options.gracefulTimeoutMs)) {
       pendingProcessTrees.delete(child);
       confirmedProcessTrees.add(child);
@@ -202,6 +245,77 @@ async function terminateTrackedProcessTree(
     options.onError?.(error);
     return "kill-timeout";
   }
+}
+
+function refreshProcessTree(
+  tracked: Map<number, ProcessTreeEntry>,
+  snapshot: ProcessTreeEntry[],
+): ProcessTreeEntry[] {
+  const current = new Map(snapshot.map((entry) => [entry.pid, entry]));
+  const remaining = new Map<number, ProcessTreeEntry>();
+  for (const entry of tracked.values()) {
+    const present = current.get(entry.pid);
+    // Zombies cannot execute code. Remember their children independently.
+    if (present && present.startedAt === entry.startedAt && !present.exited) {
+      remaining.set(present.pid, present);
+    }
+  }
+  const children = new Map<number, ProcessTreeEntry[]>();
+  for (const entry of snapshot) {
+    const siblings = children.get(entry.parentPid) ?? [];
+    siblings.push(entry);
+    children.set(entry.parentPid, siblings);
+  }
+  for (const entry of remaining.values()) {
+    for (const descendant of children.get(entry.pid) ?? []) {
+      if (!descendant.exited && !remaining.has(descendant.pid)) {
+        tracked.set(descendant.pid, descendant);
+        remaining.set(descendant.pid, descendant);
+      }
+    }
+  }
+  return [...remaining.values()];
+}
+
+export async function readProcessBootId(): Promise<string> {
+  let value: string;
+  if (process.platform === "linux") {
+    value = await readFile("/proc/sys/kernel/random/boot_id", "utf8");
+  } else if (process.platform === "darwin") {
+    // bootsessionuuid identifies this boot; boottime changes with wall-clock corrections.
+    const output = await execCommand("sysctl", ["-n", "kern.bootsessionuuid"], { timeout: 5000 });
+    if (output.stderr.trim()) throw new Error("Boot identity lookup reported an error");
+    value = output.stdout;
+  } else {
+    throw new Error("Durable process tree identity is unavailable on this platform");
+  }
+  const uuid = value.trim().toLowerCase();
+  if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(uuid)) {
+    throw new Error("Invalid process boot identity");
+  }
+  return `${process.platform}:${uuid}`;
+}
+
+export async function captureProcessTree(child: TreeKillTarget): Promise<ProcessTreeCheckpoint> {
+  if (!child.pid || isProcessExited(child)) throw new Error("Process exited before tree capture");
+  const bootId = await readProcessBootId();
+  const entries = await listPosixProcesses([child.pid]);
+  const root = entries.find((entry) => entry.pid === child.pid);
+  if (!root || root.exited || isProcessExited(child))
+    throw new Error("Process exited during tree capture");
+  const tracked = new Map([[root.pid, root]]);
+  refreshProcessTree(tracked, entries);
+  return ProcessTreeCheckpointSchema.parse({ bootId, entries: [...tracked.values()] });
+}
+
+export async function isProcessTreeStopped(
+  checkpoint: ProcessTreeCheckpoint,
+  access?: ProcessTreeAccess,
+): Promise<boolean> {
+  if (checkpoint.bootId !== (await (access?.bootId ?? readProcessBootId)())) return true;
+  const tracked = new Map(checkpoint.entries.map((entry) => [entry.pid, entry]));
+  const snapshot = access ? await access.list() : await listPosixProcesses([...tracked.keys()]);
+  return refreshProcessTree(tracked, snapshot).length === 0;
 }
 
 async function listPosixProcesses(roots: number[]): Promise<ProcessTreeEntry[]> {
