@@ -257,6 +257,11 @@ test("source preparation keeps ownership fenced after uncertain cleanup and retr
       logger: createTestLogger(),
       ownership: sourceOwnership,
       archives: new HandoffArchiveStore(path.join(root, "source-archives")),
+      destination: {
+        withConversationArchive: async () => {
+          throw new Error("No previous transfer in this test");
+        },
+      },
       workspaces: { get: async () => workspace, list: async () => [workspace] },
       agents: new AgentStorage(path.join(root, "agents"), createTestLogger()),
       agentManager: {

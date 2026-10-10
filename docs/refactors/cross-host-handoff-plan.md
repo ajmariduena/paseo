@@ -438,8 +438,13 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   restart. Conversations without observed provenance require a source turn before a new capture;
   already prepared journals retain their recorded runtime. Native destination publication records
   its local installation, allowing review for a native return transfer before the first continued
-  turn. A context-mode destination with no provider turn has no saved native session; source
-  capture still rejects it. Re-exporting its prior history/context across another hop remains open.
+  turn. Before a context-mode destination opens a local runtime, it can transfer again using its
+  private verified archive. Three-hop coverage retains original provenance, history, provider
+  artifacts and pending notes after visible context copies are deleted or ignored. Review offers
+  context mode, and staging refuses a forced native choice. Restart and release checks reject
+  changed context or damaged archived history; see [checkpoint evidence](../qa-evidence/handoff-checkpoint-recovery.txt).
+  A conversation with both earlier context and new native history still refuses re-export until
+  those histories can be combined. An opened runtime without a saved session also requires recovery.
   Interrupted publication from older journals remains idempotent. Provider and real-daemon tests
   cover changed configuration, different roots/versions in one workspace, final metadata at close,
   legacy recovery and credential-environment preservation; see [runtime evidence](../qa-evidence/handoff-runtime.txt).

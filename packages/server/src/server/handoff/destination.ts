@@ -33,6 +33,7 @@ import {
 import {
   readHandoffBundle,
   readTransferredConversation,
+  handoffConversationOrigin,
   type VerifiedHandoffBundle,
 } from "./bundle.js";
 import { fetchHandoffHistory } from "./history.js";
@@ -233,11 +234,13 @@ export class HandoffDestination {
           };
           return { ...identity, native: blocked, context: blocked };
         }
-        const nativeReason = claudeNativeHandoffReason({
-          sourceVersion: conversation.cliVersion,
-          destinationVersion,
-          hasWorkflows: conversation.hasWorkflows,
-        });
+        const nativeReason =
+          conversation.nativeUnavailableReason ??
+          claudeNativeHandoffReason({
+            sourceVersion: conversation.cliVersion,
+            destinationVersion,
+            hasWorkflows: conversation.hasWorkflows,
+          });
         return {
           ...identity,
           native: { available: nativeReason === null, reason: nativeReason },
@@ -720,10 +723,7 @@ export class HandoffDestination {
     return {
       mode: handoffConversationMode(record, mapping.sourceAgentId),
       provider: conversation.provider,
-      sourceServerId: record.sourceServerId,
-      sourceWorkspaceId: record.sourceWorkspaceId,
-      sourceAgentId: mapping.sourceAgentId,
-      sourceCwd: bundle.sourceCwd,
+      ...handoffConversationOrigin(bundle, conversation),
       title: conversation.title,
       timeline: {
         ...page,
@@ -905,12 +905,51 @@ export class HandoffDestination {
     archive: VerifiedHandoffArchive,
   ): Promise<VerifiedHandoffBundle> {
     if (!record.binding) fail("invalid_state", "Destination content is not bound");
-    return readHandoffBundle(archive, {
+    const content = await readHandoffBundle(archive, {
       sourceServerId: record.sourceServerId,
       sourceWorkspaceId: record.sourceWorkspaceId,
       sourceAgentIds: record.sourceAgentIds,
       manifestDigest: record.binding.manifest.entrypoint.sha256,
     });
+    for (const conversation of content.bundle.conversations) {
+      if (
+        conversation.mode === "context" &&
+        handoffConversationMode(record, conversation.sourceAgentId) !== "context"
+      )
+        fail(
+          "unprepared_conversations",
+          "This conversation contains exported context, not a local native session",
+        );
+    }
+    return content;
+  }
+
+  /** Re-export from the private verified archive, independently of editable workspace copies. */
+  async withConversationArchive<T>(
+    agentId: string,
+    consume: (input: {
+      transferId: string;
+      reservationId: string;
+      sourceAgentId: string;
+      archive: VerifiedHandoffArchive;
+      content: VerifiedHandoffBundle;
+    }) => Promise<T>,
+  ): Promise<T> {
+    this.assertHealthy();
+    const transferId = this.identityOwners.get(agentId);
+    const record = transferId ? this.records.get(transferId) : undefined;
+    const mapping = record?.agentMappings.find((item) => item.destinationAgentId === agentId);
+    if (!record || record.state !== "active" || !record.binding || !mapping)
+      fail("not_found", "No active transfer contains this destination conversation");
+    return this.options.archives.withVerifiedArchive(record.transferId, async (archive) =>
+      consume({
+        transferId: record.transferId,
+        reservationId: record.reservationId,
+        sourceAgentId: mapping.sourceAgentId,
+        archive,
+        content: await this.readBundle(record, archive),
+      }),
+    );
   }
 
   private async verifyStaging(record: DestinationHandoffStatus): Promise<void> {

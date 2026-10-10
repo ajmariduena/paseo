@@ -1,10 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, realpath, rm } from "node:fs/promises";
+import { copyFile, mkdir, realpath, rm } from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { Logger } from "pino";
 import { z } from "zod";
-import { HandoffArchiveManifestSchema, HandoffTransferIdSchema } from "@getpaseo/protocol/handoff";
+import {
+  HandoffArchiveManifestSchema,
+  HandoffTransferIdSchema,
+  HandoffBlobSchema,
+  HandoffDigestSchema,
+} from "@getpaseo/protocol/handoff";
 import {
   HandoffIntegrationReviewSchema,
   type HandoffIntegrationReview,
@@ -41,7 +46,15 @@ import {
   previewWorkspace,
   listWorkspaceOmissions,
 } from "./workspace.js";
-import { packHandoffArchive, readHandoffBundle } from "./bundle.js";
+import {
+  packHandoffArchive,
+  readHandoffBundle,
+  HandoffHistoryOriginSchema,
+  handoffConversationOrigin,
+  type CapturedConversation,
+} from "./bundle.js";
+import { HandoffContextSchema, handoffContextDirectory } from "./context.js";
+import type { HandoffDestination } from "./destination.js";
 import {
   writeHandoffHistory,
   readHandoffHistory,
@@ -56,16 +69,29 @@ import {
   type HandoffCancellationInput,
 } from "./ownership.js";
 
-const AgentSchema = z.object({
+const AgentIdentitySchema = z.object({
   id: z.string().min(1),
   cwd: z.string().min(1),
   title: z.string().nullable(),
+  pendingRestartNote: z.array(RestartCancelledWorkSchema).max(1024).optional(),
+});
+const NativeAgentSchema = AgentIdentitySchema.extend({
+  // COMPAT(handoffSourceMode): added in v0.11.1, remove after 2027-04-10 once retained native preparations include a mode.
+  mode: z.literal("native").optional(),
   sessionId: z.string().uuid(),
   projectDirName: z.string().optional(),
-  pendingRestartNote: z.array(RestartCancelledWorkSchema).max(1024).optional(),
   // COMPAT(handoffCapturedRuntime): added in v0.11.1, remove after 2027-02-06 once older prepared transfers expire.
   runtime: ClaudeSessionRuntimeSchema.optional(),
 });
+const ContextAgentSchema = AgentIdentitySchema.extend({
+  mode: z.literal("context"),
+  context: HandoffContextSchema,
+  previousTransferId: HandoffTransferIdSchema,
+  previousManifestDigest: HandoffDigestSchema,
+  session: HandoffBlobSchema,
+  origin: HandoffHistoryOriginSchema,
+});
+const AgentSchema = z.discriminatedUnion("mode", [NativeAgentSchema, ContextAgentSchema]);
 const PreparedSchema = z.object({
   version: z.literal(1),
   transferId: HandoffTransferIdSchema,
@@ -81,6 +107,7 @@ interface SourceOptions {
   logger: Logger;
   ownership: HandoffOwnership;
   archives: HandoffArchiveStore;
+  destination: Pick<HandoffDestination, "withConversationArchive">;
   workspaces: Pick<WorkspaceRegistry, "get" | "list">;
   agents: AgentStorage;
   agentManager: Pick<
@@ -160,10 +187,16 @@ export class HandoffSource {
           refuse("invalid_source", "Conversation has not finished saving; retry the review");
         const reason = this.conversationBlockReason(record);
         if (reason) refuse(reason.code, reason.message);
-        const agent = this.nativeAgent({
+        const current = {
           ...record,
           persistence: live?.session?.describePersistence() ?? record.persistence,
-        });
+        };
+        if (!current.persistence) {
+          const { preview } = await this.contextAgent(current);
+          conversations.push({ ...identity, provider: "claude", state: "available", ...preview });
+          continue;
+        }
+        const agent = this.nativeAgent(current);
         const preview = await previewClaudeSession({
           handle: {
             provider: "claude",
@@ -314,7 +347,7 @@ export class HandoffSource {
         records.push(await this.options.agents.checkpointClosedAgent(id));
       }
       this.assertReviewedIntegrations(source.integrationReview, records);
-      const agents = records.map((record) => this.nativeAgent(record));
+      const agents: PreparedSource["agents"] = [];
       const directory = this.captureDirectory(source.id);
       await mkdir(this.options.directory, { recursive: true, mode: 0o700 });
       await rm(directory, { recursive: true, force: true });
@@ -326,9 +359,26 @@ export class HandoffSource {
         artifactDirectory: workspaceDirectory,
         expectedReviewDigest: source.workspaceReviewDigest,
       });
-      const conversations = [];
-      for (const [index, agent] of agents.entries()) {
+      const conversations: CapturedConversation[] = [];
+      for (const [index, record] of records.entries()) {
         const artifactDirectory = path.join(directory, `conversation-${index}`);
+        const historyPath = path.join(directory, `history-${index}.json`);
+        if (!record.persistence) {
+          const { agent } = await this.contextAgent(record, { artifactDirectory, historyPath });
+          agents.push(agent);
+          conversations.push({
+            sourceAgentId: agent.id,
+            title: agent.title,
+            artifactDirectory,
+            historyPath,
+            pendingRestartNote: agent.pendingRestartNote,
+            mode: "context",
+            origin: agent.origin,
+          });
+          continue;
+        }
+        const agent = this.nativeAgent(record);
+        agents.push(agent);
         await captureClaudeSession(this.captureInput(agent, agent.runtime, artifactDirectory));
         const events = await readCapturedClaudeHistory({
           artifactDirectory,
@@ -340,7 +390,6 @@ export class HandoffSource {
           events,
           records[index].createdAt,
         );
-        const historyPath = path.join(directory, `history-${index}.json`);
         await writeHandoffHistory(historyPath, {
           version: 1,
           sourceAgentId: agent.id,
@@ -483,7 +532,7 @@ export class HandoffSource {
         refuse("invalid_source", "This transfer does not contain readable history");
       const history = await readHandoffHistory(
         path.join(archive.blobsDirectory, conversation.history.sha256),
-        agentId,
+        conversation.origin?.sourceAgentId ?? agentId,
       );
       return fetchHandoffHistory(history, options);
     });
@@ -615,15 +664,17 @@ export class HandoffSource {
       await this.options.agentManager.checkpointPromptAnnotations(id);
       const record = await this.options.agents.checkpointClosedAgent(id);
       const captured = prepared.agents.find((agent) => agent.id === id);
-      if (
-        !record ||
-        !captured ||
-        record.lastStatus !== "closed" ||
-        record.cwd !== captured.cwd ||
+      if (!record || !captured || record.lastStatus !== "closed" || record.cwd !== captured.cwd)
+        refuse("source_changed", "Source conversation changed after capture");
+      if (captured.mode === "context") {
+        if (record.persistence || !isDeepStrictEqual(record.handoffContext, captured.context))
+          refuse("source_changed", "Source carried context changed after capture");
+      } else if (
         record.persistence?.sessionId !== captured.sessionId ||
         record.persistence?.metadata?.claudeProjectDirName !== captured.projectDirName
-      )
+      ) {
         refuse("source_changed", "Source conversation changed after capture");
+      }
       if (!isDeepStrictEqual(record.pendingRestartNote ?? [], captured.pendingRestartNote ?? []))
         refuse("source_changed", "Pending restart notes changed after capture");
       records.set(id, record);
@@ -652,11 +703,17 @@ export class HandoffSource {
       expectedReviewDigest: source.workspaceReviewDigest,
     });
     for (const [index, agent] of prepared.agents.entries()) {
+      const record = records.get(agent.id);
+      if (!record) refuse("source_changed", "Captured conversation is missing from the source");
+      if (agent.mode === "context") {
+        const current = await this.contextAgent(record);
+        if (!isDeepStrictEqual(current.agent, agent))
+          refuse("source_changed", "Source carried history changed after capture");
+        continue;
+      }
       // COMPAT(handoffCapturedRuntime): added in v0.11.1, remove after 2027-02-06 once older prepared transfers expire.
       const runtime = agent.runtime ?? prepared.runtime;
       if (!runtime) refuse("invalid_source", "Source provider configuration is missing");
-      const record = records.get(agent.id);
-      if (!record) refuse("source_changed", "Captured conversation is missing from the source");
       if (
         agent.runtime &&
         !isDeepStrictEqual(agent.runtime, readClaudeSessionRuntime(record.persistence ?? undefined))
@@ -690,19 +747,123 @@ export class HandoffSource {
     await this.options.archives.withVerifiedArchive(source.id, async (archive) => {
       if (archive.manifest.entrypoint.sha256 !== prepared.manifest.entrypoint.sha256)
         refuse("source_changed", "Source archive changed after capture");
+      const { bundle } = await readHandoffBundle(archive, {
+        sourceServerId: this.options.serverId,
+        sourceWorkspaceId: source.workspaceId,
+        sourceAgentIds: source.agentIds,
+        manifestDigest: prepared.manifest.entrypoint.sha256,
+      });
+      for (const agent of prepared.agents) {
+        if (agent.mode !== "context") continue;
+        const captured = bundle.conversations.find(
+          (conversation) => conversation.sourceAgentId === agent.id,
+        );
+        if (
+          captured?.mode !== "context" ||
+          !isDeepStrictEqual(captured.history, agent.context.history) ||
+          !isDeepStrictEqual(captured.session, agent.session) ||
+          !isDeepStrictEqual(captured.origin, agent.origin)
+        )
+          refuse(
+            "source_changed",
+            "Captured context differs from the original verified conversation",
+          );
+      }
     });
+  }
+
+  private async contextAgent(
+    record: StoredAgentRecord,
+    capture?: { artifactDirectory: string; historyPath: string },
+  ) {
+    if (record.provider !== "claude" || record.persistence || !record.handoffContext?.pending)
+      refuse("invalid_source", "Conversation has no saved session or pending exported context");
+    if (record.runtimeGeneration || (record.promptAnnotations?.entryCount ?? 0) !== 0)
+      refuse(
+        "invalid_source",
+        "This conversation has local activity that requires a saved provider session",
+      );
+    return this.options.destination.withConversationArchive(
+      record.id,
+      async ({ transferId, reservationId, sourceAgentId, archive, content }) => {
+        const conversation = content.bundle.conversations.find(
+          (item) => item.sourceAgentId === sourceAgentId,
+        );
+        const session = content.sessions.get(sourceAgentId);
+        if (!conversation?.history || !session)
+          refuse("invalid_source", "Original exported conversation is incomplete");
+        const origin = handoffConversationOrigin(content.bundle, conversation);
+        const context = {
+          sourceServerId: origin.sourceServerId,
+          sourceAgentId: origin.sourceAgentId,
+          sourceCwd: origin.sourceCwd,
+          directory: handoffContextDirectory(reservationId, record.id),
+          history: conversation.history,
+          pending: true,
+        };
+        if (!isDeepStrictEqual(record.handoffContext, context))
+          refuse("source_changed", "Carried context differs from its original verified archive");
+        const agent = ContextAgentSchema.parse({
+          id: record.id,
+          cwd: record.cwd,
+          title: record.title ?? null,
+          mode: "context",
+          context,
+          ...(record.pendingRestartNote !== undefined
+            ? { pendingRestartNote: record.pendingRestartNote }
+            : {}),
+          previousTransferId: transferId,
+          previousManifestDigest: archive.manifest.entrypoint.sha256,
+          session: conversation.session,
+          origin,
+        });
+        if (capture) {
+          const blobs = path.join(capture.artifactDirectory, "blobs");
+          await mkdir(blobs, { recursive: true, mode: 0o700 });
+          await copyFile(
+            path.join(archive.blobsDirectory, conversation.session.sha256),
+            path.join(capture.artifactDirectory, "manifest.json"),
+          );
+          for (const file of session.files)
+            await copyFile(
+              path.join(archive.blobsDirectory, file.blob.sha256),
+              path.join(blobs, file.blob.sha256),
+            );
+          await copyFile(
+            path.join(archive.blobsDirectory, conversation.history.sha256),
+            capture.historyPath,
+          );
+        }
+        return {
+          agent,
+          preview: {
+            cliVersion: session.cliVersion,
+            hasWorkflows: session.files.some((file) => file.path.startsWith("session/workflows/")),
+            artifactBytes: session.files.reduce((sum, file) => sum + file.blob.size, 0),
+            nativeUnavailableReason:
+              "This conversation contains exported context, not a local native session",
+          },
+        };
+      },
+    );
   }
 
   private nativeAgent(record: StoredAgentRecord) {
     if (record.provider !== "claude" || !record.persistence)
       refuse("invalid_source", "Conversation has no saved session that can be exported");
+    if (record.handoffContext)
+      refuse(
+        "invalid_source",
+        "This conversation requires its earlier exported context and new native history to be combined before another transfer",
+      );
     const runtime = readClaudeSessionRuntime(record.persistence);
     if (!runtime)
       refuse(
         "invalid_source",
         "This conversation has no recorded Claude runtime. Resume it on the source host before transferring it.",
       );
-    const agent = AgentSchema.parse({
+    const agent = NativeAgentSchema.parse({
+      mode: "native",
       id: record.id,
       cwd: record.cwd,
       title: record.title ?? null,
@@ -713,7 +874,7 @@ export class HandoffSource {
     return { ...agent, runtime };
   }
   private captureInput(
-    agent: z.infer<typeof AgentSchema>,
+    agent: z.infer<typeof NativeAgentSchema>,
     runtime: NonNullable<PreparedSource["runtime"]>,
     artifactDirectory: string,
   ) {

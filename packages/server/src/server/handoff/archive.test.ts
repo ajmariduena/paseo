@@ -26,6 +26,7 @@ afterEach(async () => {
 async function readNoteBundle(
   version: number,
   notes?: Array<{ id: string; kind: string; label: string }>,
+  metadata: { mode?: "native" | "context"; origin?: unknown; history?: typeof blob } = {},
 ) {
   const conversations = notes
     ? [
@@ -36,6 +37,7 @@ async function readNoteBundle(
           mode: "native",
           session: blob,
           pendingRestartNote: notes,
+          ...metadata,
         },
       ]
     : [];
@@ -79,6 +81,29 @@ async function readNoteBundle(
 
 test.each([1, 2])("reads a workspace-only archive using bundle version %i", async (version) => {
   expect((await readNoteBundle(version)).bundle.version).toBe(version);
+});
+
+const originalContext = {
+  sourceServerId: "original-host",
+  sourceWorkspaceId: "original-workspace",
+  sourceAgentId: "original-agent",
+  sourceCwd: "/original",
+};
+test.each([
+  {
+    metadata: { mode: "context" as const, history: blob },
+    message: "requires its original history and provenance",
+  },
+  {
+    metadata: { mode: "context" as const, origin: originalContext },
+    message: "requires its original history and provenance",
+  },
+  {
+    metadata: { mode: "native" as const, origin: originalContext },
+    message: "Native history cannot replace its source identity",
+  },
+])("rejects incomplete or misattributed context: $metadata", async ({ metadata, message }) => {
+  await expect(readNoteBundle(2, [], metadata)).rejects.toThrow(message);
 });
 
 test.each([

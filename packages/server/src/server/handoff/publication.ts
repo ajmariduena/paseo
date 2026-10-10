@@ -8,7 +8,7 @@ import {
 import { parseStoredAgentRecord, type AgentStorage } from "../agent/agent-storage.js";
 import type { AgentManager } from "../agent/agent-manager.js";
 import type { DestinationHandoffStatus } from "./destination.js";
-import type { HandoffBundle } from "./bundle.js";
+import { handoffConversationOrigin, type HandoffBundle } from "./bundle.js";
 import type { WorkspaceManifest } from "./workspace.js";
 import { handoffContextDirectory } from "./context.js";
 
@@ -69,12 +69,13 @@ export function createHandoffPublication(stores: PublicationStores): HandoffPubl
         if (!exported) throw new Error("Captured conversation is missing");
         if (conversation.mode === "context" && !exported.history)
           throw new Error("Captured history is missing");
+        const origin = handoffConversationOrigin(bundle, exported);
         const handoffContext =
           conversation.mode === "context"
             ? {
-                sourceServerId: record.sourceServerId,
-                sourceAgentId: mapping.sourceAgentId,
-                sourceCwd: bundle.sourceCwd,
+                sourceServerId: origin.sourceServerId,
+                sourceAgentId: origin.sourceAgentId,
+                sourceCwd: origin.sourceCwd,
                 directory: handoffContextDirectory(
                   record.reservationId,
                   mapping.destinationAgentId,

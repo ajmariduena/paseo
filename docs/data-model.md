@@ -136,7 +136,13 @@ Recovering that uncertainty from provider artifacts remains implementation work.
 Unsent restart notes travel in the verified handoff bundle and stay pending in the destination
 record. Activation does not acknowledge delivery. New bundles use version 2 so older
 readers reject them explicitly; version 1 archives remain readable. Source release checks that the
-captured note set is unchanged. Prior, unconsumed handoff context still needs multi-hop transport.
+captured note set is unchanged.
+
+Before a destination opens its first local runtime, another context transfer uses the private
+verified archive and retains the original history identity. Workspace copies may be edited,
+deleted or ignored; they are not the authority for re-export. Never resume those historical native
+artifacts as the destination's own session. Once new local history exists, it must travel with the
+earlier context. Combining those histories remains implementation work, so that transfer refuses.
 
 ### Nested: SerializableConfig
 

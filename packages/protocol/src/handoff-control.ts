@@ -25,6 +25,7 @@ export const HandoffConversationPreviewSchema = z.discriminatedUnion("state", [
     provider: z.literal("claude"),
     cliVersion: z.string().min(1).max(128),
     hasWorkflows: z.boolean(),
+    nativeUnavailableReason: z.string().min(1).max(4096).optional(),
     artifactBytes: z.number().int().nonnegative().optional(),
   }),
   HandoffConversationIdentitySchema.extend({

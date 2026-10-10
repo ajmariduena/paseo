@@ -19,14 +19,21 @@ import {
   type ClaudeSessionArchive,
 } from "../agent/providers/claude/handoff.js";
 
+export const HandoffHistoryOriginSchema = z.object({
+  sourceServerId: z.string().min(1).max(512),
+  sourceWorkspaceId: z.string().min(1).max(512),
+  sourceAgentId: z.string().min(1).max(512),
+  sourceCwd: z.string().min(1).max(8192),
+});
 const ConversationSchema = z.object({
   sourceAgentId: z.string().min(1).max(512),
   title: z.string().max(4096).nullable(),
   provider: z.literal("claude"),
-  mode: z.literal("native"),
+  mode: z.enum(["native", "context"]),
   session: HandoffBlobSchema,
   history: HandoffBlobSchema.optional(),
   pendingRestartNote: z.array(RestartCancelledWorkSchema).max(1024).optional(),
+  origin: HandoffHistoryOriginSchema.optional(),
 });
 const BundleSchema = z.object({
   // COMPAT(handoffBundleV1): added in v0.11.1, remove after 2027-04-10 once retained transfers use v2.
@@ -45,6 +52,22 @@ export interface CapturedConversation {
   artifactDirectory: string;
   historyPath?: string;
   pendingRestartNote?: RestartCancelledWork[];
+  mode?: "native" | "context";
+  origin?: z.infer<typeof HandoffHistoryOriginSchema>;
+}
+
+export function handoffConversationOrigin(
+  bundle: HandoffBundle,
+  conversation: HandoffBundle["conversations"][number],
+) {
+  return (
+    conversation.origin ?? {
+      sourceServerId: bundle.sourceServerId,
+      sourceWorkspaceId: bundle.sourceWorkspaceId,
+      sourceAgentId: conversation.sourceAgentId,
+      sourceCwd: bundle.sourceCwd,
+    }
+  );
 }
 interface PackInput {
   store: HandoffArchiveStore;
@@ -87,6 +110,16 @@ function parseBundle(value: unknown): HandoffBundle {
   if (bundle.version === 1 && carriesNotes)
     reject("invalid_artifact", "Pending restart notes require handoff bundle version 2");
   for (const conversation of bundle.conversations) {
+    if (
+      conversation.mode === "context" &&
+      (bundle.version !== 2 || !conversation.origin || !conversation.history)
+    )
+      reject(
+        "invalid_artifact",
+        "Context-only conversation requires its original history and provenance",
+      );
+    if (conversation.mode === "native" && conversation.origin)
+      reject("invalid_artifact", "Native history cannot replace its source identity");
     const noteIds = conversation.pendingRestartNote?.map((note) => note.id) ?? [];
     if (new Set(noteIds).size !== noteIds.length)
       reject("invalid_artifact", "Duplicate pending restart note in handoff");
@@ -113,7 +146,10 @@ export async function packHandoffArchive(input: PackInput): Promise<HandoffArchi
     add(descriptor, manifestPath);
     let history;
     if (conversation.historyPath) {
-      await readHandoffHistory(conversation.historyPath, conversation.sourceAgentId);
+      await readHandoffHistory(
+        conversation.historyPath,
+        conversation.origin?.sourceAgentId ?? conversation.sourceAgentId,
+      );
       history = await describeFile(conversation.historyPath, HANDOFF_HISTORY_MAX_BYTES);
       add(history, conversation.historyPath);
     }
@@ -121,9 +157,10 @@ export async function packHandoffArchive(input: PackInput): Promise<HandoffArchi
       sourceAgentId: conversation.sourceAgentId,
       title: conversation.title,
       provider: "claude",
-      mode: "native",
+      mode: conversation.mode ?? "native",
       session: descriptor,
       ...(history ? { history } : {}),
+      ...(conversation.origin ? { origin: conversation.origin } : {}),
       ...(conversation.pendingRestartNote?.length
         ? { pendingRestartNote: conversation.pendingRestartNote }
         : {}),
@@ -186,7 +223,7 @@ export async function readHandoffBundle(
       requireBlob(conversation.history);
       await readHandoffHistory(
         path.join(archive.blobsDirectory, conversation.history.sha256),
-        conversation.sourceAgentId,
+        conversation.origin?.sourceAgentId ?? conversation.sourceAgentId,
       );
     }
     metadataBytes += conversation.session.size;
@@ -248,7 +285,7 @@ export async function readTransferredConversation(input: {
       conversation.history,
       HANDOFF_HISTORY_MAX_BYTES,
     ),
-    input.sourceAgentId,
+    conversation.origin?.sourceAgentId ?? input.sourceAgentId,
   );
   return { bundle, conversation, history };
 }

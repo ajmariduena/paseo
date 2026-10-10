@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import { HANDOFF_CHUNK_BASE64_CHARS } from "./handoff.js";
+import { HandoffConversationPreviewSchema } from "./handoff-control.js";
 import {
   AgentSnapshotPayloadSchema,
   AgentTimelineItemPayloadSchema,
@@ -15,6 +16,44 @@ import {
   MutableDaemonConfigSchema,
   validateQuickPrompts,
 } from "./messages.js";
+
+test.each([undefined, "This conversation contains exported context"])(
+  "handoff review accepts native availability metadata without requiring it: %s",
+  (reason) => {
+    const conversation = {
+      agentId: "source-agent",
+      title: null,
+      provider: "claude",
+      state: "available",
+      cliVersion: "2.1.295",
+      hasWorkflows: false,
+      ...(reason ? { nativeUnavailableReason: reason } : {}),
+    };
+    const request = {
+      type: "workspace.handoff.preview_destination.request",
+      requestId: "review",
+      conversations: [conversation],
+    };
+    expect(SessionInboundMessageSchema.parse(request)).toEqual(request);
+    expect(HandoffConversationPreviewSchema.parse(conversation)).toEqual(conversation);
+    const legacy = z.object({
+      agentId: z.string(),
+      title: z.string().nullable(),
+      provider: z.literal("claude"),
+      state: z.literal("available"),
+      cliVersion: z.string(),
+      hasWorkflows: z.boolean(),
+    });
+    expect(legacy.parse(conversation)).toEqual({
+      agentId: "source-agent",
+      title: null,
+      provider: "claude",
+      state: "available",
+      cliVersion: "2.1.295",
+      hasWorkflows: false,
+    });
+  },
+);
 
 test("handoff chunks reject oversized data, unsafe offsets and path-shaped transfer IDs", () => {
   const message = {

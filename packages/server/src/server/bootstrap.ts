@@ -1641,6 +1641,7 @@ export async function createPaseoDaemon(
     logger,
     ownership: handoffOwnership,
     archives: handoffArchives,
+    destination: handoffDestination,
     workspaces: workspaceRegistry,
     agents: agentStorage,
     agentManager,

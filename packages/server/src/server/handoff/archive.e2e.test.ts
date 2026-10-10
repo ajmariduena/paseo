@@ -21,8 +21,9 @@ import { createTestPaseoDaemon, type TestPaseoDaemon } from "../test-utils/paseo
 import { claudeProjectDirSync } from "../agent/providers/claude/project-dir.js";
 import { HandoffArchiveStore } from "./archive.js";
 import { readHandoffBundle } from "./bundle.js";
+import { prependHandoffContext } from "./context.js";
 import { PromptAnnotationStore } from "../agent/prompt-annotations.js";
-import { parseStoredAgentRecord } from "../agent/agent-storage.js";
+import { parseStoredAgentRecord, type StoredAgentRecord } from "../agent/agent-storage.js";
 import { captureWorkspace, packWorkspaceArchive, restoreWorkspaceArchive } from "./workspace.js";
 
 const exec = promisify(execFile);
@@ -1829,6 +1830,198 @@ test("pausing between chunks keeps verified source data and resumes only missing
   ).toBe("verified");
 }, 30_000);
 
+async function contextRecord(host: Host, agentId: string) {
+  const record = await host.daemon.daemon.agentStorage.get(agentId);
+  if (!record?.workspaceId || !record.handoffContext)
+    throw new Error("Missing context conversation");
+  expect(record.persistence).toBeNull();
+  expect(record.handoffContext.pending).toBe(true);
+  return { ...record, workspaceId: record.workspaceId, handoffContext: record.handoffContext };
+}
+
+async function expectContextReleaseChecks(
+  host: Host,
+  agentId: string,
+  originalTransferId: string,
+  transferId: string,
+) {
+  const record = await contextRecord(host, agentId);
+  await host.daemon.daemon.agentStorage.upsert({
+    ...record,
+    handoffContext: { ...record.handoffContext, pending: false },
+  });
+  expect((await host.client.handoffReleaseSource({ transferId })).error?.code).toBe(
+    "source_changed",
+  );
+  await host.daemon.daemon.agentStorage.upsert(record);
+  const original = await host.daemon.daemon.handoffArchives.withVerifiedArchive(
+    originalTransferId,
+    async (archive) => {
+      const file = path.join(archive.blobsDirectory, record.handoffContext.history.sha256);
+      return { file, bytes: await readFile(file) };
+    },
+  );
+  await writeFile(original.file, "damaged history");
+  expect((await host.client.handoffReleaseSource({ transferId })).error?.code).toBe(
+    "integrity_mismatch",
+  );
+  await writeFile(original.file, original.bytes);
+}
+
+async function expectContextReturnPreview(source: Host, destination: Host, workspaceId: string) {
+  const preview = await source.client.handoffPreviewSource({ workspaceId });
+  expect(preview.error).toBeNull();
+  expect(preview.result?.conversations[0]?.state).toBe("available");
+  if (!preview.result) throw new Error("Missing context return preview");
+  const compatibility = await destination.client.handoffPreviewDestination({
+    conversations: preview.result.conversations,
+  });
+  expect(compatibility.result?.conversations[0]).toMatchObject({
+    native: {
+      available: false,
+      reason: "This conversation contains exported context, not a local native session",
+    },
+    context: { available: true, reason: null },
+  });
+  const refusedId = randomUUID();
+  await expect(
+    prepareWorkspaceHandoff({
+      transferId: refusedId,
+      workspaceId,
+      destinationParent: root,
+      continuationMode: "native",
+      source: source.client,
+      destination: destination.client,
+    }),
+  ).rejects.toThrow("exported context, not a local native session");
+  await cancelWorkspaceHandoff({
+    transferId: refusedId,
+    sourceServerId: source.daemon.daemon.getServerId(),
+    getSource: () => source.client,
+    destination: destination.client,
+  });
+}
+
+async function expectContextHandoffReturn(input: {
+  source: Host;
+  destination: Host;
+  agentId: string;
+  originalAgentId: string;
+  originalCwd: string;
+  originalTranscript: string;
+  originalTransferId: string;
+  sessionId: string;
+  notes: NonNullable<StoredAgentRecord["pendingRestartNote"]>;
+}) {
+  let { source, destination } = input;
+  const record = await contextRecord(destination, input.agentId);
+  await writeFile(path.join(record.cwd, ".gitignore"), "handoff-context-*/\n");
+  await rm(path.join(record.cwd, record.handoffContext.directory), { recursive: true });
+  await rm(input.originalTranscript);
+  await expectContextReturnPreview(destination, source, record.workspaceId);
+  const returnTransferId = randomUUID();
+  await prepareWorkspaceHandoff({
+    transferId: returnTransferId,
+    workspaceId: record.workspaceId,
+    destinationParent: root,
+    continuationMode: "context",
+    source: destination.client,
+    destination: source.client,
+  });
+  await expectContextReleaseChecks(
+    destination,
+    input.agentId,
+    input.originalTransferId,
+    returnTransferId,
+  );
+  await stopHost(source);
+  await stopHost(destination);
+  source = await startHost("source-notes", true);
+  destination = await startHost("destination-notes", true);
+  const returned = await activateWorkspaceHandoff({
+    transferId: returnTransferId,
+    sourceServerId: destination.daemon.daemon.getServerId(),
+    getSource: () => destination.client,
+    destination: source.client,
+  });
+  expect(returned.state).toBe("active");
+  const returnedAgent = await contextRecord(source, returned.agentMappings[0].destinationAgentId);
+  expect(returnedAgent.pendingRestartNote).toEqual(input.notes);
+  expect(returnedAgent.carriedPrompt).toBeUndefined();
+  expect(returnedAgent.handoffContext).toMatchObject({
+    sourceAgentId: input.originalAgentId,
+    sourceCwd: input.originalCwd,
+  });
+  const history = await source.client.handoffGetConversationHistory({ agentId: returnedAgent.id });
+  expect(history.error).toBeNull();
+  expect(history.result?.sourceAgentId).toBe(input.originalAgentId);
+  expect(JSON.stringify(history.result?.timeline.entries)).toContain("Earlier work");
+  const prompt = await prependHandoffContext({
+    cwd: returnedAgent.cwd,
+    context: returnedAgent.handoffContext,
+    prompt: "Continue here",
+  });
+  expect(prompt).toContain("Earlier work");
+  expect(prompt).toContain("Continue here");
+  expect(
+    await readFile(
+      path.join(
+        returnedAgent.cwd,
+        returnedAgent.handoffContext.directory,
+        "native",
+        "transcript.jsonl",
+      ),
+      "utf8",
+    ),
+  ).toContain("Earlier work");
+  const nextId = randomUUID();
+  await prepareWorkspaceHandoff({
+    transferId: nextId,
+    workspaceId: returnedAgent.workspaceId,
+    destinationParent: root,
+    continuationMode: "context",
+    source: source.client,
+    destination: destination.client,
+  });
+  const next = await activateWorkspaceHandoff({
+    transferId: nextId,
+    sourceServerId: source.daemon.daemon.getServerId(),
+    getSource: () => source.client,
+    destination: destination.client,
+  });
+  const nextAgent = await contextRecord(destination, next.agentMappings[0].destinationAgentId);
+  expect(nextAgent.handoffContext).toMatchObject({
+    sourceServerId: returnedAgent.handoffContext.sourceServerId,
+    sourceAgentId: input.originalAgentId,
+    sourceCwd: input.originalCwd,
+    history: returnedAgent.handoffContext.history,
+  });
+  expect(nextAgent.pendingRestartNote).toEqual(input.notes);
+  const nextHistory = await destination.client.handoffGetConversationHistory({
+    agentId: nextAgent.id,
+  });
+  expect(nextHistory.result?.timeline.entries).toEqual(history.result?.timeline.entries);
+  const retiredHistory = await source.client.fetchAgentTimeline(returnedAgent.id);
+  expect(retiredHistory.entries.map((entry) => entry.item)).toEqual(
+    history.result?.timeline.entries.map((entry) => entry.item),
+  );
+  expect(source.daemon.daemon.agentManager.getAgent(returnedAgent.id)).toBeNull();
+  // Once local work exists, exporting only the older context would discard it.
+  await destination.daemon.daemon.agentStorage.upsert({
+    ...nextAgent,
+    persistence: { provider: "claude", sessionId: input.sessionId },
+    handoffContext: { ...nextAgent.handoffContext, pending: false },
+  });
+  const continued = await destination.client.handoffPreviewSource({
+    workspaceId: nextAgent.workspaceId,
+  });
+  expect(continued.result?.conversations[0]).toMatchObject({
+    state: "blocked",
+    reason:
+      "This conversation requires its earlier exported context and new native history to be combined before another transfer",
+  });
+}
+
 for (const continuationMode of ["native", "context"] as const) {
   test.skipIf(process.platform === "win32")(
     `preserves unsent restart notes through ${continuationMode} activation and restart`,
@@ -1964,6 +2157,18 @@ for (const continuationMode of ["native", "context"] as const) {
         expect(returnedAgent?.pendingRestartNote).toEqual([...notes, late]);
         expect(returnedAgent?.persistence?.sessionId).toBe(sessionId);
         expect(returnedAgent?.carriedPrompt).toBeUndefined();
+      } else {
+        await expectContextHandoffReturn({
+          source,
+          destination,
+          agentId: destinationAgentId,
+          originalAgentId: agentId,
+          originalCwd: cwd,
+          originalTranscript: path.join(project, `${sessionId}.jsonl`),
+          originalTransferId: transferId,
+          sessionId,
+          notes: [...notes, late],
+        });
       }
     },
     30_000,

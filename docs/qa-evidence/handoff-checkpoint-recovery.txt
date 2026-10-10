@@ -1,6 +1,6 @@
 Handoff persistence recovery foundations — 2026-10-10
 
-Unsent restart-note transport:
+Unsent notes and context before the first local runtime:
 - The regression first allowed source release after a pending note was added to the closed
   record following capture. Preparation now captures the exact note set in its journal and
   verified bundle, and release refuses a changed set. Cancellation and a fresh capture recover.
@@ -8,30 +8,55 @@ Unsent restart-note transport:
   opening a provider. Both cases restart both hosts before activation and the destination again
   afterward. The native case then returns to the original host before any provider turn, retaining
   the same native session ID and both notes.
+- The context return regression first failed at review: no local native session existed. The
+  source now re-exports the private verified archive, retaining original history provenance.
+  The extended case removes the original provider transcript and the visible context directory,
+  ignores context directories in the workspace, returns the conversation and transfers it again.
+  All three hops retain the original history, native artifacts and pending notes. Prompt assembly
+  after the return includes the prior-only text and the current request. After the third hop,
+  the retired source still serves the same readable rows without loading an agent.
+- A forced native choice refuses before installation and can be cancelled. A changed carried
+  context and a damaged private history blob each refuse source release, then recover after repair.
+  Both hosts restart before return activation. Local native history requires combining the old
+  context with the new transcript; the source refuses that case rather than dropping the old rows.
 - New bundles use version 2. Older readers reject the bundle instead of silently stripping notes;
   retained version 1 bundles remain readable. Archive cases reject version 1 carrying notes,
   duplicate note IDs and excess note counts. A workspace-only RPC case also passes with version 2,
   including a lost release response, host restarts and activation with the source offline after
   destination receipt acceptance.
-- Validation: 29 archive cases and three selected network cases passed. The network cases use
+- Current validation: 32 archive cases, 42 ownership/publication cases, 34 protocol cases and two
+  selected network cases passed. The new protocol field is optional; the old preview shape still
+  parses and older readers can parse new messages. Protocol/client declarations were rebuilt;
+  typecheck, lint and formatting pass. The network cases use
   isolated daemons and closed synthetic Claude transcripts; their version-only executable rejects
   provider-turn launch. They add no authenticated-provider or physical-host continuity claim.
-- Re-exporting prior context/history before a context-mode destination's first provider turn
-  remains open; that destination has no native session for the current source capture. Full
-  record revision guards and the remaining writer inventory also remain open. The release check
+- Combining prior context with subsequent native history remains open. Full record revision
+  guards and the remaining writer inventory also remain open. The release check
   here proves note-set validation, not an atomic barrier against every remaining writer.
 
-Current restart-note validation output:
-$ npx vitest run src/server/handoff/archive.test.ts --bail=1
+Current context and note validation output:
+$ npx vitest run src/server/handoff/archive.test.ts src/server/handoff/ownership.posix.test.ts --bail=1
+ Test Files  2 passed (2)
+      Tests  74 passed (74)
+   Duration  5.58s
+
+$ npx vitest run src/messages.wire-compat.test.ts --bail=1
  Test Files  1 passed (1)
-      Tests  29 passed (29)
-   Duration  2.64s
+      Tests  34 passed (34)
+   Duration  1.12s
 
 $ npx vitest run src/server/handoff/archive.e2e.test.ts -t 'preserves unsent restart notes' --bail=1
  Test Files  1 passed (1)
       Tests  2 passed | 28 skipped (30)
-   Duration  14.20s
+   Duration  15.97s
 
+After adding the retired-source history assertion:
+$ npx vitest run src/server/handoff/archive.e2e.test.ts -t 'preserves unsent restart notes through context' --bail=1
+ Test Files  1 passed (1)
+      Tests  1 passed | 29 skipped (30)
+   Duration  12.81s
+
+Earlier workspace-only version 2 case (not repeated):
 $ npx vitest run src/server/handoff/archive.e2e.test.ts -t 'coordinates handoff over RPC and recovers a lost release reply' --bail=1
  Test Files  1 passed (1)
       Tests  1 passed | 29 skipped (30)
@@ -57,7 +82,7 @@ Carried-context preparation and acknowledgement:
   verified unsandboxed context required by the manager's Node child-stdout tests. No real-provider
   call, UI assertion or physical-host continuity is added by these fixtures.
 - Uncertain completion still needs provider-artifact recovery, and prior handoff context/history
-  still needs multi-hop transport. This does not complete the overall persistence barrier.
+  must be combined with subsequent native history. This does not complete the overall persistence barrier.
 
 Current carried-context validation output:
 RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
