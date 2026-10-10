@@ -141,31 +141,13 @@ describe("GlanceSummaryService", () => {
     expect(generate).not.toHaveBeenCalled();
   });
 
-  it("advertises a capability only when a structured provider resolves", async () => {
-    expect(await createService().service.getCapability("/tmp")).toEqual({
-      enabled: true,
-      reason: "",
-      precompute: true,
-    });
-    expect(await createService({ getConfig: () => ({}) }).service.getCapability("/tmp")).toEqual({
-      enabled: false,
-      reason: "No structured-generation provider is configured on this host.",
-      precompute: true,
-    });
-    expect(
-      await createService({
-        providerSnapshotManager: {
-          listProviders: async () => {
-            throw new Error("offline");
-          },
-        },
-      }).service.getCapability("/tmp"),
-    ).toEqual({
-      enabled: false,
-      reason: "Structured-generation providers are unavailable on this host.",
-      precompute: true,
-    });
+  it("advertises a static capability without probing providers", () => {
+    const listProviders = vi.fn(async () => []);
+    const { service } = createService({ providerSnapshotManager: { listProviders } });
+    expect(service.getCapability()).toEqual({ enabled: true, reason: "", precompute: true });
+    expect(listProviders).not.toHaveBeenCalled();
   });
+
   it("defaults to Haiku 5.5 when Claude is available and nothing is configured", async () => {
     const { service, calls } = createService({
       getConfig: () => ({}),

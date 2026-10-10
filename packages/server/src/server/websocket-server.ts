@@ -1,9 +1,8 @@
 import type { NoteStore } from "./notes/store.js";
 import type { HostMetricsSampler } from "./host-metrics/sampler.js";
-import { homedir } from "node:os";
 import type { GlanceSummaryService } from "./glance/service.js";
 import { stat } from "node:fs/promises";
-import type { CreationSnapshot, GlanceSummaryCapability } from "@getpaseo/protocol/messages";
+import type { CreationSnapshot } from "@getpaseo/protocol/messages";
 import { CreationService } from "./creation/index.js";
 import { MessageReceipts } from "./message-receipts/index.js";
 import { WebSocket, WebSocketServer } from "ws";
@@ -563,11 +562,6 @@ export class VoiceAssistantWebSocketServer {
   private readonly workspaceLabelService: WorkspaceLabelService | null;
   private readonly noteStore: NoteStore | undefined;
   private readonly hostMetricsSampler: HostMetricsSampler | undefined;
-  private glanceSummaryCapability: GlanceSummaryCapability = {
-    enabled: false,
-    reason: "Discovering structured-generation providers.",
-    precompute: true,
-  };
   private readAloudService!: ReadAloudService | null;
   private readonly voiceOrchestrator: VoiceOrchestrator | null | undefined;
   private readonly delegations: DelegationService | null | undefined;
@@ -780,16 +774,10 @@ export class VoiceAssistantWebSocketServer {
     });
     const unsubscribeChange = this.daemonConfigStore.onChange((config) => {
       this.broadcastDaemonConfigChanged(config);
-      void this.refreshGlanceSummaryCapability();
     });
-    const refreshGlanceSummary = () => {
-      void this.refreshGlanceSummaryCapability();
-    };
-    this.providerSnapshotManager.on("change", refreshGlanceSummary);
     this.unsubscribeDaemonConfigChange = () => {
       unsubscribeProviderConfig();
       unsubscribeChange();
-      this.providerSnapshotManager.off("change", refreshGlanceSummary);
     };
 
     const pushLogger = this.logger.child({ module: "push" });
@@ -811,7 +799,6 @@ export class VoiceAssistantWebSocketServer {
     this.startRuntimeMetricsInterval();
     this.startApplicationSocketLeaseInterval();
 
-    void this.refreshGlanceSummaryCapability();
     this.logger.info("WebSocket server initialized on /ws");
   }
 
@@ -1046,14 +1033,6 @@ export class VoiceAssistantWebSocketServer {
     this.updateServerCapabilities(this.buildCurrentServerCapabilities(readiness));
   }
 
-  private async refreshGlanceSummaryCapability(): Promise<void> {
-    if (!this.glanceSummaryService) return;
-    this.glanceSummaryCapability = await this.glanceSummaryService.getCapability(homedir());
-    this.updateServerCapabilities(
-      this.buildCurrentServerCapabilities(this.speech?.getReadiness() ?? null),
-    );
-  }
-
   private buildCurrentServerCapabilities(
     readiness: SpeechReadinessSnapshot | null,
   ): ServerCapabilities | undefined {
@@ -1062,7 +1041,7 @@ export class VoiceAssistantWebSocketServer {
       readAloud: this.readAloudService?.getCapability() ?? null,
     });
     return this.glanceSummaryService
-      ? { ...capabilities, glanceSummary: this.glanceSummaryCapability }
+      ? { ...capabilities, glanceSummary: this.glanceSummaryService.getCapability() }
       : capabilities;
   }
 

@@ -102,25 +102,12 @@ export class GlanceSummaryService {
     await this.persist();
   }
 
-  async getCapability(cwd: string): Promise<GlanceSummaryCapability> {
-    try {
-      // Discovery events refresh this snapshot without delaying the client handshake.
-      const providers = await this.resolveProviders({ cwd, wait: false });
-      return {
-        enabled: providers.length > 0,
-        reason:
-          providers.length > 0
-            ? ""
-            : "No structured-generation provider is configured on this host.",
-        precompute: true,
-      };
-    } catch {
-      return {
-        enabled: false,
-        reason: "Structured-generation providers are unavailable on this host.",
-        precompute: true,
-      };
-    }
+  /**
+   * Static, like read aloud: probing providers here re-warmed catalogs on every snapshot change.
+   * A host without a structured-generation provider fails the request instead.
+   */
+  getCapability(): GlanceSummaryCapability {
+    return { enabled: true, reason: "", precompute: true };
   }
 
   async summarize(input: SummarizeInput): Promise<GlanceSummaryLine[]> {
@@ -162,7 +149,11 @@ export class GlanceSummaryService {
         schema,
         schemaName: "GlanceSummary",
         maxRetries: 1,
-        providers: await this.resolveProviders({ cwd: input.cwd, wait: true }),
+        providers: await resolveStructuredGenerationProviders({
+          cwd: input.cwd,
+          providerSnapshotManager: this.options.providerSnapshotManager,
+          daemonConfig: this.options.getConfig(),
+        }),
         persistSession: false,
         logger: this.options.logger,
         agentConfigOverrides: {
@@ -213,16 +204,5 @@ export class GlanceSummaryService {
     } catch (error) {
       this.options.logger.warn({ err: error }, "Failed to persist glance summary cache");
     }
-  }
-
-  private resolveProviders(input: { cwd: string; wait: boolean }) {
-    return resolveStructuredGenerationProviders({
-      cwd: input.cwd,
-      providerSnapshotManager: {
-        listProviders: (options) =>
-          this.options.providerSnapshotManager.listProviders({ ...options, wait: input.wait }),
-      },
-      daemonConfig: this.options.getConfig(),
-    });
   }
 }
