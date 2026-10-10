@@ -769,6 +769,37 @@ Record revision and rollback validation:
 - The store/manager selection passes 51 cases (one Windows-only case and 267 unrelated manager
   cases skipped); import storage cases pass 17; the three selected network cases pass.
   These fixtures use synthetic providers. Full writer sealing and crash-stop proof remain open.
+- At 099c1e5a5, running the complete archive test file after the bundle-version fix reached an
+  obsolete MCP fixture write: expected record revision 0, found 1 (34 cases passed before bail).
+  After that fixture was corrected, both MCP modes passed and the mixed-mode fixture exposed the
+  same issue while restoring runtime metadata: expected revision 1, found 2.
+  Both fixtures now patch the current committed record. After a rejected release, they assert
+  that restoration is fenced, cancel the transfer, restore against the current revision and
+  prepare a new transfer. Runtime storage, import namespace and cwd changes remain separate
+  refusal checks. MCP omission and mixed continuation retain their final activation/cancellation
+  and history assertions; no production barrier was relaxed.
+
+  Initial full-file command:
+  $ npx vitest run src/server/handoff/archive.e2e.test.ts --bail=1 --maxWorkers=1
+    Tests  1 failed | 34 passed (41)
+    AgentRecordConflictError: Agent record revision changed: expected 0, found 1
+  Focused MCP/mixed command after the MCP fixture correction:
+  $ npx vitest run src/server/handoff/archive.e2e.test.ts -t 'reviews omitted conversation MCP|retains mixed native/context' --bail=1 --maxWorkers=1
+    Tests  1 failed | 2 passed | 37 skipped (41)
+    AgentRecordConflictError: Agent record revision changed: expected 1, found 2
+  After both fixture corrections:
+  $ npx vitest run src/server/handoff/archive.e2e.test.ts --bail=1 --maxWorkers=1
+    Test Files  1 passed (1)
+         Tests  41 passed (41)
+      Duration  75.09s (tests 64.08s)
+  The final mixed-mode fixtures additionally restart both daemons after the replacement
+  preparation, before final activation or cancellation, then verify the recovered mode choices:
+  $ npx vitest run src/server/handoff/archive.e2e.test.ts -t 'retains mixed native/context' --bail=1 --maxWorkers=1
+    Test Files  1 passed (1)
+         Tests  2 passed | 39 skipped (41)
+      Duration  20.58s (tests 6.66s)
+  No provider turn or browser was run for this fixture repair. The full-file result is from Linux;
+  other platforms remain with CI. The main daemon was not restarted.
 
 Unsent notes and repeated context transfers:
 - Source preparation captures pending restart notes; release refuses a changed note set. Native

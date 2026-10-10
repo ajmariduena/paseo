@@ -821,32 +821,74 @@ async function storedNativeRecord(host: Host, agentId: string) {
   return { ...record, persistence: record.persistence };
 }
 
-async function expectCapturedRuntimeUnchanged(host: Host, transferId: string, agentId: string) {
-  const captured = await storedNativeRecord(host, agentId);
+interface CapturedRuntimeTestInput {
+  source: Host;
+  destination: Host;
+  agentId: string;
+  request: Pick<
+    Parameters<typeof prepareWorkspaceHandoff>[0],
+    "transferId" | "workspaceId" | "destinationParent" | "continuationMode" | "conversationModes"
+  >;
+}
+
+async function expectCapturedRuntimeUnchanged({
+  source,
+  destination,
+  agentId,
+  request,
+}: CapturedRuntimeTestInput) {
+  const captured = await storedNativeRecord(source, agentId);
   const metadata = captured.persistence.metadata;
+  let transferId = request.transferId;
   for (const changed of [
     {
-      ...metadata,
-      claudeRuntime: { configDir: path.join(root, "changed-home"), cliVersion: "2.1.295" },
+      persistence: {
+        ...captured.persistence,
+        metadata: {
+          ...metadata,
+          claudeRuntime: { configDir: path.join(root, "changed-home"), cliVersion: "2.1.295" },
+        },
+      },
     },
-    { ...metadata, claudeProjectDirName: "another-session-copy" },
+    {
+      persistence: {
+        ...captured.persistence,
+        metadata: { ...metadata, claudeProjectDirName: "another-session-copy" },
+      },
+    },
+    { cwd: path.join(root, "changed-cwd") },
   ]) {
-    await host.daemon.daemon.agentStorage.upsert({
-      ...captured,
-      persistence: { ...captured.persistence, metadata: changed },
+    await source.daemon.daemon.agentStorage.upsert({
+      ...(await storedNativeRecord(source, agentId)),
+      ...changed,
     });
-    expect((await host.client.handoffReleaseSource({ transferId })).error?.code).toBe(
+    expect((await source.client.handoffReleaseSource({ transferId })).error?.code).toBe(
       "source_changed",
     );
+    const restored = {
+      ...(await storedNativeRecord(source, agentId)),
+      persistence: captured.persistence,
+      cwd: captured.cwd,
+    };
+    await expect(source.daemon.daemon.agentStorage.upsert(restored)).rejects.toMatchObject({
+      code: "fenced",
+    });
+    await cancelWorkspaceHandoff({
+      transferId,
+      sourceServerId: source.daemon.daemon.getServerId(),
+      getSource: () => source.client,
+      destination: destination.client,
+    });
+    await source.daemon.daemon.agentStorage.upsert(restored);
+    transferId = randomUUID();
+    await prepareWorkspaceHandoff({
+      ...request,
+      transferId,
+      source: source.client,
+      destination: destination.client,
+    });
   }
-  await host.daemon.daemon.agentStorage.upsert({
-    ...captured,
-    cwd: path.join(root, "changed-cwd"),
-  });
-  expect((await host.client.handoffReleaseSource({ transferId })).error?.code).toBe(
-    "source_changed",
-  );
-  await host.daemon.daemon.agentStorage.upsert(captured);
+  return transferId;
 }
 
 async function expectExportedHistory(
@@ -4190,7 +4232,7 @@ for (const continuationMode of ["native", "context"] as const) {
         integrationReview,
       };
       const changed = {
-        ...record,
+        ...(await storedNativeRecord(source, agentId)),
         config: { mcpServers: { calendar: { type: "stdio", command: "/PRIVATE_NEW_EXECUTABLE" } } },
       };
       await source.daemon.daemon.agentStorage.upsert(changed);
@@ -4224,7 +4266,10 @@ for (const continuationMode of ["native", "context"] as const) {
         "review_changed",
       );
       expect((await source.client.handoffFindSource({ workspaceId })).result).toBeNull();
-      await source.daemon.daemon.agentStorage.upsert(record);
+      await source.daemon.daemon.agentStorage.upsert({
+        ...(await storedNativeRecord(source, agentId)),
+        config: record.config,
+      });
       const staged = await prepareWorkspaceHandoff({
         ...request,
         source: source.client,
@@ -4253,19 +4298,39 @@ for (const continuationMode of ["native", "context"] as const) {
           destination: destination.client,
         }),
       ).rejects.toThrow("Transfer already has another destination reservation");
-      await source.daemon.daemon.agentStorage.upsert(changed);
+      await source.daemon.daemon.agentStorage.upsert({
+        ...(await storedNativeRecord(source, agentId)),
+        config: changed.config,
+      });
       expect((await source.client.handoffReleaseSource(request)).error?.code).toBe(
         "review_changed",
       );
       expect((await source.client.handoffGetSourceStatus(request)).result?.source.state).toBe(
         "ready",
       );
-      await source.daemon.daemon.agentStorage.upsert(record);
+      const restored = { ...(await storedNativeRecord(source, agentId)), config: record.config };
+      await expect(source.daemon.daemon.agentStorage.upsert(restored)).rejects.toMatchObject({
+        code: "fenced",
+      });
+      await cancelWorkspaceHandoff({
+        transferId: request.transferId,
+        sourceServerId: source.daemon.daemon.getServerId(),
+        getSource: () => source.client,
+        destination: destination.client,
+      });
+      await source.daemon.daemon.agentStorage.upsert(restored);
+      const refreshedTransferId = randomUUID();
+      await prepareWorkspaceHandoff({
+        ...request,
+        transferId: refreshedTransferId,
+        source: source.client,
+        destination: destination.client,
+      });
       const active = await activateWorkspaceHandoff({
         sourceServerId: source.daemon.daemon.getServerId(),
         getSource: () => source.client,
         destination: destination.client,
-        transferId: request.transferId,
+        transferId: refreshedTransferId,
       });
       expect(active.state).toBe("active");
       const imported = await destination.daemon.daemon.agentStorage.get(
@@ -4476,7 +4541,10 @@ for (const outcome of ["activate", "cancel"] as const) {
         reason:
           "This conversation has no recorded Claude runtime. Resume it on the source host before transferring it.",
       });
-      await source.daemon.daemon.agentStorage.upsert(original);
+      await source.daemon.daemon.agentStorage.upsert({
+        ...(await storedNativeRecord(source, original.id)),
+        persistence: original.persistence,
+      });
       const review = await source.client.handoffPreviewSource({ workspaceId });
       if (!review.result) throw new Error("Missing source review");
       for (const choice of choices) {
@@ -4514,12 +4582,33 @@ for (const outcome of ["activate", "cancel"] as const) {
           "not_found",
         );
       }
-      const staged = await prepareWorkspaceHandoff({
+      let staged = await prepareWorkspaceHandoff({
         ...request,
         source: source.client,
         destination: destination.client,
       });
       expect(staged).toMatchObject({ state: "staged", conversationModes });
+      const sourceId = source.daemon.daemon.getServerId();
+      await stopHost(source);
+      await stopHost(destination);
+      source = await startHost("source", true);
+      destination = await startHost("destination", true);
+      const recovered = await destination.client.handoffGetDestinationStatus(request);
+      expect(recovered.result?.conversationModes).toEqual(conversationModes);
+      request.transferId = await expectCapturedRuntimeUnchanged({
+        source,
+        destination,
+        agentId: choices[0].agentId,
+        request,
+      });
+      await stopHost(source);
+      await stopHost(destination);
+      source = await startHost("source", true);
+      destination = await startHost("destination", true);
+      const refreshed = await destination.client.handoffGetDestinationStatus(request);
+      if (!refreshed.result) throw new Error("Missing refreshed destination reservation");
+      expect(refreshed.result).toMatchObject({ state: "staged", conversationModes });
+      staged = refreshed.result;
       const mapping = (sourceAgentId: string) => {
         const found = staged.agentMappings.find((item) => item.sourceAgentId === sourceAgentId);
         if (!found) throw new Error("Missing conversation mapping");
@@ -4530,14 +4619,6 @@ for (const outcome of ["activate", "cancel"] as const) {
       const configDir = path.join(root, "destination", "claude", "projects");
       expect(await readdir(configDir)).toContain(`paseo-handoff-${nativeId}`);
       expect(await readdir(configDir)).not.toContain(`paseo-handoff-${contextId}`);
-      const sourceId = source.daemon.daemon.getServerId();
-      await stopHost(source);
-      await stopHost(destination);
-      source = await startHost("source", true);
-      destination = await startHost("destination", true);
-      const recovered = await destination.client.handoffGetDestinationStatus(request);
-      expect(recovered.result?.conversationModes).toEqual(conversationModes);
-      await expectCapturedRuntimeUnchanged(source, request.transferId, choices[0].agentId);
       expect(
         (
           await destination.client.handoffListDestination({
