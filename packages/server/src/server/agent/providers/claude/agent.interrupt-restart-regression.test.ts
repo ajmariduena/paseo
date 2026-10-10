@@ -1082,3 +1082,136 @@ test("auto-completes an open autonomous turn when a foreground prompt starts", a
   subscribedEvents.close();
   await session.close();
 });
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+/** A session whose withdrawals and binary lookup the test controls. */
+async function createControlledSession(options: {
+  withdrawal?: () => Promise<boolean>;
+  resolveBinary?: () => Promise<string>;
+}): Promise<{ session: AgentSession; query: () => ScriptedQuery | null }> {
+  let query: ScriptedQuery | null = null;
+  queryFactory.mockImplementation(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
+    query = createScriptedQuery({ prompt, sessionId: "controlled-session" });
+    if (options.withdrawal) query.cancelAsyncMessage.mockImplementation(options.withdrawal);
+    return query;
+  });
+  const client = new ClaudeAgentClient({
+    logger: createTestLogger(),
+    queryFactory,
+    resolveBinary: options.resolveBinary ?? (async () => "/test/claude/bin"),
+  });
+  const session = await client.createSession({ provider: "claude", cwd: process.cwd() });
+  return { session, query: () => query };
+}
+
+function settledOutcome(submission: Promise<unknown> | undefined) {
+  return Promise.race([submission, Promise.resolve("pending")]);
+}
+
+test("a refused withdrawal that answers late interrupts A before B is admitted, never B", async () => {
+  const withdrawal = deferred<boolean>();
+  const { session, query } = await createControlledSession({
+    withdrawal: () => withdrawal.promise,
+  });
+
+  const first = await session.startTurn("A");
+  await waitFor(() => query()?.prompts.length === 1);
+  await session.interrupt();
+
+  const second = session.startTurn("B");
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  expect(query()?.prompts).toHaveLength(1);
+  expect(query()?.interrupt).not.toHaveBeenCalled();
+  expect(await settledOutcome(first.submission)).toBe("pending");
+
+  withdrawal.resolve(false);
+  const started = await second;
+  expect(query()?.interrupt).toHaveBeenCalledTimes(1);
+  expect(await first.submission).toBe("unknown");
+  await waitFor(() => query()?.prompts.length === 2);
+  query()?.emit(buildCommandLifecycle(query()?.prompts[1]?.uuid, "started"));
+  expect(await started.submission).toBe("accepted");
+  expect(query()?.interrupt).toHaveBeenCalledTimes(1);
+
+  await session.close();
+});
+
+test("a confirmed withdrawal that answers late proves A unsent and admits B without an interrupt", async () => {
+  const withdrawal = deferred<boolean>();
+  const { session, query } = await createControlledSession({
+    withdrawal: () => withdrawal.promise,
+  });
+
+  const first = await session.startTurn("A");
+  await waitFor(() => query()?.prompts.length === 1);
+  await session.interrupt();
+  const second = session.startTurn("B");
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+  withdrawal.resolve(true);
+  await second;
+  expect(await first.submission).toBe("unsent");
+  expect(query()?.interrupt).not.toHaveBeenCalled();
+  await waitFor(() => query()?.prompts.length === 2);
+
+  await session.close();
+});
+
+test("an unanswered withdrawal is bounded: the interrupt still goes out and B is admitted", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const { session, query } = await createControlledSession({
+      withdrawal: () => new Promise<boolean>(() => undefined),
+    });
+    const first = await session.startTurn("A");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(query()?.prompts).toHaveLength(1);
+    await session.interrupt();
+    const second = session.startTurn("B");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(query()?.interrupt).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await second;
+    expect(query()?.interrupt).toHaveBeenCalledTimes(1);
+    expect(await first.submission).toBe("unknown");
+    await session.close();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("closing with A's withdrawal unanswered settles A unknown", async () => {
+  const { session, query } = await createControlledSession({
+    withdrawal: () => new Promise<boolean>(() => undefined),
+  });
+  const first = await session.startTurn("A");
+  await waitFor(() => query()?.prompts.length === 1);
+  await session.interrupt();
+
+  await session.close();
+
+  expect(await first.submission).toBe("unknown");
+});
+
+test("Stop while the binary is still resolving withdraws the prompt by never sending it", async () => {
+  const binary = deferred<string>();
+  const { session, query } = await createControlledSession({ resolveBinary: () => binary.promise });
+
+  const starting = session.startTurn("A");
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  await session.interrupt();
+  binary.resolve("/test/claude/bin");
+
+  const started = await starting;
+  expect(await started.submission).toBe("unsent");
+  expect(query()?.prompts ?? []).toHaveLength(0);
+  await session.close();
+});
