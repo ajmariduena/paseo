@@ -14,6 +14,11 @@ import { workspaceArchiveFiles } from "./workspace.js";
 import { HANDOFF_HISTORY_MAX_BYTES, readHandoffHistory, parseHandoffHistory } from "./history.js";
 import { RestartCancelledWorkSchema, type RestartCancelledWork } from "../agent/agent-storage.js";
 import {
+  HANDOFF_QUEUE_MAX_BYTES,
+  readHandoffQueue,
+  type HandoffQueue,
+} from "../agent-queue/store.js";
+import {
   readClaudeSessionArchive,
   readClaudeSessionManifest,
   type ClaudeSessionArchive,
@@ -41,10 +46,11 @@ const ConversationSchema = z.object({
   origin: HandoffHistoryOriginSchema.optional(),
   previous: z.array(HandoffHistorySegmentSchema).max(HANDOFF_PREVIOUS_SEGMENTS_MAX).optional(),
   historyIndex: HandoffBlobSchema.optional(),
+  queue: HandoffBlobSchema.optional(),
 });
 const BundleSchema = z.object({
   // COMPAT(handoffBundleLegacy): added in v0.11.1, remove after 2027-04-10 once retained transfers use v3.
-  version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+  version: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]),
   kind: z.literal("workspace_handoff"),
   sourceServerId: z.string().min(1).max(512),
   sourceWorkspaceId: z.string().min(1).max(512),
@@ -58,6 +64,7 @@ export interface CapturedConversation {
   title: string | null;
   artifactDirectory: string;
   historyPath?: string;
+  queuePath?: string;
   pendingRestartNote?: RestartCancelledWork[];
   mode?: "native" | "context";
   origin?: z.infer<typeof HandoffHistoryOriginSchema>;
@@ -117,6 +124,7 @@ export interface VerifiedHandoffBundle {
   bundle: HandoffBundle;
   sessions: ReadonlyMap<string, ClaudeSessionArchive>;
   previousSessions: ReadonlyMap<string, ClaudeSessionArchive>;
+  queues: ReadonlyMap<string, HandoffQueue>;
 }
 export class HandoffBundleError extends Error {
   constructor(
@@ -140,6 +148,7 @@ function parseBundle(value: unknown): HandoffBundle {
   if (bundle.version === 1 && carriesNotes)
     reject("invalid_artifact", "Pending restart notes require handoff bundle version 2");
   for (const conversation of bundle.conversations) {
+    requireQueueVersion(bundle.version, conversation.queue);
     if (
       conversation.mode === "context" &&
       (bundle.version === 1 || !conversation.origin || !conversation.history)
@@ -151,7 +160,7 @@ function parseBundle(value: unknown): HandoffBundle {
     if (conversation.mode === "native" && conversation.origin)
       reject("invalid_artifact", "Native history cannot replace its source identity");
     if (conversation.previous?.length) {
-      if (bundle.version !== 3 || !conversation.historyIndex)
+      if (bundle.version < 3 || !conversation.historyIndex)
         reject(
           "invalid_artifact",
           "Earlier conversation segments require handoff bundle version 3 and an index",
@@ -185,6 +194,7 @@ export async function packHandoffArchive(input: PackInput): Promise<HandoffArchi
     const descriptor = await describeFile(manifestPath);
     add(descriptor, manifestPath);
     let history;
+    const queue = await addQueue(conversation.queuePath);
     if (conversation.historyPath) {
       await readHandoffHistory(
         conversation.historyPath,
@@ -212,6 +222,7 @@ export async function packHandoffArchive(input: PackInput): Promise<HandoffArchi
       mode: conversation.mode ?? "native",
       session: descriptor,
       ...(history ? { history } : {}),
+      queue,
       ...(conversation.origin ? { origin: conversation.origin } : {}),
       ...(conversation.previous?.length
         ? { previous: conversation.previous.map((item) => item.segment) }
@@ -222,7 +233,8 @@ export async function packHandoffArchive(input: PackInput): Promise<HandoffArchi
     });
   }
   const candidate: HandoffBundle = {
-    version: 3,
+    // COMPAT(handoffQueueCapture): added in v0.11.1, remove after 2027-04-10 once captures always include queues.
+    version: input.conversations.some((conversation) => conversation.queuePath) ? 4 : 3,
     kind: "workspace_handoff",
     sourceServerId: input.sourceServerId,
     sourceWorkspaceId: input.sourceWorkspaceId,
@@ -259,6 +271,23 @@ export async function packHandoffArchive(input: PackInput): Promise<HandoffArchi
     blobs.set(blob.sha256, blob);
     files.set(blob.sha256, file);
   }
+  async function addQueue(file?: string): Promise<HandoffBlob | undefined> {
+    if (!file) return undefined;
+    await readHandoffQueue(file);
+    const queue = await describeFile(file, HANDOFF_QUEUE_MAX_BYTES);
+    add(queue, file);
+    return queue;
+  }
+}
+function requireQueueVersion(
+  version: HandoffBundle["version"],
+  queue: HandoffBlob | undefined,
+): void {
+  if ((version === 4) !== (queue !== undefined))
+    reject(
+      "invalid_artifact",
+      "Queued messages require handoff bundle version 4 and a queue snapshot",
+    );
 }
 async function describeFile(file: string, maxBytes = 4 * 1024 * 1024): Promise<HandoffBlob> {
   const bytes = await readBoundedFile(file, maxBytes);
@@ -281,9 +310,28 @@ export async function readHandoffBundle(
   requireBlob(bundle.workspace);
   const sessions = new Map<string, ClaudeSessionArchive>();
   const previousSessions = new Map<string, ClaudeSessionArchive>();
+  const queues = new Map<string, HandoffQueue>();
+  let queueBytes = 0;
   let metadataBytes = bytes.length;
   let artifactCount = 0;
   for (const conversation of bundle.conversations) {
+    if (conversation.queue) {
+      requireBlob(conversation.queue);
+      queueBytes += conversation.queue.size;
+      if (queueBytes > HANDOFF_QUEUE_MAX_BYTES)
+        reject("invalid_artifact", "Queued messages exceed the handoff byte limit");
+      const queue = await readHandoffQueue(
+        path.join(archive.blobsDirectory, conversation.queue.sha256),
+      );
+      for (const entry of queue.entries) {
+        if (entry.senderAgentId && !expected.sourceAgentIds.includes(entry.senderAgentId))
+          reject(
+            "invalid_artifact",
+            "Queued message sender is outside the transferred conversations",
+          );
+      }
+      queues.set(conversation.sourceAgentId, queue);
+    }
     requireBlob(conversation.session);
     if (conversation.history) {
       requireBlob(conversation.history);
@@ -330,7 +378,7 @@ export async function readHandoffBundle(
       );
     }
   }
-  return { bundle, sessions, previousSessions };
+  return { bundle, sessions, previousSessions, queues };
   function requireBlob(blob: HandoffBlob): void {
     if (inventory.get(blob.sha256) !== blob.size)
       reject("invalid_artifact", "Handoff references content outside its verified archive");

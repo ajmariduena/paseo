@@ -636,7 +636,12 @@ export class HandoffDestination {
           archive,
           content,
         );
-        await publication.install({ record, bundle: content.bundle, workspace });
+        await publication.install({
+          record,
+          bundle: content.bundle,
+          workspace,
+          queues: content.queues,
+        });
         record = { ...record, state: "active" };
         await this.save(record);
       });

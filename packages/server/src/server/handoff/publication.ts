@@ -11,11 +11,14 @@ import type { DestinationHandoffStatus } from "./destination.js";
 import { handoffConversationOrigin, type HandoffBundle } from "./bundle.js";
 import type { WorkspaceManifest } from "./workspace.js";
 import { handoffContextDirectory } from "./context.js";
+import { remapHandoffQueueEntry, type HandoffQueue } from "../agent-queue/store.js";
+import type { AgentQueueRunner } from "../agent-queue/runner.js";
 
 export interface HandoffPublicationInput {
   record: DestinationHandoffStatus;
   bundle: HandoffBundle;
   workspace: WorkspaceManifest;
+  queues: ReadonlyMap<string, HandoffQueue>;
 }
 export interface HandoffPublication {
   install(input: HandoffPublicationInput): Promise<void>;
@@ -26,12 +29,13 @@ interface PublicationStores {
   workspaces: FileBackedWorkspaceRegistry;
   agents: AgentStorage;
   agentManager: Pick<AgentManager, "publishStoredAgent">;
+  queues: Pick<AgentQueueRunner, "installHandoffQueue">;
 }
 
 /** Registry reads remain gated by the destination journal until every write is durable. */
 export function createHandoffPublication(stores: PublicationStores): HandoffPublication {
   return {
-    async install({ record, workspace, bundle }) {
+    async install({ record, workspace, bundle, queues }) {
       if (!record.activationAt) throw new Error("Handoff activation timestamp is missing");
       const timestamp = record.activationAt;
       const displayName =
@@ -106,6 +110,25 @@ export function createHandoffPublication(stores: PublicationStores): HandoffPubl
                 : null,
           }),
         );
+        const queue = queues.get(mapping.sourceAgentId);
+        if (queue) {
+          const remapped = {
+            ...queue,
+            entries: queue.entries.map((entry) => {
+              if (!entry.senderAgentId) return entry;
+              const sender = record.agentMappings.find(
+                (item) => item.sourceAgentId === entry.senderAgentId,
+              );
+              if (!sender) throw new Error("Queued sender is outside the handoff");
+              return remapHandoffQueueEntry(entry, sender.destinationAgentId);
+            }),
+          };
+          await stores.queues.installHandoffQueue(
+            mapping.destinationAgentId,
+            record.reservationId,
+            remapped,
+          );
+        }
       }
     },
     async publish(record) {
@@ -135,7 +158,7 @@ function publishedContext(
     history: exported.history,
     ...(exported.historyIndex ? { historyIndex: exported.historyIndex } : {}),
     // COMPAT(handoffContextMode): added in v0.11.1, remove after 2027-04-10 once retained v1/v2 publications finish.
-    ...(bundle.version === 3 ? { continuationMode: mode } : {}),
+    ...(bundle.version >= 3 ? { continuationMode: mode } : {}),
     pending: true,
   };
 }

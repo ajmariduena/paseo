@@ -26,6 +26,8 @@ export const ptBR: TranslationResources = {
     previousOmissions: "Anterior",
     nextOmissions: "Próxima",
     omittedDirectories: "Um diretório excluído inclui todo o seu conteúdo.",
+    queuedMessagesHeld:
+      "Mensagens pendentes: {{count}}. Serão transferidas em pausa; retome a fila no destino quando quiser.",
     prWatchesStop:
       "Estes acompanhamentos de PR serão interrompidos. Reinicie-os manualmente se cancelar a transferência ou continuar no destino.",
     workToStop: "Trabalho que será interrompido",

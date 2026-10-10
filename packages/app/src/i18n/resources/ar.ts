@@ -24,6 +24,8 @@ export const ar: TranslationResources = {
     previousOmissions: "السابق",
     nextOmissions: "التالي",
     omittedDirectories: "يشمل استبعاد المجلد جميع محتوياته.",
+    queuedMessagesHeld:
+      "الرسائل المعلّقة: {{count}}. ستُنقل في حالة إيقاف مؤقت؛ استأنف قائمة الانتظار على المضيف الوجهة عندما تكون جاهزًا.",
     prWatchesStop:
       "ستتوقف متابعة طلبات السحب هذه. أعد تشغيلها يدوياً إذا ألغيت النقل أو تابعت العمل على المضيف الوجهة.",
     workToStop: "العمل الذي سيتوقف",

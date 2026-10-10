@@ -40,6 +40,41 @@ async function main(): Promise<void> {
   });
   const serverId = (await readFile(path.join(daemon.paseoHome, "server-id"), "utf8")).trim();
 
+  // Browser fixtures seed pending work without sending a synthetic provider turn.
+  process.on(
+    "message",
+    (message: { type?: string; requestId: string; agentId: string; prompt: string }) => {
+      if (message.type !== "seed-held-queue") return;
+      void (async () => {
+        const queue = daemon.daemon.agentManager.messageQueue;
+        await queue.hold(message.agentId, "user_stop");
+        const pending = await queue.enqueue(
+          message.agentId,
+          {
+            id: message.requestId,
+            origin: "user",
+            senderAgentId: null,
+            textPreview: "",
+            prompt: message.prompt,
+            wake: null,
+          },
+          async () => {
+            throw new Error("Fixture queue must remain held");
+          },
+        );
+        void pending.settled.catch(() => {});
+      })().then(
+        () => process.send?.({ type: "queue-seeded", requestId: message.requestId }),
+        (error: unknown) =>
+          process.send?.({
+            type: "queue-seeded",
+            requestId: message.requestId,
+            error: String(error),
+          }),
+      );
+    },
+  );
+
   process.send?.({
     type: "ready",
     paseoHome: daemon.paseoHome,

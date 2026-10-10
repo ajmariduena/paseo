@@ -2,12 +2,16 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { truncate, writeFile } from "node:fs/promises";
+import { syncFilePublication } from "../atomic-file.js";
 
 import {
   AgentQueueStore,
   QueueEntryTooLargeError,
   type AgentQueueEntry,
   type NewQueueEntry,
+  readHandoffQueue,
+  HANDOFF_QUEUE_MAX_BYTES,
 } from "./store.js";
 
 const NOW = "2026-10-04T00:00:00.000Z";
@@ -48,6 +52,125 @@ async function drainIds(store: AgentQueueStore, agentId: string): Promise<string
     ids.push(next.entry.id);
   }
 }
+
+test.skipIf(process.platform === "win32")(
+  "handoff installs the exact queued prompts held and retries after a destination restart",
+  async () => {
+    const source = new AgentQueueStore(join(root, "source"));
+    await source.enqueue("source-agent", userMessage("first", "first pending instruction"), NOW);
+    const prompt = [
+      { type: "text" as const, text: "inspect this image" },
+      { type: "image" as const, mimeType: "image/png", data: "aGVsbG8=" },
+    ];
+    await source.enqueue("source-agent", userMessage("second", prompt), NOW);
+    await source.hold("source-agent", "user_stop");
+    const exported = await source.exportForHandoff("source-agent");
+    const destinationPath = join(root, "destination");
+    let destination = new AgentQueueStore(destinationPath);
+    await destination.installHandoffQueue("destination-agent", "reservation", exported);
+    expect(destination.peek("destination-agent")).toMatchObject({
+      held: true,
+      heldReason: "user_stop",
+    });
+    expect(await destination.dequeueNext("destination-agent")).toBeNull();
+    destination = new AgentQueueStore(destinationPath);
+    await destination.load();
+    await destination.holdForRestart("destination-agent");
+    await destination.installHandoffQueue("destination-agent", "reservation", exported);
+    expect(destination.peek("destination-agent")?.entries).toHaveLength(2);
+    await expect(
+      destination.installHandoffQueue("destination-agent", "other-reservation", exported),
+    ).rejects.toThrow("different handoff");
+    await destination.resume("destination-agent");
+    const first = await destination.dequeueNext("destination-agent");
+    expect(first?.prompt).toBe("first pending instruction");
+    if (!first) throw new Error("Missing first prompt");
+    await destination.discard("destination-agent", first.entry);
+    expect((await destination.dequeueNext("destination-agent"))?.prompt).toEqual(prompt);
+    expect((await source.exportForHandoff("source-agent")).entries).toHaveLength(2);
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "a queue publication that reached disk but failed synchronization is unacknowledged and retryable",
+  async () => {
+    const snapshot = {
+      version: 1 as const,
+      entries: [
+        {
+          id: "pending",
+          origin: "user" as const,
+          senderAgentId: null,
+          createdAt: NOW,
+          prompt: "keep this",
+        },
+      ],
+    };
+    const destination = new AgentQueueStore(root, {
+      sync: async (file, directory) => {
+        await syncFilePublication(file, directory);
+        if (file === join(root, "target.json")) throw new Error("sync acknowledgement lost");
+      },
+    });
+    await expect(
+      destination.installHandoffQueue("target", "reservation", snapshot),
+    ).rejects.toThrow("sync acknowledgement lost");
+    expect(destination.peek("target")).toBeNull();
+    const recovered = new AgentQueueStore(root);
+    await recovered.installHandoffQueue("target", "reservation", snapshot);
+    expect(recovered.peek("target")?.held).toBe(true);
+    await expect(
+      recovered.installHandoffQueue("target", "reservation", {
+        ...snapshot,
+        entries: [{ ...snapshot.entries[0], prompt: "different" }],
+      }),
+    ).rejects.toThrow("different handoff");
+    expect(
+      (await recovered.exportForHandoff("target")).entries.map((entry) => entry.prompt),
+    ).toEqual(["keep this"]);
+  },
+);
+
+test("handoff refuses a missing prompt and cache/disk disagreement instead of exporting less data", async () => {
+  const store = new AgentQueueStore(root);
+  const entry = await store.enqueue("source", userMessage("pending"), NOW);
+  await store.hold("source", "user_stop");
+  if (!entry.promptFile) throw new Error("Missing test prompt");
+  rmSync(join(root, "source", entry.promptFile));
+  await expect(store.exportForHandoff("source")).rejects.toMatchObject({ code: "ENOENT" });
+  writeFileSync(join(root, "source", entry.promptFile), JSON.stringify("text of pending"));
+  rmSync(join(root, "source.json"));
+  await expect(store.exportForHandoff("source")).rejects.toThrow("differ from durable storage");
+});
+
+test("handoff refuses unportable queue entries and oversized snapshot files", async () => {
+  const store = new AgentQueueStore(root);
+  await store.enqueue("delegation", wake("pending-wake", 1), NOW);
+  await store.hold("delegation", "user_stop");
+  await expect(store.exportForHandoff("delegation")).rejects.toThrow(
+    "notifications or delegations",
+  );
+  await store.enqueue(
+    "file",
+    userMessage("pending-file", [
+      {
+        type: "uploaded_file",
+        id: "upload",
+        fileName: "local.txt",
+        mimeType: "text/plain",
+        size: 1,
+        path: "/source-only/local.txt",
+      },
+    ]),
+    NOW,
+  );
+  await store.hold("file", "user_stop");
+  await expect(store.exportForHandoff("file")).rejects.toThrow("source-local files or paths");
+  const oversized = join(root, "oversized.json");
+  await writeFile(oversized, "");
+  await truncate(oversized, HANDOFF_QUEUE_MAX_BYTES + 1);
+  await expect(readHandoffQueue(oversized)).rejects.toThrow("file size");
+});
 
 test("enqueue writes one queue file per agent with positions, and the prompt in a sidecar", async () => {
   const store = new AgentQueueStore(root);

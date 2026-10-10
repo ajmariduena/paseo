@@ -177,7 +177,12 @@ export const handoffFormPorts: HandoffFormPorts = {
     if (inspection.error) throw new Error(inspection.error.message);
     if (!inspection.result) throw new Error("Source preview is missing");
     const { workspace, stoppedWork, conversations, integrationReview } = inspection.result;
-    if (!workspace?.reviewDigest || !stoppedWork?.review?.pullRequestWatches || !integrationReview)
+    if (
+      !workspace?.reviewDigest ||
+      !stoppedWork?.review?.pullRequestWatches ||
+      stoppedWork.queuedMessages === undefined ||
+      !integrationReview
+    )
       throw new Error(i18n.t("handoff.updateHosts"));
     let conversationBytes = 0;
     for (const conversation of conversations) {

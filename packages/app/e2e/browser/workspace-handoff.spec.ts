@@ -114,6 +114,7 @@ async function inspectContinuedHistory(
   await expect(content).toContainText("Read-only history from Destination VPS");
   await expect(content.getByTestId("user-message")).toContainText("New work on the VPS");
   await expect(content.getByRole("textbox", { name: "Message agent..." })).toHaveCount(0);
+  return returned;
 }
 
 test.describe("workspace handoff", () => {
@@ -207,6 +208,7 @@ test.describe("workspace handoff", () => {
           },
         };
         await writeFile(watchFile, JSON.stringify({ version: 1, watches: [watch] }));
+        await host.source.seedHeldQueue(native.id, "Keep this queued task");
         await openHandoff(page);
         await page.getByTestId("handoff-host-trigger").click();
         await page.getByTestId(`handoff-host-${host.destination.serverId}`).click();
@@ -248,6 +250,15 @@ test.describe("workspace handoff", () => {
         await page.screenshot({
           path: path.join(__dirname, `../../../../docs/qa-evidence/handoff-watches-${layout}.png`),
         });
+        const queueReview = page.getByTestId("handoff-queue-review");
+        await expect(queueReview).toHaveText(
+          "Pending messages: 1. They will move paused; resume the queue on the destination when ready.",
+        );
+        await queueReview.scrollIntoViewIfNeeded();
+        await waitForSettledPosition(queueReview);
+        await page.screenshot({
+          path: path.join(__dirname, `../../../../docs/qa-evidence/handoff-queue-${layout}.png`),
+        });
         await page.getByTestId("handoff-submit").click();
         await expect(page.getByTestId("handoff-submit")).toHaveText("Move workspace", {
           timeout: 30_000,
@@ -273,13 +284,29 @@ test.describe("workspace handoff", () => {
         });
         const active = await host.destinationClient.handoffGetDestinationStatus({ transferId });
         expect(active.result?.state).toBe("active");
+        const destinationAgentId = active.result?.agentMappings.find(
+          (mapping) => mapping.sourceAgentId === native.id,
+        )?.destinationAgentId;
+        if (!destinationAgentId) throw new Error("Missing destination queue mapping");
+        expect(
+          (await host.destinationClient.listAgentQueue(destinationAgentId)).queue,
+        ).toMatchObject({
+          held: true,
+          entries: [{ origin: "user", textPreview: "Keep this queued task" }],
+        });
         expect(active.result?.conversationModes).toEqual(
           expect.arrayContaining([
             { sourceAgentId: native.id, mode: "native" },
             { sourceAgentId: context.id, mode: "context" },
           ]),
         );
-        await inspectContinuedHistory(
+        await page.goto(
+          `/h/${host.destination.serverId}/workspace/${active.result!.workspaceId}?open=${encodeURIComponent(`agent:${destinationAgentId}`)}`,
+        );
+        await expect(page.getByTestId("server-queue-track")).toContainText("Keep this queued task");
+        await expect(page.getByTestId("held-queue-callout")).toBeVisible();
+        await expect(page.getByTestId("held-queue-resume")).toBeEnabled();
+        const returned = await inspectContinuedHistory(
           page,
           host,
           context.id,
@@ -287,6 +314,14 @@ test.describe("workspace handoff", () => {
           path.join(fixtureDirectory, "destination"),
           path.join(__dirname, `../../../../docs/qa-evidence/handoff-history-parts-${layout}.png`),
         );
+        const returnedQueueAgentId = returned.agentMappings.find(
+          (mapping) => mapping.sourceAgentId === destinationAgentId,
+        )?.destinationAgentId;
+        if (!returnedQueueAgentId) throw new Error("Missing returned queue mapping");
+        expect((await host.sourceClient.listAgentQueue(returnedQueueAgentId)).queue).toMatchObject({
+          held: true,
+          entries: [{ origin: "user", textPreview: "Keep this queued task" }],
+        });
       } catch (error) {
         await page.screenshot({ path: testInfo.outputPath("handoff-mixed-failure.png") });
         throw error;

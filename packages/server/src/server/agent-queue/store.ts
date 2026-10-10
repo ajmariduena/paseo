@@ -1,11 +1,15 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { readdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { AgentAttachmentSchema } from "@getpaseo/protocol/messages";
+import { formatPeerMessage, parsePeerMessage } from "@getpaseo/protocol/peer-message";
 import { z } from "zod";
 
-import { writeJsonFileAtomic } from "../atomic-file.js";
+import { syncFilePublication, writeJsonFileAtomic } from "../atomic-file.js";
+import { readBoundedFile } from "../handoff/artifacts.js";
 import type { AgentPromptInput } from "../agent/agent-sdk-types.js";
+import { formatAgentMessage, parseAgentMessage } from "../agent/agent-messages/index.js";
 
 const MAX_ENTRIES_PER_AGENT = 200;
 const MAX_PROMPT_BYTES = 32 * 1024 * 1024;
@@ -38,6 +42,7 @@ const QueueFileSchema = z.object({
   held: z.boolean(),
   heldReason: HeldReasonSchema.nullable(),
   entries: z.array(QueueEntrySchema),
+  handoff: z.object({ reservationId: z.string(), digest: z.string() }).optional(),
 });
 
 const PromptBlockSchema = z.union([
@@ -46,6 +51,97 @@ const PromptBlockSchema = z.union([
   z.object({ type: z.literal("text"), text: z.string() }),
 ]);
 const PromptSchema = z.union([z.string(), z.array(PromptBlockSchema)]);
+
+export const HANDOFF_QUEUE_MAX_BYTES = 64 * 1024 * 1024;
+const HandoffQueueSchema = z.object({
+  version: z.literal(1),
+  entries: z
+    .array(
+      z.object({
+        id: z.string().min(1).max(512),
+        origin: z.enum(["user", "agent"]),
+        senderAgentId: z.string().min(1).max(512).nullable(),
+        createdAt: z.string().min(1).max(128),
+        prompt: PromptSchema,
+      }),
+    )
+    .max(MAX_ENTRIES_PER_AGENT),
+});
+export type HandoffQueue = z.infer<typeof HandoffQueueSchema>;
+
+export function parseHandoffQueue(value: unknown): HandoffQueue {
+  const snapshot = HandoffQueueSchema.parse(value);
+  if (Buffer.byteLength(JSON.stringify(snapshot)) > HANDOFF_QUEUE_MAX_BYTES)
+    throw new Error("Queued messages exceed the handoff byte limit");
+  const ids = new Set<string>();
+  for (const entry of snapshot.entries) {
+    if (ids.has(entry.id)) throw new Error("Duplicate queued message in handoff");
+    ids.add(entry.id);
+    if ((entry.origin === "agent") !== (entry.senderAgentId !== null))
+      throw new Error("Queued message sender does not match its origin");
+    remapHandoffQueueEntry(entry);
+    const bytes = Buffer.byteLength(JSON.stringify(entry.prompt));
+    if (bytes > MAX_PROMPT_BYTES) throw new QueueEntryTooLargeError(bytes);
+    if (typeof entry.prompt === "string") continue;
+    for (const block of entry.prompt) {
+      if (
+        block.type === "uploaded_file" ||
+        block.type === "review" ||
+        ("projectPath" in block && block.projectPath)
+      )
+        throw new Error(
+          "Queued attachments with source-local files or paths need a handoff disposition",
+        );
+    }
+  }
+  return snapshot;
+}
+
+export async function readHandoffQueue(filePath: string): Promise<HandoffQueue> {
+  return parseHandoffQueue(
+    JSON.parse((await readBoundedFile(filePath, HANDOFF_QUEUE_MAX_BYTES)).toString("utf8")),
+  );
+}
+
+/** Rewrite only the structured delivery envelope; the submitted message body stays intact. */
+export function remapHandoffQueueEntry(
+  entry: HandoffQueue["entries"][number],
+  senderAgentId = entry.senderAgentId,
+  id = entry.id,
+): HandoffQueue["entries"][number] {
+  function text(value: string): string {
+    const message = parseAgentMessage(value);
+    if (message) {
+      if (
+        message.id !== entry.id ||
+        (message.source?.agentId ?? null) !== entry.senderAgentId ||
+        message.source?.kind === "agent-notification"
+      )
+        throw new Error("Queued message envelope differs from its delivery identity");
+      return formatAgentMessage({
+        ...message,
+        id,
+        source:
+          message.source && senderAgentId ? { ...message.source, agentId: senderAgentId } : null,
+      });
+    }
+    // COMPAT(handoffPeerEnvelope): added in v0.11.1, remove after 2027-04-10 once legacy peer queues drain.
+    const peer = entry.senderAgentId ? parsePeerMessage(value) : null;
+    if (!peer) return value;
+    if (peer.sender.agentId !== entry.senderAgentId || !senderAgentId)
+      throw new Error("Queued peer envelope differs from its sender identity");
+    return formatPeerMessage({ ...peer, sender: { ...peer.sender, agentId: senderAgentId } });
+  }
+  const prompt =
+    typeof entry.prompt === "string"
+      ? text(entry.prompt)
+      : entry.prompt.map((block) =>
+          block.type === "text" && !("mimeType" in block)
+            ? { type: "text" as const, text: text(block.text) }
+            : block,
+        );
+  return { ...entry, id, senderAgentId, prompt };
+}
 
 export type AgentQueueOrigin = z.infer<typeof QueueOriginSchema>;
 export type AgentQueueHeldReason = z.infer<typeof HeldReasonSchema>;
@@ -121,7 +217,10 @@ export class AgentQueueStore {
   private readonly memoryPrompts = new Map<string, AgentPromptInput>();
   private readonly tails = new Map<string, Promise<unknown>>();
 
-  constructor(private readonly directory: string | null) {}
+  constructor(
+    private readonly directory: string | null,
+    private readonly options: { sync?: typeof syncFilePublication } = {},
+  ) {}
 
   /** Reads every queue file so `peek` sees agents that are not loaded. Boot only. */
   async load(): Promise<void> {
@@ -149,6 +248,132 @@ export class AgentQueueStore {
 
   agentIds(): string[] {
     return [...this.cache.keys()];
+  }
+
+  /** A capture must describe the durable queue, including every referenced prompt. */
+  async exportForHandoff(
+    agentId: string,
+    options: { requireHeld?: boolean; ignoreSystemIds?: readonly string[] } = {},
+  ): Promise<HandoffQueue> {
+    return this.serialize(agentId, async () => {
+      const cached = this.cache.get(agentId) ?? null;
+      const stored = this.directory ? await this.readHandoffFile(agentId) : cached;
+      if (!isDeepStrictEqual(cached, stored))
+        throw new Error("Queued messages differ from durable storage");
+      const entries: HandoffQueue["entries"] = [];
+      let bytes = 0;
+      for (const entry of inDeliveryOrder(stored?.entries ?? [])) {
+        if (entry.origin === "system" && options.ignoreSystemIds?.includes(entry.id)) continue;
+        if (entry.origin !== "user" && entry.origin !== "agent")
+          throw new Error("Pending queue notifications or delegations need a handoff disposition");
+        const captured = await this.readHandoffPrompt(
+          agentId,
+          entry,
+          HANDOFF_QUEUE_MAX_BYTES - bytes,
+        );
+        bytes += captured.bytes;
+        entries.push({
+          id: entry.id,
+          origin: entry.origin,
+          senderAgentId: entry.senderAgentId,
+          createdAt: entry.createdAt,
+          prompt: captured.prompt,
+        });
+      }
+      if ((options.requireHeld ?? true) && entries.length && !stored?.held)
+        throw new Error("Source queue must be held before handoff capture");
+      return parseHandoffQueue({ version: 1, entries });
+    });
+  }
+
+  private async readHandoffPrompt(agentId: string, entry: AgentQueueEntry, budget: number) {
+    if (!entry.promptFile || !/^(?:[a-f0-9-]{36}|[a-f0-9]{64})\.json$/.test(entry.promptFile))
+      throw new Error("Queued prompt has an invalid storage reference");
+    if (this.directory) {
+      const content = await readBoundedFile(
+        this.promptPath(this.directory, agentId, entry.promptFile),
+        budget,
+      );
+      return {
+        prompt: PromptSchema.parse(JSON.parse(content.toString("utf8"))),
+        bytes: content.length,
+      };
+    }
+    const prompt = this.memoryPrompts.get(promptKey(agentId, entry.promptFile));
+    if (prompt === undefined) throw new Error("Queued prompt is missing");
+    const bytes = Buffer.byteLength(JSON.stringify(prompt));
+    if (bytes > budget) throw new Error("Queued messages exceed the handoff byte limit");
+    return { prompt, bytes };
+  }
+
+  /** The destination journal hides this queue until its exact, held publication is durable. */
+  async installHandoffQueue(
+    agentId: string,
+    reservationId: string,
+    input: HandoffQueue,
+  ): Promise<void> {
+    const snapshot = parseHandoffQueue(input);
+    if (!/^[a-zA-Z0-9_-]{1,512}$/.test(agentId))
+      throw new Error("Invalid destination queue identity");
+    const digest = queueDigest(snapshot);
+    const prompts = new Map<string, AgentPromptInput>();
+    const entries = snapshot.entries.map((entry, index): AgentQueueEntry => {
+      const id = `handoff:${queueDigest([agentId, entry.id])}`;
+      const { prompt } = remapHandoffQueueEntry(entry, entry.senderAgentId, id);
+      const promptFile = `${queueDigest([id, prompt])}.json`;
+      prompts.set(promptFile, prompt);
+      const preview = previewPrompt(prompt);
+      return {
+        textPreview: preview.textPreview,
+        attachmentCount: preview.attachmentCount,
+        id,
+        origin: entry.origin,
+        senderAgentId: entry.senderAgentId,
+        position: index + 1,
+        createdAt: entry.createdAt,
+        promptFile,
+        wake: null,
+      };
+    });
+    const candidate: AgentQueueFile = {
+      version: 1,
+      agentId,
+      held: true,
+      heldReason: "user_stop",
+      entries,
+      handoff: { reservationId, digest },
+    };
+    await this.serialize(agentId, async () => {
+      const existing = this.directory
+        ? await this.readHandoffFile(agentId)
+        : this.cache.get(agentId);
+      if (existing) {
+        if (!isDeepStrictEqual(existing.handoff, candidate.handoff))
+          throw new Error("Destination queue belongs to a different handoff");
+        if (!isDeepStrictEqual({ ...existing, heldReason: candidate.heldReason }, candidate))
+          throw new Error("Destination queue changed during handoff installation");
+      }
+      if (!entries.length) return;
+      for (const [name, prompt] of prompts) {
+        if (this.directory) {
+          const filePath = this.promptPath(this.directory, agentId, name);
+          if (existing) {
+            const restored = JSON.parse(
+              (await readBoundedFile(filePath, HANDOFF_QUEUE_MAX_BYTES)).toString("utf8"),
+            );
+            if (!isDeepStrictEqual(restored, prompt))
+              throw new Error("Destination queued prompt changed");
+          } else await writeJsonFileAtomic(filePath, prompt);
+          await (this.options.sync ?? syncFilePublication)(filePath, path.dirname(this.directory));
+        } else this.memoryPrompts.set(promptKey(agentId, name), prompt);
+      }
+      if (this.directory) {
+        const filePath = this.filePath(this.directory, agentId);
+        await writeJsonFileAtomic(filePath, candidate);
+        await (this.options.sync ?? syncFilePublication)(filePath, path.dirname(this.directory));
+      }
+      this.cache.set(agentId, candidate);
+    });
   }
 
   async enqueue(agentId: string, input: NewQueueEntry, now: string): Promise<AgentQueueEntry> {
@@ -345,6 +570,17 @@ export class AgentQueueStore {
     return raw === null ? null : QueueFileSchema.parse(raw);
   }
 
+  private async readHandoffFile(agentId: string): Promise<AgentQueueFile | null> {
+    if (!this.directory) return this.cache.get(agentId) ?? null;
+    try {
+      const content = await readBoundedFile(this.filePath(this.directory, agentId), 1024 * 1024);
+      return QueueFileSchema.parse(JSON.parse(content.toString("utf8")));
+    } catch (error) {
+      if (isNotFound(error)) return null;
+      throw error;
+    }
+  }
+
   private async writePrompt(agentId: string, prompt: AgentPromptInput): Promise<string> {
     const serialized = JSON.stringify(prompt);
     const bytes = Buffer.byteLength(serialized, "utf8");
@@ -407,6 +643,10 @@ function replacePromptText(prompt: AgentPromptInput, text: string): AgentPromptI
 
 function promptKey(agentId: string, promptFile: string): string {
   return `${agentId}/${promptFile}`;
+}
+
+function queueDigest(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
 function isNotFound(error: unknown): boolean {

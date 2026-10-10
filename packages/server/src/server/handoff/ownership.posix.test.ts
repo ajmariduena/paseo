@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { formatPeerMessage } from "@getpaseo/protocol/peer-message";
 import {
   mkdir,
   mkdtemp,
@@ -17,6 +18,8 @@ import { writeJournal } from "./artifacts.js";
 import { syncFilePublication, writeJsonFileAtomic } from "../atomic-file.js";
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import { AgentStorage, type StoredAgentRecord } from "../agent/agent-storage.js";
+import { AgentQueueStore, type HandoffQueue } from "../agent-queue/store.js";
+import { formatAgentMessage, parseAgentMessage } from "../agent/agent-messages/index.js";
 import {
   FileBackedProjectRegistry,
   FileBackedWorkspaceRegistry,
@@ -398,7 +401,11 @@ test("source preparation keeps ownership fenced after uncertain cleanup and retr
   const createSource = (sourceOwnership = ownership) =>
     new HandoffSource({
       pullRequestWatches: { reviewForHandoff: async () => [], stopForHandoff: async () => {} },
-      queues: { holdForHandoff: async () => {} },
+      queues: {
+        holdForHandoff: async () => {},
+        entries: () => [],
+        exportForHandoff: async () => ({ version: 1, entries: [] }),
+      },
       directory: captures,
       serverId: sourceServerId,
       logger: createTestLogger(),
@@ -446,6 +453,7 @@ test("source preparation keeps ownership fenced after uncertain cleanup and retr
     agentIds: [],
     terminals: [],
     setupOperations: 1,
+    queuedMessages: 0,
     review: {
       agents: [],
       terminals: [],
@@ -543,6 +551,7 @@ async function nativeDestinationFixture(
     continuationMode?: "native" | "context";
     includeHistory?: boolean;
     contextCollision?: boolean;
+    queue?: HandoffQueue;
   } = {},
 ) {
   const transferId = randomUUID();
@@ -614,6 +623,8 @@ async function nativeDestinationFixture(
         },
       ],
     });
+  const queuePath = input.queue ? path.join(root, "queue.json") : undefined;
+  if (queuePath) await writeJournal(queuePath, input.queue);
   const manifest = await packHandoffArchive({
     store,
     transferId,
@@ -627,6 +638,7 @@ async function nativeDestinationFixture(
         title: "Imported conversation",
         artifactDirectory: sessionDirectory,
         historyPath: input.includeHistory ? historyPath : undefined,
+        queuePath,
       },
     ],
   });
@@ -780,6 +792,7 @@ test.each([
   );
   const agents = new InterruptedAgentStorage(path.join(root, "agents"), logger, isVisible);
   const publication = createHandoffPublication({
+    queues: new AgentQueueStore(path.join(root, "agent-queues")),
     projects,
     workspaces,
     agents,
@@ -834,7 +847,46 @@ test.each([
       throw new Error("interrupted publication");
     }
   };
-  const fixture = await nativeDestinationFixture({ publication: interrupted, write });
+  const queue: HandoffQueue = {
+    version: 1,
+    entries: [
+      {
+        id: "queued-user-message",
+        origin: "user",
+        senderAgentId: null,
+        createdAt: "2026-10-10T00:00:00Z",
+        prompt: "Continue after I resume the queue",
+      },
+      {
+        id: "queued-agent-message",
+        origin: "agent",
+        senderAgentId: "source-agent",
+        createdAt: "2026-10-10T00:00:01Z",
+        prompt: formatAgentMessage({
+          id: "queued-agent-message",
+          source: { kind: "agent-message", agentId: "source-agent", relation: "peer" },
+          text: "Preserve the sender when moving this pending message",
+        }),
+      },
+      {
+        id: "legacy-peer-message",
+        origin: "agent",
+        senderAgentId: "source-agent",
+        createdAt: "2026-10-10T00:00:02Z",
+        prompt: [
+          {
+            type: "text",
+            text: formatPeerMessage({
+              sender: { agentId: "source-agent" },
+              body: "Preserve this older queued message",
+            }),
+          },
+          { type: "image", mimeType: "image/png", data: "aGVsbG8=" },
+        ],
+      },
+    ],
+  };
+  const fixture = await nativeDestinationFixture({ publication: interrupted, write, queue });
   current = fixture.destination;
   const { transferId, options, reservation, manifest } = fixture;
   await current.stage(transferId);
@@ -872,7 +924,10 @@ test.each([
     { isVisible },
   );
   const recoveredAgents = new AgentStorage(path.join(root, "agents"), logger, isVisible);
+  const recoveredQueues = new AgentQueueStore(path.join(root, "agent-queues"));
+  await recoveredQueues.load();
   const recoveredPublication = createHandoffPublication({
+    queues: recoveredQueues,
     projects: recoveredProjects,
     workspaces: recoveredWorkspaces,
     agents: recoveredAgents,
@@ -899,6 +954,41 @@ test.each([
   ]);
   expect(() => current.assertMutationAllowed({ cwd: reservation.destinationCwd })).not.toThrow();
   const agentId = reservation.agentMappings[0].destinationAgentId;
+  const importedQueue = await recoveredQueues.exportForHandoff(agentId);
+  expect(
+    importedQueue.entries.map(({ origin, senderAgentId, prompt }) => ({
+      origin,
+      senderAgentId,
+      prompt,
+    })),
+  ).toEqual([
+    { origin: "user", senderAgentId: null, prompt: queue.entries[0].prompt },
+    {
+      origin: "agent",
+      senderAgentId: agentId,
+      prompt: formatAgentMessage({
+        id: importedQueue.entries[1].id,
+        source: { kind: "agent-message", agentId, relation: "peer" },
+        text: "Preserve the sender when moving this pending message",
+      }),
+    },
+    {
+      origin: "agent",
+      senderAgentId: agentId,
+      prompt: [
+        {
+          type: "text",
+          text: formatPeerMessage({
+            sender: { agentId },
+            body: "Preserve this older queued message",
+          }),
+        },
+        { type: "image", mimeType: "image/png", data: "aGVsbG8=" },
+      ],
+    },
+  ]);
+  expect(parseAgentMessage(String(importedQueue.entries[1].prompt))?.source?.agentId).toBe(agentId);
+  expect(await recoveredQueues.dequeueNext(agentId)).toBeNull();
   expect((await recoveredAgents.get(agentId))?.persistence?.metadata?.claudeRuntime).toEqual(
     failurePoint === "legacy after records" ? undefined : active.claudeRuntime,
   );
@@ -914,6 +1004,27 @@ test("refuses an archive missing a reserved conversation before installing or st
   await expect(destination.stage(transferId)).rejects.toMatchObject({
     code: "conversation_mismatch",
   });
+  expect(destination.status(transferId).state).toBe("receiving");
+  await expect(readdir(claudeHome)).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(readdir(reservation.stagingCwd)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test("refuses a queued sender outside the transferred conversations before publication", async () => {
+  const { destination, transferId, reservation, claudeHome } = await nativeDestinationFixture({
+    queue: {
+      version: 1,
+      entries: [
+        {
+          id: "outside-message",
+          origin: "agent",
+          senderAgentId: "agent-on-another-workspace",
+          createdAt: "2026-10-10T00:00:00Z",
+          prompt: "Retain my reply relationship",
+        },
+      ],
+    },
+  });
+  await expect(destination.stage(transferId)).rejects.toMatchObject({ code: "invalid_artifact" });
   expect(destination.status(transferId).state).toBe("receiving");
   await expect(readdir(claudeHome)).rejects.toMatchObject({ code: "ENOENT" });
   await expect(readdir(reservation.stagingCwd)).rejects.toMatchObject({ code: "ENOENT" });

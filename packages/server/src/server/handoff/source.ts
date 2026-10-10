@@ -60,6 +60,7 @@ import { HandoffHistorySegmentSchema, HANDOFF_PREVIOUS_SEGMENTS_MAX } from "./hi
 import type { HandoffDestination } from "./destination.js";
 import type { PullRequestWatcher } from "../pull-request-watch/watcher.js";
 import type { AgentQueueRunner } from "../agent-queue/runner.js";
+import { HANDOFF_QUEUE_MAX_BYTES } from "../agent-queue/store.js";
 import {
   writeHandoffHistory,
   readHandoffHistory,
@@ -135,7 +136,7 @@ interface SourceOptions {
   terminals: Pick<TerminalManager, "listDirectories" | "getTerminals" | "killTerminalAndWait">;
   setup: Pick<WorkspaceSetupRuntime, "stop" | "activeIds">;
   pullRequestWatches: Pick<PullRequestWatcher, "reviewForHandoff" | "stopForHandoff">;
-  queues: Pick<AgentQueueRunner, "holdForHandoff">;
+  queues: Pick<AgentQueueRunner, "holdForHandoff" | "entries" | "exportForHandoff">;
   onWorkspaceChanged?: (workspaceId: string) => Promise<void>;
 }
 interface SourceRequest {
@@ -268,6 +269,10 @@ export class HandoffSource {
     const workspace = await previewWorkspace({ cwd: inventory.cwd });
     const terminals = await this.sourceTerminals(inventory);
     const review = await this.reviewWriters(inventory, terminals);
+    const queuedMessages = await this.previewQueues(
+      inventory.agentIds,
+      review.pullRequestWatches ?? [],
+    );
     return {
       workspaceId,
       cwd: inventory.cwd,
@@ -278,6 +283,7 @@ export class HandoffSource {
         agentIds: review.agents.map(({ id }) => id),
         terminals: terminals.map((terminal) => ({ id: terminal.id, name: terminal.name })),
         setupOperations: review.setupIds.length,
+        queuedMessages,
         review,
       },
     };
@@ -364,6 +370,10 @@ export class HandoffSource {
           );
       }
       await this.requireWatchReview(input, inventory.agentIds);
+      await this.previewQueues(
+        inventory.agentIds,
+        await this.options.pullRequestWatches.reviewForHandoff(inventory.agentIds),
+      );
       this.assertReviewedIntegrations(
         input.integrationReview,
         await this.options.agents.listByWorkspaceForHandoff(input.workspaceId),
@@ -411,6 +421,8 @@ export class HandoffSource {
       for (const [index, record] of records.entries()) {
         const artifactDirectory = path.join(directory, `conversation-${index}`);
         const historyPath = path.join(directory, `history-${index}.json`);
+        const queuePath = path.join(directory, `queue-${index}.json`);
+        await writeJournal(queuePath, await this.options.queues.exportForHandoff(record.id));
         if (!record.persistence) {
           const { agent, previous } = await this.contextAgent(record, {
             artifactDirectory,
@@ -423,6 +435,7 @@ export class HandoffSource {
             artifactDirectory,
             historyPath,
             pendingRestartNote: agent.pendingRestartNote,
+            queuePath,
             mode: "context",
             origin: agent.origin,
             previous,
@@ -480,6 +493,7 @@ export class HandoffSource {
           artifactDirectory,
           historyPath,
           pendingRestartNote: agent.pendingRestartNote,
+          queuePath,
           previous,
         });
       }
@@ -612,6 +626,41 @@ export class HandoffSource {
         "review_changed",
         "Review the PR watches that will stop before preparing this transfer",
       );
+  }
+
+  private async previewQueues(
+    agentIds: string[],
+    watches: NonNullable<HandoffStoppedWorkReview["pullRequestWatches"]>,
+  ): Promise<number> {
+    let count = 0;
+    let bytes = 0;
+    for (const agentId of agentIds) {
+      const ignoreSystemIds = this.options.queues
+        .entries(agentId)
+        .filter(
+          (entry) =>
+            entry.origin === "system" &&
+            watches.some(
+              (watch) => watch.agentId === agentId && entry.id.startsWith(`pr-watch:${watch.id}:`),
+            ),
+        )
+        .map((entry) => entry.id);
+      const queue = await this.options.queues.exportForHandoff(agentId, {
+        requireHeld: false,
+        ignoreSystemIds,
+      });
+      if (
+        queue.entries.some(
+          (entry) => entry.senderAgentId && !agentIds.includes(entry.senderAgentId),
+        )
+      )
+        refuse("invalid_source", "Queued message sender is outside the transferred conversations");
+      count += queue.entries.length;
+      bytes += Buffer.byteLength(JSON.stringify(queue));
+      if (bytes > HANDOFF_QUEUE_MAX_BYTES)
+        refuse("invalid_source", "Queued messages exceed the handoff byte limit");
+    }
+    return count;
   }
 
   private async stopWatches(source: SourceHandoffStatus) {
@@ -882,13 +931,17 @@ export class HandoffSource {
     await this.options.archives.withVerifiedArchive(source.id, async (archive) => {
       if (archive.manifest.entrypoint.sha256 !== prepared.manifest.entrypoint.sha256)
         refuse("source_changed", "Source archive changed after capture");
-      const { bundle } = await readHandoffBundle(archive, {
+      const { bundle, queues } = await readHandoffBundle(archive, {
         sourceServerId: this.options.serverId,
         sourceWorkspaceId: source.workspaceId,
         sourceAgentIds: source.agentIds,
         manifestDigest: prepared.manifest.entrypoint.sha256,
       });
       for (const agent of prepared.agents) {
+        const queue = await this.options.queues.exportForHandoff(agent.id);
+        // COMPAT(handoffQueueCapture): added in v0.11.1, remove after 2027-04-10 once retained pre-v4 transfers finish.
+        if (!isDeepStrictEqual(queue, queues.get(agent.id) ?? { version: 1, entries: [] }))
+          refuse("source_changed", "Source queued messages changed after capture");
         const captured = bundle.conversations.find(
           (conversation) => conversation.sourceAgentId === agent.id,
         );
@@ -941,7 +994,7 @@ export class HandoffSource {
           pending: true,
           ...(conversation.historyIndex ? { historyIndex: conversation.historyIndex } : {}),
           // COMPAT(handoffContextMode): added in v0.11.1, remove after 2027-04-10 once retained v1/v2 publications finish.
-          ...(content.bundle.version === 3 ? { continuationMode: "context" as const } : {}),
+          ...(content.bundle.version >= 3 ? { continuationMode: "context" as const } : {}),
         };
         if (!isDeepStrictEqual(record.handoffContext, context))
           refuse("source_changed", "Carried context differs from its original verified archive");
@@ -1026,7 +1079,7 @@ export class HandoffSource {
       pending: record.handoffContext.pending,
       ...(conversation.historyIndex ? { historyIndex: conversation.historyIndex } : {}),
       // COMPAT(handoffContextMode): added in v0.11.1, remove after 2027-04-10 once retained v1/v2 publications finish.
-      ...(bundle.version === 3 ? { continuationMode } : {}),
+      ...(bundle.version >= 3 ? { continuationMode } : {}),
     };
     if (!isDeepStrictEqual(record.handoffContext, expected))
       refuse("source_changed", "Carried context differs from its original verified archive");

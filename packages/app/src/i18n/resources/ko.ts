@@ -25,6 +25,8 @@ export const ko: TranslationResources = {
     previousOmissions: "이전",
     nextOmissions: "다음",
     omittedDirectories: "제외된 폴더의 모든 내용도 제외됩니다.",
+    queuedMessagesHeld:
+      "대기 중인 메시지: {{count}}개. 일시 중지된 상태로 이동합니다. 준비되면 대상 호스트에서 대기열을 재개하세요.",
     prWatchesStop:
       "이 PR 모니터링은 중지됩니다. 전송을 취소하거나 대상 호스트에서 계속할 경우 수동으로 다시 시작하세요.",
     workToStop: "중지될 작업",

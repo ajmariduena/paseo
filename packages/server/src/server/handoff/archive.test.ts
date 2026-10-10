@@ -33,6 +33,7 @@ async function readNoteBundle(
     history?: typeof blob;
     previous?: HandoffHistorySegment[];
     historyIndex?: typeof blob;
+    queue?: typeof blob;
   } = {},
 ) {
   const conversations = notes
@@ -86,8 +87,20 @@ async function readNoteBundle(
   );
 }
 
-test.each([1, 2, 3])("reads a workspace-only archive using bundle version %i", async (version) => {
-  expect((await readNoteBundle(version)).bundle.version).toBe(version);
+test.each([1, 2, 3, 4])(
+  "reads a workspace-only archive using bundle version %i",
+  async (version) => {
+    expect((await readNoteBundle(version)).bundle.version).toBe(version);
+  },
+);
+
+test.each([
+  { version: 3, queue: blob },
+  { version: 4, queue: undefined },
+])("refuses incomplete queue coverage in bundle version $version", async ({ version, queue }) => {
+  await expect(readNoteBundle(version, [], { queue })).rejects.toThrow(
+    "Queued messages require handoff bundle version 4 and a queue snapshot",
+  );
 });
 
 const originalContext = {

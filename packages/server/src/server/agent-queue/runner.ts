@@ -12,6 +12,7 @@ import {
   type AgentQueueStore,
   type DequeuedEntry,
   type NewQueueEntry,
+  type HandoffQueue,
 } from "./store.js";
 
 export interface QueueDelivery {
@@ -125,6 +126,17 @@ export class AgentQueueRunner {
 
   entries(agentId: string): AgentQueueEntry[] {
     return inDeliveryOrder(this.store.peek(agentId)?.entries ?? []);
+  }
+
+  exportForHandoff(
+    agentId: string,
+    options?: Parameters<AgentQueueStore["exportForHandoff"]>[1],
+  ): Promise<HandoffQueue> {
+    return this.store.exportForHandoff(agentId, options);
+  }
+
+  installHandoffQueue(agentId: string, reservationId: string, queue: HandoffQueue): Promise<void> {
+    return this.store.installHandoffQueue(agentId, reservationId, queue);
   }
 
   async enqueue(

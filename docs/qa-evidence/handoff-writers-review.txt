@@ -36,9 +36,48 @@ transfer; the prompt is still editable in the held queue and no provider runtime
 All 10 runner cases, 30 watcher cases, one selected source coordinator case and two selected
 network cases pass (43 distinct cases). The watcher fixtures now give the real manager and watcher
 the same ownership service. The final selected runner/coordinator run passed 3 cases (52 skipped).
-Queue transport, paused destination installation, attachment portability, sender/delegation
-remapping and recovery of uncertain delivery after a crash remain open. This evidence does not
-claim that pending messages already travel to the destination.
+Queue transport now includes held text and embedded images in version 4 archives. Every
+conversation has a bounded queue snapshot; source release rechecks its content. Destination
+installation writes and synchronizes prompt files and the held queue before acknowledging
+publication. Stable destination message IDs and the reservation/digest binding make interrupted
+publication retryable without duplicate delivery. Sender identities within the transfer are remapped,
+including current and legacy peer envelopes, their reply guidance and stable delivery IDs. A focused
+regression first showed a correctly remapped queue row still instructing replies to the old agent ID;
+the six interruption cases now verify the structured prompt as well as the row and embedded image.
+Native and exported-context network cases preserve the exact prompts across source and destination
+restarts, reject changed prompt files before release, and keep destination agents unloaded.
+
+These queue cases use synthetic Claude artifacts and a version-only executable. They prove
+transport and held installation, not an authenticated continued turn. Source-local uploaded/review
+attachments, path-bearing attachments, senders outside the transfer, delegation wakes and other
+system notifications require a disposition and currently refuse. Recovery of uncertain delivery
+after a crash remains open. The source retains a fenced copy until retirement is implemented.
+
+
+Desktop and compact Chromium also show the pending-message review warning, load the destination
+conversation with its held queue and enabled Resume control, and preserve that queue on the return
+transfer. Screenshots: handoff-queue-desktop.png and handoff-queue-compact.png. Desktop passed in
+51.5s and compact in 57.4s, run separately. Earlier desktop attempts failed before the flow on the
+20-second isolated-daemon startup limit, then on a missing required wake:null field in the new
+queue-seeding fixture. The corrected fixture uses the real queue runner through test-process IPC.
+No startup timeout was increased and the production daemon was not restarted.
+
+Queue transport checks (222 distinct passing cases, including both browser layouts):
+
+$ npx vitest run packages/server/src/server/agent-queue/store.test.ts packages/server/src/server/handoff/archive.test.ts packages/server/src/server/handoff/ownership.posix.test.ts --config packages/server/vitest.config.ts --bail=1
+  100 passed. Includes six interrupted-publication phases, source-local attachment refusal,
+  missing prompts, cache/disk disagreement, bounded snapshot reads, fsync acknowledgement loss,
+  archive version coverage and senders outside the transfer.
+  After correcting structured peer identities, the two affected files passed 58 cases again.
+
+$ npx vitest run src/server/handoff/archive.e2e.test.ts --bail=1 -t 'transfers queued text and images|holds source queued messages|reviews and durably stops'
+  4 passed, 31 skipped. Both continuation modes and the existing conservation/watch cases pass.
+
+$ npx vitest run src/messages.wire-compat.test.ts --bail=1
+  43 passed. The queue count is optional on the wire; old and new shapes parse.
+
+$ npx vitest run src/handoff/form-model.test.ts src/i18n/resources.test.ts --bail=1
+  73 passed.
 
 $ npx vitest run src/server/agent-queue/runner.test.ts --bail=1
   Test Files  1 passed (1)

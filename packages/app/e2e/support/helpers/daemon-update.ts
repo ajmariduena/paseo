@@ -1,4 +1,5 @@
 import { fork, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { AgentProviderRuntimeSettingsMap } from "@getpaseo/protocol/provider-config";
 import { killProcessTree } from "./spawn-node";
@@ -8,6 +9,7 @@ export interface OutdatedDaemon {
   endpoint: string;
   label: string;
   serverId: string;
+  seedHeldQueue(agentId: string, prompt: string): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -77,12 +79,37 @@ export async function startTestDaemon(options?: TestDaemonOptions): Promise<Outd
       endpoint: ready.endpoint,
       label: options?.desktopManaged === true ? "outdated Desktop host" : "outdated host",
       serverId: ready.serverId,
+      seedHeldQueue: (agentId, prompt) => seedHeldQueue(child, agentId, prompt),
       close: () => killProcessTree(child),
     };
   } catch (error) {
     await killProcessTree(child);
     throw error;
   }
+}
+
+function seedHeldQueue(child: ChildProcess, agentId: string, prompt: string): Promise<void> {
+  const requestId = randomUUID();
+  return new Promise((resolve, reject) => {
+    const finish = (error?: Error) => {
+      clearTimeout(timeout);
+      child.off("message", onMessage);
+      child.off("exit", onExit);
+      if (error) reject(error);
+      else resolve();
+    };
+    const onMessage = (message: { type?: string; requestId?: string; error?: string }) => {
+      if (message.type !== "queue-seeded" || message.requestId !== requestId) return;
+      finish(message.error ? new Error(message.error) : undefined);
+    };
+    const onExit = () => finish(new Error("Test daemon exited while seeding a held queue"));
+    const timeout = setTimeout(() => finish(new Error("Timed out seeding a held queue")), 10_000);
+    child.on("message", onMessage);
+    child.once("exit", onExit);
+    child.send({ type: "seed-held-queue", requestId, agentId, prompt }, (error) => {
+      if (error) finish(error);
+    });
+  });
 }
 
 async function waitForDaemon(

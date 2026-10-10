@@ -466,6 +466,11 @@ function ReviewWorkspace({
               {terminal.name}
             </Text>
           ))}
+          {stoppedWork.queuedMessages ? (
+            <Text style={styles.text} testID="handoff-queue-review">
+              {t("handoff.queuedMessagesHeld", { count: stoppedWork.queuedMessages })}
+            </Text>
+          ) : null}
           {stoppedWork.review?.pullRequestWatches?.length ? (
             <View style={styles.status} testID="handoff-pr-watches-review">
               <Text style={styles.text}>{t("handoff.prWatchesStop")}</Text>

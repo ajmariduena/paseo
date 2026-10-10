@@ -707,6 +707,146 @@ test.skipIf(process.platform === "win32").each(["reserved", "staged"] as const)(
   30_000,
 );
 
+test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
+  "transfers queued text and images held through %s activation and destination restart",
+  async (continuationMode) => {
+    let source = await startHost("source", true);
+    let destination = await startHost("destination", true);
+    const cwd = path.join(root, "transported-queue-workspace");
+    await mkdir(cwd);
+    await writeFile(path.join(cwd, "work.txt"), "Prior work");
+    const created = await source.client.createWorkspace({
+      source: { kind: "directory", path: cwd },
+    });
+    if (!created.workspace) throw new Error("Missing workspace");
+    const agentId = randomUUID();
+    const sessionId = randomUUID();
+    const configDir = path.join(root, "source", "claude");
+    const project = claudeProjectDirSync(cwd, { configDir });
+    await mkdir(project, { recursive: true });
+    await writeFile(
+      path.join(project, `${sessionId}.jsonl`),
+      JSON.stringify({
+        type: "user",
+        uuid: randomUUID(),
+        sessionId,
+        message: { role: "user", content: "Keep the prior task" },
+      }) + "\n",
+    );
+    await source.daemon.daemon.agentStorage.upsert(
+      parseStoredAgentRecord({
+        id: agentId,
+        provider: "claude",
+        cwd,
+        workspaceId: created.workspace.id,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lastStatus: "closed",
+        persistence: {
+          provider: "claude",
+          sessionId,
+          metadata: { cwd, claudeRuntime: { configDir, cliVersion: "2.1.295" } },
+        },
+      }),
+    );
+    const queue = source.daemon.daemon.agentManager.messageQueue;
+    await queue.hold(agentId, "user_stop");
+    const prompts = [
+      "Do not lose the next task",
+      [
+        { type: "text" as const, text: "Then inspect this image" },
+        { type: "image" as const, data: "aGVsbG8=", mimeType: "image/png" },
+      ],
+    ];
+    for (const [index, prompt] of prompts.entries()) {
+      const queued = await queue.enqueue(
+        agentId,
+        {
+          id: `pending-${index}`,
+          origin: "user",
+          senderAgentId: null,
+          textPreview: "",
+          prompt,
+          wake: null,
+        },
+        async () => {
+          throw new Error("Handoff must leave pending work paused");
+        },
+      );
+      void queued.settled.catch(() => undefined);
+    }
+    const preview = await source.client.handoffPreviewSource({ workspaceId: created.workspace.id });
+    expect(preview.result?.stoppedWork?.queuedMessages).toBe(2);
+    const staged = await prepareWorkspaceHandoff({
+      transferId: randomUUID(),
+      workspaceId: created.workspace.id,
+      destinationParent: root,
+      continuationMode,
+      source: source.client,
+      destination: destination.client,
+    });
+    expect(staged.state).toBe("staged");
+    const sourcePrompt = queue.entries(agentId)[0];
+    if (!sourcePrompt?.promptFile) throw new Error("Missing queued prompt file");
+    const promptPath = path.join(
+      source.daemon.paseoHome,
+      "agent-queues",
+      agentId,
+      sourcePrompt.promptFile,
+    );
+    const capturedPrompt = await readFile(promptPath);
+    await writeFile(promptPath, JSON.stringify("changed after preparation"));
+    const refused = await source.client.handoffReleaseSource({ transferId: staged.transferId });
+    expect(refused.error?.code).toBe("source_changed");
+    await writeFile(promptPath, capturedPrompt);
+    await stopHost(source);
+    await stopHost(destination);
+    source = await startHost("source", true);
+    destination = await startHost("destination", true);
+    const activation = {
+      transferId: staged.transferId,
+      sourceServerId: source.daemon.daemon.getServerId(),
+      getSource: () => source.client,
+      destination: destination.client,
+    };
+    const active = await activateWorkspaceHandoff(activation);
+    const destinationAgentId = active.agentMappings[0]!.destinationAgentId;
+    expect((await destination.client.listAgentQueue(destinationAgentId)).queue).toMatchObject({
+      held: true,
+      heldReason: "user_stop",
+      entries: [
+        { origin: "user", textPreview: "Do not lose the next task", attachmentCount: 0 },
+        { origin: "user", textPreview: "Then inspect this image", attachmentCount: 1 },
+      ],
+    });
+    expect(destination.daemon.daemon.agentManager.getAgent(destinationAgentId)).toBeNull();
+    const imported =
+      await destination.daemon.daemon.agentManager.messageQueue.exportForHandoff(
+        destinationAgentId,
+      );
+    expect(imported.entries.map((entry) => entry.prompt)).toEqual(prompts);
+    expect(imported.entries.map((entry) => entry.id)).not.toEqual(["pending-0", "pending-1"]);
+    await stopHost(destination);
+    destination = await startHost("destination", true);
+    expect(
+      (await activateWorkspaceHandoff({ ...activation, destination: destination.client })).state,
+    ).toBe("active");
+    expect(
+      await destination.daemon.daemon.agentManager.messageQueue.exportForHandoff(
+        destinationAgentId,
+      ),
+    ).toEqual(imported);
+    expect((await destination.client.listAgentQueue(destinationAgentId)).queue.held).toBe(true);
+    expect(destination.daemon.daemon.agentManager.getAgent(destinationAgentId)).toBeNull();
+    expect(
+      (await source.daemon.daemon.agentManager.messageQueue.exportForHandoff(agentId)).entries.map(
+        (entry) => entry.prompt,
+      ),
+    ).toEqual(prompts);
+  },
+  30_000,
+);
+
 test.skipIf(process.platform === "win32")(
   "holds source queued messages through handoff preparation, restart and cancellation",
   async () => {
@@ -2768,7 +2908,7 @@ for (const continuationMode of ["native", "context"] as const) {
             sourceAgentIds: [agentId],
             manifestDigest: archive.manifest.entrypoint.sha256,
           });
-          expect(bundle.version).toBe(3);
+          expect(bundle.version).toBe(4);
           expect(bundle.conversations[0].pendingRestartNote).toEqual(notes);
         },
       );

@@ -24,6 +24,8 @@ export const ja: TranslationResources = {
     previousOmissions: "前へ",
     nextOmissions: "次へ",
     omittedDirectories: "除外されたフォルダ内のすべての内容も除外されます。",
+    queuedMessagesHeld:
+      "保留中のメッセージ：{{count}} 件。一時停止した状態で移動します。準備ができたら移動先でキューを再開してください。",
     prWatchesStop:
       "これらのPR監視は停止します。転送をキャンセルする場合や転送先で続ける場合は、手動で再開してください。",
     workToStop: "停止する作業",

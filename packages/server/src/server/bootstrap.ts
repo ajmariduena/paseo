@@ -1100,6 +1100,7 @@ export async function createPaseoDaemon(
   function publication() {
     if (!workspaceRegistry) throw new Error("Workspace registry is unavailable");
     return createHandoffPublication({
+      queues: agentManager.messageQueue,
       projects: projectRegistry,
       workspaces: workspaceRegistry,
       agents: agentStorage,
