@@ -1,3 +1,75 @@
+Failed Claude query construction and inspection recovery — Linux, 2026-10-10
+Baseline: a3f8bc84c (plan-machine-handoff-macbook-vps)
+
+An SDK factory that spawned then threw left a registered process outside session ownership.
+The first regression reproduced a retained registry entry after close. Query attempts are now owned
+before SDK construction. Failed construction closes the same process without releasing its provider;
+failed cleanup retains the attempt and prevents replacement until the storage operation succeeds.
+
+A separate regression reproduced an initial process-inspection failure that blocked every later
+close, even after inspection recovered. Close now retries registration of the same gated process.
+An assigned publication ID is reused; a retry cannot release the original failed provider launch.
+The inspection case injects only the inspection error. All cases use real temporary storage and
+harmless Node processes; SDK messages and constructor failures remain injected fixtures.
+No fresh authenticated Claude turn or physical-host transfer was performed. Unobserved descendants,
+complete generation recovery and failures after a bootstrap itself exits remain separate gates.
+
+Construction regression before the fix (retained-record body omitted):
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  src/server/agent/providers/claude/agent.spawn.test.ts > Claude spawn override > a throwing SDK constructor cannot leave a registered process or start its provider
+AssertionError: expected [ { …(9) } ] to deeply equal []
+ Test Files  1 failed (1)
+      Tests  1 failed | 33 skipped (34)
+
+Inspection regression before the fix:
+
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/providers/claude/agent.spawn.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  load multiple .env files with { path: ['.env.local', '.env'] }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  suppress all logs with { quiet: true }
+
+ ❯ src/server/agent/providers/claude/agent.spawn.test.ts (36 tests | 1 failed | 35 skipped) 57ms
+     × retries initial process inspection during close without releasing the provider 55ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/providers/claude/agent.spawn.test.ts > Claude spawn override > retries initial process inspection during close without releasing the provider
+Error: Process inspection unavailable
+ ❯ src/server/agent/providers/claude/agent.spawn.test.ts:1292:35
+    1290|       const capture = treeKillUtils.captureProcessTree;
+    1291|       vi.spyOn(treeKillUtils, "captureProcessTree").mockImplementation…
+    1292|         if (failInspection) throw new Error("Process inspection unavai…
+       |                                   ^
+    1293|         return capture(child);
+    1294|       });
+ ❯ ClaudeAgentSession.recordQueryProcess src/server/agent/providers/claude/agent.ts:3592:31
+ ❯ src/server/agent/providers/claude/agent.ts:3545:22
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 35 skipped (36)
+   Start at  08:13:41
+   Duration  1.00s (transform 528ms, setup 40ms, import 787ms, tests 57ms, environment 0ms)
+
+
+Final owning-file validation:
+
+Command: npx vitest run src/server/agent/providers/claude/agent.spawn.test.ts --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  36 passed (36)
+   Start at  08:14:05
+   Duration  3.29s (transform 597ms, setup 49ms, import 846ms, tests 2.27s, environment 0ms)
+
+
 macOS-compatible supervised launch — Linux, 2026-10-10
 Baseline: 9e7ac2173 (plan-machine-handoff-macbook-vps)
 

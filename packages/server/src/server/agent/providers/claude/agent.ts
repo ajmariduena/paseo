@@ -2128,13 +2128,14 @@ interface ClaudeManagedProcessOptions {
 }
 
 interface ClaudeManagedProcess {
+  register: () => Promise<ManagedProcessRecord>;
   record: Promise<ManagedProcessRecord>;
   ready: Promise<void>;
 }
 
 interface ClaudeQueryResources {
   callbacks: ClaudeQueryCallbacks;
-  query: Query;
+  query: Query | null;
   input: AsyncMessageInput<SDKUserMessage>;
   child: ChildProcess | null;
   managedProcess: ClaudeManagedProcess | null;
@@ -2239,7 +2240,7 @@ class ClaudeAgentSession implements AgentSession {
   private compactionMarkerOpen = false;
   private queryPumpPromise: Promise<void> | null = null;
   private queryOpening: Promise<Query> | null = null;
-  private readonly queryResources = new Map<Query, ClaudeQueryResources>();
+  private readonly queryResources = new Set<ClaudeQueryResources>();
   private closeOperation: Promise<void> | null = null;
   private readonly pendingSessionOperations = new Set<Promise<void>>();
   private semanticDrainError: Error | null = null;
@@ -3452,12 +3453,16 @@ class ClaudeAgentSession implements AgentSession {
     return { kind: "fresh-session" };
   }
 
+  private findQueryResource(query: Query): ClaudeQueryResources | undefined {
+    return [...this.queryResources].find((resource) => resource.query === query);
+  }
+
   private async ensureQuery(launchMode: PermissionMode = this.currentMode): Promise<Query> {
     if (this.closed) throw new Error("Claude session is closed");
     if (this.queryOpening) return this.queryOpening;
     if (this.query && !this.queryRestartNeeded) {
       const query = this.query;
-      await this.queryResources.get(query)?.managedProcess?.ready;
+      await this.findQueryResource(query)?.managedProcess?.ready;
       return query;
     }
     const opening = this.openQuery(launchMode);
@@ -3504,59 +3509,71 @@ class ClaudeAgentSession implements AgentSession {
     this.input = input;
     // A fresh Claude process has no turn of its own in flight.
     this.mainTurnInFlight = false;
-    let resource: ClaudeQueryResources | null = null;
-    let spawnedChild: ChildProcess | null = null;
-    let managedProcess: ClaudeManagedProcess | null = null;
-    this.query = claudeQuery(
-      { prompt: input.iterable, options },
-      {
-        runtimeSettings: this.runtimeSettings,
-        launchEnv: this.launchEnv,
-        queryFactory: this.queryFactory,
-        deferProcessStart: this.managedProcesses !== undefined && process.platform !== "win32",
-        onChildProcess: (launch) => {
-          const child = launch.child;
-          spawnedChild = child;
-          this.childProcess = child;
-          if (this.managedProcesses && process.platform !== "win32") {
-            const registry = this.managedProcesses;
-            const record = launch.ready.then(() =>
-              this.recordQueryProcess({ child, command: launch.command, registry }),
-            );
-            const ready = record.then(() => {
-              if (this.closed || resource?.closing)
-                throw new Error("Claude session closed before process launch");
-              return launch.start();
-            });
-            managedProcess = { record, ready };
-            void ready.catch((err) =>
-              this.logger.error({ err }, "Claude process registration failed"),
-            );
-          }
-          if (resource) {
-            resource.child = child;
-            resource.managedProcess = managedProcess;
-            resource.requiresNaturalDrain = true;
-          }
-          child.once("exit", (code, signal) => this.handleRuntimeExit(child, code, signal));
-        },
-      },
-    );
-    resource = {
+    const resource: ClaudeQueryResources = {
       callbacks,
-      query: this.query,
+      query: null,
       input,
-      child: spawnedChild,
-      managedProcess,
+      child: null,
+      managedProcess: null,
       pump: null,
       shutdown: null,
       stopping: null,
       returned: null,
       closing: false,
       closeRequested: false,
-      requiresNaturalDrain: spawnedChild !== null,
+      requiresNaturalDrain: false,
     };
-    this.queryResources.set(this.query, resource);
+    // The SDK may spawn and then throw before returning a Query. Own that attempt
+    // first, so closure can join registration and keep the launch gate closed.
+    this.queryResources.add(resource);
+    let query: Query;
+    try {
+      query = claudeQuery(
+        { prompt: input.iterable, options },
+        {
+          runtimeSettings: this.runtimeSettings,
+          launchEnv: this.launchEnv,
+          queryFactory: this.queryFactory,
+          deferProcessStart: this.managedProcesses !== undefined && process.platform !== "win32",
+          onChildProcess: (launch) => {
+            const child = launch.child;
+            this.childProcess = child;
+            resource.child = child;
+            resource.requiresNaturalDrain = true;
+            if (this.managedProcesses && process.platform !== "win32") {
+              const registry = this.managedProcesses;
+              const register = () =>
+                launch.ready.then(() =>
+                  this.recordQueryProcess({ child, command: launch.command, registry }),
+                );
+              const record = register();
+              const ready = record.then(() => {
+                if (this.closed || resource.closing || !resource.query)
+                  throw new Error("Claude session closed before process launch");
+                return launch.start();
+              });
+              resource.managedProcess = { register, record, ready };
+              void ready.catch((err) =>
+                this.logger.error({ err }, "Claude process registration failed"),
+              );
+            }
+            child.once("exit", (code, signal) => this.handleRuntimeExit(child, code, signal));
+          },
+        },
+      );
+      resource.query = query;
+    } catch (error) {
+      this.detachQuery(resource);
+      try {
+        await this.shutdownQuery(resource);
+      } catch (cleanupError) {
+        // Retain the same attempt for close/retry; never launch a replacement
+        // while its failed cleanup is outstanding.
+        this.logger.warn({ err: cleanupError }, "Failed Claude construction retains cleanup");
+      }
+      throw error;
+    }
+    this.query = query;
     await resource.managedProcess?.ready;
     const fastMode = this.resolveFastModeSetting();
     if (fastMode !== null) {
@@ -4199,13 +4216,14 @@ class ClaudeAgentSession implements AgentSession {
 
   private startQueryPump(): void {
     if (this.closed || this.queryPumpPromise || !this.query) return;
-    const resource = this.queryResources.get(this.query);
+    const resource = this.findQueryResource(this.query);
     if (!resource) throw new Error("Claude query has no lifecycle owner");
     this.queryPumpPromise = this.pumpQuery(resource);
   }
 
   private pumpQuery(resource: ClaudeQueryResources): Promise<void> {
     if (resource.pump) return resource.pump;
+    if (!resource.query) return Promise.resolve();
     const pump = this.runQueryPump(resource.query);
     resource.pump = pump;
     void pump.catch((error: unknown) => {
@@ -4253,7 +4271,7 @@ class ClaudeAgentSession implements AgentSession {
 
   private closeQueryTransport(resource: ClaudeQueryResources): void {
     if (!resource.closeRequested) {
-      resource.query.close?.();
+      resource.query?.close?.();
       resource.closeRequested = true;
     }
   }
@@ -4262,13 +4280,22 @@ class ClaudeAgentSession implements AgentSession {
     resource.callbacks.abort.abort();
     // Inventory descendants before the SDK can reap their root process.
     if (resource.child && resource.managedProcess && this.managedProcesses) {
-      const recordId = await resource.managedProcess.record.then(
-        (record) => record.id,
-        (error: unknown) => {
-          if (error instanceof ManagedProcessPublicationError) return error.recordId;
-          throw error;
-        },
-      );
+      const managed = resource.managedProcess;
+      const recordId = await managed.record
+        .catch((error: unknown) => {
+          // A publication failure already owns an ID. Earlier inspection failures
+          // can retry the same gated child; never retry its rejected launch promise.
+          if (error instanceof ManagedProcessPublicationError) throw error;
+          managed.record = managed.register();
+          return managed.record;
+        })
+        .then(
+          (record) => record.id,
+          (error: unknown) => {
+            if (error instanceof ManagedProcessPublicationError) return error.recordId;
+            throw error;
+          },
+        );
       await this.managedProcesses.stop(recordId);
       resource.child = null;
     } else if (resource.child) {
@@ -4297,7 +4324,7 @@ class ClaudeAgentSession implements AgentSession {
     this.closeQueryTransport(resource);
     // return() terminates the SDK generator; calling it before draining loses frames.
     if (!resource.returned) {
-      const returned = Promise.resolve().then(() => resource.query.return?.());
+      const returned = Promise.resolve().then(() => resource.query?.return?.());
       resource.returned = returned;
       void returned.catch(() => {
         if (resource.returned === returned) resource.returned = null;
@@ -4314,7 +4341,7 @@ class ClaudeAgentSession implements AgentSession {
     );
     if (drained.status === "rejected") throw drained.reason;
     if (this.semanticDrainError) throw this.semanticDrainError;
-    this.queryResources.delete(resource.query);
+    this.queryResources.delete(resource);
   }
 
   private async runQueryPump(activeQuery: Query): Promise<void> {
@@ -4573,7 +4600,7 @@ class ClaudeAgentSession implements AgentSession {
     );
 
     this.failActiveTurns(staleResumeError);
-    const resource = this.queryResources.get(activeQuery);
+    const resource = this.findQueryResource(activeQuery);
     if (!resource) throw new Error("Claude query has no lifecycle owner");
     this.detachQuery(resource);
     // This runs inside the pump. Stop the writer here, then let that pump drain;

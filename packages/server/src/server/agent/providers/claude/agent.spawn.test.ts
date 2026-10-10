@@ -10,6 +10,7 @@ import type { ChildProcess } from "node:child_process";
 import type {
   Options,
   Query,
+  SpawnedProcess,
   SpawnOptions as ClaudeSpawnOptions,
 } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -18,6 +19,7 @@ import { syncFilePublication } from "../../../atomic-file.js";
 import { asInternals } from "../../../test-utils/class-mocks.js";
 import { createTestLogger } from "../../../../test-utils/test-logger.js";
 import * as spawnUtils from "../../../../utils/spawn.js";
+import * as treeKillUtils from "../../../../utils/tree-kill.js";
 import {
   captureProcessTree,
   readLinuxProcessEntry,
@@ -1139,6 +1141,202 @@ describe("Claude spawn override", () => {
         allowPublication.resolve();
         await opening.catch(() => {});
         await session.close();
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "a throwing SDK constructor cannot leave a registered process or start its provider",
+    async () => {
+      const home = await mkdtemp(path.join(tmpdir(), "paseo-query-construction-"));
+      const marker = path.join(home, "provider-started");
+      const published = Promise.withResolvers<void>();
+      const registry = createManagedProcessRegistry({
+        paseoHome: home,
+        processTable: createSystemManagedProcessTable(),
+        terminateProcess: terminateWithTreeKill,
+        logger: createTestLogger(),
+        syncPublication: async (file, root) => {
+          await syncFilePublication(file, root);
+          published.resolve();
+        },
+      });
+      const children: SpawnedProcess[] = [];
+      const exited = Promise.withResolvers<void>();
+      const queryFactory = vi.fn(({ options }: ClaudeQueryInput) => {
+        if (!options.spawnClaudeCodeProcess) throw new Error("Missing launcher");
+        const child = options.spawnClaudeCodeProcess({
+          command: process.execPath,
+          args: [
+            "-e",
+            `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started'); setInterval(() => {}, 1000)`,
+          ],
+          cwd: process.cwd(),
+          env: {},
+          signal: new AbortController().signal,
+        });
+        children.push(child);
+        child.on("exit", exited.resolve.bind(undefined, undefined));
+        throw new Error("SDK construction failed after spawning");
+      });
+      const session = await new ClaudeAgentClient({
+        logger: createTestLogger(),
+        resolveBinary: async () => process.execPath,
+        managedProcesses: registry,
+        queryFactory,
+      }).createSession({ provider: "claude", cwd: process.cwd() });
+      try {
+        await expect(session.listCommands()).rejects.toThrow("SDK construction failed");
+        await published.promise;
+        await session.close();
+        expect(await registry.list()).toEqual([]);
+        await exited.promise;
+        await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
+        expect(queryFactory).toHaveBeenCalledTimes(1);
+      } finally {
+        await registry.reapStale();
+        for (const child of children) child.kill("SIGKILL");
+        await exited.promise;
+        await session.close();
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "failed construction retains cleanup and blocks a replacement until storage recovers",
+    async () => {
+      const home = await mkdtemp(path.join(tmpdir(), "paseo-query-cleanup-retry-"));
+      const marker = path.join(home, "failed-provider-started");
+      let publicationCount = 0;
+      let blockCleanup = true;
+      const registry = createManagedProcessRegistry({
+        paseoHome: home,
+        processTable: createSystemManagedProcessTable(),
+        terminateProcess: terminateWithTreeKill,
+        logger: createTestLogger(),
+        syncPublication: async (file, root) => {
+          publicationCount += 1;
+          if (blockCleanup && publicationCount > 1) throw new Error("Closure sync unavailable");
+          await syncFilePublication(file, root);
+        },
+      });
+      const children: SpawnedProcess[] = [];
+      const exits: Promise<void>[] = [];
+      let constructionCount = 0;
+      const queryFactory = vi.fn(({ options }: ClaudeQueryInput) => {
+        if (!options.spawnClaudeCodeProcess) throw new Error("Missing launcher");
+        constructionCount += 1;
+        const child = options.spawnClaudeCodeProcess({
+          command: process.execPath,
+          args: [
+            "-e",
+            `if (${constructionCount} === 1) require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started'); setInterval(() => {}, 1000)`,
+          ],
+          cwd: process.cwd(),
+          env: {},
+          signal: new AbortController().signal,
+        });
+        children.push(child);
+        const exited = Promise.withResolvers<void>();
+        exits.push(exited.promise);
+        child.on("exit", exited.resolve.bind(undefined, undefined));
+        if (constructionCount === 1) throw new Error("SDK construction failed after spawning");
+        return createQueryMock([]);
+      });
+      const session = await new ClaudeAgentClient({
+        logger: createTestLogger(),
+        resolveBinary: async () => process.execPath,
+        managedProcesses: registry,
+        queryFactory,
+      }).createSession({ provider: "claude", cwd: process.cwd() });
+      try {
+        await expect(session.listCommands()).rejects.toThrow("SDK construction failed");
+        await expect(session.listCommands()).rejects.toThrow("Closure sync unavailable");
+        expect(queryFactory).toHaveBeenCalledTimes(1);
+        expect(await registry.list()).toHaveLength(1);
+        blockCleanup = false;
+        expect((await session.listCommands()).map((command) => command.name)).toEqual(["rewind"]);
+        await exits[0];
+        expect(queryFactory).toHaveBeenCalledTimes(2);
+        expect(await registry.list()).toHaveLength(1);
+        await session.close();
+        expect(await registry.list()).toEqual([]);
+        await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        blockCleanup = false;
+        await session.close();
+        await registry.reapStale();
+        for (const child of children) child.kill("SIGKILL");
+        await Promise.all(exits);
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "retries initial process inspection during close without releasing the provider",
+    async () => {
+      const home = await mkdtemp(path.join(tmpdir(), "paseo-query-inspection-retry-"));
+      const marker = path.join(home, "provider-started");
+      const registry = createManagedProcessRegistry({
+        paseoHome: home,
+        processTable: createSystemManagedProcessTable(),
+        terminateProcess: terminateWithTreeKill,
+        logger: createTestLogger(),
+      });
+      let failInspection = true;
+      const capture = treeKillUtils.captureProcessTree;
+      vi.spyOn(treeKillUtils, "captureProcessTree").mockImplementation(async (child) => {
+        if (failInspection) throw new Error("Process inspection unavailable");
+        return capture(child);
+      });
+      const children: SpawnedProcess[] = [];
+      const exited = Promise.withResolvers<void>();
+      const query = createQueryMock([]);
+      const queryFactory = vi.fn(({ options }: ClaudeQueryInput) => {
+        if (!options.spawnClaudeCodeProcess) throw new Error("Missing launcher");
+        const child = options.spawnClaudeCodeProcess({
+          command: process.execPath,
+          args: [
+            "-e",
+            `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started'); setInterval(() => {}, 1000)`,
+          ],
+          cwd: process.cwd(),
+          env: {},
+          signal: new AbortController().signal,
+        });
+        children.push(child);
+        child.on("exit", exited.resolve.bind(undefined, undefined));
+        return query;
+      });
+      const session = await new ClaudeAgentClient({
+        logger: createTestLogger(),
+        resolveBinary: async () => process.execPath,
+        managedProcesses: registry,
+        queryFactory,
+      }).createSession({ provider: "claude", cwd: process.cwd() });
+      try {
+        await expect(session.listCommands()).rejects.toThrow("Process inspection unavailable");
+        await expect(session.listCommands()).rejects.toThrow("Process inspection unavailable");
+        await expect(session.close()).rejects.toThrow("Process inspection unavailable");
+        expect(await registry.list()).toEqual([]);
+        expect(query.supportedCommands).not.toHaveBeenCalled();
+        expect(query.close).not.toHaveBeenCalled();
+        expect(queryFactory).toHaveBeenCalledTimes(1);
+        failInspection = false;
+        await session.close();
+        await exited.promise;
+        expect(await registry.list()).toEqual([]);
+        await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
+        expect(queryFactory).toHaveBeenCalledTimes(1);
+      } finally {
+        failInspection = false;
+        await session.close().catch(() => {});
+        await registry.reapStale();
+        for (const child of children) child.kill("SIGKILL");
+        await exited.promise;
         await rm(home, { recursive: true, force: true });
       }
     },

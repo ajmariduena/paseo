@@ -23,7 +23,10 @@ primed.
 
 Reload releases the old runtime before resuming its durable session: an idle provider process can
 still own an exclusive writer. A close failure retains that runtime for cleanup and blocks the
-replacement. Closure must join already admitted provider operations, including a rewind that can
+replacement. Own each query attempt before calling the SDK: construction can spawn a process and
+then throw without returning a query. Retain failed cleanup for retry and keep its provider launch
+blocked. An initial process-inspection failure may retry against that same gated process; it must
+not release the failed launch. Closure must join already admitted provider operations, including a rewind that can
 change the session handle after its process stops. SDK callbacks can outlive the message stream;
 retire their permissions and join their work before releasing the query. Read the final provider
 handle after closure before resuming. A failed replacement

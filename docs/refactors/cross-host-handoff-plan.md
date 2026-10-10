@@ -456,7 +456,9 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   process identities without signalling current PIDs. See the [store contract](../data-model.md#managed-process-store)
   and [process proof evidence](../qa-evidence/handoff-checkpoint-recovery.txt). The Claude spawn suite
   now covers durable launch admission, parent death before admission, closure during publication,
-  failed-registration cleanup and preservation of process identity, streams and executable wrappers.
+  failed-registration cleanup, SDK construction failure after spawning, retry of initial inspection
+  and preservation of process identity, streams and executable wrappers. Failed construction retains
+  its process until cleanup succeeds and prevents a replacement from bypassing that cleanup.
   macOS now uses a registered supervisor to retain its provider environment; the same suite runs in
   the macOS CI job. Local evidence exercises both launch strategies with harmless Linux processes,
   including cold registry recovery, SDK signals, forced shutdown and memory overhead. Native macOS
