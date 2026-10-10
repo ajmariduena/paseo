@@ -2182,6 +2182,13 @@ export const ja: TranslationResources = {
       weakAutoHint: "電波が弱いため自動で切り替えました。接続が安定するとライブに戻ります。",
       weakUnavailable: "弱い電波モードを使うには、パソコンの Paseo を更新してください。",
     },
+    onTheGo: {
+      enter: "On the go",
+      exit: "On the go を終了",
+      detected: "車内 · On the go",
+      mute: "ミュート",
+      unmute: "ミュート解除",
+    },
     spoken: {
       notHeard: "聞き取れませんでした。もう一度お願いします。",
       backendFailed: "実行できませんでした。少ししてからもう一度お試しください。",
@@ -2700,6 +2707,22 @@ export const ja: TranslationResources = {
         keepKey: "現在のキーを使い続けるには空欄のままにしてください",
         invalidUrl: "http:// または https:// で始まる URL を入力してください",
       },
+    },
+    onTheGo: {
+      title: "On the go",
+      description: "この電話の音声通話用の運転向け表示。大きなボタン2つだけです。",
+      mode: "オンにする",
+      auto: "自動",
+      always: "常に",
+      never: "しない",
+      autoHint: "車内でオンになります：CarPlay、システムの車モード、または記憶した車の Bluetooth。",
+      useMotion: "電話のモーションを使う",
+      useMotionHint:
+        "CarPlay や Bluetooth がなくても運転中を検出します。モーションへのアクセスを求めます。",
+      motionDenied: "モーションへのアクセスがオフです。システム設定でオンにしてください。",
+      rememberedCars: "記憶した車",
+      noCars: "まだありません。車内での通話中に On the go をタップすると記憶します。",
+      forget: "削除",
     },
     readAloud: {
       title: "Read aloud",

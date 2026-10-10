@@ -24,6 +24,7 @@ import {
 } from "@/voice-chat/call-event-log";
 import { ConnectionQuality } from "@/voice-chat/connection-quality";
 import { startFleetCourier } from "@/voice-chat/fleet-courier";
+import { useOnTheGo } from "@/voice-chat/on-the-go/use-on-the-go";
 import { useGlobalVoiceStore, type GlobalVoiceMode } from "@/voice-chat/global-voice-store";
 import { createHostVoiceMessagesTransport } from "@/voice-chat/messages/host-transport";
 import { stopReadAloud } from "@/read-aloud/player";
@@ -514,6 +515,7 @@ export function useGlobalVoiceSupervisor(call: GlobalVoice): void {
   const wasActiveRef = useRef(false);
   // Outlives the effect re-runs a mode switch causes, so relapse backoff keeps growing per call.
   const qualityRef = useRef<{ serverId: string; quality: ConnectionQuality } | null>(null);
+  useOnTheGo(call.isActive || call.isStarting || call.isSwitching);
 
   useEffect(() => {
     if (call.isSwitching || call.isStarting) return;

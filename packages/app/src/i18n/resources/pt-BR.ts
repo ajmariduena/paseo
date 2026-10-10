@@ -2196,6 +2196,13 @@ export const ptBR: TranslationResources = {
         "Mudou sozinho porque o sinal está fraco. Volta ao vivo quando a conexão estabilizar.",
       weakUnavailable: "Atualize o Paseo no seu computador para usar o modo de sinal fraco.",
     },
+    onTheGo: {
+      enter: "On the go",
+      exit: "Sair do On the go",
+      detected: "No carro · On the go",
+      mute: "Silenciar",
+      unmute: "Ativar microfone",
+    },
     spoken: {
       notHeard: "Não entendi. Pode repetir?",
       backendFailed: "Não consegui fazer isso. Tente de novo em instantes.",
@@ -2707,6 +2714,24 @@ export const ptBR: TranslationResources = {
         keepKey: "Deixe vazio para manter a chave atual",
         invalidUrl: "Digite uma URL que comece com http:// ou https://",
       },
+    },
+    onTheGo: {
+      title: "On the go",
+      description:
+        "Uma tela para dirigir nas chamadas de voz deste telefone: dois botões grandes e nada mais.",
+      mode: "Ativar",
+      auto: "Automático",
+      always: "Sempre",
+      never: "Nunca",
+      autoHint:
+        "Ativa no carro: CarPlay, o modo carro do sistema ou o Bluetooth de um carro lembrado.",
+      useMotion: "Usar o movimento do telefone",
+      useMotionHint:
+        "Também percebe que você está dirigindo sem CarPlay ou Bluetooth. Pede acesso ao movimento.",
+      motionDenied: "O acesso ao movimento está desativado. Ative nos ajustes do sistema.",
+      rememberedCars: "Carros lembrados",
+      noCars: "Nenhum ainda. Toque em On the go durante uma chamada no carro para lembrá-lo.",
+      forget: "Esquecer",
     },
     readAloud: {
       title: "Read aloud",

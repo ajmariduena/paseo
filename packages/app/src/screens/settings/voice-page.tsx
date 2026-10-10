@@ -7,6 +7,8 @@ import type { AgentProvider } from "@getpaseo/protocol/agent-types";
 import { CombinedModelSelector } from "@/components/combined-model-selector";
 import { DictionarySection } from "@/dictionary/settings-section";
 import { VoiceCommandsSection } from "@/voice-commands/settings-section";
+import { OnTheGoSettingsSection } from "@/voice-chat/on-the-go/settings-section";
+import { isNative } from "@/constants/platform";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { Button } from "@/components/ui/button";
 import { FormTextInput } from "@/components/ui/form-field";
@@ -102,6 +104,7 @@ export function VoicePage({ serverId }: { serverId: string }) {
       <DictationSettingsSection serverId={serverId} />
       <DictionarySection key={serverId} serverId={serverId} />
       <VoiceCommandsSection key={serverId} serverId={serverId} />
+      {isNative ? <OnTheGoSettingsSection /> : null}
       <SettingsSection
         title={t("settings.readAloud.title")}
         info={t("settings.readAloud.description")}

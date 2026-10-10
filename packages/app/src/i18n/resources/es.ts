@@ -2213,6 +2213,13 @@ export const es: TranslationResources = {
         "Cambió solo porque la señal está débil. Vuelve a en vivo cuando la conexión se estabilice.",
       weakUnavailable: "Actualiza Paseo en tu computadora para usar el modo señal débil.",
     },
+    onTheGo: {
+      enter: "On the go",
+      exit: "Salir de On the go",
+      detected: "En el carro · On the go",
+      mute: "Silenciar",
+      unmute: "Activar micrófono",
+    },
     spoken: {
       notHeard: "No te escuché bien. ¿Me lo repites?",
       backendFailed: "No pude hacerlo. Inténtalo de nuevo en un momento.",
@@ -2721,6 +2728,25 @@ export const es: TranslationResources = {
         keepKey: "Déjalo vacío para conservar la clave actual",
         invalidUrl: "Escribe una URL que empiece por http:// o https://",
       },
+    },
+    onTheGo: {
+      title: "On the go",
+      description:
+        "Una vista para manejar en las llamadas de voz de este teléfono: dos botones grandes y nada más.",
+      mode: "Activar",
+      auto: "Automático",
+      always: "Siempre",
+      never: "Nunca",
+      autoHint:
+        "Se activa en un carro: CarPlay, el modo coche del sistema o el Bluetooth de un carro recordado.",
+      useMotion: "Usar el movimiento del teléfono",
+      useMotionHint:
+        "Detecta que vas manejando aunque no haya CarPlay ni Bluetooth. Pide acceso al movimiento.",
+      motionDenied:
+        "El acceso al movimiento está desactivado. Actívalo en los ajustes del sistema.",
+      rememberedCars: "Carros recordados",
+      noCars: "Ninguno todavía. Toca On the go durante una llamada en tu carro para recordarlo.",
+      forget: "Olvidar",
     },
     readAloud: {
       title: "Lectura en voz alta",

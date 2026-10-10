@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { OnTheGoOverride, OnTheGoReason } from "@/voice-chat/on-the-go/on-the-go-detector";
 
 export type GlobalVoiceMode = "live" | "messages";
 
@@ -20,6 +21,11 @@ interface GlobalVoiceState {
   isSwitching: boolean;
   /** Start the next call in messages mode (the user's last manual choice in this app session). */
   preferMessages: boolean;
+  /** The driving layout of the call screen, on while the phone is in a car. */
+  onTheGo: boolean;
+  onTheGoReason: OnTheGoReason | null;
+  /** The user's choice for this call; cleared at hang-up. */
+  onTheGoOverride: OnTheGoOverride;
   setOrchestratorAgentId: (serverId: string, agentId: string) => void;
   setStarting: (isStarting: boolean) => void;
   setMinimized: (isMinimized: boolean) => void;
@@ -30,6 +36,9 @@ interface GlobalVoiceState {
   ) => void;
   setSwitching: (isSwitching: boolean) => void;
   setPreferMessages: (preferMessages: boolean) => void;
+  setOnTheGo: (
+    patch: Partial<Pick<GlobalVoiceState, "onTheGo" | "onTheGoReason" | "onTheGoOverride">>,
+  ) => void;
 }
 
 export const useGlobalVoiceStore = create<GlobalVoiceState>((set) => ({
@@ -43,6 +52,9 @@ export const useGlobalVoiceStore = create<GlobalVoiceState>((set) => ({
   isMuted: false,
   isSwitching: false,
   preferMessages: false,
+  onTheGo: false,
+  onTheGoReason: null,
+  onTheGoOverride: null,
   setOrchestratorAgentId: (serverId, agentId) =>
     set((state) => ({
       orchestratorAgentIds: { ...state.orchestratorAgentIds, [serverId]: agentId },
@@ -52,4 +64,5 @@ export const useGlobalVoiceStore = create<GlobalVoiceState>((set) => ({
   setCall: (patch) => set(patch),
   setSwitching: (isSwitching) => set({ isSwitching }),
   setPreferMessages: (preferMessages) => set({ preferMessages }),
+  setOnTheGo: (patch) => set(patch),
 }));

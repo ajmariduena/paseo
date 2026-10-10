@@ -2188,6 +2188,13 @@ export const en = {
         "Switched by itself because the signal is weak. It goes back to live when the connection holds.",
       weakUnavailable: "Update Paseo on your computer to use weak signal mode.",
     },
+    onTheGo: {
+      enter: "On the go",
+      exit: "Exit On the go",
+      detected: "In the car · On the go",
+      mute: "Mute",
+      unmute: "Unmute",
+    },
     spoken: {
       notHeard: "I didn't catch that. Can you say it again?",
       backendFailed: "I couldn't do that. Try again in a moment.",
@@ -2795,6 +2802,22 @@ export const en = {
         keepKey: "Leave empty to keep the current key",
         invalidUrl: "Enter a URL that starts with http:// or https://",
       },
+    },
+    onTheGo: {
+      title: "On the go",
+      description:
+        "A driving layout for voice calls on this phone: two large buttons and nothing else.",
+      mode: "Turn on",
+      auto: "Auto",
+      always: "Always",
+      never: "Never",
+      autoHint: "Turns on in a car: CarPlay, the system car mode, or a remembered car's Bluetooth.",
+      useMotion: "Use the phone's motion",
+      useMotionHint: "Also notices driving without CarPlay or Bluetooth. Asks for motion access.",
+      motionDenied: "Motion access is off. Turn it on in the system settings.",
+      rememberedCars: "Remembered cars",
+      noCars: "None yet. Tap On the go during a call in your car to remember it.",
+      forget: "Forget",
     },
     readAloud: {
       title: "Read aloud",

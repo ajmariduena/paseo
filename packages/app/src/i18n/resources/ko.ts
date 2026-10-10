@@ -2172,6 +2172,13 @@ export const ko: TranslationResources = {
       weakAutoHint: "신호가 약해서 자동으로 전환했어요. 연결이 안정되면 실시간으로 돌아가요.",
       weakUnavailable: "약한 신호 모드를 쓰려면 컴퓨터의 Paseo를 업데이트하세요.",
     },
+    onTheGo: {
+      enter: "On the go",
+      exit: "On the go 종료",
+      detected: "차 안 · On the go",
+      mute: "음소거",
+      unmute: "음소거 해제",
+    },
     spoken: {
       notHeard: "잘 못 들었어요. 다시 말해 주세요.",
       backendFailed: "처리하지 못했어요. 잠시 후 다시 시도하세요.",
@@ -2682,6 +2689,22 @@ export const ko: TranslationResources = {
         keepKey: "현재 키를 유지하려면 비워 두세요",
         invalidUrl: "http:// 또는 https://로 시작하는 URL을 입력하세요",
       },
+    },
+    onTheGo: {
+      title: "On the go",
+      description: "이 휴대폰의 음성 통화용 운전 화면: 큰 버튼 두 개뿐입니다.",
+      mode: "켜기",
+      auto: "자동",
+      always: "항상",
+      never: "안 함",
+      autoHint: "차 안에서 켜집니다: CarPlay, 시스템 차량 모드 또는 기억한 차량의 블루투스.",
+      useMotion: "휴대폰 움직임 사용",
+      useMotionHint:
+        "CarPlay나 블루투스 없이도 운전 중임을 감지합니다. 동작 접근 권한을 요청합니다.",
+      motionDenied: "동작 접근이 꺼져 있습니다. 시스템 설정에서 켜세요.",
+      rememberedCars: "기억한 차량",
+      noCars: "아직 없습니다. 차 안에서 통화 중에 On the go를 누르면 기억합니다.",
+      forget: "삭제",
     },
     readAloud: {
       title: "Read aloud",
