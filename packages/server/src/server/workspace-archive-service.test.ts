@@ -259,6 +259,36 @@ async function handoffArchiveFixture() {
   return { tempDir, repoDir, cwd, workspace, registryPath, registry, deps, ownership, transfer };
 }
 
+test("an unreadable workspace registry refuses cleanup without deleting retained work", async () => {
+  const { repoDir, cwd, workspace, registryPath, deps } = await handoffArchiveFixture();
+  const saved = readFileSync(registryPath, "utf8");
+  writeFileSync(registryPath, "{damaged registry");
+  const cold = new FileBackedWorkspaceRegistry(registryPath, createLogger());
+  deps.getWorkspace = (id) => cold.get(id);
+  deps.listActiveWorkspaces = async () =>
+    (await cold.list()).filter((record) => !record.archivedAt);
+  deps.archiveWorkspaceRecord = (id) => cold.archive(id, new Date().toISOString());
+
+  const request = {
+    scope: { kind: "worktree" as const, targetPath: cwd },
+    requestId: "damaged-retained-workspace-registry",
+  };
+  await expect(archiveByScope(deps, request)).rejects.toThrow("Failed to load registry");
+  expect(deps.stopWorkspaceSetup).not.toHaveBeenCalled();
+  expect(deps.killTerminalsForWorkspace).not.toHaveBeenCalled();
+  expect(deps.markWorkspaceArchiving).not.toHaveBeenCalled();
+  expect(readFileSync(path.join(cwd, "selected", "notes.txt"), "utf8")).toBe("retained content");
+  expect(existsSync(path.join(repoDir, "handoff-teardown.txt"))).toBe(false);
+  expect(readFileSync(registryPath, "utf8")).toBe("{damaged registry");
+
+  writeFileSync(registryPath, saved);
+  expect(await cold.get(workspace.workspaceId)).toEqual(workspace);
+  expect(await archiveByScope(deps, request)).toMatchObject({
+    archivedWorkspaceIds: [workspace.workspaceId],
+    removedDirectory: true,
+  });
+});
+
 test("handoff refuses archive before stopping runtimes, persisting records or running teardown", async () => {
   const { repoDir, cwd, workspace, registry, deps, ownership, transfer } =
     await handoffArchiveFixture();

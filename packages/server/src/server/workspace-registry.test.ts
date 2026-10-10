@@ -1,8 +1,16 @@
 import os from "node:os";
 import path from "node:path";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+  promises as fs,
+} from "node:fs";
 
-import { beforeEach, afterEach, describe, expect, test } from "vitest";
+import { beforeEach, afterEach, describe, expect, test, vi } from "vitest";
 
 import { createTestLogger } from "../test-utils/test-logger.js";
 import { writeJsonFileAtomic } from "./atomic-file.js";
@@ -63,7 +71,110 @@ describe("workspace registries", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test.each(["invalid JSON", "invalid record", "duplicate identity"])(
+    "a registry with %s refuses reads and writes until its file is repaired",
+    async (damage) => {
+      const record = createPersistedWorkspaceRecord({
+        workspaceId: "retained-workspace",
+        projectId: "project-one",
+        cwd: tmpDir,
+        kind: "directory",
+        displayName: "Retained work",
+        createdAt: "2026-10-10T00:00:00.000Z",
+        updatedAt: "2026-10-10T00:00:00.000Z",
+      });
+      const file = path.join(tmpDir, "projects", "workspaces.json");
+      const damaged =
+        damage === "invalid JSON"
+          ? "[broken"
+          : JSON.stringify(
+              damage === "invalid record" ? [record, { workspaceId: "invalid" }] : [record, record],
+            );
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, damaged);
+
+      for (const operation of [
+        () => workspaceRegistry.initialize(),
+        () => workspaceRegistry.list(),
+        () => workspaceRegistry.get(record.workspaceId),
+        () => workspaceRegistry.upsert({ ...record, workspaceId: "replacement" }),
+        () => workspaceRegistry.archive(record.workspaceId, "2026-10-11T00:00:00.000Z"),
+        () => workspaceRegistry.remove(record.workspaceId),
+      ]) {
+        await expect(operation()).rejects.toThrow("Failed to load registry");
+        expect(readFileSync(file, "utf8")).toBe(damaged);
+      }
+
+      writeFileSync(file, JSON.stringify([record]));
+      expect(await workspaceRegistry.list()).toEqual([record]);
+      await workspaceRegistry.update(record.workspaceId, (current) => ({
+        ...current,
+        title: "Recovered",
+      }));
+      const cold = new FileBackedWorkspaceRegistry(file, logger);
+      expect(await cold.get(record.workspaceId)).toMatchObject({ title: "Recovered" });
+    },
+  );
+
+  test("a failed presence check cannot describe an unreadable registry as absent", async () => {
+    const error = Object.assign(new Error("Registry access denied"), { code: "EACCES" });
+    vi.spyOn(fs, "access").mockRejectedValueOnce(error);
+    await expect(workspaceRegistry.existsOnDisk()).rejects.toBe(error);
+    expect(await workspaceRegistry.existsOnDisk()).toBe(false);
+  });
+
+  test("a project registry refuses damaged records without replacing its file", async () => {
+    const file = path.join(tmpDir, "projects", "projects.json");
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, "[broken");
+    await expect(projectRegistry.initialize()).rejects.toThrow("Failed to load registry");
+    await expect(projectRegistry.remove("project-one")).rejects.toThrow("Failed to load registry");
+    expect(readFileSync(file, "utf8")).toBe("[broken");
+    writeFileSync(file, "[]");
+    expect(await projectRegistry.list()).toEqual([]);
+  });
+
+  test("concurrent initial reads and mutations share one registry snapshot", async () => {
+    const file = path.join(tmpDir, "projects", "workspaces.json");
+    const record = createPersistedWorkspaceRecord({
+      workspaceId: "workspace-one",
+      projectId: "project-one",
+      cwd: tmpDir,
+      kind: "directory",
+      displayName: "Original",
+      createdAt: "2026-10-10T00:00:00.000Z",
+      updatedAt: "2026-10-10T00:00:00.000Z",
+    });
+    await writeJsonFileAtomic(file, [record]);
+    const originalRead = fs.readFile.bind(fs);
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const reads = vi.spyOn(fs, "readFile").mockImplementationOnce(async (...args) => {
+      const result = await originalRead(...args);
+      started.resolve();
+      await release.promise;
+      return result;
+    });
+    const initial = workspaceRegistry.get(record.workspaceId);
+    await started.promise;
+    const update = workspaceRegistry.update(record.workspaceId, (current) => ({
+      ...current,
+      title: "Latest",
+    }));
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(reads).toHaveBeenCalledTimes(1);
+    } finally {
+      release.resolve();
+      await Promise.all([initial, update]);
+    }
+    expect(await workspaceRegistry.get(record.workspaceId)).toMatchObject({ title: "Latest" });
+    const cold = new FileBackedWorkspaceRegistry(file, logger);
+    expect(await cold.get(record.workspaceId)).toMatchObject({ title: "Latest" });
   });
 
   test("creates, updates, archives, deletes, and lists project records", async () => {

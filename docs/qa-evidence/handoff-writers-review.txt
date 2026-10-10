@@ -5,6 +5,26 @@ lifecycle tests with a test provider. No real provider turn, physical MacBook/VP
 round trip, Electron, iOS, Android, macOS, Windows or released-version drift.
 The main daemon was not restarted.
 
+Registry-backed cleanup — a real worktree regression corrupted workspaces.json, reopened its
+registry, then requested archive by path. Before the fix, archive resolved with
+{archivedAgentIds: [], archivedWorkspaceIds: [], removedDirectory: true}: it deleted the checkout
+while treating the damaged ownership inventory as empty. Registry loading now refuses malformed
+JSON, invalid records, duplicate identities and read errors without publishing a partial cache or
+replacing the file. Repairing the file lets the same registry instance retry. Initial concurrent
+reads and mutations share one load, so a delayed read cannot overwrite a newer committed cache.
+Presence checks distinguish absence from denied access.
+
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/workspace-archive-service.test.ts -t 'unreadable workspace registry' --bail=1
+  Before the fix: 1 failed, 25 skipped. Expected rejection; received removedDirectory: true.
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/workspace-registry.test.ts packages/server/src/server/workspace-archive-service.test.ts --bail=1
+  Test Files  2 passed (2)
+       Tests  51 passed (51)
+    Duration  1.99s (tests 1.24s)
+The repaired case proves no setup/terminal stop, archive publication, teardown or file deletion
+before successful inventory recovery, then proves normal cleanup still works after repair.
+This closes the corrupt-inventory path; incarnation-bound callbacks and durable source retention
+remain separate implementation work.
+
 The initial network regression reproduced an unreviewed same-name replacement
 terminal being stopped and the transfer reaching staged state. Source preview now
 identifies the loaded provider-session and terminal instances, plus active setup

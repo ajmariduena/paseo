@@ -190,6 +190,7 @@ class FileBackedRegistry<TRecord extends RegistryRecord> {
   private readonly getId: (record: TRecord) => string;
   protected readonly isVisible: (id: string) => boolean;
   private loaded = false;
+  private loading: Promise<void> | null = null;
   private readonly cache = new Map<string, TRecord>();
   private mutationQueue: Promise<void> = Promise.resolve();
   private mutationsBlockedUntilRestart = false;
@@ -223,8 +224,9 @@ class FileBackedRegistry<TRecord extends RegistryRecord> {
     try {
       await fs.access(this.filePath);
       return true;
-    } catch {
-      return false;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
     }
   }
 
@@ -311,23 +313,36 @@ class FileBackedRegistry<TRecord extends RegistryRecord> {
   }
 
   private async load(): Promise<void> {
-    if (this.loaded) {
-      return;
+    if (this.loaded) return;
+    if (this.loading) return this.loading;
+    const loading = this.readRecords();
+    this.loading = loading;
+    try {
+      await loading;
+    } finally {
+      if (this.loading === loading) this.loading = null;
     }
+  }
 
-    this.cache.clear();
+  private async readRecords(): Promise<void> {
+    const records = new Map<string, TRecord>();
     try {
       const raw = await fs.readFile(this.filePath, "utf8");
       const parsed = z.array(this.schema).parse(JSON.parse(raw));
       for (const record of parsed) {
-        this.cache.set(this.getId(record), record);
+        const id = this.getId(record);
+        if (records.has(id)) throw new Error(`Duplicate registry identity: ${id}`);
+        records.set(id, record);
       }
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "ENOENT") {
         this.logger.error({ err: error, filePath: this.filePath }, "Failed to load registry file");
+        throw new Error(`Failed to load registry file: ${this.filePath}`, { cause: error });
       }
     }
+    this.cache.clear();
+    for (const [id, record] of records) this.cache.set(id, record);
     this.loaded = true;
   }
 

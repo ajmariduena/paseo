@@ -604,6 +604,11 @@ workspace together with its owning project.
 
 Array of workspace records. A workspace is a specific working directory within a project.
 
+Read project and workspace registries strictly. Only a missing file means an empty registry;
+unreadable files, invalid records and duplicate identities refuse reads and mutations until
+repaired. Cleanup uses this inventory to decide whether a checkout still has owners, so treating
+damage as an empty list can delete retained work.
+
 | Field                          | Type                                                         | Description                                                                                                                                                                                   |
 | ------------------------------ | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `workspaceId`                  | `string`                                                     | Opaque stable identifier (`wks_<hex>`), generated independently of the directory. MUST NOT be treated as a path; compare by exact equality. Use the `cwd` field for directory access.         |
