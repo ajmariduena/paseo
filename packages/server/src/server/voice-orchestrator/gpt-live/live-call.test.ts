@@ -368,7 +368,7 @@ describe("GptLiveCall", () => {
     }
   });
 
-  it("attaches to a WebRTC session as a sideband and greets once the phone's audio arrives", async () => {
+  it("attaches to a WebRTC session as a sideband and greets once the phone's microphone is live", async () => {
     const live = await startFakeLive();
     activeLive = live;
     const stub = createOrchestratorStub();
@@ -388,7 +388,25 @@ describe("GptLiveCall", () => {
     expect(findMessage(live, "session.start")).toBeUndefined();
     expect(findMessage(live, "session.instructions.append")).toBeUndefined();
 
-    live.socket().send(JSON.stringify({ type: "session.input_audio.append", audio: "AAAA" }));
+    // WebRTC sends digital silence until the phone's audio unit runs; speech then is lost.
+    live.socket().send(
+      JSON.stringify({
+        type: "session.input_audio.append",
+        audio: Buffer.alloc(960).toString("base64"),
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(findMessage(live, "session.instructions.append")).toBeUndefined();
+
+    const roomNoise = Buffer.alloc(960);
+    for (let offset = 0; offset < roomNoise.length; offset += 2) {
+      roomNoise.writeInt16LE(offset % 4 === 0 ? 6 : -5, offset);
+    }
+    live
+      .socket()
+      .send(
+        JSON.stringify({ type: "session.input_audio.append", audio: roomNoise.toString("base64") }),
+      );
     live.socket().send(
       JSON.stringify({
         type: "session.output_audio.delta",
