@@ -821,7 +821,10 @@ describe("ScheduleService", () => {
         .spyOn(atomicFile, "writeJsonFileAtomic")
         .mockImplementation(async (file, value) => {
           const parsed = value as StoredSchedule;
-          if (file.endsWith(`${schedule.id}.json`) && parsed.runs[0]?.status === status)
+          if (
+            file === join(tempDir, "schedules", `${schedule.id}.json`) &&
+            parsed.runs[0]?.status === status
+          )
             throw new Error("outcome publication unavailable");
           return write(file, value);
         });
@@ -846,6 +849,67 @@ describe("ScheduleService", () => {
         },
       ]);
       expect(runner).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  test.skipIf(process.platform === "win32").each(["succeeded", "failed"] as const)(
+    "startup repairs a known %s outcome behind the recovered source fence without executing it again",
+    async (status) => {
+      const runner = vi.fn(async () => {
+        if (status === "failed") throw new Error("Actual execution failure");
+        return { agentId: null, output: "Only copy of the completed result" };
+      });
+      const { service, schedule, transfer, options, ownership } = await handoffFixture(runner);
+      const recordPath = join(tempDir, "schedules", `${schedule.id}.json`);
+      const write = atomicFile.writeJsonFileAtomic;
+      const failedWrite = vi
+        .spyOn(atomicFile, "writeJsonFileAtomic")
+        .mockImplementation(async (file, value) => {
+          if (file === recordPath && StoredScheduleSchema.parse(value).runs[0]?.status === status)
+            throw new Error("outcome publication unavailable");
+          return write(file, value);
+        });
+      let restarted: ScheduleService | undefined;
+      try {
+        await expect(service.runOnce(schedule.id)).rejects.toThrow(
+          "outcome publication unavailable",
+        );
+        await service.stop();
+        await ownership.prepare(transfer);
+        const restartedOwnership = new HandoffOwnership({
+          directory: join(tempDir, "handoff"),
+          sourceServerId: "source",
+        });
+        await restartedOwnership.initialize();
+        const archiveWorkspace = vi.fn(async () => {});
+        restarted = createScheduleService({
+          ...options,
+          handoffOwnership: restartedOwnership,
+          archiveWorkspace,
+        });
+        await expect(restarted.start()).rejects.toThrow("outcome publication unavailable");
+        expect(archiveWorkspace).not.toHaveBeenCalled();
+        expect(runner).toHaveBeenCalledTimes(1);
+        failedWrite.mockRestore();
+        await restarted.start();
+        const saved = await restarted.inspect(schedule.id);
+        expect(saved.status).toBe("active");
+        expect(saved.runs).toMatchObject([
+          {
+            status,
+            output: status === "succeeded" ? "Only copy of the completed result" : null,
+            error: status === "failed" ? "Actual execution failure" : null,
+          },
+        ]);
+        expect(await restarted.reviewForHandoff(transfer)).toHaveLength(1);
+        expect(restartedOwnership.status(transfer.id).state).toBe("preparing");
+        await restarted.tick();
+        expect(runner).toHaveBeenCalledTimes(1);
+        expect(archiveWorkspace).not.toHaveBeenCalled();
+      } finally {
+        failedWrite.mockRestore();
+        await restarted?.stop();
+      }
     },
   );
 
@@ -1063,7 +1127,7 @@ describe("ScheduleService", () => {
         .mockImplementation(async (file, value) => {
           await write(file, value);
           if (
-            file.endsWith(`${schedule.id}.json`) &&
+            file === join(tempDir, "schedules", `${schedule.id}.json`) &&
             StoredScheduleSchema.parse(value).runs[0].status === "failed"
           )
             await ownership.prepare(transfer);

@@ -598,10 +598,10 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   set, ancestor-directory schedules, outside heartbeat owners, damaged
   inventory, more than 1,000 reviewed schedules or metadata beyond 32 MiB. Two-daemon tests cover
   both continuation modes, readable notifications, source changes, restarts and interrupted installation.
-  Known completed outcomes now retry failed publication from immutable retained inputs, including
-  a failed synchronization after rename. A storage failure cannot replace successful output with
-  a failed-execution record. POSIX acknowledgement includes file and directory synchronization;
-  handoff waits for pending publication to repair. These retained inputs are process-local.
+  Known completed outcomes survive restart once their repair inputs are durably recorded by the
+  [schedule store](../data-model.md#3-schedule). Handoff waits for failed publication to repair;
+  storage failure cannot replace successful output or the actual execution error. Both continuation
+  modes are covered through interrupted outcome publication, host restart and resumed preparation.
   Heartbeats and jobs that create agents retain their target identity and distinguish cancellation
   from successful idle, including after runtime eviction; see
   [lifecycle cancellation](../agent-lifecycle.md#cancellation). Job cleanup rechecks the scheduled

@@ -501,13 +501,15 @@ Keep run admission through workspace cleanup and the outcome write; changing its
 agent requires the run to finish first. Startup recovery and expiration leave fenced records
 unchanged.
 
-Keep execution failure separate from failure to save its result. Retain an immutable completed
-outcome until publication succeeds; retrying storage must not rerun the provider or replace its
-output with an I/O error. On POSIX, acknowledgement includes file and directory synchronization.
-Later writes to that schedule and handoff inventory repair pending publication first. Refuse repair
-if another writer changed the record. Retained inputs cover the current process; a crash before
-durable publication still needs evidence from the provider. Windows keeps atomic-write semantics
-while source handoff remains unavailable.
+Keep execution failure separate from failure to save its result. Before publishing a known outcome,
+the store retains immutable previous/candidate records in `schedules/.pending/{id}.json`. Reads,
+later mutations and startup recovery finish that publication first, without rerunning the provider
+or replacing its output with an I/O error. Refuse conflicting or damaged recovery records.
+On POSIX, acknowledgement includes synchronizing the intent, final record and retirement of the
+intent. Flush an empty recovery directory on startup too: an unacknowledged unlink must not let an
+old intent reappear after a newer mutation. Windows keeps atomic-write semantics while source
+handoff remains unavailable. A crash before the outcome's recovery record is durable still needs
+evidence from the provider; a restart alone does not establish what the run did.
 
 Handoff reads a strict inventory and durably pauses the reviewed records before capture. Cancel
 leaves them paused. Destination IDs derive from the reservation so interrupted installation can

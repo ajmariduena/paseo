@@ -1,15 +1,16 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { link, mkdir, readFile, readdir, rm } from "node:fs/promises";
+import { link, lstat, mkdir, readFile, readdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { Logger } from "pino";
+import { z } from "zod";
 import {
   StoredScheduleSchema,
   type ScheduleTarget,
   type StoredSchedule,
 } from "@getpaseo/protocol/schedule/types";
 import { syncFilePublication, writeJsonFileAtomic } from "../atomic-file.js";
-import { readBoundedFile, writeJournal } from "../handoff/artifacts.js";
+import { readBoundedFile, syncDirectory, writeJournal } from "../handoff/artifacts.js";
 import {
   HANDOFF_SCHEDULE_MAX_BYTES,
   HandoffScheduleIdSchema,
@@ -35,10 +36,13 @@ interface ScheduleMutationOptions {
   durable?: boolean;
 }
 
-interface PendingSchedulePublication {
-  previous: StoredSchedule;
-  record: StoredSchedule;
-}
+const PendingSchedulePublicationSchema = z.object({
+  version: z.literal(1),
+  previous: StoredScheduleSchema,
+  record: StoredScheduleSchema,
+});
+type PendingSchedulePublication = z.infer<typeof PendingSchedulePublicationSchema>;
+const MAX_PENDING_PUBLICATION_BYTES = 2 * HANDOFF_SCHEDULE_MAX_BYTES + 1024;
 
 interface ScheduleStoreOptions extends ScheduleMutationOptions {
   isVisible?: (id: string) => boolean;
@@ -131,6 +135,7 @@ function parseStoredSchedule(
 
 export class ScheduleStore {
   private readonly pendingPublications = new Map<string, PendingSchedulePublication>();
+  private recoveryLoaded: Promise<void> | null = null;
   private readonly scheduleMutations = new Map<string, Promise<unknown>>();
   private readonly identityMutations = new Map<string, Promise<unknown>>();
   private reportedInvalidFiles = new Set<string>();
@@ -152,6 +157,7 @@ export class ScheduleStore {
   // The service lists schedules on every tick, so a file that is not a valid schedule is
   // reported when it first appears rather than once per second.
   async list(): Promise<StoredSchedule[]> {
+    await this.repairPendingPersistence();
     await this.ensureDir();
     const entries = await readdir(this.dir, { withFileTypes: true });
     const files = await Promise.all(
@@ -179,6 +185,11 @@ export class ScheduleStore {
   }
 
   async get(id: string): Promise<StoredSchedule | null> {
+    await this.repairPendingPersistence(id);
+    return this.readRecord(id);
+  }
+
+  private async readRecord(id: string): Promise<StoredSchedule | null> {
     if (this.options.isVisible?.(id) === false) return null;
     await this.ensureDir();
     try {
@@ -265,6 +276,7 @@ export class ScheduleStore {
     await this.ensureDir();
     for (const record of records) {
       await this.serializeScheduleMutation(record.id, async () => {
+        await this.publishPending(record.id);
         const file = this.filePath(record.id);
         const temporary = join(this.dir, `.handoff-${randomUUID()}.tmp`);
         try {
@@ -294,7 +306,7 @@ export class ScheduleStore {
   ): Promise<StoredSchedule | null> {
     return this.serializeScheduleMutation(id, async () => {
       await this.publishPending(id);
-      const current = await this.get(id);
+      const current = await this.readRecord(id);
       if (!current) {
         return null;
       }
@@ -311,6 +323,7 @@ export class ScheduleStore {
           if (updated === current) return;
           if (options.durable) {
             this.pendingPublications.set(id, {
+              version: 1,
               previous: structuredClone(current),
               // Match JSON's omission of optional undefined values when checking
               // a renamed file after its synchronization acknowledgement failed.
@@ -367,6 +380,7 @@ export class ScheduleStore {
   }
 
   async repairPendingPersistence(id?: string): Promise<void> {
+    await this.loadRecovery();
     const ids = id === undefined ? [...this.pendingPublications.keys()] : [id];
     await Promise.all(
       ids.map((key) => this.serializeScheduleMutation(key, () => this.publishPending(key))),
@@ -374,8 +388,21 @@ export class ScheduleStore {
   }
 
   private async publishPending(id: string): Promise<void> {
+    await this.loadRecovery();
     const pending = this.pendingPublications.get(id);
     if (!pending) return;
+    const journal = join(this.dir, ".pending", `${id}.json`);
+    const surviving = await this.readPendingPublication(id);
+    if (surviving && !isDeepStrictEqual(surviving, pending))
+      throw new Error("Pending schedule publication changed before recovery");
+    if (!surviving) {
+      if (Buffer.byteLength(JSON.stringify(pending, null, 2)) > MAX_PENDING_PUBLICATION_BYTES)
+        throw new Error("Pending schedule publication exceeds the recovery byte limit");
+      await writeJsonFileAtomic(journal, pending);
+    }
+    // Publish the repair inputs before the final record. A readable surviving
+    // rename still needs acknowledgement before it can authorize another write.
+    if (process.platform !== "win32") await syncFilePublication(journal, dirname(this.dir));
     const limit = Math.max(
       Buffer.byteLength(JSON.stringify(pending.previous, null, 2)),
       Buffer.byteLength(JSON.stringify(pending.record, null, 2)),
@@ -390,13 +417,66 @@ export class ScheduleStore {
     // Windows keeps ordinary atomic-write semantics; source handoff remains disabled there.
     if (process.platform !== "win32")
       await syncFilePublication(this.filePath(id), dirname(this.dir));
+    await rm(journal, { force: true });
+    await syncDirectory(dirname(journal));
     this.pendingPublications.delete(id);
+  }
+
+  private async readPendingPublication(id: string): Promise<PendingSchedulePublication | null> {
+    HandoffScheduleIdSchema.parse(id);
+    let bytes: Buffer;
+    try {
+      bytes = await readBoundedFile(
+        join(this.dir, ".pending", `${id}.json`),
+        MAX_PENDING_PUBLICATION_BYTES,
+      );
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return null;
+      throw error;
+    }
+    const pending = PendingSchedulePublicationSchema.parse(JSON.parse(bytes.toString("utf8")));
+    if (pending.previous.id !== id || pending.record.id !== id)
+      throw new Error("Pending schedule identity differs from its file");
+    return pending;
+  }
+
+  private async loadRecovery(): Promise<void> {
+    if (!this.recoveryLoaded) {
+      this.recoveryLoaded = this.readRecoveryInventory().catch((error) => {
+        this.recoveryLoaded = null;
+        throw error;
+      });
+    }
+    await this.recoveryLoaded;
+  }
+
+  private async readRecoveryInventory(): Promise<void> {
+    const directory = join(this.dir, ".pending");
+    await mkdir(directory, { recursive: true });
+    if (!(await lstat(directory)).isDirectory())
+      throw new Error("Schedule recovery inventory is not a directory");
+    const entries = await readdir(directory, { withFileTypes: true });
+    if (entries.length > 10_000) throw new Error("Schedule recovery inventory exceeds its limit");
+    const recovered = new Map<string, PendingSchedulePublication>();
+    for (const entry of entries) {
+      if (!entry.name.endsWith(".json")) continue;
+      if (!entry.isFile()) throw new Error("Schedule recovery contains a non-regular record");
+      const id = HandoffScheduleIdSchema.parse(entry.name.slice(0, -5));
+      const pending = await this.readPendingPublication(id);
+      if (!pending) throw new Error("Pending schedule publication disappeared during recovery");
+      recovered.set(id, pending);
+    }
+    // An empty inventory after restart can be an unacknowledged unlink. Flush
+    // that absence before allowing a newer mutation which the old intent could undo.
+    await syncDirectory(directory);
+    await syncDirectory(this.dir);
+    for (const [id, pending] of recovered) this.pendingPublications.set(id, pending);
   }
 
   async delete(id: string): Promise<void> {
     await this.serializeScheduleMutation(id, async () => {
       await this.publishPending(id);
-      const current = await this.get(id);
+      const current = await this.readRecord(id);
       if (!current) return;
       await this.withMutation({
         previous: current,
@@ -412,6 +492,7 @@ export class ScheduleStore {
       operation: () => Promise<void>;
     },
   ): Promise<void> {
+    await this.loadRecovery();
     const options = input.options ?? this.options;
     const release = await options.admitMutation?.({ previous: input.previous, next: input.next });
     try {
@@ -460,7 +541,7 @@ export class ScheduleStore {
   ): Promise<StoredSchedule | null> {
     return this.serializeScheduleMutation(id, async () => {
       await this.publishPending(id);
-      const current = await this.get(id);
+      const current = await this.readRecord(id);
       if (!current || !matchesNameAndTarget(current, name, target)) {
         return null;
       }

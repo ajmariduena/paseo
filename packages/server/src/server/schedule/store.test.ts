@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Writable } from "node:stream";
@@ -15,6 +15,7 @@ import {
   scheduleHandoffDigest,
 } from "./handoff.js";
 import * as atomicFile from "../atomic-file.js";
+import * as artifacts from "../handoff/artifacts.js";
 
 describe("ScheduleStore", () => {
   let tempDir: string;
@@ -26,8 +27,42 @@ describe("ScheduleStore", () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
+    await chmod(join(tempDir, ".pending"), 0o700).catch((error) => {
+      if (error.code !== "ENOENT") throw error;
+    });
     await rm(tempDir, { recursive: true, force: true });
   });
+
+  async function createRunningSchedule() {
+    const timestamp = "2026-01-01T00:00:00.000Z";
+    return store.create({
+      name: null,
+      prompt: "Continue",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: { type: "new-agent", config: { provider: "claude", cwd: tempDir } },
+      status: "active",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      nextRunAt: timestamp,
+      lastRunAt: null,
+      pausedAt: null,
+      expiresAt: null,
+      maxRuns: 1,
+      runs: [
+        {
+          id: "run",
+          scheduledFor: timestamp,
+          startedAt: timestamp,
+          endedAt: null,
+          status: "running",
+          agentId: null,
+          output: null,
+          error: null,
+        },
+      ],
+    });
+  }
 
   test.skipIf(process.platform === "win32").each([
     { kind: "heartbeat", status: "succeeded" },
@@ -145,6 +180,163 @@ describe("ScheduleStore", () => {
     },
   );
 
+  test("handoff recovers a known outcome after restart before its schedule record was published", async () => {
+    const timestamp = "2026-01-01T00:00:00.000Z";
+    const schedule = await createRunningSchedule();
+    const candidate = {
+      ...schedule,
+      status: "completed" as const,
+      nextRunAt: null,
+      lastRunAt: timestamp,
+      runs: [
+        {
+          ...schedule.runs[0],
+          status: "succeeded" as const,
+          endedAt: timestamp,
+          output: "Exact completed output",
+        },
+      ],
+    };
+    const write = atomicFile.writeJsonFileAtomic;
+    const fail = vi
+      .spyOn(atomicFile, "writeJsonFileAtomic")
+      .mockImplementation(async (file, value) => {
+        if (file === join(tempDir, `${schedule.id}.json`))
+          throw new Error("outcome record unavailable");
+        return write(file, value);
+      });
+    try {
+      await expect(store.update(schedule.id, () => candidate, { durable: true })).rejects.toThrow(
+        "outcome record unavailable",
+      );
+    } finally {
+      fail.mockRestore();
+    }
+    const restarted = new ScheduleStore(tempDir, createTestLogger());
+    expect(await restarted.get(schedule.id)).toEqual(candidate);
+    expect(await restarted.listForHandoff()).toEqual([candidate]);
+    await restarted.update(schedule.id, (record) => ({ ...record, name: "Later edit" }));
+    expect((await new ScheduleStore(tempDir, createTestLogger()).get(schedule.id))?.name).toBe(
+      "Later edit",
+    );
+  });
+
+  test
+    .skipIf(process.platform === "win32" || process.getuid?.() === 0)
+    .each(["intent sync", "record sync", "intent removal", "intent retirement sync"])(
+    "restart cannot acknowledge a known outcome before repairing %s",
+    async (phase) => {
+      const schedule = await createRunningSchedule();
+      const candidate = {
+        ...schedule,
+        status: "completed" as const,
+        nextRunAt: null,
+        runs: [
+          {
+            ...schedule.runs[0],
+            status: "succeeded" as const,
+            endedAt: schedule.createdAt,
+            output: "Completed once",
+          },
+        ],
+      };
+      const recordPath = join(tempDir, `${schedule.id}.json`);
+      const journalPath = join(tempDir, ".pending", `${schedule.id}.json`);
+      const sync = atomicFile.syncFilePublication;
+      const syncDirectory = artifacts.syncDirectory;
+      const expectedError = phase === "intent removal" ? "EACCES" : phase;
+      vi.spyOn(atomicFile, "syncFilePublication").mockImplementation(async (file, root) => {
+        if (
+          (phase === "intent sync" && file === journalPath) ||
+          (phase === "record sync" && file === recordPath)
+        )
+          throw new Error(phase);
+        await sync(file, root);
+        if (phase === "intent removal" && file === recordPath)
+          await chmod(join(tempDir, ".pending"), 0o500);
+      });
+      vi.spyOn(artifacts, "syncDirectory").mockImplementation(async (directory) => {
+        if (phase === "intent retirement sync" && directory === join(tempDir, ".pending"))
+          throw new Error(phase);
+        return syncDirectory(directory);
+      });
+      await expect(store.update(schedule.id, () => candidate, { durable: true })).rejects.toThrow(
+        expectedError,
+      );
+      const restarted = new ScheduleStore(tempDir, createTestLogger());
+      await expect(restarted.get(schedule.id)).rejects.toThrow(expectedError);
+      await expect(restarted.listForHandoff()).rejects.toThrow(expectedError);
+      const edit = vi.fn((record: typeof schedule) => ({ ...record, name: "Later edit" }));
+      await expect(restarted.update(schedule.id, edit)).rejects.toThrow(expectedError);
+      expect(edit).not.toHaveBeenCalled();
+      vi.restoreAllMocks();
+      await chmod(join(tempDir, ".pending"), 0o700);
+      expect(await restarted.list()).toEqual([candidate]);
+      expect(await readdir(join(tempDir, ".pending"))).toEqual([]);
+      await restarted.update(schedule.id, edit);
+      expect((await new ScheduleStore(tempDir, createTestLogger()).get(schedule.id))?.name).toBe(
+        "Later edit",
+      );
+      expect(edit).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  test("restart refuses a conflicting pending outcome and retries after the conflict is repaired", async () => {
+    const schedule = await createRunningSchedule();
+    const candidate = { ...schedule, name: "Completed result" };
+    const recordPath = join(tempDir, `${schedule.id}.json`);
+    const write = atomicFile.writeJsonFileAtomic;
+    vi.spyOn(atomicFile, "writeJsonFileAtomic").mockImplementation(async (file, value) => {
+      if (file === recordPath) throw new Error("record unavailable");
+      return write(file, value);
+    });
+    await expect(store.update(schedule.id, () => candidate, { durable: true })).rejects.toThrow(
+      "record unavailable",
+    );
+    vi.restoreAllMocks();
+    const external = { ...schedule, name: "Other writer" };
+    await writeFile(recordPath, JSON.stringify(external));
+    const restarted = new ScheduleStore(tempDir, createTestLogger());
+    await expect(restarted.get(schedule.id)).rejects.toThrow("changed while");
+    await expect(restarted.delete(schedule.id)).rejects.toThrow("changed while");
+    expect(JSON.parse(await readFile(recordPath, "utf8"))).toEqual(external);
+    await writeFile(recordPath, JSON.stringify(schedule));
+    expect(await restarted.get(schedule.id)).toEqual(candidate);
+  });
+
+  test.each(["invalid JSON", "wrong version", "wrong identity", "directory"])(
+    "restart refuses %s recovery metadata before ordinary schedule mutations",
+    async (fault) => {
+      const schedule = await createRunningSchedule();
+      const journalPath = join(tempDir, ".pending", `${schedule.id}.json`);
+      const candidate = { ...schedule, name: "Known result" };
+      const intent = { version: 1, previous: schedule, record: candidate };
+      if (fault === "directory") await mkdir(journalPath);
+      else {
+        const damaged =
+          fault === "invalid JSON"
+            ? "{"
+            : JSON.stringify({
+                ...intent,
+                version: fault === "wrong version" ? 2 : 1,
+                record: fault === "wrong identity" ? { ...candidate, id: "deadbeef" } : candidate,
+              });
+        await writeFile(journalPath, damaged);
+      }
+      const restarted = new ScheduleStore(tempDir, createTestLogger());
+      const updater = vi.fn((record: typeof schedule) => ({ ...record, name: "Later edit" }));
+      await expect(restarted.update(schedule.id, updater)).rejects.toThrow();
+      await expect(restarted.list()).rejects.toThrow();
+      expect(updater).not.toHaveBeenCalled();
+      expect(JSON.parse(await readFile(join(tempDir, `${schedule.id}.json`), "utf8"))).toEqual(
+        schedule,
+      );
+      await rm(journalPath, { recursive: true });
+      await writeFile(journalPath, JSON.stringify(intent));
+      expect(await restarted.get(schedule.id)).toEqual(candidate);
+    },
+  );
+
   test.skipIf(process.platform === "win32")(
     "handoff outcome repair keeps exact inputs after rename and gates later mutations on synchronization",
     async () => {
@@ -192,9 +384,14 @@ describe("ScheduleStore", () => {
           },
         ],
       };
+      const sync = atomicFile.syncFilePublication;
       const failedAck = vi
         .spyOn(atomicFile, "syncFilePublication")
-        .mockRejectedValue(new Error("outcome synchronization unavailable"));
+        .mockImplementation(async (file, root) => {
+          if (file === join(tempDir, `${schedule.id}.json`))
+            throw new Error("outcome synchronization unavailable");
+          return sync(file, root);
+        });
       const laterMutation = vi.fn((record: typeof schedule) => ({
         ...record,
         name: "Later title",
@@ -236,10 +433,15 @@ describe("ScheduleStore", () => {
       } finally {
         failedWrite.mockRestore();
       }
-      const external = { ...(await reloaded.get(schedule.id)), name: "Other title" };
+      const external = {
+        ...JSON.parse(await readFile(join(tempDir, `${schedule.id}.json`), "utf8")),
+        name: "Other title",
+      };
       await writeFile(join(tempDir, `${schedule.id}.json`), JSON.stringify(external));
       await expect(store.repairPendingPersistence(schedule.id)).rejects.toThrow("changed while");
-      expect(await reloaded.get(schedule.id)).toEqual(external);
+      expect(JSON.parse(await readFile(join(tempDir, `${schedule.id}.json`), "utf8"))).toEqual(
+        external,
+      );
     },
   );
 

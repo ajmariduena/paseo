@@ -9,6 +9,7 @@ import {
 import { WebSocket, type RawData } from "ws";
 import type { WorkspaceHandoffCheckpoint } from "@getpaseo/client/internal/workspace-handoff";
 import { WSOutboundMessageSchema } from "@getpaseo/protocol/messages";
+import { StoredScheduleSchema } from "@getpaseo/protocol/schedule/types";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
@@ -28,6 +29,7 @@ import { PullRequestWatchStore } from "../pull-request-watch/watch-store.js";
 import { parseStoredAgentRecord, type StoredAgentRecord } from "../agent/agent-storage.js";
 import { captureWorkspace, packWorkspaceArchive, restoreWorkspaceArchive } from "./workspace.js";
 import { ScheduleStore } from "../schedule/store.js";
+import * as atomicFile from "../atomic-file.js";
 import { handoffScheduleId } from "../schedule/handoff.js";
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import {
@@ -438,7 +440,7 @@ test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
 );
 
 test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
-  "%s handoff stops a scheduled created agent and moves its own workspace and history",
+  "%s handoff recovers a stopped job outcome after daemon restart and moves its workspace and history",
   async (continuationMode) => {
     let source = await startHost("source", true);
     let destination = await startHost("destination", true);
@@ -495,28 +497,53 @@ test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
     const review = (await source.client.handoffPreviewSource({ workspaceId })).result;
     if (!review?.stoppedWork?.review) throw new Error("Missing created job review");
     const transferId = randomUUID();
-    const staged = await prepareWorkspaceHandoff({
-      transferId,
-      workspaceId,
-      destinationParent: root,
-      continuationMode,
-      source: source.client,
-      destination: destination.client,
-      stoppedWorkReview: review.stoppedWork.review,
+    const stoppedWorkReview = review.stoppedWork.review;
+    const prepare = () =>
+      prepareWorkspaceHandoff({
+        transferId,
+        workspaceId,
+        destinationParent: root,
+        continuationMode,
+        source: source.client,
+        destination: destination.client,
+        stoppedWorkReview,
+      });
+    const scheduleFile = path.join(source.daemon.paseoHome, "schedules", `${scheduleId}.json`);
+    const write = atomicFile.writeJsonFileAtomic;
+    const failedOutcome = vi
+      .spyOn(atomicFile, "writeJsonFileAtomic")
+      .mockImplementation(async (file, value) => {
+        if (file === scheduleFile && StoredScheduleSchema.parse(value).runs[0]?.status === "failed")
+          throw new Error("Scheduled outcome disk unavailable");
+        return write(file, value);
+      });
+    try {
+      await expect(prepare()).rejects.toThrow("Scheduled outcome disk unavailable");
+      expect(await execution).toBeInstanceOf(Error);
+      expect(JSON.parse(await readFile(scheduleFile, "utf8")).runs[0].status).toBe("running");
+      expect(
+        (await source.client.handoffGetSourceStatus({ transferId })).result?.source.state,
+      ).toBe("preparing");
+      expect(manager.getAgent(agentId)).toBeNull();
+      await stopHost(source);
+      await stopHost(destination);
+    } finally {
+      failedOutcome.mockRestore();
+    }
+    source = await startHost("source", true);
+    destination = await startHost("destination", true);
+    expect((await source.client.scheduleInspect({ id: scheduleId })).schedule).toMatchObject({
+      runs: [
+        {
+          id: run.id,
+          agentId,
+          workspaceId,
+          status: "failed",
+          error: `Scheduled agent ${agentId} was canceled`,
+        },
+      ],
     });
-    expect(await execution).toMatchObject({
-      schedule: {
-        runs: [
-          {
-            id: run.id,
-            agentId,
-            workspaceId,
-            status: "failed",
-            error: `Scheduled agent ${agentId} was canceled`,
-          },
-        ],
-      },
-    });
+    const staged = await prepare();
     expect(manager.getAgent(agentId)).toBeNull();
     expect(await readFile(path.join(cwd, "unfinished.txt"), "utf8")).toBe(
       "Keep this scheduled work",
