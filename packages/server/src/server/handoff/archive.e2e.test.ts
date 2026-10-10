@@ -622,7 +622,163 @@ test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
   30_000,
 );
 
-test.skipIf(process.platform === "win32").each(["activate", "cancel", "nested"] as const)(
+const retainedJobCompletions = [
+  "activate",
+  "cancel",
+  "nested",
+  "cancel after history failure",
+  "continue after history failure",
+] as const;
+type RetainedJobCompletion = (typeof retainedJobCompletions)[number];
+
+async function startRetainedJob(source: Host, scheduleId: string, configDir: string) {
+  const manager = source.daemon.daemon.agentManager;
+  holdNextScheduledClaudeTestTurn({ manager, scheduleId, configDir });
+  const entered = Promise.withResolvers<string>();
+  const runAgent = manager.runAgent.bind(manager);
+  const observer = vi.spyOn(manager, "runAgent").mockImplementation((...args) => {
+    const result = runAgent(...args);
+    if (manager.getAgent(args[0])?.labels["paseo.schedule-id"] === scheduleId)
+      entered.resolve(args[0]);
+    return result;
+  });
+  const execution = source.client.scheduleRunOnce({ id: scheduleId });
+  void execution.catch(() => undefined);
+  try {
+    // A real worktree can take longer than expect.poll's deadline under CI load.
+    // The scheduler enters runAgent only after publishing this run's agent/workspace links.
+    const agentId = await Promise.race([
+      entered.promise,
+      execution.then((result) => {
+        throw new Error(`Scheduled test job ended before dispatch: ${JSON.stringify(result)}`);
+      }),
+    ]);
+    await manager.waitForAgentRunStart(agentId);
+    const run = (await source.client.scheduleInspect({ id: scheduleId })).schedule!.runs[0];
+    expect(run).toMatchObject({ status: "running", agentId, workspaceId: expect.any(String) });
+    return { run, execution };
+  } finally {
+    observer.mockRestore();
+  }
+}
+
+interface RetainedScheduledJob {
+  agentId: string;
+  cwd: string;
+  scheduleId: string;
+  workspaceId: string;
+  execution: Promise<unknown>;
+}
+
+async function assertNestedRetainedJob(source: Host, nested: RetainedScheduledJob): Promise<void> {
+  await nested.execution;
+  expect(source.daemon.daemon.agentManager.getAgent(nested.agentId)).toBeNull();
+  expect((await source.client.scheduleInspect({ id: nested.scheduleId })).schedule?.status).toBe(
+    "paused",
+  );
+  expect(source.daemon.daemon.agentManager.messageQueue.isHeldForUserStop(nested.agentId)).toBe(
+    true,
+  );
+  expect(await readFile(path.join(nested.cwd, "nested.txt"), "utf8")).toBe(
+    "Second retained worktree bytes",
+  );
+  expect(
+    (await source.daemon.daemon.agentStorage.get(nested.agentId))?.handoffRetention?.history,
+  ).toBeDefined();
+}
+
+async function failRetainedHistoryPreparation(
+  source: Host,
+  agentId: string,
+  transferId: string,
+  prepare: () => Promise<unknown>,
+): Promise<void> {
+  const directory = path.join(source.daemon.paseoHome, "handoff", "source", "retained");
+  await mkdir(path.dirname(directory), { recursive: true });
+  await writeFile(directory, "A filesystem obstruction prevents history publication");
+  await expect(prepare()).rejects.toThrow();
+  const record = await source.daemon.daemon.agentStorage.get(agentId);
+  expect(record?.handoffRetention).toMatchObject({ transferId, delegationsPending: true });
+  expect(record?.handoffRetention?.history).toBeUndefined();
+}
+
+async function assertRetainedContinuation({
+  source,
+  agentId,
+  configDir,
+  completion,
+}: {
+  source: Host;
+  agentId: string;
+  configDir: string;
+  completion: RetainedJobCompletion;
+}): Promise<void> {
+  const historyFailure =
+    completion === "cancel after history failure" ||
+    completion === "continue after history failure";
+  const retainedDirectory = path.join(source.daemon.paseoHome, "handoff", "source", "retained");
+  const retainedAfterRestart = {
+    agentManager: source.daemon.daemon.agentManager,
+    agentStorage: source.daemon.daemon.agentStorage,
+    logger: createTestLogger(),
+  };
+  await expect(ensureAgentLoaded(agentId, retainedAfterRestart)).rejects.toMatchObject({
+    code: "handoff_retained",
+  });
+  if (completion !== "continue after history failure") {
+    if (historyFailure) {
+      await expect(source.client.fetchAgentTimeline(agentId)).rejects.toThrow();
+      expect(retainedAfterRestart.agentManager.getAgent(agentId)).toBeNull();
+      await rm(retainedDirectory);
+    }
+    const history = await source.client.fetchAgentTimeline(agentId);
+    expect(JSON.stringify(history.entries)).toContain("Continue the unfinished job");
+  }
+  expect(retainedAfterRestart.agentManager.getAgent(agentId)).toBeNull();
+  const onStartTurn = vi.fn();
+  retainedAfterRestart.agentManager.registerClient(
+    "claude",
+    createTestAgentClient("claude", {
+      claudeRuntime: { configDir, cliVersion: "2.1.295" },
+      onStartTurn,
+    }),
+  );
+  const continuation = {
+    ...retainedAfterRestart,
+    agentId,
+    prompt: "Continue the retained job explicitly",
+  };
+  if (completion === "cancel") {
+    const record = await retainedAfterRestart.agentStorage.get(agentId);
+    const checkpoint = path.join(
+      retainedDirectory,
+      `${record!.handoffRetention!.history!.sha256}.json`,
+    );
+    const bytes = await readFile(checkpoint);
+    await writeFile(checkpoint, "A damaged published checkpoint");
+    await expect(sendPromptToAgent(continuation)).rejects.toThrow(
+      "Retained conversation history is damaged",
+    );
+    expect(onStartTurn).not.toHaveBeenCalled();
+    expect(retainedAfterRestart.agentManager.getAgent(agentId)).toBeNull();
+    await writeFile(checkpoint, bytes);
+  }
+  if (completion === "continue after history failure") {
+    await expect(sendPromptToAgent(continuation)).rejects.toThrow();
+    expect(onStartTurn).not.toHaveBeenCalled();
+    expect(retainedAfterRestart.agentManager.getAgent(agentId)).toBeNull();
+    await rm(retainedDirectory);
+  }
+  await expect(sendPromptToAgent(continuation)).resolves.toMatchObject({
+    disposition: "started",
+  });
+  await retainedAfterRestart.agentManager.waitForRunToSettle(agentId);
+  expect(onStartTurn).toHaveBeenCalledExactlyOnceWith("Continue the retained job explicitly");
+  expect(retainedAfterRestart.agentManager.getAgent(agentId)?.lastTurnOutcome).toBe("completed");
+  expect((await retainedAfterRestart.agentStorage.get(agentId))?.handoffRetention).toBeUndefined();
+}
+
+test.skipIf(process.platform === "win32").each(retainedJobCompletions)(
   "%s handoff retains the scheduled worktree on the source",
   async (completion) => {
     let source = await startHost("source", true);
@@ -671,28 +827,11 @@ test.skipIf(process.platform === "win32").each(["activate", "cancel", "nested"] 
     });
     if (!result.schedule) throw new Error("Missing schedule");
     const scheduleId = result.schedule.id;
-    holdNextScheduledClaudeTestTurn({ manager, scheduleId, configDir });
-    const execution = source.client
-      .scheduleRunOnce({ id: scheduleId })
-      .catch((error: unknown) => error);
-    await expect
-      .poll(async () => (await source.client.scheduleInspect({ id: scheduleId })).schedule?.runs)
-      .toMatchObject([
-        { status: "running", agentId: expect.any(String), workspaceId: expect.any(String) },
-      ]);
-    const run = (await source.client.scheduleInspect({ id: scheduleId })).schedule!.runs[0];
+    const { run, execution } = await startRetainedJob(source, scheduleId, configDir);
     const agentId = run.agentId!;
     const worktree = manager.getAgent(agentId)!.cwd;
     await writeFile(path.join(worktree, "work.txt"), "Retained uncommitted job bytes");
-    let nested:
-      | {
-          agentId: string;
-          cwd: string;
-          scheduleId: string;
-          workspaceId: string;
-          execution: Promise<unknown>;
-        }
-      | undefined;
+    let nested: RetainedScheduledJob | undefined;
     if (completion === "nested") {
       const second = await source.client.scheduleCreate({
         name: "Retained task",
@@ -710,18 +849,11 @@ test.skipIf(process.platform === "win32").each(["activate", "cancel", "nested"] 
         },
       });
       if (!second.schedule) throw new Error("Missing retained schedule");
-      holdNextScheduledClaudeTestTurn({ manager, scheduleId: second.schedule.id, configDir });
-      const secondExecution = source.client
-        .scheduleRunOnce({ id: second.schedule.id })
-        .catch((error: unknown) => error);
-      await expect
-        .poll(
-          async () =>
-            (await source.client.scheduleInspect({ id: second.schedule!.id })).schedule?.runs,
-        )
-        .toMatchObject([{ status: "running", agentId: expect.any(String) }]);
-      const secondRun = (await source.client.scheduleInspect({ id: second.schedule.id })).schedule!
-        .runs[0];
+      const { run: secondRun, execution: secondExecution } = await startRetainedJob(
+        source,
+        second.schedule.id,
+        configDir,
+      );
       nested = {
         agentId: secondRun.agentId!,
         workspaceId: secondRun.workspaceId!,
@@ -765,15 +897,22 @@ test.skipIf(process.platform === "win32").each(["activate", "cancel", "nested"] 
         });
       }
       const transferId = randomUUID();
-      await prepareWorkspaceHandoff({
-        transferId,
-        workspaceId,
-        destinationParent: root,
-        continuationMode: "context",
-        source: source.client,
-        destination: destination.client,
-        stoppedWorkReview: preview.result!.stoppedWork!.review,
-      });
+      const historyFailure =
+        completion === "cancel after history failure" ||
+        completion === "continue after history failure";
+      const preparation = () =>
+        prepareWorkspaceHandoff({
+          transferId,
+          workspaceId,
+          destinationParent: root,
+          continuationMode: "context",
+          source: source.client,
+          destination: destination.client,
+          stoppedWorkReview: preview.result!.stoppedWork!.review,
+        });
+      if (historyFailure)
+        await failRetainedHistoryPreparation(source, agentId, transferId, preparation);
+      else await preparation();
       expect((await execution).schedule.runs).toMatchObject([
         { id: run.id, status: "failed", agentId, workspaceId: run.workspaceId },
       ]);
@@ -820,11 +959,19 @@ test.skipIf(process.platform === "win32").each(["activate", "cancel", "nested"] 
       expect(manager.messageQueue.entries(agentId)).toMatchObject([
         { id: "retained-notification" },
       ]);
+      if (completion === "cancel after history failure") {
+        await cancelWorkspaceHandoff({
+          transferId,
+          sourceServerId: source.daemon.daemon.getServerId(),
+          getSource: () => source.client,
+          destination: destination.client,
+        });
+      }
       await stopHost(source);
       await stopHost(destination);
       source = await startHost("source", true);
       destination = await startHost("destination", true);
-      if (completion !== "cancel") {
+      if (completion !== "cancel" && !historyFailure) {
         const active = await activateWorkspaceHandoff({
           transferId,
           sourceServerId: source.daemon.daemon.getServerId(),
@@ -872,44 +1019,11 @@ test.skipIf(process.platform === "win32").each(["activate", "cancel", "nested"] 
       expect((await source.daemon.daemon.agentStorage.get(agentId))?.archivedAt).toBeUndefined();
       expect(
         (await source.daemon.daemon.agentStorage.get(agentId))?.handoffRetention,
-      ).toMatchObject({ transferId });
-      if (nested) {
-        await nested.execution;
-        expect(source.daemon.daemon.agentManager.getAgent(nested.agentId)).toBeNull();
-        expect(
-          (await source.client.scheduleInspect({ id: nested.scheduleId })).schedule?.status,
-        ).toBe("paused");
-        expect(
-          source.daemon.daemon.agentManager.messageQueue.isHeldForUserStop(nested.agentId),
-        ).toBe(true);
-        expect(await readFile(path.join(nested.cwd, "nested.txt"), "utf8")).toBe(
-          "Second retained worktree bytes",
-        );
-        expect(
-          (await source.daemon.daemon.agentStorage.get(nested.agentId))?.handoffRetention?.history,
-        ).toBeDefined();
-      }
-      const retainedAfterRestart = {
-        agentManager: source.daemon.daemon.agentManager,
-        agentStorage: source.daemon.daemon.agentStorage,
-        logger: createTestLogger(),
-      };
-      await expect(ensureAgentLoaded(agentId, retainedAfterRestart)).rejects.toMatchObject({
-        code: "handoff_retained",
+      ).toMatchObject({
+        transferId,
       });
-      const history = await source.client.fetchAgentTimeline(agentId);
-      expect(JSON.stringify(history.entries)).toContain("Continue the unfinished job");
-      expect(retainedAfterRestart.agentManager.getAgent(agentId)).toBeNull();
-      await expect(
-        sendPromptToAgent({
-          ...retainedAfterRestart,
-          agentId,
-          prompt: "Continue the retained job explicitly",
-        }),
-      ).resolves.toMatchObject({ disposition: "started" });
-      expect(
-        (await retainedAfterRestart.agentStorage.get(agentId))?.handoffRetention,
-      ).toBeUndefined();
+      if (nested) await assertNestedRetainedJob(source, nested);
+      await assertRetainedContinuation({ source, agentId, configDir, completion });
       expect(await readFile(path.join(worktree, "work.txt"), "utf8")).toBe(
         "Retained uncommitted job bytes",
       );

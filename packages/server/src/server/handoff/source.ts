@@ -210,6 +210,7 @@ export class HandoffSource {
   private tail: Promise<unknown> = Promise.resolve();
   private readonly writerInstances = new WeakMap<object, string>();
   private readonly stopping = new Map<string, Promise<void>>();
+  private readonly retainedCheckpoints = new Map<string, Promise<void>>();
   private closing = false;
   constructor(private readonly options: SourceOptions) {}
 
@@ -714,7 +715,11 @@ export class HandoffSource {
   }
 
   async fetchTimeline(agentId: string, options: AgentTimelineFetchOptions) {
-    const retained = await this.options.agents.get(agentId);
+    let retained = await this.options.agents.get(agentId);
+    if (retained?.handoffRetention && !retained.handoffRetention.history && !retained.internal) {
+      await this.checkpointRetainedConversation(agentId);
+      retained = await this.options.agents.get(agentId);
+    }
     if (retained?.handoffRetention && !retained.internal) {
       const blob = retained.handoffRetention.history;
       if (!blob)
@@ -769,6 +774,7 @@ export class HandoffSource {
     this.closing = true;
     await this.tail;
     await Promise.allSettled(this.stopping.values());
+    await Promise.allSettled(this.retainedCheckpoints.values());
   }
 
   private async stopSource(source: SourceHandoffStatus): Promise<void> {
@@ -830,11 +836,34 @@ export class HandoffSource {
     await this.stopWatches(source);
     await this.options.schedules.pauseForHandoff(source);
     for (const workspace of source.stoppedWorkReview?.retainedWorkspaces ?? []) {
-      for (const agentId of workspace.agentIds) {
-        await this.checkpointRetainedHistory(agentId);
-        await this.options.delegations.checkpointRetainedResults(agentId);
-      }
+      for (const agentId of workspace.agentIds) await this.checkpointRetainedConversation(agentId);
     }
+  }
+
+  /** Finish a stopped conversation's publication even after its transfer was cancelled. */
+  async checkpointRetainedConversation(agentId: string): Promise<void> {
+    if (this.closing) refuse("invalid_source", "Source preparation service is stopping");
+    const existing = this.retainedCheckpoints.get(agentId);
+    if (existing) return existing;
+    const checkpoint = this.persistRetainedConversation(agentId);
+    this.retainedCheckpoints.set(agentId, checkpoint);
+    try {
+      await checkpoint;
+    } finally {
+      this.retainedCheckpoints.delete(agentId);
+    }
+  }
+
+  private async persistRetainedConversation(agentId: string): Promise<void> {
+    const retention = (await this.options.agents.get(agentId))?.handoffRetention;
+    if (!retention) return;
+    if (retention.history) {
+      // An existing binding cannot adopt a replacement after bytes were lost or changed.
+      await readRetainedHandoffHistory(this.options.directory, agentId, retention.history);
+    } else {
+      await this.checkpointRetainedHistory(agentId);
+    }
+    await this.options.delegations.checkpointRetainedResults(agentId);
   }
 
   private async checkpointRetainedHistory(agentId: string): Promise<void> {
@@ -844,7 +873,8 @@ export class HandoffSource {
     const artifacts = path.join(directory, randomUUID());
     try {
       const agent = this.nativeAgent(record);
-      await captureClaudeSession(this.captureInput(agent, agent.runtime, artifacts));
+      const input = this.captureInput(agent, agent.runtime, artifacts);
+      await captureClaudeSession(input);
       const events = await readCapturedClaudeHistory({
         artifactDirectory: artifacts,
         cwd: record.cwd,
@@ -869,6 +899,7 @@ export class HandoffSource {
       const file = path.join(directory, `${blob.sha256}.json`);
       await writeHandoffHistory(file, history);
       await syncFilePublication(file, path.dirname(this.options.directory));
+      await verifyCapturedClaudeSession(input);
       await this.options.agents.checkpointRetainedHistory(agentId, blob);
     } finally {
       await rm(artifacts, { recursive: true, force: true });

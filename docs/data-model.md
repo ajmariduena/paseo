@@ -151,6 +151,12 @@ conversation without opening a provider. Held system notifications append to its
 they do not belong to the transferred archive. Explicit continuation waits for the
 [delegation checkpoint](#delegation-store), so a new turn cannot replace an earlier result.
 
+Cancellation must not strand a successfully stopped conversation behind unfinished history
+publication. Reading history or explicitly continuing may finish that capture from the stopped
+provider's files, including after restart. Keep the first published history digest: lost or altered
+checkpoint bytes must be restored before continuation. These repairs never open a provider or
+clear unresolved runtime or prompt outcomes.
+
 This seal protects records; it does not prove that all provider callbacks or OS processes stopped.
 The remaining certification requirements live in the
 [conversation persistence contract](refactors/cross-host-handoff-plan.md#conversation-persistence-contract).

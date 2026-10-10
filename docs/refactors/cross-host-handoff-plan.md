@@ -600,6 +600,9 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   admissions drain before workspace retention is published; runners drain after their agents stop.
   Retained definitions stay paused, and retained conversations require a human prompt or explicit
   queue resume. Their stopped history remains readable after restart without opening a provider.
+  A cancelled transfer whose stopped-history publication failed can now complete that publication
+  on a history read or explicit continuation, including after a daemon restart. An already bound
+  but damaged history still refuses continuation until its original bytes are restored.
   Retained delegation results now bind to that stopped history before continuation; independent
   descendants can finish later without reloading the retained child or substituting a newer turn.
   Controlled-provider regressions cover continuation, service recovery before and after the

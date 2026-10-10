@@ -1111,7 +1111,7 @@ export async function createPaseoDaemon(
     });
   }
   const agentManager = new AgentManager({
-    beforeRetainedContinuation: (agentId) => delegations.checkpointRetainedResults(agentId),
+    beforeRetainedContinuation: (agentId) => handoffSource.checkpointRetainedConversation(agentId),
     paseoHome: config.paseoHome,
     handoffOwnership,
     pluginLifecycle: pluginRuntime,

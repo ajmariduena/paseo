@@ -147,6 +147,32 @@ $ npx vitest run --config packages/server/vitest.config.ts packages/server/src/s
   3 passed, 41 skipped. Activation, cancellation, nested retained jobs and source restart still pass
   with delegation checkpointing integrated into source preparation and explicit continuation.
 
+Interrupted retained-history publication — a filesystem obstruction stopped preparation after the
+job had closed but before its history checkpoint was published. The cases cancel before or after
+restarting both daemon instances, then remove the obstruction. Before repair support, the human prompt
+still failed with “Retained conversation history is unavailable for delegation recovery”. History
+reads and explicit continuation now share the stopped capture and delegation checkpoint, without
+opening a provider. They verify the native files again before binding the history. An existing digest
+cannot be replaced by recapturing: a damaged bound checkpoint refuses continuation until its original
+bytes are restored. All five retained-job cases now also verify one controlled-provider prompt and a
+completed turn after explicit continuation, rather than only accepted dispatch.
+
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/handoff/archive.e2e.test.ts -t 'continue after history failure handoff retains' --bail=1
+  Red: 1 failed, 45 skipped; continuation stayed blocked after removing the filesystem obstruction.
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/handoff/archive.e2e.test.ts -t 'history failure handoff retains' --bail=1
+  Green: 2 passed, 44 skipped. Both history-read and human-prompt recovery pass after cancellation
+  and daemon restart.
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/handoff/archive.e2e.test.ts -t 'handoff retains the scheduled worktree on the source' --bail=1
+  Final run: 5 passed, 41 skipped. An earlier combined run reached the nested creation poll's
+  deadline before the scheduler published its agent ID. The fixture now observes the real scheduler
+  dispatch and waits for turn start, preserving the same identity, history and cleanup assertions.
+  No timeout was increased. Root typecheck, lint and formatting pass.
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/handoff/archive.e2e.test.ts -t 'cancel after history failure handoff retains' --bail=1
+  1 passed, 45 skipped after adding cancellation before shutdown and repeating it after restart.
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/handoff/ownership.posix.test.ts -t '^source' --bail=1
+  6 passed, 50 skipped. Source shutdown deadlines, uncertain cleanup, cancellation fencing and
+  preparation retries remain covered.
+
 Limits: physical-stop proof after a crash, backing-checkout replacement identity, the remaining
 relationship dispositions and unknown outcomes remain unfinished. Retained history currently requires a
 recorded Claude session. These tests use real stores, Git and lifecycle services with controlled
