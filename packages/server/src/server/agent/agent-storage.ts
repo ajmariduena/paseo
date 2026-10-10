@@ -418,6 +418,23 @@ export class AgentStorage {
     await this.queueRecordMutation(agentId);
   }
 
+  async retryClosedSnapshot(agentId: string): Promise<void> {
+    await this.repairPendingPersistence(agentId);
+    const saved = await this.get(agentId);
+    if (!saved || saved.lastStatus !== "closed") return;
+    // After restart, a renamed record may exist without its previous sync acknowledgement.
+    // This republishes known closure only; carried prompts and generation faults remain intact.
+    await this.queueRecordMutation(
+      agentId,
+      (record) => {
+        if (!record || record.lastStatus !== "closed")
+          throw new Error("Stored agent reopened before closure could be synchronized");
+        return record;
+      },
+      process.platform === "win32" ? undefined : this.syncPublication,
+    );
+  }
+
   async checkpointClosedAgent(agentId: string): Promise<StoredAgentRecord> {
     await this.load();
     const checkpoint = await this.queueRecordMutation(
@@ -693,34 +710,42 @@ export class AgentStorage {
     );
     const generationId = agent.runtimeGenerationId;
     await this.load();
-    await this.queueRecordMutation(snapshot.id, (existing) => {
-      this.assertRuntimeGeneration(existing, generationId);
-      this.assertRuntimeNotReopened(existing, snapshot);
-      const record: StoredAgentRecord = {
-        ...snapshot,
-        title: hasTitleOverride ? snapshot.title : (existing?.title ?? null),
-        createdAt: existing?.createdAt ?? snapshot.createdAt,
-        internal: hasInternalOverride
-          ? snapshot.internal
-          : (snapshot.internal ?? existing?.internal),
-        ...recordRecoveryState(existing),
-      };
+    const synchronize =
+      snapshot.lastStatus === "closed" && process.platform !== "win32"
+        ? this.syncPublication
+        : undefined;
+    await this.queueRecordMutation(
+      snapshot.id,
+      (existing) => {
+        this.assertRuntimeGeneration(existing, generationId);
+        this.assertRuntimeNotReopened(existing, snapshot);
+        const record: StoredAgentRecord = {
+          ...snapshot,
+          title: hasTitleOverride ? snapshot.title : (existing?.title ?? null),
+          createdAt: existing?.createdAt ?? snapshot.createdAt,
+          internal: hasInternalOverride
+            ? snapshot.internal
+            : (snapshot.internal ?? existing?.internal),
+          ...recordRecoveryState(existing),
+        };
 
-      // Preserve soft-delete/archive status across snapshot flushes. The
-      // merge runs inside the per-agent write queue so it cannot commit a
-      // stale pre-archive record after the archive mutation.
-      if (existing && existing.archivedAt !== undefined) {
-        record.archivedAt = existing.archivedAt;
-      }
-      if (existing?.creation) {
-        record.creation = existing.creation;
-      }
-      if (existing?.pendingRestartNote) {
-        record.pendingRestartNote = existing.pendingRestartNote;
-      }
-      if (existing?.handoffContext) record.handoffContext = existing.handoffContext;
-      return record;
-    });
+        // Preserve soft-delete/archive status across snapshot flushes. The
+        // merge runs inside the per-agent write queue so it cannot commit a
+        // stale pre-archive record after the archive mutation.
+        if (existing && existing.archivedAt !== undefined) {
+          record.archivedAt = existing.archivedAt;
+        }
+        if (existing?.creation) {
+          record.creation = existing.creation;
+        }
+        if (existing?.pendingRestartNote) {
+          record.pendingRestartNote = existing.pendingRestartNote;
+        }
+        if (existing?.handoffContext) record.handoffContext = existing.handoffContext;
+        return record;
+      },
+      synchronize,
+    );
   }
 
   async prepareCarriedPrompt(agentId: string, delivery: CarriedPrompt): Promise<void> {

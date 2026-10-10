@@ -12378,6 +12378,100 @@ test("reviewed close refuses a runtime replaced by an earlier queued reload", as
   }
 });
 
+test.skipIf(process.platform === "win32").each(["explicit", "reviewed"])(
+  "handoff: a %s close retries a failed durable snapshot without reopening its stopped provider",
+  async (mode) => {
+    const workdir = mkdtempSync(join(tmpdir(), "agent-manager-close-sync-"));
+    let failClosedSync = false;
+    const storage = new AgentStorage(
+      join(workdir, "agents"),
+      logger,
+      undefined,
+      async (file, parent) => {
+        const record = JSON.parse(readFileSync(file, "utf8"));
+        if (failClosedSync && record.lastStatus === "closed")
+          throw new Error("closed snapshot sync failed");
+        await syncFilePublication(file, parent);
+      },
+    );
+    const client = new TestAgentClient();
+    const session = new TestAgentSession({ provider: "codex", cwd: workdir });
+    const created = vi.spyOn(client, "createSession").mockResolvedValue(session);
+    const resumed = vi.spyOn(client, "resumeSession");
+    const stopped = vi.spyOn(session, "close");
+    const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+    try {
+      const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+        workspaceId: undefined,
+      });
+      await manager.flush();
+      const close = () => manager.closeAgent(agent.id, mode === "reviewed" ? session : undefined);
+      failClosedSync = true;
+      await expect(close()).rejects.toThrow("closed snapshot sync failed");
+      expect(manager.getAgent(agent.id)).toBeNull();
+      await expect(close()).rejects.toThrow("closed snapshot sync failed");
+      failClosedSync = false;
+      await close();
+      expect(stopped).toHaveBeenCalledTimes(1);
+      expect(created).toHaveBeenCalledTimes(1);
+      expect(resumed).not.toHaveBeenCalled();
+      const cold = new AgentStorage(join(workdir, "agents"), logger);
+      await expect(cold.checkpointClosedAgent(agent.id)).resolves.toMatchObject({
+        lastStatus: "closed",
+      });
+    } finally {
+      failClosedSync = false;
+      await manager.flushForShutdown();
+      await storage.flush();
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "handoff cold close reacknowledges stored closure without creating a runtime",
+  async () => {
+    const workdir = mkdtempSync(join(tmpdir(), "agent-manager-cold-close-"));
+    const storagePath = join(workdir, "agents");
+    const original = new AgentManager({
+      clients: { codex: new TestAgentClient() },
+      registry: new AgentStorage(storagePath, logger),
+      logger,
+    });
+    let fail = true;
+    const coldStorage = new AgentStorage(storagePath, logger, undefined, async (file, parent) => {
+      if (fail) throw new Error("cold close sync failed");
+      await syncFilePublication(file, parent);
+    });
+    const client = new TestAgentClient();
+    const created = vi.spyOn(client, "createSession");
+    const resumed = vi.spyOn(client, "resumeSession");
+    const cold = new AgentManager({ clients: { codex: client }, registry: coldStorage, logger });
+    try {
+      const agent = await original.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+        workspaceId: undefined,
+      });
+      await original.closeAgent(agent.id);
+      const before = await coldStorage.get(agent.id);
+      await expect(cold.closeAgent(agent.id)).rejects.toThrow("cold close sync failed");
+      fail = false;
+      await cold.closeAgent(agent.id);
+      expect(await coldStorage.get(agent.id)).toEqual(before);
+      expect(cold.listAgents()).toEqual([]);
+      expect(created).not.toHaveBeenCalled();
+      expect(resumed).not.toHaveBeenCalled();
+      await expect(coldStorage.checkpointClosedAgent(agent.id)).resolves.toMatchObject({
+        lastStatus: "closed",
+      });
+    } finally {
+      fail = false;
+      await original.flushForShutdown();
+      await cold.flushForShutdown();
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  },
+);
+
 test("closeAgent persists one final closed snapshot", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-close-no-persist-"));
   const storagePath = join(workdir, "agents");

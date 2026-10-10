@@ -2090,7 +2090,10 @@ export class AgentManager {
       // Check inside the lifecycle lock: a queued reload can replace the reviewed runtime.
       return this.runLifecycleMutation(agentId, async () => {
         const agent = this.agents.get(agentId);
-        if (!agent) return;
+        if (!agent) {
+          await this.registry?.retryClosedSnapshot(agentId);
+          return;
+        }
         if (agent.session !== expectedSession)
           throw new Error("Reviewed agent runtime was replaced; review the transfer again");
         await this.closeAgentRuntime({ agentId });
@@ -2117,7 +2120,11 @@ export class AgentManager {
     const close = this.runLifecycleMutation(agentId, async () => {
       // A preceding reload or archive may already have closed the durable agent.
       const agent = this.agents.get(agentId);
-      if (agent && (!shouldClose || shouldClose(agent))) {
+      if (!agent) {
+        await this.registry?.retryClosedSnapshot(agentId);
+        return;
+      }
+      if (!shouldClose || shouldClose(agent)) {
         await this.closeAgentRuntime({ agentId, shouldClose, beforeClose, onClose });
       }
     });

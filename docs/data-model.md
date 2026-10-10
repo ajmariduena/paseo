@@ -127,6 +127,13 @@ must retain it when replacing a full record. A stale replacement fails instead o
 metadata. Identical retries retain the committed revision, including across restart. Legacy records
 gain their first revision on the next write, without a migration.
 
+On POSIX, synchronize a closed snapshot and its directories before acknowledging closure.
+Startup uses that record to decide whether an earlier runtime generation ended. A failed
+publication retains its exact candidate for same-process retry; repeating close also synchronizes
+an already closed record read after restart, without opening a provider. Neither operation clears
+unresolved generations or carried prompts, or invents closure when no closed record survived.
+Windows keeps ordinary atomic writes until directory durability is available.
+
 Use a store-owned field operation for a semantic change or rollback. A failed provider import may
 undo its placement and label patch, but must preserve later edits and runtime recovery obligations.
 Handoff preparation binds the exact closed checkpoint revision; changing a record and changing it

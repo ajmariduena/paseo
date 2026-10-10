@@ -249,7 +249,11 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
 - Agent-record publication retains immutable failed writes for same-process retry and withholds
   acknowledgement until the operation's required synchronization completes. Strict handoff inventory
   repairs retained candidates before inspection, so a failed closed-record write can recover without
-  reopening its provider. Monotonic record revisions now reject stale full-record replacements;
+  reopening its provider. POSIX closure now waits for synchronized publication; explicit and reviewed
+  close retries repair storage even after the runtime was unloaded. A reconstructed manager can
+  synchronize a surviving closed record without opening a provider. These paths preserve uncertain
+  generations and carried prompts. The [record contract](../data-model.md#record-revisions) owns
+  the durability boundary. Monotonic record revisions now reject stale full-record replacements;
   identical retries retain their committed revision after restart. Preparation binds the closed
   checkpoint revision, so changing metadata and restoring its old value still refuses release.
   Failed provider imports revert only their own placement/label patch, preserving newer metadata

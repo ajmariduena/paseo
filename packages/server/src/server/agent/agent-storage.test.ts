@@ -460,6 +460,105 @@ describe("AgentStorage", () => {
     },
   );
 
+  test.skipIf(process.platform === "win32")(
+    "handoff closed snapshots retain their exact candidate until durable publication succeeds",
+    async () => {
+      let failClosedSync = false;
+      let closedSyncs = 0;
+      storage = new AgentStorage(storagePath, logger, undefined, async (file, parent) => {
+        const record = JSON.parse(await fs.readFile(file, "utf8"));
+        if (record.lastStatus === "closed") {
+          closedSyncs++;
+          if (failClosedSync) throw new Error("closed snapshot sync failed");
+        }
+        await syncFilePublication(file, parent);
+      });
+      const agent = createManagedAgent({ id: "durable-close", lifecycle: "idle" });
+      agent.runtimeGenerationId = await storage.beginRuntimeGeneration(toStoredAgentRecord(agent));
+      await storage.applySnapshot(agent);
+      const before = await storage.get(agent.id);
+      const closed = createManagedAgent({
+        id: agent.id,
+        lifecycle: "closed",
+        runtimeGenerationId: agent.runtimeGenerationId,
+        lastError: "Final provider detail",
+      });
+      failClosedSync = true;
+      await expect(storage.applySnapshot(closed)).rejects.toThrow("closed snapshot sync failed");
+      expect(await storage.get(agent.id)).toEqual(before);
+      closed.lastError = "Changed after failure";
+      await expect(storage.applySnapshot(agent)).rejects.toThrow("closed snapshot sync failed");
+      failClosedSync = false;
+      await storage.repairPendingPersistence(agent.id);
+      const cold = new AgentStorage(storagePath, logger);
+      expect(await cold.get(agent.id)).toMatchObject({
+        lastStatus: "closed",
+        lastError: "Final provider detail",
+        runtimeGeneration: { id: agent.runtimeGenerationId },
+      });
+      expect(closedSyncs).toBe(3);
+      await expect(cold.checkpointClosedAgent(agent.id)).resolves.toMatchObject({
+        lastStatus: "closed",
+      });
+      await expect(storage.applySnapshot(agent)).rejects.toThrow("already closed");
+    },
+  );
+
+  test.skipIf(process.platform === "win32").each(["generation", "carried prompt"])(
+    "handoff cold closure retry synchronizes its record without clearing an unresolved %s",
+    async (kind) => {
+      const agent = createManagedAgent({ id: "cold-close", lifecycle: "idle" });
+      const seed = toStoredAgentRecord(agent);
+      agent.runtimeGenerationId = await storage.beginRuntimeGeneration(seed);
+      if (kind === "generation")
+        agent.runtimeGenerationId = await storage.beginRuntimeGeneration(seed);
+      else {
+        const note = { kind: "task", id: "cancelled", label: "Interrupted task" };
+        await storage.addPendingRestartNote(agent.id, [note]);
+        await storage.prepareCarriedPrompt(agent.id, {
+          id: randomUUID(),
+          generationId: agent.runtimeGenerationId,
+          restartNote: [note],
+        });
+      }
+      await storage.applySnapshot(
+        createManagedAgent({
+          id: agent.id,
+          lifecycle: "closed",
+          runtimeGenerationId: agent.runtimeGenerationId,
+        }),
+      );
+      let fail = true;
+      let acknowledgements = 0;
+      const cold = new AgentStorage(storagePath, logger, undefined, async (file, parent) => {
+        if (fail) throw new Error("cold closure sync failed");
+        await syncFilePublication(file, parent);
+        acknowledgements++;
+      });
+      const before = await cold.get(agent.id);
+      await expect(cold.retryClosedSnapshot(agent.id)).rejects.toThrow("cold closure sync failed");
+      expect(await cold.get(agent.id)).toEqual(before);
+      fail = false;
+      await cold.retryClosedSnapshot(agent.id);
+      expect(acknowledgements).toBeGreaterThan(0);
+      expect(await cold.get(agent.id)).toEqual(before);
+      const reason =
+        kind === "generation" ? "unresolved runtime generations" : "carried prompt delivery";
+      await expect(cold.checkpointClosedAgent(agent.id)).rejects.toThrow(reason);
+    },
+  );
+
+  test("handoff closure retry cannot invent a closed record for a missing or unclosed runtime", async () => {
+    const agent = createManagedAgent({ id: "open-runtime", lifecycle: "idle" });
+    await storage.beginRuntimeGeneration(toStoredAgentRecord(agent));
+    const before = await storage.get(agent.id);
+    await storage.retryClosedSnapshot("missing");
+    await storage.retryClosedSnapshot(agent.id);
+    expect(await storage.get("missing")).toBeNull();
+    expect(await storage.get(agent.id)).toEqual(before);
+    expect((await storage.get(agent.id))?.lastStatus).toBe("initializing");
+  });
+
   test("runtime generations reject late snapshots after close and after a replacement opens", async () => {
     const agent = createManagedAgent({ id: "generation-agent" });
     const seed = toStoredAgentRecord(agent);

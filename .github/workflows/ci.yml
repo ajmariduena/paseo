@@ -238,6 +238,7 @@ jobs:
             --bail=1 --maxWorkers=1
           npx vitest run --config packages/server/vitest.config.ts \
             packages/server/src/server/agent/agent-manager.test.ts \
+            packages/server/src/server/agent/agent-storage.test.ts \
             packages/server/src/server/agent/mcp-server.test.ts \
             packages/server/src/server/bootstrap.smoke.test.ts \
             packages/server/src/server/bootstrap-managed-processes.test.ts \
