@@ -15,7 +15,7 @@ Pod::Spec.new do |s|
 
   s.dependency 'ExpoModulesCore'
   s.dependency 'ExpoTwoWayAudio'
-  s.frameworks = 'CallKit', 'AVFAudio'
+  s.frameworks = 'CallKit', 'AVFAudio', 'AVKit', 'CoreMotion'
 
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',

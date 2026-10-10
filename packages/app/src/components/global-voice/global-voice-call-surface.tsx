@@ -3,16 +3,22 @@ import { useTranslation } from "react-i18next";
 import { Modal, Pressable, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { ChevronDown, Maximize2, Mic, MicOff, PhoneOff, SignalLow } from "lucide-react-native";
+import { Car, ChevronDown, Maximize2, Mic, MicOff, PhoneOff, SignalLow } from "lucide-react-native";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { VoiceGlow } from "@/components/global-voice/voice-glow";
-import type { VoiceGlowActivity } from "@/components/global-voice/voice-glow-types";
+import {
+  resolveCallStatusKey as resolveStatusKey,
+  resolveGlowActivity,
+  type CallStatusKey,
+} from "@/components/global-voice/call-status";
+import { OnTheGoContent } from "@/components/global-voice/on-the-go-screen";
 import { VolumeMeter } from "@/components/volume-meter";
 import { isWeb } from "@/constants/platform";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useVoiceTelemetryOptional } from "@/contexts/voice-context";
 import type { Theme } from "@/styles/theme";
 import { useGlobalVoiceStore } from "@/voice-chat/global-voice-store";
+import { enterOnTheGo, exitOnTheGo } from "@/voice-chat/on-the-go/use-on-the-go";
 import {
   useGlobalVoice,
   useGlobalVoiceSupervisor,
@@ -32,49 +38,12 @@ const ThemedChevronDown = withUnistyles(ChevronDown);
 const ThemedMaximize = withUnistyles(Maximize2);
 const ThemedSpinner = withUnistyles(LoadingSpinner);
 const ThemedSignalLow = withUnistyles(SignalLow);
+const ThemedCar = withUnistyles(Car);
 
 const SWITCH_ON = { checked: true };
 const SWITCH_OFF = { checked: false };
 
-type StatusKey =
-  | "connecting"
-  | "listening"
-  | "recording"
-  | "sending"
-  | "offline"
-  | "thinking"
-  | "speaking"
-  | "muted";
-
-function resolveMessagesStatusKey(call: GlobalVoice): StatusKey {
-  const { messages } = call;
-  if (messages.isMuted) return "muted";
-  if (messages.phase === "speaking") return "speaking";
-  if (messages.phase === "recording") return "recording";
-  if (!messages.connected && messages.pendingSends > 0) return "offline";
-  if (messages.pendingSends > 0) return "sending";
-  if (messages.phase === "waiting") return "thinking";
-  return "listening";
-}
-
-function resolveStatusKey(call: GlobalVoice): StatusKey {
-  if (call.isStarting || call.isSwitching || call.phase === "starting") return "connecting";
-  if (call.messages.active) return resolveMessagesStatusKey(call);
-  if (call.phase === "playing") return "speaking";
-  if (call.phase === "submitting" || call.phase === "waiting") return "thinking";
-  if (call.isMuted) return "muted";
-  return "listening";
-}
-
-function resolveGlowActivity(statusKey: StatusKey): VoiceGlowActivity {
-  if (statusKey === "connecting") return "connecting";
-  if (statusKey === "thinking" || statusKey === "sending" || statusKey === "offline") {
-    return "processing";
-  }
-  return "conversation";
-}
-
-/** The global voice call UI: car-mode screen on phones, a floating pill everywhere else. */
+/** The global voice call UI: the car screen (or On the go while driving) on phones, a floating pill everywhere else. */
 export function GlobalVoiceCallSurface() {
   const call = useGlobalVoice();
   useGlobalVoiceSupervisor(call);
@@ -86,94 +55,125 @@ export function GlobalVoiceCallSurface() {
 }
 
 function CarModeScreen({ call }: { call: GlobalVoice }) {
-  const { t } = useTranslation();
   const insets = useSafeAreaInsets();
-  const telemetry = useVoiceTelemetryOptional();
   const statusKey = resolveStatusKey(call);
+  const onTheGo = useGlobalVoiceStore((state) => state.onTheGo);
   const minimize = useCallback(() => useGlobalVoiceStore.getState().setMinimized(true), []);
 
   return (
-    <Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={minimize}>
-      <View
-        style={[styles.carScreen, { paddingTop: insets.top, paddingBottom: insets.bottom }]}
-        testID="global-voice-car-mode"
-      >
-        <VoiceGlow activity={resolveGlowActivity(statusKey)} />
-        <View style={styles.carHeader}>
-          <Pressable
-            onPress={minimize}
-            accessibilityRole="button"
-            accessibilityLabel={t("globalVoice.actions.minimize")}
-            style={styles.carHeaderButton}
-            hitSlop={12}
-          >
-            <ThemedChevronDown uniProps={mutedColorMapping} size={28} />
-          </Pressable>
-        </View>
-
-        <View style={styles.carCenter}>
-          <Text style={styles.carTitle}>Paseo</Text>
-          <Text style={styles.carStatus} testID="global-voice-status">
-            {t(`globalVoice.status.${statusKey}`, { count: call.messages.pendingSends })}
-          </Text>
-          <View style={styles.carMeter}>
-            {call.isStarting ? <ThemedSpinner uniProps={mutedColorMapping} size="large" /> : null}
-            {!call.isStarting && isWeb ? (
-              <VolumeMeter
-                volume={telemetry?.volume ?? 0}
-                isMuted={call.isMuted}
-                isSpeaking={telemetry?.isSpeaking ?? false}
-                orientation="horizontal"
-              />
-            ) : null}
-          </View>
-          {call.mode === "messages" && call.messages.lastSpoken ? (
-            <Text style={styles.carTranscript} numberOfLines={3}>
-              {call.messages.lastSpoken}
-            </Text>
-          ) : null}
-        </View>
-
-        <View style={styles.carModeRow}>
-          <ModeSelector call={call} />
-        </View>
-
-        <View style={styles.carActions}>
-          <Pressable
-            onPress={call.toggleMute}
-            disabled={!call.isActive}
-            accessibilityRole="button"
-            accessibilityLabel={
-              call.isMuted ? t("globalVoice.actions.unmute") : t("globalVoice.actions.mute")
-            }
-            testID="global-voice-mute"
-            style={[
-              styles.carButton,
-              call.isMuted ? styles.carMuteButtonActive : styles.carMuteButton,
-            ]}
-          >
-            {call.isMuted ? (
-              <MicOff size={CAR_ICON_SIZE} color={WHITE} strokeWidth={2.25} />
-            ) : (
-              <ThemedMic
-                uniProps={foregroundColorMapping}
-                size={CAR_ICON_SIZE}
-                strokeWidth={2.25}
-              />
-            )}
-          </Pressable>
-          <Pressable
-            onPress={call.stop}
-            accessibilityRole="button"
-            accessibilityLabel={t("globalVoice.actions.end")}
-            testID="global-voice-end"
-            style={[styles.carButton, styles.endButton]}
-          >
-            <PhoneOff size={CAR_ICON_SIZE} color={WHITE} strokeWidth={2.25} />
-          </Pressable>
-        </View>
+    <Modal
+      visible
+      animationType="slide"
+      presentationStyle="fullScreen"
+      onRequestClose={onTheGo ? exitOnTheGo : minimize}
+    >
+      <View style={[styles.carScreen, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
+        {onTheGo ? (
+          <OnTheGoContent call={call} statusKey={statusKey} />
+        ) : (
+          <CarModeContent call={call} statusKey={statusKey} minimize={minimize} />
+        )}
       </View>
     </Modal>
+  );
+}
+
+function CarModeContent({
+  call,
+  statusKey,
+  minimize,
+}: {
+  call: GlobalVoice;
+  statusKey: CallStatusKey;
+  minimize: () => void;
+}) {
+  const { t } = useTranslation();
+  const telemetry = useVoiceTelemetryOptional();
+
+  return (
+    <View style={styles.carContent} testID="global-voice-car-mode">
+      <VoiceGlow activity={resolveGlowActivity(statusKey)} />
+      <View style={styles.carHeader}>
+        <Pressable
+          onPress={minimize}
+          accessibilityRole="button"
+          accessibilityLabel={t("globalVoice.actions.minimize")}
+          style={styles.carHeaderButton}
+          hitSlop={12}
+        >
+          <ThemedChevronDown uniProps={mutedColorMapping} size={28} />
+        </Pressable>
+      </View>
+
+      <View style={styles.carCenter}>
+        <Text style={styles.carTitle}>Paseo</Text>
+        <Text style={styles.carStatus} testID="global-voice-status">
+          {t(`globalVoice.status.${statusKey}`, { count: call.messages.pendingSends })}
+        </Text>
+        <View style={styles.carMeter}>
+          {call.isStarting ? <ThemedSpinner uniProps={mutedColorMapping} size="large" /> : null}
+          {!call.isStarting && isWeb ? (
+            <VolumeMeter
+              volume={telemetry?.volume ?? 0}
+              isMuted={call.isMuted}
+              isSpeaking={telemetry?.isSpeaking ?? false}
+              orientation="horizontal"
+            />
+          ) : null}
+        </View>
+        {call.mode === "messages" && call.messages.lastSpoken ? (
+          <Text style={styles.carTranscript} numberOfLines={3}>
+            {call.messages.lastSpoken}
+          </Text>
+        ) : null}
+      </View>
+
+      <View style={styles.carModeRow}>
+        <ModeSelector call={call} />
+        <Pressable
+          onPress={enterOnTheGo}
+          disabled={!call.isActive}
+          accessibilityRole="button"
+          testID="global-voice-on-the-go-enter"
+          hitSlop={8}
+          style={styles.onTheGoLink}
+        >
+          <ThemedCar uniProps={mutedColorMapping} size={18} />
+          <Text style={styles.onTheGoLinkText}>{t("globalVoice.onTheGo.enter")}</Text>
+        </Pressable>
+      </View>
+
+      <View style={styles.carActions}>
+        <Pressable
+          onPress={call.toggleMute}
+          disabled={!call.isActive}
+          accessibilityRole="button"
+          accessibilityLabel={
+            call.isMuted ? t("globalVoice.actions.unmute") : t("globalVoice.actions.mute")
+          }
+          testID="global-voice-mute"
+          style={[
+            styles.carButton,
+            call.isMuted ? styles.carMuteButtonActive : styles.carMuteButton,
+          ]}
+        >
+          {call.isMuted ? (
+            <MicOff size={CAR_ICON_SIZE} color={WHITE} strokeWidth={2.25} />
+          ) : (
+            <ThemedMic uniProps={foregroundColorMapping} size={CAR_ICON_SIZE} strokeWidth={2.25} />
+          )}
+        </Pressable>
+        <Pressable
+          onPress={call.stop}
+          accessibilityRole="button"
+          accessibilityLabel={t("globalVoice.actions.end")}
+          testID="global-voice-end"
+          style={[styles.carButton, styles.endButton]}
+        >
+          <PhoneOff size={CAR_ICON_SIZE} color={WHITE} strokeWidth={2.25} />
+        </Pressable>
+      </View>
+    </View>
   );
 }
 
@@ -335,6 +335,9 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     backgroundColor: theme.colors.surface0,
   },
+  carContent: {
+    flex: 1,
+  },
   carHeader: {
     flexDirection: "row",
     paddingHorizontal: theme.spacing[4],
@@ -369,7 +372,20 @@ const styles = StyleSheet.create((theme) => ({
   },
   carModeRow: {
     alignItems: "center",
+    gap: theme.spacing[4],
     paddingBottom: theme.spacing[6],
+  },
+  onTheGoLink: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+    minHeight: 44,
+    paddingHorizontal: theme.spacing[4],
+  },
+  onTheGoLinkText: {
+    fontSize: theme.fontSize.base,
+    color: theme.colors.foregroundMuted,
+    textDecorationLine: "underline",
   },
   modeSelector: {
     alignItems: "center",

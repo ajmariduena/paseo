@@ -2187,6 +2187,11 @@ export const fr: TranslationResources = {
       end: "Raccrocher",
       mute: "Couper le micro",
       unmute: "Réactiver le micro",
+      audio: "Audio",
+      working_one: "{{count}} au travail",
+      working_other: "{{count}} au travail",
+      needsYou_one: "{{count}} vous attend",
+      needsYou_other: "{{count}} vous attendent",
       minimize: "Réduire",
       weakSignal: "Signal faible",
     },
@@ -2209,6 +2214,12 @@ export const fr: TranslationResources = {
         "Basculé automatiquement car le signal est faible. Repasse en direct quand la connexion tient.",
       weakUnavailable:
         "Mettez à jour Paseo sur votre ordinateur pour utiliser le mode signal faible.",
+    },
+    onTheGo: {
+      enter: "On the go",
+      exit: "Quitter On the go",
+      mute: "Couper le micro",
+      unmute: "Réactiver le micro",
     },
     spoken: {
       notHeard: "Je n'ai pas bien entendu. Pouvez-vous répéter ?",
@@ -2722,6 +2733,26 @@ export const fr: TranslationResources = {
         keepKey: "Laissez vide pour garder la clé actuelle",
         invalidUrl: "Saisissez une URL qui commence par http:// ou https://",
       },
+    },
+    onTheGo: {
+      title: "On the go",
+      description:
+        "Une vue pour conduire pendant les appels vocaux sur ce téléphone : deux grands boutons, rien d'autre.",
+      mode: "Activer",
+      auto: "Auto",
+      always: "Toujours",
+      never: "Jamais",
+      autoHint:
+        "S'active en voiture : CarPlay, le mode voiture du système ou le Bluetooth d'une voiture mémorisée.",
+      useMotion: "Utiliser les mouvements du téléphone",
+      useMotionHint:
+        "Détecte aussi la conduite sans CarPlay ni Bluetooth. Demande l'accès aux mouvements.",
+      motionDenied:
+        "L'accès aux mouvements est désactivé. Activez-le dans les réglages du système.",
+      rememberedCars: "Voitures mémorisées",
+      noCars:
+        "Aucune pour l'instant. Touchez On the go pendant un appel dans votre voiture pour la mémoriser.",
+      forget: "Oublier",
     },
     readAloud: {
       title: "Read aloud",

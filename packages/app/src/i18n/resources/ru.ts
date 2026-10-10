@@ -2174,6 +2174,11 @@ export const ru: TranslationResources = {
       end: "Завершить",
       mute: "Выключить микрофон",
       unmute: "Включить микрофон",
+      audio: "Звук",
+      working_one: "{{count}} работает",
+      working_other: "{{count}} работают",
+      needsYou_one: "{{count}} ждёт вас",
+      needsYou_other: "{{count}} ждут вас",
       minimize: "Свернуть",
       weakSignal: "Слабый сигнал",
     },
@@ -2195,6 +2200,12 @@ export const ru: TranslationResources = {
       weakAutoHint:
         "Переключено автоматически из-за слабого сигнала. Вернётся, когда связь стабилизируется.",
       weakUnavailable: "Обновите Paseo на компьютере, чтобы использовать режим слабого сигнала.",
+    },
+    onTheGo: {
+      enter: "On the go",
+      exit: "Выйти из On the go",
+      mute: "Выключить микрофон",
+      unmute: "Включить микрофон",
     },
     spoken: {
       notHeard: "Я не расслышал. Повторите, пожалуйста.",
@@ -2717,6 +2728,24 @@ export const ru: TranslationResources = {
         keepKey: "Оставьте пустым, чтобы сохранить текущий ключ",
         invalidUrl: "Введите URL, который начинается с http:// или https://",
       },
+    },
+    onTheGo: {
+      title: "On the go",
+      description:
+        "Режим для вождения в голосовых звонках на этом телефоне: две большие кнопки и ничего лишнего.",
+      mode: "Включать",
+      auto: "Авто",
+      always: "Всегда",
+      never: "Никогда",
+      autoHint:
+        "Включается в машине: CarPlay, автомобильный режим системы или Bluetooth запомненной машины.",
+      useMotion: "Использовать движение телефона",
+      useMotionHint:
+        "Замечает вождение и без CarPlay или Bluetooth. Запрашивает доступ к движению.",
+      motionDenied: "Доступ к движению выключен. Включите его в настройках системы.",
+      rememberedCars: "Запомненные машины",
+      noCars: "Пока нет. Нажмите On the go во время звонка в машине, чтобы запомнить её.",
+      forget: "Забыть",
     },
     readAloud: {
       title: "Read aloud",
