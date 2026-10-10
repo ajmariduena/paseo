@@ -28,6 +28,8 @@ export const ru: TranslationResources = {
     history: "Предыдущий разговор",
     historyConnect: "Подключитесь к целевому хосту, чтобы прочитать историю.",
     historyUnavailable: "Перенесённая история недоступна.",
+    historyPart: "Часть разговора",
+    historyPartLabel: "{{number}} · {{host}}",
     historyOrigin: "История с {{host}} только для чтения",
     historyNotice: "Файлы и связанные ресурсы относятся к исходному хосту и могут быть недоступны.",
     continuedNative: "Исходная сессия продолжена",

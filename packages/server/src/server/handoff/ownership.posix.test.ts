@@ -258,6 +258,7 @@ test("source preparation keeps ownership fenced after uncertain cleanup and retr
       ownership: sourceOwnership,
       archives: new HandoffArchiveStore(path.join(root, "source-archives")),
       destination: {
+        hasConversation: () => false,
         withConversationArchive: async () => {
           throw new Error("No previous transfer in this test");
         },

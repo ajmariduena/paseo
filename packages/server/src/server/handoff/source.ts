@@ -52,8 +52,11 @@ import {
   HandoffHistoryOriginSchema,
   handoffConversationOrigin,
   type CapturedConversation,
+  type CapturedPreviousSegment,
+  type HandoffBundle,
 } from "./bundle.js";
 import { HandoffContextSchema, handoffContextDirectory } from "./context.js";
+import { HandoffHistorySegmentSchema, HANDOFF_PREVIOUS_SEGMENTS_MAX } from "./history-segments.js";
 import type { HandoffDestination } from "./destination.js";
 import {
   writeHandoffHistory,
@@ -82,6 +85,11 @@ const NativeAgentSchema = AgentIdentitySchema.extend({
   projectDirName: z.string().optional(),
   // COMPAT(handoffCapturedRuntime): added in v0.11.1, remove after 2027-02-06 once older prepared transfers expire.
   runtime: ClaudeSessionRuntimeSchema.optional(),
+  context: HandoffContextSchema.optional(),
+  previous: z.array(HandoffHistorySegmentSchema).max(HANDOFF_PREVIOUS_SEGMENTS_MAX).optional(),
+  previousBinding: z
+    .object({ transferId: HandoffTransferIdSchema, manifestDigest: HandoffDigestSchema })
+    .optional(),
 });
 const ContextAgentSchema = AgentIdentitySchema.extend({
   mode: z.literal("context"),
@@ -90,10 +98,12 @@ const ContextAgentSchema = AgentIdentitySchema.extend({
   previousManifestDigest: HandoffDigestSchema,
   session: HandoffBlobSchema,
   origin: HandoffHistoryOriginSchema,
+  previous: z.array(HandoffHistorySegmentSchema).max(HANDOFF_PREVIOUS_SEGMENTS_MAX).optional(),
 });
 const AgentSchema = z.discriminatedUnion("mode", [NativeAgentSchema, ContextAgentSchema]);
 const PreparedSchema = z.object({
-  version: z.literal(1),
+  // COMPAT(handoffPreparedHistory): added in v0.11.1, remove after 2027-04-10 once retained v1 preparations finish.
+  version: z.union([z.literal(1), z.literal(2)]),
   transferId: HandoffTransferIdSchema,
   cwd: z.string().min(1),
   agents: z.array(AgentSchema).max(1000),
@@ -107,7 +117,7 @@ interface SourceOptions {
   logger: Logger;
   ownership: HandoffOwnership;
   archives: HandoffArchiveStore;
-  destination: Pick<HandoffDestination, "withConversationArchive">;
+  destination: Pick<HandoffDestination, "withConversationArchive" | "hasConversation">;
   workspaces: Pick<WorkspaceRegistry, "get" | "list">;
   agents: AgentStorage;
   agentManager: Pick<
@@ -197,6 +207,7 @@ export class HandoffSource {
           continue;
         }
         const agent = this.nativeAgent(current);
+        const previous = await this.previousSegments(current, agent.sessionId);
         const preview = await previewClaudeSession({
           handle: {
             provider: "claude",
@@ -206,7 +217,19 @@ export class HandoffSource {
           cwd: agent.cwd,
           ...agent.runtime,
         });
-        conversations.push({ ...identity, provider: "claude", state: "available", ...preview });
+        conversations.push({
+          ...identity,
+          provider: "claude",
+          state: "available",
+          ...preview,
+          artifactBytes:
+            preview.artifactBytes +
+            previous.previous.reduce(
+              (sum, item) =>
+                sum + item.manifest.files.reduce((bytes, file) => bytes + file.blob.size, 0),
+              0,
+            ),
+        });
       } catch (error) {
         conversations.push({
           ...identity,
@@ -364,7 +387,10 @@ export class HandoffSource {
         const artifactDirectory = path.join(directory, `conversation-${index}`);
         const historyPath = path.join(directory, `history-${index}.json`);
         if (!record.persistence) {
-          const { agent } = await this.contextAgent(record, { artifactDirectory, historyPath });
+          const { agent, previous } = await this.contextAgent(record, {
+            artifactDirectory,
+            historyPath,
+          });
           agents.push(agent);
           conversations.push({
             sourceAgentId: agent.id,
@@ -374,12 +400,21 @@ export class HandoffSource {
             pendingRestartNote: agent.pendingRestartNote,
             mode: "context",
             origin: agent.origin,
+            previous,
           });
           continue;
         }
-        const agent = this.nativeAgent(record);
+        const native = this.nativeAgent(record);
+        const { previous, binding } = await this.previousSegments(record, native.sessionId);
+        const agent = NativeAgentSchema.parse({
+          ...native,
+          runtime: native.runtime,
+          ...(record.handoffContext ? { context: record.handoffContext } : {}),
+          ...(binding ? { previousBinding: binding } : {}),
+          ...(previous.length ? { previous: previous.map((item) => item.segment) } : {}),
+        });
         agents.push(agent);
-        await captureClaudeSession(this.captureInput(agent, agent.runtime, artifactDirectory));
+        await captureClaudeSession(this.captureInput(agent, native.runtime, artifactDirectory));
         const events = await readCapturedClaudeHistory({
           artifactDirectory,
           cwd: agent.cwd,
@@ -403,6 +438,7 @@ export class HandoffSource {
           artifactDirectory,
           historyPath,
           pendingRestartNote: agent.pendingRestartNote,
+          previous,
         });
       }
       const manifest = await packHandoffArchive({
@@ -415,7 +451,7 @@ export class HandoffSource {
         conversations,
       });
       const prepared: PreparedSource = {
-        version: 1,
+        version: 2,
         transferId: source.id,
         cwd: source.cwd,
         agents,
@@ -671,7 +707,8 @@ export class HandoffSource {
           refuse("source_changed", "Source carried context changed after capture");
       } else if (
         record.persistence?.sessionId !== captured.sessionId ||
-        record.persistence?.metadata?.claudeProjectDirName !== captured.projectDirName
+        record.persistence?.metadata?.claudeProjectDirName !== captured.projectDirName ||
+        !isDeepStrictEqual(record.handoffContext, captured.context)
       ) {
         refuse("source_changed", "Source conversation changed after capture");
       }
@@ -711,6 +748,16 @@ export class HandoffSource {
           refuse("source_changed", "Source carried history changed after capture");
         continue;
       }
+      const previous = await this.previousSegments(record, agent.sessionId);
+      if (
+        // COMPAT(handoffPreparedHistory): v1 did not bind a prior native import when it contained no earlier segments.
+        (prepared.version === 2 && !isDeepStrictEqual(previous.binding, agent.previousBinding)) ||
+        !isDeepStrictEqual(
+          previous.previous.map((item) => item.segment),
+          agent.previous ?? [],
+        )
+      )
+        refuse("source_changed", "Earlier conversation history changed after capture");
       // COMPAT(handoffCapturedRuntime): added in v0.11.1, remove after 2027-02-06 once older prepared transfers expire.
       const runtime = agent.runtime ?? prepared.runtime;
       if (!runtime) refuse("invalid_source", "Source provider configuration is missing");
@@ -754,10 +801,12 @@ export class HandoffSource {
         manifestDigest: prepared.manifest.entrypoint.sha256,
       });
       for (const agent of prepared.agents) {
-        if (agent.mode !== "context") continue;
         const captured = bundle.conversations.find(
           (conversation) => conversation.sourceAgentId === agent.id,
         );
+        if (!isDeepStrictEqual(captured?.previous ?? [], agent.previous ?? []))
+          refuse("source_changed", "Captured earlier history differs from its verified source");
+        if (agent.mode !== "context") continue;
         if (
           captured?.mode !== "context" ||
           !isDeepStrictEqual(captured.history, agent.context.history) ||
@@ -785,7 +834,7 @@ export class HandoffSource {
       );
     return this.options.destination.withConversationArchive(
       record.id,
-      async ({ transferId, reservationId, sourceAgentId, archive, content }) => {
+      async ({ transferId, reservationId, sourceAgentId, continuationMode, archive, content }) => {
         const conversation = content.bundle.conversations.find(
           (item) => item.sourceAgentId === sourceAgentId,
         );
@@ -793,6 +842,8 @@ export class HandoffSource {
         if (!conversation?.history || !session)
           refuse("invalid_source", "Original exported conversation is incomplete");
         const origin = handoffConversationOrigin(content.bundle, conversation);
+        if (continuationMode !== "context")
+          refuse("invalid_source", "A native conversation is missing its persistence handle");
         const context = {
           sourceServerId: origin.sourceServerId,
           sourceAgentId: origin.sourceAgentId,
@@ -800,6 +851,9 @@ export class HandoffSource {
           directory: handoffContextDirectory(reservationId, record.id),
           history: conversation.history,
           pending: true,
+          ...(conversation.historyIndex ? { historyIndex: conversation.historyIndex } : {}),
+          // COMPAT(handoffContextMode): added in v0.11.1, remove after 2027-04-10 once retained v1/v2 publications finish.
+          ...(content.bundle.version === 3 ? { continuationMode: "context" as const } : {}),
         };
         if (!isDeepStrictEqual(record.handoffContext, context))
           refuse("source_changed", "Carried context differs from its original verified archive");
@@ -816,6 +870,7 @@ export class HandoffSource {
           previousManifestDigest: archive.manifest.entrypoint.sha256,
           session: conversation.session,
           origin,
+          ...(conversation.previous?.length ? { previous: conversation.previous } : {}),
         });
         if (capture) {
           const blobs = path.join(capture.artifactDirectory, "blobs");
@@ -834,12 +889,22 @@ export class HandoffSource {
             capture.historyPath,
           );
         }
+        const previous = (conversation.previous ?? []).map((segment): CapturedPreviousSegment => {
+          const manifest = content.previousSessions.get(segment.session.sha256);
+          if (!manifest) refuse("invalid_source", "Earlier conversation artifacts are missing");
+          return { segment, manifest, blobsDirectory: archive.blobsDirectory };
+        });
         return {
           agent,
+          previous,
           preview: {
             cliVersion: session.cliVersion,
             hasWorkflows: session.files.some((file) => file.path.startsWith("session/workflows/")),
-            artifactBytes: session.files.reduce((sum, file) => sum + file.blob.size, 0),
+            artifactBytes: [session, ...previous.map((item) => item.manifest)].reduce(
+              (sum, manifest) =>
+                sum + manifest.files.reduce((bytes, file) => bytes + file.blob.size, 0),
+              0,
+            ),
             nativeUnavailableReason:
               "This conversation contains exported context, not a local native session",
           },
@@ -848,14 +913,91 @@ export class HandoffSource {
     );
   }
 
+  private assertPreviousContext(
+    record: StoredAgentRecord,
+    bundle: HandoffBundle,
+    conversation: HandoffBundle["conversations"][number],
+    reservationId: string,
+    continuationMode: "native" | "context",
+  ) {
+    if (continuationMode !== "context" && !conversation.previous?.length) {
+      if (record.handoffContext)
+        refuse("source_changed", "Unexpected carried context on a native conversation");
+      return;
+    }
+    if (!record.handoffContext || !conversation.history)
+      refuse("invalid_source", "Earlier conversation context is missing from the agent record");
+    const origin = handoffConversationOrigin(bundle, conversation);
+    const expected = {
+      sourceServerId: origin.sourceServerId,
+      sourceAgentId: origin.sourceAgentId,
+      sourceCwd: origin.sourceCwd,
+      directory: handoffContextDirectory(reservationId, record.id),
+      history: conversation.history,
+      pending: record.handoffContext.pending,
+      ...(conversation.historyIndex ? { historyIndex: conversation.historyIndex } : {}),
+      // COMPAT(handoffContextMode): added in v0.11.1, remove after 2027-04-10 once retained v1/v2 publications finish.
+      ...(bundle.version === 3 ? { continuationMode } : {}),
+    };
+    if (!isDeepStrictEqual(record.handoffContext, expected))
+      refuse("source_changed", "Carried context differs from its original verified archive");
+  }
+
+  private async previousSegments(
+    record: StoredAgentRecord,
+    currentSessionId: string,
+  ): Promise<{
+    previous: CapturedPreviousSegment[];
+    binding?: { transferId: string; manifestDigest: string };
+  }> {
+    if (!record.handoffContext && !this.options.destination.hasConversation(record.id))
+      return { previous: [] };
+    return this.options.destination.withConversationArchive(
+      record.id,
+      async ({ transferId, reservationId, sourceAgentId, continuationMode, archive, content }) => {
+        const conversation = content.bundle.conversations.find(
+          (item) => item.sourceAgentId === sourceAgentId,
+        );
+        const session = content.sessions.get(sourceAgentId);
+        if (!conversation || !session)
+          refuse("invalid_source", "Original exported conversation is missing");
+        this.assertPreviousContext(
+          record,
+          content.bundle,
+          conversation,
+          reservationId,
+          continuationMode,
+        );
+        const segments = [...(conversation.previous ?? [])];
+        if (continuationMode === "context" || currentSessionId !== session.sessionId) {
+          if (!conversation.history)
+            refuse("invalid_source", "Earlier conversation has no readable history");
+          segments.push({
+            origin: handoffConversationOrigin(content.bundle, conversation),
+            history: conversation.history,
+            session: conversation.session,
+          });
+        }
+        if (segments.length > HANDOFF_PREVIOUS_SEGMENTS_MAX)
+          refuse("invalid_source", "Conversation exceeds the handoff history segment limit");
+        return {
+          binding: { transferId, manifestDigest: archive.manifest.entrypoint.sha256 },
+          previous: segments.map((segment) => {
+            const manifest =
+              segment.session.sha256 === conversation.session.sha256
+                ? session
+                : content.previousSessions.get(segment.session.sha256);
+            if (!manifest) refuse("invalid_source", "Earlier conversation artifacts are missing");
+            return { segment, manifest, blobsDirectory: archive.blobsDirectory };
+          }),
+        };
+      },
+    );
+  }
+
   private nativeAgent(record: StoredAgentRecord) {
     if (record.provider !== "claude" || !record.persistence)
       refuse("invalid_source", "Conversation has no saved session that can be exported");
-    if (record.handoffContext)
-      refuse(
-        "invalid_source",
-        "This conversation requires its earlier exported context and new native history to be combined before another transfer",
-      );
     const runtime = readClaudeSessionRuntime(record.persistence);
     if (!runtime)
       refuse(

@@ -79,11 +79,8 @@ export async function handoffHosts(
       clientIdPrefix: "handoff-source-browser",
     });
     cleanupSteps.push(() => sourceClient.close());
-    cleanupSteps.push(async () => {
-      const projects = await destinationClient.listProjects();
-      for (const project of projects.projects)
-        await destinationClient.removeProject(project.projectId);
-    });
+    // Each isolated daemon removes its project registry on shutdown. A return trip
+    // leaves a released source fenced, so deleting its project through RPC must refuse.
     await writeFile(path.join(workspace.repoPath, "prior-work.txt"), "work from the source\n");
     await gotoAppShell(page);
     await addScheduleHostAndReload({

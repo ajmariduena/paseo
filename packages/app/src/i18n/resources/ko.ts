@@ -27,6 +27,8 @@ export const ko: TranslationResources = {
     history: "이전 대화",
     historyConnect: "이 기록을 읽으려면 대상 호스트에 연결하세요.",
     historyUnavailable: "전송된 기록을 사용할 수 없습니다.",
+    historyPart: "대화 구간",
+    historyPartLabel: "{{number}} · {{host}}",
     historyOrigin: "{{host}}의 읽기 전용 기록",
     historyNotice: "파일과 연결된 리소스는 원본 호스트에 속하며 사용할 수 없을 수 있습니다.",
     continuedNative: "네이티브 세션 계속",

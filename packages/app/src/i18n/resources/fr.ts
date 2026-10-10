@@ -29,6 +29,8 @@ export const fr: TranslationResources = {
     history: "Conversation précédente",
     historyConnect: "Connectez l’hôte de destination pour consulter cet historique.",
     historyUnavailable: "L’historique transféré est indisponible.",
+    historyPart: "Partie de la conversation",
+    historyPartLabel: "{{number}} · {{host}}",
     historyOrigin: "Historique en lecture seule de {{host}}",
     historyNotice:
       "Les fichiers et ressources liés appartiennent à l’hôte source et peuvent être indisponibles.",

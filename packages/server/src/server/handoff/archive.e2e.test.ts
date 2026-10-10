@@ -2006,20 +2006,167 @@ async function expectContextHandoffReturn(input: {
     history.result?.timeline.entries.map((entry) => entry.item),
   );
   expect(source.daemon.daemon.agentManager.getAgent(returnedAgent.id)).toBeNull();
-  // Once local work exists, exporting only the older context would discard it.
-  await destination.daemon.daemon.agentStorage.upsert({
-    ...nextAgent,
-    persistence: { provider: "claude", sessionId: input.sessionId },
-    handoffContext: { ...nextAgent.handoffContext, pending: false },
+  await expectContinuedContextHandoff(destination, source, nextAgent.id);
+}
+
+async function expectContinuedContextHandoff(source: Host, destination: Host, agentId: string) {
+  const record = await contextRecord(source, agentId);
+  const sessionId = randomUUID();
+  const configDir = path.join(root, "destination-notes", "claude");
+  const project = claudeProjectDirSync(record.cwd, { configDir });
+  await mkdir(project, { recursive: true });
+  await writeFile(
+    path.join(project, `${sessionId}.jsonl`),
+    JSON.stringify({
+      type: "user",
+      uuid: randomUUID(),
+      sessionId,
+      message: { role: "user", content: "New local work after the context export" },
+    }) + "\n",
+  );
+  await source.daemon.daemon.agentStorage.upsert({
+    ...record,
+    persistence: {
+      provider: "claude",
+      sessionId,
+      metadata: { claudeRuntime: { configDir, cliVersion: "2.1.295" } },
+    },
+    handoffContext: { ...record.handoffContext, pending: false },
   });
-  const continued = await destination.client.handoffPreviewSource({
-    workspaceId: nextAgent.workspaceId,
+  const preview = await source.client.handoffPreviewSource({ workspaceId: record.workspaceId });
+  expect(preview.result?.conversations[0]?.state).toBe("available");
+  const transferId = randomUUID();
+  await prepareWorkspaceHandoff({
+    transferId,
+    workspaceId: record.workspaceId,
+    destinationParent: root,
+    continuationMode: "native",
+    source: source.client,
+    destination: destination.client,
   });
-  expect(continued.result?.conversations[0]).toMatchObject({
-    state: "blocked",
-    reason:
-      "This conversation requires its earlier exported context and new native history to be combined before another transfer",
+  const active = await activateWorkspaceHandoff({
+    transferId,
+    sourceServerId: source.daemon.daemon.getServerId(),
+    getSource: () => source.client,
+    destination: destination.client,
   });
+  const installedId = active.agentMappings[0].destinationAgentId;
+  const installed = await destination.daemon.daemon.agentStorage.get(installedId);
+  expect(installed?.persistence?.sessionId).toBe(sessionId);
+  const history = await destination.client.handoffGetConversationHistory({ agentId: installedId });
+  if (!history.result) throw new Error("Missing continued history");
+  expect(history.result.segments).toHaveLength(2);
+  expect(JSON.stringify(history.result.timeline.entries)).toContain("New local work");
+  const previousId = history.result.segments?.[0].id;
+  if (!previousId) throw new Error("Missing previous history segment");
+  const previous = await destination.client.handoffGetConversationHistory({
+    agentId: installedId,
+    segmentId: previousId,
+  });
+  expect(previous.result?.sourceAgentId).toBe(record.handoffContext.sourceAgentId);
+  expect(JSON.stringify(previous.result?.timeline.entries)).toContain("Earlier work");
+  expect(previous.result?.sourceServerId).toBe(record.handoffContext.sourceServerId);
+  const foreign = await destination.client.handoffGetConversationHistory({
+    agentId: installedId,
+    segmentId: "0".repeat(64),
+  });
+  expect(foreign.result).toBeNull();
+  expect(foreign.error).not.toBeNull();
+  if (!installed?.handoffContext || !installed.workspaceId)
+    throw new Error("Missing native history context");
+  const contextual = {
+    ...installed,
+    handoffContext: installed.handoffContext,
+    workspaceId: installed.workspaceId,
+  };
+  expect(contextual.handoffContext.continuationMode).toBe("native");
+  const prompt = await prependHandoffContext({
+    cwd: contextual.cwd,
+    context: contextual.handoffContext,
+    prompt: "Continue the task",
+  });
+  expect(prompt).toContain("native continuation");
+  expect(prompt).toContain("Earlier work");
+  expect(prompt).toContain("New local work");
+  const contextDirectory = path.join(contextual.cwd, contextual.handoffContext.directory);
+  const indexPath = path.join(contextDirectory, "index.json");
+  const indexBytes = await readFile(indexPath);
+  await writeFile(indexPath, Buffer.alloc(indexBytes.length));
+  await expect(
+    prependHandoffContext({
+      cwd: contextual.cwd,
+      context: contextual.handoffContext,
+      prompt: "Go",
+    }),
+  ).rejects.toThrow("history index changed");
+  await writeFile(indexPath, indexBytes);
+
+  // Same native session: preserve the earlier segment without duplicating the current one.
+  const returnId = randomUUID();
+  await prepareWorkspaceHandoff({
+    transferId: returnId,
+    workspaceId: contextual.workspaceId,
+    destinationParent: root,
+    continuationMode: "native",
+    source: destination.client,
+    destination: source.client,
+  });
+  const returned = await activateWorkspaceHandoff({
+    transferId: returnId,
+    sourceServerId: destination.daemon.daemon.getServerId(),
+    getSource: () => destination.client,
+    destination: source.client,
+  });
+  const returnedId = returned.agentMappings[0].destinationAgentId;
+  const returnedHistory = await source.client.handoffGetConversationHistory({
+    agentId: returnedId,
+  });
+  expect(returnedHistory.result?.segments).toHaveLength(2);
+  expect(returnedHistory.result?.segments?.[0].id).toBe(previousId);
+  expect((await source.daemon.daemon.agentStorage.get(returnedId))?.persistence?.sessionId).toBe(
+    sessionId,
+  );
+  await expectSegmentedContextReturns(source, destination, returned.workspaceId, previousId);
+}
+
+async function expectSegmentedContextReturns(
+  source: Host,
+  destination: Host,
+  workspaceId: string,
+  previousId: string,
+) {
+  let current = { host: source, workspaceId };
+  for (const target of [destination, source]) {
+    const nextId = randomUUID();
+    await prepareWorkspaceHandoff({
+      transferId: nextId,
+      workspaceId: current.workspaceId,
+      destinationParent: root,
+      continuationMode: "context",
+      source: current.host.client,
+      destination: target.client,
+    });
+    const next = await activateWorkspaceHandoff({
+      transferId: nextId,
+      sourceServerId: current.host.daemon.daemon.getServerId(),
+      getSource: () => current.host.client,
+      destination: target.client,
+    });
+    const nextAgentId = next.agentMappings[0].destinationAgentId;
+    const nextContext = await contextRecord(target, nextAgentId);
+    const nextHistory = await target.client.handoffGetConversationHistory({ agentId: nextAgentId });
+    expect(nextHistory.result?.segments).toHaveLength(2);
+    expect(nextHistory.result?.segments?.[0].id).toBe(previousId);
+    const nextPrompt = await prependHandoffContext({
+      cwd: nextContext.cwd,
+      context: nextContext.handoffContext,
+      prompt: "Keep going",
+    });
+    expect(nextPrompt).toContain("NEW provider session");
+    expect(nextPrompt).toContain("Earlier work");
+    expect(nextPrompt).toContain("New local work");
+    current = { host: target, workspaceId: next.workspaceId };
+  }
 }
 
 for (const continuationMode of ["native", "context"] as const) {
@@ -2089,7 +2236,7 @@ for (const continuationMode of ["native", "context"] as const) {
             sourceAgentIds: [agentId],
             manifestDigest: archive.manifest.entrypoint.sha256,
           });
-          expect(bundle.version).toBe(2);
+          expect(bundle.version).toBe(3);
           expect(bundle.conversations[0].pendingRestartNote).toEqual(notes);
         },
       );

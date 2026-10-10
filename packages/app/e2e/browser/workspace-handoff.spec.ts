@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { claudeProjectDirSync } from "../../../server/src/server/agent/providers/claude/project-dir";
 import { mkdir, mkdtemp, readFile, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { expect, test } from "../support/fixtures";
+import { expect, test, type Page } from "../support/fixtures";
 import { pressDirectNewTabShortcut } from "../support/helpers/launcher";
 import { openFileExplorer, openFileFromExplorer } from "../support/helpers/file-explorer";
 import { openChangesPanel } from "../support/helpers/workspace-tabs";
@@ -28,6 +28,77 @@ function hasRecoveredLocalWork() {
       return true;
   }
   return false;
+}
+
+async function inspectContinuedHistory(
+  page: Page,
+  host: Awaited<ReturnType<typeof hosts>>,
+  contextAgentId: string,
+  transferId: string,
+  configDir: string,
+  screenshotPath: string,
+) {
+  const { prepareWorkspaceHandoff, activateWorkspaceHandoff } =
+    await import("../../../client/dist/workspace-handoff.js");
+  const active = (await host.destinationClient.handoffGetDestinationStatus({ transferId })).result;
+  const importedId = active?.agentMappings.find(
+    (mapping) => mapping.sourceAgentId === contextAgentId,
+  )?.destinationAgentId;
+  if (!active || !importedId) throw new Error("Missing context destination");
+  // Open a synthetic local session without a provider turn, then seed its transcript.
+  // Real-provider continuation is covered separately in the authenticated spec.
+  expect((await host.destinationClient.listCommands(importedId)).error).toBeNull();
+  const current = (await host.destinationClient.fetchAgent(importedId))?.agent;
+  if (!current?.persistence) throw new Error("Missing new local session");
+  const project = claudeProjectDirSync(current.cwd, { configDir });
+  await mkdir(project, { recursive: true });
+  await writeFile(
+    path.join(project, `${current.persistence.sessionId}.jsonl`),
+    JSON.stringify({
+      type: "user",
+      uuid: randomUUID(),
+      sessionId: current.persistence.sessionId,
+      message: { role: "user", content: "New work on the VPS after the context export" },
+    }) + "\n",
+  );
+  const returnId = randomUUID();
+  await prepareWorkspaceHandoff({
+    transferId: returnId,
+    workspaceId: active.workspaceId,
+    destinationParent: host.destinationParent,
+    continuationMode: "native",
+    source: host.destinationClient,
+    destination: host.sourceClient,
+  });
+  const returned = await activateWorkspaceHandoff({
+    transferId: returnId,
+    sourceServerId: host.destination.serverId,
+    getSource: () => host.destinationClient,
+    destination: host.sourceClient,
+  });
+  const returnedId = returned.agentMappings.find(
+    (mapping) => mapping.sourceAgentId === importedId,
+  )?.destinationAgentId;
+  if (!returnedId) throw new Error("Missing returned conversation");
+  await page.goto(
+    `/h/${host.source.serverId}/workspace/${returned.workspaceId}?open=${encodeURIComponent(`agent:${returnedId}`)}`,
+  );
+  await page.getByTestId("handoff-history-open").click();
+  const content = page.getByTestId("handoff-history-content");
+  await expect(content).toContainText("Read-only history from Destination VPS");
+  await expect(content.getByTestId("user-message")).toContainText("New work on the VPS");
+  await content.getByTestId("handoff-history-part").click();
+  await page.getByTestId("handoff-history-part-1").click();
+  await expect(page.getByTestId("handoff-history-part-1")).toBeHidden();
+  await expect(content).toContainText("Read-only history from Source laptop");
+  await expect(content.getByTestId("user-message")).toContainText("Keep the prior workspace task");
+  await expect(content).not.toContainText("New work on the VPS");
+  await page.screenshot({ path: screenshotPath });
+  await content.getByTestId("handoff-history-part").click();
+  await page.getByTestId("handoff-history-part-2").click();
+  await expect(content).toContainText("Read-only history from Destination VPS");
+  await expect(content.getByTestId("user-message")).toContainText("New work on the VPS");
+  await expect(content.getByRole("textbox", { name: "Message agent..." })).toHaveCount(0);
 }
 
 test.describe("workspace handoff", () => {
@@ -156,6 +227,14 @@ test.describe("workspace handoff", () => {
             { sourceAgentId: native.id, mode: "native" },
             { sourceAgentId: context.id, mode: "context" },
           ]),
+        );
+        await inspectContinuedHistory(
+          page,
+          host,
+          context.id,
+          transferId,
+          path.join(fixtureDirectory, "destination"),
+          path.join(__dirname, `../../../../docs/qa-evidence/handoff-history-parts-${layout}.png`),
         );
       } catch (error) {
         await page.screenshot({ path: testInfo.outputPath("handoff-mixed-failure.png") });

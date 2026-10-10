@@ -9,6 +9,7 @@ import { AgentStreamView } from "@/agent-stream/view";
 import { AdaptiveModalSheet } from "@/components/adaptive-modal-sheet";
 import type { ContextBridge } from "@/components/ui/isolated-bottom-sheet-modal";
 import { Button } from "@/components/ui/button";
+import { SelectField } from "@/components/ui/select-field";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import {
   PaneProvider,
@@ -68,13 +69,18 @@ function HistoryContent({ serverId, agentId, onClose }: Props & { onClose: () =>
   const client = useSessionStore((state) => state.sessions[serverId]?.client ?? null);
   const hosts = useHosts();
   const [pageParams, setPageParams] = useState<PageParam[]>([FIRST_PAGE]);
+  const [selection, setSelection] = useState<{
+    id: string;
+    segments: NonNullable<History["segments"]>;
+  } | null>(null);
   const queries = useFetchQueries<History>(
     pageParams.map((pageParam) => ({
-      queryKey: ["handoff-history", serverId, agentId, pageParam],
+      queryKey: ["handoff-history", serverId, agentId, selection?.id, pageParam],
       queryFn: async () => {
         if (!client) throw new Error(t("handoff.historyConnect"));
         const reply = await client.handoffGetConversationHistory({
           agentId,
+          segmentId: selection?.id,
           ...pageParam,
           limit: 100,
         });
@@ -88,6 +94,16 @@ function HistoryContent({ serverId, agentId, onClose }: Props & { onClose: () =>
     })),
   );
   const history = queries[0].data;
+  // Keep the verified catalog available if loading another segment fails.
+  const segments = selection?.segments ?? history?.segments;
+  const selectSegment = useCallback(
+    (id: string) => {
+      if (!segments) return;
+      setSelection({ id, segments });
+      setPageParams([FIRST_PAGE]);
+    },
+    [segments],
+  );
   const openSourceTarget = useCallback(
     (target: WorkspaceTabTarget) => {
       if (!history) return;
@@ -118,7 +134,8 @@ function HistoryContent({ serverId, agentId, onClose }: Props & { onClose: () =>
   }, [history, pane, openSourceTarget]);
   const last = queries[queries.length - 1];
   const failed = queries.find((query) => query.error);
-  const streamId = `handoff-history:${agentId}`;
+  const segmentId = selection?.id ?? history?.segmentId;
+  const streamId = `handoff-history:${agentId}:${segmentId ?? "latest"}`;
   const stream = useMemo(
     () =>
       projectHistory(
@@ -171,6 +188,7 @@ function HistoryContent({ serverId, agentId, onClose }: Props & { onClose: () =>
     : "";
   return (
     <View style={styles.history} testID="handoff-history-content">
+      <HistorySegmentPicker segments={segments} value={segmentId} onChange={selectSegment} />
       {queries[0].isPending ? <Text style={styles.note}>{t("handoff.busy.loading")}</Text> : null}
       {history && context && historyPane ? (
         <>
@@ -183,6 +201,7 @@ function HistoryContent({ serverId, agentId, onClose }: Props & { onClose: () =>
           </View>
           <PaneProvider value={historyPane}>
             <AgentStreamView
+              key={streamId}
               agentId={streamId}
               serverId={history.sourceServerId}
               context={context}
@@ -212,6 +231,48 @@ function HistoryContent({ serverId, agentId, onClose }: Props & { onClose: () =>
           </Button>
         </View>
       ) : null}
+    </View>
+  );
+}
+
+function HistorySegmentPicker({
+  segments,
+  value,
+  onChange,
+}: {
+  segments: History["segments"];
+  value: string | undefined;
+  onChange: (id: string) => void;
+}) {
+  const { t } = useTranslation();
+  const hosts = useHosts();
+  if (!segments || segments.length < 2) return null;
+  const options = segments.map((segment, index) => ({
+    id: segment.id,
+    value: segment.id,
+    label: t("handoff.historyPartLabel", {
+      number: index + 1,
+      host:
+        hosts.find((host) => host.serverId === segment.sourceServerId)?.label ??
+        segment.sourceServerId,
+    }),
+    description: segment.sourceCwd,
+    testID: `handoff-history-part-${index + 1}`,
+  }));
+  return (
+    <View style={styles.segmentPicker}>
+      <SelectField
+        field={false}
+        size="sm"
+        label={t("handoff.historyPart")}
+        value={value ?? null}
+        selectedDisplay={options.find((option) => option.id === value) ?? null}
+        options={options}
+        onChange={onChange}
+        placeholder={t("handoff.historyPart")}
+        emptyText={t("handoff.historyUnavailable")}
+        triggerTestID="handoff-history-part"
+      />
     </View>
   );
 }
@@ -293,6 +354,7 @@ const styles = StyleSheet.create((theme) => ({
   history: { flex: 1, minHeight: 0 },
   sheetContent: { flex: 1, minHeight: 0 },
   origin: { gap: theme.spacing[2], paddingBottom: theme.spacing[3] },
+  segmentPicker: { paddingBottom: theme.spacing[3] },
   label: {
     fontFamily: theme.fontFamily.ui,
     fontSize: theme.fontSize.base,

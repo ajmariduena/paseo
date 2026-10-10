@@ -7,6 +7,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { HandoffArchiveStore, HANDOFF_ARCHIVE_LIMITS } from "./archive.js";
 import { readHandoffHistory, HANDOFF_HISTORY_MAX_BYTES } from "./history.js";
 import { readHandoffBundle } from "./bundle.js";
+import { readHistoryIndex, type HandoffHistorySegment } from "./history-segments.js";
 
 let root: string;
 let store: HandoffArchiveStore;
@@ -26,7 +27,13 @@ afterEach(async () => {
 async function readNoteBundle(
   version: number,
   notes?: Array<{ id: string; kind: string; label: string }>,
-  metadata: { mode?: "native" | "context"; origin?: unknown; history?: typeof blob } = {},
+  metadata: {
+    mode?: "native" | "context";
+    origin?: unknown;
+    history?: typeof blob;
+    previous?: HandoffHistorySegment[];
+    historyIndex?: typeof blob;
+  } = {},
 ) {
   const conversations = notes
     ? [
@@ -79,7 +86,7 @@ async function readNoteBundle(
   );
 }
 
-test.each([1, 2])("reads a workspace-only archive using bundle version %i", async (version) => {
+test.each([1, 2, 3])("reads a workspace-only archive using bundle version %i", async (version) => {
   expect((await readNoteBundle(version)).bundle.version).toBe(version);
 });
 
@@ -89,6 +96,62 @@ const originalContext = {
   sourceAgentId: "original-agent",
   sourceCwd: "/original",
 };
+const earlierSegment = {
+  origin: originalContext,
+  history: { ...blob, sha256: "e".repeat(64) },
+  session: blob,
+};
+
+test.each([
+  {
+    version: 2,
+    previous: [earlierSegment],
+    historyIndex: blob,
+    message: "require handoff bundle version 3",
+  },
+  {
+    version: 3,
+    previous: [earlierSegment],
+    message: "require handoff bundle version 3 and an index",
+  },
+  { version: 3, previous: [], historyIndex: blob, message: "has no earlier segments" },
+  {
+    version: 3,
+    previous: [earlierSegment, earlierSegment],
+    historyIndex: blob,
+    message: "Duplicate conversation history segment",
+  },
+  {
+    version: 3,
+    previous: Array.from({ length: 33 }, () => earlierSegment),
+    historyIndex: blob,
+    message: "Invalid workspace and conversation handoff manifest",
+  },
+])(
+  "refuses invalid segment inventories: $message",
+  async ({ version, previous, historyIndex, message }) => {
+    await expect(
+      readNoteBundle(version, [], { previous, historyIndex, history: blob }),
+    ).rejects.toThrow(message);
+  },
+);
+
+test("binds the history index to the verified segment order and provenance", async () => {
+  const file = path.join(root, "index.json");
+  const current = { ...earlierSegment, history: blob };
+  const segments = [earlierSegment, current];
+  await writeFile(file, JSON.stringify({ version: 1, segments }));
+  expect((await readHistoryIndex(file, segments)).segments).toEqual(segments);
+  await expect(readHistoryIndex(file, [current, earlierSegment])).rejects.toThrow(
+    "differs from its verified segments",
+  );
+  await expect(
+    readHistoryIndex(file, [
+      earlierSegment,
+      { ...current, origin: { ...originalContext, sourceServerId: "wrong-host" } },
+    ]),
+  ).rejects.toThrow("differs from its verified segments");
+});
 test.each([
   {
     metadata: { mode: "context" as const, history: blob },

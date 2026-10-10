@@ -33,7 +33,6 @@ import {
 import {
   readHandoffBundle,
   readTransferredConversation,
-  handoffConversationOrigin,
   type VerifiedHandoffBundle,
 } from "./bundle.js";
 import { fetchHandoffHistory } from "./history.js";
@@ -414,13 +413,7 @@ export class HandoffDestination {
           archive,
           entrypoint: content.bundle.workspace,
           destination: record.stagingCwd,
-          additionalFiles: handoffContextFiles({
-            content,
-            reservationId: record.reservationId,
-            agentMappings: record.agentMappings.filter(
-              (mapping) => handoffConversationMode(record, mapping.sourceAgentId) === "context",
-            ),
-          }),
+          additionalFiles: this.contextFiles(record, content),
         });
         const preparedConversations: DestinationHandoffStatus["preparedConversations"] = [];
         for (const conversation of content.bundle.conversations) {
@@ -703,11 +696,12 @@ export class HandoffDestination {
     const mapping = record?.agentMappings.find((item) => item.destinationAgentId === input.agentId);
     if (!record || record.state !== "active" || !record.binding || !mapping)
       fail("not_found", "No active transfer contains this destination conversation");
-    const { bundle, conversation, history } = await readTransferredConversation({
+    const { conversation, history, segments, segment } = await readTransferredConversation({
       store: this.options.archives,
       transferId: record.transferId,
       entrypoint: record.binding.manifest.entrypoint,
       sourceAgentId: mapping.sourceAgentId,
+      segmentId: input.segmentId,
       expected: {
         sourceServerId: record.sourceServerId,
         sourceWorkspaceId: record.sourceWorkspaceId,
@@ -723,7 +717,15 @@ export class HandoffDestination {
     return {
       mode: handoffConversationMode(record, mapping.sourceAgentId),
       provider: conversation.provider,
-      ...handoffConversationOrigin(bundle, conversation),
+      ...segment.origin,
+      segmentId: segment.history.sha256,
+      segments: segments.map((item) => ({
+        id: item.history.sha256,
+        sourceServerId: item.origin.sourceServerId,
+        sourceWorkspaceId: item.origin.sourceWorkspaceId,
+        sourceAgentId: item.origin.sourceAgentId,
+        sourceCwd: item.origin.sourceCwd,
+      })),
       title: conversation.title,
       timeline: {
         ...page,
@@ -925,12 +927,23 @@ export class HandoffDestination {
   }
 
   /** Re-export from the private verified archive, independently of editable workspace copies. */
+  hasConversation(agentId: string): boolean {
+    this.assertHealthy();
+    const transferId = this.identityOwners.get(agentId);
+    const record = transferId ? this.records.get(transferId) : undefined;
+    return (
+      record?.state === "active" &&
+      record.agentMappings.some((item) => item.destinationAgentId === agentId)
+    );
+  }
+
   async withConversationArchive<T>(
     agentId: string,
     consume: (input: {
       transferId: string;
       reservationId: string;
       sourceAgentId: string;
+      continuationMode: "native" | "context";
       archive: VerifiedHandoffArchive;
       content: VerifiedHandoffBundle;
     }) => Promise<T>,
@@ -946,6 +959,7 @@ export class HandoffDestination {
         transferId: record.transferId,
         reservationId: record.reservationId,
         sourceAgentId: mapping.sourceAgentId,
+        continuationMode: handoffConversationMode(record, mapping.sourceAgentId),
         archive,
         content: await this.readBundle(record, archive),
       }),
@@ -960,6 +974,23 @@ export class HandoffDestination {
     });
   }
 
+  private contextFiles(record: DestinationHandoffStatus, content: VerifiedHandoffBundle) {
+    const withPrevious = new Set(
+      content.bundle.conversations
+        .filter((item) => item.previous?.length)
+        .map((item) => item.sourceAgentId),
+    );
+    return handoffContextFiles({
+      content,
+      reservationId: record.reservationId,
+      agentMappings: record.agentMappings.filter(
+        (mapping) =>
+          handoffConversationMode(record, mapping.sourceAgentId) === "context" ||
+          withPrevious.has(mapping.sourceAgentId),
+      ),
+    });
+  }
+
   private async verifyContents(
     record: DestinationHandoffStatus,
     archive: VerifiedHandoffArchive,
@@ -969,13 +1000,7 @@ export class HandoffDestination {
       archive,
       entrypoint: content.bundle.workspace,
       cwd: record.stagingCwd,
-      additionalFiles: handoffContextFiles({
-        content,
-        reservationId: record.reservationId,
-        agentMappings: record.agentMappings.filter(
-          (mapping) => handoffConversationMode(record, mapping.sourceAgentId) === "context",
-        ),
-      }),
+      additionalFiles: this.contextFiles(record, content),
     });
     for (const mapping of record.agentMappings) {
       const manifest = content.sessions.get(mapping.sourceAgentId);

@@ -19,12 +19,17 @@ import {
   type ClaudeSessionArchive,
 } from "../agent/providers/claude/handoff.js";
 
-export const HandoffHistoryOriginSchema = z.object({
-  sourceServerId: z.string().min(1).max(512),
-  sourceWorkspaceId: z.string().min(1).max(512),
-  sourceAgentId: z.string().min(1).max(512),
-  sourceCwd: z.string().min(1).max(8192),
-});
+import {
+  HandoffHistoryOriginSchema,
+  HandoffHistorySegmentSchema,
+  HANDOFF_PREVIOUS_SEGMENTS_MAX,
+  HANDOFF_HISTORY_INDEX_MAX_BYTES,
+  validateHistorySegments,
+  readHistoryIndex,
+  type HandoffHistorySegment,
+} from "./history-segments.js";
+export { HandoffHistoryOriginSchema } from "./history-segments.js";
+
 const ConversationSchema = z.object({
   sourceAgentId: z.string().min(1).max(512),
   title: z.string().max(4096).nullable(),
@@ -34,10 +39,12 @@ const ConversationSchema = z.object({
   history: HandoffBlobSchema.optional(),
   pendingRestartNote: z.array(RestartCancelledWorkSchema).max(1024).optional(),
   origin: HandoffHistoryOriginSchema.optional(),
+  previous: z.array(HandoffHistorySegmentSchema).max(HANDOFF_PREVIOUS_SEGMENTS_MAX).optional(),
+  historyIndex: HandoffBlobSchema.optional(),
 });
 const BundleSchema = z.object({
-  // COMPAT(handoffBundleV1): added in v0.11.1, remove after 2027-04-10 once retained transfers use v2.
-  version: z.union([z.literal(1), z.literal(2)]),
+  // COMPAT(handoffBundleLegacy): added in v0.11.1, remove after 2027-04-10 once retained transfers use v3.
+  version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
   kind: z.literal("workspace_handoff"),
   sourceServerId: z.string().min(1).max(512),
   sourceWorkspaceId: z.string().min(1).max(512),
@@ -54,6 +61,28 @@ export interface CapturedConversation {
   pendingRestartNote?: RestartCancelledWork[];
   mode?: "native" | "context";
   origin?: z.infer<typeof HandoffHistoryOriginSchema>;
+  previous?: CapturedPreviousSegment[];
+}
+
+export interface CapturedPreviousSegment {
+  segment: HandoffHistorySegment;
+  manifest: ClaudeSessionArchive;
+  blobsDirectory: string;
+}
+
+export function conversationHistorySegments(
+  bundle: HandoffBundle,
+  conversation: HandoffBundle["conversations"][number],
+): HandoffHistorySegment[] {
+  if (!conversation.history) throw new Error("Conversation has no captured readable history");
+  return [
+    ...(conversation.previous ?? []),
+    {
+      origin: handoffConversationOrigin(bundle, conversation),
+      history: conversation.history,
+      session: conversation.session,
+    },
+  ];
 }
 
 export function handoffConversationOrigin(
@@ -87,6 +116,7 @@ export interface HandoffBundleExpectation {
 export interface VerifiedHandoffBundle {
   bundle: HandoffBundle;
   sessions: ReadonlyMap<string, ClaudeSessionArchive>;
+  previousSessions: ReadonlyMap<string, ClaudeSessionArchive>;
 }
 export class HandoffBundleError extends Error {
   constructor(
@@ -112,7 +142,7 @@ function parseBundle(value: unknown): HandoffBundle {
   for (const conversation of bundle.conversations) {
     if (
       conversation.mode === "context" &&
-      (bundle.version !== 2 || !conversation.origin || !conversation.history)
+      (bundle.version === 1 || !conversation.origin || !conversation.history)
     )
       reject(
         "invalid_artifact",
@@ -120,6 +150,16 @@ function parseBundle(value: unknown): HandoffBundle {
       );
     if (conversation.mode === "native" && conversation.origin)
       reject("invalid_artifact", "Native history cannot replace its source identity");
+    if (conversation.previous?.length) {
+      if (bundle.version !== 3 || !conversation.historyIndex)
+        reject(
+          "invalid_artifact",
+          "Earlier conversation segments require handoff bundle version 3 and an index",
+        );
+      validateHistorySegments(conversationHistorySegments(bundle, conversation));
+    } else if (conversation.historyIndex) {
+      reject("invalid_artifact", "Conversation history index has no earlier segments");
+    }
     const noteIds = conversation.pendingRestartNote?.map((note) => note.id) ?? [];
     if (new Set(noteIds).size !== noteIds.length)
       reject("invalid_artifact", "Duplicate pending restart note in handoff");
@@ -153,6 +193,18 @@ export async function packHandoffArchive(input: PackInput): Promise<HandoffArchi
       history = await describeFile(conversation.historyPath, HANDOFF_HISTORY_MAX_BYTES);
       add(history, conversation.historyPath);
     }
+    for (const previous of conversation.previous ?? []) {
+      add(
+        previous.segment.session,
+        path.join(previous.blobsDirectory, previous.segment.session.sha256),
+      );
+      add(
+        previous.segment.history,
+        path.join(previous.blobsDirectory, previous.segment.history.sha256),
+      );
+      for (const file of previous.manifest.files)
+        add(file.blob, path.join(previous.blobsDirectory, file.blob.sha256));
+    }
     conversations.push({
       sourceAgentId: conversation.sourceAgentId,
       title: conversation.title,
@@ -161,22 +213,35 @@ export async function packHandoffArchive(input: PackInput): Promise<HandoffArchi
       session: descriptor,
       ...(history ? { history } : {}),
       ...(conversation.origin ? { origin: conversation.origin } : {}),
+      ...(conversation.previous?.length
+        ? { previous: conversation.previous.map((item) => item.segment) }
+        : {}),
       ...(conversation.pendingRestartNote?.length
         ? { pendingRestartNote: conversation.pendingRestartNote }
         : {}),
     });
   }
-  const bundle = parseBundle({
-    version: 2,
+  const candidate: HandoffBundle = {
+    version: 3,
     kind: "workspace_handoff",
     sourceServerId: input.sourceServerId,
     sourceWorkspaceId: input.sourceWorkspaceId,
     sourceCwd: input.sourceCwd,
     workspace: workspace.manifest.entrypoint,
     conversations,
-  });
+  };
   const temporary = await mkdtemp(path.join(os.tmpdir(), "paseo-handoff-bundle-"));
   try {
+    for (const [index, conversation] of conversations.entries()) {
+      if (!conversation.previous?.length) continue;
+      const segments = conversationHistorySegments(candidate, conversation);
+      validateHistorySegments(segments);
+      const indexPath = path.join(temporary, `history-${index}.json`);
+      await writeJournal(indexPath, { version: 1, segments });
+      conversation.historyIndex = await describeFile(indexPath, HANDOFF_HISTORY_INDEX_MAX_BYTES);
+      add(conversation.historyIndex, indexPath);
+    }
+    const bundle = parseBundle(candidate);
     const manifestPath = path.join(temporary, "handoff.json");
     await writeJournal(manifestPath, bundle);
     const entrypoint = await describeFile(manifestPath);
@@ -215,6 +280,7 @@ export async function readHandoffBundle(
   const inventory = new Map(archive.manifest.blobs.map((blob) => [blob.sha256, blob.size]));
   requireBlob(bundle.workspace);
   const sessions = new Map<string, ClaudeSessionArchive>();
+  const previousSessions = new Map<string, ClaudeSessionArchive>();
   let metadataBytes = bytes.length;
   let artifactCount = 0;
   for (const conversation of bundle.conversations) {
@@ -237,8 +303,34 @@ export async function readHandoffBundle(
       reject("invalid_artifact", "Too many conversation artifacts in handoff");
     for (const file of session.files) requireBlob(file.blob);
     sessions.set(conversation.sourceAgentId, session);
+    for (const segment of conversation.previous ?? []) {
+      requireBlob(segment.history);
+      requireBlob(segment.session);
+      metadataBytes += segment.session.size;
+      if (metadataBytes > 20 * 1024 * 1024)
+        reject("invalid_artifact", "Conversation manifests exceed the handoff metadata limit");
+      await readHandoffHistory(
+        path.join(archive.blobsDirectory, segment.history.sha256),
+        segment.origin.sourceAgentId,
+      );
+      const previous = await readClaudeSessionManifest(
+        path.join(archive.blobsDirectory, segment.session.sha256),
+      );
+      artifactCount += previous.files.length;
+      if (artifactCount > 100_000)
+        reject("invalid_artifact", "Too many conversation artifacts in handoff");
+      for (const file of previous.files) requireBlob(file.blob);
+      previousSessions.set(segment.session.sha256, previous);
+    }
+    if (conversation.historyIndex) {
+      requireBlob(conversation.historyIndex);
+      await readHistoryIndex(
+        path.join(archive.blobsDirectory, conversation.historyIndex.sha256),
+        conversationHistorySegments(bundle, conversation),
+      );
+    }
   }
-  return { bundle, sessions };
+  return { bundle, sessions, previousSessions };
   function requireBlob(blob: HandoffBlob): void {
     if (inventory.get(blob.sha256) !== blob.size)
       reject("invalid_artifact", "Handoff references content outside its verified archive");
@@ -264,6 +356,7 @@ export async function readTransferredConversation(input: {
   entrypoint: HandoffBlob;
   expected: HandoffBundleExpectation;
   sourceAgentId: string;
+  segmentId?: string;
 }) {
   if (input.entrypoint.sha256 !== input.expected.manifestDigest)
     reject("invalid_artifact", "Archive differs from the destination reservation");
@@ -279,13 +372,19 @@ export async function readTransferredConversation(input: {
   );
   if (!conversation?.history)
     reject("invalid_artifact", "This transfer does not contain readable history");
+  const segments = conversationHistorySegments(bundle, conversation);
+  const segment = input.segmentId
+    ? segments.find((item) => item.history.sha256 === input.segmentId)
+    : segments.at(-1);
+  if (!segment)
+    reject("invalid_artifact", "Requested history segment does not belong to this conversation");
   const history = parseHandoffHistory(
     await input.store.readVerifiedBlob(
       input.transferId,
-      conversation.history,
+      segment.history,
       HANDOFF_HISTORY_MAX_BYTES,
     ),
-    conversation.origin?.sourceAgentId ?? input.sourceAgentId,
+    segment.origin.sourceAgentId,
   );
-  return { bundle, conversation, history };
+  return { bundle, conversation, history, segments, segment };
 }

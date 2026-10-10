@@ -26,6 +26,8 @@ export const zhCN: TranslationResources = {
     history: "之前的对话",
     historyConnect: "请连接目标主机以查看此历史记录。",
     historyUnavailable: "转移的历史记录不可用。",
+    historyPart: "对话片段",
+    historyPartLabel: "{{number}} · {{host}}",
     historyOrigin: "来自 {{host}} 的只读历史记录",
     historyNotice: "文件和链接资源属于源主机，可能无法使用。",
     continuedNative: "继续原生会话",

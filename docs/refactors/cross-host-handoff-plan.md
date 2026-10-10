@@ -279,8 +279,8 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   generations, block subsequent turns and refuse handoff certification. Native carried prompts
   retain their UUID even without a caller message ID, and capture checks its presence.
   Unsent restart notes are now part of the verified bundle and remain pending after native or
-  context activation and restart. Source release refuses a changed note set. Version 2 bundles
-  make older readers refuse this metadata; version 1 archives remain readable. See the
+  context activation and restart. Source release refuses a changed note set. Versioned bundles
+  make older readers refuse unsupported metadata; retained archives remain readable. See the
   [carried-context contract](../data-model.md#carried-context-acknowledgement).
   Artifact-based recovery of uncertain completion, remaining manager descendants, record revision
   guards, presentation coverage and durable process-stop recovery remain open under the
@@ -443,8 +443,12 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   artifacts and pending notes after visible context copies are deleted or ignored. Review offers
   context mode, and staging refuses a forced native choice. Restart and release checks reject
   changed context or damaged archived history; see [checkpoint evidence](../qa-evidence/handoff-checkpoint-recovery.txt).
-  A conversation with both earlier context and new native history still refuses re-export until
-  those histories can be combined. An opened runtime without a saved session also requires recovery.
+  After new local work, the archive retains earlier history and artifacts as separate segments
+  with their original host and paths. Native activation resumes the current session and supplies
+  a brief pointing to the verified history index. A same-session native return preserves the
+  earlier segments without adding a duplicate. The previous-conversation sheet selects a segment
+  before paginating or opening source links. An opened runtime without a saved session still
+  requires recovery. See the [carried-context contract](../data-model.md#carried-context-acknowledgement).
   Interrupted publication from older journals remains idempotent. Provider and real-daemon tests
   cover changed configuration, different roots/versions in one workspace, final metadata at close,
   legacy recovery and credential-environment preservation; see [runtime evidence](../qa-evidence/handoff-runtime.txt).

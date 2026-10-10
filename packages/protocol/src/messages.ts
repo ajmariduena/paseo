@@ -1,6 +1,7 @@
 import {
   HandoffWorkspaceStateSchema,
   HandoffGetConversationHistoryRequestSchema,
+  HandoffHistorySegmentMetadataSchema,
   HandoffListDestinationRequestSchema,
   HandoffFindSourceRequestSchema,
   HandoffPreviewSourceRequestSchema,
@@ -5174,6 +5175,11 @@ export const HandoffGetConversationHistoryResponseSchema = z.object({
         sourceAgentId: z.string(),
         sourceCwd: z.string(),
         title: z.string().nullable(),
+        segmentId: z
+          .string()
+          .regex(/^[a-f0-9]{64}$/)
+          .optional(),
+        segments: z.array(HandoffHistorySegmentMetadataSchema).max(33).optional(),
         timeline: FetchAgentTimelineResponseMessageSchema.shape.payload.omit({
           requestId: true,
           agentId: true,

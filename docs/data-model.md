@@ -134,15 +134,19 @@ handoff certification, including after restart; reopening a runtime is not deliv
 Recovering that uncertainty from provider artifacts remains implementation work.
 
 Unsent restart notes travel in the verified handoff bundle and stay pending in the destination
-record. Activation does not acknowledge delivery. New bundles use version 2 so older
-readers reject them explicitly; version 1 archives remain readable. Source release checks that the
+record. Activation does not acknowledge delivery. New bundles use version 3 so older
+readers reject unsupported history semantics explicitly; version 1 and 2 archives remain readable. Source release checks that the
 captured note set is unchanged.
 
 Before a destination opens its first local runtime, another context transfer uses the private
 verified archive and retains the original history identity. Workspace copies may be edited,
 deleted or ignored; they are not the authority for re-export. Never resume those historical native
-artifacts as the destination's own session. Once new local history exists, it must travel with the
-earlier context. Combining those histories remains implementation work, so that transfer refuses.
+artifacts as the destination's own session. After local work, retain the earlier history and raw
+artifacts as separate segments with their original host, workspace and conversation identity.
+Only the current native session is eligible for resume. The private archive owns the flat segment
+inventory; its verified index binds the workspace copies. The continuation brief points to that
+index even in native mode. Repeated native transfers of the same session must not duplicate it.
+Refuse histories beyond the segment limit instead of silently dropping older work.
 
 ### Nested: SerializableConfig
 

@@ -23,6 +23,8 @@ export const en = {
     history: "Previous conversation",
     historyConnect: "Connect to the destination host to read this history.",
     historyUnavailable: "Transferred history is unavailable.",
+    historyPart: "Conversation part",
+    historyPartLabel: "{{number}} · {{host}}",
     historyOrigin: "Read-only history from {{host}}",
     historyNotice: "Files and linked resources refer to the source host and may be unavailable.",
     continuedNative: "Native session continued",

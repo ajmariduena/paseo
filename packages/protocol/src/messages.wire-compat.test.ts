@@ -15,7 +15,82 @@ import {
   MutableDaemonConfigPatchSchema,
   MutableDaemonConfigSchema,
   validateQuickPrompts,
+  HandoffGetConversationHistoryResponseSchema,
 } from "./messages.js";
+
+test.each([undefined, "a".repeat(64)])(
+  "handoff history accepts optional segment selection: %s",
+  (segmentId) => {
+    const request = {
+      type: "workspace.handoff.get_conversation_history.request",
+      requestId: "history",
+      agentId: "agent",
+      ...(segmentId ? { segmentId } : {}),
+    };
+    expect(SessionInboundMessageSchema.parse(request)).toEqual(request);
+    const result = {
+      mode: "native",
+      provider: "claude",
+      sourceServerId: "source",
+      sourceWorkspaceId: "workspace",
+      sourceAgentId: "agent",
+      sourceCwd: "/workspace",
+      title: null,
+      timeline: {
+        direction: "tail",
+        projection: "projected",
+        epoch: "epoch",
+        reset: false,
+        staleCursor: false,
+        gap: false,
+        window: { minSeq: 0, maxSeq: 0, nextSeq: 1 },
+        entries: [],
+        startCursor: null,
+        endCursor: null,
+        hasOlder: false,
+        hasNewer: false,
+      },
+      ...(segmentId
+        ? {
+            segmentId,
+            segments: [
+              {
+                id: segmentId,
+                sourceServerId: "source",
+                sourceWorkspaceId: "workspace",
+                sourceAgentId: "agent",
+                sourceCwd: "/workspace",
+              },
+            ],
+          }
+        : {}),
+    };
+    const response = {
+      type: "workspace.handoff.get_conversation_history.response",
+      payload: { requestId: "history", result, error: null },
+    };
+    expect(HandoffGetConversationHistoryResponseSchema.parse(response)).toEqual(response);
+    const legacy = HandoffGetConversationHistoryResponseSchema.shape.payload.shape.result
+      .unwrap()
+      .omit({ segmentId: true, segments: true });
+    const { segmentId: _id, segments: _segments, ...legacyResult } = result;
+    expect(legacy.parse(result)).toEqual(legacyResult);
+  },
+);
+
+test.each(["../history", "f".repeat(65), "g".repeat(64)])(
+  "refuses invalid history segment selectors: %s",
+  (segmentId) => {
+    expect(
+      SessionInboundMessageSchema.safeParse({
+        type: "workspace.handoff.get_conversation_history.request",
+        requestId: "history",
+        agentId: "agent",
+        segmentId,
+      }).success,
+    ).toBe(false);
+  },
+);
 
 test.each([undefined, "This conversation contains exported context"])(
   "handoff review accepts native availability metadata without requiring it: %s",

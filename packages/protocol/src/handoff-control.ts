@@ -10,8 +10,17 @@ export const HandoffGetConversationHistoryRequestSchema = z.object({
   type: z.literal("workspace.handoff.get_conversation_history.request"),
   requestId: z.string(),
   agentId: z.string().min(1),
+  segmentId: HandoffDigestSchema.optional(),
   cursor: z.object({ epoch: z.string().uuid(), seq: z.number().int().positive() }).optional(),
   limit: z.number().int().min(1).max(200).optional(),
+});
+
+export const HandoffHistorySegmentMetadataSchema = z.object({
+  id: HandoffDigestSchema,
+  sourceServerId: z.string().min(1).max(512),
+  sourceWorkspaceId: z.string().min(1).max(512),
+  sourceAgentId: z.string().min(1).max(512),
+  sourceCwd: z.string().min(1).max(8192),
 });
 
 const HandoffConversationIdentitySchema = z.object({

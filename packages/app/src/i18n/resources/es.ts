@@ -27,6 +27,8 @@ export const es: TranslationResources = {
     history: "Conversación anterior",
     historyConnect: "Conecta el host de destino para leer este historial.",
     historyUnavailable: "El historial transferido no está disponible.",
+    historyPart: "Tramo de la conversación",
+    historyPartLabel: "{{number}} · {{host}}",
     historyOrigin: "Historial de solo lectura de {{host}}",
     historyNotice:
       "Los archivos y recursos enlazados pertenecen al host de origen y podrían no estar disponibles.",

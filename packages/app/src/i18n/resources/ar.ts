@@ -26,6 +26,8 @@ export const ar: TranslationResources = {
     history: "المحادثة السابقة",
     historyConnect: "اتصل بالمضيف الوجهة لقراءة هذا السجل.",
     historyUnavailable: "السجل المنقول غير متاح.",
+    historyPart: "جزء المحادثة",
+    historyPartLabel: "{{number}} · {{host}}",
     historyOrigin: "سجل للقراءة فقط من {{host}}",
     historyNotice: "الملفات والموارد المرتبطة تخص المضيف المصدر وقد لا تكون متاحة.",
     continuedNative: "تمت متابعة الجلسة الأصلية",

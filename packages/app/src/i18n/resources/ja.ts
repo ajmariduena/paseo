@@ -26,6 +26,8 @@ export const ja: TranslationResources = {
     history: "以前の会話",
     historyConnect: "履歴を読むには転送先ホストに接続してください。",
     historyUnavailable: "転送した履歴を利用できません。",
+    historyPart: "会話の区間",
+    historyPartLabel: "{{number}} · {{host}}",
     historyOrigin: "{{host}} の読み取り専用履歴",
     historyNotice: "ファイルとリンク先のリソースは転送元ホストに属し、利用できない場合があります。",
     continuedNative: "ネイティブセッションを継続",

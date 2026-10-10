@@ -67,23 +67,13 @@ export function createHandoffPublication(stores: PublicationStores): HandoffPubl
           (item) => item.sourceAgentId === mapping.sourceAgentId,
         );
         if (!exported) throw new Error("Captured conversation is missing");
-        if (conversation.mode === "context" && !exported.history)
-          throw new Error("Captured history is missing");
-        const origin = handoffConversationOrigin(bundle, exported);
-        const handoffContext =
-          conversation.mode === "context"
-            ? {
-                sourceServerId: origin.sourceServerId,
-                sourceAgentId: origin.sourceAgentId,
-                sourceCwd: origin.sourceCwd,
-                directory: handoffContextDirectory(
-                  record.reservationId,
-                  mapping.destinationAgentId,
-                ),
-                history: exported.history,
-                pending: true,
-              }
-            : undefined;
+        const handoffContext = publishedContext(
+          record,
+          bundle,
+          exported,
+          mapping.destinationAgentId,
+          conversation.mode,
+        );
         await stores.agents.installHandoffRecord(
           parseStoredAgentRecord({
             id: mapping.destinationAgentId,
@@ -124,5 +114,28 @@ export function createHandoffPublication(stores: PublicationStores): HandoffPubl
       for (const mapping of record.agentMappings)
         await stores.agentManager.publishStoredAgent(mapping.destinationAgentId);
     },
+  };
+}
+
+function publishedContext(
+  record: DestinationHandoffStatus,
+  bundle: HandoffBundle,
+  exported: HandoffBundle["conversations"][number],
+  destinationAgentId: string,
+  mode: "native" | "context",
+) {
+  if (mode !== "context" && !exported.previous?.length) return undefined;
+  if (!exported.history) throw new Error("Captured history is missing");
+  const origin = handoffConversationOrigin(bundle, exported);
+  return {
+    sourceServerId: origin.sourceServerId,
+    sourceAgentId: origin.sourceAgentId,
+    sourceCwd: origin.sourceCwd,
+    directory: handoffContextDirectory(record.reservationId, destinationAgentId),
+    history: exported.history,
+    ...(exported.historyIndex ? { historyIndex: exported.historyIndex } : {}),
+    // COMPAT(handoffContextMode): added in v0.11.1, remove after 2027-04-10 once retained v1/v2 publications finish.
+    ...(bundle.version === 3 ? { continuationMode: mode } : {}),
+    pending: true,
   };
 }
