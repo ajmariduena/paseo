@@ -2128,9 +2128,9 @@ interface ClaudeManagedProcessOptions {
 }
 
 interface ClaudeManagedProcess {
-  register: () => Promise<ManagedProcessRecord>;
   record: Promise<ManagedProcessRecord>;
   ready: Promise<void>;
+  exited: Promise<void>;
 }
 
 interface ClaudeQueryResources {
@@ -3542,17 +3542,21 @@ class ClaudeAgentSession implements AgentSession {
             resource.requiresNaturalDrain = true;
             if (this.managedProcesses && process.platform !== "win32") {
               const registry = this.managedProcesses;
-              const register = () =>
-                launch.ready.then(() =>
-                  this.recordQueryProcess({ child, command: launch.command, registry }),
-                );
-              const record = register();
-              const ready = record.then(() => {
+              const exited = new Promise<void>((resolve) => child.once("close", () => resolve()));
+              const record = launch.ready.then(() =>
+                this.recordQueryProcess({ child, command: launch.command, registry }),
+              );
+              const ready = record.then(async (registered) => {
                 if (this.closed || resource.closing || !resource.query)
+                  throw new Error("Claude session closed before process launch");
+                if (child.exitCode !== null || child.signalCode !== null)
+                  throw new Error("Claude bootstrap exited before process launch");
+                await registry.admitLaunch(registered.id);
+                if (this.closed || resource.closing)
                   throw new Error("Claude session closed before process launch");
                 return launch.start();
               });
-              resource.managedProcess = { register, record, ready };
+              resource.managedProcess = { record, ready, exited };
               void ready.catch((err) =>
                 this.logger.error({ err }, "Claude process registration failed"),
               );
@@ -3601,6 +3605,7 @@ class ClaudeAgentSession implements AgentSession {
       args: [],
       metadata: { agentId: this.agentId, cwd: this.config.cwd },
       processTree,
+      launchGated: true,
     });
   }
 
@@ -4281,22 +4286,22 @@ class ClaudeAgentSession implements AgentSession {
     // Inventory descendants before the SDK can reap their root process.
     if (resource.child && resource.managedProcess && this.managedProcesses) {
       const managed = resource.managedProcess;
-      const recordId = await managed.record
-        .catch((error: unknown) => {
-          // A publication failure already owns an ID. Earlier inspection failures
-          // can retry the same gated child; never retry its rejected launch promise.
-          if (error instanceof ManagedProcessPublicationError) throw error;
-          managed.record = managed.register();
-          return managed.record;
-        })
-        .then(
-          (record) => record.id,
-          (error: unknown) => {
-            if (error instanceof ManagedProcessPublicationError) return error.recordId;
-            throw error;
-          },
-        );
-      await this.managedProcesses.stop(recordId);
+      const child = resource.child;
+      const recordId = await managed.record.then(
+        (record) => record.id,
+        (error: unknown) =>
+          error instanceof ManagedProcessPublicationError ? error.recordId : null,
+      );
+      if (recordId === null) {
+        // Registration failed before assigning an ID. Its dependent launch could
+        // not dispatch, so only the trusted, childless bootstrap can have run.
+        // Join that native handle even if process-table inspection is unavailable.
+        if (child.pid && child.exitCode === null && child.signalCode === null)
+          child.kill("SIGKILL");
+        await withTimeout(managed.exited, 3_000, "Claude bootstrap did not finish closing");
+      } else {
+        await this.managedProcesses.stop(recordId);
+      }
       resource.child = null;
     } else if (resource.child) {
       const result = await this.processTerminator(resource.child, {

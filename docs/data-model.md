@@ -700,9 +700,11 @@ Every `watch_pull_request` watch in one file; each `PullRequestWatchStore` metho
 ## Managed Process Store
 
 Keep OS process ownership in `runtime/managed-processes/`, alongside the existing helper records.
-Register a gated Claude launcher durably before releasing its command, arguments and environment.
-Only the trusted bootstrap can run before publication; losing its control channel without a complete
-launch message ends it. Closing during publication or repairing failed registration must stop that
+Register a Claude launcher with a closed gate, then durably admit it before releasing its command,
+arguments and environment. Before admission only a trusted, childless bootstrap can run. Its durable
+gated state permits cleanup after it exits, including an interrupted inspection; admission removes
+that exemption before provider execution becomes possible. Losing the control channel without a complete
+launch message ends the bootstrap. Closing during publication or repairing failed registration must stop that
 bootstrap without opening the gate. Linux replaces that root with the provider. macOS retains a
 Node supervisor until its child exits: going through a protected `env` executable would purge
 `DYLD_*` settings. That extra resident process belongs in the platform's memory budget. Provider
@@ -711,7 +713,7 @@ signal sends the child a duplicate and can interrupt its cleanup handler.
 
 Claude POSIX queries record a bounded tree with a boot identity and process birth identities;
 SDK arguments and command lines are excluded because they can contain inline credentials.
-A launch snapshot does not certify closure: the owner must still match when shutdown first
+After admission a launch snapshot does not certify closure: the owner must still match when shutdown first
 observes its tree. Persist that closing inventory before sending signals. Startup recovery can
 then finish an interrupted stop even if the original owner has exited.
 
@@ -719,7 +721,7 @@ Publish an inspection obligation before reading the process table, and synchroni
 inventory before acknowledging it. Failed registration retains its assigned identity and exact
 candidate, so closure can repair publication and stop that process without launching another query.
 If the inspection marker itself failed, the live store knows inspection never started and can retry;
-after a crash, a pending marker does not carry that evidence. Never clear it from a smaller current
+after a crash, a pending marker for an admitted launch does not carry that evidence. Never clear it from a smaller current
 process list. A missing record does not prove exit; after a confirmed stop the provider retains that
 outcome while retrying its remaining SDK cleanup. A different OS boot proves the prior processes are
 gone without signalling reused PIDs. Process exit does not repair a conversation's unresolved persistence obligations.

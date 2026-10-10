@@ -451,14 +451,18 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   process regression found that an exited root could leave a detached child alive while termination
   reported success. Claude POSIX queries now use the existing managed-process ledger, excluding
   credential-bearing SDK arguments. Shutdown durably observes the tree while its owner still
-  matches; startup can finish that interrupted stop after the owner exits. Launch-only snapshots,
+  matches; startup can finish that interrupted stop after the owner exits. Snapshots of admitted launches,
   interrupted inspections and failed publication cannot certify closure. A new OS boot clears old
   process identities without signalling current PIDs. See the [store contract](../data-model.md#managed-process-store)
   and [process proof evidence](../qa-evidence/handoff-checkpoint-recovery.txt). The Claude spawn suite
   now covers durable launch admission, parent death before admission, closure during publication,
-  failed-registration cleanup, SDK construction failure after spawning, retry of initial inspection
+  failed-registration cleanup, SDK construction failure after spawning, initial inspection failure
   and preservation of process identity, streams and executable wrappers. Failed construction retains
   its process until cleanup succeeds and prevents a replacement from bypassing that cleanup.
+  The durable gated state permits recovery of a bootstrap that exited before admission; publication
+  of admission removes that exemption before dispatch. Registration failures without an assigned record
+  stop the unused bootstrap and join its close without requiring inspection recovery. Unconfirmed
+  exit retains cleanup for retry; lost roots after admission still refuse certification.
   macOS now uses a registered supervisor to retain its provider environment; the same suite runs in
   the macOS CI job. Local evidence exercises both launch strategies with harmless Linux processes,
   including cold registry recovery, SDK signals, forced shutdown and memory overhead. Native macOS

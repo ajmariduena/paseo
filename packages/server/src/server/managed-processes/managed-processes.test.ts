@@ -35,6 +35,133 @@ afterEach(async () => {
 });
 
 describe("managed process registry", () => {
+  test.runIf(process.platform !== "win32")(
+    "handoff cold recovery removes a gated launch that exited before admission",
+    async () => {
+      tempHome = await mkdtemp(path.join(tmpdir(), "paseo-managed-gated-exit-"));
+      const child = spawn(
+        process.execPath,
+        ["-e", "process.stdout.write('ready'); setInterval(() => {}, 1000)"],
+        {
+          stdio: ["ignore", "pipe", "ignore"],
+        },
+      );
+      const exited = once(child, "exit");
+      const options = {
+        paseoHome: tempHome,
+        processTable: createSystemManagedProcessTable(),
+        terminateProcess: terminateWithTreeKill,
+        logger: createTestLogger(),
+      };
+      try {
+        await once(child.stdout!, "data");
+        const registry = createManagedProcessRegistry(options);
+        const record = await registry.record({
+          owner: { provider: "claude", kind: "query" },
+          pid: child.pid!,
+          command: "claude",
+          args: [],
+          processTree: await captureProcessTree(child),
+          launchGated: true,
+        });
+        child.kill("SIGKILL");
+        await exited;
+        const recovered = createManagedProcessRegistry(options);
+        expect(await recovered.reapStale()).toMatchObject({ checked: 1, removed: 1, errors: [] });
+        expect(await recovered.list()).toEqual([]);
+        await expect(recovered.admitLaunch(record.id)).rejects.toThrow(
+          "Managed process record is missing",
+        );
+      } finally {
+        child.kill("SIGKILL");
+        await exited;
+      }
+    },
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "handoff admission removes the exited-bootstrap exemption across restart",
+    async () => {
+      tempHome = await mkdtemp(path.join(tmpdir(), "paseo-managed-admitted-exit-"));
+      const signals: number[] = [];
+      const options = {
+        paseoHome: tempHome,
+        processTable: new FakeProcessTable([]),
+        terminateProcess: terminateWithTreeKill,
+        logger: createTestLogger(),
+        processTree: {
+          bootId: async () => "boot",
+          list: async () => [],
+          signal: (pid: number) => {
+            signals.push(pid);
+          },
+        },
+      };
+      const registry = createManagedProcessRegistry(options);
+      const record = await registry.record({
+        owner: { provider: "claude", kind: "query" },
+        pid: 4101,
+        command: "claude",
+        args: [],
+        processTree: {
+          bootId: "boot",
+          entries: [{ pid: 4101, parentPid: 1, startedAt: "root", exited: false }],
+        },
+        launchGated: true,
+      });
+      await registry.admitLaunch(record.id);
+      const recovered = createManagedProcessRegistry(options);
+      await expect(recovered.stop(record.id)).rejects.toThrow("termination timed out");
+      await expect(recovered.admitLaunch(record.id)).rejects.toThrow("launch cannot be admitted");
+      expect(await recovered.list()).toEqual([
+        { ...record, tree: { ...record.tree, state: "running", inspectionPending: true } },
+      ]);
+      expect(signals).toEqual([]);
+    },
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "handoff gated inspection faults remain recoverable after restart without permitting admission",
+    async () => {
+      tempHome = await mkdtemp(path.join(tmpdir(), "paseo-managed-gated-inspection-"));
+      let failInspection = true;
+      const options = {
+        paseoHome: tempHome,
+        processTable: new FakeProcessTable([]),
+        terminateProcess: terminateWithTreeKill,
+        logger: createTestLogger(),
+        processTree: {
+          bootId: async () => "boot",
+          list: async () => {
+            if (failInspection) throw new Error("Inspection unavailable");
+            return [];
+          },
+          signal: () => {
+            throw new Error("No live bootstrap to signal");
+          },
+        },
+      };
+      const registry = createManagedProcessRegistry(options);
+      const record = await registry.record({
+        owner: { provider: "claude", kind: "query" },
+        pid: 4101,
+        command: "claude",
+        args: [],
+        processTree: {
+          bootId: "boot",
+          entries: [{ pid: 4101, parentPid: 1, startedAt: "root", exited: false }],
+        },
+        launchGated: true,
+      });
+      await expect(registry.stop(record.id)).rejects.toThrow("termination timed out");
+      const recovered = createManagedProcessRegistry(options);
+      await expect(recovered.admitLaunch(record.id)).rejects.toThrow("launch cannot be admitted");
+      failInspection = false;
+      await recovered.stop(record.id);
+      expect(await recovered.list()).toEqual([]);
+    },
+  );
+
   test.runIf(process.platform === "linux")(
     "a fresh registry stops a real detached descendant after the recorded owner dies",
     async () => {

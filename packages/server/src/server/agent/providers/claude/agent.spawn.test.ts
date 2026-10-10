@@ -1002,6 +1002,192 @@ describe("Claude spawn override", () => {
   );
 
   test.runIf(process.platform !== "win32")(
+    "closing during durable launch admission never dispatches the provider",
+    async () => {
+      const home = await mkdtemp(path.join(tmpdir(), "paseo-launch-admission-"));
+      const marker = path.join(home, "provider-started");
+      const observed = Promise.withResolvers<"admission" | "provider">();
+      const publication = Promise.withResolvers<void>();
+      let writes = 0;
+      const registry = createManagedProcessRegistry({
+        paseoHome: home,
+        processTable: createSystemManagedProcessTable(),
+        terminateProcess: terminateWithTreeKill,
+        logger: createTestLogger(),
+        syncPublication: async (file, root) => {
+          if (++writes === 2) {
+            observed.resolve("admission");
+            await publication.promise;
+          }
+          await syncFilePublication(file, root);
+        },
+      });
+      const session = await new ClaudeAgentClient({
+        logger: createTestLogger(),
+        resolveBinary: async () => process.execPath,
+        managedProcesses: registry,
+        queryFactory: ({ options }) => {
+          if (!options.spawnClaudeCodeProcess) throw new Error("Missing launcher");
+          const child = options.spawnClaudeCodeProcess({
+            command: process.execPath,
+            args: [
+              "-e",
+              `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started'); process.stdout.write('started'); setInterval(() => {}, 1000)`,
+            ],
+            cwd: process.cwd(),
+            env: {},
+            signal: new AbortController().signal,
+          });
+          child.stdout.once("data", () => observed.resolve("provider"));
+          return createQueryMock([]);
+        },
+      }).createSession({ provider: "claude", cwd: process.cwd() });
+      const opening = session.listCommands();
+      void opening.catch(() => {});
+      try {
+        expect(await observed.promise).toBe("admission");
+        await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
+        const closing = session.close();
+        publication.resolve();
+        await expect(opening).rejects.toThrow("closed before process launch");
+        await closing;
+        expect(await registry.list()).toEqual([]);
+        await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        publication.resolve();
+        await opening.catch(() => {});
+        await session.close();
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "failed launch admission cannot execute the provider and closure retries its publication",
+    async () => {
+      const home = await mkdtemp(path.join(tmpdir(), "paseo-launch-admission-failure-"));
+      const marker = path.join(home, "provider-started");
+      let writes = 0;
+      let failAdmission = true;
+      const registry = createManagedProcessRegistry({
+        paseoHome: home,
+        processTable: createSystemManagedProcessTable(),
+        terminateProcess: terminateWithTreeKill,
+        logger: createTestLogger(),
+        syncPublication: async (file, root) => {
+          if (++writes > 1 && failAdmission) throw new Error("Launch admission sync failed");
+          await syncFilePublication(file, root);
+        },
+      });
+      const query = createQueryMock([]);
+      const queryFactory = vi.fn(({ options }: ClaudeQueryInput) => {
+        if (!options.spawnClaudeCodeProcess) throw new Error("Missing launcher");
+        options.spawnClaudeCodeProcess({
+          command: process.execPath,
+          args: [
+            "-e",
+            `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started'); setInterval(() => {}, 1000)`,
+          ],
+          cwd: process.cwd(),
+          env: {},
+          signal: new AbortController().signal,
+        });
+        return query;
+      });
+      const session = await new ClaudeAgentClient({
+        logger: createTestLogger(),
+        resolveBinary: async () => process.execPath,
+        managedProcesses: registry,
+        queryFactory,
+      }).createSession({ provider: "claude", cwd: process.cwd() });
+      try {
+        await expect(session.listCommands()).rejects.toThrow("Launch admission sync failed");
+        await expect(session.close()).rejects.toThrow("Launch admission sync failed");
+        expect(await registry.list()).toHaveLength(1);
+        expect(query.supportedCommands).not.toHaveBeenCalled();
+        failAdmission = false;
+        await session.close();
+        expect(await registry.list()).toEqual([]);
+        expect(queryFactory).toHaveBeenCalledTimes(1);
+        await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        failAdmission = false;
+        await session.close();
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.runIf(process.platform !== "win32").each(["durable", "failed"] as const)(
+    "a bootstrap exit during %s registration remains closeable",
+    async (publicationResult) => {
+      const home = await mkdtemp(path.join(tmpdir(), "paseo-bootstrap-registration-exit-"));
+      const entered = Promise.withResolvers<void>();
+      const publication = Promise.withResolvers<void>();
+      let writes = 0;
+      const registry = createManagedProcessRegistry({
+        paseoHome: home,
+        processTable: createSystemManagedProcessTable(),
+        terminateProcess: terminateWithTreeKill,
+        logger: createTestLogger(),
+        syncPublication: async (file, root) => {
+          if (++writes === 1) {
+            entered.resolve();
+            await publication.promise;
+            if (publicationResult === "failed") throw new Error("Registration sync failed");
+          }
+          await syncFilePublication(file, root);
+        },
+      });
+      const children: SpawnedProcess[] = [];
+      const exited = Promise.withResolvers<void>();
+      const query = createQueryMock([]);
+      const session = await new ClaudeAgentClient({
+        logger: createTestLogger(),
+        resolveBinary: async () => process.execPath,
+        managedProcesses: registry,
+        queryFactory: ({ options }) => {
+          if (!options.spawnClaudeCodeProcess) throw new Error("Missing launcher");
+          const child = options.spawnClaudeCodeProcess({
+            command: process.execPath,
+            args: ["-e", "throw new Error('Provider must not run')"],
+            cwd: process.cwd(),
+            env: {},
+            signal: new AbortController().signal,
+          });
+          children.push(child);
+          child.on("exit", exited.resolve.bind(undefined, undefined));
+          return query;
+        },
+      }).createSession({ provider: "claude", cwd: process.cwd() });
+      const opening = session.listCommands();
+      void opening.catch(() => {});
+      try {
+        await entered.promise;
+        children[0]!.kill("SIGKILL");
+        await exited.promise;
+        publication.resolve();
+        await expect(opening).rejects.toThrow(
+          publicationResult === "failed"
+            ? "registration is not durable"
+            : "bootstrap exited before process launch",
+        );
+        await session.close();
+        expect(await registry.list()).toEqual([]);
+        expect(query.supportedCommands).not.toHaveBeenCalled();
+        expect(query.close).toHaveBeenCalledTimes(1);
+      } finally {
+        publication.resolve();
+        await opening.catch(() => {});
+        for (const child of children) child.kill("SIGKILL");
+        await exited.promise;
+        await session.close();
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.runIf(process.platform !== "win32")(
     "closing during registration never releases the provider launch gate",
     async () => {
       const home = await mkdtemp(path.join(tmpdir(), "paseo-launch-cancel-"));
@@ -1276,7 +1462,49 @@ describe("Claude spawn override", () => {
   );
 
   test.runIf(process.platform !== "win32")(
-    "retries initial process inspection during close without releasing the provider",
+    "a bootstrap spawn failure closes without inventing a process record",
+    async () => {
+      const home = await mkdtemp(path.join(tmpdir(), "paseo-bootstrap-spawn-failure-"));
+      const registry = createManagedProcessRegistry({
+        paseoHome: home,
+        processTable: createSystemManagedProcessTable(),
+        terminateProcess: terminateWithTreeKill,
+        logger: createTestLogger(),
+      });
+      const query = createQueryMock([]);
+      const queryFactory = vi.fn(({ options }: ClaudeQueryInput) => {
+        if (!options.spawnClaudeCodeProcess) throw new Error("Missing launcher");
+        options.spawnClaudeCodeProcess({
+          command: process.execPath,
+          args: ["-e", "throw new Error('Provider must not run')"],
+          cwd: path.join(home, "missing-directory"),
+          env: {},
+          signal: new AbortController().signal,
+        });
+        return query;
+      });
+      const session = await new ClaudeAgentClient({
+        logger: createTestLogger(),
+        resolveBinary: async () => process.execPath,
+        managedProcesses: registry,
+        queryFactory,
+      }).createSession({ provider: "claude", cwd: process.cwd() });
+      try {
+        await expect(session.listCommands()).rejects.toThrow("ENOENT");
+        await session.close();
+        expect(await registry.list()).toEqual([]);
+        expect(queryFactory).toHaveBeenCalledTimes(1);
+        expect(query.supportedCommands).not.toHaveBeenCalled();
+        expect(query.close).toHaveBeenCalledTimes(1);
+      } finally {
+        await session.close().catch(() => {});
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "failed initial inspection stops the unused bootstrap without requiring inspection recovery",
     async () => {
       const home = await mkdtemp(path.join(tmpdir(), "paseo-query-inspection-retry-"));
       const marker = path.join(home, "provider-started");
@@ -1286,12 +1514,9 @@ describe("Claude spawn override", () => {
         terminateProcess: terminateWithTreeKill,
         logger: createTestLogger(),
       });
-      let failInspection = true;
-      const capture = treeKillUtils.captureProcessTree;
-      vi.spyOn(treeKillUtils, "captureProcessTree").mockImplementation(async (child) => {
-        if (failInspection) throw new Error("Process inspection unavailable");
-        return capture(child);
-      });
+      const capture = vi
+        .spyOn(treeKillUtils, "captureProcessTree")
+        .mockRejectedValue(new Error("Process inspection unavailable"));
       const children: SpawnedProcess[] = [];
       const exited = Promise.withResolvers<void>();
       const query = createQueryMock([]);
@@ -1320,23 +1545,73 @@ describe("Claude spawn override", () => {
       try {
         await expect(session.listCommands()).rejects.toThrow("Process inspection unavailable");
         await expect(session.listCommands()).rejects.toThrow("Process inspection unavailable");
-        await expect(session.close()).rejects.toThrow("Process inspection unavailable");
-        expect(await registry.list()).toEqual([]);
-        expect(query.supportedCommands).not.toHaveBeenCalled();
-        expect(query.close).not.toHaveBeenCalled();
-        expect(queryFactory).toHaveBeenCalledTimes(1);
-        failInspection = false;
         await session.close();
         await exited.promise;
         expect(await registry.list()).toEqual([]);
-        await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
+        expect(query.supportedCommands).not.toHaveBeenCalled();
+        expect(query.close).toHaveBeenCalledTimes(1);
         expect(queryFactory).toHaveBeenCalledTimes(1);
+        expect(capture).toHaveBeenCalledTimes(1);
+        await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
       } finally {
-        failInspection = false;
         await session.close().catch(() => {});
         await registry.reapStale();
         for (const child of children) child.kill("SIGKILL");
         await exited.promise;
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "an unused bootstrap still requires confirmed exit before query cleanup",
+    async () => {
+      const home = await mkdtemp(path.join(tmpdir(), "paseo-bootstrap-stop-retry-"));
+      const registry = createManagedProcessRegistry({
+        paseoHome: home,
+        processTable: createSystemManagedProcessTable(),
+        terminateProcess: terminateWithTreeKill,
+        logger: createTestLogger(),
+      });
+      vi.spyOn(treeKillUtils, "captureProcessTree").mockRejectedValue(
+        new Error("Inspection unavailable"),
+      );
+      const spawn = vi.spyOn(spawnUtils, "spawnProcess");
+      const query = createQueryMock([]);
+      const session = await new ClaudeAgentClient({
+        logger: createTestLogger(),
+        resolveBinary: async () => process.execPath,
+        managedProcesses: registry,
+        queryFactory: ({ options }) => {
+          if (!options.spawnClaudeCodeProcess) throw new Error("Missing launcher");
+          options.spawnClaudeCodeProcess({
+            command: process.execPath,
+            args: ["-e", "setInterval(() => {}, 1000)"],
+            cwd: process.cwd(),
+            env: {},
+            signal: new AbortController().signal,
+          });
+          return query;
+        },
+      }).createSession({ provider: "claude", cwd: process.cwd() });
+      await expect(session.listCommands()).rejects.toThrow("Inspection unavailable");
+      const child = spawn.mock.results[0]!.value;
+      const exited = once(child, "close");
+      const kill = vi.spyOn(child, "kill").mockReturnValueOnce(false);
+      try {
+        await expect(session.close()).rejects.toThrow("bootstrap did not finish closing");
+        expect(child.exitCode).toBeNull();
+        expect(child.signalCode).toBeNull();
+        expect(query.close).not.toHaveBeenCalled();
+        await session.close();
+        await exited;
+        expect(query.close).toHaveBeenCalledTimes(1);
+        expect(await registry.list()).toEqual([]);
+      } finally {
+        kill.mockRestore();
+        child.kill("SIGKILL");
+        await exited;
+        await session.close().catch(() => {});
         await rm(home, { recursive: true, force: true });
       }
     },

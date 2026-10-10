@@ -25,8 +25,8 @@ Reload releases the old runtime before resuming its durable session: an idle pro
 still own an exclusive writer. A close failure retains that runtime for cleanup and blocks the
 replacement. Own each query attempt before calling the SDK: construction can spawn a process and
 then throw without returning a query. Retain failed cleanup for retry and keep its provider launch
-blocked. An initial process-inspection failure may retry against that same gated process; it must
-not release the failed launch. Closure must join already admitted provider operations, including a rewind that can
+blocked. If initial inspection fails before registration, stop the unused bootstrap and join its
+native exit; no provider could have run behind that closed gate. Closure must join already admitted provider operations, including a rewind that can
 change the session handle after its process stops. SDK callbacks can outlive the message stream;
 retire their permissions and join their work before releasing the query. Read the final provider
 handle after closure before resuming. A failed replacement
@@ -40,8 +40,8 @@ checks current liveness. A drain timeout retains the work for retry. An event or
 fault prevents a closed checkpoint, including after a later successful event. Subscriber delivery
 failures are isolated from these authoritative effects.
 
-For Claude on POSIX, a root process that exits before shutdown observes its tree leaves closure
-unconfirmed. It may have surviving children; the earlier launch snapshot does not resolve that.
+For Claude on POSIX, an admitted root process that exits before shutdown observes its tree leaves
+closure unconfirmed. It may have surviving children; the earlier launch snapshot does not resolve that.
 Retain that runtime instead of certifying closure or claiming its background work stopped.
 The [managed process store](data-model.md#managed-process-store) retains closing inventories for
 startup recovery. A successful process stop still needs the conversation persistence checkpoint;

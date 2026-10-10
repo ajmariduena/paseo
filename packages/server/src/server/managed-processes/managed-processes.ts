@@ -43,7 +43,7 @@ const ManagedProcessRecordSchema = z.object({
     .object({
       checkpoint: ProcessTreeCheckpointSchema,
       inspectionPending: z.boolean(),
-      state: z.enum(["running", "stopping"]),
+      state: z.enum(["gated", "running", "stopping"]),
     })
     .optional(),
 });
@@ -85,6 +85,8 @@ export interface ManagedProcessRecordInput {
   args: string[];
   metadata?: Record<string, unknown>;
   processTree?: ProcessTreeCheckpoint;
+  // Only a trusted bootstrap that cannot spawn work before admitLaunch().
+  launchGated?: boolean;
 }
 
 export type ManagedProcessRecord = z.infer<typeof ManagedProcessRecordSchema>;
@@ -100,6 +102,7 @@ export interface ManagedProcessReapResult {
 
 export interface ManagedProcessRegistry {
   record(input: ManagedProcessRecordInput): Promise<ManagedProcessRecord>;
+  admitLaunch(id: string): Promise<void>;
   remove(id: string): Promise<void>;
   stop(id: string): Promise<void>;
   list(): Promise<ManagedProcessRecord[]>;
@@ -129,6 +132,13 @@ class ManagedProcessRecordMissingError extends Error {
   constructor(readonly recordId: string) {
     super(`Managed process record is missing: ${recordId}`);
     this.name = "ManagedProcessRecordMissingError";
+  }
+}
+
+class ManagedProcessLaunchStateError extends Error {
+  constructor(readonly recordId: string) {
+    super(`Managed process launch cannot be admitted: ${recordId}`);
+    this.name = "ManagedProcessLaunchStateError";
   }
 }
 
@@ -293,6 +303,8 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
   }
 
   async record(input: ManagedProcessRecordInput): Promise<ManagedProcessRecord> {
+    if (input.launchGated && input.processTree?.entries.length !== 1)
+      throw new ManagedProcessInspectionError(input.pid);
     const inspection = input.processTree ? null : await this.processTable.inspect(input.pid);
     const snapshot = inspection?.status === "alive" ? inspection.snapshot : null;
     const record: ManagedProcessRecord = {
@@ -308,7 +320,13 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
       },
       createdAt: new Date().toISOString(),
       ...(input.processTree
-        ? { tree: { checkpoint: input.processTree, inspectionPending: false, state: "running" } }
+        ? {
+            tree: {
+              checkpoint: input.processTree,
+              inspectionPending: false,
+              state: input.launchGated ? "gated" : "running",
+            },
+          }
         : {}),
     };
 
@@ -326,6 +344,19 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
       throw new ManagedProcessPublicationError(validated.id, error);
     }
     return validated;
+  }
+
+  async admitLaunch(id: string): Promise<void> {
+    return this.serialize(id, async () => {
+      await this.repairPublication(id);
+      const record = await this.readRecord(id);
+      if (!record) throw new ManagedProcessRecordMissingError(id);
+      if (!record.tree || record.tree.inspectionPending || record.tree.state === "stopping")
+        throw new ManagedProcessLaunchStateError(id);
+      // A crash after this publication may have dispatched work. Cold recovery
+      // must no longer treat an exited root as an unused bootstrap.
+      await this.publish({ ...record, tree: { ...record.tree, state: "running" } });
+    });
   }
 
   async remove(id: string): Promise<void> {
@@ -350,7 +381,10 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
         await fs.rm(this.recordPath(id), { force: true });
         return;
       }
-      if (record.tree.inspectionPending) throw new ManagedProcessInspectionError(record.pid);
+      // Before admission no provider can run or create descendants, so a failed
+      // inspection cannot lose a child inventory. The gated marker survives restart.
+      if (record.tree.inspectionPending && record.tree.state !== "gated")
+        throw new ManagedProcessInspectionError(record.pid);
       const initialTree = record.tree.checkpoint;
       const result = await this.terminateProcess(createPidTarget(record.pid), {
         requireTreeProof: true,
