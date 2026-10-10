@@ -1,5 +1,5 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
@@ -60,6 +60,87 @@ async function createCheckpointFixture() {
   });
   return { root, dir, recordsDir, logger, records, file: join(dir, "agent.json") };
 }
+
+test.skipIf(process.platform === "win32").each([false, true])(
+  "native dispatch recovery survives restart (failed synchronization=$0)",
+  async (failSync) => {
+    const { root, dir, records, recordsDir, logger } = await createCheckpointFixture();
+    let fail = false;
+    const store = new PromptAnnotationStore(dir, {
+      records,
+      synchronize: async (target, parent) => {
+        if (fail) throw new Error("recovery sync failed");
+        await syncFilePublication(target, parent);
+      },
+    });
+    const attempts = [0, 1].map((index) => ({
+      agentId: "agent",
+      messageId: `wake-${index}`,
+      nativeMessageId: randomUUID(),
+    }));
+    try {
+      for (const attempt of attempts) {
+        await store.remember("agent", {
+          messageId: attempt.messageId,
+          text: "same text",
+          annotation: notification(attempt.messageId),
+          nativeMessageIds: true,
+        });
+        await store.prepareNativeDispatch(attempt);
+      }
+      const ids = attempts.map((attempt) => attempt.nativeMessageId);
+      fail = failSync;
+      const recovery = store.recoverNativeDispatches("agent", ids);
+      if (failSync) await expect(recovery).rejects.toThrow("recovery sync failed");
+      else await recovery;
+      const coldRecords = new AgentStorage(recordsDir, logger);
+      const cold = new PromptAnnotationStore(dir, { records: coldRecords });
+      await cold.recoverNativeDispatches("agent", ids);
+      const checkpoint = await coldRecords.checkpointClosedAgent("agent");
+      await cold.recoverNativeDispatches("agent", ids);
+      expect(await coldRecords.checkpointClosedAgent("agent")).toEqual(checkpoint);
+      const matcher = await cold.historyMatcherForHandoff("agent");
+      for (const attempt of attempts)
+        expect(matcher.take("text with carried context", attempt.nativeMessageId)?.messageId).toBe(
+          attempt.messageId,
+        );
+      expect(() => matcher.assertNativeDispatchesResolved()).not.toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test.each(["absent", "duplicate", "withdrawn"] as const)(
+  "native dispatch recovery rejects inconclusive or contradictory evidence: %s",
+  async (evidence) => {
+    const store = new PromptAnnotationStore(null);
+    const attempt = { agentId: "agent", messageId: "wake", nativeMessageId: randomUUID() };
+    await store.remember("agent", {
+      messageId: "wake",
+      text: "same text",
+      annotation: notification("notice"),
+      nativeMessageIds: true,
+    });
+    await store.prepareNativeDispatch(attempt);
+    if (evidence === "withdrawn")
+      await store.settleNativeDispatch({ ...attempt, state: "withdrawn" });
+    const ids = {
+      absent: [randomUUID()],
+      duplicate: [attempt.nativeMessageId, attempt.nativeMessageId],
+      withdrawn: [attempt.nativeMessageId],
+    }[evidence];
+    if (evidence === "absent") await store.recoverNativeDispatches("agent", ids);
+    else
+      await expect(store.recoverNativeDispatches("agent", ids)).rejects.toThrow(
+        evidence === "duplicate" ? "more than once" : "Withdrawn native prompt",
+      );
+    const matcher = await store.historyMatcherForHandoff("agent");
+    expect(matcher.take("same text", ids[0])).toBeNull();
+    if (evidence !== "withdrawn")
+      expect(() => matcher.assertNativeDispatchesResolved()).toThrow("unresolved");
+  },
+);
 
 test.skipIf(process.platform === "win32").each([
   { change: "append", disk: "base" },
@@ -322,7 +403,7 @@ test("native annotations distinguish repeated text, unsent attempts and prepende
 
     const matcher = await new PromptAnnotationStore(dir).historyMatcherForHandoff("agent");
     expect(matcher.take("same text", "unrelated-user-message")).toBeNull();
-    expect(matcher.take("same text", withdrawnId)).toBeNull();
+    expect((await store.historyMatcher("agent")).take("same text", withdrawnId)).toBeNull();
     expect(matcher.take("context\n\nsame text", secondId)).toEqual({
       messageId: "second",
       annotation: notification("second"),
@@ -332,9 +413,15 @@ test("native annotations distinguish repeated text, unsent attempts and prepende
       messageId: "first",
       annotation: notification("first"),
     });
-    expect(matcher.take("same text", firstId)).toBeNull();
     expect(matcher.take("same text")).toBeNull();
     expect(() => matcher.assertNativeDispatchesResolved()).not.toThrow();
+    expect(matcher.take("same text", firstId)).toBeNull();
+    expect(() => matcher.assertNativeDispatchesResolved()).toThrow("more than once");
+    const contradictory = await store.historyMatcherForHandoff("agent");
+    contradictory.take("same text", firstId);
+    contradictory.take("same text", secondId);
+    contradictory.take("same text", withdrawnId);
+    expect(() => contradictory.assertNativeDispatchesResolved()).toThrow("Withdrawn native prompt");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

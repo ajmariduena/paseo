@@ -14,7 +14,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { HANDOFF_CHUNK_BYTES } from "@getpaseo/protocol/handoff";
 import { DaemonClient } from "../test-utils/daemon-client.js";
 import { createTestPaseoDaemon, type TestPaseoDaemon } from "../test-utils/paseo-daemon.js";
@@ -2444,16 +2444,21 @@ for (const continuationMode of ["native", "context"] as const) {
       const workspaceId = created.workspace.id;
       const agentId = randomUUID();
       const sessionId = randomUUID();
+      const recoveredMessageId = randomUUID();
       const project = claudeProjectDirSync(cwd, { configDir: path.join(root, "source", "claude") });
       await mkdir(project, { recursive: true });
       await writeFile(
         path.join(project, `${sessionId}.jsonl`),
-        JSON.stringify({
-          type: "user",
-          uuid: randomUUID(),
-          sessionId,
-          message: { role: "user", content: "A background task finished" },
-        }) + "\n",
+        [randomUUID(), recoveredMessageId]
+          .map((uuid) =>
+            JSON.stringify({
+              type: "user",
+              uuid,
+              sessionId,
+              message: { role: "user", content: "A background task finished" },
+            }),
+          )
+          .join("\n") + "\n",
       );
       const timestamp = new Date().toISOString();
       await source.daemon.daemon.agentStorage.upsert(
@@ -2479,19 +2484,34 @@ for (const continuationMode of ["native", "context"] as const) {
       );
       // Seed a historical, already closed conversation without opening a provider runtime.
       const annotationDirectory = path.join(source.daemon.paseoHome, "prompt-annotations");
-      await new PromptAnnotationStore(annotationDirectory, {
+      const annotations = new PromptAnnotationStore(annotationDirectory, {
         records: source.daemon.daemon.agentStorage,
-      }).remember(agentId, {
+      });
+      await annotations.remember(agentId, {
         messageId: "wake-1",
         text: "A background task finished",
         annotation: { kind: "notification", level: "info", message: "Original notification" },
       });
+      await annotations.remember(agentId, {
+        messageId: "wake-2",
+        text: "A background task finished",
+        annotation: { kind: "notification", level: "info", message: "Recovered notification" },
+        nativeMessageIds: true,
+      });
+      await annotations.prepareNativeDispatch({
+        agentId,
+        messageId: "wake-2",
+        nativeMessageId: recoveredMessageId,
+      });
+      // The daemon lost the dispatch acknowledgement; the native user UUID survived.
+      await stopHost(source);
+      source = await startHost("source", true);
       const annotationPath = path.join(
         source.daemon.paseoHome,
         "prompt-annotations",
         `${agentId}.json`,
       );
-      const original = await readFile(annotationPath, "utf8");
+      let original = await readFile(annotationPath, "utf8");
       await writeFile(annotationPath, JSON.stringify({ version: 1, entries: {} }));
       const transferId = randomUUID();
       const request = { transferId, workspaceId, destinationParent: root, continuationMode };
@@ -2509,12 +2529,59 @@ for (const continuationMode of ["native", "context"] as const) {
         source.daemon.daemon.handoffOwnership.withMutation({ cwd }, async () => {}),
       ).rejects.toMatchObject({ code: "fenced" });
       await writeFile(annotationPath, original);
+      const transcriptPath = path.join(project, `${sessionId}.jsonl`);
+      const transcript = await readFile(transcriptPath, "utf8");
+      const transcriptLines = transcript.trim().split("\n");
+      // Matching text under another UUID is not evidence for the missing dispatch.
+      await writeFile(transcriptPath, transcriptLines[0] + "\n");
+      await expect(
+        prepareWorkspaceHandoff({
+          ...request,
+          source: source.client,
+          destination: destination.client,
+        }),
+      ).rejects.toThrow("Native prompt dispatch outcome is unresolved");
+      expect(await readFile(annotationPath, "utf8")).toBe(original);
+      // Duplicate identities must remain ambiguous through the real history decoder.
+      await writeFile(transcriptPath, transcript + transcriptLines[1] + "\n");
+      await expect(
+        prepareWorkspaceHandoff({
+          ...request,
+          source: source.client,
+          destination: destination.client,
+        }),
+      ).rejects.toThrow("Native prompt identity appears more than once");
+      expect(await readFile(annotationPath, "utf8")).toBe(original);
+      await writeFile(transcriptPath, transcript);
+      const manager = source.daemon.daemon.agentManager;
+      const recover = manager.recoverPromptAnnotationsForHandoff.bind(manager);
+      const concurrentEdit = vi
+        .spyOn(manager, "recoverPromptAnnotationsForHandoff")
+        .mockImplementationOnce(async (...args) => {
+          await recover(...args);
+          await source.daemon.daemon.agentStorage.setTitle(agentId, "Concurrent title");
+        });
+      try {
+        await expect(
+          prepareWorkspaceHandoff({
+            ...request,
+            source: source.client,
+            destination: destination.client,
+          }),
+        ).rejects.toThrow("Source conversation changed during annotation recovery");
+      } finally {
+        concurrentEdit.mockRestore();
+      }
       const staged = await prepareWorkspaceHandoff({
         ...request,
         source: source.client,
         destination: destination.client,
       });
       expect(staged.state).toBe("staged");
+      original = await readFile(annotationPath, "utf8");
+      expect(JSON.parse(original).entries[1].nativeDispatches).toEqual([
+        { messageId: recoveredMessageId, state: "dispatched" },
+      ]);
       await stopHost(source);
       await stopHost(destination);
       const changed = JSON.parse(original);
@@ -2602,6 +2669,12 @@ for (const continuationMode of ["native", "context"] as const) {
           level: "info",
           message: "Original notification",
           messageId: "wake-1",
+        },
+        {
+          type: "notification",
+          level: "info",
+          message: "Recovered notification",
+          messageId: "wake-2",
         },
       ]);
     },

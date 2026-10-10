@@ -230,6 +230,36 @@ export class PromptAnnotationStore {
     });
   }
 
+  /** Exact user-message identities prove dispatch, never turn completion or non-delivery. */
+  recoverNativeDispatches(agentId: string, nativeMessageIds: readonly string[]): Promise<void> {
+    const counts = new Map<string, number>();
+    for (const id of nativeMessageIds) counts.set(id, (counts.get(id) ?? 0) + 1);
+    return this.serialize(agentId, async () => {
+      const next = structuredClone(await this.readForHandoff(agentId));
+      // Validate all evidence before publishing any repairs.
+      for (const entry of next) {
+        for (const dispatch of entry.nativeDispatches ?? []) {
+          const count = counts.get(dispatch.messageId) ?? 0;
+          if (count > 1)
+            throw new Error("Native prompt identity appears more than once in history");
+          if (count && dispatch.state === "withdrawn")
+            throw new Error("Withdrawn native prompt is present in provider history");
+        }
+      }
+      for (const entry of next) {
+        let changed = false;
+        for (const dispatch of entry.nativeDispatches ?? []) {
+          if (dispatch.state === "prepared" && counts.get(dispatch.messageId) === 1) {
+            dispatch.state = "dispatched";
+            changed = true;
+          }
+        }
+        // The store's bounded publication obligation owns one entry delta at a time.
+        if (changed) await this.save(agentId, next);
+      }
+    });
+  }
+
   /** Only sees prompts remembered or loaded in this process; call after `remember`. */
   forMessage(agentId: string, messageId: string): PromptAnnotation | null {
     const entry = this.cache.get(agentId)?.find((candidate) => candidate.messageId === messageId);
@@ -418,6 +448,7 @@ export class PromptAnnotationStore {
 function createHistoryMatcher(entries: Entry[]): HistoryAnnotationMatcher {
   const pending = structuredClone(entries);
   const observed = new Set<string>();
+  const occurrences = new Map<string, number>();
   const nativeEntries = new Map<string, NativeHistoryEntry>();
   const legacyEntries = new Map<string, Entry[]>();
   for (const entry of pending.toReversed()) {
@@ -435,6 +466,7 @@ function createHistoryMatcher(entries: Entry[]): HistoryAnnotationMatcher {
       if (nativeMessageId) {
         const native = nativeEntries.get(nativeMessageId);
         if (native) {
+          occurrences.set(nativeMessageId, (occurrences.get(nativeMessageId) ?? 0) + 1);
           if (native.dispatch.state !== "dispatched" || observed.has(nativeMessageId)) return null;
           observed.add(nativeMessageId);
           return { messageId: native.entry.messageId, annotation: native.entry.annotation };
@@ -446,6 +478,10 @@ function createHistoryMatcher(entries: Entry[]): HistoryAnnotationMatcher {
     },
     assertNativeDispatchesResolved(): void {
       for (const { dispatch } of nativeEntries.values()) {
+        const count = occurrences.get(dispatch.messageId) ?? 0;
+        if (count > 1) throw new Error("Native prompt identity appears more than once in history");
+        if (count && dispatch.state === "withdrawn")
+          throw new Error("Withdrawn native prompt is present in provider history");
         if (dispatch.state === "prepared")
           throw new Error("Native prompt dispatch outcome is unresolved");
         if (dispatch.state === "dispatched" && !observed.has(dispatch.messageId)) {

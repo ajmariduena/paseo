@@ -886,12 +886,31 @@ test.each(["completed", "unknown"] as const)(
         await expect(
           manager.runAgent(agentId, formatSystemNotificationPrompt("Background wake")),
         ).rejects.toThrow("Prior carried prompt delivery is unresolved");
+        await expect(manager.recoverPromptAnnotationsForHandoff(agentId, [])).rejects.toThrow(
+          "requires a closed provider runtime",
+        );
         await manager.closeAgent(agentId);
         expect(
           (await new AgentStorage(join(workdir, "agents"), logger).get(agentId))?.carriedPrompt
             ?.restartNote,
         ).toEqual([first]);
         await expect(storage.checkpointClosedAgent(agentId)).rejects.toThrow();
+        const pending = await storage.get(agentId);
+        if (!pending?.carriedPrompt?.nativeMessageId) throw new Error("Missing carried identity");
+        await expect(
+          manager.recoverPromptAnnotationsForHandoff(agentId, [
+            {
+              type: "timeline",
+              provider: "codex",
+              item: {
+                type: "user_message",
+                text: "Continue",
+                messageId: pending.carriedPrompt.nativeMessageId,
+              },
+            },
+          ]),
+        ).rejects.toThrow("resolution of carried prompt delivery");
+        expect(await storage.get(agentId)).toEqual(pending);
       } else {
         await manager.runAgent(agentId, "Continue");
         await manager.flush();

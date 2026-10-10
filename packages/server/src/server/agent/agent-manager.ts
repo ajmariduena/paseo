@@ -1465,6 +1465,22 @@ export class AgentManager {
     return this.promptAnnotations.checkpointForHandoff(agentId);
   }
 
+  async recoverPromptAnnotationsForHandoff(
+    agentId: string,
+    history: AgentStreamEvent[],
+  ): Promise<void> {
+    if (this.agents.has(agentId) || this.inFlightAgentCloses?.has(agentId))
+      throw new Error("Prompt recovery requires a closed provider runtime");
+    // Dispatch evidence cannot settle carried context or unresolved runtime failures.
+    await this.requireRegistry().checkpointClosedAgent(agentId);
+    const ids = history.flatMap((event) =>
+      event.type === "timeline" && event.item.type === "user_message" && event.item.messageId
+        ? [event.item.messageId]
+        : [],
+    );
+    await this.promptAnnotations.recoverNativeDispatches(agentId, ids);
+  }
+
   async projectHistoryForHandoff(
     agentId: string,
     history: AgentStreamEvent[],

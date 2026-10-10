@@ -744,13 +744,18 @@ atomic writes. The agent record owns the expected annotation revision, digest an
 plus at most one pending entry change. Persist that change before replacing the annotation file;
 advance the witness only after the file is synchronized. Recovery accepts the exact previous or
 intended file, never an unrelated suffix. Snapshots and replacement runtimes preserve this state.
-A known disposition-write failure can retry on close without another provider call; an unknown
-dispatch outcome remains unresolved.
+A known disposition-write failure can retry on close without another provider call. For a closed
+conversation, one matching native prompt identity in the captured provider history can also prove
+dispatch after a lost acknowledgement. Publish that repair through the same witnessed store and
+bind the resulting record revision into the capture. Missing identities remain unresolved: compacted
+history cannot prove non-delivery. Duplicate identities or an observed withdrawn attempt contradict
+the stored disposition and refuse certification. Dispatch evidence cannot acknowledge carried notes,
+prove turn completion or clear an unresolved runtime generation.
 
 A new runtime records an empty witness before opening. Older histories adopt only their available
 prefix and retain `adopted` coverage; this does not certify lifetime presentation. Captured handoff
 history binds its witness so release detects changes even when the rendered rows are unchanged.
-Complete presentation coverage and ambiguous dispatch recovery remain in the
+Complete presentation coverage and outcomes without sufficient native evidence remain in the
 [handoff plan](refactors/cross-host-handoff-plan.md#conversation-persistence-contract).
 
 ---

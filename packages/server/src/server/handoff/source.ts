@@ -128,6 +128,7 @@ interface SourceOptions {
     | "closeAgent"
     | "projectHistoryForHandoff"
     | "checkpointPromptAnnotations"
+    | "recoverPromptAnnotationsForHandoff"
   >;
   terminals: Pick<TerminalManager, "listDirectories" | "getTerminals" | "killTerminalAndWait">;
   setup: Pick<WorkspaceSetupRuntime, "stop" | "activeIds">;
@@ -438,6 +439,23 @@ export class HandoffSource {
           cwd: agent.cwd,
           logger: this.options.logger,
         });
+        await this.options.agentManager.recoverPromptAnnotationsForHandoff(agent.id, events);
+        const checkpoint = await this.options.agents.checkpointClosedAgent(agent.id);
+        const {
+          revision: _beforeRevision,
+          promptAnnotations: _beforeAnnotations,
+          ...before
+        } = record;
+        const {
+          revision: _afterRevision,
+          promptAnnotations: _afterAnnotations,
+          ...after
+        } = checkpoint;
+        if (!isDeepStrictEqual(before, after))
+          refuse("source_changed", "Source conversation changed during annotation recovery");
+        // Only the witnessed annotation repair may advance this capture's record revision.
+        agent.recordRevision = checkpoint.revision;
+        records[index] = checkpoint;
         const rows = await this.options.agentManager.projectHistoryForHandoff(
           agent.id,
           events,

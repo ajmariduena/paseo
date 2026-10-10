@@ -1,3 +1,105 @@
+Native dispatch recovery from captured history — Linux, 2026-10-10
+Baseline: bd813ad84 (plan-machine-handoff-macbook-vps)
+
+The extended network regression first failed with "Native prompt dispatch outcome is unresolved"
+after a daemon restart, although the captured transcript retained the prepared prompt's UUID.
+A closed conversation now recovers that dispatch disposition through the witnessed annotation store.
+The source rechecks the record and binds the resulting annotation witness and record revision.
+This does not reopen a provider or replay a prompt/tool.
+
+Coverage:
+- Two prepared identities with repeated text recover after a fresh store load, including a failed
+  annotation synchronization and cold repair of the retained publication. Identical retries do not
+  advance the checkpoint. Missing identities stay unresolved; duplicate and withdrawn identities
+  contradict the evidence. History certification independently rejects those contradictions.
+- Manager recovery refuses a loaded runtime and cannot use a native prompt identity to consume
+  an uncertain carried note. The existing completion path still consumes only its exact note set.
+- Both native and context network cases retain one legacy annotation plus one prepared native
+  annotation across restart. A different UUID with identical text fails; a duplicate UUID fails
+  through the real Claude history decoder. Neither refusal changes the annotation file.
+- A concurrent title edit after the annotation repair refuses the capture; a fresh preparation
+  succeeds. The existing corruption, restart, changed-witness, release-seal and cancellation cases
+  remain covered. Destination history contains both original and recovered notifications.
+
+35 distinct cases pass: 31 annotation-store cases, two focused manager cases, two network cases.
+The focused eight-case run overlaps six annotation cases in the full annotation-file run below.
+Build, typecheck, lint and formatting pass. No main daemon restart or new UI change.
+These are synthetic provider/transcript fixtures with real temporary storage and isolated Linux
+WebSocket daemons. They do not establish fresh authenticated-provider or physical-host continuity.
+Missing/compacted dispatch evidence, carried-turn completion and unresolved runtime/process-stop
+recovery remain open. A persisted closed conversation is a prerequisite for this repair.
+
+Before the fix:
+$ npx vitest run src/server/handoff/archive.e2e.test.ts --testNamePattern='keeps native handoff fenced until prompt annotation' --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/handoff/archive.e2e.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: 🤖 agentic secret storage: https://dotenvx.com/as2
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  write to custom object with { processEnv: myObject }
+
+ ❯ src/server/handoff/archive.e2e.test.ts (30 tests | 1 failed | 29 skipped) 889ms
+   × keeps native handoff fenced until prompt annotation history is saved and unchanged 887ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/handoff/archive.e2e.test.ts > keeps native handoff fenced until prompt annotation history is saved and unchanged
+HandoffTransferError: Native prompt dispatch outcome is unresolved
+ ❯ handoffResult ../client/src/handoff-transfer.ts:29:26
+ ❯ prepareWorkspaceHandoff ../client/src/workspace-handoff.ts:193:29
+ ❯ src/server/handoff/archive.e2e.test.ts:2526:22
+    2524|       ).rejects.toMatchObject({ code: "fenced" });
+    2525|       await writeFile(annotationPath, original);
+    2526|       const staged = await prepareWorkspaceHandoff({
+       |                      ^
+    2527|         ...request,
+    2528|         source: source.client,
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 29 skipped (30)
+   Start at  06:04:40
+   Duration  11.99s (transform 8.78s, setup 42ms, import 10.94s, tests 889ms, environment 0ms)
+
+
+After the fix:
+$ npx vitest run src/server/agent/prompt-annotations.test.ts --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  31 passed (31)
+   Start at  06:07:17
+   Duration  1.52s (transform 537ms, setup 44ms, import 884ms, tests 454ms, environment 0ms)
+
+
+$ npx vitest run src/server/agent/prompt-annotations.test.ts src/server/agent/agent-manager.test.ts --testNamePattern='native dispatch recovery|native annotations distinguish|native carried note' --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  2 passed (2)
+      Tests  8 passed | 301 skipped (309)
+   Start at  06:06:38
+   Duration  2.13s (transform 1.05s, setup 53ms, import 1.70s, tests 143ms, environment 0ms)
+
+
+$ npx vitest run src/server/handoff/archive.e2e.test.ts --testNamePattern='handoff fenced until prompt annotation' --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  2 passed | 28 skipped (30)
+   Start at  06:10:03
+   Duration  15.68s (transform 9.50s, setup 44ms, import 11.79s, tests 3.70s, environment 0ms)
+
+
+Earlier persistence validation:
+
 Prompt annotation persistence and handoff history validation
 Date: 2026-10-09
 Baseline: 78d8fbf0a (plan-machine-handoff-macbook-vps)

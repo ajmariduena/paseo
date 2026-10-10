@@ -348,7 +348,12 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   bound into the bundle digest. Annotation export waits for that conversation's queued writes and
   validates the stored metadata rather than accepting a stale cache or silently ignoring a damaged
   file. Readiness and release compare the current presentation with the captured history, including
-  after source restart. Native/context network cases refuse damaged metadata during preparation,
+  after source restart. Closed conversations recover a lost dispatch acknowledgement from a unique
+  native prompt identity in captured history; the capture binds the repaired annotation witness and
+  record revision. Matching text, missing UUIDs, duplicate identities and withdrawn attempts do not
+  supply that proof. The store retains exact retry inputs through failed synchronization and restart.
+  Carried context and unresolved runtime generations remain blocked; dispatch is not completion.
+  Native/context network cases refuse damaged metadata during preparation,
   retain the source fence, recover after repair and refuse changed notification presentation before
   release. See [history persistence evidence](../qa-evidence/handoff-history-persistence.txt) and the
   [annotation write contract](../data-model.md#prompt-annotation-store).
