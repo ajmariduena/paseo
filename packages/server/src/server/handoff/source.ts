@@ -201,6 +201,7 @@ function sameIds(left: string[], right: string[]): boolean {
 export class HandoffSource {
   private tail: Promise<unknown> = Promise.resolve();
   private readonly writerInstances = new WeakMap<object, string>();
+  private readonly stopping = new Map<string, Promise<void>>();
   private closing = false;
   constructor(private readonly options: SourceOptions) {}
 
@@ -399,15 +400,7 @@ export class HandoffSource {
         await this.verify(source, prepared);
         return { source, manifest: prepared.manifest };
       }
-      // Setup and provider commands may hold admission leases until cancellation settles.
-      await this.stopWriters(source);
-      await this.options.ownership.drain(source.id);
-      const finalInventory = await this.inspect(source.workspaceId);
-      if (!sameIds(finalInventory.agentIds, source.agentIds))
-        refuse("inventory_changed", "Source conversation set changed while draining admitted work");
-      await this.stopWriters(source);
-      await this.stopWatches(source);
-      await this.options.schedules.pauseForHandoff(source);
+      await this.stopSource(source);
       const records = await this.checkpointConversations(source.agentIds);
       this.assertReviewedIntegrations(source.integrationReview, records);
       const agents: PreparedSource["agents"] = [];
@@ -592,9 +585,14 @@ export class HandoffSource {
 
   cancel(input: HandoffCancellationInput) {
     // Do not reopen source admission while its preparation is still stopping or capturing writers.
-    return this.serialize(() => this.options.ownership.cancelReservation(input)).finally(() =>
-      this.publishTransfer(input.transferId),
-    );
+    return this.serialize(() => {
+      if (this.stopping.has(input.transferId))
+        refuse(
+          "stop_uncertain",
+          "Source shutdown is still pending; retry cancellation after it finishes. Handoff remains fenced.",
+        );
+      return this.options.ownership.cancelReservation(input);
+    }).finally(() => this.publishTransfer(input.transferId));
   }
 
   release(transferId: string) {
@@ -739,6 +737,55 @@ export class HandoffSource {
   async dispose(): Promise<void> {
     this.closing = true;
     await this.tail;
+    await Promise.allSettled(this.stopping.values());
+  }
+
+  private async stopSource(source: SourceHandoffStatus): Promise<void> {
+    let operation = this.stopping.get(source.id);
+    if (!operation) {
+      operation = this.stopAndDrainSource(source).finally(() => this.stopping.delete(source.id));
+      this.stopping.set(source.id, operation);
+      void operation.catch((error: unknown) => {
+        this.options.logger.warn(
+          { err: error, transferId: source.id },
+          "Source shutdown failed; handoff remains fenced",
+        );
+      });
+    }
+    // A request deadline must not abandon commands that can still stop a source writer.
+    // Retries join the retained operation; only the waiting request can proceed to capture.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        operation,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () =>
+              reject(
+                new HandoffSourceError(
+                  "stop_uncertain",
+                  "Source shutdown did not finish within 30 seconds. Handoff remains fenced; retry preparation to wait for the same shutdown.",
+                ),
+              ),
+            30_000,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async stopAndDrainSource(source: SourceHandoffStatus): Promise<void> {
+    // Setup and provider commands may hold admission leases until cancellation settles.
+    await this.stopWriters(source);
+    await this.options.ownership.drain(source.id);
+    const finalInventory = await this.inspect(source.workspaceId);
+    if (!sameIds(finalInventory.agentIds, source.agentIds))
+      refuse("inventory_changed", "Source conversation set changed while draining admitted work");
+    await this.stopWriters(source);
+    await this.stopWatches(source);
+    await this.options.schedules.pauseForHandoff(source);
   }
 
   private async sourceTerminals(source: { workspaceId: string; cwd: string }) {

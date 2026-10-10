@@ -21,6 +21,18 @@ both journals, refusal to drop that approval and successful activation. The setu
 regression reloads the ownership journal after failed cleanup and refuses a
 replacement with the same active count. It also tests active setup blocking release.
 
+Shutdown deadline — the initial regression held setup cleanup open and found preparation still
+pending after advancing a controlled clock by 30 seconds. Preparation now bounds the whole
+stop-and-drain phase, including watches and schedule pausing, while retaining its work and fence.
+Five new cases cover those three stop phases, a retained mutation lease and a stop that rejects
+after timeout. They assert that retries join the existing operation, cancellation cannot race late
+stops, no archive appears after a late completion, and a fresh attempt can complete preparation.
+All 54 cases in the changed ownership file pass. The existing recovery case also passes after sharing
+the source fixture. Root typecheck, lint and formatting pass. No browser suite was repeated for this
+server-only change; the existing CI jobs own broader and platform verification.
+These tests use real ownership journals and files with held shutdown adapters and controlled timers.
+They do not prove provider termination, repair unknown run outcomes or enable active-run transfer.
+
 Scheduler admission — the initial regression ran a schedule after source fencing and consumed
 its final allowed execution. Schedule controls and dispatch now admit the persisted target inside
 the store's per-schedule queue. A run retains admission through workspace cleanup and its outcome
@@ -76,8 +88,9 @@ The existing CI jobs own platform and full-suite verification; no new feature-sp
 
 Strict capture refuses running jobs, ancestor-directory schedules, outside heartbeat owners sharing
 the checkout, damaged inventory, more than 1,000 selected records or metadata beyond 32 MiB. This
-slice does not certify a running job's outcome after a crash. Bounded runner shutdown and recovery
-of uncertain outcomes remain open; an admitted runner can still delay draining indefinitely.
+slice does not certify a running job's outcome after a crash. Active-run shutdown and recovery
+of uncertain outcomes remain open; an admitted runner can still prevent drain completion, with
+the preparation wait bounded as tested above.
 Completed-outcome recovery — an injected failure writing a successful run reproduced the runner
 resolving with status=failed, output=null and error="outcome publication unavailable". That replaced
 the provider's only retained result with an I/O error. Execution and publication now have separate

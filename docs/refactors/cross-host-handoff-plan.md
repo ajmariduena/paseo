@@ -61,6 +61,9 @@ prepared copy while the source is irrevocably fenced.
 The source issues a signed cancellation bound to the destination reservation. Record it even if
 preparation has not arrived, so a delayed prepare cannot revive the cancelled transfer. Destination
 cleanup requires that proof and the previously pinned source key when content is already bound.
+Source preparation bounds its stop-and-drain wait to 30 seconds. A deadline retains the fence and
+pending shutdown; a retry joins that operation. Cancel refuses while shutdown can still stop or
+pause source work. Finishing after the deadline cannot capture or certify a transfer in the background.
 After release, a lost acknowledgement leaves the source fenced: query/retry the same transfer,
 never infer rollback from a timeout. Once the destination has durably accepted the signed receipt,
 finish activation using its journal even when the source is offline. Until that acceptance, recovery
@@ -586,8 +589,9 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   a failed synchronization after rename. A storage failure cannot replace successful output with
   a failed-execution record. POSIX acknowledgement includes file and directory synchronization;
   handoff waits for pending publication to repair. These retained inputs are process-local.
-  Recovery of uncertain run outcomes after a crash and bounded shutdown remain open; an admitted runner can
-  still delay draining. See the scheduler cases in the
+  Active-run shutdown and recovery of uncertain run outcomes after a crash remain open. An admitted
+  runner can still prevent draining, but the preparation wait now expires with ownership retained
+  under the [recovery contract](#ownership-and-recovery). See the scheduler cases in the
   [stopped-work evidence](../qa-evidence/handoff-writers-review.txt).
   PR watches now have a reviewed stop disposition. Preparation durably removes the selected watches,
   cancels their queued notifications and joins dispatched wakes. Registration participates in source

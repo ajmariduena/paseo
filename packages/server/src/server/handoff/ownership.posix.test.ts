@@ -12,7 +12,7 @@ import {
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, expect, test as platformTest } from "vitest";
+import { afterEach, beforeEach, expect, test as platformTest, vi } from "vitest";
 import { HandoffOwnership, verifyHandoffRelease, verifyHandoffCancellation } from "./ownership.js";
 import { writeJournal } from "./artifacts.js";
 import { syncFilePublication, writeJsonFileAtomic } from "../atomic-file.js";
@@ -376,6 +376,227 @@ test.each(["cancel", "release"])(
   },
 );
 
+function createSourceFixture(
+  overrides: Partial<ConstructorParameters<typeof HandoffSource>[0]> = {},
+) {
+  const workspace = createPersistedWorkspaceRecord({
+    workspaceId: "source-workspace",
+    projectId: "source-project",
+    cwd,
+    kind: "directory",
+    displayName: "Source",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+  const captures = path.join(root, "source-captures");
+  const source = new HandoffSource({
+    schedules: {
+      reviewForHandoff: async () => [],
+      pauseForHandoff: async () => {},
+      exportForHandoff: async () => ({ version: 1, schedules: [] }),
+      estimateForHandoff: async () => 28,
+    },
+    pullRequestWatches: { reviewForHandoff: async () => [], stopForHandoff: async () => {} },
+    queues: {
+      holdForHandoff: async () => {},
+      entries: () => [],
+      exportForHandoff: async () => ({ version: 1, entries: [] }),
+    },
+    directory: captures,
+    serverId: sourceServerId,
+    logger: createTestLogger(),
+    ownership,
+    archives: new HandoffArchiveStore(path.join(root, "source-archives")),
+    destination: {
+      hasConversation: () => false,
+      withConversationArchive: async () => {
+        throw new Error("No previous transfer in this test");
+      },
+    },
+    workspaces: { get: async () => workspace, list: async () => [workspace] },
+    agents: new AgentStorage(path.join(root, "agents"), createTestLogger()),
+    agentManager: {
+      getAgent: () => null,
+      listAgents: () => [],
+      closeAgent: async () => {},
+      projectHistoryForHandoff: async () => [],
+      checkpointPromptAnnotations: async () => {},
+      recoverPromptAnnotationsForHandoff: async () => {},
+    },
+    terminals: {
+      listDirectories: () => [],
+      getTerminals: async () => [],
+      killTerminalAndWait: async () => {},
+    },
+    setup: { activeIds: () => [], stop: async () => {} },
+    ...overrides,
+  });
+  return {
+    source,
+    captures,
+    request: {
+      transferId: randomUUID(),
+      workspaceId: workspace.workspaceId,
+      agentIds: [],
+      destinationServerId: "destination",
+      reservationId: randomUUID(),
+    },
+  };
+}
+
+test.each(["writers", "watches", "schedules"])(
+  "source stop timeout during %s retains cleanup and joins the same stop on retry",
+  async (phase) => {
+    const entered = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    let stopCalls = 0;
+    const stop = async () => {
+      stopCalls++;
+      entered.resolve();
+      await finish.promise;
+    };
+    const { source, request, captures } = createSourceFixture({
+      setup: {
+        activeIds: () => [],
+        stop: phase === "writers" ? stop : async () => {},
+      },
+      pullRequestWatches: {
+        reviewForHandoff: async () => [],
+        stopForHandoff: phase === "watches" ? stop : async () => {},
+      },
+      schedules: {
+        reviewForHandoff: async () => [],
+        pauseForHandoff: phase === "schedules" ? stop : async () => {},
+        exportForHandoff: async () => ({ version: 1, schedules: [] }),
+        estimateForHandoff: async () => 28,
+      },
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const preparing = source.prepare(request);
+    let settled = false;
+    const outcome = preparing
+      .catch((error: unknown) => error)
+      .finally(() => {
+        settled = true;
+      });
+    try {
+      await entered.promise;
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(settled).toBe(true);
+      expect(await outcome).toMatchObject({ code: "stop_uncertain" });
+      expect(ownership.status(request.transferId).state).toBe("preparing");
+      await expect(readdir(captures)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(ownership.acquireMutation({ cwd })).rejects.toMatchObject({ code: "fenced" });
+      await expect(source.cancel(request)).rejects.toMatchObject({ code: "stop_uncertain" });
+      expect(ownership.cancellation(request.transferId)).toBeNull();
+
+      // The failed wait released the request queue, but the stop operation still belongs to it.
+      const retry = source.prepare(request);
+      const retried = expect(retry).rejects.toMatchObject({ code: "stop_uncertain" });
+      await vi.waitFor(() => expect(vi.getTimerCount()).toBe(1));
+      await vi.advanceTimersByTimeAsync(30_000);
+      await retried;
+      expect(stopCalls).toBe(1);
+    } finally {
+      finish.resolve();
+      await outcome;
+      await source.dispose();
+      vi.useRealTimers();
+    }
+    // Finishing after the deadline never captures or certifies in the background.
+    expect(ownership.status(request.transferId).state).toBe("preparing");
+    await expect(readdir(captures)).rejects.toMatchObject({ code: "ENOENT" });
+    const recovered = createSourceFixture().source;
+    expect((await recovered.prepare(request)).source.state).toBe("ready");
+    await recovered.dispose();
+  },
+);
+
+test("source stop failure after a timeout remains observable and permits a fresh retry", async () => {
+  const entered = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
+  let stopCalls = 0;
+  const { source, request, captures } = createSourceFixture({
+    setup: {
+      activeIds: () => [],
+      stop: async () => {
+        stopCalls++;
+        if (stopCalls === 1) {
+          entered.resolve();
+          await finish.promise;
+        }
+      },
+    },
+  });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const preparing = source.prepare(request);
+  const expired = expect(preparing).rejects.toMatchObject({ code: "stop_uncertain" });
+  try {
+    await entered.promise;
+    await vi.advanceTimersByTimeAsync(30_000);
+    await expired;
+    const retry = source.prepare(request);
+    const failure = new Error("late provider stop failure");
+    const failed = expect(retry).rejects.toMatchObject({ errors: [failure] });
+    await vi.waitFor(() => expect(vi.getTimerCount()).toBe(1));
+    finish.reject(failure);
+    await failed;
+    expect(stopCalls).toBe(1);
+    expect(ownership.status(request.transferId).state).toBe("preparing");
+    await expect(readdir(captures)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await source.prepare(request)).source.state).toBe("ready");
+    expect(stopCalls).toBe(3);
+  } finally {
+    finish.resolve();
+    await source.dispose();
+    vi.useRealTimers();
+  }
+});
+
+test("source drain timeout keeps admitted mutations fenced until they finish", async () => {
+  const finishMutation = await ownership.acquireMutation({ cwd });
+  const entered = Promise.withResolvers<void>();
+  const { source, request, captures } = createSourceFixture({
+    setup: {
+      activeIds: () => [],
+      stop: async () => {
+        entered.resolve();
+      },
+    },
+  });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const preparing = source.prepare(request);
+  let settled = false;
+  const outcome = preparing
+    .catch((error: unknown) => error)
+    .finally(() => {
+      settled = true;
+    });
+  try {
+    await entered.promise;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(settled).toBe(true);
+    expect(await outcome).toMatchObject({ code: "stop_uncertain" });
+    await expect(ownership.markReady(request.transferId, digest)).rejects.toMatchObject({
+      code: "invalid_state",
+    });
+    await expect(source.cancel(request)).rejects.toMatchObject({ code: "stop_uncertain" });
+    await expect(readdir(captures)).rejects.toMatchObject({ code: "ENOENT" });
+  } finally {
+    finishMutation();
+    await outcome;
+    await source.dispose();
+    vi.useRealTimers();
+  }
+  expect(ownership.status(request.transferId).state).toBe("preparing");
+  const recovered = createSourceFixture().source;
+  const cancelled = await recovered.cancel(request);
+  expect(cancelled.receipt.outcome).toBe("cancelled");
+  const afterCancel = await ownership.acquireMutation({ cwd });
+  afterCancel();
+  await recovered.dispose();
+});
+
 test("source preparation keeps ownership fenced after uncertain cleanup and retries before capture", async () => {
   const transferId = randomUUID();
   const workspace = createPersistedWorkspaceRecord({
@@ -400,45 +621,8 @@ test("source preparation keeps ownership fenced after uncertain cleanup and retr
   let stopFails = true;
   const failure = new Error("setup exit is unconfirmed");
   const createSource = (sourceOwnership = ownership) =>
-    new HandoffSource({
-      schedules: {
-        reviewForHandoff: async () => [],
-        pauseForHandoff: async () => {},
-        exportForHandoff: async () => ({ version: 1, schedules: [] }),
-        estimateForHandoff: async () => 28,
-      },
-      pullRequestWatches: { reviewForHandoff: async () => [], stopForHandoff: async () => {} },
-      queues: {
-        holdForHandoff: async () => {},
-        entries: () => [],
-        exportForHandoff: async () => ({ version: 1, entries: [] }),
-      },
-      directory: captures,
-      serverId: sourceServerId,
-      logger: createTestLogger(),
+    createSourceFixture({
       ownership: sourceOwnership,
-      archives: new HandoffArchiveStore(path.join(root, "source-archives")),
-      destination: {
-        hasConversation: () => false,
-        withConversationArchive: async () => {
-          throw new Error("No previous transfer in this test");
-        },
-      },
-      workspaces: { get: async () => workspace, list: async () => [workspace] },
-      agents: new AgentStorage(path.join(root, "agents"), createTestLogger()),
-      agentManager: {
-        getAgent: () => null,
-        listAgents: () => [],
-        closeAgent: async () => {},
-        projectHistoryForHandoff: async () => [],
-        checkpointPromptAnnotations: async () => {},
-        recoverPromptAnnotationsForHandoff: async () => {},
-      },
-      terminals: {
-        listDirectories: () => [],
-        getTerminals: async () => [],
-        killTerminalAndWait: async () => {},
-      },
       setup: {
         activeIds: (workspaceId) => setup.activeIds(workspaceId),
         stop: async () => {
@@ -446,7 +630,7 @@ test("source preparation keeps ownership fenced after uncertain cleanup and retr
           await setup.stop(workspace.workspaceId);
         },
       },
-    });
+    }).source;
   let source = createSource();
   const request = {
     transferId,
