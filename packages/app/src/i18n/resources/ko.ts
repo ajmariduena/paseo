@@ -2175,7 +2175,6 @@ export const ko: TranslationResources = {
     onTheGo: {
       enter: "On the go",
       exit: "On the go 종료",
-      detected: "차 안 · On the go",
       mute: "음소거",
       unmute: "음소거 해제",
     },

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, Text, View } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
@@ -8,7 +8,7 @@ import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import * as Haptics from "expo-haptics";
 import { useKeepAwake } from "expo-keep-awake";
 import { Mic, MicOff, PhoneOff } from "lucide-react-native";
-import { resolveCallStatusKey } from "@/components/global-voice/call-status";
+import { resolveCallStatusKey, type CallStatusKey } from "@/components/global-voice/call-status";
 import { Button } from "@/components/ui/button";
 import { isNative } from "@/constants/platform";
 import type { Theme } from "@/styles/theme";
@@ -17,12 +17,12 @@ import type { OnTheGoReason } from "@/voice-chat/on-the-go/on-the-go-detector";
 import { exitOnTheGo } from "@/voice-chat/on-the-go/use-on-the-go";
 import type { GlobalVoice } from "@/voice-chat/use-global-voice";
 
-const TILE_ICON_SIZE = 30;
-const TILE_HEIGHT = 112;
-const TILE_RADIUS = 24;
+const TILE_ICON_SIZE = 52;
+const TILE_HEIGHT = 168;
+const TILE_RADIUS = 32;
+const STATUS_DOT_SIZE = 18;
 const PANEL_RADIUS = 28;
 const PANEL_BOTTOM_MIN = 16;
-const DETECTED_NOTICE_MS = 2_000;
 const SLIDE_MS = 220;
 const DISMISS_DISTANCE = 48;
 const KEEP_AWAKE_TAG = "paseo-on-the-go";
@@ -42,6 +42,15 @@ function isDetected(reason: OnTheGoReason | null): boolean {
   return reason !== null && reason !== "manual" && reason !== "always";
 }
 
+type StatusTone = "ready" | "speaking" | "busy" | "alert";
+
+function resolveStatusTone(statusKey: CallStatusKey): StatusTone {
+  if (statusKey === "listening" || statusKey === "recording") return "ready";
+  if (statusKey === "speaking") return "speaking";
+  if (statusKey === "muted" || statusKey === "offline") return "alert";
+  return "busy";
+}
+
 function tapHaptic(style: Haptics.ImpactFeedbackStyle): void {
   if (isNative) void Haptics.impactAsync(style).catch(() => {});
 }
@@ -59,18 +68,12 @@ export function OnTheGoPanel({ call }: { call: GlobalVoice }) {
   const insets = useSafeAreaInsets();
   useKeepAwake(KEEP_AWAKE_TAG);
   const statusKey = resolveCallStatusKey(call);
-  const [showDetected, setShowDetected] = useState(() =>
-    isDetected(useGlobalVoiceStore.getState().onTheGoReason),
-  );
+  const statusTone = resolveStatusTone(statusKey);
 
   useEffect(() => {
-    if (!showDetected) return;
-    if (isNative) {
-      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-    }
-    const timer = setTimeout(() => setShowDetected(false), DETECTED_NOTICE_MS);
-    return () => clearTimeout(timer);
-  }, [showDetected]);
+    if (!isNative || !isDetected(useGlobalVoiceStore.getState().onTheGoReason)) return;
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+  }, []);
 
   const exit = useCallback(() => {
     exitOnTheGo();
@@ -106,35 +109,49 @@ export function OnTheGoPanel({ call }: { call: GlobalVoice }) {
             collapsable={false}
             style={[styles.panel, { paddingBottom: Math.max(insets.bottom, PANEL_BOTTOM_MIN) }]}
           >
-            <Pressable
-              onPress={minimizeCall}
-              accessibilityRole="button"
-              accessibilityLabel={t("globalVoice.actions.minimize")}
-              testID="global-voice-on-the-go-minimize"
-              style={styles.handleArea}
-            >
-              <View style={styles.handle} />
-            </Pressable>
+            <View style={styles.topRow}>
+              <View style={styles.topSide} />
+              <Pressable
+                onPress={minimizeCall}
+                accessibilityRole="button"
+                accessibilityLabel={t("globalVoice.actions.minimize")}
+                testID="global-voice-on-the-go-minimize"
+                style={styles.handleArea}
+              >
+                <View style={styles.handle} />
+              </Pressable>
+              <View style={[styles.topSide, styles.topSideEnd]}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onPress={exit}
+                  testID="global-voice-on-the-go-exit"
+                  textStyle={styles.exitText}
+                >
+                  {t("globalVoice.onTheGo.exit")}
+                </Button>
+              </View>
+            </View>
 
-            <View style={styles.header}>
+            <View style={styles.statusRow}>
+              <View
+                style={[
+                  styles.statusDot,
+                  statusTone === "ready" ? styles.statusDotReady : null,
+                  statusTone === "speaking" ? styles.statusDotSpeaking : null,
+                  statusTone === "busy" ? styles.statusDotBusy : null,
+                  statusTone === "alert" ? styles.statusDotAlert : null,
+                ]}
+              />
               <Text
                 style={styles.status}
                 numberOfLines={1}
+                adjustsFontSizeToFit
                 accessibilityLiveRegion="polite"
                 testID="global-voice-status"
               >
                 {t(`globalVoice.status.${statusKey}`, { count: call.messages.pendingSends })}
               </Text>
-              <Button
-                variant="ghost"
-                size="md"
-                onPress={exit}
-                testID="global-voice-on-the-go-exit"
-                style={styles.exit}
-                textStyle={showDetected ? styles.exitTextDetected : styles.exitText}
-              >
-                {showDetected ? t("globalVoice.onTheGo.detected") : t("globalVoice.onTheGo.exit")}
-              </Button>
             </View>
 
             <View style={styles.tiles}>
@@ -264,8 +281,19 @@ const styles = StyleSheet.create((theme) => ({
     shadowOffset: { width: 0, height: -4 },
     elevation: 8,
   },
+  topRow: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  topSide: {
+    flex: 1,
+  },
+  topSideEnd: {
+    alignItems: "flex-end",
+    // Pulls the label's ink onto the tiles' trailing rail; the ghost padding stays as hit area.
+    marginRight: -theme.spacing[3],
+  },
   handleArea: {
-    alignSelf: "center",
     width: 88,
     minHeight: 28,
     alignItems: "center",
@@ -277,26 +305,38 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius.full,
     backgroundColor: theme.colors.surface4,
   },
-  header: {
+  statusRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[3],
-    minHeight: 44,
+    paddingHorizontal: theme.spacing[1],
+  },
+  statusDot: {
+    width: STATUS_DOT_SIZE,
+    height: STATUS_DOT_SIZE,
+    borderRadius: theme.borderRadius.full,
+  },
+  statusDotReady: {
+    backgroundColor: theme.colors.statusDotSuccess,
+  },
+  statusDotSpeaking: {
+    backgroundColor: theme.colors.statusDotRunning,
+  },
+  statusDotBusy: {
+    backgroundColor: theme.colors.statusDotWarning,
+  },
+  statusDotAlert: {
+    backgroundColor: theme.colors.statusDotDanger,
   },
   status: {
     flex: 1,
-    fontSize: theme.fontSize.xl,
+    fontSize: 40,
+    lineHeight: 48,
+    fontWeight: theme.fontWeight.bold,
     color: theme.colors.foreground,
-  },
-  exit: {
-    // Pulls the label's ink onto the tiles' trailing rail; the ghost padding stays as hit area.
-    marginRight: -theme.spacing[4],
   },
   exitText: {
     color: theme.colors.foregroundMuted,
-  },
-  exitTextDetected: {
-    color: theme.colors.accentBright,
   },
   tiles: {
     flexDirection: "row",
@@ -308,7 +348,7 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: TILE_RADIUS,
     alignItems: "center",
     justifyContent: "center",
-    gap: theme.spacing[2],
+    gap: theme.spacing[3],
     backgroundColor: theme.colors.surface3,
   },
   tileInverted: {
@@ -321,18 +361,18 @@ const styles = StyleSheet.create((theme) => ({
     opacity: 0.45,
   },
   tileLabel: {
-    fontSize: theme.fontSize.lg,
-    fontWeight: theme.fontWeight.medium,
+    fontSize: 24,
+    fontWeight: theme.fontWeight.semibold,
     color: theme.colors.foreground,
   },
   tileLabelInverted: {
-    fontSize: theme.fontSize.lg,
-    fontWeight: theme.fontWeight.medium,
+    fontSize: 24,
+    fontWeight: theme.fontWeight.semibold,
     color: theme.colors.surface0,
   },
   tileLabelOnColor: {
-    fontSize: theme.fontSize.lg,
-    fontWeight: theme.fontWeight.medium,
+    fontSize: 24,
+    fontWeight: theme.fontWeight.semibold,
     color: theme.colors.destructiveForeground,
   },
 }));

@@ -2216,9 +2216,8 @@ export const es: TranslationResources = {
     onTheGo: {
       enter: "On the go",
       exit: "Salir de On the go",
-      detected: "En el carro · On the go",
       mute: "Silenciar",
-      unmute: "Activar micrófono",
+      unmute: "Activar mic",
     },
     spoken: {
       notHeard: "No te escuché bien. ¿Me lo repites?",

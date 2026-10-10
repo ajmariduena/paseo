@@ -2185,7 +2185,6 @@ export const ja: TranslationResources = {
     onTheGo: {
       enter: "On the go",
       exit: "On the go を終了",
-      detected: "車内 · On the go",
       mute: "ミュート",
       unmute: "ミュート解除",
     },

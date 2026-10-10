@@ -2141,7 +2141,6 @@ export const zhCN: TranslationResources = {
     onTheGo: {
       enter: "On the go",
       exit: "退出 On the go",
-      detected: "在车上 · On the go",
       mute: "静音",
       unmute: "取消静音",
     },

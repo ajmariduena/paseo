@@ -2164,7 +2164,6 @@ export const ar: TranslationResources = {
     onTheGo: {
       enter: "On the go",
       exit: "الخروج من On the go",
-      detected: "في السيارة · On the go",
       mute: "كتم",
       unmute: "إلغاء الكتم",
     },

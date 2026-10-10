@@ -2191,7 +2191,6 @@ export const en = {
     onTheGo: {
       enter: "On the go",
       exit: "Exit On the go",
-      detected: "In the car · On the go",
       mute: "Mute",
       unmute: "Unmute",
     },

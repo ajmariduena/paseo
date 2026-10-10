@@ -2199,9 +2199,8 @@ export const ptBR: TranslationResources = {
     onTheGo: {
       enter: "On the go",
       exit: "Sair do On the go",
-      detected: "No carro · On the go",
       mute: "Silenciar",
-      unmute: "Ativar microfone",
+      unmute: "Ativar mic",
     },
     spoken: {
       notHeard: "Não entendi. Pode repetir?",

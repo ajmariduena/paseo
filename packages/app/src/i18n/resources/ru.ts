@@ -2199,9 +2199,8 @@ export const ru: TranslationResources = {
     onTheGo: {
       enter: "On the go",
       exit: "Выйти из On the go",
-      detected: "В машине · On the go",
       mute: "Выключить микрофон",
-      unmute: "Включить микрофон",
+      unmute: "Включить",
     },
     spoken: {
       notHeard: "Я не расслышал. Повторите, пожалуйста.",
