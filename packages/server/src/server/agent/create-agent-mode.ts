@@ -91,9 +91,9 @@ export function resolveAndValidateCreateAgentMode(
 }
 
 /** planning < asks before acting < approves edits on its own < runs without prompts */
-type PermissionLevel = 0 | 1 | 2 | 3;
+export type PermissionLevel = 0 | 1 | 2 | 3;
 
-function modePermissionLevel(mode: AgentMode | undefined): PermissionLevel | null {
+export function modePermissionLevel(mode: AgentMode | undefined): PermissionLevel | null {
   if (!mode) return null;
   if (mode.isUnattended) return 3;
   switch (mode.colorTier) {

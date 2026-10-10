@@ -100,6 +100,11 @@ export function toStoredAgentRecord(
       : null,
     internal: options?.internal,
     owner: agent.owner,
+    ...(agent.providerSegments !== undefined ? { providerSegments: agent.providerSegments } : {}),
+    ...(agent.pendingProviderSwitch !== undefined
+      ? { pendingProviderSwitch: agent.pendingProviderSwitch }
+      : {}),
+    ...(agent.switchOperations !== undefined ? { switchOperations: agent.switchOperations } : {}),
   } satisfies StoredAgentRecord;
 }
 

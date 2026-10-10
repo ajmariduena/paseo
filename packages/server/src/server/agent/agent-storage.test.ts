@@ -5,7 +5,7 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { promises as fs } from "node:fs";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
-import { AgentStorage } from "./agent-storage.js";
+import { AgentStorage, parseStoredAgentRecord, type StoredAgentRecord } from "./agent-storage.js";
 import { buildConfigOverrides, buildSessionConfig } from "../persistence-hooks.js";
 import type { ManagedAgent } from "./agent-manager.js";
 import type {
@@ -574,5 +574,145 @@ describe("AgentStorage", () => {
     const afterReload = new AgentStorage(storagePath, logger);
     const after = await afterReload.list();
     expect(after.some((r) => r.id === agentId)).toBe(false);
+  });
+});
+
+/** What a record looks like after a round trip through disk: undefined keys gone, defaults in. */
+function persistedShape(record: StoredAgentRecord | null): StoredAgentRecord {
+  if (!record) throw new Error("expected a record");
+  return parseStoredAgentRecord(JSON.parse(JSON.stringify(record)));
+}
+
+describe("AgentStorage provider switch state", () => {
+  let tmpDir: string;
+  let storage: AgentStorage;
+  const logger = createTestLogger();
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(path.join(os.tmpdir(), "agent-registry-switch-"));
+    storage = new AgentStorage(path.join(tmpDir, "agents"), logger);
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const segment = {
+    id: "seg-a",
+    provider: "claude",
+    model: null,
+    modeId: null,
+    thinkingOptionId: null,
+    incarnations: [],
+    startedAt: "2026-10-09T10:00:00.000Z",
+    endedAt: null,
+    handoffId: null,
+    requestedBy: "user" as const,
+    operationId: "op-1",
+  };
+
+  test("a snapshot flush from a manager that never read the switch state keeps it", async () => {
+    await storage.applySnapshot(createManagedAgent({ id: "agent-1", cwd: "/tmp/project" }));
+    await storage.commitProviderSwitch("agent-1", (candidate) => ({
+      ...candidate,
+      providerSegments: [segment],
+      pendingProviderSwitch: null,
+      switchOperations: [],
+    }));
+
+    await storage.applySnapshot(createManagedAgent({ id: "agent-1", cwd: "/tmp/project" }));
+
+    const record = await storage.get("agent-1");
+    expect(record?.providerSegments).toEqual([segment]);
+    expect(record?.switchOperations).toEqual([]);
+    const reloaded = new AgentStorage(path.join(tmpDir, "agents"), logger);
+    expect((await reloaded.get("agent-1"))?.providerSegments).toEqual([segment]);
+  });
+
+  test("a manager that carries the switch state projects its own copy", async () => {
+    await storage.applySnapshot(createManagedAgent({ id: "agent-1", cwd: "/tmp/project" }));
+    await storage.commitProviderSwitch("agent-1", (candidate) => ({
+      ...candidate,
+      providerSegments: [segment],
+    }));
+
+    await storage.applySnapshot({
+      ...createManagedAgent({ id: "agent-1", cwd: "/tmp/project" }),
+      providerSegments: [{ ...segment, id: "seg-b" }],
+    });
+
+    expect((await storage.get("agent-1"))?.providerSegments?.map((entry) => entry.id)).toEqual([
+      "seg-b",
+    ]);
+  });
+
+  test("a switch commits the whole active selection in one write and caps settled operations", async () => {
+    await storage.applySnapshot(
+      createManagedAgent({ id: "agent-1", cwd: "/tmp/project", config: { model: "opus" } }),
+    );
+    const operation = (index: number, phase: "done" | "sealed") => ({
+      operationId: `op-${index}`,
+      clientOperationId: `client-${index}`,
+      fingerprint: "fp",
+      phase,
+      sourceSegmentId: "seg-a",
+      targetSegmentId: null,
+      sealedSnapshotId: null,
+      allocatedHandle: null,
+      result: null,
+      error: null,
+      updatedAt: "2026-10-09T10:00:00.000Z",
+    });
+    const settled = Array.from({ length: 25 }, (_, index) => operation(index + 1, "done"));
+
+    const written = await storage.commitProviderSwitch("agent-1", (candidate) => ({
+      ...candidate,
+      provider: "codex",
+      persistence: { provider: "codex", sessionId: "thread-b" },
+      config: { ...candidate.config, model: "gpt-5.4" },
+      providerSegments: [segment, { ...segment, id: "seg-b", provider: "codex" }],
+      switchOperations: [operation(0, "sealed"), ...settled],
+    }));
+
+    expect(written).toMatchObject({
+      provider: "codex",
+      persistence: { provider: "codex", sessionId: "thread-b" },
+      config: { model: "gpt-5.4" },
+    });
+    expect(written.switchOperations?.map((entry) => entry.operationId)).toEqual([
+      "op-0",
+      ...Array.from({ length: 19 }, (_, index) => `op-${index + 7}`),
+    ]);
+    expect(await storage.get("agent-1")).toEqual(written);
+    const reloaded = new AgentStorage(path.join(tmpDir, "agents"), logger);
+    expect(await reloaded.get("agent-1")).toEqual(persistedShape(written));
+    await expect(storage.commitProviderSwitch("missing", (candidate) => candidate)).rejects.toThrow(
+      "Agent missing not found",
+    );
+  });
+
+  test("a switch whose write fails leaves disk and cache on the old selection", async () => {
+    await storage.applySnapshot(createManagedAgent({ id: "agent-1", cwd: "/tmp/project" }));
+    const before = await storage.get("agent-1");
+    const recordDir = path.dirname(
+      readdirSync(path.join(tmpDir, "agents"), { recursive: true, withFileTypes: true })
+        .filter((entry) => entry.isFile())
+        .map((entry) => path.join(entry.parentPath, entry.name))[0],
+    );
+    await fs.chmod(recordDir, 0o500);
+    try {
+      await expect(
+        storage.commitProviderSwitch("agent-1", (candidate) => {
+          candidate.provider = "codex";
+          return { ...candidate, providerSegments: [segment] };
+        }),
+      ).rejects.toThrow();
+    } finally {
+      await fs.chmod(recordDir, 0o700);
+    }
+
+    expect(await storage.get("agent-1")).toEqual(before);
+    const reloaded = new AgentStorage(path.join(tmpDir, "agents"), logger);
+    expect(await reloaded.get("agent-1")).toEqual(persistedShape(before));
   });
 });

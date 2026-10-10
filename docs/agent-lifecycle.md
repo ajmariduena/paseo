@@ -19,11 +19,23 @@ processes and subscriptions while retaining its Paseo identity, persistence hand
 workspace, labels, title, usage, attention, timestamps, and parent relationship. Opening or prompting
 the agent runs through `ensureAgentLoaded()`, which resumes the durable provider session under the
 same Paseo agent ID. Provider history is not appended again when the canonical timeline is already
-primed.
+primed. A record without a provider handle gets a fresh session but is still a restore: it keeps
+its timestamps, attention and retained timeline instead of being created again.
 
 Reload releases the old runtime before resuming its durable session: an idle provider process can
 still own an exclusive writer. A close failure retains that runtime for cleanup and blocks the
 replacement. Once closure succeeds, a failed resume leaves the durable agent closed and retryable.
+
+An agent that switched provider keeps one id and one chat made of provider segments, each a list
+of incarnations (native sessions). The record names the active incarnation; a resume inside the
+lifecycle lane rejects a handle that is no longer it, and the loader re-reads the record once. An
+incarnation that never accepted a turn restores fresh under its reserved id instead of resuming a
+transcript that does not exist. Retired history lives in sealed snapshots and is seeded into the
+in-memory timeline only when the store has no state for the agent (cold registration) or right
+after a destructive rebuild wipes it; a retained store is already complete, so closing and
+reopening keeps every row and the epoch. The seeder emits the divider at each segment boundary,
+because notification rows never come back from provider replay. See
+[data-model.md](data-model.md#segment-snapshot-store).
 
 An idle agent releases its runtime after `agents.idleRuntimeTimeoutMs` (default two hours; `0`
 disables it) when its provider opts in and confirms nothing depends on the live process. The agent
@@ -34,7 +46,13 @@ archive, replacement, reload, workspace teardown, or daemon shutdown.
 A provider opts in with `idleBackendEvictionEligible` and answers `canEvictIdleBackend()`
 immediately before the close, inside the agent's lifecycle queue. It returns `false` while work
 needs the process, and a rejection also retains the runtime: when in doubt, stay resident.
-Providers that do not opt in stay resident indefinitely. Claude opts in and releases only when the
+Providers that do not opt in stay resident indefinitely. Switching an agent's provider asks a
+narrower question through `AgentManager.getProviderSwitchBlockers`: only live work counts (turns,
+runs, permissions, out-of-band commands, running provider subagents, a replacement reservation
+another operation holds, a close still in flight or one that failed), then the provider's
+`describeRuntimeHolds()` when it defines it, else `canEvictIdleBackend()`. Typed holds say whether
+the hold ends on its own: background work and one-shot crons do; recurring crons, crons the CLI
+did not classify, unknown inventory and session-scoped grants do not. The eviction opt-in, timeout and handle checks are not part of it. Claude opts in and releases only when the
 last Stop hook in the current CLI process reported empty `background_tasks` and `session_crons`,
 no later `background_tasks_changed` added a task, and the session holds no session-scoped
 permission grant. Neither signal is sent at process start, and older CLIs never send them, so a

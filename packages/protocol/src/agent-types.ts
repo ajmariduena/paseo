@@ -397,6 +397,42 @@ export interface SubagentNotificationSource {
 /** Why a daemon notification reached this agent. Extend with new `kind`s, never reshape one. */
 export type NotificationSource = SubagentNotificationSource;
 
+/** The boundary between two provider segments of one agent; `handoffId` opens "Ver contexto". */
+export interface ProviderSwitchNotification {
+  kind: "provider_switch";
+  segmentId: string;
+  fromProvider: string;
+  toProvider: string;
+  fromModel: string | null;
+  toModel: string | null;
+  handoffId: string | null;
+}
+
+/** A native session replaced inside one segment, without a provider change. */
+export interface IncarnationNotification {
+  kind: "incarnation";
+  segmentId: string;
+  incarnationId: string;
+  reason: "resume_failed" | "uncertain_delivery";
+}
+
+/** Retired history the daemon could not show in full. */
+export interface RetiredHistoryNotification {
+  kind: "retired_history";
+  segmentId: string;
+  incarnationId: string;
+  reason: "dropped" | "unavailable" | "over_cap";
+}
+
+/**
+ * Segment context of a notification row. A separate optional field, not a `source` kind, so
+ * clients whose `source` union predates provider switching still parse the row.
+ */
+export type ProviderSegmentNotification =
+  | ProviderSwitchNotification
+  | IncarnationNotification
+  | RetiredHistoryNotification;
+
 export interface NotificationTimelineItem {
   type: "notification";
   level: "info" | "warning" | "error";
@@ -404,6 +440,7 @@ export interface NotificationTimelineItem {
   /** The id of the prompt the provider received for this notification, when there was one. */
   messageId?: string;
   source?: NotificationSource;
+  providerSegment?: ProviderSegmentNotification;
 }
 
 export interface UserMessageOrigin {

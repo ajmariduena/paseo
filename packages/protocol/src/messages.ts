@@ -792,6 +792,30 @@ export const NotificationSourceSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 
+export const ProviderSegmentNotificationSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("provider_switch"),
+    segmentId: z.string(),
+    fromProvider: z.string(),
+    toProvider: z.string(),
+    fromModel: z.string().nullable(),
+    toModel: z.string().nullable(),
+    handoffId: z.string().nullable(),
+  }),
+  z.object({
+    kind: z.literal("incarnation"),
+    segmentId: z.string(),
+    incarnationId: z.string(),
+    reason: z.enum(["resume_failed", "uncertain_delivery"]),
+  }),
+  z.object({
+    kind: z.literal("retired_history"),
+    segmentId: z.string(),
+    incarnationId: z.string(),
+    reason: z.enum(["dropped", "unavailable", "over_cap"]),
+  }),
+]);
+
 // zod-aot 0.20.4 miscompiles this as a nested discriminated union by omitting
 // the inner tool_call branch from the generated outer dispatch.
 export const AgentTimelineItemPayloadSchema: z.ZodType<AgentTimelineItem, unknown> = z.union([
@@ -836,6 +860,8 @@ export const AgentTimelineItemPayloadSchema: z.ZodType<AgentTimelineItem, unknow
     // COMPAT(notificationSource): added in v0.11.0, keep optional; older daemons send neither.
     messageId: z.string().optional(),
     source: NotificationSourceSchema.optional(),
+    // Optional on purpose: older clients ignore it instead of rejecting an unknown source kind.
+    providerSegment: ProviderSegmentNotificationSchema.optional(),
   }),
   z.object({
     type: z.literal("compaction"),

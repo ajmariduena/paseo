@@ -114,6 +114,16 @@ history replay. The pending approval UI can hide that tool from presentation, bu
 must retain its position. Creating a new history card on rejection places it after the prompt that
 rejected it; changing steer-event ordering would also put new assistant output before that prompt.
 
+## Retired provider segments
+
+An agent that switched provider rebuilds its timeline from the sealed snapshots of its retired
+segments followed by the active provider's replay. Seeding mints a new epoch with dense sequence
+numbers, so clients reset to the tail as on any epoch change; it happens only when the daemon has
+no retained state for the agent. Dividers, incarnation markers and coverage warnings are
+`notification` rows carrying an optional `providerSegment` of kind `provider_switch`,
+`incarnation` or `retired_history`; it is a separate field rather than a `source` kind so that
+clients whose `source` union predates provider switching still parse the row.
+
 ## Provider child history
 
 Child transcripts use the same projected-page reconciliation as the main conversation. The client

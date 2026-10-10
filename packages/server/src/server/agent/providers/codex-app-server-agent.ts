@@ -18,7 +18,12 @@ import {
   type AgentProviderNotice,
   type AgentPromptContentBlock,
   type AgentPromptInput,
+  type AgentModelTransitionPlan,
   type AgentRunOptions,
+  type AgentSessionSelectionChange,
+  type AgentSubmissionOutcome,
+  type AgentTurnStart,
+  attachTurnSubmissionOutcome,
   type AgentRunResult,
   type AgentRuntimeInfo,
   type AgentSession,
@@ -90,6 +95,7 @@ import {
   type CodexThreadRollbackParams,
   type CodexThreadRollbackResponse,
   type CodexAppServerTraceContext,
+  CodexAppServerClientClosedError,
 } from "./codex/app-server-transport.js";
 import { type CodexUserMessageTurnIndex, revertCodexConversation } from "./codex/rewind.js";
 import {
@@ -338,6 +344,21 @@ function shouldPromoteThreadResponseToAutoReview(params: {
     params.approvalPolicy === "on-request" &&
     params.sandbox === "workspace-write"
   );
+}
+
+interface ForegroundAttempt {
+  turnId: string;
+  nativeTurnId: string | null;
+}
+
+function classifyLostTurnStart(
+  error: unknown,
+  attempt: ForegroundAttempt | null,
+): AgentSubmissionOutcome {
+  if (error instanceof CodexAppServerClientClosedError) {
+    return "unsent";
+  }
+  return attempt?.nativeTurnId ? "accepted" : "unknown";
 }
 
 function validateCodexMode(modeId: string): void {
@@ -3494,6 +3515,12 @@ export class CodexAppServerAgentSession implements AgentSession {
     resolve: () => void;
     cancelRequested: boolean;
   } | null = null;
+  /**
+   * The latest foreground submission and the native turn Codex acknowledged for it. Unlike the
+   * active-turn fields, completion, termination and close do not clear it: acceptance is a fact
+   * about the attempt and must outlive the turn.
+   */
+  private foregroundAttempt: ForegroundAttempt | null = null;
   private client: CodexAppServerClient | null = null;
   private threadRollbackAvailable = true;
   private readonly subscribers = new Set<(event: AgentStreamEvent) => void>();
@@ -3894,10 +3921,12 @@ export class CodexAppServerAgentSession implements AgentSession {
   }
 
   private currentServiceTiers(): CodexServiceTier[] {
-    const selectedModel = this.config.model
-      ? this.speedModels.find(
-          (model) => model.id === this.config.model || model.model === this.config.model,
-        )
+    return this.serviceTiersForModel(this.config.model);
+  }
+
+  private serviceTiersForModel(modelId: string | undefined): CodexServiceTier[] {
+    const selectedModel = modelId
+      ? this.speedModels.find((model) => model.id === modelId || model.model === modelId)
       : (this.speedModels.find((model) => model.isDefault) ?? this.speedModels[0]);
     return selectedModel?.serviceTiers ?? [];
   }
@@ -4397,12 +4426,9 @@ export class CodexAppServerAgentSession implements AgentSession {
     });
   }
 
-  async startTurn(
-    prompt: AgentPromptInput,
-    options?: AgentRunOptions,
-  ): Promise<{ turnId: string }> {
+  async startTurn(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<AgentTurnStart> {
     if (this.activeForegroundTurnId || this.pendingForegroundStart) {
-      throw new Error("A foreground turn is already active");
+      throw attachTurnSubmissionOutcome(new Error("A foreground turn is already active"), "unsent");
     }
 
     let resolveStart!: () => void;
@@ -4417,6 +4443,10 @@ export class CodexAppServerAgentSession implements AgentSession {
 
     this.dismissPendingPlanApprovals("Dismissed by a new prompt");
 
+    let turnId: string | null = null;
+    // Everything before the turn/start write leaves the prompt unsent; after it, only a
+    // correlated response or root turn/started proves acceptance.
+    let submission: AgentSubmissionOutcome = "unsent";
     try {
       await this.connect();
       if (!this.client) {
@@ -4435,7 +4465,9 @@ export class CodexAppServerAgentSession implements AgentSession {
       }
 
       const turnStart = await this.buildTurnStartParams(effectivePrompt, options);
-      const turnId = this.createTurnId();
+      turnId = this.createTurnId();
+      const attempt: ForegroundAttempt = { turnId, nativeTurnId: null };
+      this.foregroundAttempt = attempt;
       this.activeForegroundTurnId = turnId;
       this.activeClientMessageId = options?.clientMessageId ?? null;
       this.currentTurnId = null;
@@ -4462,14 +4494,25 @@ export class CodexAppServerAgentSession implements AgentSession {
       if (pendingStart.cancelRequested) {
         throw new Error("Codex turn start was interrupted before reaching Codex");
       }
-      await this.client.request("turn/start", turnStart.params, TURN_START_TIMEOUT_MS);
-      return { turnId };
+      submission = "unknown";
+      const response = toObjectRecord(
+        await this.client.request("turn/start", turnStart.params, TURN_START_TIMEOUT_MS),
+      );
+      submission = "accepted";
+      const acknowledgedTurnId = nonEmptyString(toObjectRecord(response?.turn)?.id);
+      if (acknowledgedTurnId) {
+        attempt.nativeTurnId = acknowledgedTurnId;
+      }
+      return { turnId, submission: Promise.resolve(submission) };
     } catch (error) {
+      if (submission === "unknown") {
+        submission = classifyLostTurnStart(error, this.foregroundAttempt);
+      }
       this.pendingForegroundTurnIdentification?.resolve(null);
       this.pendingForegroundTurnIdentification = null;
       this.activeForegroundTurnId = null;
       this.activeClientMessageId = null;
-      throw error;
+      throw error instanceof Error ? attachTurnSubmissionOutcome(error, submission) : error;
     } finally {
       if (this.pendingForegroundStart === pendingStart) {
         this.pendingForegroundStart = null;
@@ -4682,6 +4725,48 @@ export class CodexAppServerAgentSession implements AgentSession {
     if (this.activeForegroundTurnId) {
       return THINKING_APPLIES_NEXT_TURN_NOTICE;
     }
+  }
+
+  // Every Codex selection rides on the next turn/start, so nothing here needs a relaunch; only
+  // speed tiers can be invalid for the chosen model.
+  planModelTransition(change: AgentSessionSelectionChange): AgentModelTransitionPlan {
+    if (change.modeId !== undefined) {
+      try {
+        validateCodexMode(change.modeId);
+      } catch (error) {
+        return { kind: "reject", reason: error instanceof Error ? error.message : String(error) };
+      }
+    }
+    const model =
+      change.model === undefined ? this.config.model : normalizeCodexModelId(change.model);
+    const tiers = this.serviceTiersForModel(model);
+    for (const [featureId, value] of Object.entries(change.featureValues ?? {})) {
+      if (featureId === "plan_mode") continue;
+      // COMPAT(codexFastPreference): added in v0.10.0, remove after 2027-03-29 once clients use service_tier.
+      if (featureId === "fast_mode") {
+        if (value && !tiers.some((tier) => tier.name.toLowerCase() === "fast")) {
+          return {
+            kind: "reject",
+            reason: `Codex fast mode is not available for model '${model ?? "default"}'`,
+          };
+        }
+        continue;
+      }
+      if (featureId === "service_tier") {
+        if (
+          typeof value !== "string" ||
+          (value !== "default" && !tiers.some((tier) => tier.id === value))
+        ) {
+          return {
+            kind: "reject",
+            reason: `Codex speed '${String(value)}' is not available for model '${model ?? "default"}'`,
+          };
+        }
+        continue;
+      }
+      return { kind: "reject", reason: `Unknown Codex feature: ${featureId}` };
+    }
+    return { kind: "in_session" };
   }
 
   async setFeature(featureId: string, value: unknown): Promise<void> {
@@ -6212,6 +6297,9 @@ export class CodexAppServerAgentSession implements AgentSession {
       return;
     }
     this.currentTurnId = parsed.turnId;
+    if (this.foregroundAttempt && this.foregroundAttempt.turnId === this.activeForegroundTurnId) {
+      this.foregroundAttempt.nativeTurnId = parsed.turnId;
+    }
     const pendingIdentification = this.pendingForegroundTurnIdentification;
     if (
       pendingIdentification &&
@@ -7362,10 +7450,14 @@ export class CodexAppServerAgentClient implements AgentClient {
     const sessionConfig: AgentSessionConfig = { ...config, provider: CODEX_PROVIDER };
     const goalsEnabled = await this.resolveGoalsEnabled();
     const autoReviewEnabled = await this.resolveAutoReviewEnabled();
+    // thread/start already created the reserved thread server-side, so binding means resuming it.
+    const reserved = options?.reservedSessionId
+      ? { sessionId: options.reservedSessionId, metadata: { cwd: sessionConfig.cwd } }
+      : null;
     const environment = buildCodexAppServerEnv(this.runtimeSettings, launchContext?.env);
     const session = new CodexAppServerAgentSession(
       sessionConfig,
-      null,
+      reserved,
       this.logger,
       () =>
         this.spawnAppServer(launchContext?.env, {

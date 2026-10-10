@@ -32,12 +32,23 @@ const QueueEntrySchema = z.object({
   wake: WakeRefSchema.nullable(),
 });
 
+const ClaimSchema = z.object({
+  entry: QueueEntrySchema,
+  /** The submission attempt the entry was handed to; the claim ends with that attempt's outcome. */
+  attemptId: z.string(),
+  claimedAt: z.string(),
+  /** Set when the attempt's outcome was lost: the entry is held, never replayed on its own. */
+  outcome: z.literal("unknown").nullable(),
+});
+
 const QueueFileSchema = z.object({
   version: z.literal(1),
   agentId: z.string(),
   held: z.boolean(),
   heldReason: HeldReasonSchema.nullable(),
   entries: z.array(QueueEntrySchema),
+  /** Entries handed to a delivery whose native outcome has not settled; absent before claims existed. */
+  claims: z.array(ClaimSchema).default([]),
 });
 
 const PromptBlockSchema = z.union([
@@ -52,6 +63,8 @@ export type AgentQueueHeldReason = z.infer<typeof HeldReasonSchema>;
 export type AgentQueueEntry = z.infer<typeof QueueEntrySchema>;
 export type AgentQueueFile = z.infer<typeof QueueFileSchema>;
 export type QueueWakeRef = z.infer<typeof WakeRefSchema>;
+export type AgentQueueClaim = z.infer<typeof ClaimSchema>;
+export type QueueClaimOutcome = "accepted" | "unsent" | "unknown";
 
 export interface NewQueueEntry {
   id: string;
@@ -107,7 +120,7 @@ export function inDeliveryOrder(entries: readonly AgentQueueEntry[]): AgentQueue
 }
 
 function emptyFile(agentId: string): AgentQueueFile {
-  return { version: 1, agentId, held: false, heldReason: null, entries: [] };
+  return { version: 1, agentId, held: false, heldReason: null, entries: [], claims: [] };
 }
 
 /**
@@ -154,10 +167,15 @@ export class AgentQueueStore {
   async enqueue(agentId: string, input: NewQueueEntry, now: string): Promise<AgentQueueEntry> {
     const promptFile = input.prompt === null ? null : await this.writePrompt(agentId, input.prompt);
     const preview = input.prompt === null ? null : previewPrompt(input.prompt);
-    return await this.mutate(agentId, (file) => {
-      const existing = file.entries.find((entry) => entry.id === input.id);
+    const owned = await this.mutate(agentId, (file) => {
+      // A message id stays owned while queued or claimed; a resend answers with that entry.
+      const existing =
+        file.entries.find((entry) => entry.id === input.id) ??
+        file.claims.find((claim) => claim.entry.id === input.id)?.entry;
       if (existing) return existing;
-      if (file.entries.length >= MAX_ENTRIES_PER_AGENT) throw new QueueFullError(agentId);
+      if (file.entries.length + file.claims.length >= MAX_ENTRIES_PER_AGENT) {
+        throw new QueueFullError(agentId);
+      }
       const position = Math.max(0, ...file.entries.map((entry) => entry.position)) + 1;
       const entry: AgentQueueEntry = {
         id: input.id,
@@ -173,6 +191,10 @@ export class AgentQueueStore {
       file.entries.push(entry);
       return entry;
     });
+    if (promptFile && owned.promptFile !== promptFile) {
+      await this.discard(agentId, { ...owned, promptFile });
+    }
+    return owned;
   }
 
   /** Removes and returns the next entry in delivery order, unless the queue is held. */
@@ -185,6 +207,56 @@ export class AgentQueueStore {
       return next;
     });
     return entry ? { entry, prompt: await this.readPrompt(agentId, entry) } : null;
+  }
+
+  /**
+   * Like `dequeueNext`, but the entry and its prompt stay owned by the queue as a claim until
+   * `settleClaim` learns the submission outcome. A claim the daemon loses survives a restart.
+   */
+  async claimNext(agentId: string, attemptId: string, now: string): Promise<DequeuedEntry | null> {
+    const entry = await this.mutate(agentId, (file) => {
+      const retried = file.claims.find((claim) => claim.attemptId === attemptId);
+      if (retried) return retried.entry;
+      if (file.held) return null;
+      const [next] = inDeliveryOrder(file.entries);
+      if (!next) return null;
+      file.entries = file.entries.filter((candidate) => candidate.id !== next.id);
+      file.claims.push({ entry: next, attemptId, claimedAt: now, outcome: null });
+      return next;
+    });
+    return entry ? { entry, prompt: await this.readPrompt(agentId, entry) } : null;
+  }
+
+  claims(agentId: string): AgentQueueClaim[] {
+    return [...(this.cache.get(agentId)?.claims ?? [])];
+  }
+
+  /**
+   * `accepted` releases the entry for good; `unsent` puts it back and holds the queue, payload
+   * intact; `unknown` keeps the claim so nothing replays it on its own.
+   */
+  async settleClaim(
+    agentId: string,
+    attemptId: string,
+    outcome: QueueClaimOutcome,
+  ): Promise<AgentQueueClaim | null> {
+    const claim = await this.mutate(agentId, (file) => {
+      const found = file.claims.find((candidate) => candidate.attemptId === attemptId) ?? null;
+      if (!found) return null;
+      if (outcome === "unknown") {
+        found.outcome = "unknown";
+        return found;
+      }
+      file.claims = file.claims.filter((candidate) => candidate !== found);
+      if (outcome === "unsent") {
+        file.entries.push(found.entry);
+        file.held = true;
+        file.heldReason = "failure";
+      }
+      return found;
+    });
+    if (claim && outcome === "accepted") await this.discard(agentId, claim.entry);
+    return claim;
   }
 
   /** Removes one entry, for cancel or promote. Its prompt stays readable until `discard`. */
@@ -311,13 +383,15 @@ export class AgentQueueStore {
   }
 
   private async write(agentId: string, file: AgentQueueFile): Promise<void> {
-    const isEmpty = file.entries.length === 0;
+    const isEmpty = file.entries.length === 0 && file.claims.length === 0;
     if (this.directory) {
       const filePath = this.filePath(this.directory, agentId);
       if (isEmpty) {
         await rm(filePath, { force: true });
       } else {
-        await writeJsonFileAtomic(filePath, file);
+        // Files without claims keep the shape older daemons wrote.
+        const { claims, ...rest } = file;
+        await writeJsonFileAtomic(filePath, claims.length > 0 ? file : rest);
       }
     }
     if (isEmpty) {
@@ -372,7 +446,10 @@ export class AgentQueueStore {
   private async removeOrphanPrompts(agentId: string, file: AgentQueueFile | null): Promise<void> {
     const directory = this.directory;
     if (!directory) return;
-    const referenced = new Set(file?.entries.flatMap((entry) => entry.promptFile ?? []) ?? []);
+    const referenced = new Set([
+      ...(file?.entries.flatMap((entry) => entry.promptFile ?? []) ?? []),
+      ...(file?.claims.flatMap((claim) => claim.entry.promptFile ?? []) ?? []),
+    ]);
     let names: string[];
     try {
       names = await readdir(path.join(directory, agentId));

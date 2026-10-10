@@ -472,6 +472,71 @@ describe("wire schema compatibility", () => {
     });
   });
 
+  test("provider switch dividers stay parseable by clients that only know subagent sources", () => {
+    const divider = {
+      type: "notification",
+      level: "info",
+      message: "Switched from claude to codex",
+      providerSegment: {
+        kind: "provider_switch",
+        segmentId: "seg-b",
+        fromProvider: "claude",
+        toProvider: "codex",
+        fromModel: "claude-opus-5-5",
+        toModel: null,
+        handoffId: "handoff-1",
+      },
+    };
+    expect(AgentTimelineItemPayloadSchema.parse(divider)).toEqual(divider);
+    const gap = {
+      type: "notification",
+      level: "warning",
+      message: "The earlier claude history could not be read",
+      providerSegment: {
+        kind: "retired_history",
+        segmentId: "seg-a",
+        incarnationId: "inc-a1",
+        reason: "unavailable",
+      },
+    };
+    expect(AgentTimelineItemPayloadSchema.parse(gap)).toEqual(gap);
+    const marker = {
+      type: "notification",
+      level: "warning",
+      message: "A codex prompt's delivery was uncertain; a new session was started",
+      providerSegment: {
+        kind: "incarnation",
+        segmentId: "seg-b",
+        incarnationId: "inc-b2",
+        reason: "uncertain_delivery",
+      },
+    };
+    expect(AgentTimelineItemPayloadSchema.parse(marker)).toEqual(marker);
+
+    // Copied from v0.11.0-beta.19: notifications with a closed `source` union.
+    const NotificationWithSourceSchema = z.object({
+      type: z.literal("notification"),
+      level: z.enum(["info", "warning", "error"]),
+      message: z.string(),
+      messageId: z.string().optional(),
+      source: z
+        .discriminatedUnion("kind", [
+          z.object({
+            kind: z.literal("subagent"),
+            subagents: z.array(z.object({ agentId: z.string() })),
+          }),
+        ])
+        .optional(),
+    });
+    for (const row of [divider, gap, marker]) {
+      expect(NotificationWithSourceSchema.parse(row)).toEqual({
+        type: "notification",
+        level: row.level,
+        message: row.message,
+      });
+    }
+  });
+
   test("agent snapshots carry the server queue, and old clients still parse them", () => {
     const snapshot = {
       id: "agent-1",

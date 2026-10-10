@@ -1,9 +1,21 @@
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
+import type { AgentRuntimeHold } from "../../agent-sdk-types.js";
+
 type BackgroundTasksChangedMessage = Extract<
   SDKMessage,
   { type: "system"; subtype: "background_tasks_changed" }
 >;
+
+// A single unknown schedule makes the whole set unknown: a caller may only wait on crons it knows
+// are one-shot.
+function describeCronRecurrence(
+  crons: ReadonlyArray<{ recurring: boolean | null }>,
+): boolean | null {
+  if (crons.some((cron) => cron.recurring === true)) return true;
+  if (crons.some((cron) => cron.recurring === null)) return null;
+  return false;
+}
 
 // Claude Code reports live background work two ways: every Stop hook input carries the whole
 // inventory (background tasks and session crons), and `background_tasks_changed` replaces the task
@@ -13,7 +25,7 @@ type BackgroundTasksChangedMessage = Extract<
 export class ClaudeRuntimeResidency {
   private inventoryReported = false;
   private liveTaskIds = new Set<string>();
-  private sessionCronCount = 0;
+  private sessionCrons: Array<{ recurring: boolean | null }> = [];
   private holdsSessionPermissions = false;
 
   observeStopHook(input: unknown): void {
@@ -31,7 +43,10 @@ export class ClaudeRuntimeResidency {
         return typeof id === "string" ? [id] : [];
       }),
     );
-    this.sessionCronCount = crons.length;
+    this.sessionCrons = crons.map((cron) => {
+      const recurring = (cron as { recurring?: unknown } | null)?.recurring;
+      return { recurring: typeof recurring === "boolean" ? recurring : null };
+    });
   }
 
   observeMessage(message: SDKMessage): void {
@@ -49,16 +64,32 @@ export class ClaudeRuntimeResidency {
   reset(): void {
     this.inventoryReported = false;
     this.liveTaskIds = new Set();
-    this.sessionCronCount = 0;
+    this.sessionCrons = [];
     this.holdsSessionPermissions = false;
   }
 
+  holds(): AgentRuntimeHold[] {
+    const holds: AgentRuntimeHold[] = [];
+    if (this.liveTaskIds.size > 0) {
+      holds.push({ kind: "background_work", taskIds: [...this.liveTaskIds] });
+    }
+    if (this.sessionCrons.length > 0) {
+      holds.push({
+        kind: "session_crons",
+        count: this.sessionCrons.length,
+        recurring: describeCronRecurrence(this.sessionCrons),
+      });
+    }
+    if (!this.inventoryReported) {
+      holds.push({ kind: "inventory_unknown" });
+    }
+    if (this.holdsSessionPermissions) {
+      holds.push({ kind: "session_permissions" });
+    }
+    return holds;
+  }
+
   canRelease(): boolean {
-    return (
-      this.inventoryReported &&
-      this.liveTaskIds.size === 0 &&
-      this.sessionCronCount === 0 &&
-      !this.holdsSessionPermissions
-    );
+    return this.holds().length === 0;
   }
 }

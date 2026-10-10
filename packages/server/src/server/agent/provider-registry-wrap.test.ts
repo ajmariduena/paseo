@@ -2,8 +2,11 @@ import { describe, expect, test } from "vitest";
 
 import type {
   AgentCapabilityFlags,
+  AgentModelTransitionPlan,
   AgentPromptInput,
+  AgentRuntimeHold,
   AgentSession,
+  AgentSessionSelectionChange,
   AgentStreamEvent,
   AgentRuntimeInfo,
   SteerActiveTurnOptions,
@@ -21,11 +24,14 @@ type OptionalAgentSessionMethodName = {
 }[keyof AgentSession];
 
 const OPTIONAL_AGENT_SESSION_METHOD_NAMES = [
+  "canEvictIdleBackend",
+  "describeRuntimeHolds",
   "steerActiveTurn",
   "listCommands",
   "setModel",
   "setThinkingOption",
   "setFeature",
+  "planModelTransition",
   "revertConversation",
   "revertFiles",
   "revertBoth",
@@ -74,6 +80,16 @@ class FakeSession implements AgentSession {
     return { timeline: [] };
   }
 
+  async canEvictIdleBackend() {
+    this.recordedCalls.push("canEvictIdleBackend");
+    return false;
+  }
+
+  async describeRuntimeHolds(): Promise<AgentRuntimeHold[]> {
+    this.recordedCalls.push("describeRuntimeHolds");
+    return [{ kind: "inventory_unknown" }];
+  }
+
   async startTurn() {
     this.recordedCalls.push("startTurn");
     return { turnId: "turn-1" };
@@ -115,6 +131,11 @@ class FakeSession implements AgentSession {
 
   async setMode(_modeId: string) {
     this.recordedCalls.push("setMode");
+  }
+
+  planModelTransition(_change: AgentSessionSelectionChange): AgentModelTransitionPlan {
+    this.recordedCalls.push("planModelTransition");
+    return { kind: "in_session" };
   }
 
   getPendingPermissions() {
@@ -189,11 +210,14 @@ describe("wrapSessionProvider", () => {
     const session = new FakeSession();
     const wrapped = wrapSessionProvider("custom-claude", session);
 
+    expect(await wrapped.canEvictIdleBackend?.()).toBe(false);
+    expect(await wrapped.describeRuntimeHolds?.()).toEqual([{ kind: "inventory_unknown" }]);
     await wrapped.steerActiveTurn?.("follow-up", { expectedTurnId: "turn-1" });
     await wrapped.listCommands?.();
     await wrapped.setModel?.("sonnet");
     await wrapped.setThinkingOption?.("high");
     await wrapped.setFeature?.("feature-1", true);
+    expect(wrapped.planModelTransition?.({ model: "opus" })).toEqual({ kind: "in_session" });
     await wrapped.revertConversation?.({ messageId: "message-1" });
     await wrapped.revertFiles?.({ messageId: "message-1" });
     await wrapped.revertBoth?.({ messageId: "message-1" });
@@ -204,11 +228,14 @@ describe("wrapSessionProvider", () => {
       { prompt: "follow-up", options: { expectedTurnId: "turn-1" } },
     ]);
     expect(session.recordedCalls).toEqual([
+      "canEvictIdleBackend",
+      "describeRuntimeHolds",
       "steerActiveTurn",
       "listCommands",
       "setModel",
       "setThinkingOption",
       "setFeature",
+      "planModelTransition",
       "revertConversation",
       "revertFiles",
       "revertBoth",

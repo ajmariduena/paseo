@@ -267,6 +267,7 @@ function buildAgentManagerSpies() {
     listAgents: vi.fn().mockReturnValue([]),
     getTimeline: vi.fn().mockReturnValue([]),
     resumeAgentFromPersistence: vi.fn(),
+    restoreAgent: vi.fn(),
     hydrateTimelineFromProvider: vi.fn().mockResolvedValue(undefined),
     appendTimelineItem: vi.fn().mockResolvedValue(undefined),
     emitLiveTimelineItem: vi.fn().mockResolvedValue(undefined),
@@ -7685,7 +7686,7 @@ describe("agent snapshot MCP serialization", () => {
       .mockReturnValue(snapshot)
       .mockReturnValue(snapshot);
     spies.agentStorage.get.mockResolvedValue(record);
-    spies.agentManager.resumeAgentFromPersistence.mockResolvedValue(snapshot);
+    spies.agentManager.restoreAgent.mockResolvedValue(snapshot);
     spies.agentManager.getTimeline.mockReturnValue([
       {
         kind: "status",
@@ -7710,7 +7711,11 @@ describe("agent snapshot MCP serialization", () => {
         currentModeId: "default",
       }),
     );
-    expect(spies.agentManager.resumeAgentFromPersistence).toHaveBeenCalled();
+    expect(spies.agentManager.restoreAgent).toHaveBeenCalledWith("archived-activity-agent", {
+      provider: record.provider,
+      incarnationId: null,
+      sessionId: record.persistence?.sessionId ?? null,
+    });
     expect(spies.agentManager.hydrateTimelineFromProvider).toHaveBeenCalledWith(
       "archived-activity-agent",
       { broadcast: expect.any(Function) },

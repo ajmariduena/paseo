@@ -853,6 +853,7 @@ describe("ClaudeAgentSession features", () => {
 
     await expect(session.startTurn("hello")).resolves.toEqual({
       turnId: expect.stringMatching(/^foreground-turn-/),
+      submission: expect.any(Promise),
     });
 
     expect(launches[0]?.options.extraArgs).toEqual({ chrome: null, model: "x" });
@@ -1054,6 +1055,7 @@ describe("ClaudeAgentSession features", () => {
 
     await expect(session.startTurn("hello")).resolves.toEqual({
       turnId: expect.stringMatching(/^foreground-turn-/),
+      submission: expect.any(Promise),
     });
 
     expect(queryFactory.mock.calls[0]?.[0].options).toMatchObject({
@@ -1110,6 +1112,7 @@ describe("ClaudeAgentSession features", () => {
 
     await expect(session.startTurn("hello")).resolves.toEqual({
       turnId: expect.stringMatching(/^foreground-turn-/),
+      submission: expect.any(Promise),
     });
 
     expect(launches[0]?.options.thinking).toEqual({ type: "disabled" });
@@ -1372,6 +1375,7 @@ describe("ClaudeAgentSession features", () => {
 
     await expect(session.startTurn("hello")).resolves.toEqual({
       turnId: expect.stringMatching(/^foreground-turn-/),
+      submission: expect.any(Promise),
     });
 
     await expect(session.setThinkingOption?.("ultracode")).resolves.toEqual({

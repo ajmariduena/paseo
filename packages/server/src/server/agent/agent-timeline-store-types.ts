@@ -1,12 +1,21 @@
 import type { ProjectedTimelineRow } from "./timeline-projection.js";
 import type { AgentTimelineItem } from "./agent-sdk-types.js";
 
+/** Where a seeded row came from: its sealed snapshot, stable across restarts and reseeds. */
+export interface AgentTimelineRowOrigin {
+  segmentId: string;
+  incarnationId: string;
+  rowIndex: number;
+}
+
 export interface AgentTimelineRow {
   seq: number;
   timestamp: string;
   item: AgentTimelineItem;
   readonly turnId?: string;
   readonly providerMessageId?: string;
+  /** Daemon-side only; never sent on the wire. */
+  readonly origin?: AgentTimelineRowOrigin;
 }
 
 export interface AgentTimelineCursor {

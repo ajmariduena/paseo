@@ -454,6 +454,7 @@ export function wrapSessionProvider(provider: AgentProvider, inner: AgentSession
       return inner.idleBackendEvictionEligible;
     },
     canEvictIdleBackend: inner.canEvictIdleBackend?.bind(inner),
+    describeRuntimeHolds: inner.describeRuntimeHolds?.bind(inner),
     usageSession: inner.usageSession?.bind(inner),
     run: (prompt, options) => inner.run(prompt, options),
     startTurn: (prompt, options) => inner.startTurn(prompt, options),
@@ -477,6 +478,7 @@ export function wrapSessionProvider(provider: AgentProvider, inner: AgentSession
     setModel: inner.setModel?.bind(inner),
     setThinkingOption: inner.setThinkingOption?.bind(inner),
     setFeature: inner.setFeature?.bind(inner),
+    planModelTransition: inner.planModelTransition?.bind(inner),
     stopBackgroundTask: inner.stopBackgroundTask?.bind(inner),
     revertConversation: inner.revertConversation?.bind(inner),
     revertFiles: inner.revertFiles?.bind(inner),

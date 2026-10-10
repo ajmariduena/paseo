@@ -1,7 +1,7 @@
 import type { AgentTimelineItem, ToolCallDetail } from "./agent-sdk-types.js";
 import { timelineItemIdentity } from "@getpaseo/protocol/timeline-identity";
 
-import type { AgentTimelineRow } from "./agent-timeline-store-types.js";
+import type { AgentTimelineRow, AgentTimelineRowOrigin } from "./agent-timeline-store-types.js";
 
 export type TimelineProjectionMode = "canonical" | "projected";
 
@@ -21,6 +21,7 @@ export interface TimelineProjectionEntry {
   item: AgentTimelineItem;
   turnId?: string;
   providerMessageId?: string;
+  origin?: AgentTimelineRowOrigin;
   timestamp: string;
   seqStart: number;
   seqEnd: number;
@@ -124,6 +125,7 @@ function makeCanonicalEntries(rows: readonly AgentTimelineRow[]): WorkingEntry[]
       timestamp: row.timestamp,
       ...(row.turnId ? { turnId: row.turnId } : {}),
       ...(row.providerMessageId ? { providerMessageId: row.providerMessageId } : {}),
+      ...(row.origin ? { origin: row.origin } : {}),
       seqStart: row.seq,
       seqEnd: row.seq,
       sourceSeqRanges: [{ startSeq: row.seq, endSeq: row.seq }],

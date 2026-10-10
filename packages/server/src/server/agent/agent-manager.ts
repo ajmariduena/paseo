@@ -63,6 +63,33 @@ import {
   type ListImportableSessionsOptions,
 } from "./agent-sdk-types.js";
 import { buildArchivedAgentRecord, type ArchivedStoredAgentRecord } from "./agent-archive.js";
+import {
+  collectProviderSwitchBlockers,
+  type ProviderSwitchBlocker,
+  type ProviderSwitchEligibilityOptions,
+  type ProviderSwitchWorkFacts,
+} from "./provider-switch-eligibility.js";
+import {
+  activeIncarnation,
+  type PendingProviderSwitch,
+  type ProviderSegment,
+  type SwitchOperation,
+} from "./provider-switch/record.js";
+import {
+  seedRetiredHistory,
+  retiredSnapshotIds,
+  type SeededHistory,
+} from "./provider-switch/seed.js";
+import type { SegmentSnapshot, SegmentSnapshotStore } from "./provider-switch/snapshot-store.js";
+import { StaleAgentHandleError } from "./provider-switch/stale-handle-error.js";
+import { SwitchRecoveryPendingError } from "./provider-switch/recovery-pending-error.js";
+import {
+  buildConfigOverrides,
+  buildSessionConfig,
+  extractAttention,
+  extractTimestamps,
+  toAgentPersistenceHandle,
+} from "../persistence-hooks.js";
 import type { StoredAgentRecord, AgentStorage, RestartCancelledWork } from "./agent-storage.js";
 import type { AgentOwner } from "./agent-owner.js";
 import {
@@ -113,7 +140,6 @@ import {
   type ProviderSubagentStoreEvent,
 } from "./provider-subagents/store.js";
 import { withTimeout } from "../../utils/promise-timeout.js";
-import { extractAttention } from "../persistence-hooks.js";
 
 const RELOAD_SESSION_CLOSE_TIMEOUT_MS = 3_000;
 const INTERRUPT_SESSION_TIMEOUT_MS = 2_000;
@@ -407,6 +433,22 @@ interface ProviderEnabledFlag {
 type ProviderEnabledMap = Partial<Record<AgentProvider, ProviderEnabledFlag>>;
 type ProviderClientMap = Partial<Record<AgentProvider, AgentClient>>;
 
+export interface StoredAgentRestoreState {
+  createdAt: Date;
+  updatedAt: Date;
+  lastUserMessageAt: Date | null;
+  attention: AttentionState;
+  lastTurnOutcome?: AgentTurnOutcome;
+  switchState: SwitchStateFields;
+}
+
+/** What a loader read before asking for a restore; the restore re-reads and rejects a change. */
+export interface AgentRestoreExpectation {
+  provider: string;
+  incarnationId: string | null;
+  sessionId: string | null;
+}
+
 export interface CreateAgentOptions {
   labels?: Record<string, string>;
   initialPrompt?: string;
@@ -416,6 +458,10 @@ export interface CreateAgentOptions {
   // undefined is an explicit decision: the agent never appears in the sidebar.
   workspaceId: string | undefined;
   owner?: AgentOwner;
+  /** Bringing back a stored agent that has no provider handle, which keeps its record and timeline. */
+  restore?: StoredAgentRestoreState;
+  /** Bind the fresh native session to an id allocated earlier; see AgentCreateSessionOptions. */
+  reservedSessionId?: string;
 }
 
 export interface AgentManagerOptions {
@@ -428,6 +474,8 @@ export interface AgentManagerOptions {
   onAgentAttention?: AgentAttentionCallback;
   onWorkspaceStateMayHaveChanged?: (params: { cwd: string }) => void;
   durableTimelineStore?: AgentTimelineStore;
+  /** Sealed retired history of switched agents; without it, segments seed nothing. */
+  segmentSnapshots?: Pick<SegmentSnapshotStore, "read">;
   /** Defaults to an in-memory store, so annotations do not survive a restart. */
   promptAnnotations?: PromptAnnotationStore;
   /** Defaults to an in-memory store, so queued messages do not survive a restart. */
@@ -505,6 +553,47 @@ export type AttentionState =
       attentionTimestamp: Date;
     };
 
+interface SwitchStateFields {
+  providerSegments?: ProviderSegment[];
+  pendingProviderSwitch?: PendingProviderSwitch | null;
+  switchOperations?: SwitchOperation[];
+}
+
+function switchStateOf(source: SwitchStateFields | undefined): SwitchStateFields {
+  return {
+    providerSegments: source?.providerSegments,
+    pendingProviderSwitch: source?.pendingProviderSwitch,
+    switchOperations: source?.switchOperations,
+  };
+}
+
+function assertRestoreExpectation(
+  agentId: string,
+  expected: AgentRestoreExpectation,
+  actual: AgentRestoreExpectation,
+): void {
+  const unchanged =
+    actual.provider === expected.provider &&
+    actual.incarnationId === expected.incarnationId &&
+    actual.sessionId === expected.sessionId;
+  if (!unchanged) {
+    throw new StaleAgentHandleError(agentId, expected.sessionId ?? "", actual.sessionId);
+  }
+}
+
+/** A loader that read the record before a switch committed must not bring the old session back. */
+function assertHandleMatchesActiveIncarnation(
+  record: StoredAgentRecord,
+  handle: AgentPersistenceHandle,
+): void {
+  const incarnation = activeIncarnation(record);
+  if (!incarnation) return;
+  const activeSessionId = incarnation.persistence?.sessionId ?? null;
+  if (activeSessionId !== handle.sessionId) {
+    throw new StaleAgentHandleError(record.id, handle.sessionId, activeSessionId);
+  }
+}
+
 function resolveInitialAttention(input: AttentionState | undefined): AttentionState {
   if (input == null || !input.requiresAttention) {
     return { requiresAttention: false };
@@ -575,6 +664,10 @@ interface ManagedAgentBase {
    * User-defined labels for categorizing agents (e.g., { surface: "workspace" }).
    */
   labels: Record<string, string>;
+  /** Switch state as read from the record at registration; undefined until then. */
+  providerSegments?: ProviderSegment[];
+  pendingProviderSwitch?: PendingProviderSwitch | null;
+  switchOperations?: SwitchOperation[];
 }
 
 type ManagedAgentWithSession = ManagedAgentBase & {
@@ -873,6 +966,8 @@ export class AgentManager {
   private readonly idFactory: () => string;
   private readonly registry?: AgentStorage;
   private readonly durableTimelineStore?: AgentTimelineStore;
+  private readonly segmentSnapshots?: Pick<SegmentSnapshotStore, "read">;
+  private readonly switchRecoveryPending = new Set<string>();
   private readonly promptAnnotations: PromptAnnotationStore;
   /** Messages waiting for an agent's running turn to end. */
   readonly messageQueue: AgentQueueRunner;
@@ -889,6 +984,9 @@ export class AgentManager {
   private readonly agentRegistrationTasks = new Set<Promise<void>>();
   private readonly inFlightAgentCloses = new Map<string, Promise<void>>();
   private readonly reloadedSessionCloses = new WeakMap<AgentSession, Promise<void>>();
+  /** Runtimes whose last close failed: they may still own a native writer until a close succeeds. */
+  private readonly unreleasedSessions = new WeakSet<AgentSession>();
+  private readonly pendingSessionCloses = new WeakSet<AgentSession>();
   private readonly lifecycleMutationTails = new Map<string, Promise<void>>();
   private readonly inFlightOutOfBand = new Map<string, number>();
   private readonly stopRequests = new Set<string>();
@@ -929,6 +1027,7 @@ export class AgentManager {
     this.idFactory = options?.idFactory ?? (() => randomUUID());
     this.registry = options?.registry;
     this.durableTimelineStore = options?.durableTimelineStore;
+    this.segmentSnapshots = options.segmentSnapshots;
     this.promptAnnotations = resolvePromptAnnotations(options);
     this.onAgentAttention = options?.onAgentAttention;
     this.onWorkspaceStateMayHaveChanged = options?.onWorkspaceStateMayHaveChanged;
@@ -1445,6 +1544,87 @@ export class AgentManager {
     return this.trackAgentRegistrationOperation(this.createAgentInternal(config, agentId, options));
   }
 
+  /**
+   * Brings a stored agent back inside its lifecycle lane: the record is re-read there, compared
+   * with what the loader saw, and a never-accepted incarnation binds a fresh session to its
+   * reserved id instead of resuming a transcript that does not exist.
+   */
+  restoreAgent(agentId: string, expected: AgentRestoreExpectation): Promise<ManagedAgent> {
+    const resolvedAgentId = validateAgentId(agentId, "restoreAgent");
+    return this.trackAgentRegistrationOperation(
+      this.runLifecycleMutation(resolvedAgentId, () =>
+        this.restoreAgentInternal(resolvedAgentId, expected),
+      ),
+    );
+  }
+
+  private async restoreAgentInternal(
+    agentId: string,
+    expected: AgentRestoreExpectation,
+  ): Promise<ManagedAgent> {
+    this.assertNotQuarantined(agentId);
+    const record = this.registry ? await this.registry.get(agentId) : null;
+    if (!record) {
+      throw new Error(`Agent not found: ${agentId}`);
+    }
+    const validProviders = this.getRegisteredProviderIds();
+    const incarnation = activeIncarnation(record);
+    const handle = toAgentPersistenceHandle(
+      validProviders,
+      record.persistence ?? incarnation?.persistence ?? null,
+    );
+    assertRestoreExpectation(agentId, expected, {
+      provider: record.provider,
+      incarnationId: incarnation?.id ?? null,
+      sessionId: handle?.sessionId ?? null,
+    });
+    const restore = {
+      ...extractTimestamps(record),
+      attention: extractAttention(record),
+      lastTurnOutcome: record.lastTurnOutcome,
+    };
+    const resumable =
+      handle !== null && (incarnation === null || incarnation.firstAcceptedAt !== null);
+    if (handle && resumable) {
+      return this.resumeAgentFromPersistenceInternal(
+        handle,
+        buildConfigOverrides(record),
+        agentId,
+        restore,
+        record.archivedAt ? { purpose: "history" } : undefined,
+      );
+    }
+    const config = buildSessionConfig(record, { validProviders });
+    if (!config) {
+      throw new Error(`Agent ${agentId} references unavailable provider '${record.provider}'`);
+    }
+    return this.createAgentInternal(config, agentId, {
+      labels: record.labels,
+      workspaceId: record.workspaceId,
+      owner: record.owner,
+      restore: {
+        createdAt: restore.createdAt,
+        updatedAt: restore.updatedAt,
+        lastUserMessageAt: restore.lastUserMessageAt,
+        attention: restore.attention,
+        lastTurnOutcome: restore.lastTurnOutcome,
+        switchState: switchStateOf(record),
+      },
+      ...(handle ? { reservedSessionId: handle.sessionId } : {}),
+    });
+  }
+
+  /** Boot found switch operations it could not settle for these agents; nothing may load them. */
+  quarantineForSwitchRecovery(agentIds: Iterable<string>): void {
+    for (const agentId of agentIds) this.switchRecoveryPending.add(agentId);
+  }
+
+  private assertNotQuarantined(agentId: string): void {
+    if (this.switchRecoveryPending.has(agentId)) {
+      throw new SwitchRecoveryPendingError(agentId);
+    }
+  }
+
   private async createAgentInternal(
     config: AgentSessionConfig,
     agentId: string | undefined,
@@ -1452,6 +1632,7 @@ export class AgentManager {
   ): Promise<ManagedAgent> {
     this.assertAcceptingAgentRegistrations();
     const resolvedAgentId = validateAgentId(agentId ?? this.idFactory(), "createAgent");
+    this.assertNotQuarantined(resolvedAgentId);
     if (this.pluginLifecycle && !config.internal) {
       const request = await this.pluginLifecycle.before("agent.create", {
         config,
@@ -1471,7 +1652,9 @@ export class AgentManager {
     options: CreateAgentOptions,
   ): Promise<ManagedAgent> {
     assertWorktreeNotCleaningUp(config.cwd);
-    await this.deleteAgentState(resolvedAgentId);
+    if (!options.restore) {
+      await this.deleteAgentState(resolvedAgentId);
+    }
     const { storedConfig, launchConfig, paseoToolPolicy } = await this.prepareSessionConfig(
       config,
       resolvedAgentId,
@@ -1494,12 +1677,16 @@ export class AgentManager {
     const createOptions = this.buildCreateSessionOptions(options);
     const session = await client.createSession(providerLaunchConfig, launchContext, createOptions);
     await this.requireExternalMcpSupport(session, storedConfig);
+    const restoreOptions = options.restore
+      ? { ...options.restore, ...options.restore.switchState, restoring: true }
+      : undefined;
     const agent = await this.registerSession(session, storedConfig, resolvedAgentId, {
       labels: options.labels,
       initialTitle: options.initialTitle,
       workspaceId: options.workspaceId,
       owner: options.owner,
       historyPrimed: true,
+      ...restoreOptions,
     });
     if (!agent.internal) {
       this.pluginLifecycle?.emit("agent.created", {
@@ -1511,10 +1698,15 @@ export class AgentManager {
 
   private buildCreateSessionOptions(options?: {
     persistSession?: boolean;
+    reservedSessionId?: string;
   }): AgentCreateSessionOptions | undefined {
-    return options?.persistSession === undefined
-      ? undefined
-      : { persistSession: options.persistSession };
+    const createOptions: AgentCreateSessionOptions = {
+      ...(options?.persistSession === undefined ? {} : { persistSession: options.persistSession }),
+      ...(options?.reservedSessionId === undefined
+        ? {}
+        : { reservedSessionId: options.reservedSessionId }),
+    };
+    return Object.keys(createOptions).length > 0 ? createOptions : undefined;
   }
 
   // Reconstruct an agent from provider persistence. Callers should explicitly
@@ -1573,6 +1765,7 @@ export class AgentManager {
       agentId ?? this.idFactory(),
       "resumeAgentFromPersistence",
     );
+    this.assertNotQuarantined(resolvedAgentId);
     const metadata = (handle.metadata ?? {}) as Partial<AgentSessionConfig>;
     const mergedConfig = {
       ...metadata,
@@ -1584,6 +1777,9 @@ export class AgentManager {
     // settled before the config is prepared, because a history load reads an archived
     // agent whose working directory may be gone.
     const record = this.registry ? await this.registry.get(resolvedAgentId) : null;
+    if (record) {
+      assertHandleMatchesActiveIncarnation(record, handle);
+    }
     const currentResumeOptions = record
       ? { purpose: record.archivedAt ? ("history" as const) : ("interactive" as const) }
       : resumeOptions;
@@ -1626,6 +1822,7 @@ export class AgentManager {
       ...options,
       persistence: handle,
       restoring: true,
+      ...(record ? switchStateOf(record) : {}),
     });
   }
 
@@ -1734,11 +1931,13 @@ export class AgentManager {
     options?: { rehydrateFromDisk?: boolean },
   ): Promise<ManagedAgent> {
     this.assertAcceptingAgentRegistrations();
+    this.assertNotQuarantined(agentId);
     let existing = this.requireSessionAgent(agentId);
     if (this.hasInFlightRun(agentId)) {
       await this.cancelAgentRunBefore(agentId, "reload");
       existing = this.requireSessionAgent(agentId);
     }
+    const switchState = await this.fenceReloadAgainstRecord(agentId, existing);
     const rehydrateFromDisk = options?.rehydrateFromDisk ?? false;
     const preservedHistoryPrimed = existing.historyPrimed;
     const preservedLastUsage = existing.lastUsage;
@@ -1817,6 +2016,7 @@ export class AgentManager {
         lastTurnOutcome: existing.lastTurnOutcome,
         attention: preservedAttention,
         restoring: true,
+        ...switchState,
       });
     } catch (error) {
       if (closedExisting) {
@@ -1841,10 +2041,22 @@ export class AgentManager {
     }
   }
 
+  /** A reload resumes the live handle, so the record must still name it as the active one. */
+  private async fenceReloadAgainstRecord(
+    agentId: string,
+    existing: LiveManagedAgent,
+  ): Promise<SwitchStateFields> {
+    const record = this.registry ? await this.registry.get(agentId) : null;
+    if (record && existing.persistence) {
+      assertHandleMatchesActiveIncarnation(record, existing.persistence);
+    }
+    return switchStateOf(record ?? existing);
+  }
+
   private async closeReloadedSession(session: AgentSession, agentId: string): Promise<void> {
     let operation = this.reloadedSessionCloses.get(session);
     if (!operation) {
-      operation = session.close();
+      operation = this.trackSessionClose(session, session.close());
       this.reloadedSessionCloses.set(session, operation);
       // Keep pending closes across request timeouts; a retry must await the same release.
       void operation.catch(() => this.reloadedSessionCloses.delete(session));
@@ -1944,6 +2156,48 @@ export class AgentManager {
     this.idleBackendTimers.delete(agentId);
   }
 
+  /** Blockers for switching this agent's provider; an agent without a live runtime has none. */
+  async getProviderSwitchBlockers(
+    agentId: string,
+    options?: ProviderSwitchEligibilityOptions,
+  ): Promise<ProviderSwitchBlocker[]> {
+    const agent = this.agents.get(agentId);
+    if (!agent) {
+      return [];
+    }
+    const runningProviderSubagents = this.providerSubagents
+      .list(agentId)
+      .filter((subagent) => subagent.status === "running");
+    return collectProviderSwitchBlockers(
+      {
+        lifecycle: agent.lifecycle,
+        runtimeRelease: this.describeRuntimeRelease(agent),
+        activeForegroundTurnId: agent.activeForegroundTurnId,
+        activeTurnId: agent.activeTurnId,
+        pendingReplacement: agent.pendingReplacement,
+        pendingPermissionCount: agent.pendingPermissions.size,
+        inFlightPermissionResponseCount: agent.inFlightPermissionResponses.size,
+        hasRun: this.runs.hasRun(agentId),
+        hasInFlightOutOfBand: this.inFlightOutOfBand.has(agentId),
+        runningProviderSubagentCount: runningProviderSubagents.length,
+      },
+      agent.session,
+      options,
+    );
+  }
+
+  private describeRuntimeRelease(agent: ManagedAgent): ProviderSwitchWorkFacts["runtimeRelease"] {
+    if (!agent.session) {
+      return "held";
+    }
+    const closing =
+      this.inFlightAgentCloses.has(agent.id) || this.pendingSessionCloses.has(agent.session);
+    if (closing) {
+      return "pending";
+    }
+    return this.unreleasedSessions.has(agent.session) ? "failed" : "held";
+  }
+
   private isIdleBackendEvictionCandidate(agent: ActiveManagedAgent): boolean {
     return (
       this.acceptingAgentRegistrations &&
@@ -2035,7 +2289,7 @@ export class AgentManager {
     onClose?.(agent);
     // Retain ownership until shutdown succeeds. A failed close may still own a
     // native writer, so publishing a resumable closed snapshot would orphan it.
-    await agent.session.close();
+    await this.trackSessionClose(agent.session, agent.session.close());
     this.cancelRunningProviderSubagents(agentId);
     const closedAgent = this.prepareAgentForClosure(agent, "agent closed");
 
@@ -2058,6 +2312,19 @@ export class AgentManager {
     if (persistError !== undefined) {
       throw persistError;
     }
+  }
+
+  private async trackSessionClose(session: AgentSession, close: Promise<void>): Promise<void> {
+    this.pendingSessionCloses.add(session);
+    try {
+      await close;
+    } catch (error) {
+      this.unreleasedSessions.add(session);
+      throw error;
+    } finally {
+      this.pendingSessionCloses.delete(session);
+    }
+    this.unreleasedSessions.delete(session);
   }
 
   private cancelRunningProviderSubagents(parentAgentId: string): void {
@@ -4054,6 +4321,9 @@ export class AgentManager {
       publishWhenReady?: boolean;
       workspaceId?: string;
       owner?: AgentOwner;
+      providerSegments?: ProviderSegment[];
+      pendingProviderSwitch?: PendingProviderSwitch | null;
+      switchOperations?: SwitchOperation[];
     },
   ): Promise<ManagedAgent> {
     let registered = false;
@@ -4201,7 +4471,17 @@ export class AgentManager {
     const durableTimelineHasRows =
       timelineAlreadyPrimed ||
       (durableTimelineSeed != null && (durableTimelineSeed.nextSeq ?? 1) > 1);
-    const timelineSeed = explicitTimelineSeed ?? durableTimelineSeed;
+    let timelineSeed = explicitTimelineSeed ?? durableTimelineSeed;
+    if (!explicitTimelineSeed && !timelineAlreadyPrimed) {
+      const retired = await this.loadRetiredHistorySeed(agentId, now);
+      if (retired) {
+        timelineSeed = {
+          rows: retired.rows,
+          nextSeq: Math.max(retired.rows.length + 1, durableTimelineSeed?.nextSeq ?? 1),
+          timestamp: now.toISOString(),
+        };
+      }
+    }
     if (timelineSeed || !this.timelineStore.has(agentId)) {
       this.timelineStore.initialize(agentId, timelineSeed ?? { timestamp: now.toISOString() });
     }
@@ -4231,6 +4511,9 @@ export class AgentManager {
           persistence?: AgentPersistenceHandle;
           workspaceId?: string;
           owner?: AgentOwner;
+          providerSegments?: ProviderSegment[];
+          pendingProviderSwitch?: PendingProviderSwitch | null;
+          switchOperations?: SwitchOperation[];
         }
       | undefined;
   }): ActiveManagedAgent {
@@ -4273,7 +4556,29 @@ export class AgentManager {
       attention: resolveInitialAttention(options?.attention),
       internal: config.internal ?? false,
       labels: options?.labels ?? {},
+      ...switchStateOf(options),
     } as ActiveManagedAgent;
+  }
+
+  /**
+   * Retired segments come from sealed snapshots only on a cold or destructive rebuild; a
+   * retained store already holds them. Returns null when the record has no retired history.
+   */
+  private async loadRetiredHistorySeed(agentId: string, now: Date): Promise<SeededHistory | null> {
+    if (!this.segmentSnapshots || !this.registry) return null;
+    const record = await this.registry.get(agentId);
+    if (!record || (record.providerSegments ?? []).length === 0) return null;
+    const snapshots = new Map<string, SegmentSnapshot | null>();
+    for (const snapshotId of retiredSnapshotIds(record)) {
+      snapshots.set(snapshotId, await this.segmentSnapshots.read(agentId, snapshotId));
+    }
+    const seeded = seedRetiredHistory({ state: record, snapshots, now: now.toISOString() });
+    if (seeded.rows.length === 0) return null;
+    this.logger.info(
+      { agentId, rows: seeded.rows.length, bytes: seeded.bytes, gaps: seeded.gaps.length },
+      "provider_switch.retired_history_seeded",
+    );
+    return seeded;
   }
 
   private async loadCommittedTimelineSeed(
@@ -4633,10 +4938,17 @@ export class AgentManager {
       }
     }
 
+    // Everything the rebuild needs is read before anything is deleted, so a failed read leaves
+    // the current timeline in place.
+    const now = new Date();
+    const retired = await this.loadRetiredHistorySeed(agent.id, now);
     this.agentStreamCoalescer.flushAndDiscard(agent.id);
     await this.deleteCommittedTimeline(agent.id);
     this.timelineStore.delete(agent.id);
-    this.timelineStore.initialize(agent.id, { timestamp: new Date().toISOString() });
+    this.timelineStore.initialize(agent.id, {
+      ...(retired ? { rows: retired.rows } : {}),
+      timestamp: now.toISOString(),
+    });
     agent.historyPrimed = true;
 
     for (const event of this.providerSubagents.deleteParent(agent.id)) {

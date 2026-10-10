@@ -229,6 +229,37 @@ export interface SteerActiveTurnOptions extends AgentSteerOptions {
   expectedTurnId: string;
 }
 
+/**
+ * Whether the native runtime took the submitted prompt. `accepted` is native acknowledgement,
+ * not completion; `unsent` is proof the prompt never reached the provider; `unknown` means the
+ * evidence was lost, so the prompt must never be replayed automatically.
+ */
+export type AgentSubmissionOutcome = "unsent" | "accepted" | "unknown";
+
+export interface AgentTurnStart {
+  turnId: string;
+  /** Absent on adapters without a correlated acceptance signal; callers treat absence as legacy. */
+  submission?: Promise<AgentSubmissionOutcome>;
+}
+
+const TURN_SUBMISSION_OUTCOME = Symbol("turnSubmissionOutcome");
+
+/** Tags a `startTurn` failure with how far the prompt got, without wrapping the error. */
+export function attachTurnSubmissionOutcome<E extends Error>(
+  error: E,
+  outcome: AgentSubmissionOutcome,
+): E {
+  return Object.assign(error, { [TURN_SUBMISSION_OUTCOME]: outcome });
+}
+
+export function readTurnSubmissionOutcome(error: unknown): AgentSubmissionOutcome | null {
+  if (typeof error !== "object" || error === null || !(TURN_SUBMISSION_OUTCOME in error)) {
+    return null;
+  }
+  const outcome = error[TURN_SUBMISSION_OUTCOME];
+  return outcome === "unsent" || outcome === "accepted" || outcome === "unknown" ? outcome : null;
+}
+
 export interface AgentUsage {
   inputTokens?: number;
   cachedInputTokens?: number;
@@ -642,6 +673,11 @@ export interface AgentCreateSessionOptions {
    */
   persistSession?: boolean;
   /**
+   * A native session id allocated earlier but never prompted. The provider binds its fresh
+   * session to it instead of resuming a transcript that does not exist yet.
+   */
+  reservedSessionId?: string;
+  /**
    * Model ids added by provider configuration (`models` / `additionalModels`).
    * Providers that validate against runtime-advertised models must accept these.
    */
@@ -667,6 +703,38 @@ export interface AgentPermissionResult {
   followUpPrompt?: AgentPromptInput;
 }
 
+/** A same-session change to what the agent runs with. Undefined fields stay as they are. */
+export interface AgentSessionSelectionChange {
+  model?: string | null;
+  modeId?: string;
+  thinkingOptionId?: string | null;
+  featureValues?: Record<string, unknown>;
+}
+
+/**
+ * How a selection change reaches the native session. `in_session`: the live runtime takes it
+ * through its setters. `restart_session`: the native process has to be relaunched on the same
+ * persisted session, by the setter or by a close and resume. `new_segment`: this native session
+ * cannot carry it; a new session with a context handoff is needed. `reject`: the combination is
+ * invalid for this provider.
+ */
+export type AgentModelTransitionPlan =
+  | { kind: "in_session" }
+  | { kind: "restart_session" }
+  | { kind: "new_segment" }
+  | { kind: "reject"; reason: string };
+
+/**
+ * What still depends on a live runtime. `background_work` ends on its own. Session crons end only
+ * when every one is a one-shot (`recurring: false`); `null` means the CLI did not say. The last
+ * two never end without the process, so a caller must not wait on them.
+ */
+export type AgentRuntimeHold =
+  | { kind: "background_work"; taskIds: string[] }
+  | { kind: "session_crons"; count: number; recurring: boolean | null }
+  | { kind: "inventory_unknown" }
+  | { kind: "session_permissions" };
+
 export interface AgentUsageSession {
   provider: string;
   model?: string;
@@ -683,12 +751,14 @@ export interface AgentSession {
   readonly idleBackendEvictionEligible?: boolean;
   /** Return false while provider-owned background work needs this runtime; reject if it cannot be checked. */
   canEvictIdleBackend?(): Promise<boolean>;
+  /** The holds behind `canEvictIdleBackend`; empty means the runtime can be released. */
+  describeRuntimeHolds?(): Promise<AgentRuntimeHold[]>;
   readonly features?: AgentFeature[];
   /** New provider-owned rows to commit on registration. streamHistory must also
    * replay them at their original timestamps; restored sessions omit old rows. */
   readonly initialTimeline?: ImportedTimelineEntry[];
   run(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<AgentRunResult>;
-  startTurn(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<{ turnId: string }>;
+  startTurn(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<AgentTurnStart>;
   steerActiveTurn?(prompt: AgentPromptInput, options: SteerActiveTurnOptions): Promise<SteerResult>;
   subscribe(callback: (event: AgentStreamEvent) => void): () => void;
   streamHistory(): AsyncGenerator<AgentStreamEvent>;
@@ -714,6 +784,8 @@ export interface AgentSession {
   setModel?(modelId: string | null): Promise<void>;
   setThinkingOption?(thinkingOptionId: string | null): Promise<void | AgentProviderNotice>;
   setFeature?(featureId: string, value: unknown): Promise<void>;
+  /** Classify a selection change before applying it. Absent means `restart_session`. */
+  planModelTransition?(change: AgentSessionSelectionChange): AgentModelTransitionPlan;
   stopBackgroundTask?(taskId: string): Promise<void>;
   revertConversation?(input: { messageId: string }): Promise<void>;
   revertFiles?(input: { messageId: string }): Promise<void>;

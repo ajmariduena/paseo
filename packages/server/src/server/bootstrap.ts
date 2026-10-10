@@ -169,6 +169,9 @@ import { ScheduleService } from "./schedule/service.js";
 import { DelegationService } from "./delegation/delegation-service.js";
 import { DelegationStore } from "./delegation/delegation-store.js";
 import { PullRequestWatchStore } from "./pull-request-watch/watch-store.js";
+import { reconcileProviderSwitchesAtBoot } from "./agent/provider-switch/boot-reconciliation.js";
+import { HandoffStore } from "./agent/provider-switch/handoff-store.js";
+import { SegmentSnapshotStore } from "./agent/provider-switch/snapshot-store.js";
 import { PullRequestWatcher } from "./pull-request-watch/watcher.js";
 import { AgentStop } from "./agent/stop.js";
 import { PromptAnnotationStore } from "./agent/prompt-annotations.js";
@@ -1056,12 +1059,17 @@ export async function createPaseoDaemon(
     if (git) configureGitProcessPolicy(git);
   });
   const initialAgentManagerState = providerSnapshotManager.getAgentManagerProviderState();
+  const segmentSnapshots = new SegmentSnapshotStore(
+    path.join(config.paseoHome, "context", "segments"),
+  );
+  const handoffs = new HandoffStore(path.join(config.paseoHome, "context", "handoffs"));
   const agentManager = new AgentManager({
     paseoHome: config.paseoHome,
     pluginLifecycle: pluginRuntime,
     clients: initialAgentManagerState.clients,
     providerDefinitions: initialAgentManagerState.providerDefinitions,
     registry: agentStorage,
+    segmentSnapshots,
     promptAnnotations: new PromptAnnotationStore(path.join(config.paseoHome, "prompt-annotations")),
     messageQueueStore: new AgentQueueStore(path.join(config.paseoHome, "agent-queues")),
     idleRuntimeTimeoutMs: config.idleRuntimeTimeoutMs,
@@ -1121,6 +1129,16 @@ export async function createPaseoDaemon(
   await new HtmlRenderStore(config.paseoHome).initialize();
   await agentStorage.initialize();
   logger.info({ elapsed: elapsed() }, "Agent storage initialized");
+  // Before any boot sender: a switch the restart cut must be settled on disk first. An agent
+  // whose settlement could not be written stays off limits to every loader until the next boot.
+  const switchRecovery = await reconcileProviderSwitchesAtBoot({
+    storage: agentStorage,
+    snapshots: segmentSnapshots,
+    handoffs,
+    logger,
+    now: () => new Date().toISOString(),
+  });
+  agentManager.quarantineForSwitchRecovery(switchRecovery.recoveryFailed.map((e) => e.agentId));
   agentManager.messageQueue.setFallbackDeliverer(
     createRestoredEntryDeliverer({
       agentManager,

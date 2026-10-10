@@ -3,7 +3,12 @@ import { afterEach, expect, test, vi } from "vitest";
 import { createTestLogger } from "../../../../test-utils/test-logger.js";
 import { ClaudeAgentClient } from "./agent.js";
 import { streamSession } from "../test-utils/session-stream-adapter.js";
-import type { AgentSession, AgentStreamEvent } from "../../agent-sdk-types.js";
+import {
+  readTurnSubmissionOutcome,
+  type AgentSession,
+  type AgentStreamEvent,
+  type AgentTurnStart,
+} from "../../agent-sdk-types.js";
 
 interface QueryMock {
   next: ReturnType<typeof vi.fn>;
@@ -1081,4 +1086,596 @@ test("auto-completes an open autonomous turn when a foreground prompt starts", a
 
   subscribedEvents.close();
   await session.close();
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+/** A session whose withdrawals and binary lookup the test controls. */
+async function createControlledSession(options: {
+  withdrawal?: () => Promise<boolean>;
+  resolveBinary?: () => Promise<string>;
+}): Promise<{
+  session: AgentSession;
+  query: () => ScriptedQuery | null;
+  queries: ScriptedQuery[];
+}> {
+  let query: ScriptedQuery | null = null;
+  const queries: ScriptedQuery[] = [];
+  queryFactory.mockImplementation(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
+    query = createScriptedQuery({ prompt, sessionId: "controlled-session" });
+    if (options.withdrawal) query.cancelAsyncMessage.mockImplementation(options.withdrawal);
+    queries.push(query);
+    return query;
+  });
+  const client = new ClaudeAgentClient({
+    logger: createTestLogger(),
+    queryFactory,
+    resolveBinary: options.resolveBinary ?? (async () => "/test/claude/bin"),
+  });
+  const session = await client.createSession({ provider: "claude", cwd: process.cwd() });
+  return { session, query: () => query, queries };
+}
+
+function settledOutcome(submission: Promise<unknown> | undefined) {
+  return Promise.race([submission, Promise.resolve("pending")]);
+}
+
+test("a refused withdrawal that answers late interrupts A before B is admitted, never B", async () => {
+  const withdrawal = deferred<boolean>();
+  const { session, query } = await createControlledSession({
+    withdrawal: () => withdrawal.promise,
+  });
+
+  const first = await session.startTurn("A");
+  await waitFor(() => query()?.prompts.length === 1);
+  await session.interrupt();
+
+  const second = session.startTurn("B");
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  expect(query()?.prompts).toHaveLength(1);
+  expect(query()?.interrupt).not.toHaveBeenCalled();
+  expect(await settledOutcome(first.submission)).toBe("pending");
+
+  withdrawal.resolve(false);
+  const started = await second;
+  expect(query()?.interrupt).toHaveBeenCalledTimes(1);
+  expect(await first.submission).toBe("unknown");
+  await waitFor(() => query()?.prompts.length === 2);
+  query()?.emit(buildCommandLifecycle(query()?.prompts[1]?.uuid, "started"));
+  expect(await started.submission).toBe("accepted");
+  expect(query()?.interrupt).toHaveBeenCalledTimes(1);
+
+  await session.close();
+});
+
+test("a confirmed withdrawal that answers late proves A unsent and admits B without an interrupt", async () => {
+  const withdrawal = deferred<boolean>();
+  const { session, query } = await createControlledSession({
+    withdrawal: () => withdrawal.promise,
+  });
+
+  const first = await session.startTurn("A");
+  await waitFor(() => query()?.prompts.length === 1);
+  await session.interrupt();
+  const second = session.startTurn("B");
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+  withdrawal.resolve(true);
+  await second;
+  expect(await first.submission).toBe("unsent");
+  expect(query()?.interrupt).not.toHaveBeenCalled();
+  await waitFor(() => query()?.prompts.length === 2);
+
+  await session.close();
+});
+
+test("an unanswered withdrawal is bounded: the interrupt still goes out and B is admitted", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const { session, query } = await createControlledSession({
+      withdrawal: () => new Promise<boolean>(() => undefined),
+    });
+    const first = await session.startTurn("A");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(query()?.prompts).toHaveLength(1);
+    await session.interrupt();
+    const second = session.startTurn("B");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(query()?.interrupt).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await second;
+    expect(query()?.interrupt).toHaveBeenCalledTimes(1);
+    expect(await first.submission).toBe("unknown");
+    await session.close();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("closing with A's withdrawal unanswered settles A unknown", async () => {
+  const { session, query } = await createControlledSession({
+    withdrawal: () => new Promise<boolean>(() => undefined),
+  });
+  const first = await session.startTurn("A");
+  await waitFor(() => query()?.prompts.length === 1);
+  await session.interrupt();
+
+  await session.close();
+
+  expect(await first.submission).toBe("unknown");
+});
+
+test("Stop while the binary is still resolving withdraws the prompt by never sending it", async () => {
+  const binary = deferred<string>();
+  const { session, query } = await createControlledSession({ resolveBinary: () => binary.promise });
+
+  const starting = session.startTurn("A");
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  await session.interrupt();
+  binary.resolve("/test/claude/bin");
+
+  const started = await starting;
+  expect(await started.submission).toBe("unsent");
+  expect(query()?.prompts ?? []).toHaveLength(0);
+  await session.close();
+});
+
+test("Stop while B waits behind A's cancellation settles B unsent and never pushes it", async () => {
+  const withdrawal = deferred<boolean>();
+  const { session, query } = await createControlledSession({
+    withdrawal: () => withdrawal.promise,
+  });
+  const events: string[] = [];
+  session.subscribe((event) => {
+    if (event.type.startsWith("turn_")) events.push(event.type);
+  });
+
+  const first = await session.startTurn("A");
+  await waitFor(() => query()?.prompts.length === 1);
+  await waitForInitRouted(query);
+  await session.interrupt();
+  const second = session.startTurn("B");
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+  await session.interrupt();
+  expect(events).toEqual(["turn_started", "turn_canceled", "turn_started", "turn_canceled"]);
+
+  withdrawal.resolve(false);
+  const started = await second;
+  expect(await started.submission).toBe("unsent");
+  expect(await first.submission).toBe("unknown");
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  expect(query()?.prompts.map((prompt) => prompt.text)).toEqual(["A"]);
+  expect(query()?.interrupt).toHaveBeenCalledTimes(1);
+  expect(events).toEqual(["turn_started", "turn_canceled", "turn_started", "turn_canceled"]);
+
+  await session.close();
+});
+
+test("two Stops while B waits behind A's cancellation cancel B once; the second only interrupts Claude's running turn", async () => {
+  const withdrawal = deferred<boolean>();
+  const { session, query } = await createControlledSession({
+    withdrawal: () => withdrawal.promise,
+  });
+  const events: string[] = [];
+  session.subscribe((event) => {
+    if (event.type.startsWith("turn_")) events.push(event.type);
+  });
+
+  await session.startTurn("A");
+  await waitFor(() => query()?.prompts.length === 1);
+  await waitForInitRouted(query);
+  await session.interrupt();
+  const second = session.startTurn("B");
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+  await session.interrupt();
+  expect(query()?.interrupt).not.toHaveBeenCalled();
+  // Nothing of ours is pending any more, but Claude's main turn is still running: this Stop is
+  // a plain native interrupt of that turn, never of B, which was never pushed.
+  await session.interrupt();
+  expect(query()?.interrupt).toHaveBeenCalledTimes(1);
+  expect(query()?.prompts.map((prompt) => prompt.text)).toEqual(["A"]);
+
+  withdrawal.resolve(false);
+  const started = await second;
+  expect(await started.submission).toBe("unsent");
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  expect(query()?.prompts.map((prompt) => prompt.text)).toEqual(["A"]);
+  expect(query()?.interrupt).toHaveBeenCalledTimes(2);
+  expect(events).toEqual(["turn_started", "turn_canceled", "turn_started", "turn_canceled"]);
+
+  const third = await session.startTurn("C");
+  await waitFor(() => query()?.prompts.length === 2);
+  query()?.emit(buildCommandLifecycle(query()?.prompts[1]?.uuid, "started"));
+  expect(await third.submission).toBe("accepted");
+
+  await session.close();
+});
+
+type WithdrawalAnswer = "confirm" | "refuse" | "hang";
+type LateFrames = "none" | "started" | "started+result";
+type MidOrder = "frames-first" | "stops-first";
+
+interface PendingReplacementSchedule {
+  withdrawal: WithdrawalAnswer;
+  frames: LateFrames;
+  stops: 0 | 1 | 2;
+  close: boolean;
+  startC: boolean;
+  order: MidOrder;
+}
+
+const WITHDRAWAL_ANSWERS: WithdrawalAnswer[] = ["confirm", "refuse", "hang"];
+const LATE_FRAMES: LateFrames[] = ["none", "started", "started+result"];
+const STOP_COUNTS: Array<0 | 1 | 2> = [0, 1, 2];
+const MID_ORDERS: MidOrder[] = ["frames-first", "stops-first"];
+
+type MidPhaseVariant = Pick<PendingReplacementSchedule, "close" | "startC" | "order">;
+
+function enumerateMidPhaseVariants(): MidPhaseVariant[] {
+  const variants: MidPhaseVariant[] = [];
+  for (const close of [false, true]) {
+    for (const startC of [false, true]) {
+      for (const order of MID_ORDERS) {
+        variants.push({ close, startC, order });
+      }
+    }
+  }
+  return variants;
+}
+
+function enumeratePendingReplacementSchedules(): PendingReplacementSchedule[] {
+  const schedules: PendingReplacementSchedule[] = [];
+  for (const withdrawal of WITHDRAWAL_ANSWERS) {
+    for (const frames of LATE_FRAMES) {
+      for (const stops of STOP_COUNTS) {
+        for (const variant of enumerateMidPhaseVariants()) {
+          schedules.push({ withdrawal, frames, stops, ...variant });
+        }
+      }
+    }
+  }
+  return schedules;
+}
+
+function describeSchedule(schedule: PendingReplacementSchedule): string {
+  return [
+    `withdrawal=${schedule.withdrawal}`,
+    `frames=${schedule.frames}`,
+    `stops=${schedule.stops}`,
+    schedule.close ? "close" : "open",
+    schedule.startC ? "startC" : "noC",
+    schedule.order,
+  ].join(" ");
+}
+
+/** Drains microtasks and the pump's async hops without depending on faked timers. */
+async function settleMicrotasks(rounds = 6): Promise<void> {
+  for (let index = 0; index < rounds; index += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
+function submissionOutcomeOf(submission: Promise<string> | undefined): Promise<string> {
+  return Promise.race([
+    submission ?? Promise.resolve("missing"),
+    settleMicrotasks(2).then(() => "pending"),
+  ]);
+}
+
+interface TurnEventRecord {
+  type: string;
+  turnId: string | undefined;
+}
+
+interface PendingReplacementRun {
+  schedule: PendingReplacementSchedule;
+  session: AgentSession;
+  live: ScriptedQuery;
+  events: TurnEventRecord[];
+  promptsAtInterrupt: string[][];
+  first: AgentTurnStart;
+  secondStart: Promise<AgentTurnStart>;
+  closePromise: Promise<void> | null;
+  thirdStart: Promise<AgentTurnStart | null> | null;
+  thirdRejected: () => string | null;
+}
+
+function promptTexts(live: ScriptedQuery): string[] {
+  return live.prompts.map((prompt) => prompt.text);
+}
+
+/** A stopped, un-acknowledged A with its withdrawal held, and B waiting behind it. */
+async function arrangePendingReplacement(
+  schedule: PendingReplacementSchedule,
+  withdrawal: Promise<boolean>,
+): Promise<PendingReplacementRun> {
+  const { session, query } = await createControlledSession({ withdrawal: () => withdrawal });
+  const events: TurnEventRecord[] = [];
+  session.subscribe((event) => {
+    if (event.type.startsWith("turn_")) {
+      events.push({ type: event.type, turnId: (event as { turnId?: string }).turnId });
+    }
+  });
+  const promptsAtInterrupt: string[][] = [];
+  const first = await session.startTurn("A");
+  await settleMicrotasks();
+  const live = query();
+  if (!live) throw new Error("query was not created");
+  live.interrupt.mockImplementation(async () => {
+    promptsAtInterrupt.push(promptTexts(live));
+  });
+  expect(promptTexts(live)).toEqual(["A"]);
+  expect(live.next.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+  await session.interrupt();
+  const secondStart = session.startTurn("B");
+  await settleMicrotasks();
+  expect(promptTexts(live)).toEqual(["A"]);
+  return {
+    schedule,
+    session,
+    live,
+    events,
+    promptsAtInterrupt,
+    first,
+    secondStart,
+    closePromise: null,
+    thirdStart: null,
+    thirdRejected: () => null,
+  };
+}
+
+async function deliverLateFrames(run: PendingReplacementRun): Promise<void> {
+  if (run.schedule.frames === "none") return;
+  run.live.emit(buildCommandLifecycle(run.live.prompts[0]?.uuid ?? null, "started"));
+  if (run.schedule.frames === "started+result") {
+    run.live.emit(buildSuccessResult("controlled-session"));
+  }
+  await settleMicrotasks();
+}
+
+async function deliverStops(run: PendingReplacementRun): Promise<void> {
+  for (let index = 0; index < run.schedule.stops; index += 1) {
+    await run.session.interrupt();
+    await settleMicrotasks();
+  }
+}
+
+/** Everything that happens while B is still waiting: late A frames, Stops, close, a competing C. */
+async function actWhileReplacementPends(run: PendingReplacementRun): Promise<void> {
+  if (run.schedule.order === "frames-first") {
+    await deliverLateFrames(run);
+    await deliverStops(run);
+  } else {
+    await deliverStops(run);
+    await deliverLateFrames(run);
+  }
+  if (run.schedule.close) {
+    run.closePromise = run.session.close();
+    await settleMicrotasks();
+  }
+  if (run.schedule.startC) {
+    let rejected: string | null = null;
+    run.thirdStart = run.session.startTurn("C").catch((error: unknown) => {
+      rejected = readTurnSubmissionOutcome(error) ?? "untagged";
+      return null;
+    });
+    run.thirdRejected = () => rejected;
+    await settleMicrotasks();
+  }
+  expect(promptTexts(run.live)).toEqual(["A"]);
+}
+
+async function releaseWithdrawal(
+  run: PendingReplacementRun,
+  withdrawal: { resolve: (value: boolean) => void },
+): Promise<void> {
+  if (run.schedule.withdrawal === "hang") {
+    await vi.advanceTimersByTimeAsync(3_000);
+  } else {
+    withdrawal.resolve(run.schedule.withdrawal === "confirm");
+  }
+  await settleMicrotasks();
+  await vi.advanceTimersByTimeAsync(0);
+  await settleMicrotasks();
+  if (run.closePromise) {
+    await vi.advanceTimersByTimeAsync(6_000);
+    await run.closePromise;
+  }
+}
+
+function expectedOutcomeOfA(schedule: PendingReplacementSchedule): string {
+  if (schedule.frames !== "none") return "accepted";
+  // Close settles everything on the query before the withdrawal can answer, so a confirmation
+  // that lands afterwards proves nothing any more.
+  if (schedule.withdrawal === "confirm" && !schedule.close) return "unsent";
+  return "unknown";
+}
+
+async function assertPushesAndInterrupts(
+  run: PendingReplacementRun,
+  bCancelled: boolean,
+): Promise<void> {
+  const expectedPushed = ["A"];
+  if (!bCancelled) expectedPushed.push("B");
+  if (run.schedule.startC && bCancelled && !run.schedule.close) expectedPushed.push("C");
+  expect(promptTexts(run.live)).toEqual(expectedPushed);
+  expect(queryFactory).toHaveBeenCalledTimes(1);
+  for (const prompts of run.promptsAtInterrupt) {
+    expect(prompts).toEqual(["A"]);
+  }
+}
+
+async function assertReplacementSubmission(
+  run: PendingReplacementRun,
+  second: AgentTurnStart,
+  bCancelled: boolean,
+): Promise<void> {
+  if (bCancelled) {
+    expect(await second.submission).toBe("unsent");
+    return;
+  }
+  expect(await submissionOutcomeOf(second.submission)).toBe("pending");
+  run.live.emit(buildCommandLifecycle(run.live.prompts[1]?.uuid, "started"));
+  expect(await second.submission).toBe("accepted");
+}
+
+async function assertCompetingSubmission(
+  run: PendingReplacementRun,
+  third: AgentTurnStart | null,
+  bCancelled: boolean,
+): Promise<void> {
+  if (!run.schedule.startC) return;
+  if (run.schedule.close || !bCancelled) {
+    expect(third).toBeNull();
+    expect(run.thirdRejected()).toBe("unsent");
+    return;
+  }
+  expect(third).not.toBeNull();
+  expect(await submissionOutcomeOf(third?.submission)).toBe("pending");
+  run.live.emit(buildCommandLifecycle(run.live.prompts.at(-1)?.uuid, "started"));
+  expect(await third?.submission).toBe("accepted");
+}
+
+function assertTurnEvents(
+  run: PendingReplacementRun,
+  second: AgentTurnStart,
+  bCancelled: boolean,
+): void {
+  const byTurn = new Map<string, string[]>();
+  for (const event of run.events) {
+    const key = event.turnId ?? "?";
+    byTurn.set(key, [...(byTurn.get(key) ?? []), event.type]);
+  }
+  for (const sequence of byTurn.values()) {
+    expect(sequence[0]).toBe("turn_started");
+    expect(sequence.filter((type) => type === "turn_started")).toHaveLength(1);
+    expect(sequence.filter((type) => type !== "turn_started").length).toBeLessThanOrEqual(1);
+  }
+  expect(byTurn.get(second.turnId) ?? []).toEqual(
+    bCancelled ? ["turn_started", "turn_canceled"] : ["turn_started"],
+  );
+  expect(byTurn.get(run.first.turnId) ?? []).toEqual(["turn_started", "turn_canceled"]);
+}
+
+async function runPendingReplacementSchedule(schedule: PendingReplacementSchedule) {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const withdrawal = deferred<boolean>();
+    const run = await arrangePendingReplacement(schedule, withdrawal.promise);
+    await actWhileReplacementPends(run);
+    await releaseWithdrawal(run, withdrawal);
+
+    const second = await run.secondStart;
+    const third = run.thirdStart ? await run.thirdStart : null;
+    await settleMicrotasks();
+    const bCancelled = schedule.stops > 0 || schedule.close;
+
+    await assertPushesAndInterrupts(run, bCancelled);
+    expect(await run.first.submission).toBe(expectedOutcomeOfA(schedule));
+    await assertReplacementSubmission(run, second, bCancelled);
+    await assertCompetingSubmission(run, third, bCancelled);
+    const interruptsAfterPush = run.live.interrupt.mock.calls.length;
+    await settleMicrotasks();
+    expect(run.live.interrupt.mock.calls.length).toBe(interruptsAfterPush);
+    assertTurnEvents(run, second, bCancelled);
+
+    if (!schedule.close) await run.session.close();
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
+for (const schedule of enumeratePendingReplacementSchedules()) {
+  test(`pending replacement schedule: ${describeSchedule(schedule)}`, async () => {
+    await runPendingReplacementSchedule(schedule);
+  });
+}
+
+test("a retired query's missing-conversation recovery leaves the replacement turn it did not own alone", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const withdrawal = deferred<boolean>();
+    const heldReturn = deferred<void>();
+    const { session, queries } = await createControlledSession({
+      withdrawal: () => withdrawal.promise,
+    });
+    const events: Array<{ type: string; turnId: string | undefined }> = [];
+    session.subscribe((event) => {
+      if (event.type.startsWith("turn_")) {
+        events.push({ type: event.type, turnId: (event as { turnId?: string }).turnId });
+      }
+    });
+
+    const first = await session.startTurn("A");
+    await settleMicrotasks();
+    const retired = queries[0];
+    if (!retired) throw new Error("query was not created");
+    expect(retired.next.mock.calls.length).toBeGreaterThanOrEqual(2);
+    await session.interrupt();
+    const secondStart = session.startTurn("B");
+    await settleMicrotasks();
+
+    // The recovery's own return of the failed query is what we hold open.
+    retired.return.mockImplementationOnce(async () => {
+      await heldReturn.promise;
+      retired.end();
+    });
+    retired.emit({
+      type: "result",
+      subtype: "error_during_execution",
+      errors: ["No conversation found with session ID: controlled-session"],
+    });
+    await settleMicrotasks();
+    expect(retired.return).toHaveBeenCalledTimes(1);
+
+    await session.setThinkingOption?.(null);
+    withdrawal.resolve(false);
+    await settleMicrotasks();
+    const second = await secondStart;
+    await settleMicrotasks();
+    const replacement = queries[1];
+    if (!replacement) throw new Error("replacement query was not created");
+    expect(queries).toHaveLength(2);
+    expect(replacement.prompts.map((prompt) => prompt.text)).toEqual(["B"]);
+    replacement.emit(buildCommandLifecycle(replacement.prompts[0]?.uuid, "started"));
+    expect(await second.submission).toBe("accepted");
+
+    heldReturn.resolve();
+    await settleMicrotasks();
+    await vi.advanceTimersByTimeAsync(0);
+    await settleMicrotasks();
+
+    expect(await first.submission).toBe("unknown");
+    const bEvents = events.filter((event) => event.turnId === second.turnId).map((e) => e.type);
+    expect(bEvents).toEqual(["turn_started"]);
+    const competing = await session.startTurn("C").then(
+      () => "admitted",
+      (error: unknown) => readTurnSubmissionOutcome(error) ?? "untagged",
+    );
+    expect(competing).toBe("unsent");
+    expect(await session.steerActiveTurn?.("more", { expectedTurnId: second.turnId })).toEqual({
+      status: "accepted",
+    });
+    await session.interrupt();
+    await settleMicrotasks();
+    expect(events.filter((event) => event.turnId === second.turnId).map((e) => e.type)).toEqual([
+      "turn_started",
+      "turn_canceled",
+    ]);
+    expect(replacement.prompts.map((prompt) => prompt.text)).toEqual(["B", "more"]);
+
+    await session.close();
+  } finally {
+    vi.useRealTimers();
+  }
 });
