@@ -1,9 +1,9 @@
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Writable } from "node:stream";
 import pino from "pino";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import { ScheduleStore } from "./store.js";
 
@@ -18,6 +18,97 @@ describe("ScheduleStore", () => {
 
   afterEach(async () => {
     await rm(tempDir, { recursive: true, force: true });
+  });
+
+  test("handoff mutation admission checks the latest queued target before deletion", async () => {
+    const entered = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    const protectedTarget = {
+      type: "new-agent" as const,
+      config: { provider: "claude", cwd: join(tempDir, "protected") },
+    };
+    const guarded = new ScheduleStore(tempDir, createTestLogger(), {
+      admitMutation: async ({ previous, next }) => {
+        if (
+          !next &&
+          previous?.target.type === "new-agent" &&
+          previous.target.config.cwd === protectedTarget.config.cwd
+        )
+          throw new Error("protected schedule");
+        return () => {};
+      },
+    });
+    const created = await guarded.create({
+      name: null,
+      prompt: "before",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: { type: "new-agent", config: { provider: "claude", cwd: tempDir } },
+      status: "active",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      nextRunAt: null,
+      lastRunAt: null,
+      pausedAt: null,
+      expiresAt: null,
+      maxRuns: null,
+      runs: [],
+    });
+    const update = guarded.update(created.id, async (current) => {
+      entered.resolve();
+      await finish.promise;
+      return { ...current, target: protectedTarget };
+    });
+    await entered.promise;
+    const deletion = expect(guarded.delete(created.id)).rejects.toThrow("protected schedule");
+    finish.resolve();
+    await update;
+    await deletion;
+    expect(await guarded.get(created.id)).toEqual({ ...created, target: protectedTarget });
+    await guarded.update(created.id, (current) => ({ ...current, target: created.target }));
+    await guarded.delete(created.id);
+    expect(await guarded.get(created.id)).toBeNull();
+  });
+
+  test("handoff releases failed schedule publication admission and allows a repaired retry", async () => {
+    const released = vi.fn();
+    let obstructPublication = false;
+    const guarded = new ScheduleStore(tempDir, createTestLogger(), {
+      admitMutation: async ({ next }) => {
+        if (obstructPublication && next) {
+          const file = join(tempDir, `${next.id}.json`);
+          await rm(file);
+          await mkdir(file);
+        }
+        return released;
+      },
+    });
+    const created = await guarded.create({
+      name: null,
+      prompt: "before",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: { type: "new-agent", config: { provider: "claude", cwd: tempDir } },
+      status: "active",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      nextRunAt: null,
+      lastRunAt: null,
+      pausedAt: null,
+      expiresAt: null,
+      maxRuns: null,
+      runs: [],
+    });
+    expect(released).toHaveBeenCalledTimes(1);
+    obstructPublication = true;
+    await expect(
+      guarded.update(created.id, (current) => ({ ...current, prompt: "after" })),
+    ).rejects.toThrow();
+    expect(released).toHaveBeenCalledTimes(2);
+    obstructPublication = false;
+    await rm(join(tempDir, `${created.id}.json`), { recursive: true });
+    await writeFile(join(tempDir, `${created.id}.json`), JSON.stringify(created));
+    await guarded.update(created.id, (current) => ({ ...current, prompt: "after" }));
+    expect(released).toHaveBeenCalledTimes(3);
+    expect(await store.get(created.id)).toEqual({ ...created, prompt: "after" });
   });
 
   test("creates and reloads schedules from disk", async () => {

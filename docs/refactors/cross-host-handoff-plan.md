@@ -569,6 +569,13 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   completed. Other connected clients' buffers, concurrent windows and unsent conversation draft
   transfer remain open. Other workspace mutation surfaces need inventory.
   Source retirement still needs tombstones to replace broad path fences.
+  Schedules and heartbeats now obey source admission for controls, automatic/manual runs,
+  expiration and startup recovery. A run holds admission through its outcome write and workspace
+  cleanup. Tests cover stale tick inventories, target changes, aliases, uncertain journals and a
+  released heartbeat whose source record was removed. Reviewed durable pause, strict automation
+  inventory, interrupted-run proof, bounded shutdown, cancellation disposition and paused destination
+  remapping remain open; the source fence alone does not provide them. See the scheduler cases in
+  the [stopped-work evidence](../qa-evidence/handoff-writers-review.txt).
   PR watches now have a reviewed stop disposition. Preparation durably removes the selected watches,
   cancels their queued notifications and joins dispatched wakes. Registration participates in source
   admission and rechecks before publication; late forge reads cannot revive a removed watch. The

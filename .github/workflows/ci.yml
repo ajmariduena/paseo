@@ -239,6 +239,8 @@ jobs:
           npx vitest run --config packages/server/vitest.config.ts \
             packages/server/src/server/agent/agent-manager.test.ts \
             packages/server/src/server/agent/agent-storage.test.ts \
+            packages/server/src/server/schedule/service.test.ts \
+            packages/server/src/server/schedule/store.test.ts \
             packages/server/src/server/agent/mcp-server.test.ts \
             packages/server/src/server/bootstrap.smoke.test.ts \
             packages/server/src/server/bootstrap-managed-processes.test.ts \

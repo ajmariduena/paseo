@@ -1621,6 +1621,7 @@ export async function createPaseoDaemon(
   const hostMetricsSampler = new HostMetricsSampler({ logger });
   const scheduleService = new ScheduleService({
     paseoHome: config.paseoHome,
+    handoffOwnership,
     logger,
     agentManager,
     agentStorage,

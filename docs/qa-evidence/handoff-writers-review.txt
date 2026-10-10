@@ -21,6 +21,28 @@ both journals, refusal to drop that approval and successful activation. The setu
 regression reloads the ownership journal after failed cleanup and refuses a
 replacement with the same active count. It also tests active setup blocking release.
 
+Scheduler admission — the initial regression ran a schedule after source fencing and consumed
+its final allowed execution. Schedule controls and dispatch now admit the persisted target inside
+the store's per-schedule queue. A run retains admission through workspace cleanup and its outcome
+write. Both sides of a retarget must be admitted; an active run can change future provider settings
+but cannot move its directory or agent. A refused automatic tick consumes no run or cadence, and
+unrelated schedules continue. Manual requests return the refusal. Startup recovery and expiration
+leave fenced records unchanged, including a released heartbeat with no remaining source agent record.
+
+The focused service and store suites pass 80 cases, including 12 new handoff cases. They cover
+stale tick inventories after pause/retarget, symlink targets, concurrent run refusal, run completion
+under a fence, an uncertain ownership journal, release/restart, queued deletion against a changed
+record and cleanup after a failed publication. One case uses the real schedule executor and agent
+manager with a test provider, holding workspace cleanup open while readiness refuses. The existing
+concurrent provider-setting update regression also passes. npm run build:server, npm run typecheck,
+npm run lint and npm run format pass. macOS uses the existing filtered handoff job; it was not run locally.
+
+This is admission coverage, not automation transfer or durable outcome certification. Schedule
+files still use ordinary atomic writes, and the default list still skips invalid records. Durable
+reviewed pause, strict inventory, recovery of interrupted runs, bounded shutdown, cancellation
+disposition and paused destination installation remain open. An in-flight runner can still delay
+draining indefinitely. The production handoff capability remains unadvertised.
+
 Queue conservation — source handoff now holds queues before closing writers. The initial runner
 regression reproduced the pending instruction disappearing when the current turn settled under
 the handoff fence (expected held=true, received no queue). Delivery now joins ownership admission

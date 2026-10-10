@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -38,6 +38,8 @@ import {
   type ScheduleServiceOptions,
 } from "./service.js";
 import { ScheduleStore } from "./store.js";
+import { randomUUID } from "node:crypto";
+import { HandoffOwnership, HandoffOwnershipError } from "../handoff/ownership.js";
 import type { ScheduleExecutionResult, StoredSchedule } from "@getpaseo/protocol/schedule/types";
 
 interface ScheduleServiceInternals {
@@ -70,8 +72,13 @@ let workspaceArchiveInProgress = false;
 
 type TestScheduleServiceOptions = Omit<
   ScheduleServiceOptions,
-  "createAgent" | "createDirectoryWorkspace" | "createPaseoWorktreeWorkspace" | "archiveWorkspace"
+  | "createAgent"
+  | "createDirectoryWorkspace"
+  | "createPaseoWorktreeWorkspace"
+  | "archiveWorkspace"
+  | "handoffOwnership"
 > & {
+  handoffOwnership?: HandoffOwnership;
   agentManager: AgentManager;
   providerSnapshotManager: Pick<ProviderSnapshotManager, "resolveCreateConfig">;
   createAgent?: ScheduleServiceOptions["createAgent"];
@@ -151,6 +158,7 @@ function createScheduleService(options: TestScheduleServiceOptions): ScheduleSer
   };
   return new ScheduleService({
     ...options,
+    handoffOwnership: options.handoffOwnership ?? null,
     createAgent:
       options.createAgent ??
       ((input) =>
@@ -305,6 +313,409 @@ describe("ScheduleService", () => {
     await agentStorage.flush();
     await rm(tempDir, { recursive: true, force: true });
   });
+
+  async function handoffFixture(runner?: ScheduleServiceOptions["runner"]) {
+    const ownership = new HandoffOwnership({
+      directory: join(tempDir, "handoff"),
+      sourceServerId: "source",
+    });
+    await ownership.initialize();
+    const cwd = join(tempDir, "moving");
+    const otherCwd = join(tempDir, "other");
+    await mkdir(cwd);
+    await mkdir(otherCwd);
+    const options: TestScheduleServiceOptions = {
+      paseoHome: tempDir,
+      handoffOwnership: ownership,
+      logger: createTestLogger(),
+      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      now: () => now,
+      runner,
+    };
+    const service = createScheduleService(options);
+    const schedule = await service.create({
+      prompt: "Check progress",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: { type: "new-agent", config: { provider: "claude", cwd } },
+    });
+    const transfer = {
+      id: randomUUID(),
+      cwd,
+      workspaceId: "moving",
+      agentIds: [],
+      destinationServerId: "destination",
+      reservationId: randomUUID(),
+    };
+    return { ownership, service, schedule, transfer, otherCwd, options };
+  }
+
+  test.skipIf(process.platform === "win32")(
+    "handoff waits for an admitted schedule outcome and preserves it after fencing",
+    async () => {
+      const entered = Promise.withResolvers<void>();
+      const finish = Promise.withResolvers<void>();
+      const { ownership, service, schedule, transfer, otherCwd } = await handoffFixture(
+        async () => {
+          entered.resolve();
+          await finish.promise;
+          return { agentId: null, output: "Saved result" };
+        },
+      );
+      const run = service.runOnce(schedule.id);
+      await entered.promise;
+      await expect(
+        service.update({ id: schedule.id, newAgentConfig: { cwd: otherCwd } }),
+      ).rejects.toThrow("while a run is active");
+      await expect(service.runOnce(schedule.id)).rejects.toThrow("already running");
+      await ownership.prepare(transfer);
+      try {
+        await expect(ownership.markReady(transfer.id, "a".repeat(64))).rejects.toThrow(
+          "still running",
+        );
+      } finally {
+        finish.resolve();
+      }
+      const result = await run;
+      await ownership.drain(transfer.id);
+      expect(result.runs).toMatchObject([{ status: "succeeded", output: "Saved result" }]);
+      await expect(ownership.markReady(transfer.id, "a".repeat(64))).resolves.toMatchObject({
+        state: "ready",
+      });
+    },
+  );
+
+  test.skipIf(process.platform === "win32").each(["pause", "retarget"] as const)(
+    "handoff rechecks a stale scheduler snapshot after %s",
+    async (action) => {
+      const entered = Promise.withResolvers<void>();
+      const finish = Promise.withResolvers<void>();
+      const runner = vi.fn(async () => {
+        entered.resolve();
+        await finish.promise;
+        return { agentId: null, output: "done" };
+      });
+      const { ownership, service, transfer, otherCwd } = await handoffFixture(runner);
+      now = new Date(now.getTime() + 1);
+      const later = await service.create({
+        prompt: "Later schedule",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: { type: "new-agent", config: { provider: "claude", cwd: otherCwd } },
+      });
+      const tick = service.tick();
+      await entered.promise;
+      try {
+        if (action === "pause") await service.pause(later.id);
+        else await service.update({ id: later.id, newAgentConfig: { cwd: transfer.cwd } });
+        await ownership.prepare(transfer);
+      } finally {
+        finish.resolve();
+      }
+      await tick;
+      expect(runner).toHaveBeenCalledTimes(1);
+      expect((await service.inspect(later.id)).runs).toEqual([]);
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff guards both old and new schedule targets, including symlinks",
+    async () => {
+      const { ownership, service, schedule, transfer, otherCwd } = await handoffFixture();
+      const outside = await service.create({
+        prompt: "Outside",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: { type: "new-agent", config: { provider: "claude", cwd: otherCwd } },
+      });
+      const alias = join(tempDir, "alias");
+      await symlink(transfer.cwd, alias, "dir");
+      await ownership.prepare(transfer);
+      await expect(
+        service.update({ id: schedule.id, newAgentConfig: { cwd: otherCwd } }),
+      ).rejects.toMatchObject({ code: "fenced" });
+      await expect(
+        service.update({ id: outside.id, newAgentConfig: { cwd: alias } }),
+      ).rejects.toMatchObject({ code: "fenced" });
+      await expect(
+        service.create({
+          prompt: "Alias",
+          cadence: outside.cadence,
+          target: { type: "new-agent", config: { provider: "claude", cwd: alias } },
+        }),
+      ).rejects.toMatchObject({ code: "fenced" });
+      expect(await service.inspect(schedule.id)).toEqual(schedule);
+      expect(await service.inspect(outside.id)).toEqual(outside);
+      await ownership.markReady(transfer.id, "a".repeat(64));
+      await expect(service.pause(outside.id)).resolves.toMatchObject({ status: "paused" });
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff schedule admission propagates uncertain storage instead of skipping it",
+    async () => {
+      const runner = vi.fn(async () => ({ agentId: null, output: "unexpected" }));
+      const { ownership, service, schedule } = await handoffFixture(runner);
+      const admission = vi
+        .spyOn(ownership, "acquireMutation")
+        .mockRejectedValue(new HandoffOwnershipError("storage_uncertain", "journal unavailable"));
+      try {
+        await expect(service.tick()).rejects.toThrow("journal unavailable");
+        expect(await service.inspect(schedule.id)).toEqual(schedule);
+        expect(runner).not.toHaveBeenCalled();
+      } finally {
+        admission.mockRestore();
+      }
+      await service.tick();
+      expect(runner).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff retains schedule admission through workspace cleanup with the real runner",
+    async () => {
+      const { ownership, schedule, transfer, options } = await handoffFixture();
+      const cleanupEntered = Promise.withResolvers<void>();
+      const finishCleanup = Promise.withResolvers<void>();
+      const manager = new AgentManager({
+        logger: createTestLogger(),
+        clients: createTestAgentClients(),
+        registry: agentStorage,
+      });
+      const service = createScheduleService({
+        ...options,
+        agentManager: manager,
+        archiveWorkspace: async () => {
+          cleanupEntered.resolve();
+          await finishCleanup.promise;
+        },
+      });
+      const run = service.runOnce(schedule.id);
+      await cleanupEntered.promise;
+      await ownership.prepare(transfer);
+      try {
+        await expect(ownership.markReady(transfer.id, "a".repeat(64))).rejects.toThrow(
+          "still running",
+        );
+      } finally {
+        finishCleanup.resolve();
+      }
+      const result = await run;
+      expect(result.runs).toMatchObject([
+        { status: "succeeded", workspaceId: "wks_schedule_test_1", agentId: expect.any(String) },
+      ]);
+      await ownership.drain(transfer.id);
+      await ownership.markReady(transfer.id, "a".repeat(64));
+      await manager.closeAgent(result.runs[0].agentId!);
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff keeps a released heartbeat fenced after its agent record is removed",
+    async () => {
+      const { ownership, service, transfer, options } = await handoffFixture();
+      const agentId = randomUUID();
+      await agentStorage.upsert({
+        id: agentId,
+        cwd: transfer.cwd,
+        workspaceId: transfer.workspaceId,
+        provider: "claude",
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+        lastStatus: "closed",
+        labels: {},
+      });
+      const heartbeat = await service.create({
+        prompt: "Continue",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: { type: "agent", agentId },
+      });
+      await ownership.prepare({ ...transfer, agentIds: [agentId] });
+      const manifestDigest = "a".repeat(64);
+      await ownership.markReady(transfer.id, manifestDigest);
+      await ownership.release(
+        transfer.id,
+        {
+          version: 1,
+          transferId: transfer.id,
+          sourceServerId: "source",
+          destinationServerId: transfer.destinationServerId,
+          reservationId: transfer.reservationId,
+          manifestDigest,
+        },
+        async () => {},
+      );
+      await agentStorage.remove(agentId);
+      const restartedOwnership = new HandoffOwnership({
+        directory: join(tempDir, "handoff"),
+        sourceServerId: "source",
+      });
+      await restartedOwnership.initialize();
+      const restarted = createScheduleService({ ...options, handoffOwnership: restartedOwnership });
+      try {
+        await restarted.start();
+        await restarted.tick();
+        await expect(restarted.resume(heartbeat.id)).rejects.toMatchObject({ code: "fenced" });
+        await expect(restarted.runOnce(heartbeat.id)).rejects.toMatchObject({ code: "fenced" });
+        expect(await restarted.inspect(heartbeat.id)).toEqual(heartbeat);
+      } finally {
+        await restarted.stop();
+      }
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff restart leaves fenced schedule recovery and expiration untouched",
+    async () => {
+      const { ownership, service, schedule, transfer, options } = await handoffFixture();
+      const interrupted = await new ScheduleStore(
+        join(tempDir, "schedules"),
+        createTestLogger(),
+      ).update(schedule.id, (current) => ({
+        ...current,
+        expiresAt: now.toISOString(),
+        runs: [
+          {
+            id: randomUUID(),
+            scheduledFor: now.toISOString(),
+            startedAt: now.toISOString(),
+            endedAt: null,
+            status: "running",
+            agentId: null,
+            workspaceId: "interrupted-workspace",
+            output: null,
+            error: null,
+          },
+        ],
+      }));
+      await ownership.prepare(transfer);
+      const restartedOwnership = new HandoffOwnership({
+        directory: join(tempDir, "handoff"),
+        sourceServerId: "source",
+      });
+      await restartedOwnership.initialize();
+      const archiveWorkspace = vi.fn(async () => {});
+      const restarted = createScheduleService({
+        ...options,
+        handoffOwnership: restartedOwnership,
+        archiveWorkspace,
+      });
+      try {
+        await restarted.start();
+        await restarted.tick();
+        expect(await service.inspect(schedule.id)).toEqual(interrupted);
+        expect(archiveWorkspace).not.toHaveBeenCalled();
+      } finally {
+        await restarted.stop();
+      }
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff skips fenced schedules without consuming a run and continues unrelated work",
+    async () => {
+      const ownership = new HandoffOwnership({
+        directory: join(tempDir, "handoff"),
+        sourceServerId: "source",
+      });
+      await ownership.initialize();
+      const cwd = join(tempDir, "moving");
+      const otherCwd = join(tempDir, "other");
+      await mkdir(cwd);
+      await mkdir(otherCwd);
+      const runner = vi.fn(async () => ({ agentId: null, output: "finished" }));
+      const service = createScheduleService({
+        paseoHome: tempDir,
+        handoffOwnership: ownership,
+        logger: createTestLogger(),
+        agentManager: new AgentManager({ logger: createTestLogger() }),
+        agentStorage,
+        providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+        now: () => now,
+        runner,
+      });
+      const moving = await service.create({
+        prompt: "Review moving workspace",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: { type: "new-agent", config: { provider: "claude", cwd } },
+        maxRuns: 1,
+      });
+      const other = await service.create({
+        prompt: "Review unrelated workspace",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: { type: "new-agent", config: { provider: "claude", cwd: otherCwd } },
+      });
+      await ownership.prepare({
+        id: randomUUID(),
+        cwd,
+        workspaceId: "moving",
+        agentIds: [],
+        destinationServerId: "destination",
+        reservationId: randomUUID(),
+      });
+      await service.tick();
+      expect(await service.inspect(moving.id)).toEqual(moving);
+      expect(runner).toHaveBeenCalledTimes(1);
+      expect((await service.inspect(other.id)).runs).toMatchObject([{ status: "succeeded" }]);
+      await expect(service.runOnce(moving.id)).rejects.toMatchObject({ code: "fenced" });
+      expect(await service.inspect(moving.id)).toEqual(moving);
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff fences schedule controls and heartbeat replacement through the store",
+    async () => {
+      const ownership = new HandoffOwnership({
+        directory: join(tempDir, "handoff"),
+        sourceServerId: "source",
+      });
+      await ownership.initialize();
+      const agentId = randomUUID();
+      await agentStorage.upsert({
+        id: agentId,
+        cwd: tempDir,
+        workspaceId: "moving",
+        provider: "claude",
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+        lastStatus: "closed",
+        labels: {},
+      });
+      const service = createScheduleService({
+        paseoHome: tempDir,
+        handoffOwnership: ownership,
+        logger: createTestLogger(),
+        agentManager: new AgentManager({ logger: createTestLogger() }),
+        agentStorage,
+        providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+        now: () => now,
+      });
+      const input = {
+        name: "Keep checking",
+        prompt: "Check progress",
+        cadence: { type: "every" as const, everyMs: 60_000 },
+        target: { type: "agent" as const, agentId },
+      };
+      const heartbeat = await service.createOrReplace(input);
+      await ownership.prepare({
+        id: randomUUID(),
+        cwd: tempDir,
+        workspaceId: "moving",
+        agentIds: [agentId],
+        destinationServerId: "destination",
+        reservationId: randomUUID(),
+      });
+      await expect(service.create(input)).rejects.toMatchObject({ code: "fenced" });
+      await expect(service.createOrReplace(input)).rejects.toMatchObject({ code: "fenced" });
+      await expect(service.pause(heartbeat.id)).rejects.toMatchObject({ code: "fenced" });
+      await expect(service.resume(heartbeat.id)).rejects.toMatchObject({ code: "fenced" });
+      await expect(service.update({ id: heartbeat.id, prompt: "Changed" })).rejects.toMatchObject({
+        code: "fenced",
+      });
+      await expect(service.delete(heartbeat.id)).rejects.toMatchObject({ code: "fenced" });
+      await expect(service.runOnce(heartbeat.id)).rejects.toMatchObject({ code: "fenced" });
+      expect(await service.list()).toEqual([heartbeat]);
+    },
+  );
 
   test("ticks due schedules and records run history on disk", async () => {
     const service = createScheduleService({

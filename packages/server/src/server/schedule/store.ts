@@ -15,6 +15,15 @@ function generateScheduleId(): string {
 
 type ScheduleUpdater = (schedule: StoredSchedule) => StoredSchedule | Promise<StoredSchedule>;
 
+export interface ScheduleMutation {
+  previous: StoredSchedule | null;
+  next: StoredSchedule | null;
+}
+
+interface ScheduleMutationOptions {
+  admitMutation?: (mutation: ScheduleMutation) => Promise<() => void>;
+}
+
 interface ScheduleNameTargetUpsert {
   create: () => Omit<StoredSchedule, "id"> | Promise<Omit<StoredSchedule, "id">>;
   update: ScheduleUpdater;
@@ -108,6 +117,7 @@ export class ScheduleStore {
   constructor(
     private readonly dir: string,
     private readonly logger: Logger,
+    private readonly options: ScheduleMutationOptions = {},
   ) {}
 
   private filePath(id: string): string {
@@ -162,25 +172,37 @@ export class ScheduleStore {
 
   async create(schedule: Omit<StoredSchedule, "id">): Promise<StoredSchedule> {
     const created = StoredScheduleSchema.parse({ ...schedule, id: generateScheduleId() });
-    await this.write(created);
+    await this.withMutation({
+      previous: null,
+      next: created,
+      operation: () => this.write(created),
+    });
     return created;
   }
 
-  async update(id: string, updater: ScheduleUpdater): Promise<StoredSchedule | null> {
+  async update(
+    id: string,
+    updater: ScheduleUpdater,
+    options: ScheduleMutationOptions = this.options,
+  ): Promise<StoredSchedule | null> {
     return this.serializeScheduleMutation(id, async () => {
       const current = await this.get(id);
       if (!current) {
         return null;
       }
       const next = await updater(current);
-      if (next === current) {
-        return current;
-      }
       if (next.id !== id) {
         throw new Error(`Schedule update cannot change id: ${id}`);
       }
-      const updated = StoredScheduleSchema.parse(next);
-      await this.write(updated);
+      const updated = next === current ? current : StoredScheduleSchema.parse(next);
+      await this.withMutation({
+        previous: current,
+        next: updated,
+        options,
+        operation: async () => {
+          if (updated !== current) await this.write(updated);
+        },
+      });
       return updated;
     });
   }
@@ -204,7 +226,11 @@ export class ScheduleStore {
           if (!matchesNameAndTarget(created, name, target)) {
             throw new Error("Created schedule does not match requested identity");
           }
-          await this.write(created);
+          await this.withMutation({
+            previous: null,
+            next: created,
+            operation: () => this.write(created),
+          });
           return created;
         }
 
@@ -223,9 +249,29 @@ export class ScheduleStore {
 
   async delete(id: string): Promise<void> {
     await this.serializeScheduleMutation(id, async () => {
-      await this.ensureDir();
-      await rm(this.filePath(id), { force: true });
+      const current = await this.get(id);
+      if (!current) return;
+      await this.withMutation({
+        previous: current,
+        next: null,
+        operation: () => rm(this.filePath(id), { force: true }),
+      });
     });
+  }
+
+  private async withMutation(
+    input: ScheduleMutation & {
+      options?: ScheduleMutationOptions;
+      operation: () => Promise<void>;
+    },
+  ): Promise<void> {
+    const options = input.options ?? this.options;
+    const release = await options.admitMutation?.({ previous: input.previous, next: input.next });
+    try {
+      await input.operation();
+    } finally {
+      release?.();
+    }
   }
 
   private async serializeScheduleMutation<T>(
@@ -278,7 +324,11 @@ export class ScheduleStore {
       if (!matchesNameAndTarget(updated, name, target)) {
         throw new Error("Updated schedule does not match requested identity");
       }
-      await this.write(updated);
+      await this.withMutation({
+        previous: current,
+        next: updated,
+        operation: () => this.write(updated),
+      });
       return updated;
     });
   }

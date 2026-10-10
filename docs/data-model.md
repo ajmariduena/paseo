@@ -495,6 +495,13 @@ A key restricted to the Text to Speech permission is enough to speak. Listing vo
 
 One file per schedule. ID is 8 hex characters.
 
+Use the persisted target when admitting schedule changes and runs into workspace ownership.
+Checking a prior list result lets a concurrent retarget bypass the source handoff fence.
+Keep run admission through workspace cleanup and the outcome write; changing its directory or
+agent requires the run to finish first. Startup recovery and expiration leave fenced records
+unchanged. This admission does not certify durable run outcomes or transport automation; the
+[handoff plan](refactors/cross-host-handoff-plan.md#delivery-gates) owns those remaining gates.
+
 | Field       | Type                                  | Description                      |
 | ----------- | ------------------------------------- | -------------------------------- |
 | `id`        | `string`                              | 8-char hex ID                    |
