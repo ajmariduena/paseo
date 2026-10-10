@@ -125,6 +125,7 @@ import {
   type AgentPromptInput,
   type AgentRunOptions,
   type AgentRunResult,
+  type AgentTurnStart,
   type AgentSession,
   type AgentSessionConfig,
   type AgentSlashCommand,
@@ -302,7 +303,7 @@ interface AutonomousTurnState {
 }
 
 interface AsyncMessageInput<T> {
-  push: (item: T) => void;
+  push: (item: T) => boolean;
   end: () => void;
   iterable: AsyncIterable<T>;
 }
@@ -2122,6 +2123,7 @@ interface ClaudeQueryResources {
 class ClaudeAgentSession implements AgentSession {
   readonly provider = "claude" as const;
   readonly capabilities = CLAUDE_CAPABILITIES;
+  readonly nativeMessageIds = true;
   readonly idleBackendEvictionEligible = true;
 
   async canEvictIdleBackend(): Promise<boolean> {
@@ -2339,10 +2341,8 @@ class ClaudeAgentSession implements AgentSession {
     return result;
   }
 
-  async startTurn(
-    prompt: AgentPromptInput,
-    options?: AgentRunOptions,
-  ): Promise<{ turnId: string }> {
+  async startTurn(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<AgentTurnStart> {
+    const nativeMessageId = options?.nativeMessageId;
     return this.withSessionOperation(async () => {
       if (this.activeForegroundTurnId) {
         throw new Error("A foreground turn is already active");
@@ -2360,18 +2360,25 @@ class ClaudeAgentSession implements AgentSession {
             this.semanticDrainError ??= error instanceof Error ? error : new Error(String(error));
           }
         });
-        return { turnId };
+        return {
+          turnId,
+          ...(nativeMessageId ? { promptDisposition: "withdrawn" as const } : {}),
+        };
       }
 
       if (this.autonomousTurn) {
         this.completeAutonomousTurn();
       }
 
-      const sdkMessage = this.toSdkUserMessage(prompt);
+      const sdkMessage = this.toSdkUserMessage(prompt, nativeMessageId);
       const sdkUserMessageId =
         typeof sdkMessage.uuid === "string" && sdkMessage.uuid.length > 0 ? sdkMessage.uuid : null;
       this.rememberRewindUserAnchor(sdkUserMessageId);
       const turnId = this.createTurnId("foreground");
+      const result: AgentTurnStart = {
+        turnId,
+        ...(nativeMessageId ? { promptDisposition: "withdrawn" as const } : {}),
+      };
       this.activeForegroundTurnId = turnId;
       this.foregroundHasVisibleActivity = false;
       this.activeTurnHasAssistantText = false;
@@ -2415,7 +2422,7 @@ class ClaudeAgentSession implements AgentSession {
         if (cancelIssued) {
           // Stopped while Claude was still starting up: withdrawn by never sending it.
           if (sdkUserMessageId) this.unstartedMessageUuids.delete(sdkUserMessageId);
-          return { turnId };
+          return result;
         }
         if (!this.input) {
           throw new Error("Claude session input stream not initialized");
@@ -2423,7 +2430,8 @@ class ClaudeAgentSession implements AgentSession {
         this.activeForegroundQuery = this.query;
         this.activeForegroundInput = this.input;
         this.startQueryPump();
-        this.input.push(sdkMessage);
+        if (!this.input.push(sdkMessage)) throw new Error("Claude session input stream is closed");
+        if (nativeMessageId) result.promptDisposition = "dispatched";
         const emitSubmitted = () => {
           if (this.activeForegroundTurnId === turnId) {
             this.emitSubmittedUserMessage(sdkMessage, turnId, options?.clientMessageId);
@@ -2443,7 +2451,7 @@ class ClaudeAgentSession implements AgentSession {
         );
       }
 
-      return { turnId };
+      return result;
     });
   }
 
@@ -2471,7 +2479,7 @@ class ClaudeAgentSession implements AgentSession {
       if (!query || !input || this.query !== query || this.input !== input) {
         return { status: "unavailable" };
       }
-      const message = this.toSdkUserMessage(prompt);
+      const message = this.toSdkUserMessage(prompt, options.nativeMessageId);
       message.priority = "next";
       if (
         (this.activeForegroundTurnId ?? this.autonomousTurn?.id) !== options.expectedTurnId ||
@@ -2482,7 +2490,9 @@ class ClaudeAgentSession implements AgentSession {
       ) {
         return { status: "unavailable" };
       }
-      this.enqueueSteer(input, message, options.clearPendingPermissions === true);
+      if (!this.enqueueSteer(input, message, options.clearPendingPermissions === true)) {
+        return { status: "unavailable" };
+      }
       return { status: "accepted" };
     });
   }
@@ -2491,17 +2501,24 @@ class ClaudeAgentSession implements AgentSession {
     input: AsyncMessageInput<SDKUserMessage>,
     message: SDKUserMessage,
     clearPendingPermissions: boolean,
-  ): void {
+  ): boolean {
     const uuid = message.uuid;
     if (uuid) this.unstartedMessageUuids.add(uuid);
     if (uuid && clearPendingPermissions) {
       this.permissionClearingSteerUuids.add(uuid);
     }
     try {
-      input.push(message);
+      if (!input.push(message)) {
+        if (uuid) {
+          this.unstartedMessageUuids.delete(uuid);
+          this.permissionClearingSteerUuids.delete(uuid);
+        }
+        return false;
+      }
       if (clearPendingPermissions) {
         this.denyPendingPermissionsSupersededBySteer();
       }
+      return true;
     } catch (error) {
       if (uuid) {
         this.unstartedMessageUuids.delete(uuid);
@@ -3772,7 +3789,10 @@ class ClaudeAgentSession implements AgentSession {
     return result;
   }
 
-  private toSdkUserMessage(prompt: AgentPromptInput): SDKUserMessage {
+  private toSdkUserMessage(
+    prompt: AgentPromptInput,
+    nativeMessageId?: AgentRunOptions["nativeMessageId"],
+  ): SDKUserMessage {
     const content: Array<
       | { type: "text"; text: string }
       | {
@@ -3821,7 +3841,7 @@ class ClaudeAgentSession implements AgentSession {
       content.push(slashCommand);
     }
 
-    const messageId = randomUUID();
+    const messageId = nativeMessageId ?? randomUUID();
     this.rememberUserMessageId(messageId);
 
     return {
@@ -6725,14 +6745,15 @@ function createAsyncMessageInput<T>(): AsyncMessageInput<T> {
   return {
     push(item: T) {
       if (closed) {
-        return;
+        return false;
       }
       const resolve = resolvers.shift();
       if (resolve) {
         resolve({ value: item, done: false });
-        return;
+        return true;
       }
       queue.push(item);
+      return true;
     },
     end() {
       closed = true;

@@ -444,6 +444,9 @@ export function wrapSessionProvider(provider: AgentProvider, inner: AgentSession
     get capabilities() {
       return inner.capabilities;
     },
+    get nativeMessageIds() {
+      return inner.nativeMessageIds;
+    },
     get initialTimeline() {
       return inner.initialTimeline;
     },

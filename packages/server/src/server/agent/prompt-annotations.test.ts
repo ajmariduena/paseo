@@ -1,13 +1,208 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
+import { syncFilePublication } from "../atomic-file.js";
 
 import { PromptAnnotationStore, type PromptAnnotation } from "./prompt-annotations.js";
 
 function notification(message: string): PromptAnnotation {
   return { kind: "notification", level: "info", message };
 }
+
+test("new annotations preserve older presentation instead of evicting it at 500 entries", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "prompt-annotations-retain-"));
+  try {
+    const entries = Array.from({ length: 500 }, (_, index) => ({
+      messageId: `m${index}`,
+      textHash: createHash("sha256").update("same").digest("hex"),
+      annotation: notification(`notification ${index}`),
+    }));
+    writeFileSync(join(dir, "agent.json"), JSON.stringify({ version: 1, entries }));
+    const store = new PromptAnnotationStore(dir);
+    await store.remember("agent", {
+      messageId: "new",
+      text: "new",
+      annotation: notification("new"),
+    });
+    const restored = await new PromptAnnotationStore(dir).historyMatcherForHandoff("agent");
+    expect(restored.take("same")).toEqual({
+      messageId: "m0",
+      annotation: notification("notification 0"),
+    });
+    expect(restored.take("new")).toEqual({ messageId: "new", annotation: notification("new") });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("native annotations distinguish repeated text, unsent attempts and prepended context", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "prompt-annotations-native-"));
+  const store = new PromptAnnotationStore(dir);
+  const firstId = "00000000-0000-4000-8000-000000000001";
+  const secondId = "00000000-0000-4000-8000-000000000002";
+  const withdrawnId = "00000000-0000-4000-8000-000000000003";
+  try {
+    for (const messageId of ["first", "second", "unsent"]) {
+      await store.remember("agent", {
+        messageId,
+        text: "same text",
+        annotation: notification(messageId),
+        nativeMessageIds: true,
+      });
+    }
+    const first = { agentId: "agent", messageId: "first", nativeMessageId: firstId } as const;
+    const second = { agentId: "agent", messageId: "second", nativeMessageId: secondId } as const;
+    const withdrawn = {
+      agentId: "agent",
+      messageId: "first",
+      nativeMessageId: withdrawnId,
+    } as const;
+    await store.prepareNativeDispatch(first);
+    await store.prepareNativeDispatch(second);
+    await store.prepareNativeDispatch(withdrawn);
+    expect((await store.historyMatcher("agent")).take("same text", firstId)).toBeNull();
+    await store.settleNativeDispatch({ ...first, state: "dispatched" });
+    await store.settleNativeDispatch({ ...second, state: "dispatched" });
+    await store.settleNativeDispatch({ ...withdrawn, state: "withdrawn" });
+
+    const matcher = await new PromptAnnotationStore(dir).historyMatcherForHandoff("agent");
+    expect(matcher.take("same text", "unrelated-user-message")).toBeNull();
+    expect(matcher.take("same text", withdrawnId)).toBeNull();
+    expect(matcher.take("context\n\nsame text", secondId)).toEqual({
+      messageId: "second",
+      annotation: notification("second"),
+    });
+    expect(() => matcher.assertNativeDispatchesResolved()).toThrow("absent from provider history");
+    expect(matcher.take("same text", firstId)).toEqual({
+      messageId: "first",
+      annotation: notification("first"),
+    });
+    expect(matcher.take("same text", firstId)).toBeNull();
+    expect(matcher.take("same text")).toBeNull();
+    expect(() => matcher.assertNativeDispatchesResolved()).not.toThrow();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test.skipIf(process.platform === "win32")(
+  "failed disposition synchronization retries the retained publication",
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "prompt-annotations-sync-"));
+    let failSync = false;
+    const store = new PromptAnnotationStore(dir, async (file, root) => {
+      if (failSync) throw new Error("disposition sync failed");
+      await syncFilePublication(file, root);
+    });
+    const attempt = {
+      agentId: "agent",
+      messageId: "wake",
+      nativeMessageId: "00000000-0000-4000-8000-000000000001",
+    } as const;
+    try {
+      await store.remember("agent", {
+        messageId: "wake",
+        text: "same",
+        annotation: notification("done"),
+        nativeMessageIds: true,
+      });
+      await store.prepareNativeDispatch(attempt);
+      await store.prepareNativeDispatch(attempt);
+      failSync = true;
+      await expect(store.settleNativeDispatch({ ...attempt, state: "dispatched" })).rejects.toThrow(
+        "disposition sync failed",
+      );
+      await expect(store.historyMatcherForHandoff("agent")).rejects.toThrow(
+        "disposition sync failed",
+      );
+      failSync = false;
+      const repaired = await store.historyMatcherForHandoff("agent");
+      expect(repaired.take("same", attempt.nativeMessageId)).toEqual({
+        messageId: "wake",
+        annotation: notification("done"),
+      });
+      expect(() => repaired.assertNativeDispatchesResolved()).not.toThrow();
+      await expect(store.settleNativeDispatch({ ...attempt, state: "withdrawn" })).rejects.toThrow(
+        "disposition cannot change",
+      );
+      const disk = await new PromptAnnotationStore(dir).historyMatcherForHandoff("agent");
+      expect(disk.take("same", attempt.nativeMessageId)).toEqual({
+        messageId: "wake",
+        annotation: notification("done"),
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test("annotation capacity refuses new data without overwriting existing history", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "prompt-annotations-capacity-"));
+  const store = new PromptAnnotationStore(dir);
+  try {
+    await store.remember("agent", {
+      messageId: "first",
+      text: "first",
+      annotation: notification("first"),
+    });
+    const saved = readFileSync(join(dir, "agent.json"), "utf8");
+    await expect(
+      store.remember("agent", {
+        messageId: "too-large",
+        text: "next",
+        annotation: notification("x".repeat(16 * 1024 * 1024)),
+      }),
+    ).rejects.toThrow("storage capacity exceeded");
+    expect(store.forMessage("agent", "too-large")).toBeNull();
+    expect(readFileSync(join(dir, "agent.json"), "utf8")).toBe(saved);
+    await store.remember("agent", {
+      messageId: "next",
+      text: "next",
+      annotation: notification("next"),
+    });
+    const matcher = await new PromptAnnotationStore(dir).historyMatcherForHandoff("agent");
+    expect(matcher.take("first")).toEqual({
+      messageId: "first",
+      annotation: notification("first"),
+    });
+    expect(matcher.take("next")).toEqual({ messageId: "next", annotation: notification("next") });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("preparation reserves room to persist the final dispatch disposition", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "prompt-annotations-reserve-"));
+  const nativeMessageId = "00000000-0000-4000-8000-000000000001";
+  try {
+    const entry = {
+      messageId: "wake",
+      textHash: createHash("sha256").update("wake").digest("hex"),
+      annotation: notification(""),
+      nativeDispatches: [{ messageId: nativeMessageId, state: "prepared" }],
+    };
+    const preparedBytes = Buffer.byteLength(
+      JSON.stringify({ version: 1, entries: [entry] }, null, 2),
+    );
+    const initial = {
+      ...entry,
+      annotation: notification("x".repeat(16 * 1024 * 1024 - preparedBytes)),
+      nativeDispatches: [],
+    };
+    const file = join(dir, "agent.json");
+    const saved = JSON.stringify({ version: 1, entries: [initial] }, null, 2);
+    writeFileSync(file, saved);
+    const store = new PromptAnnotationStore(dir);
+    await expect(
+      store.prepareNativeDispatch({ agentId: "agent", messageId: "wake", nativeMessageId }),
+    ).rejects.toThrow("storage capacity exceeded");
+    expect(readFileSync(file, "utf8")).toBe(saved);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("duplicate prompts do not acknowledge a failed annotation write and can retry", async () => {
   const root = mkdtempSync(join(tmpdir(), "prompt-annotations-failure-"));
@@ -93,7 +288,7 @@ test("handoff refuses a missing committed annotation file until it is restored",
   }
 });
 
-test.each(["duplicate IDs", "invalid hash", "too many entries"])(
+test.each(["duplicate IDs", "invalid hash", "invalid native identity"])(
   "handoff refuses annotation metadata with %s and can retry repaired data",
   async (fault) => {
     const dir = mkdtempSync(join(tmpdir(), "prompt-annotations-invalid-"));
@@ -109,11 +304,8 @@ test.each(["duplicate IDs", "invalid hash", "too many entries"])(
       const data = JSON.parse(saved);
       if (fault === "duplicate IDs") data.entries.push(data.entries[0]);
       if (fault === "invalid hash") data.entries[0].textHash = "invalid";
-      if (fault === "too many entries")
-        data.entries = Array.from({ length: 501 }, (_, index) => ({
-          ...data.entries[0],
-          messageId: `m${index}`,
-        }));
+      if (fault === "invalid native identity")
+        data.entries[0].nativeDispatches = [{ messageId: "invalid", state: "dispatched" }];
       writeFileSync(file, JSON.stringify(data));
       const reader = new PromptAnnotationStore(dir);
       await expect(reader.historyMatcherForHandoff("agent-1")).rejects.toThrow(

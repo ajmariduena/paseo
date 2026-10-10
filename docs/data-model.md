@@ -673,12 +673,25 @@ native history belongs to the [handoff persistence contract](refactors/cross-hos
 
 **Path:** `$PASEO_HOME/prompt-annotations/{agentId}.json`
 
-The timeline is rebuilt from provider history on load, and provider history keeps only the prompt text. When the daemon sends a prompt the user didn't write, it records the prompt's `messageId`, a SHA-256 of its text, and how to show it: a wake or permission notification becomes a `notification` row with its `source`, and a prompt another agent sent through its Paseo tools keeps its `origin`. Replayed user messages match entries by text hash, each entry once, in send order. A replayed `<paseo-system>` envelope without an entry has no timeline row. The newest 500 entries per agent are kept, and the file is deleted with the agent's state. Schema: `packages/server/src/server/agent/prompt-annotations.ts`.
+Provider history does not carry Paseo's logical message id. An annotation preserves how to show a
+daemon prompt: a notification with its source, or a user message with its sender. Claude attempts
+bind that annotation to a caller-assigned native UUID before starting or steering. Prepared and
+withdrawn attempts do not match replayed rows; dispatched attempts match their native UUID even
+when text repeats or continuation context was prepended. A retry gets a separate attempt identity.
+Schema: `packages/server/src/server/agent/prompt-annotations.ts`.
 
-Await the annotation write before dispatching its prompt. A retry may acknowledge only a committed
-entry; caching an attempted write can otherwise send a prompt whose provenance disappears on
-restart. Handoff has a stricter read contract than ordinary timeline loading; see the
-[handoff plan](refactors/cross-host-handoff-plan.md#current-evidence-and-integration-gaps).
+Older entries and adapters without native identity support retain text-hash matching in send order.
+That preserves available presentation without proving lifetime coverage. A replayed system envelope
+without an annotation has no timeline row. Handoff refuses unresolved native attempts and dispatched
+UUIDs absent from the captured history; an adapter input acknowledgement does not prove completion
+of the turn or delivery of carried notes.
+
+Keep entries until agent deletion. Refuse additional data at the 16 MiB file budget rather than
+evicting older presentation, and reserve room for each prepared attempt's final disposition before
+dispatch. POSIX writes synchronize publication before acknowledgement; Windows retains ordinary
+atomic writes. Failed publication retains the exact candidate for same-process repair. This store
+still needs the agent-record coverage witness and crash-repair contract in the
+[handoff plan](refactors/cross-host-handoff-plan.md#conversation-persistence-contract).
 
 ---
 

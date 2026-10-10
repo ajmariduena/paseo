@@ -5,7 +5,7 @@ import {
 } from "./agent-messages/index.js";
 import { describe, expect, test, vi } from "vitest";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
@@ -57,6 +57,9 @@ import type {
   AgentRunOptions,
   AgentResumeSessionOptions,
   AgentRunResult,
+  AgentTurnStart,
+  SteerActiveTurnOptions,
+  SteerResult,
   AgentSession,
   AgentSessionConfig,
   AgentSlashCommand,
@@ -544,6 +547,137 @@ class TestAgentSession implements AgentSession {
 
   async close(): Promise<void> {}
 }
+
+test("native annotation dispatch is prepared before the provider and survives prepended restart notes", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "native-annotation-admission-"));
+  const annotationDirectory = join(directory, "annotations");
+  const logger = createTestLogger();
+  const storage = new AgentStorage(join(directory, "agents"), logger);
+  const annotations = new PromptAnnotationStore(annotationDirectory);
+  let agentId = "";
+  class NativeSession extends TestAgentSession {
+    readonly nativeMessageIds = true;
+    readonly history: AgentStreamEvent[] = [];
+    readonly steerIds: string[] = [];
+
+    async startTurn(
+      prompt: AgentPromptInput = "",
+      options?: AgentRunOptions,
+    ): Promise<AgentTurnStart> {
+      if (!options?.nativeMessageId || typeof prompt !== "string")
+        throw new Error("missing native prompt identity");
+      const disk = await new PromptAnnotationStore(annotationDirectory).historyMatcherForHandoff(
+        agentId,
+      );
+      expect(() => disk.assertNativeDispatchesResolved()).toThrow("outcome is unresolved");
+      this.history.push({
+        type: "timeline",
+        provider: "codex",
+        item: { type: "user_message", text: prompt, messageId: options.nativeMessageId },
+      });
+      return { turnId: "native-turn", promptDisposition: "dispatched" };
+    }
+
+    async steerActiveTurn(
+      prompt: AgentPromptInput,
+      options: SteerActiveTurnOptions,
+    ): Promise<SteerResult> {
+      if (!options.nativeMessageId || typeof prompt !== "string")
+        throw new Error("missing native steer identity");
+      this.steerIds.push(options.nativeMessageId);
+      if (this.steerIds.length === 1) return { status: "unavailable" };
+      this.history.push({
+        type: "timeline",
+        provider: "codex",
+        item: { type: "user_message", text: prompt, messageId: options.nativeMessageId },
+      });
+      return { status: "accepted" };
+    }
+  }
+  const session = new NativeSession({ provider: "codex", cwd: directory });
+  const client = new TestAgentClient();
+  vi.spyOn(client, "createSession").mockResolvedValue(session);
+  const manager = new AgentManager({
+    clients: { codex: client },
+    logger,
+    registry: storage,
+    promptAnnotations: annotations,
+  });
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd: directory }, undefined, {
+      workspaceId: undefined,
+    });
+    agentId = agent.id;
+    await storage.addPendingRestartNote(agentId, [
+      { kind: "shell", label: "stopped task", id: "task" },
+    ]);
+    await manager.annotatePrompt(agentId, {
+      messageId: "logical-wake",
+      prompt: "same text",
+      annotation: { kind: "notification", level: "info", message: "background finished" },
+    });
+    const run = manager.streamAgent(agentId, "same text", { clientMessageId: "logical-wake" });
+    expect((await run.next()).value).toMatchObject({ type: "turn_started" });
+    await manager.annotatePrompt(agentId, {
+      messageId: "logical-steer",
+      prompt: "same text",
+      annotation: { kind: "notification", level: "info", message: "second notification" },
+    });
+    await expect(
+      manager.steerAgentRun(agentId, "same text", { clientMessageId: "logical-steer" }),
+    ).resolves.toEqual({ status: "unavailable" });
+    await expect(
+      manager.steerAgentRun(agentId, "same text", { clientMessageId: "logical-steer" }),
+    ).resolves.toEqual({ status: "accepted" });
+    expect(session.steerIds).toHaveLength(2);
+    expect(new Set(session.steerIds).size).toBe(2);
+    const rows = await manager.projectHistoryForHandoff(
+      agentId,
+      [
+        {
+          type: "timeline",
+          provider: "codex",
+          item: { type: "user_message", text: "same text", messageId: "earlier-user" },
+        },
+        ...session.history,
+      ],
+      new Date().toISOString(),
+    );
+    expect(rows.map((row) => row.item)).toEqual([
+      { type: "user_message", text: "same text", messageId: "earlier-user" },
+      {
+        type: "notification",
+        level: "info",
+        message: "background finished",
+        messageId: "logical-wake",
+      },
+      {
+        type: "notification",
+        level: "info",
+        message: "second notification",
+        messageId: "logical-steer",
+      },
+    ]);
+    session.pushEvent({ type: "turn_completed", provider: "codex", turnId: "native-turn" });
+    await drainAsyncGenerator(run);
+    await manager.closeAgent(agentId);
+    const annotationFile = join(annotationDirectory, `${agentId}.json`);
+    const saved = readFileSync(annotationFile, "utf8");
+    await expect(
+      manager.annotatePrompt(agentId, {
+        messageId: "late",
+        prompt: "same text",
+        annotation: { kind: "notification", level: "info", message: "never dispatched" },
+      }),
+    ).rejects.toThrow();
+    expect(readFileSync(annotationFile, "utf8")).toBe(saved);
+  } finally {
+    await manager.closeAgent(agentId);
+    await manager.flushForShutdown();
+    await storage.flush();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("context-export continuation retries failed turns and persists delivery only after success", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-handoff-context-"));
@@ -2068,6 +2202,7 @@ test.each([
   "steer",
   "replace",
   "steer-or-replace",
+  "annotation",
 ])("handoff fences the active runtime operation %s", async (operation) => {
   const fixture = await handoffAgentFixture();
   const { manager, cwd } = fixture;
@@ -2087,6 +2222,12 @@ test.each([
       steer: () => manager.steerAgentRun(agent.id, "continue"),
       replace: () => manager.replaceAgentRun(agent.id, "continue"),
       "steer-or-replace": () => manager.steerOrReplaceActiveTurn(agent.id, "continue"),
+      annotation: () =>
+        manager.annotatePrompt(agent.id, {
+          messageId: "late-wake",
+          prompt: "continue",
+          annotation: { kind: "notification", level: "info", message: "late notification" },
+        }),
     };
     await expect(operations[operation]()).rejects.toMatchObject({ code: "fenced" });
     expect(manager.getAgent(agent.id)?.lifecycle).toBe("idle");

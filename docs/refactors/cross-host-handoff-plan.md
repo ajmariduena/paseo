@@ -277,6 +277,17 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   descendants, record revision guards, presentation coverage and durable process-stop
   recovery also remain open under the
   [conversation persistence contract](#conversation-persistence-contract).
+- New Claude notification/origin annotations bind a prepared attempt to its native UUID before
+  provider start or steer, and persist the adapter's dispatched/withdrawn result. Replay uses that
+  identity across repeated text and prepended context. Handoff refuses unresolved attempts or a
+  dispatched UUID missing from captured history. Publication failures retain exact retry candidates;
+  required annotations no longer use sliding-window eviction. Annotation writes require a loaded
+  runtime and pass the source mutation fence. See the
+  [annotation store contract](../data-model.md#prompt-annotation-store) and
+  [focused evidence](../qa-evidence/handoff-checkpoint-recovery.txt). This does not establish legacy
+  lifetime coverage, provide an agent-record publication witness, prove a turn's completion, or
+  repair ambiguous dispatch after a crash. Error-row reservation and other provider identities
+  remain open. The capability stays unadvertised.
 - `server/handoff/workspace.ts` and its neighboring tests cover Git and directory snapshots,
   restoration and source rechecks. `packWorkspaceArchive` registers the manifest as an archive blob,
   including an empty workspace; restoration consumes only referenced blobs in the verified inventory.

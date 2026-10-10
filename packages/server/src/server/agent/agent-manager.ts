@@ -49,11 +49,13 @@ import {
   type AgentPromptInput,
   type AgentProvider,
   type AgentRunOptions,
+  type AgentTurnStart,
   type AgentSteerOptions,
   type AgentRunResult,
   type AgentSession,
   type AgentSessionConfig,
   type SteerResult,
+  type SteerActiveTurnOptions,
   type AgentStreamEvent,
   type AgentTimelineItem,
   type AgentUsage,
@@ -103,6 +105,8 @@ import { composeSystemPromptParts } from "./system-prompt.js";
 import {
   PromptAnnotationStore,
   type HistoryAnnotationMatcher,
+  type NativePromptDispatch,
+  type SettledNativePromptDispatch,
   type NotificationAnnotation,
   type PromptAnnotation,
 } from "./prompt-annotations.js";
@@ -171,7 +175,7 @@ function presentReplayedItem(
   if (item.type !== "user_message") {
     return item;
   }
-  const matched = annotations.take(item.text);
+  const matched = annotations.take(item.text, item.messageId);
   if (matched?.annotation.kind === "notification") {
     return toNotificationItem(matched.messageId, matched.annotation);
   }
@@ -467,6 +471,12 @@ interface ForegroundTurnAdmissionInput {
   prompt: AgentPromptInput;
   options?: AgentRunOptions;
   isReplacement: boolean;
+}
+
+interface ProviderSteerAdmissionInput {
+  agent: ActiveManagedAgent;
+  prompt: AgentPromptInput;
+  options: SteerActiveTurnOptions;
 }
 
 interface AdmittedForegroundTurn {
@@ -1448,6 +1458,7 @@ export class AgentManager {
       if (!item) continue;
       rows.push({ seq: rows.length + 1, timestamp: event.timestamp ?? fallbackTimestamp, item });
     }
+    annotations.assertNativeDispatchesResolved();
     return rows;
   }
 
@@ -3043,7 +3054,12 @@ export class AgentManager {
       if (this.agents.get(agentId)?.session !== agent.session) {
         throw new Error(`Agent ${agentId} runtime changed before its turn started`);
       }
-      const result = await agent.session.startTurn(submitted, options);
+      const result = await this.admitProviderStart({
+        agent,
+        pendingRun,
+        prompt: submitted,
+        options,
+      });
       if (pendingRun.settled) {
         this.runs.abandonTurn(agentId, result.turnId);
         throw new Error(`Agent ${agentId} run was canceled before its turn started`);
@@ -3392,14 +3408,11 @@ export class AgentManager {
       }
       try {
         const result = await this.runSteerAdmission(agent, expectedTurnId, async () => {
-          const admission = await agent.session.steerActiveTurn!(prompt, {
-            ...options,
-            expectedTurnId,
+          return this.admitProviderSteer({
+            agent,
+            prompt,
+            options: { ...options, expectedTurnId },
           });
-          if (admission.status === "accepted") {
-            await this.recordAcceptedSteer(agent, prompt, options?.clientMessageId, expectedTurnId);
-          }
-          return admission;
         });
         if (result.status === "unavailable" && agent.activeTurnId !== expectedTurnId) {
           return { status: "inactive" };
@@ -3478,19 +3491,11 @@ export class AgentManager {
 
       const result = agent.session.steerActiveTurn
         ? await this.runSteerAdmission(agent, expectedTurnId, async () => {
-            const admission = await agent.session.steerActiveTurn!(prompt, {
-              ...options,
-              expectedTurnId,
+            return this.admitProviderSteer({
+              agent,
+              prompt,
+              options: { ...options, expectedTurnId },
             });
-            if (admission.status === "accepted") {
-              await this.recordAcceptedSteer(
-                agent,
-                prompt,
-                options?.clientMessageId,
-                expectedTurnId,
-              );
-            }
-            return admission;
           })
         : { status: "unavailable" as const };
       if (result.status === "accepted") {
@@ -3524,6 +3529,75 @@ export class AgentManager {
     if (agent.activeTurnId !== expectedTurnId) {
       throw new ActiveTurnChangedError();
     }
+  }
+
+  private async prepareNativePrompt(
+    agent: ActiveManagedAgent,
+    options: AgentRunOptions | undefined,
+  ): Promise<NativePromptDispatch | null> {
+    if (!agent.session.nativeMessageIds || !options?.clientMessageId) return null;
+    const attempt: NativePromptDispatch = {
+      agentId: agent.id,
+      messageId: options.clientMessageId,
+      nativeMessageId: randomUUID(),
+    };
+    const prepared = await this.promptAnnotations.prepareNativeDispatch(attempt);
+    return prepared ? attempt : null;
+  }
+
+  private settleNativePrompt(
+    agent: ActiveManagedAgent,
+    input: SettledNativePromptDispatch,
+  ): Promise<void> {
+    return this.trackRuntimeWork(agent, () => this.promptAnnotations.settleNativeDispatch(input));
+  }
+
+  private async admitProviderStart(
+    input: Pick<ForegroundTurnAdmissionInput, "agent" | "pendingRun" | "prompt" | "options">,
+  ): Promise<AgentTurnStart> {
+    const { agent, pendingRun, prompt, options } = input;
+    const attempt = await this.prepareNativePrompt(agent, options);
+    const invalidated = pendingRun.settled || this.agents.get(agent.id) !== agent;
+    if (invalidated) {
+      if (attempt) await this.settleNativePrompt(agent, { ...attempt, state: "withdrawn" });
+      throw new Error(`Agent ${agent.id} run changed before its turn started`);
+    }
+    const providerOptions = attempt
+      ? { ...options, nativeMessageId: attempt.nativeMessageId }
+      : options;
+    const result = await agent.session.startTurn(prompt, providerOptions);
+    if (attempt) {
+      if (!result.promptDisposition)
+        throw new Error("Provider did not report native prompt disposition");
+      await this.settleNativePrompt(agent, { ...attempt, state: result.promptDisposition });
+    }
+    return result;
+  }
+
+  private async admitProviderSteer(input: ProviderSteerAdmissionInput): Promise<SteerResult> {
+    const { agent, prompt, options } = input;
+    const attempt = await this.prepareNativePrompt(agent, options);
+    if (this.agents.get(agent.id) !== agent) {
+      if (attempt) await this.settleNativePrompt(agent, { ...attempt, state: "withdrawn" });
+      throw new ActiveTurnChangedError();
+    }
+    const admission = await agent.session.steerActiveTurn!(prompt, {
+      ...options,
+      ...(attempt ? { nativeMessageId: attempt.nativeMessageId } : {}),
+    });
+    if (attempt) {
+      const state = admission.status === "accepted" ? "dispatched" : "withdrawn";
+      await this.settleNativePrompt(agent, { ...attempt, state });
+    }
+    if (admission.status === "accepted") {
+      await this.recordAcceptedSteer(
+        agent,
+        prompt,
+        options.clientMessageId,
+        options.expectedTurnId,
+      );
+    }
+    return admission;
   }
 
   private async runSteerAdmission<T>(
@@ -4005,10 +4079,14 @@ export class AgentManager {
    * dispatching the prompt under `messageId`.
    */
   async annotatePrompt(agentId: string, input: PromptToAnnotate): Promise<void> {
-    await this.promptAnnotations.remember(agentId, {
-      messageId: input.messageId,
-      text: submittedPromptText(input.prompt),
-      annotation: input.annotation,
+    await this.withAgentMutation(agentId, async () => {
+      const agent = this.requireSessionAgent(agentId);
+      await this.promptAnnotations.remember(agentId, {
+        messageId: input.messageId,
+        text: submittedPromptText(input.prompt),
+        annotation: input.annotation,
+        nativeMessageIds: agent.session.nativeMessageIds === true,
+      });
     });
   }
 

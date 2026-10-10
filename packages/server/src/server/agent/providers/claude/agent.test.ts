@@ -1280,6 +1280,58 @@ describe("ClaudeAgentSession features", () => {
     }
   });
 
+  test("preserves caller native message identities for starts and steers", async () => {
+    const { queryFactory } = createQueryMock();
+    const client = new ClaudeAgentClient({
+      logger,
+      queryFactory,
+      resolveBinary: async () => "/test/claude/bin",
+    });
+    const session = await client.createSession({ provider: "claude", cwd: process.cwd() });
+    const startedId = "00000000-0000-4000-8000-000000000001";
+    const steeredId = "00000000-0000-4000-8000-000000000002";
+    try {
+      const started = await session.startTurn("same text", { nativeMessageId: startedId });
+      expect(started).toMatchObject({ promptDisposition: "dispatched" });
+      const input = queryFactory.mock.calls[0]?.[0].prompt;
+      if (!input || typeof input === "string") throw new Error("Expected streaming input");
+      const iterator = input[Symbol.asyncIterator]();
+      expect((await iterator.next()).value).toMatchObject({ uuid: startedId });
+
+      await expect(
+        session.steerActiveTurn?.("same text", {
+          nativeMessageId: steeredId,
+          expectedTurnId: started.turnId,
+        }),
+      ).resolves.toEqual({ status: "accepted" });
+      expect((await iterator.next()).value).toMatchObject({ uuid: steeredId });
+    } finally {
+      await session.close();
+    }
+  });
+
+  test("reports withdrawal when startup fails before a native prompt reaches input", async () => {
+    const { queryFactory } = createQueryMock();
+    queryFactory.mockImplementation(() => {
+      throw new Error("injected startup failure");
+    });
+    const client = new ClaudeAgentClient({
+      logger,
+      queryFactory,
+      resolveBinary: async () => "/test/claude/bin",
+    });
+    const session = await client.createSession({ provider: "claude", cwd: process.cwd() });
+    try {
+      await expect(
+        session.startTurn("never sent", {
+          nativeMessageId: "00000000-0000-4000-8000-000000000001",
+        }),
+      ).resolves.toMatchObject({ promptDisposition: "withdrawn" });
+    } finally {
+      await session.close();
+    }
+  });
+
   test("a human steer supersedes blocking permissions until Claude reads it", async () => {
     const { queryFactory } = createQueryMock();
     const client = new ClaudeAgentClient({

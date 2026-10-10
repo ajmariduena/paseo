@@ -1,5 +1,33 @@
 Handoff persistence recovery foundations — 2026-10-10
 
+Native prompt identity and annotation retention:
+- Claude preserves caller UUIDs for start and steer, reports a withdrawn start when startup
+  fails before input admission, and refuses input into a closed SDK input queue. Provider
+  aliases forward this contract. The manager persists a native attempt before the call and
+  its known disposition afterward; an unavailable steer and its retry get different IDs.
+- The new manager case reads the prepared identity from disk inside provider admission, then
+  projects a repeated user prompt, a notification with a prepended restart note, and a retried
+  steer. Only the matching dispatched native messages become notifications. All 271 tests in
+  the affected manager file pass outside the sandbox (the previously verified Node stdout
+  sandbox defect still requires that execution context).
+- Annotation matching excludes prepared/withdrawn attempts. Handoff rejects unresolved
+  attempts or missing dispatched UUIDs. A failed disposition fsync retains its exact candidate
+  and retries publication without invoking a provider; terminal dispositions cannot change.
+- A 501st entry reproduced loss of the first annotation. Entries now remain within the byte
+  budget without eviction; oversize additions preserve existing data. Admission reserves the
+  bytes needed for a final disposition. Matching uses indexes so removing the old entry cap
+  does not introduce a scan of every annotation for each history row.
+- The two affected provider/store files pass 110 tests. After indexing the matcher and
+  tightening duplicate-identity validation, all 15 annotation-store tests pass again.
+- After the admission helper refactor, all three affected files pass together: 381 tests.
+  An additional focused case verifies the source fence rejects annotation writes (1 passed).
+  Closed-runtime annotation writes also refuse without changing the saved presentation file.
+
+These are SDK-boundary fixtures, controlled manager sessions and real annotation files. They
+do not prove authenticated provider continuity, legacy lifetime coverage, cross-store coverage
+witnesses, crash repair of an ambiguous attempt, error-row capacity or completion of carried
+notes. Native artifacts may be incomplete after compaction; absence still refuses certification.
+
 Restart intent retention and note repair:
 - A failed pending-note write reproduced consumption of the only recovery input. Both idle
   agents and declined continuations now retain the intent, report the failure and retry from
