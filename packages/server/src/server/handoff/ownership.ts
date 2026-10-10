@@ -371,8 +371,10 @@ export class HandoffOwnership {
           await this.persist();
         }
         await verifyStoppedSource();
-        this.records.set(id, { ...sealed, state: "released" });
-        await this.persist();
+        const released: SourceRecord = { ...sealed, state: "released" };
+        // Retained source work must remain fenced until release publication is acknowledged.
+        await this.persistWith(released);
+        this.records.set(id, released);
       }
       const signature = sign(
         null,

@@ -143,7 +143,22 @@ test.skipIf(process.platform === "win32").each(["retained", "transferred"] as co
       }),
     ).rejects.toMatchObject({ code: "fenced" });
     await ownership.markReady(input.id, "a".repeat(64));
-    await ownership.release(
+    const publicationEntered = deferred();
+    const publish = deferred();
+    let sourceVerified = false;
+    ownership = new HandoffOwnership({
+      directory,
+      sourceServerId,
+      write: async (file, value) => {
+        if (sourceVerified) {
+          publicationEntered.resolve();
+          await publish.promise;
+        }
+        await writeJournal(file, value);
+      },
+    });
+    await ownership.initialize();
+    const release = ownership.release(
       input.id,
       {
         version: 1,
@@ -153,8 +168,20 @@ test.skipIf(process.platform === "win32").each(["retained", "transferred"] as co
         reservationId: input.reservationId,
         manifestDigest: "a".repeat(64),
       },
-      async () => {},
+      async () => {
+        sourceVerified = true;
+      },
     );
+    try {
+      await publicationEntered.promise;
+      await expect(ownership.withMutation(scope, async () => "too early")).rejects.toMatchObject({
+        code: "fenced",
+      });
+      expect(ownership.status(input.id).state).toBe("ready");
+    } finally {
+      publish.resolve();
+      await release;
+    }
     ownership = new HandoffOwnership({ directory, sourceServerId });
     await ownership.initialize();
     const admitted = ownership.withMutation(scope, async () => "allowed").catch(() => "fenced");

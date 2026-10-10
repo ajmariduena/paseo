@@ -581,6 +581,30 @@ release permit explicit source schedule resume; the released worktree and conver
 Unrelated work in the source schedule directory stays available. A carried note identifies the retained
 schedule and source path on the destination.
 
+Release publication — pausing the final ownership write reproduced a retained schedule mutation
+being admitted before release was durable. Release now publishes its candidate before exposing the
+released state, matching cancellation's ordering. The retained and transferred schedule cases both
+verify that admission stays fenced and status stays ready during that write; after acknowledgement
+and a fresh owner, only the retained schedule can mutate. A failed publication still makes the owner
+unavailable until recovery; it does not return a receipt.
+
+$ npx vitest run src/server/handoff/ownership.test.ts -t 'schedule identity fences' --bail=1
+  FAIL retained schedule identity fences outside-directory work through restart and release
+  AssertionError: promise resolved "'too early'" instead of rejecting
+  Tests  1 failed | 12 skipped (14)
+$ npx vitest run src/server/handoff/ownership.test.ts --bail=1
+  Test Files  1 passed (1)
+       Tests  14 passed (14)
+    Duration  369ms (tests 65ms)
+$ npx vitest run src/server/handoff/ownership.posix.test.ts -t 'release survives restart|lost reply after durable release|readable release after failed synchronization|failure before persisting release|cancellation and release serialize|release already verifying' --bail=1
+  Test Files  1 passed (1)
+       Tests  6 passed | 50 skipped (56)
+    Duration  1.82s (tests 46ms)
+
+The six existing recovery cases cover failed writes/synchronization, lost acknowledgement, durable
+receipt replay and both cancellation/release orderings. These are Linux file-backed owner tests;
+they do not prove power-loss behavior or the still-pending external-job retention disposition.
+
 A second regression paused creation after the agent existed but before its run link was persisted.
 Review again returned an empty array. Selection now also uses the already-persisted workspace ID,
 so the incomplete execution refuses review instead of disappearing from it. No provider turn is used
