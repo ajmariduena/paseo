@@ -1100,11 +1100,17 @@ function deferred<T>() {
 async function createControlledSession(options: {
   withdrawal?: () => Promise<boolean>;
   resolveBinary?: () => Promise<string>;
-}): Promise<{ session: AgentSession; query: () => ScriptedQuery | null }> {
+}): Promise<{
+  session: AgentSession;
+  query: () => ScriptedQuery | null;
+  queries: ScriptedQuery[];
+}> {
   let query: ScriptedQuery | null = null;
+  const queries: ScriptedQuery[] = [];
   queryFactory.mockImplementation(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
     query = createScriptedQuery({ prompt, sessionId: "controlled-session" });
     if (options.withdrawal) query.cancelAsyncMessage.mockImplementation(options.withdrawal);
+    queries.push(query);
     return query;
   });
   const client = new ClaudeAgentClient({
@@ -1113,7 +1119,7 @@ async function createControlledSession(options: {
     resolveBinary: options.resolveBinary ?? (async () => "/test/claude/bin"),
   });
   const session = await client.createSession({ provider: "claude", cwd: process.cwd() });
-  return { session, query: () => query };
+  return { session, query: () => query, queries };
 }
 
 function settledOutcome(submission: Promise<unknown> | undefined) {
@@ -1594,3 +1600,82 @@ for (const schedule of enumeratePendingReplacementSchedules()) {
     await runPendingReplacementSchedule(schedule);
   });
 }
+
+test("a retired query's missing-conversation recovery leaves the replacement turn it did not own alone", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const withdrawal = deferred<boolean>();
+    const heldReturn = deferred<void>();
+    const { session, queries } = await createControlledSession({
+      withdrawal: () => withdrawal.promise,
+    });
+    const events: Array<{ type: string; turnId: string | undefined }> = [];
+    session.subscribe((event) => {
+      if (event.type.startsWith("turn_")) {
+        events.push({ type: event.type, turnId: (event as { turnId?: string }).turnId });
+      }
+    });
+
+    const first = await session.startTurn("A");
+    await settleMicrotasks();
+    const retired = queries[0];
+    if (!retired) throw new Error("query was not created");
+    expect(retired.next.mock.calls.length).toBeGreaterThanOrEqual(2);
+    await session.interrupt();
+    const secondStart = session.startTurn("B");
+    await settleMicrotasks();
+
+    // The recovery's own return of the failed query is what we hold open.
+    retired.return.mockImplementationOnce(async () => {
+      await heldReturn.promise;
+      retired.end();
+    });
+    retired.emit({
+      type: "result",
+      subtype: "error_during_execution",
+      errors: ["No conversation found with session ID: controlled-session"],
+    });
+    await settleMicrotasks();
+    expect(retired.return).toHaveBeenCalledTimes(1);
+
+    await session.setThinkingOption?.(null);
+    withdrawal.resolve(false);
+    await settleMicrotasks();
+    const second = await secondStart;
+    await settleMicrotasks();
+    const replacement = queries[1];
+    if (!replacement) throw new Error("replacement query was not created");
+    expect(queries).toHaveLength(2);
+    expect(replacement.prompts.map((prompt) => prompt.text)).toEqual(["B"]);
+    replacement.emit(buildCommandLifecycle(replacement.prompts[0]?.uuid, "started"));
+    expect(await second.submission).toBe("accepted");
+
+    heldReturn.resolve();
+    await settleMicrotasks();
+    await vi.advanceTimersByTimeAsync(0);
+    await settleMicrotasks();
+
+    expect(await first.submission).toBe("unknown");
+    const bEvents = events.filter((event) => event.turnId === second.turnId).map((e) => e.type);
+    expect(bEvents).toEqual(["turn_started"]);
+    const competing = await session.startTurn("C").then(
+      () => "admitted",
+      (error: unknown) => readTurnSubmissionOutcome(error) ?? "untagged",
+    );
+    expect(competing).toBe("unsent");
+    expect(await session.steerActiveTurn?.("more", { expectedTurnId: second.turnId })).toEqual({
+      status: "accepted",
+    });
+    await session.interrupt();
+    await settleMicrotasks();
+    expect(events.filter((event) => event.turnId === second.turnId).map((e) => e.type)).toEqual([
+      "turn_started",
+      "turn_canceled",
+    ]);
+    expect(replacement.prompts.map((prompt) => prompt.text)).toEqual(["B", "more"]);
+
+    await session.close();
+  } finally {
+    vi.useRealTimers();
+  }
+});

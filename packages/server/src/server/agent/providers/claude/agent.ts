@@ -4085,10 +4085,7 @@ class ClaudeAgentSession implements AgentSession {
   private failActiveTurns(errorMessage: string): void {
     const failure = this.buildTurnFailedEvent(errorMessage);
     this.flushPendingToolCalls();
-    if (this.foregroundIsAdmitting()) {
-      return;
-    }
-    if (this.activeForegroundTurnId) {
+    if (this.activeForegroundTurnId && !this.foregroundIsAdmitting()) {
       this.finishForegroundTurn(failure);
       return;
     }
@@ -4450,7 +4447,26 @@ class ClaudeAgentSession implements AgentSession {
       "Claude resumed session no longer exists; invalidating persisted session",
     );
 
+    // Everything the recovery settles belongs to the query that failed, so it is settled before
+    // the first await: once the old query's return is awaited, a replacement query may own the
+    // foreground, the submissions, the process and the restart state, and none of that is ours.
+    if (this.query !== activeQuery) {
+      await this.awaitWithTimeout(
+        activeQuery.return?.(),
+        "query pump return on missing resumed conversation",
+      );
+      return true;
+    }
     this.failActiveTurns(staleResumeError);
+    this.autonomousTurn = null;
+    this.settleAllSubmissions("unknown");
+    if (!this.foregroundIsAdmitting()) this.clearForegroundTurn();
+    this.persistence = null;
+    this.persistedHistory = [];
+    this.persistedProviderSubagentEvents = [];
+    this.historyPending = false;
+    this.cachedRuntimeInfo = null;
+    this.syncTurnState("missing resumed conversation");
     // Ending the input retires the process on purpose. Detach first so its exit
     // is not reported as a crash.
     const retiredChild = this.childProcess;
@@ -4473,17 +4489,8 @@ class ClaudeAgentSession implements AgentSession {
     if (this.query === activeQuery) {
       this.query = null;
       this.input = null;
+      this.queryRestartNeeded = false;
     }
-    this.persistence = null;
-    this.persistedHistory = [];
-    this.persistedProviderSubagentEvents = [];
-    this.historyPending = false;
-    this.cachedRuntimeInfo = null;
-    this.queryRestartNeeded = false;
-    this.autonomousTurn = null;
-    this.settleAllSubmissions("unknown");
-    if (!this.foregroundIsAdmitting()) this.clearForegroundTurn();
-    this.syncTurnState("missing resumed conversation");
     return true;
   }
 
