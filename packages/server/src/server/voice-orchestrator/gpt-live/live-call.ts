@@ -13,6 +13,7 @@ import {
   type GptLiveServerEvent,
 } from "./live-connection.js";
 import { FloorQueue, SpeechFloor, isEchoOfAssistant } from "./speech-floor.js";
+import { ReflectedInput, meanAmplitude } from "./reflected-audio.js";
 import type { CallTranscript } from "../call-transcript.js";
 
 const OUTPUT_FORMAT = `pcm;rate=${GPT_LIVE_SAMPLE_RATE}`;
@@ -28,8 +29,12 @@ const HISTORY_LIMIT = 24;
 const REFLECTED_BYTES_PER_MS = (24_000 * 2) / 1000;
 // While the assistant is audible, a transcript must be at least this long to count as the user.
 const BARGE_IN_MIN_WORDS = 3;
-// Over WebRTC the session runs before the phone's media connects; greet once its audio arrives.
+// Over WebRTC the session runs before the phone's audio does: greet once the microphone carries
+// real signal, plus a moment for the phone to finish routing its output.
 const GREETING_FALLBACK_MS = 6_000;
+const GREETING_SETTLE_MS = 400;
+// A pause this long inside a sentence is a stall worth recording.
+const SPEECH_STALL_MS = 1_000;
 // An update GPT-Live never starts saying within this long counts as not heard.
 const ANNOUNCEMENT_SPEECH_TIMEOUT_MS = 20_000;
 // A pause this long in the user's speech starts planning the likely request before GPT-Live
@@ -92,6 +97,12 @@ export class GptLiveCall {
   private assistantIdleTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingGreeting: string | null = null;
   private greetingTimer: ReturnType<typeof setTimeout> | null = null;
+  private greetingScheduled = false;
+  private readonly input = new ReflectedInput();
+  private readonly startedAt = Date.now();
+  private lastAppend: { kind: string; at: number } | null = null;
+  private lastUserTranscriptAt = 0;
+  private lastOutputEndMs: number | null = null;
   private recentAssistantText = "";
   private pendingDelegations = 0;
   private readonly floor = new SpeechFloor();
@@ -109,7 +120,7 @@ export class GptLiveCall {
     this.requests = new RequestTracker({ filterEcho: !options.sidebandSessionId });
     this.snapshot = new LiveFleetSnapshot({
       describe: () => options.orchestrator.fleetView(),
-      append: (text) => this.connection.append("thinking", text, null),
+      append: (text) => this.append("thinking", text, null),
     });
   }
 
@@ -151,7 +162,7 @@ export class GptLiveCall {
       announce: (lines, options) => {
         this.transcript?.record("notice", lines.join(" · "), { urgent: options?.urgent ?? false });
         this.outbox.push(options?.urgent ? "urgent" : "routine", () => {
-          this.connection.append("commentary", lines.join("\n"), null);
+          this.append("commentary", lines.join("\n"), null);
           if (options?.onOutcome) this.awaitSpoken(options.onOutcome);
         });
       },
@@ -167,19 +178,46 @@ export class GptLiveCall {
         ? buildLiveResume(orchestrator.language)
         : buildLiveGreeting(orchestrator.language);
     if (!this.options.sidebandSessionId) {
-      this.connection.append("instructions", greeting, null);
+      this.append("instructions", greeting, null);
       return;
     }
     this.pendingGreeting = greeting;
-    this.greetingTimer = setTimeout(() => this.sendPendingGreeting(), GREETING_FALLBACK_MS);
+    this.greetingTimer = setTimeout(
+      () => this.sendPendingGreeting("fallback"),
+      GREETING_FALLBACK_MS,
+    );
   }
 
-  private sendPendingGreeting(): void {
+  private sendPendingGreeting(reason: "mic_live" | "fallback"): void {
     if (this.greetingTimer) clearTimeout(this.greetingTimer);
     this.greetingTimer = null;
     const greeting = this.pendingGreeting;
     this.pendingGreeting = null;
-    if (greeting && !this.closed) this.connection.append("instructions", greeting, null);
+    if (!greeting || this.closed) return;
+    this.transcript?.record("status", "greeting_sent", {
+      reason,
+      afterStartMs: Date.now() - this.startedAt,
+      silentMicLeadMs: this.input.silentLeadMs,
+    });
+    this.append("instructions", greeting, null);
+  }
+
+  private noteReflectedInput(audio: string | undefined): void {
+    const live = audio ? this.input.note(Buffer.from(audio, "base64")) : false;
+    if (!live || !this.pendingGreeting || this.greetingScheduled) return;
+    this.greetingScheduled = true;
+    if (this.greetingTimer) clearTimeout(this.greetingTimer);
+    this.greetingTimer = setTimeout(() => this.sendPendingGreeting("mic_live"), GREETING_SETTLE_MS);
+  }
+
+  /** Every append is remembered: an instruction can cut the assistant off mid-sentence. */
+  private append(
+    kind: "instructions" | "thinking" | "commentary",
+    text: string,
+    delegationId: string | null,
+  ): void {
+    this.lastAppend = { kind, at: Date.now() };
+    this.connection.append(kind, text, delegationId);
   }
 
   private async pushFleetSnapshot(): Promise<void> {
@@ -248,7 +286,7 @@ export class GptLiveCall {
         if (this.options.sidebandSessionId) {
           this.reflectedChunks += 1;
           // Silent frames would keep the floor "taken" and hold every update to its max wait.
-          if (isAudible(audio)) {
+          if (meanAmplitude(audio) >= AUDIBLE_MEAN_AMPLITUDE) {
             this.floor.noteAssistantAudio(audio.length / REFLECTED_BYTES_PER_MS);
           } else {
             this.silentReflectedChunks += 1;
@@ -259,13 +297,14 @@ export class GptLiveCall {
         return;
       }
       case "session.input_audio.append":
-        if (this.pendingGreeting) this.sendPendingGreeting();
+        this.noteReflectedInput((event as { audio?: string }).audio);
         return;
       case "session.input_transcript.delta":
         this.handleUserSpeech((event as { delta: string }).delta);
         return;
       case "session.output_transcript.delta": {
         const delta = (event as { delta: string }).delta;
+        this.noteOutputTiming(event as { start_ms?: number; end_ms?: number }, delta);
         this.requests.noteAssistant(delta, Date.now());
         if (this.resultAppendedAt !== null) {
           this.transcript?.record("status", "result_speech_started", {
@@ -346,7 +385,41 @@ export class GptLiveCall {
     }
   }
 
+  /** Records pauses inside a sentence and lines GPT-Live cut short, with what surrounded them. */
+  private noteOutputTiming(timing: { start_ms?: number; end_ms?: number }, delta: string): void {
+    const before = this.recentAssistantText.slice(-60);
+    if (typeof timing.start_ms === "number" && this.lastOutputEndMs !== null) {
+      const gapMs = timing.start_ms - this.lastOutputEndMs;
+      if (gapMs >= SPEECH_STALL_MS && before && !/[.!?…:]\s*$/.test(before)) {
+        this.transcript?.record("status", "speech_stall", {
+          gapMs,
+          before,
+          ...this.surroundings(),
+        });
+      }
+    }
+    if (typeof timing.end_ms === "number") this.lastOutputEndMs = timing.end_ms;
+    if (/(…|\.\.\.)\s*$/.test(delta)) {
+      this.transcript?.record("status", "speech_cut", {
+        before: `${before}${delta}`.slice(-60),
+        ...this.surroundings(),
+      });
+    }
+  }
+
+  private surroundings(): Record<string, unknown> {
+    const now = Date.now();
+    return {
+      inputPeak: this.input.peak(1_500),
+      userSpokeAgoMs: this.lastUserTranscriptAt ? now - this.lastUserTranscriptAt : null,
+      lastAppend: this.lastAppend
+        ? `${this.lastAppend.kind} ${now - this.lastAppend.at} ms ago`
+        : null,
+    };
+  }
+
   private handleUserSpeech(delta: string): void {
+    this.lastUserTranscriptAt = Date.now();
     this.requests.noteUser(delta, Date.now());
     this.scheduleSpeculation();
     this.userTurn += delta;
@@ -519,14 +592,14 @@ export class GptLiveCall {
         return;
       }
       this.outbox.push("result", () => {
-        this.connection.append("commentary", result, delegationId);
+        this.append("commentary", result, delegationId);
         this.resultAppendedAt = Date.now();
       });
     } catch (error) {
       this.options.logger.warn({ err: error }, "GPT-Live delegation failed");
       if (this.closed) return;
       this.outbox.push("result", () =>
-        this.connection.append(
+        this.append(
           "commentary",
           "The request could not be completed because the backend failed. Tell the user briefly.",
           delegationId,
@@ -540,11 +613,3 @@ export class GptLiveCall {
 
 // Mean absolute amplitude of PCM16 below this is silence or comfort noise (about -44 dBFS).
 const AUDIBLE_MEAN_AMPLITUDE = 200;
-
-function isAudible(pcm16: Buffer): boolean {
-  const samples = Math.floor(pcm16.length / 2);
-  if (samples === 0) return false;
-  let total = 0;
-  for (let index = 0; index < samples; index += 1) total += Math.abs(pcm16.readInt16LE(index * 2));
-  return total / samples >= AUDIBLE_MEAN_AMPLITUDE;
-}
