@@ -636,6 +636,7 @@ export interface AgentSessionConfig {
 
 export interface AgentLaunchContext {
   agentId?: string;
+  runtimeGenerationId?: string;
   env?: Record<string, string>;
   /**
    * Runtime-only internal Paseo tools. This must never be persisted into

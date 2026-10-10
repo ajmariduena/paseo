@@ -23,7 +23,37 @@ existing macOS handoff test filter; the complete spawn suite already runs there.
 pending. This does not prove fresh authenticated Claude continuity, physical MacBook/VPS transfer,
 conversation-generation recovery, or uncertain stops after durable admission.
 
-Cold recovery regression (generated record ID and PID redacted):
+Stopped-runtime acknowledgements — Linux, 2026-10-10, baseline 81288b229
+
+Reproduced: stop removed the launch record before the agent's closed snapshot was durable.
+A fresh registry retry rejected with ManagedProcessRecordMissingError, losing the positive stop
+result even though the process had finished. Registered Claude launches now carry the owner's
+runtime generation and retain synchronized stopped records through SDK cleanup and failed agent
+publication. Ordinary cleanup preserves them; durable owner closure retires them.
+
+Targeted verification:
+- managed-processes.test.ts: 40 passed. New cases cover cold retry with a reused PID, missing
+  records, refusal to readmit a stopped launch, generation-specific retirement, and receipt sync
+  failure with same-instance and fresh-registry retry. No second signal is sent.
+- agent.spawn.test.ts: 46 passed. The real Node bootstrap registration/SDK-cleanup regression now
+  verifies that the generation-bound stop record outlives a failed SDK return and its retry.
+- bootstrap-managed-processes.test.ts: 3 passed. Startup retires receipts for durable closed
+  owners and preserves them for open owners; shutdown joins reconciliation.
+- agent-manager.test.ts: 11 focused cases passed in two selections. Creation, resume, reload
+  and import carry the published generation; failed closed-record synchronization cannot retire
+  stop evidence. Existing unknown-event faults continue to refuse certification.
+
+The existing macOS CI name filter was exercised locally for the store/bootstrap files: 28 passed,
+15 skipped (overlapping the counts above). This is Linux evidence; native macOS remains for CI.
+The server-stack build, root typecheck, lint and formatting pass. An initial lint failure required
+an explicit return from the startup reconciliation callback; the final lint run has no errors.
+
+These are real file-backed records, isolated daemons and harmless Node subprocesses, with injected
+SDK frames, process tables and storage faults. They preserve a known stop; they do not reconstruct
+unknown process inventories, callback outcomes or conversation state after a crash. No authenticated
+provider or physical MacBook/VPS transfer ran. The complete feature remains unadvertised.
+
+Earlier cold recovery regression (generated record ID and PID redacted):
 
  FAIL  src/server/managed-processes/managed-processes.test.ts > managed process registry > cold recovery removes a gated launch that exited before admission
 AssertionError: expected { checked: 1, dead: +0, …(4) } to match object { checked: 1, removed: 1, errors: [] }

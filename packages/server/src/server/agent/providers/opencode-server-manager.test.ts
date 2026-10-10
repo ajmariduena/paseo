@@ -569,6 +569,8 @@ class FakeOpenCodeProcess extends EventEmitter {
 }
 
 class FakeManagedProcesses implements ManagedProcessRegistry {
+  async retireStoppedRuntime(): Promise<void> {}
+
   private records: ManagedProcessRecord[] = [];
 
   async stop(): Promise<void> {

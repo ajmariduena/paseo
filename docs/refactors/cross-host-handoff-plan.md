@@ -470,7 +470,12 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   matches; startup can finish that interrupted stop after the owner exits. Snapshots of admitted launches,
   interrupted inspections and failed publication cannot certify closure. A new OS boot clears old
   process identities without signalling current PIDs. See the [store contract](../data-model.md#managed-process-store)
-  and [process proof evidence](../qa-evidence/handoff-checkpoint-recovery.txt). The Claude spawn suite
+  and [process proof evidence](../qa-evidence/handoff-checkpoint-recovery.txt). Confirmed stops now
+  retain a durable acknowledgement bound to their owning runtime generation until agent closure is
+  durable. Tests cover receipt synchronization failure, retry after restart and PID reuse, failed
+  agent closure, generation propagation and startup retirement without discarding unresolved owners.
+  This preserves positive stop evidence; it does not reconcile unknown runtime outcomes.
+  The Claude spawn suite
   now covers durable launch admission, parent death before admission, closure during publication,
   failed-registration cleanup, SDK construction failure after spawning, initial inspection failure
   and preservation of process identity, streams and executable wrappers. Failed construction retains

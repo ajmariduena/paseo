@@ -16,6 +16,7 @@ import {
   type ManagedProcessTable,
 } from "./managed-processes.js";
 import { spawnProcess } from "../../utils/spawn.js";
+import { syncFilePublication } from "../atomic-file.js";
 import {
   captureProcessTree,
   readLinuxProcessEntry,
@@ -35,6 +36,108 @@ afterEach(async () => {
 });
 
 describe("managed process registry", () => {
+  test.skipIf(process.platform === "win32").each([false, true])(
+    "handoff stop acknowledgement retries without signalling again after failed sync (restart: %s)",
+    async (restart) => {
+      tempHome = await mkdtemp(path.join(tmpdir(), "paseo-managed-stop-sync-"));
+      const runtime = { agentId: "agent", generationId: "b5992186-a159-4d19-85e7-2b6331180ee7" };
+      const root = { pid: 4101, parentPid: 1, startedAt: "owner", exited: false };
+      let entries = [root];
+      let failReceipt = true;
+      const signals: number[] = [];
+      const options = {
+        paseoHome: tempHome,
+        processTable: new FakeProcessTable([]),
+        terminateProcess: terminateWithTreeKill,
+        logger: createTestLogger(),
+        syncPublication: async (file: string, parent: string) => {
+          const saved = JSON.parse(await readFile(file, "utf8"));
+          if (failReceipt && saved.tree.state === "stopped") throw new Error("receipt sync failed");
+          await syncFilePublication(file, parent);
+        },
+        processTree: {
+          bootId: async () => "boot",
+          list: async () => entries,
+          signal: (pid: number) => {
+            signals.push(pid);
+            entries = [];
+          },
+        },
+      };
+      const registry = createManagedProcessRegistry(options);
+      const record = await registry.record({
+        owner: { provider: "claude", kind: "query" },
+        runtime,
+        pid: root.pid,
+        command: "claude",
+        args: [],
+        processTree: { bootId: "boot", entries: [root] },
+      });
+      await registry.retireStoppedRuntime(runtime);
+      expect(await registry.list()).toEqual([record]);
+      await expect(registry.stop(record.id)).rejects.toThrow("receipt sync failed");
+      const recovered = restart ? createManagedProcessRegistry(options) : registry;
+      await expect(recovered.stop(record.id)).rejects.toThrow("receipt sync failed");
+      failReceipt = false;
+      await recovered.stop(record.id);
+      expect(signals).toEqual([root.pid]);
+      await recovered.retireStoppedRuntime(runtime);
+      expect(await recovered.list({ includeStopped: true })).toEqual([]);
+    },
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "handoff stopped runtime keeps its acknowledgement across restart until its owner retires it",
+    async () => {
+      tempHome = await mkdtemp(path.join(tmpdir(), "paseo-managed-stop-receipt-"));
+      const runtime = { agentId: "agent", generationId: "b5992186-a159-4d19-85e7-2b6331180ee7" };
+      const root = { pid: 4101, parentPid: 1, startedAt: "owner", exited: false };
+      let entries = [root];
+      const signals: number[] = [];
+      const options = {
+        paseoHome: tempHome,
+        processTable: new FakeProcessTable([]),
+        terminateProcess: terminateWithTreeKill,
+        logger: createTestLogger(),
+        processTree: {
+          bootId: async () => "boot",
+          list: async () => entries,
+          signal: (pid: number) => {
+            signals.push(pid);
+            entries = [];
+          },
+        },
+      };
+      const registry = createManagedProcessRegistry(options);
+      const record = await registry.record({
+        owner: { provider: "claude", kind: "query" },
+        runtime,
+        pid: root.pid,
+        command: "claude",
+        args: [],
+        processTree: { bootId: "boot", entries: [root] },
+      });
+      await registry.stop(record.id);
+      const recovered = createManagedProcessRegistry(options);
+      // The PID now belongs to unrelated work. A retry consumes the saved result.
+      entries = [{ ...root, startedAt: "replacement" }];
+      await recovered.remove(record.id);
+      await expect(recovered.stop(record.id)).resolves.toBeUndefined();
+      expect(signals).toEqual([root.pid]);
+      expect(await recovered.list()).toEqual([]);
+      expect(await recovered.list({ includeStopped: true })).toEqual([
+        { ...record, tree: { ...record.tree, state: "stopped" } },
+      ]);
+      expect(await recovered.reapStale()).toMatchObject({ checked: 0, errors: [] });
+      await expect(recovered.admitLaunch(record.id)).rejects.toThrow("launch cannot be admitted");
+      await recovered.retireStoppedRuntime({ ...runtime, generationId: "another-generation" });
+      await expect(recovered.stop(record.id)).resolves.toBeUndefined();
+      await recovered.retireStoppedRuntime(runtime);
+      expect(await recovered.list({ includeStopped: true })).toEqual([]);
+      await expect(recovered.stop(record.id)).rejects.toThrow("Managed process record is missing");
+    },
+  );
+
   test.runIf(process.platform !== "win32")(
     "handoff cold recovery removes a gated launch that exited before admission",
     async () => {

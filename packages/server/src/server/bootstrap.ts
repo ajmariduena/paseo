@@ -772,12 +772,11 @@ export async function createPaseoDaemon(
   // Reconcile the helper-process ledger in the background so it never blocks the
   // daemon from coming up; terminating a live leftover can take a few seconds.
   // Best-effort, so a failure is logged here rather than crashing startup.
-  const managedProcessReconciliation = reconcileManagedProcessLedger(
-    managedProcesses,
-    logger,
-  ).catch((error) => {
-    logger.warn({ err: error }, "Failed to reconcile managed helper process ledger");
-  });
+  let managedProcessReconciliation = reconcileManagedProcessLedger(managedProcesses, logger).catch(
+    (error) => {
+      logger.warn({ err: error }, "Failed to reconcile managed helper process ledger");
+    },
+  );
   let relayRuntime: RelayRuntime | null = null;
 
   const staticDir = config.staticDir;
@@ -1111,6 +1110,7 @@ export async function createPaseoDaemon(
     });
   }
   const agentManager = new AgentManager({
+    onRuntimeClosed: (runtime) => managedProcesses.retireStoppedRuntime(runtime),
     beforeRetainedContinuation: (agentId): Promise<void> =>
       handoffSource.checkpointRetainedConversation(agentId),
     paseoHome: config.paseoHome,
@@ -1691,6 +1691,45 @@ export async function createPaseoDaemon(
   });
   logger.info({ elapsed: elapsed() }, "Loading persisted agent registry");
   const persistedRecords = await agentStorage.list();
+  managedProcessReconciliation = managedProcessReconciliation
+    .then(async () => {
+      const records = new Map(persistedRecords.map((record) => [record.id, record]));
+      const stopped = await managedProcesses.list({ includeStopped: true });
+      const retired = new Set<string>();
+      for (const entry of stopped) {
+        if (entry.tree?.state !== "stopped" || !entry.runtime) continue;
+        const record = records.get(entry.runtime.agentId);
+        if (
+          record?.lastStatus !== "closed" ||
+          record.runtimeGeneration?.id !== entry.runtime.generationId ||
+          retired.has(record.id)
+        )
+          continue;
+        try {
+          await agentStorage.retryClosedSnapshot(record.id);
+          const closed = await agentStorage.get(record.id);
+          if (
+            closed?.lastStatus !== "closed" ||
+            closed.runtimeGeneration?.id !== record.runtimeGeneration.id
+          )
+            continue;
+          await managedProcesses.retireStoppedRuntime({
+            agentId: record.id,
+            generationId: record.runtimeGeneration.id,
+          });
+          retired.add(record.id);
+        } catch (error) {
+          logger.warn(
+            { err: error, agentId: record.id },
+            "Retaining process stop acknowledgements until agent closure is durable",
+          );
+        }
+      }
+      return undefined;
+    })
+    .catch((error) => {
+      logger.warn({ err: error }, "Failed to reconcile managed process stop acknowledgements");
+    });
   logger.info(
     { elapsed: elapsed() },
     `Agent registry loaded (${persistedRecords.length} record${persistedRecords.length === 1 ? "" : "s"}); agents will initialize on demand`,

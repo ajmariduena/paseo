@@ -807,9 +807,15 @@ inventory before acknowledging it. Failed registration retains its assigned iden
 candidate, so closure can repair publication and stop that process without launching another query.
 If the inspection marker itself failed, the live store knows inspection never started and can retry;
 after a crash, a pending marker for an admitted launch does not carry that evidence. Never clear it from a smaller current
-process list. A missing record does not prove exit; after a confirmed stop the provider retains that
-outcome while retrying its remaining SDK cleanup. A different OS boot proves the prior processes are
-gone without signalling reused PIDs. Process exit does not repair a conversation's unresolved persistence obligations.
+process list. A missing record does not prove exit. Registered Claude launches bind their record to
+the agent's durable runtime generation. After a confirmed stop, keep a synchronized `stopped` record
+while SDK cleanup and agent closure are unfinished. Retrying that exact launch acknowledges the saved
+outcome without signalling current PIDs. Ordinary process cleanup cannot erase it. Retire these records
+only after the owning generation's closed snapshot is durable; startup retries this retirement for
+closed owners and retains acknowledgements for unresolved generations. Active-process inventories
+exclude acknowledgements, so an empty inventory is never a substitute for a launch's stop result.
+A different OS boot proves the prior processes are gone without signalling reused PIDs. Process exit
+does not repair a conversation's unresolved persistence obligations.
 The [handoff boundary](refactors/cross-host-handoff-plan.md#boundary) tracks the remaining launch
 and process-coverage gaps.
 

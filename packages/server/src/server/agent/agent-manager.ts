@@ -12,6 +12,7 @@ import {
 } from "../worktree-use-lock.js";
 import { stat } from "node:fs/promises";
 import type { HandoffMutationScope, HandoffOwnership } from "../handoff/ownership.js";
+import type { ManagedRuntime } from "../managed-processes/managed-processes.js";
 import {
   AGENT_LIFECYCLE_STATUSES,
   type AgentLifecycleStatus,
@@ -436,6 +437,7 @@ export interface AgentManagerOptions {
   paseoHome?: string;
   handoffOwnership?: HandoffOwnership;
   beforeRetainedContinuation?: (agentId: string) => Promise<void>;
+  onRuntimeClosed?: (runtime: ManagedRuntime) => Promise<void>;
   pluginLifecycle?: PluginLifecycle;
   clients?: ProviderClientMap;
   providerDefinitions?: ProviderEnabledMap;
@@ -918,6 +920,7 @@ export class AgentManager {
   private readonly subscribers = new Set<SubscriptionRecord>();
   private readonly idFactory: () => string;
   private readonly registry?: AgentStorage;
+  private readonly onRuntimeClosed?: AgentManagerOptions["onRuntimeClosed"];
   private readonly durableTimelineStore?: AgentTimelineStore;
   private readonly promptAnnotations: PromptAnnotationStore;
   private readonly internalPromptAnnotations = new WeakMap<ManagedAgent, PromptAnnotationStore>();
@@ -976,6 +979,7 @@ export class AgentManager {
     this.pluginLifecycle = options.pluginLifecycle;
     this.idFactory = options.idFactory ?? (() => randomUUID());
     this.registry = options?.registry;
+    this.onRuntimeClosed = options.onRuntimeClosed;
     this.durableTimelineStore = options?.durableTimelineStore;
     this.promptAnnotations = resolvePromptAnnotations(options);
     this.onAgentAttention = options?.onAgentAttention;
@@ -1639,6 +1643,7 @@ export class AgentManager {
       storedConfig,
       options,
     );
+    launchContext.runtimeGenerationId = runtimeGenerationId;
     const session = await client.createSession(providerLaunchConfig, launchContext, createOptions);
     await this.requireExternalMcpSupport(session, storedConfig);
     const agent = await this.registerSession(session, storedConfig, resolvedAgentId, {
@@ -1804,7 +1809,7 @@ export class AgentManager {
         const session = await client.resumeSession(
           handle,
           providerLaunchConfig,
-          launchContext,
+          { ...launchContext, runtimeGenerationId },
           currentResumeOptions,
         );
         await this.requireExternalMcpSupport(session, storedConfig);
@@ -1873,7 +1878,11 @@ export class AgentManager {
         providerHandleId: input.providerHandleId,
         cwd: input.cwd,
       },
-      { config: providerLaunchConfig, storedConfig, launchContext },
+      {
+        config: providerLaunchConfig,
+        storedConfig,
+        launchContext: { ...launchContext, runtimeGenerationId },
+      },
     );
     let handedToRegistration = false;
     try {
@@ -1996,6 +2005,7 @@ export class AgentManager {
         owner: existing.owner,
         persistence: handle,
       });
+      launchContext.runtimeGenerationId = runtimeGenerationId;
       session = handle
         ? await client.resumeSession(handle, providerLaunchConfig, launchContext)
         : await client.createSession(providerLaunchConfig, launchContext);
@@ -2110,7 +2120,7 @@ export class AgentManager {
       return this.runLifecycleMutation(agentId, async () => {
         const agent = this.agents.get(agentId);
         if (!agent) {
-          await this.registry?.retryClosedSnapshot(agentId);
+          await this.retryClosedSnapshot(agentId);
           return;
         }
         if (agent.session !== expectedSession)
@@ -2140,7 +2150,7 @@ export class AgentManager {
       // A preceding reload or archive may already have closed the durable agent.
       const agent = this.agents.get(agentId);
       if (!agent) {
-        await this.registry?.retryClosedSnapshot(agentId);
+        await this.retryClosedSnapshot(agentId);
         return;
       }
       if (!shouldClose || shouldClose(agent)) {
@@ -5114,8 +5124,9 @@ export class AgentManager {
   ): Promise<string | undefined> {
     if (this.agents.has(agentId)) throw new Error(`Agent with id ${agentId} already exists`);
     if (!this.registry || config.internal) return undefined;
+    const previous = await this.registry.get(agentId);
     const now = new Date().toISOString();
-    return this.registry.beginRuntimeGeneration({
+    const generationId = await this.registry.beginRuntimeGeneration({
       id: agentId,
       provider: config.provider,
       cwd: config.cwd,
@@ -5129,6 +5140,11 @@ export class AgentManager {
       updatedAt: now,
       lastStatus: "initializing",
     });
+    // The new durable opening preserves the preceding closed outcome. Unclosed
+    // predecessors remain unresolved and keep their process acknowledgements.
+    if (previous?.lastStatus === "closed" && previous.runtimeGeneration)
+      await this.retireStoppedRuntime(agentId, previous.runtimeGeneration.id);
+    return generationId;
   }
 
   private async persistSnapshot(
@@ -5142,7 +5158,29 @@ export class AgentManager {
     if (agent.internal) {
       return;
     }
+    const closedGeneration = agent.lifecycle === "closed" ? agent.runtimeGenerationId : undefined;
     await this.registry.applySnapshot(agent, options);
+    if (closedGeneration) await this.retireStoppedRuntime(agent.id, closedGeneration);
+  }
+
+  private async retryClosedSnapshot(agentId: string): Promise<void> {
+    await this.registry?.retryClosedSnapshot(agentId);
+    const record = await this.registry?.get(agentId);
+    if (record?.lastStatus === "closed" && record.runtimeGeneration)
+      await this.retireStoppedRuntime(agentId, record.runtimeGeneration.id);
+  }
+
+  private async retireStoppedRuntime(agentId: string, generationId: string): Promise<void> {
+    try {
+      await this.onRuntimeClosed?.({ agentId, generationId });
+    } catch (error) {
+      // Retaining proof after its owner is durable is a cleanup failure, not an
+      // uncertain stop. Startup and the next opening can retry retirement.
+      this.logger.warn(
+        { err: error, agentId, generationId },
+        "Failed to retire managed process stop acknowledgements",
+      );
+    }
   }
 
   private requireRegistry(): AgentStorage {

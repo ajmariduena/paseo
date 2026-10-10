@@ -1662,6 +1662,10 @@ describe("Claude spawn override", () => {
     "retries failed process registration during close without launching another query",
     async () => {
       const home = await mkdtemp(path.join(tmpdir(), "paseo-claude-registration-retry-"));
+      const runtime = {
+        agentId: "test-agent",
+        generationId: "b5992186-a159-4d19-85e7-2b6331180ee7",
+      };
       const blocker = path.join(home, "runtime");
       await writeFile(blocker, "prevents ledger publication");
       const registry = createManagedProcessRegistry({
@@ -1694,7 +1698,10 @@ describe("Claude spawn override", () => {
         resolveBinary: async () => process.execPath,
         managedProcesses: registry,
         queryFactory,
-      }).createSession({ provider: "claude", cwd: process.cwd() });
+      }).createSession(
+        { provider: "claude", cwd: process.cwd() },
+        { agentId: runtime.agentId, runtimeGenerationId: runtime.generationId },
+      );
       try {
         await expect(session.listCommands()).rejects.toThrow("registration is not durable");
         fixtureChild = spawn.mock.results[0]!.value;
@@ -1709,8 +1716,13 @@ describe("Claude spawn override", () => {
         await expect(session.close()).rejects.toThrow("Query return failed");
         await exited;
         expect(await registry.list()).toEqual([]);
+        const receipts = await registry.list({ includeStopped: true });
+        expect(receipts).toHaveLength(1);
+        expect(receipts[0]).toMatchObject({ runtime, tree: { state: "stopped" } });
         await session.close();
-        expect(await registry.list()).toEqual([]);
+        expect(await registry.list({ includeStopped: true })).toEqual(receipts);
+        await registry.retireStoppedRuntime(runtime);
+        expect(await registry.list({ includeStopped: true })).toEqual([]);
         expect(queryFactory).toHaveBeenCalledTimes(1);
         expect(query.close).toHaveBeenCalledTimes(1);
         expect(query.return).toHaveBeenCalledTimes(2);

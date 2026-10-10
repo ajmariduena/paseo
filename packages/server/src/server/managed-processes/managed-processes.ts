@@ -24,29 +24,43 @@ const POSIX_LSTART_WIDTH = 24;
 const POSIX_LSTART_PATTERN =
   /^(Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [ \d]\d \d{2}:\d{2}:\d{2} \d{4}$/;
 
-const ManagedProcessRecordSchema = z.object({
-  id: z.string().min(1),
-  owner: z.object({
-    provider: z.string().min(1),
-    kind: z.string().min(1),
-  }),
-  pid: z.number().int().positive(),
-  command: z.string().min(1),
-  args: z.array(z.string()),
-  metadata: z.record(z.string(), z.unknown()).default({}),
-  identity: z.object({
-    commandLine: z.string().nullable(),
-    startedAt: z.string().nullable(),
-  }),
-  createdAt: z.string().min(1),
-  tree: z
-    .object({
-      checkpoint: ProcessTreeCheckpointSchema,
-      inspectionPending: z.boolean(),
-      state: z.enum(["gated", "running", "stopping"]),
-    })
-    .optional(),
+const ManagedRuntimeSchema = z.object({
+  agentId: z.string().min(1),
+  generationId: z.string().uuid(),
 });
+export type ManagedRuntime = z.infer<typeof ManagedRuntimeSchema>;
+
+const ManagedProcessRecordSchema = z
+  .object({
+    id: z.string().min(1),
+    owner: z.object({
+      provider: z.string().min(1),
+      kind: z.string().min(1),
+    }),
+    pid: z.number().int().positive(),
+    command: z.string().min(1),
+    args: z.array(z.string()),
+    metadata: z.record(z.string(), z.unknown()).default({}),
+    identity: z.object({
+      commandLine: z.string().nullable(),
+      startedAt: z.string().nullable(),
+    }),
+    createdAt: z.string().min(1),
+    runtime: ManagedRuntimeSchema.optional(),
+    tree: z
+      .object({
+        checkpoint: ProcessTreeCheckpointSchema,
+        inspectionPending: z.boolean(),
+        state: z.enum(["gated", "running", "stopping", "stopped"]),
+      })
+      .optional(),
+  })
+  .refine(
+    (record) =>
+      record.tree?.state !== "stopped" ||
+      (record.runtime !== undefined && !record.tree.inspectionPending),
+    "A stop acknowledgement requires a runtime identity and completed inspection",
+  );
 
 const WindowsProcessSnapshotSchema = z.object({
   ProcessId: z.number().int().positive(),
@@ -79,6 +93,7 @@ export interface ManagedProcessOwner {
 }
 
 export interface ManagedProcessRecordInput {
+  runtime?: ManagedRuntime;
   owner: ManagedProcessOwner;
   pid: number;
   command: string;
@@ -105,7 +120,9 @@ export interface ManagedProcessRegistry {
   admitLaunch(id: string): Promise<void>;
   remove(id: string): Promise<void>;
   stop(id: string): Promise<void>;
-  list(): Promise<ManagedProcessRecord[]>;
+  list(options?: { includeStopped?: boolean }): Promise<ManagedProcessRecord[]>;
+  /** Only after the owner's closed record, or its successor opening, is durable. */
+  retireStoppedRuntime(runtime: ManagedRuntime): Promise<void>;
   reapStale(): Promise<ManagedProcessReapResult>;
 }
 
@@ -303,6 +320,7 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
   }
 
   async record(input: ManagedProcessRecordInput): Promise<ManagedProcessRecord> {
+    if (input.runtime && !input.processTree) throw new ManagedProcessInspectionError(input.pid);
     if (input.launchGated && input.processTree?.entries.length !== 1)
       throw new ManagedProcessInspectionError(input.pid);
     const inspection = input.processTree ? null : await this.processTable.inspect(input.pid);
@@ -319,6 +337,7 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
         startedAt: snapshot?.startedAt ?? null,
       },
       createdAt: new Date().toISOString(),
+      runtime: input.runtime,
       ...(input.processTree
         ? {
             tree: {
@@ -351,7 +370,11 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
       await this.repairPublication(id);
       const record = await this.readRecord(id);
       if (!record) throw new ManagedProcessRecordMissingError(id);
-      if (!record.tree || record.tree.inspectionPending || record.tree.state === "stopping")
+      if (
+        !record.tree ||
+        record.tree.inspectionPending ||
+        !["gated", "running"].includes(record.tree.state)
+      )
         throw new ManagedProcessLaunchStateError(id);
       // A crash after this publication may have dispatched work. Cold recovery
       // must no longer treat an exited root as an unused bootstrap.
@@ -365,7 +388,7 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
       const record = await this.readRecord(id);
       if (!record) return;
       await this.confirmProcessExited(record);
-      await fs.rm(this.recordPath(id), { force: true });
+      await this.completeStop(record);
     });
   }
 
@@ -376,9 +399,14 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
       if (!stored) throw new ManagedProcessRecordMissingError(id);
       let record = stored;
       if (!record.tree) throw new ManagedProcessInspectionError(record.pid);
+      if (record.tree.state === "stopped") {
+        // Re-acknowledge publication after restart without inspecting or signalling reused PIDs.
+        await this.publish(record);
+        return;
+      }
       const bootId = await (this.processTree?.bootId ?? readProcessBootId)();
       if (record.tree.checkpoint.bootId !== bootId) {
-        await fs.rm(this.recordPath(id), { force: true });
+        await this.completeStop(record);
         return;
       }
       // Before admission no provider can run or create descendants, so a failed
@@ -408,8 +436,36 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
       if (result === "kill-timeout")
         throw new ManagedProcessTerminationError(record.pid, "timeout");
       await this.confirmProcessExited(record);
-      await fs.rm(this.recordPath(id), { force: true });
+      await this.completeStop(record);
     });
+  }
+
+  private async completeStop(record: ManagedProcessRecord): Promise<void> {
+    if (record.runtime && record.tree) {
+      await this.publish({
+        ...record,
+        tree: { ...record.tree, inspectionPending: false, state: "stopped" },
+      });
+    } else {
+      await fs.rm(this.recordPath(record.id), { force: true });
+    }
+  }
+
+  async retireStoppedRuntime(runtime: ManagedRuntime): Promise<void> {
+    const records = await this.list({ includeStopped: true });
+    for (const candidate of records) {
+      if (
+        candidate.runtime?.agentId !== runtime.agentId ||
+        candidate.runtime.generationId !== runtime.generationId
+      )
+        continue;
+      await this.serialize(candidate.id, async () => {
+        await this.repairPublication(candidate.id);
+        const record = await this.readRecord(candidate.id);
+        if (record?.tree?.state !== "stopped") return;
+        await fs.rm(this.recordPath(record.id), { force: true });
+      });
+    }
   }
 
   private async readRecord(id: string): Promise<ManagedProcessRecord | null> {
@@ -455,10 +511,12 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
     }
   }
 
-  async list(): Promise<ManagedProcessRecord[]> {
+  async list(options?: { includeStopped?: boolean }): Promise<ManagedProcessRecord[]> {
     const { entries, errors } = await this.readEntries();
     if (errors.length > 0) throw new ManagedProcessInventoryError(errors);
-    return entries.map((entry) => entry.record);
+    return entries
+      .map((entry) => entry.record)
+      .filter((record) => options?.includeStopped || record.tree?.state !== "stopped");
   }
 
   async reapStale(): Promise<ManagedProcessReapResult> {
@@ -473,12 +531,13 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
     };
 
     for (const entry of inventory.entries) {
+      if (entry.record.tree?.state === "stopped") continue;
       result.checked += 1;
       try {
         if (entry.record.tree) {
           await this.stop(entry.record.id);
           result.terminated += 1;
-          result.removed += 1;
+          if (!entry.record.runtime) result.removed += 1;
           continue;
         }
         const inspection = await this.processTable.inspect(entry.record.pid);
@@ -552,6 +611,7 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
 
   private async confirmProcessExited(record: ManagedProcessRecord): Promise<void> {
     if (record.tree) {
+      if (record.tree.state === "stopped") return;
       const bootId = await (this.processTree?.bootId ?? readProcessBootId)();
       if (record.tree.checkpoint.bootId !== bootId) return;
       if (record.tree.inspectionPending || record.tree.state === "running")

@@ -2665,8 +2665,12 @@ test("publishes an open runtime generation before creating a provider session", 
   const agentId = randomUUID();
   let observed: StoredAgentRecord | null = null;
   const client = new (class extends TestAgentClient {
-    override async createSession(): Promise<AgentSession> {
+    override async createSession(
+      _config: AgentSessionConfig,
+      launchContext?: AgentLaunchContext,
+    ): Promise<AgentSession> {
       observed = await new AgentStorage(storagePath, logger).get(agentId);
+      expect(launchContext?.runtimeGenerationId).toBe(observed?.runtimeGeneration?.id);
       throw new Error("interrupted before registration");
     }
   })();
@@ -2700,8 +2704,13 @@ test.each(["resume", "reload"] as const)(
     const agentId = randomUUID();
     let observed: StoredAgentRecord | null = null;
     const client = new (class extends TestAgentClient {
-      override async resumeSession(): Promise<AgentSession> {
+      override async resumeSession(
+        _handle: AgentPersistenceHandle,
+        _config?: Partial<AgentSessionConfig>,
+        launchContext?: AgentLaunchContext,
+      ): Promise<AgentSession> {
         observed = await new AgentStorage(storagePath, logger).get(agentId);
+        expect(launchContext?.runtimeGenerationId).toBe(observed?.runtimeGeneration?.id);
         throw new Error("interrupted replacement");
       }
     })();
@@ -5052,6 +5061,7 @@ test("createAgent passes daemon launch env through the provider launch context",
   });
   expect(client.lastLaunchContext).toEqual({
     agentId: snapshot.id,
+    runtimeGenerationId: snapshot.runtimeGenerationId,
     env: {
       PASEO_AGENT_ID: snapshot.id,
       PASEO_AGENT_CWD: workdir,
@@ -6406,6 +6416,7 @@ test("resumeAgentFromPersistence keeps metadata config, applies overrides, and p
   expect(client.lastResumeOverrides).not.toHaveProperty("modeId");
   expect(client.lastResumeLaunchContext).toEqual({
     agentId: resumed.id,
+    runtimeGenerationId: resumed.runtimeGenerationId,
     env: {
       PASEO_AGENT_ID: resumed.id,
       PASEO_AGENT_CWD: workdir,
@@ -6524,6 +6535,7 @@ test("importProviderSession imports the selected session without listing and pub
   expect(client.importInput).toEqual({ providerHandleId: "thread-selected", cwd: workdir });
   expect(client.importLaunchContext).toEqual({
     agentId: imported.id,
+    runtimeGenerationId: imported.runtimeGenerationId,
     env: {
       PASEO_AGENT_ID: imported.id,
       PASEO_AGENT_CWD: workdir,
@@ -6627,6 +6639,7 @@ test("reloadAgentSession passes daemon launch env through the provider launch co
 
   expect(client.lastCreateLaunchContext).toEqual({
     agentId: snapshot.id,
+    runtimeGenerationId: snapshot.runtimeGenerationId,
     env: {
       PASEO_AGENT_ID: snapshot.id,
       PASEO_AGENT_CWD: workdir,
@@ -6639,6 +6652,7 @@ test("reloadAgentSession passes daemon launch env through the provider launch co
 
   expect(client.lastResumeLaunchContext).toEqual({
     agentId: snapshot.id,
+    runtimeGenerationId: manager.getAgent(snapshot.id)?.runtimeGenerationId,
     env: {
       PASEO_AGENT_ID: snapshot.id,
       PASEO_AGENT_CWD: workdir,
@@ -12603,19 +12617,31 @@ test.skipIf(process.platform === "win32").each(["explicit", "reviewed"])(
     const created = vi.spyOn(client, "createSession").mockResolvedValue(session);
     const resumed = vi.spyOn(client, "resumeSession");
     const stopped = vi.spyOn(session, "close");
-    const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+    const retired = vi.fn(async () => {});
+    const manager = new AgentManager({
+      clients: { codex: client },
+      registry: storage,
+      logger,
+      onRuntimeClosed: retired,
+    });
     try {
       const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
         workspaceId: undefined,
       });
       await manager.flush();
       const close = () => manager.closeAgent(agent.id, mode === "reviewed" ? session : undefined);
+      expect(created.mock.calls[0]?.[1]?.runtimeGenerationId).toBe(agent.runtimeGenerationId);
       failClosedSync = true;
       await expect(close()).rejects.toThrow("closed snapshot sync failed");
       expect(manager.getAgent(agent.id)).toBeNull();
       await expect(close()).rejects.toThrow("closed snapshot sync failed");
+      expect(retired).not.toHaveBeenCalled();
       failClosedSync = false;
       await close();
+      expect(retired).toHaveBeenCalledExactlyOnceWith({
+        agentId: agent.id,
+        generationId: agent.runtimeGenerationId,
+      });
       expect(stopped).toHaveBeenCalledTimes(1);
       expect(created).toHaveBeenCalledTimes(1);
       expect(resumed).not.toHaveBeenCalled();

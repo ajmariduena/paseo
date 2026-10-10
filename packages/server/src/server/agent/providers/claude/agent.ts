@@ -451,6 +451,7 @@ interface ClaudeAgentSessionOptions {
   runtimeSettings?: ProviderRuntimeSettings;
   handle?: AgentPersistenceHandle;
   agentId?: string;
+  runtimeGenerationId?: string;
   launchEnv?: Record<string, string>;
   persistSession?: boolean;
   logger: Logger;
@@ -1597,6 +1598,7 @@ export class ClaudeAgentClient implements AgentClient {
       defaults: this.defaults,
       runtimeSettings: this.runtimeSettings,
       agentId: launchContext?.agentId,
+      runtimeGenerationId: launchContext?.runtimeGenerationId,
       launchEnv: launchContext?.env,
       persistSession: options?.persistSession,
       logger: this.logger,
@@ -1629,6 +1631,7 @@ export class ClaudeAgentClient implements AgentClient {
       runtimeSettings: this.runtimeSettings,
       handle,
       agentId: launchContext?.agentId,
+      runtimeGenerationId: launchContext?.runtimeGenerationId,
       launchEnv: launchContext?.env,
       logger: this.logger,
       queryFactory: this.queryFactory,
@@ -2162,6 +2165,7 @@ class ClaudeAgentSession implements AgentSession {
   private readonly config: ClaudeAgentConfig;
   private readonly launchEnv?: Record<string, string>;
   private readonly agentId?: string;
+  private readonly runtimeGenerationId?: string;
   private readonly defaults?: { agents?: Record<string, AgentDefinition> };
   private readonly runtimeSettings?: ProviderRuntimeSettings;
   private readonly persistSession?: boolean;
@@ -2269,6 +2273,7 @@ class ClaudeAgentSession implements AgentSession {
     assertClaudeThinkingOptionSupported(config.model, config.thinkingOptionId);
     this.launchEnv = options.launchEnv;
     this.agentId = options.agentId;
+    this.runtimeGenerationId = options.runtimeGenerationId;
     this.defaults = options.defaults;
     this.runtimeSettings = options.runtimeSettings;
     const projectDirName = options.handle?.metadata?.claudeProjectDirName;
@@ -3604,6 +3609,10 @@ class ClaudeAgentSession implements AgentSession {
       // SDK arguments can contain inline MCP credentials. Recovery uses birth identity.
       args: [],
       metadata: { agentId: this.agentId, cwd: this.config.cwd },
+      runtime:
+        this.agentId && this.runtimeGenerationId
+          ? { agentId: this.agentId, generationId: this.runtimeGenerationId }
+          : undefined,
       processTree,
       launchGated: true,
     });
