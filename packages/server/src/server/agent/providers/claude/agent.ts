@@ -2339,11 +2339,6 @@ class ClaudeAgentSession implements AgentSession {
   }
 
   async startTurn(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<AgentTurnStart> {
-    // Stop releases the foreground before its withdrawal and interrupt have answered; admitting
-    // a replacement earlier would let the old turn's native interrupt land on the new one.
-    while (this.cancellationInFlight) {
-      await this.cancellationInFlight;
-    }
     if (this.closed) {
       throw attachTurnSubmissionOutcome(new Error("Claude session is closed"), "unsent");
     }
@@ -2368,7 +2363,6 @@ class ClaudeAgentSession implements AgentSession {
     const sdkMessage = this.toSdkUserMessage(prompt);
     const sdkUserMessageId =
       typeof sdkMessage.uuid === "string" && sdkMessage.uuid.length > 0 ? sdkMessage.uuid : null;
-    this.rememberRewindUserAnchor(sdkUserMessageId);
     const turnId = this.createTurnId("foreground");
     this.activeForegroundTurnId = turnId;
     this.foregroundHasVisibleActivity = false;
@@ -2410,15 +2404,21 @@ class ClaudeAgentSession implements AgentSession {
         provider: "claude",
         reason: "Interrupted",
       });
+      if (!pushed) {
+        // Stopped while still waiting for Claude: withdrawn by never sending it, nothing to
+        // interrupt. The previous turn's cancellation keeps its own cleanup.
+        if (sdkUserMessageId) this.unstartedMessageUuids.delete(sdkUserMessageId);
+        this.settleSubmission(pending, "unsent");
+        return;
+      }
       // The interrupt withdraws a prompt Claude never started; its confirmation is the only
       // unsent proof a cancel can give, so the submission settles after it, unknown otherwise.
-      // A prompt not yet pushed is settled by startTurn itself, which knows it never went out.
       const cancellation = this.interruptActiveTurn(claudeStartedTurn)
         .catch((error) => {
           this.logger.warn({ err: error }, "Failed to interrupt during cancel");
         })
         .finally(() => {
-          if (pushed) this.settleSubmission(pending, "unknown");
+          this.settleSubmission(pending, "unknown");
           if (this.cancellationInFlight === cancellation) this.cancellationInFlight = null;
         });
       this.cancellationInFlight = cancellation;
@@ -2428,16 +2428,22 @@ class ClaudeAgentSession implements AgentSession {
     this.notifySubscribers({ type: "turn_started", provider: "claude" });
 
     try {
-      await this.ensureQuery();
+      // Stop releases the foreground before its withdrawal and interrupt have answered; pushing
+      // a replacement earlier would let the old turn's native interrupt land on the new one.
+      // The replacement is already cancellable here, so a Stop during the wait reaches it.
+      while (this.cancellationInFlight) {
+        await this.cancellationInFlight;
+      }
+      if (!cancelIssued) {
+        await this.ensureQuery();
+      }
       if (cancelIssued) {
-        // Stopped while Claude was still starting up: withdrawn by never sending it.
-        if (sdkUserMessageId) this.unstartedMessageUuids.delete(sdkUserMessageId);
-        this.settleSubmission(pending, "unsent");
         return { turnId, submission };
       }
       if (!this.input) {
         throw new Error("Claude session input stream not initialized");
       }
+      this.rememberRewindUserAnchor(sdkUserMessageId);
       this.activeForegroundQuery = this.query;
       this.activeForegroundInput = this.input;
       this.startQueryPump();
@@ -2449,6 +2455,9 @@ class ClaudeAgentSession implements AgentSession {
         }
       }, 0);
     } catch (error) {
+      if (cancelIssued) {
+        return { turnId, submission };
+      }
       this.settleSubmission(pending, "unsent");
       if (sdkUserMessageId) this.unstartedMessageUuids.delete(sdkUserMessageId);
       this.finishForegroundTurn(

@@ -1215,3 +1215,76 @@ test("Stop while the binary is still resolving withdraws the prompt by never sen
   expect(query()?.prompts ?? []).toHaveLength(0);
   await session.close();
 });
+
+test("Stop while B waits behind A's cancellation settles B unsent and never pushes it", async () => {
+  const withdrawal = deferred<boolean>();
+  const { session, query } = await createControlledSession({
+    withdrawal: () => withdrawal.promise,
+  });
+  const events: string[] = [];
+  session.subscribe((event) => {
+    if (event.type.startsWith("turn_")) events.push(event.type);
+  });
+
+  const first = await session.startTurn("A");
+  await waitFor(() => query()?.prompts.length === 1);
+  await waitForInitRouted(query);
+  await session.interrupt();
+  const second = session.startTurn("B");
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+  await session.interrupt();
+  expect(events).toEqual(["turn_started", "turn_canceled", "turn_started", "turn_canceled"]);
+
+  withdrawal.resolve(false);
+  const started = await second;
+  expect(await started.submission).toBe("unsent");
+  expect(await first.submission).toBe("unknown");
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  expect(query()?.prompts.map((prompt) => prompt.text)).toEqual(["A"]);
+  expect(query()?.interrupt).toHaveBeenCalledTimes(1);
+  expect(events).toEqual(["turn_started", "turn_canceled", "turn_started", "turn_canceled"]);
+
+  await session.close();
+});
+
+test("two Stops while B waits behind A's cancellation cancel B once; the second only interrupts Claude's running turn", async () => {
+  const withdrawal = deferred<boolean>();
+  const { session, query } = await createControlledSession({
+    withdrawal: () => withdrawal.promise,
+  });
+  const events: string[] = [];
+  session.subscribe((event) => {
+    if (event.type.startsWith("turn_")) events.push(event.type);
+  });
+
+  await session.startTurn("A");
+  await waitFor(() => query()?.prompts.length === 1);
+  await waitForInitRouted(query);
+  await session.interrupt();
+  const second = session.startTurn("B");
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+  await session.interrupt();
+  expect(query()?.interrupt).not.toHaveBeenCalled();
+  // Nothing of ours is pending any more, but Claude's main turn is still running: this Stop is
+  // a plain native interrupt of that turn, never of B, which was never pushed.
+  await session.interrupt();
+  expect(query()?.interrupt).toHaveBeenCalledTimes(1);
+  expect(query()?.prompts.map((prompt) => prompt.text)).toEqual(["A"]);
+
+  withdrawal.resolve(false);
+  const started = await second;
+  expect(await started.submission).toBe("unsent");
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  expect(query()?.prompts.map((prompt) => prompt.text)).toEqual(["A"]);
+  expect(query()?.interrupt).toHaveBeenCalledTimes(2);
+  expect(events).toEqual(["turn_started", "turn_canceled", "turn_started", "turn_canceled"]);
+
+  const third = await session.startTurn("C");
+  await waitFor(() => query()?.prompts.length === 2);
+  query()?.emit(buildCommandLifecycle(query()?.prompts[1]?.uuid, "started"));
+  expect(await third.submission).toBe("accepted");
+
+  await session.close();
+});
