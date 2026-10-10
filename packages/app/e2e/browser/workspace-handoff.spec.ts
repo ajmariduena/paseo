@@ -16,6 +16,7 @@ import {
   handoffHosts as hosts,
   openHandoff,
   savedTransfer,
+  savedHandoffRecord,
   forgetTransfer,
   reconnectSourceDestination,
 } from "../support/helpers/workspace-handoff";
@@ -813,14 +814,27 @@ test.describe("workspace handoff", () => {
         host.workspace.workspaceId,
       );
       await page.screenshot({ path: testInfo.outputPath("handoff-ready-desktop.png") });
+      const checkpoint = await savedHandoffRecord(
+        page,
+        host.source.serverId,
+        host.workspace.workspaceId,
+      );
+      const staged = await host.destinationClient.handoffGetDestinationStatus({ transferId });
+      if (!staged.result) throw new Error("Missing prepared destination");
+      expect(checkpoint.sourcePublicKey).toBe(
+        (await host.sourceClient.handoffGetSourceStatus({ transferId })).result?.source.publicKey,
+      );
+      expect(checkpoint.sourcePublicKey).toBe(staged.result.sourcePublicKey);
+      expect(checkpoint.snapshot).toEqual(staged.result);
       await page.reload();
       await openHandoff(page);
       await expect(page.getByTestId("handoff-submit")).toHaveText("Move workspace");
       expect(await savedTransfer(page, host.source.serverId, host.workspace.workspaceId)).toBe(
         transferId,
       );
-      const staged = await host.destinationClient.handoffGetDestinationStatus({ transferId });
-      if (!staged.result) throw new Error("Missing prepared destination");
+      expect(
+        await savedHandoffRecord(page, host.source.serverId, host.workspace.workspaceId),
+      ).toEqual(checkpoint);
       // A real path conflict leaves the accepted release durable but activation unfinished.
       await mkdir(staged.result.destinationCwd);
       await page.getByTestId("handoff-submit").click();
@@ -859,6 +873,17 @@ test.describe("workspace handoff", () => {
         transferId,
       );
       await page.screenshot({ path: testInfo.outputPath("handoff-offline-recovery.png") });
+      const recovered = await savedHandoffRecord(
+        page,
+        host.source.serverId,
+        host.workspace.workspaceId,
+      );
+      expect(recovered.sourcePublicKey).toBe(checkpoint.sourcePublicKey);
+      expect(recovered.snapshot).toMatchObject({
+        reservationId: checkpoint.snapshot?.reservationId,
+        manifestDigest: checkpoint.snapshot?.manifestDigest,
+        agentMappings: checkpoint.snapshot?.agentMappings,
+      });
       await rmdir(staged.result.destinationCwd);
       await page.getByTestId("handoff-submit").click();
       await expect(page.getByTestId("handoff-status")).toHaveText(

@@ -7,6 +7,7 @@ import {
   DaemonClient as TransportClient,
 } from "@getpaseo/client/internal/daemon-client";
 import { WebSocket, type RawData } from "ws";
+import type { WorkspaceHandoffCheckpoint } from "@getpaseo/client/internal/workspace-handoff";
 import { WSOutboundMessageSchema } from "@getpaseo/protocol/messages";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
@@ -701,6 +702,157 @@ test.skipIf(process.platform === "win32").each(["reserved", "staged"] as const)(
       readdir(path.join(root, `.paseo-handoff-${result.reservationId}`)),
     ).rejects.toMatchObject({ code: "ENOENT" });
     expect((await destination.client.fetchWorkspaces()).entries).toEqual([]);
+  },
+  30_000,
+);
+
+test.skipIf(process.platform === "win32")(
+  "persists client signing checkpoints before effects and rejects changed bindings after restart",
+  async () => {
+    let source = await startHost("source");
+    let destination = await startHost("destination");
+    const sourceServerId = source.daemon.daemon.getServerId();
+    const cwd = path.join(root, "checkpoint-workspace");
+    await mkdir(cwd);
+    await writeFile(path.join(cwd, "work.txt"), "Retained client binding");
+    const created = await source.client.createWorkspace({
+      source: { kind: "directory", path: cwd },
+    });
+    if (!created.workspace) throw new Error("Missing workspace");
+    const transferId = randomUUID();
+    const request = {
+      transferId,
+      workspaceId: created.workspace.id,
+      destinationParent: root,
+      continuationMode: "context" as const,
+    };
+    const file = path.join(root, "client-checkpoint.json");
+    const readCheckpoint = async (): Promise<WorkspaceHandoffCheckpoint> =>
+      JSON.parse(await readFile(file, "utf8"));
+    let failure: "reservation" | "key" | null = "reservation";
+    const onCheckpoint = async (checkpoint: WorkspaceHandoffCheckpoint) => {
+      if (failure === "reservation" || (failure === "key" && checkpoint.sourcePublicKey))
+        throw new Error("Client checkpoint disk failed");
+      if (checkpoint.snapshot.state === "reserved" && checkpoint.sourcePublicKey) {
+        const target = await destination.client.handoffGetDestinationStatus({ transferId });
+        expect(target.result?.state).toBe("reserved");
+        expect(target.result?.sourcePublicKey).toBeUndefined();
+      }
+      await writeFile(file, JSON.stringify(checkpoint));
+    };
+    await expect(
+      prepareWorkspaceHandoff({
+        ...request,
+        source: source.client,
+        destination: destination.client,
+        onCheckpoint,
+      }),
+    ).rejects.toThrow("Client checkpoint disk failed");
+    expect(
+      (await source.client.handoffFindSource({ workspaceId: created.workspace.id })).result,
+    ).toBeNull();
+    expect(
+      (await destination.client.handoffGetDestinationStatus({ transferId })).result?.state,
+    ).toBe("reserved");
+    failure = "key";
+    await expect(
+      prepareWorkspaceHandoff({
+        ...request,
+        source: source.client,
+        destination: destination.client,
+        onCheckpoint,
+      }),
+    ).rejects.toThrow("Client checkpoint disk failed");
+    expect((await source.client.handoffGetSourceStatus({ transferId })).result?.source.state).toBe(
+      "ready",
+    );
+    expect(
+      (await destination.client.handoffGetDestinationStatus({ transferId })).result?.state,
+    ).toBe("reserved");
+    expect((await readCheckpoint()).sourcePublicKey).toBeUndefined();
+    failure = null;
+    const staged = await prepareWorkspaceHandoff({
+      ...request,
+      source: source.client,
+      destination: destination.client,
+      checkpoint: await readCheckpoint(),
+      onCheckpoint,
+    });
+    const saved = await readCheckpoint();
+    expect(saved.snapshot).toEqual(staged);
+    expect(saved.sourcePublicKey).toBe(
+      (await source.client.handoffGetSourceStatus({ transferId })).result?.source.publicKey,
+    );
+    expect(saved.sourcePublicKey).toBe(staged.sourcePublicKey);
+    await stopHost(source);
+    await stopHost(destination);
+    source = await startHost("source");
+    destination = await startHost("destination");
+    const activation = {
+      sourceServerId,
+      getSource: () => source.client,
+      destination: destination.client,
+      transferId,
+    };
+    for (const checkpoint of [
+      { ...saved, destinationServerId: "changed-host" },
+      { ...saved, sourcePublicKey: "changed-key" },
+      { ...saved, snapshot: { ...saved.snapshot, reservationId: randomUUID() } },
+      { ...saved, snapshot: { ...saved.snapshot, workspaceId: "changed-workspace" } },
+      { ...saved, snapshot: { ...saved.snapshot, manifestDigest: "b".repeat(64) } },
+    ]) {
+      await expect(activateWorkspaceHandoff({ ...activation, checkpoint })).rejects.toThrow(
+        /changed/,
+      );
+      await expect(cancelWorkspaceHandoff({ ...activation, checkpoint })).rejects.toThrow(
+        /changed/,
+      );
+      expect(
+        (await source.client.handoffGetSourceStatus({ transferId })).result?.source.state,
+      ).toBe("ready");
+      expect(
+        (await destination.client.handoffGetDestinationStatus({ transferId })).result?.state,
+      ).toBe("staged");
+    }
+    const getSourceStatus = source.client.handoffGetSourceStatus.bind(source.client);
+    for (const operation of [activateWorkspaceHandoff, cancelWorkspaceHandoff]) {
+      const changedSource = vi
+        .spyOn(source.client, "handoffGetSourceStatus")
+        .mockImplementationOnce(async (input) => {
+          const response = await getSourceStatus(input);
+          if (!response.result) throw new Error("Missing source status");
+          return {
+            ...response,
+            result: {
+              ...response.result,
+              source: { ...response.result.source, publicKey: "changed-key" },
+            },
+          };
+        });
+      await expect(operation({ ...activation, checkpoint: saved })).rejects.toThrow(
+        "signing key changed",
+      );
+      changedSource.mockRestore();
+      expect((await getSourceStatus({ transferId })).result?.source.state).toBe("ready");
+    }
+    failure = "reservation";
+    await expect(
+      activateWorkspaceHandoff({ ...activation, checkpoint: saved, onCheckpoint }),
+    ).rejects.toThrow("Client checkpoint disk failed");
+    expect((await source.client.handoffGetSourceStatus({ transferId })).result?.source.state).toBe(
+      "ready",
+    );
+    failure = null;
+    const active = await activateWorkspaceHandoff({
+      ...activation,
+      checkpoint: saved,
+      onCheckpoint,
+    });
+    expect(active.state).toBe("active");
+    expect((await readCheckpoint()).sourcePublicKey).toBe(saved.sourcePublicKey);
+    expect(await readFile(path.join(active.destinationCwd, "work.txt"), "utf8")).toBe(
+      "Retained client binding",
+    );
   },
   30_000,
 );

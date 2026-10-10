@@ -42,6 +42,16 @@ function connections(record: HandoffRecord) {
   };
 }
 
+function savedCheckpoint(record: HandoffRecord) {
+  return record.snapshot
+    ? {
+        destinationServerId: record.destinationServerId,
+        snapshot: record.snapshot,
+        sourcePublicKey: record.sourcePublicKey,
+      }
+    : undefined;
+}
+
 /** Resolve both hosts afresh before a source banner links to the destination. */
 export async function readSourceHandoffRecord(
   origin: HandoffOrigin,
@@ -215,6 +225,7 @@ export const handoffFormPorts: HandoffFormPorts = {
           return prepareWorkspaceHandoff({
             ...connections(record),
             ...options,
+            checkpoint: savedCheckpoint(record),
             workspaceId: record.workspaceId,
             destinationParent: record.destinationParent,
             continuationMode: record.continuationMode,
@@ -248,6 +259,7 @@ export const handoffFormPorts: HandoffFormPorts = {
   activate: (record, options) =>
     activateWorkspaceHandoff({
       ...options,
+      checkpoint: savedCheckpoint(record),
       sourceServerId: record.sourceServerId,
       getSource: () => connectedClient(record.sourceServerId),
       destination: connectedClient(record.destinationServerId),
@@ -256,6 +268,7 @@ export const handoffFormPorts: HandoffFormPorts = {
   cancel: (record, options) =>
     cancelWorkspaceHandoff({
       ...options,
+      checkpoint: savedCheckpoint(record),
       sourceServerId: record.sourceServerId,
       getSource: () => connectedClient(record.sourceServerId),
       destination: connectedClient(record.destinationServerId),

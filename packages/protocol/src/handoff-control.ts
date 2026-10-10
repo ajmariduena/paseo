@@ -270,6 +270,7 @@ export const HandoffDestinationSnapshotSchema = z.object({
   manifestDigest: HandoffDigestSchema.nullable(),
   cleanupComplete: z.boolean().optional(),
   cancellationAccepted: z.boolean().optional(),
+  sourcePublicKey: z.string().min(1).max(1024).optional(),
 });
 export type HandoffSourceSnapshot = z.infer<typeof HandoffSourceSnapshotSchema>;
 export type HandoffDestinationSnapshot = z.infer<typeof HandoffDestinationSnapshotSchema>;

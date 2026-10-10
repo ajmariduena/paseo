@@ -56,6 +56,7 @@ const destination: HandoffDestinationSnapshot = {
   continuationMode: "native",
   state: "staged",
   manifestDigest: "a".repeat(64),
+  sourcePublicKey: "source-key",
 };
 
 function deferred() {
@@ -94,10 +95,14 @@ function fixture() {
       reviewDigest: record.workspaceReviewDigest ?? "",
     }),
     prepare: async (record) => {
-      expect(await persistence.load(origin)).toEqual(record);
+      expect(await persistence.load(origin)).toMatchObject(record);
       calls.push(`prepare:${record.transferId}`);
       return {
         ...destination,
+        ...record.snapshot,
+        transferId: record.transferId,
+        state: "staged",
+        manifestDigest: destination.manifestDigest,
         continuationMode: record.continuationMode,
         workspaceReviewDigest: record.workspaceReviewDigest,
         stoppedWorkReview: record.stoppedWorkReview,
@@ -110,7 +115,10 @@ function fixture() {
       calls.push(`activate:${record.transferId}`);
       return {
         ...destination,
+        ...record.snapshot,
+        transferId: record.transferId,
         state: "active",
+        continuationMode: record.continuationMode,
         workspaceReviewDigest: record.workspaceReviewDigest,
         stoppedWorkReview: record.stoppedWorkReview,
         integrationReview: record.integrationReview,
@@ -122,7 +130,10 @@ function fixture() {
       calls.push(`cancel:${record.transferId}`);
       return {
         ...destination,
+        ...record.snapshot,
+        transferId: record.transferId,
         state: "cancelled",
+        continuationMode: record.continuationMode,
         cleanupComplete: true,
         cancellationAccepted: true,
         workspaceReviewDigest: record.workspaceReviewDigest,
@@ -229,6 +240,138 @@ async function reviewedForm(ports: HandoffFormPorts) {
   await model.review();
   return model;
 }
+
+it("keeps the existing signer when destination discovery refreshes the same transfer", async () => {
+  const { persistence } = fixture();
+  const record = restoreReleasedHandoffRecord({
+    origin,
+    destination: { serverId: "destination", label: "VPS" },
+    snapshot: { ...destination, state: "released" },
+  });
+  await persistence.save(record);
+  await expect(
+    persistence.save({ ...record, destinationServerId: "different-host" }),
+  ).rejects.toThrow("Destination host changed");
+  await expect(persistence.save({ ...record, sourcePublicKey: "different-key" })).rejects.toThrow(
+    "signing key changed",
+  );
+  await expect(
+    persistence.save({
+      ...record,
+      snapshot: { ...record.snapshot!, reservationId: "00000000-0000-4000-8000-000000000004" },
+    }),
+  ).rejects.toThrow("reservation changed");
+  expect(await persistence.load(origin)).toEqual(record);
+  await persistence.save({ ...record, sourcePublicKey: undefined });
+  expect((await persistence.load(origin))?.sourcePublicKey).toBe("source-key");
+});
+
+it("serializes competing checkpoint publications so the first persisted signer cannot be replaced", async () => {
+  const writing = deferred();
+  const release = deferred();
+  let raw: string | null = null;
+  const persistence = createHandoffPersistence({
+    getItem: async () => raw,
+    setItem: async (_key, value) => {
+      writing.resolve();
+      await release.promise;
+      raw = value;
+    },
+    removeItem: async () => {
+      raw = null;
+    },
+  });
+  const record = restoreReleasedHandoffRecord({
+    origin,
+    destination: { serverId: "destination", label: "VPS" },
+    snapshot: { ...destination, state: "released" },
+  });
+  const first = persistence.save(record);
+  await writing.promise;
+  const competing = persistence.save({
+    ...record,
+    sourcePublicKey: "different-key",
+    snapshot: { ...record.snapshot!, sourcePublicKey: "different-key" },
+  });
+  const refused = expect(competing).rejects.toThrow("signing key changed");
+  release.resolve();
+  await first;
+  await refused;
+  expect(await persistence.load(origin)).toEqual(record);
+});
+
+it("retains a signing checkpoint across an interrupted operation and form reload", async () => {
+  const { ports, persistence } = fixture();
+  ports.prepare = async (record, options) => {
+    await options.onCheckpoint({
+      destinationServerId: record.destinationServerId,
+      snapshot: {
+        ...destination,
+        continuationMode: record.continuationMode,
+        conversationModes: record.conversationModes,
+        workspaceReviewDigest: record.workspaceReviewDigest,
+        stoppedWorkReview: record.stoppedWorkReview,
+        integrationReview: record.integrationReview,
+      },
+      sourcePublicKey: "source-key",
+    });
+    expect(await persistence.load(origin)).toMatchObject({ sourcePublicKey: "source-key" });
+    throw new Error("Reply was lost");
+  };
+  const model = await reviewedForm(ports);
+  await model.prepare();
+  expect(model.getState()).toMatchObject({
+    kind: "transfer",
+    record: { snapshot: destination, sourcePublicKey: "source-key" },
+    run: { status: "error", message: "Reply was lost" },
+  });
+  model.close();
+  const reopened = openHandoffForm(origin, ports);
+  await reopened.load();
+  expect(reopened.getState()).toMatchObject({
+    kind: "transfer",
+    record: { snapshot: destination, sourcePublicKey: "source-key" },
+  });
+  reopened.close();
+});
+
+it("refuses the next operation after a checkpoint write fails and retains its candidate for retry", async () => {
+  const { ports, persistence, calls } = fixture();
+  ports.save = async (record) => {
+    if (record.sourcePublicKey) throw new Error("Storage unavailable");
+    await persistence.save(record);
+  };
+  ports.prepare = async (record, options) => {
+    const snapshot = {
+      ...destination,
+      continuationMode: record.continuationMode,
+      conversationModes: record.conversationModes,
+      workspaceReviewDigest: record.workspaceReviewDigest,
+      stoppedWorkReview: record.stoppedWorkReview,
+      integrationReview: record.integrationReview,
+    };
+    await options.onCheckpoint({
+      destinationServerId: record.destinationServerId,
+      snapshot,
+      sourcePublicKey: "source-key",
+    });
+    calls.push("must not continue");
+    return snapshot;
+  };
+  const model = await reviewedForm(ports);
+  await model.prepare();
+  expect(calls).toEqual([]);
+  expect(await persistence.load(origin)).toMatchObject({ snapshot: null });
+  expect(model.getState()).toMatchObject({
+    kind: "transfer",
+    record: { snapshot: destination, sourcePublicKey: "source-key" },
+    run: { status: "error", message: "Storage unavailable" },
+  });
+  ports.save = persistence.save;
+  await model.retry();
+  expect(await persistence.load(origin)).toMatchObject({ sourcePublicKey: "source-key" });
+  model.close();
+});
 
 describe("handoff form recovery", () => {
   it("pages exclusions without accumulating rows, keeps a failed page retryable and waits before preparation", async () => {
@@ -463,7 +606,12 @@ describe("handoff form recovery", () => {
       destination: { serverId: "destination", label: "VPS" },
       snapshot: { ...destination, continuationMode: "context" },
     });
-    expect(record).toMatchObject({ transferId, continuationMode: "context", intent: "activate" });
+    expect(record).toMatchObject({
+      transferId,
+      continuationMode: "context",
+      intent: "activate",
+      sourcePublicKey: "source-key",
+    });
     await persistence.save(record);
     const model = openHandoffForm(origin, ports);
     await model.load();
@@ -474,6 +622,7 @@ describe("handoff form recovery", () => {
     expect(calls).toEqual([`activate:${transferId}`]);
     for (const snapshot of [
       { ...destination, sourceServerId: "another-host" },
+      { ...destination, sourcePublicKey: "changed-key" },
       { ...destination, sourceWorkspaceId: "another-workspace" },
       { ...destination, reservationId: "00000000-0000-4000-8000-000000000003" },
       { ...destination, manifestDigest: "b".repeat(64) },

@@ -655,8 +655,12 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   [desktop list](../qa-evidence/handoff-incoming-desktop.png),
   [compact list](../qa-evidence/handoff-incoming-compact.png) and
   [compact recovery](../qa-evidence/handoff-incoming-recovery-compact.png). Cleanup with the source
-  offline is covered after recovering and persisting the local transfer intent. Pinned-key client persistence,
-  provider-discovered integration/resource dispositions,
+  offline is covered after recovering and persisting the local transfer intent. The app persists the
+  reservation and source signing key before the next mutation, then retains the bound archive digest
+  and mappings. Refreshed journals cannot replace that binding. Storage failures stop the operation;
+  retries compare both hosts with the saved checkpoint before release or cancellation. The app store
+  serializes publications within its own instance; this does not establish cross-window coordination.
+  Provider-discovered integration/resource dispositions,
   concurrent windows and other connected clients' unsaved buffers and conversation draft transfer,
   complete source mutation affordances and native-platform evidence remain open. Provider-discovered
   integrations and resources outside the current provider-session/terminal/setup inventory still

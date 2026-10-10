@@ -4,6 +4,7 @@ import { HANDOFF_CHUNK_BASE64_CHARS } from "./handoff.js";
 import {
   HandoffConversationPreviewSchema,
   HandoffDestinationPageSchema,
+  HandoffDestinationSnapshotSchema,
 } from "./handoff-control.js";
 import {
   AgentSnapshotPayloadSchema,
@@ -20,6 +21,29 @@ import {
   validateQuickPrompts,
   HandoffGetConversationHistoryResponseSchema,
 } from "./messages.js";
+
+test("handoff destination signing keys remain optional for older wire snapshots", () => {
+  const legacy = {
+    transferId: "00000000-0000-4000-8000-000000000001",
+    reservationId: "00000000-0000-4000-8000-000000000002",
+    sourceServerId: "source",
+    sourceWorkspaceId: "workspace",
+    sourceAgentIds: [],
+    destinationParent: "/work",
+    destinationCwd: "/work/moved",
+    workspaceId: "destination-workspace",
+    projectId: "destination-project",
+    agentMappings: [],
+    continuationMode: "context",
+    state: "staged",
+    manifestDigest: "a".repeat(64),
+  };
+  expect(HandoffDestinationSnapshotSchema.parse(legacy)).toEqual(legacy);
+  const current = { ...legacy, sourcePublicKey: "source-key" };
+  expect(HandoffDestinationSnapshotSchema.parse(current)).toEqual(current);
+  const oldReader = HandoffDestinationSnapshotSchema.omit({ sourcePublicKey: true });
+  expect(oldReader.parse(current)).toEqual(legacy);
+});
 
 test("handoff discovery accepts global and scoped requests while origin metadata stays optional", () => {
   const request = { type: "workspace.handoff.list_destination.request", requestId: "discover" };

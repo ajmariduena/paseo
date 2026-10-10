@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AgentProviderRuntimeSettingsMap } from "@getpaseo/protocol/provider-config";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
+import type { HandoffRecord } from "../../../src/handoff/persistence";
 import { expect, type Page } from "@playwright/test";
 import { startTestDaemon } from "./daemon-update";
 import { addScheduleHostAndReload } from "./schedule-host";
@@ -114,12 +115,16 @@ export async function handoffHosts(
 }
 
 export async function savedTransfer(page: Page, sourceServerId: string, workspaceId: string) {
+  return (await savedHandoffRecord(page, sourceServerId, workspaceId)).transferId;
+}
+
+export async function savedHandoffRecord(page: Page, sourceServerId: string, workspaceId: string) {
   const key = `paseo:workspace-handoff:${JSON.stringify([sourceServerId, workspaceId])}`;
   return page.evaluate((storageKey) => {
     const raw = localStorage.getItem(storageKey);
     if (!raw) throw new Error("No saved handoff");
-    const value: { transferId: string } = JSON.parse(raw);
-    return value.transferId;
+    const value: HandoffRecord = JSON.parse(raw);
+    return value;
   }, key);
 }
 

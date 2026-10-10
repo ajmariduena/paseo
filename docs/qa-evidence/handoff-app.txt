@@ -1,4 +1,46 @@
-Release recovery after local and source capture loss — Linux, 2026-10-10
+Client checkpoints and release recovery — Linux, 2026-10-10
+
+The client now publishes the destination identity and reservation before preparing the source,
+the source signing key before binding the capture, and the digest/mappings before transport or
+release. The app awaits each publication. Failed storage stops the next host mutation and keeps
+the candidate available for retry. The existing app store serializes its own writes and refuses
+replacement of an already saved host, reservation, digest or signer during discovery refresh.
+This queue is local to one store instance; cross-window coordination remains open.
+
+The new real-daemon regression fails client storage at reservation and signer publication, then
+repairs it without creating a second transfer. After restarting both hosts, changed destination
+identity, signer, reservation, workspace mapping and digest all refuse release/cancellation.
+A changed key reported by the source also refuses both operations before changing ownership.
+The repaired checkpoint finishes activation with the original key and file bytes. Existing lost
+release-reply and reserved/staged cancellation cases still pass. The form suite covers reload,
+storage failure/retry and competing same-instance publications; its first pin assertion failed
+before implementation. A later fixture failure came from returning the wrong transfer identity
+and comparing a noncanonical record with a store-adopted key; the fixture now preserves both.
+
+Desktop Chromium compares the saved signer and complete staged snapshot with the host records,
+reloads without changing that checkpoint, and recovers the same signer/digest/mappings after
+deleting local state and stopping the source. It then completes activation and verifies the files.
+The first run timed out while creating the browser context, before opening the app. After the
+other checks finished, the isolated rerun passed with the same timeout and test assertions.
+The client/server workspace builds, root typecheck, lint and formatting pass.
+
+Current checkpoint validation:
+
+$ npx vitest run src/handoff/form-model.test.ts --bail=1
+  Test Files  1 passed (1)
+       Tests  33 passed (33)
+
+$ npx vitest run src/messages.wire-compat.test.ts --bail=1
+  Test Files  1 passed (1)
+       Tests  41 passed (41)
+
+$ npx vitest run src/server/handoff/archive.e2e.test.ts --bail=1 -t 'persists client signing|coordinates handoff over RPC|cancels a .* handoff after'
+  Test Files  1 passed (1)
+       Tests  4 passed | 27 skipped (31)
+
+$ npm run test:e2e -- e2e/browser/workspace-handoff.spec.ts --grep 'recovers preparation errors and finishes offline' --workers=1
+  ✓ recovers preparation errors and finishes offline after losing local transfer state (45.8s)
+  1 passed (1.2m)
 
 The network regression first failed because released-source status tried to read a deleted capture.
 After release, status and receipt retries now use the durable ownership record. The test restarts
@@ -24,7 +66,7 @@ error used a different selector, and compact sheet content renders outside its h
 now use the visible alert and close button across layouts, without changing production behavior.
 Screenshot review also corrected the shared close notice so it no longer directs destination recovery back to an absent source workspace.
 
-The 29 form cases include selected destination recovery without cached source state, retry of the
+The form cases also include selected destination recovery without cached source state, retry of the
 same selection, closing during lookup, released/activating/active recovery, preservation of context mode,
 and refusals for pre-release states, absent digest, wrong workspace/source or identical hosts.
 The network and browser cases use isolated Linux daemons and a workspace without conversations.

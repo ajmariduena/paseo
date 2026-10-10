@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   handoffReviewsMatch,
   handoffContinuationsMatch,
+  assertHandoffCheckpointMatches,
 } from "@getpaseo/client/internal/workspace-handoff";
 import {
   HandoffDestinationSnapshotSchema,
@@ -36,9 +37,14 @@ const HandoffRecordSchema = z.object({
   stoppedWorkReview: HandoffStoppedWorkReviewSchema.optional(),
   integrationReview: HandoffIntegrationReviewSchema.optional(),
   intent: z.enum(["prepare", "activate", "cancel"]),
+  sourcePublicKey: z.string().min(1).max(1024).optional(),
   snapshot: HandoffDestinationSnapshotSchema.nullable(),
 });
 export type HandoffRecord = z.infer<typeof HandoffRecordSchema>;
+
+function sourceKeyMatches(actual: string | undefined, expected: string) {
+  return actual === undefined || actual === expected;
+}
 
 export function restoreHandoffRecord(input: {
   origin: HandoffOrigin;
@@ -56,6 +62,7 @@ export function restoreHandoffRecord(input: {
     snapshot.sourceWorkspaceId !== origin.workspaceId ||
     snapshot.transferId !== source.id ||
     snapshot.reservationId !== source.reservationId ||
+    !sourceKeyMatches(snapshot.sourcePublicKey, source.publicKey) ||
     !handoffReviewsMatch(snapshot, source) ||
     JSON.stringify([...snapshot.sourceAgentIds].sort()) !==
       JSON.stringify([...source.agentIds].sort()) ||
@@ -72,7 +79,10 @@ export function restoreHandoffRecord(input: {
     preparing: "prepare",
   } as const;
   const intent = intents[source.state];
-  return restoredRecord(origin, destination, snapshot, intent);
+  return {
+    ...restoredRecord(origin, destination, snapshot, intent),
+    sourcePublicKey: source.publicKey,
+  };
 }
 
 export function restoreReservedHandoffRecord(input: {
@@ -132,10 +142,15 @@ export function restoreCancelledHandoffRecord(input: {
       receipt.reservationId !== snapshot.reservationId
     )
       throw new Error("Cancellation does not match the destination reservation");
+    if (snapshot.sourcePublicKey !== undefined && snapshot.sourcePublicKey !== proof.publicKey)
+      throw new Error("Cancellation signing key does not match the destination reservation");
   } else if (snapshot.state !== "cancelled") {
     throw new Error("Source cancellation has not been confirmed");
   }
-  return restoredRecord(origin, destination, snapshot, "cancel");
+  return {
+    ...restoredRecord(origin, destination, snapshot, "cancel"),
+    sourcePublicKey: proof?.publicKey ?? snapshot.sourcePublicKey,
+  };
 }
 
 export function isHandoffCancellationComplete(
@@ -164,6 +179,7 @@ function restoredRecord(
     stoppedWorkReview: snapshot.stoppedWorkReview,
     integrationReview: snapshot.integrationReview,
     intent,
+    sourcePublicKey: snapshot.sourcePublicKey,
     snapshot,
   };
 }
@@ -180,6 +196,18 @@ function storageKey(origin: HandoffOrigin): string {
 
 /** Unlike preference persistence, failures must reach the form before it starts host mutations. */
 export function createHandoffPersistence(storage: Storage) {
+  const writes = new Map<string, Promise<void>>();
+  async function serialize(origin: HandoffOrigin, operation: () => Promise<void>) {
+    const key = storageKey(origin);
+    const previous = writes.get(key) ?? Promise.resolve();
+    const current = previous.catch(() => {}).then(operation);
+    writes.set(key, current);
+    try {
+      await current;
+    } finally {
+      if (writes.get(key) === current) writes.delete(key);
+    }
+  }
   return {
     async load(origin: HandoffOrigin): Promise<HandoffRecord | null> {
       const raw = await storage.getItem(storageKey(origin));
@@ -197,6 +225,9 @@ export function createHandoffPersistence(storage: Storage) {
         (snapshot.transferId !== record.transferId ||
           snapshot.sourceServerId !== record.sourceServerId ||
           snapshot.sourceWorkspaceId !== record.workspaceId ||
+          (record.sourcePublicKey !== undefined &&
+            snapshot.sourcePublicKey !== undefined &&
+            snapshot.sourcePublicKey !== record.sourcePublicKey) ||
           !handoffContinuationsMatch(snapshot, record) ||
           !handoffReviewsMatch(snapshot, record))
       )
@@ -204,10 +235,27 @@ export function createHandoffPersistence(storage: Storage) {
       return record;
     },
     async save(record: HandoffRecord): Promise<void> {
-      await storage.setItem(storageKey(record), JSON.stringify(record));
+      await serialize(record, async () => {
+        const key = storageKey(record);
+        const raw = await storage.getItem(key);
+        const previous = raw === null ? null : HandoffRecordSchema.parse(JSON.parse(raw));
+        let candidate = record;
+        if (previous?.transferId === record.transferId) {
+          candidate = {
+            ...record,
+            sourcePublicKey:
+              record.sourcePublicKey ??
+              record.snapshot?.sourcePublicKey ??
+              previous.sourcePublicKey ??
+              previous.snapshot?.sourcePublicKey,
+          };
+          assertHandoffCheckpointMatches(previous, candidate);
+        }
+        await storage.setItem(key, JSON.stringify(candidate));
+      });
     },
     async discard(origin: HandoffOrigin): Promise<void> {
-      await storage.removeItem(storageKey(origin));
+      await serialize(origin, () => storage.removeItem(storageKey(origin)));
     },
   };
 }

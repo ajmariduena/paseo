@@ -21,6 +21,88 @@ interface HandoffConnections {
   transferId: string;
   signal?: AbortSignal;
 }
+export interface WorkspaceHandoffCheckpoint {
+  destinationServerId: string;
+  snapshot: HandoffDestinationSnapshot;
+  sourcePublicKey?: string;
+}
+interface HandoffCheckpointPersistence {
+  checkpoint?: WorkspaceHandoffCheckpoint;
+  /** A rejected publication prevents the next host mutation. */
+  onCheckpoint?: (checkpoint: WorkspaceHandoffCheckpoint) => Promise<void>;
+}
+
+function reservationIdentity(snapshot: HandoffDestinationSnapshot) {
+  return {
+    transferId: snapshot.transferId,
+    reservationId: snapshot.reservationId,
+    sourceServerId: snapshot.sourceServerId,
+    sourceWorkspaceId: snapshot.sourceWorkspaceId,
+    sourceAgentIds: snapshot.sourceAgentIds,
+    destinationParent: snapshot.destinationParent,
+    destinationCwd: snapshot.destinationCwd,
+    workspaceId: snapshot.workspaceId,
+    projectId: snapshot.projectId,
+    agentMappings: snapshot.agentMappings,
+    continuationMode: snapshot.continuationMode,
+    conversationModes: snapshot.conversationModes,
+    workspaceReviewDigest: snapshot.workspaceReviewDigest,
+    stoppedWorkReview: snapshot.stoppedWorkReview,
+    integrationReview: snapshot.integrationReview,
+  };
+}
+
+/** A refreshed journal may advance, but cannot replace the saved reservation or signer. */
+export function assertHandoffCheckpointMatches(
+  prior: {
+    snapshot: HandoffDestinationSnapshot | null;
+    sourcePublicKey?: string;
+    destinationServerId?: string;
+  },
+  current: {
+    snapshot: HandoffDestinationSnapshot | null;
+    sourcePublicKey?: string;
+    destinationServerId?: string;
+  },
+) {
+  if (prior.destinationServerId && prior.destinationServerId !== current.destinationServerId)
+    throw new Error("Destination host changed since the saved handoff");
+  if (
+    prior.snapshot &&
+    (!current.snapshot ||
+      JSON.stringify(reservationIdentity(prior.snapshot)) !==
+        JSON.stringify(reservationIdentity(current.snapshot)) ||
+      (prior.snapshot.manifestDigest !== null &&
+        prior.snapshot.manifestDigest !== current.snapshot.manifestDigest))
+  )
+    throw new Error("Destination reservation changed since the saved handoff");
+  const pinned = prior.sourcePublicKey ?? prior.snapshot?.sourcePublicKey;
+  const key = current.sourcePublicKey ?? current.snapshot?.sourcePublicKey;
+  if (
+    (pinned && pinned !== key) ||
+    (current.snapshot?.sourcePublicKey && key && current.snapshot.sourcePublicKey !== key)
+  )
+    throw new Error("Source signing key changed since the saved handoff");
+}
+
+function checkpointWriter(
+  input: HandoffCheckpointPersistence & { transferId: string },
+  sourceServerId: string,
+  destinationServerId: string,
+) {
+  let prior = input.checkpoint;
+  return async (snapshot: HandoffDestinationSnapshot, key = snapshot.sourcePublicKey) => {
+    if (snapshot.transferId !== input.transferId || snapshot.sourceServerId !== sourceServerId)
+      throw new Error("Destination reservation belongs to another handoff");
+    if (snapshot.manifestDigest !== null && !snapshot.sourcePublicKey)
+      throw new Error("Destination did not report its pinned source key; update the host");
+    const pinned = prior?.sourcePublicKey ?? prior?.snapshot.sourcePublicKey;
+    const checkpoint = { destinationServerId, snapshot, sourcePublicKey: key ?? pinned };
+    assertHandoffCheckpointMatches(prior ?? { snapshot: null }, checkpoint);
+    await input.onCheckpoint?.(checkpoint);
+    prior = checkpoint;
+  };
+}
 /** No reservation or source mutation was started, so the caller can discard its local intent. */
 export class HandoffReviewChangedError extends Error {}
 
@@ -48,7 +130,8 @@ export interface WorkspaceHandoffProgress {
     | "active";
   transfer?: HandoffTransferProgress;
 }
-export interface PrepareWorkspaceHandoffInput extends HandoffConnections {
+export interface PrepareWorkspaceHandoffInput
+  extends HandoffConnections, HandoffCheckpointPersistence {
   workspaceId: string;
   destinationParent: string;
   continuationMode: "native" | "context";
@@ -59,7 +142,7 @@ export interface PrepareWorkspaceHandoffInput extends HandoffConnections {
   integrationReview?: HandoffIntegrationReview;
   onProgress?: (progress: WorkspaceHandoffProgress) => void;
 }
-export interface ActivateWorkspaceHandoffInput {
+export interface ActivateWorkspaceHandoffInput extends HandoffCheckpointPersistence {
   sourceServerId: string;
   getSource: () => DaemonClient;
   destination: DaemonClient;
@@ -128,6 +211,7 @@ export async function prepareWorkspaceHandoff(
 ): Promise<HandoffDestinationSnapshot> {
   const { source, destination, transferId, signal } = input;
   const { sourceServerId, destinationServerId } = requireDistinctHosts(input);
+  const checkpoint = checkpointWriter(input, sourceServerId, destinationServerId);
   const progress = (phase: WorkspaceHandoffProgress["phase"]) => input.onProgress?.({ phase });
   progress("inspecting");
   const prior = await handoffRequest(
@@ -135,6 +219,8 @@ export async function prepareWorkspaceHandoff(
     signal,
   );
   if (prior.error && prior.error.code !== "not_found") handoffResult(prior);
+  if (prior.result) await checkpoint(prior.result);
+  else if (input.checkpoint) throw new Error("Saved destination reservation is unavailable");
   const { workspaceReviewDigest, stoppedWorkReview, integrationReview, conversationModes } =
     await validateReview(input, prior.result);
   const inventory = prior.result
@@ -171,6 +257,7 @@ export async function prepareWorkspaceHandoff(
     continuationMode: input.continuationMode,
     conversationModes,
   });
+  await checkpoint(reserved);
   if (reserved.state === "cancelled")
     throw new Error("This handoff was cancelled; start a new transfer");
   if (reserved.state === "active") {
@@ -181,14 +268,54 @@ export async function prepareWorkspaceHandoff(
     progress("activating");
     return reserved;
   }
-  if (reserved.state === "staged") return stageWorkspaceHandoff(input);
+  if (reserved.state === "staged") {
+    const staged = await stageWorkspaceHandoff(input);
+    await checkpoint(staged);
+    return staged;
+  }
   progress("preparing_source");
+  const prepared = await prepareSource(input, reserved, destinationServerId, checkpoint);
+  const manifest = prepared.manifest;
+  await checkpoint(reserved, prepared.source.publicKey);
+  const bound = handoffResult(
+    await handoffRequest(
+      () =>
+        destination.handoffBindDestination({
+          transferId,
+          publicKey: prepared.source.publicKey,
+          manifest,
+        }),
+      signal,
+    ),
+  );
+  await checkpoint(bound);
+  await transferHandoffArchive({
+    source,
+    destination,
+    transferId,
+    manifest,
+    signal,
+    onProgress: (transfer) => input.onProgress?.({ phase: "transferring", transfer }),
+  });
+  const staged = await stageWorkspaceHandoff(input);
+  await checkpoint(staged);
+  return staged;
+}
+
+async function prepareSource(
+  input: PrepareWorkspaceHandoffInput,
+  reserved: HandoffDestinationSnapshot,
+  destinationServerId: string,
+  checkpoint: ReturnType<typeof checkpointWriter>,
+) {
+  const { source, transferId, signal } = input;
   const priorSource = await handoffRequest(
     () => source.handoffGetSourceStatus({ transferId }),
     signal,
   );
   if (priorSource.error && priorSource.error.code !== "not_found") handoffResult(priorSource);
   let prepared = priorSource.result;
+  if (prepared) await checkpoint(reserved, prepared.source.publicKey);
   if (!prepared || prepared.source.state === "preparing") {
     prepared = handoffResult(
       await handoffRequest(
@@ -219,26 +346,7 @@ export async function prepareWorkspaceHandoff(
   const manifest = prepared.manifest;
   if (!manifest || prepared.source.manifestDigest !== manifest.entrypoint.sha256)
     throw new Error("Source capture is not ready");
-  handoffResult(
-    await handoffRequest(
-      () =>
-        destination.handoffBindDestination({
-          transferId,
-          publicKey: prepared.source.publicKey,
-          manifest,
-        }),
-      signal,
-    ),
-  );
-  await transferHandoffArchive({
-    source,
-    destination,
-    transferId,
-    manifest,
-    signal,
-    onProgress: (transfer) => input.onProgress?.({ phase: "transferring", transfer }),
-  });
-  return stageWorkspaceHandoff(input);
+  return { source: prepared.source, manifest };
 }
 
 async function stageWorkspaceHandoff(
@@ -317,6 +425,8 @@ export async function activateWorkspaceHandoff(
   );
   if (target.sourceServerId !== sourceServerId)
     throw new Error("Destination reservation belongs to another source host");
+  const checkpoint = checkpointWriter(input, sourceServerId, destinationServerId);
+  await checkpoint(target);
   if (target.state === "active") {
     input.onProgress?.({ phase: "active" });
     return target;
@@ -339,6 +449,7 @@ export async function activateWorkspaceHandoff(
       !handoffReviewsMatch(prepared.source, target)
     )
       throw new Error("Handoff ownership and destination content do not match");
+    await checkpoint(target, prepared.source.publicKey);
     input.onProgress?.({ phase: "releasing" });
     receipt = handoffResult(
       await handoffRequest(() => source.handoffReleaseSource({ transferId }), signal),
@@ -352,8 +463,30 @@ export async function activateWorkspaceHandoff(
     ),
   );
   if (active.state !== "active") throw new Error("Destination has not completed activation");
+  await checkpoint(active);
   input.onProgress?.({ phase: "active" });
   return active;
+}
+
+async function verifyCancellationSigner(
+  source: DaemonClient,
+  target: HandoffDestinationSnapshot,
+  input: Omit<ActivateWorkspaceHandoffInput, "onProgress">,
+  checkpoint: ReturnType<typeof checkpointWriter>,
+) {
+  const pinned =
+    input.checkpoint?.sourcePublicKey ??
+    input.checkpoint?.snapshot.sourcePublicKey ??
+    target.sourcePublicKey;
+  if (!pinned) return;
+  const status = await handoffRequest(
+    () => source.handoffGetSourceStatus({ transferId: input.transferId }),
+    input.signal,
+  );
+  if (status.error) handoffResult(status);
+  const key = status.result?.source.publicKey ?? status.cancellation?.publicKey;
+  if (!key) throw new Error("Saved source signing key is unavailable");
+  await checkpoint(target, key);
 }
 
 /** Cancellation wins durably at source before destination is permitted to discard its copy. */
@@ -369,6 +502,8 @@ export async function cancelWorkspaceHandoff(
     throw new Error("Choose a different destination host");
   if (target.sourceServerId !== sourceServerId)
     throw new Error("Destination reservation belongs to another source host");
+  const checkpoint = checkpointWriter(input, sourceServerId, destinationServerId);
+  await checkpoint(target);
   if (["released", "activating", "active"].includes(target.state))
     throw new Error("Source ownership was released; finish destination activation");
   if (target.state === "cancelled" && target.cleanupComplete === true) return target;
@@ -377,6 +512,7 @@ export async function cancelWorkspaceHandoff(
     const source = input.getSource();
     if (serverId(source) !== sourceServerId)
       throw new Error("Source connection belongs to another host");
+    await verifyCancellationSigner(source, target, input, checkpoint);
     proof = handoffResult(
       await handoffRequest(
         () =>
@@ -388,8 +524,11 @@ export async function cancelWorkspaceHandoff(
         signal,
       ),
     );
+    await checkpoint(target, proof.publicKey);
   }
-  return handoffResult(
+  const cancelled = handoffResult(
     await handoffRequest(() => destination.handoffCancelDestination({ transferId, proof }), signal),
   );
+  await checkpoint(cancelled);
+  return cancelled;
 }

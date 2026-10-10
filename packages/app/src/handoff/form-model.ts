@@ -8,7 +8,10 @@ import type {
   HandoffSourcePreview,
   HandoffOmissionsPage,
 } from "@getpaseo/protocol/handoff-control";
-import type { WorkspaceHandoffProgress } from "@getpaseo/client/internal/workspace-handoff";
+import type {
+  WorkspaceHandoffProgress,
+  WorkspaceHandoffCheckpoint,
+} from "@getpaseo/client/internal/workspace-handoff";
 import { HandoffReviewChangedError } from "@getpaseo/client/internal/workspace-handoff";
 import type { HandoffOrigin, HandoffRecord } from "./persistence";
 
@@ -70,6 +73,7 @@ export type HandoffFormState =
 interface OperationOptions {
   signal: AbortSignal;
   onProgress: (progress: WorkspaceHandoffProgress) => void;
+  onCheckpoint: (checkpoint: WorkspaceHandoffCheckpoint) => Promise<void>;
 }
 /** Editor saving failed before any host handoff mutation was attempted. */
 export class HandoffFilesNotSavedError extends Error {}
@@ -163,7 +167,8 @@ export function openHandoffForm(input: HandoffFormInput, ports: HandoffFormPorts
     }
   }
 
-  async function run(record: HandoffRecord) {
+  async function run(initialRecord: HandoffRecord) {
+    let record = initialRecord;
     if (closed || (state.kind === "transfer" && state.run.status === "running")) return;
     const fromReview = state.kind === "review";
     publish({ kind: "transfer", record, run: { status: "running", progress: null } });
@@ -173,6 +178,11 @@ export function openHandoffForm(input: HandoffFormInput, ports: HandoffFormPorts
       if (closed) return;
       const snapshot = await ports[record.intent](record, {
         signal: abort.signal,
+        onCheckpoint: async (checkpoint) => {
+          record = { ...record, ...checkpoint };
+          await ports.save(record);
+          publish({ kind: "transfer", record, run: { status: "running", progress: null } });
+        },
         onProgress: (progress) =>
           publish({
             kind: "transfer",

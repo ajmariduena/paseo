@@ -38,6 +38,7 @@ function snapshot(record: DestinationHandoffStatus) {
     ...record,
     cancellationAccepted: record.cancellationProof !== null,
     manifestDigest: record.binding?.manifest.entrypoint.sha256 ?? null,
+    sourcePublicKey: record.binding?.publicKey ?? record.cancellationProof?.publicKey,
   });
 }
 function errorResponse(request: ControlRequest, error: unknown): ControlResponse {

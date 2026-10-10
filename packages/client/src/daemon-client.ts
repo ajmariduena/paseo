@@ -4,6 +4,7 @@ export {
   cancelWorkspaceHandoff,
   type PrepareWorkspaceHandoffInput,
   type WorkspaceHandoffProgress,
+  type WorkspaceHandoffCheckpoint,
 } from "./workspace-handoff.js";
 export {
   transferHandoffArchive,
