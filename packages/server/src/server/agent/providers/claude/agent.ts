@@ -163,9 +163,10 @@ import {
   terminateWithTreeKill,
   type ProcessTerminator,
 } from "../../../../utils/tree-kill.js";
-import type {
-  ManagedProcessRegistry,
-  ManagedProcessRecord,
+import {
+  ManagedProcessPublicationError,
+  type ManagedProcessRegistry,
+  type ManagedProcessRecord,
 } from "../../../managed-processes/managed-processes.js";
 import { execCommand } from "../../../../utils/spawn.js";
 import { composeSystemPromptParts } from "../../system-prompt.js";
@@ -4237,9 +4238,15 @@ class ClaudeAgentSession implements AgentSession {
   private async finishStoppingQueryWriter(resource: ClaudeQueryResources): Promise<void> {
     resource.callbacks.abort.abort();
     // Inventory descendants before the SDK can reap their root process.
-    if (resource.managedProcess && this.managedProcesses) {
-      const record = await resource.managedProcess;
-      await this.managedProcesses.stop(record.id);
+    if (resource.child && resource.managedProcess && this.managedProcesses) {
+      const recordId = await resource.managedProcess.then(
+        (record) => record.id,
+        (error: unknown) => {
+          if (error instanceof ManagedProcessPublicationError) return error.recordId;
+          throw error;
+        },
+      );
+      await this.managedProcesses.stop(recordId);
       resource.child = null;
     } else if (resource.child) {
       const result = await this.processTerminator(resource.child, {

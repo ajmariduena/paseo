@@ -707,10 +707,13 @@ observes its tree. Persist that closing inventory before sending signals. Startu
 then finish an interrupted stop even if the original owner has exited.
 
 Publish an inspection obligation before reading the process table, and synchronize the complete
-inventory before acknowledging it. A failed publication retains its exact candidate in memory for
-retry. After a crash, an unresolved inspection cannot be cleared from a smaller current process
-list; retain the record. A different OS boot proves the prior processes are gone without signalling
-reused PIDs. Process exit does not repair a conversation's unresolved persistence obligations.
+inventory before acknowledging it. Failed registration retains its assigned identity and exact
+candidate, so closure can repair publication and stop that process without launching another query.
+If the inspection marker itself failed, the live store knows inspection never started and can retry;
+after a crash, a pending marker does not carry that evidence. Never clear it from a smaller current
+process list. A missing record does not prove exit; after a confirmed stop the provider retains that
+outcome while retrying its remaining SDK cleanup. A different OS boot proves the prior processes are
+gone without signalling reused PIDs. Process exit does not repair a conversation's unresolved persistence obligations.
 The [handoff boundary](refactors/cross-host-handoff-plan.md#boundary) tracks the remaining launch
 and process-coverage gaps.
 

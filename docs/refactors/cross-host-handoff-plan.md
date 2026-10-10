@@ -24,8 +24,9 @@ alone does not prove that observed descendants stopped.
 This is a managed-resource contract. Paseo cannot freeze unrelated editors or prove that a process
 it never observed did not daemonize. Detect changes during capture, recheck before release, and tell
 the user that later source edits do not synchronize. Do not expand handoff into a general OS process
-supervisor. The existing POSIX terminator retains observed descendants in memory; launch-time and
-restart recovery still need integration into source preparation.
+supervisor. The [managed process store](../data-model.md#managed-process-store) owns retained closing
+inventories and known publication repair. Launch-time proof and recovery of unknown stops still need
+integration into source preparation.
 
 Credentials, permission grants, absolute launch paths, host MCP configuration, sockets, browser
 sessions, process IDs, installed dependencies, and ignored files do not migrate automatically.

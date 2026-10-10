@@ -115,6 +115,23 @@ interface ManagedProcessRegistryOptions {
   syncPublication?: typeof syncFilePublication;
 }
 
+export class ManagedProcessPublicationError extends Error {
+  constructor(
+    readonly recordId: string,
+    cause: unknown,
+  ) {
+    super(`Managed process registration is not durable: ${recordId}`, { cause });
+    this.name = "ManagedProcessPublicationError";
+  }
+}
+
+class ManagedProcessRecordMissingError extends Error {
+  constructor(readonly recordId: string) {
+    super(`Managed process record is missing: ${recordId}`);
+    this.name = "ManagedProcessRecordMissingError";
+  }
+}
+
 class ManagedProcessTerminationError extends Error {
   constructor(
     readonly pid: number,
@@ -302,14 +319,18 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
     ) {
       throw new ManagedProcessInspectionError(validated.pid);
     }
-    await this.publish(validated);
+    try {
+      await this.publish(validated);
+    } catch (error) {
+      // The caller must retain this identity even when no file reached disk.
+      throw new ManagedProcessPublicationError(validated.id, error);
+    }
     return validated;
   }
 
   async remove(id: string): Promise<void> {
     return this.serialize(id, async () => {
-      const candidate = this.unpublished.get(id);
-      if (candidate) await this.publish(candidate);
+      await this.repairPublication(id);
       const record = await this.readRecord(id);
       if (!record) return;
       await this.confirmProcessExited(record);
@@ -319,10 +340,9 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
 
   async stop(id: string): Promise<void> {
     return this.serialize(id, async () => {
-      const candidate = this.unpublished.get(id);
-      if (candidate) await this.publish(candidate);
+      await this.repairPublication(id);
       const stored = await this.readRecord(id);
-      if (!stored) return;
+      if (!stored) throw new ManagedProcessRecordMissingError(id);
       let record = stored;
       if (!record.tree) throw new ManagedProcessInspectionError(record.pid);
       const bootId = await (this.processTree?.bootId ?? readProcessBootId)();
@@ -369,6 +389,17 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
       if (isNodeErrorWithCode(error, "ENOENT")) return null;
       throw error;
     }
+  }
+
+  private async repairPublication(id: string): Promise<void> {
+    const candidate = this.unpublished.get(id);
+    if (!candidate) return;
+    // A failed opening marker prevented the OS inspection from starting. Only
+    // this in-memory failed operation proves that no observation was lost.
+    const repaired = candidate.tree?.inspectionPending
+      ? { ...candidate, tree: { ...candidate.tree, inspectionPending: false } }
+      : candidate;
+    await this.publish(repaired);
   }
 
   private async publish(record: ManagedProcessRecord): Promise<void> {

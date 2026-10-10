@@ -274,6 +274,113 @@ describe("managed process registry", () => {
     },
   );
 
+  test.skipIf(process.platform === "win32").each([
+    {
+      name: "before inspection",
+      failureAt: 2,
+      inspectedBeforeFault: 0,
+      retainRoot: true,
+      expectedSignals: [4102, 4101],
+    },
+    {
+      name: "after inspection",
+      failureAt: 3,
+      inspectedBeforeFault: 1,
+      retainRoot: false,
+      expectedSignals: [4102],
+    },
+  ])(
+    "repairs a known publication failure $name without clearing a cold unknown observation",
+    async ({ failureAt, inspectedBeforeFault, retainRoot, expectedSignals }) => {
+      tempHome = await mkdtemp(path.join(tmpdir(), "paseo-managed-publication-retry-"));
+      const root = { pid: 4101, parentPid: 1, startedAt: "owner", exited: false };
+      const child = { pid: 4102, parentPid: 4101, startedAt: "child", exited: false };
+      let entries = [root, child];
+      const checkpoint = { bootId: "boot", entries: [root] };
+      let publications = 0;
+      let inspections = 0;
+      const signals: number[] = [];
+      const options = {
+        paseoHome: tempHome,
+        processTable: new FakeProcessTable([]),
+        terminateProcess: terminateWithTreeKill,
+        logger: createTestLogger(),
+        processTree: {
+          bootId: async () => "boot",
+          list: async () => {
+            inspections++;
+            return entries;
+          },
+          signal: (pid: number) => {
+            signals.push(pid);
+            entries = entries.filter((entry) => entry.pid !== pid);
+          },
+        },
+      };
+      const registry = createManagedProcessRegistry({
+        ...options,
+        syncPublication: async (filePath) => {
+          if (++publications === failureAt) {
+            const pending = JSON.parse(await readFile(filePath, "utf8"));
+            pending.tree = { checkpoint, inspectionPending: true, state: "running" };
+            await writeFile(filePath, JSON.stringify(pending));
+            throw new Error("Interrupted publication");
+          }
+        },
+      });
+      const record = await registry.record({
+        owner: { provider: "claude", kind: "query" },
+        pid: root.pid,
+        command: "claude",
+        args: [],
+        processTree: checkpoint,
+      });
+      await expect(registry.stop(record.id)).rejects.toThrow("termination timed out");
+      expect(inspections).toBe(inspectedBeforeFault);
+      expect(signals).toEqual([]);
+      entries = retainRoot ? [root, child] : [{ ...child, parentPid: 1 }];
+      const restarted = createManagedProcessRegistry(options);
+      await expect(restarted.stop(record.id)).rejects.toThrow("Incomplete process inspection");
+      expect(inspections).toBe(inspectedBeforeFault);
+      expect(signals).toEqual([]);
+      await registry.stop(record.id);
+      expect(signals).toEqual(expectedSignals);
+      expect(await registry.list()).toEqual([]);
+    },
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "a missing record cannot acknowledge process termination",
+    async () => {
+      tempHome = await mkdtemp(path.join(tmpdir(), "paseo-managed-missing-stop-"));
+      const root = { pid: 4101, parentPid: 1, startedAt: "owner", exited: false };
+      const signals: number[] = [];
+      const registry = createManagedProcessRegistry({
+        paseoHome: tempHome,
+        processTable: new FakeProcessTable([]),
+        terminateProcess: terminateWithTreeKill,
+        logger: createTestLogger(),
+        processTree: {
+          bootId: async () => "boot",
+          list: async () => [root],
+          signal: (pid) => {
+            signals.push(pid);
+          },
+        },
+      });
+      const record = await registry.record({
+        owner: { provider: "claude", kind: "query" },
+        pid: root.pid,
+        command: "claude",
+        args: [],
+        processTree: { bootId: "boot", entries: [root] },
+      });
+      await rm(path.join(tempHome, "runtime", "managed-processes", `${record.id}.json`));
+      await expect(registry.stop(record.id)).rejects.toThrow("Managed process record is missing");
+      expect(signals).toEqual([]);
+    },
+  );
+
   test("handoff recovery recognizes the captured identity when executable paths are quoted", async () => {
     tempHome = await mkdtemp(path.join(tmpdir(), "paseo-managed-quoted-"));
     const command = path.join(tempHome, "Program Files", "node.exe");

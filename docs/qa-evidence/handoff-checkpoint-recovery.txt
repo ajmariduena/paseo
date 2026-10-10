@@ -1,3 +1,105 @@
+Process registration and shutdown publication retries — Linux, 2026-10-10
+Baseline: 9cc79e9e7 (plan-machine-handoff-macbook-vps)
+
+A real Node process regression blocked creation of the managed-process directory. After removing
+that obstruction, the old provider still rejected close with the original ENOTDIR: it awaited a
+permanently rejected registration promise and never reached repair. The registration error now
+carries the assigned record ID. Closure repairs that exact candidate and stops the original process.
+The test verifies one query launch, no command delivery after failed registration, and retry of a
+later SDK return failure after the process and ledger are already gone.
+
+Two registry cases fail publication before or after process inspection. The original store repairs
+its known candidate; a fresh store reading the pending inspection refuses without signals. When the
+owner exits after observation, the in-memory candidate retains the child needed to finish cleanup.
+A missing-record case verifies that deletion cannot be acknowledged as termination.
+
+34 registry cases passed in the combined run. Its provider fixture initially had an unmatched
+return-call assertion while being extended; after adding the intended SDK failure, all 21 provider
+cases passed. Thus 55 distinct cases pass across the two affected suites. These tests use real
+temporary storage and harmless Node processes with injected SDK frames, not authenticated Claude.
+They do not establish full launch ownership or recover unknown conversation outcomes. Server/CLI
+builds, root typecheck, lint and formatting pass. The new provider case passed again after replacing
+its nested exit callback with an equivalent bound resolver to meet the repository's lint limit.
+
+Provider regression before the fix:
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/providers/claude/agent.spawn.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: 🔐 prevent building .env in docker: https://dotenvx.com/prebuild
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  write to custom object with { processEnv: myObject }
+
+ ❯ src/server/agent/providers/claude/agent.spawn.test.ts (21 tests | 1 failed | 20 skipped) 42ms
+     × retries failed process registration during close without launching another query 40ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/providers/claude/agent.spawn.test.ts > Claude spawn override > retries failed process registration during close without launching another query
+Error: ENOTDIR: not a directory, mkdir '/tmp/paseo-claude-registration-retry-yk3N1K/runtime/managed-processes'
+ ❯ writeFileAtomic src/server/atomic-file.ts:9:3
+      7|   data: string | NodeJS.ArrayBufferView,
+      8| ): Promise<void> {
+      9|   await fs.mkdir(path.dirname(filePath), { recursive: true });
+       |   ^
+     10|   const tempPath = path.join(
+     11|     path.dirname(filePath),
+ ❯ writeJsonFileAtomic src/server/atomic-file.ts:24:3
+ ❯ FileBackedManagedProcessRegistry.publish src/server/managed-processes/managed-processes.ts:377:5
+ ❯ FileBackedManagedProcessRegistry.record src/server/managed-processes/managed-processes.ts:305:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 20 skipped (21)
+   Start at  06:48:39
+   Duration  1.05s (transform 580ms, setup 39ms, import 838ms, tests 42ms, environment 0ms)
+
+
+Registry validation and the intermediate provider-fixture failure:
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/providers/claude/agent.spawn.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  enable debug logging with { debug: true }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: 🛠️  run anywhere with `dotenvx run -- yourcommand`
+
+ ❯ src/server/agent/providers/claude/agent.spawn.test.ts (21 tests | 1 failed) 295ms
+     × retries failed process registration during close without launching another query 234ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/providers/claude/agent.spawn.test.ts > Claude spawn override > retries failed process registration during close without launching another query
+AssertionError: expected "vi.fn()" to be called 2 times, but got 1 times
+ ❯ src/server/agent/providers/claude/agent.spawn.test.ts:712:30
+    710|         expect(queryFactory).toHaveBeenCalledTimes(1);
+    711|         expect(query.close).toHaveBeenCalledTimes(1);
+    712|         expect(query.return).toHaveBeenCalledTimes(2);
+       |                              ^
+    713|       } finally {
+    714|         fixtureChild?.kill("SIGKILL");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed | 1 passed (2)
+      Tests  1 failed | 50 passed (55)
+   Start at  06:51:41
+   Duration  2.40s (transform 720ms, setup 68ms, import 1.10s, tests 978ms, environment 0ms)
+
+
+Final provider validation:
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  21 passed (21)
+   Start at  06:52:02
+   Duration  1.53s (transform 644ms, setup 47ms, import 945ms, tests 410ms, environment 0ms)
+
+
+
 Persistent observed process trees — Linux, 2026-10-10
 Baseline: c38370f10 (plan-machine-handoff-macbook-vps)
 

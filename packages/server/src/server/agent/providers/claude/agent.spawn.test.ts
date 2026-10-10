@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -658,6 +658,70 @@ describe("Claude spawn override", () => {
       expect(result.value.return).toHaveBeenCalledTimes(1);
     }
   });
+
+  test.runIf(process.platform !== "win32")(
+    "retries failed process registration during close without launching another query",
+    async () => {
+      const home = await mkdtemp(path.join(tmpdir(), "paseo-claude-registration-retry-"));
+      const blocker = path.join(home, "runtime");
+      await writeFile(blocker, "prevents ledger publication");
+      const registry = createManagedProcessRegistry({
+        paseoHome: home,
+        processTable: createSystemManagedProcessTable(),
+        terminateProcess: terminateWithTreeKill,
+        logger: createTestLogger(),
+      });
+      const query = createQueryMock([]);
+      let fixtureChild: ChildProcess | null = null;
+      let exited = Promise.resolve();
+      const queryFactory = vi.fn(({ options }: ClaudeQueryInput) => {
+        if (!options.spawnClaudeCodeProcess) throw new Error("Missing launcher");
+        const child = options.spawnClaudeCodeProcess({
+          command: process.execPath,
+          args: ["-e", "setInterval(() => {}, 1000)"],
+          cwd: process.cwd(),
+          env: {},
+          signal: new AbortController().signal,
+        });
+        // The production spawn helper owns the real Node child behind this SDK interface.
+        const completion = Promise.withResolvers<void>();
+        exited = completion.promise;
+        child.on("exit", completion.resolve.bind(undefined, undefined));
+        return query;
+      });
+      const spawn = vi.spyOn(spawnUtils, "spawnProcess");
+      const session = await new ClaudeAgentClient({
+        logger: createTestLogger(),
+        resolveBinary: async () => process.execPath,
+        managedProcesses: registry,
+        queryFactory,
+      }).createSession({ provider: "claude", cwd: process.cwd() });
+      try {
+        await expect(session.listCommands()).rejects.toThrow("registration is not durable");
+        fixtureChild = spawn.mock.results[0]!.value;
+        await expect(session.listCommands()).rejects.toThrow("registration is not durable");
+        await expect(session.close()).rejects.toThrow();
+        expect(query.supportedCommands).not.toHaveBeenCalled();
+        expect(query.close).not.toHaveBeenCalled();
+        expect(queryFactory).toHaveBeenCalledTimes(1);
+        expect(fixtureChild!.exitCode).toBeNull();
+        await rm(blocker);
+        vi.mocked(query.return!).mockRejectedValueOnce(new Error("Query return failed"));
+        await expect(session.close()).rejects.toThrow("Query return failed");
+        await exited;
+        expect(await registry.list()).toEqual([]);
+        await session.close();
+        expect(await registry.list()).toEqual([]);
+        expect(queryFactory).toHaveBeenCalledTimes(1);
+        expect(query.close).toHaveBeenCalledTimes(1);
+        expect(query.return).toHaveBeenCalledTimes(2);
+      } finally {
+        fixtureChild?.kill("SIGKILL");
+        await exited;
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
 
   test.runIf(process.platform !== "win32")(
     "registers a real Claude process durably and removes it only after shutdown",
