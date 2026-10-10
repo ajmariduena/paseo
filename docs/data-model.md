@@ -130,7 +130,14 @@ gain their first revision on the next write, without a migration.
 Use a store-owned field operation for a semantic change or rollback. A failed provider import may
 undo its placement and label patch, but must preserve later edits and runtime recovery obligations.
 Handoff preparation binds the exact closed checkpoint revision; changing a record and changing it
-back still requires a fresh preparation. The remaining certification requirements live in the
+back still requires a fresh preparation. Before final release verification, the ownership journal
+durably seals agent-record mutations. Store writes and deletes participate in admission; a refused
+write must not become a pending retry. Checkpointing unchanged data remains available. Failed
+verification retains the seal across restart until cancellation is durable. Finish known repairs
+and legacy annotation adoption before entering this boundary.
+
+This seal protects records; it does not prove that all provider callbacks or OS processes stopped.
+The remaining certification requirements live in the
 [conversation persistence contract](refactors/cross-host-handoff-plan.md#conversation-persistence-contract).
 
 ### Carried context acknowledgement

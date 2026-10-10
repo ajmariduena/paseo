@@ -250,7 +250,12 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   identical retries retain their committed revision after restart. Preparation binds the closed
   checkpoint revision, so changing metadata and restoring its old value still refuses release.
   Failed provider imports revert only their own placement/label patch, preserving newer metadata
-  and recovery obligations. See the [record contract](../data-model.md#record-revisions) and
+  and recovery obligations. Store writes and deletes now participate in release admission. A durable
+  ownership-journal seal closes them before final verification and remains after a failed verification
+  or restart until cancellation is durable. Existing publication repairs and legacy annotation
+  adoption finish before sealing; unchanged checkpoints remain available afterward. This closes the
+  record-write window between verification and release, without proving callback or process quiescence.
+  See the [record contract](../data-model.md#record-revisions) and
   [persistence evidence](../qa-evidence/handoff-checkpoint-recovery.txt).
   Registered, non-internal conversations now publish an opening generation before provider create,
   resume, import or reload. POSIX publication synchronizes the file and its directories; Windows
@@ -287,8 +292,8 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   context activation and restart. Source release refuses a changed note set. Versioned bundles
   make older readers refuse unsupported metadata; retained archives remain readable. See the
   [carried-context contract](../data-model.md#carried-context-acknowledgement).
-  Artifact-based recovery of uncertain completion, remaining manager descendants, final writer
-  sealing, presentation coverage and durable process-stop recovery remain open under the
+  Artifact-based recovery of uncertain completion, remaining manager descendants and producer
+  quiescence, presentation coverage and durable process-stop recovery remain open under the
   [conversation persistence contract](#conversation-persistence-contract).
 - New Claude notification/origin annotations bind a prepared attempt to its native UUID before
   provider start or steer, and persist the adapter's dispatched/withdrawn result. Replay uses that

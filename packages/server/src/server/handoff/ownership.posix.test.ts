@@ -52,6 +52,151 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
+test("release seals agent-record writes before verification and retains that seal after restart", async () => {
+  const input = {
+    id: randomUUID(),
+    cwd,
+    workspaceId: "sealed-workspace",
+    agentIds: ["sealed-agent"],
+    destinationServerId: "destination-host",
+    reservationId: randomUUID(),
+  };
+  const storagePath = path.join(root, "sealed-agents");
+  const createStorage = () =>
+    new AgentStorage(storagePath, createTestLogger(), undefined, undefined, (record) =>
+      ownership.acquireAgentRecordMutation({
+        agentId: record.id,
+        workspaceId: record.workspaceId,
+        cwd: record.cwd,
+      }),
+    );
+  let agents = createStorage();
+  const seed = await agents.upsert({
+    id: input.agentIds[0],
+    cwd,
+    workspaceId: input.workspaceId,
+    provider: "claude",
+    createdAt: "2026-10-10T00:00:00Z",
+    updatedAt: "2026-10-10T00:00:00Z",
+    lastStatus: "closed",
+    labels: {},
+    title: "Captured conversation",
+  });
+  await ownership.prepare(input);
+  await ownership.markReady(input.id, digest);
+  const binding = {
+    version: 1 as const,
+    transferId: input.id,
+    sourceServerId,
+    destinationServerId: input.destinationServerId,
+    reservationId: input.reservationId,
+    manifestDigest: digest,
+  };
+  await expect(
+    ownership.release(input.id, binding, async () => {
+      await expect(agents.setTitle(seed.id, "Late callback")).rejects.toMatchObject({
+        code: "fenced",
+      });
+      await expect(agents.remove(seed.id)).rejects.toMatchObject({ code: "fenced" });
+      await expect(agents.checkpointClosedAgent(seed.id)).resolves.toEqual(seed);
+      throw new Error("injected verification failure");
+    }),
+  ).rejects.toThrow("injected verification failure");
+  ownership = new HandoffOwnership({ directory, sourceServerId });
+  await ownership.initialize();
+  agents = createStorage();
+  await expect(agents.setTitle(seed.id, "After restart")).rejects.toMatchObject({ code: "fenced" });
+  expect(await agents.get(seed.id)).toEqual(seed);
+  await ownership.cancel(input.id);
+  await agents.repairPendingPersistence(seed.id);
+  expect(await agents.get(seed.id)).toEqual(seed);
+  await agents.setTitle(seed.id, "After durable cancellation");
+  expect((await agents.get(seed.id))?.title).toBe("After durable cancellation");
+});
+
+test("release refuses an agent record publication until its directory sync finishes", async () => {
+  const { input, binding } = await prepare();
+  const entered = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
+  let holdPublication = false;
+  const agents = new AgentStorage(
+    path.join(root, "publishing-agents"),
+    createTestLogger(),
+    undefined,
+    async (file, publicationRoot) => {
+      if (holdPublication) {
+        entered.resolve();
+        await finish.promise;
+      }
+      await syncFilePublication(file, publicationRoot);
+    },
+    (record) =>
+      ownership.acquireAgentRecordMutation({
+        agentId: record.id,
+        cwd: record.cwd,
+        workspaceId: record.workspaceId,
+      }),
+  );
+  const seed = await agents.upsert({
+    id: input.agentIds[0],
+    cwd,
+    workspaceId: input.workspaceId,
+    provider: "claude",
+    labels: {},
+    createdAt: "2026-10-10T00:00:00Z",
+    updatedAt: "2026-10-10T00:00:00Z",
+    lastStatus: "closed",
+  });
+  holdPublication = true;
+  const writing = agents.addPendingRestartNote(seed.id, [
+    { id: "work", kind: "shell", label: "Stopped task" },
+  ]);
+  await entered.promise;
+  try {
+    await expect(ownership.release(input.id, binding, async () => {})).rejects.toThrow(
+      "mutations are still running",
+    );
+  } finally {
+    finish.resolve();
+  }
+  await writing;
+  const committed = await agents.get(seed.id);
+  const receipt = await ownership.release(input.id, binding, async () => {
+    expect(await agents.checkpointClosedAgent(seed.id)).toEqual(committed);
+  });
+  expect(verifyHandoffRelease(receipt, binding, ownership.status(input.id).publicKey)).toBe(true);
+  await expect(agents.setTitle(seed.id, "After release")).rejects.toMatchObject({ code: "fenced" });
+  expect(() => agents.beginDelete(seed.id)).toThrow("sealed by handoff");
+});
+
+test("a failed seal acknowledgement cannot run verification and recovers a sealed ready transfer", async () => {
+  const { input, binding } = await prepare();
+  const interrupted = new HandoffOwnership({
+    directory,
+    sourceServerId,
+    write: async (file, value) => {
+      await writeJournal(file, value);
+      throw new Error("seal acknowledgement lost");
+    },
+  });
+  await interrupted.initialize();
+  let verified = false;
+  await expect(
+    interrupted.release(input.id, binding, async () => {
+      verified = true;
+    }),
+  ).rejects.toThrow("seal acknowledgement lost");
+  expect(verified).toBe(false);
+  ownership = new HandoffOwnership({ directory, sourceServerId });
+  await ownership.initialize();
+  expect(ownership.status(input.id).state).toBe("ready");
+  expect(() => ownership.acquireAgentRecordMutation({ cwd, agentId: input.agentIds[0] })).toThrow(
+    "sealed by handoff",
+  );
+  await ownership.cancel(input.id);
+  ownership.acquireAgentRecordMutation({ cwd, agentId: input.agentIds[0] })();
+});
+
 test("cancellation before preparation survives restart and refuses a delayed prepare", async () => {
   const input = {
     transferId: randomUUID(),
@@ -1354,6 +1499,9 @@ test("release survives restart, is idempotent and cannot be rolled back by cance
   await expect(restarted.withMutation({ cwd }, async () => 1)).rejects.toMatchObject({
     code: "fenced",
   });
+  expect(() => restarted.acquireAgentRecordMutation({ cwd, agentId: input.agentIds[0] })).toThrow(
+    "sealed by handoff",
+  );
 });
 
 test("a lost reply after durable release cannot resurrect source ownership", async () => {
@@ -1363,7 +1511,8 @@ test("a lost reply after durable release cannot resurrect source ownership", asy
     sourceServerId,
     write: async (file, value) => {
       await writeJournal(file, value);
-      throw new Error("lost after durable write");
+      if (JSON.parse(await readFile(file, "utf8")).records[0].state === "released")
+        throw new Error("lost after durable write");
     },
   });
   await interrupted.initialize();
@@ -1388,7 +1537,10 @@ test("a readable release after failed synchronization is not a durable receipt",
     sourceServerId,
     write: async (file, value) => {
       await writeJsonFileAtomic(file, value);
-      throw new Error("directory synchronization failed");
+      if (JSON.parse(await readFile(file, "utf8")).records[0].state !== "released")
+        await syncFilePublication(file, path.dirname(directory));
+      if (JSON.parse(await readFile(file, "utf8")).records[0].state === "released")
+        throw new Error("directory synchronization failed");
     },
   });
   await interrupted.initialize();

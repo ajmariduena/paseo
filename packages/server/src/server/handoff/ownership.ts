@@ -29,6 +29,7 @@ const SourceSchema = z.object({
 const RecordSchema = SourceSchema.extend({
   state: z.enum(["preparing", "ready", "released", "cancelled"]),
   manifestDigest: HandoffDigestSchema.nullable(),
+  agentRecordsSealed: z.boolean().optional(),
   privateKey: z.string().min(1).max(1024),
   publicKey: z.string().min(1).max(1024),
 });
@@ -52,7 +53,7 @@ export type HandoffCancellationInput = Pick<
   "transferId" | "destinationServerId" | "reservationId"
 >;
 export type HandoffReleaseReceipt = z.infer<typeof ReceiptSchema>;
-export type SourceHandoffStatus = Omit<SourceRecord, "privateKey">;
+export type SourceHandoffStatus = Omit<SourceRecord, "privateKey" | "agentRecordsSealed">;
 
 export interface HandoffMutationScope {
   cwd: string;
@@ -105,7 +106,7 @@ function protects(record: SourceRecord, scope: HandoffMutationScope): boolean {
   );
 }
 function publicStatus(record: SourceRecord): SourceHandoffStatus {
-  const { privateKey: _key, ...status } = record;
+  const { privateKey: _key, agentRecordsSealed: _sealed, ...status } = record;
   return structuredClone(status);
 }
 
@@ -279,11 +280,26 @@ export class HandoffOwnership {
 
   private acquireCanonicalMutation(scope: HandoffMutationScope): () => void {
     this.assertAllowed(scope);
+    return this.trackMutation(scope);
+  }
+
+  /** Store writes may finish during preparation, but cannot pass the release verification boundary. */
+  acquireAgentRecordMutation(scope: HandoffMutationScope): () => void {
+    this.assertHealthy();
+    const fence = [...this.records.values()].find(
+      (record) =>
+        protects(record, scope) && (record.agentRecordsSealed || record.state === "released"),
+    );
+    if (fence) reject("fenced", `Conversation records are sealed by handoff ${fence.id}`);
+    return this.trackMutation(scope);
+  }
+
+  private trackMutation(scope: HandoffMutationScope): () => void {
     let finish: () => void = () => {};
     const done = new Promise<void>((resolve) => {
       finish = resolve;
     });
-    const mutation = { scope, done };
+    const mutation = { scope: { ...scope }, done };
     this.mutations.add(mutation);
     return () => {
       this.mutations.delete(mutation);
@@ -341,8 +357,14 @@ export class HandoffOwnership {
         reject("conflict", "Release does not match the prepared destination and content");
       this.assertDrained(record);
       if (record.state !== "released") {
+        const sealed = { ...record, agentRecordsSealed: true };
+        if (!record.agentRecordsSealed) {
+          // Close admission before awaiting the journal write or validating captured inputs.
+          this.records.set(id, sealed);
+          await this.persist();
+        }
         await verifyStoppedSource();
-        this.records.set(id, { ...record, state: "released" });
+        this.records.set(id, { ...sealed, state: "released" });
         await this.persist();
       }
       const signature = sign(

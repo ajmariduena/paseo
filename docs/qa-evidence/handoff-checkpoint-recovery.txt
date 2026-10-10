@@ -1,5 +1,33 @@
 Handoff persistence recovery foundations — 2026-10-10
 
+Release record admission:
+- The regression reproduced a record mutation inside release verification. Release now durably
+  seals agent-record mutations before the final verification and signing step. Publication leases
+  last through required directory sync; release refuses an in-flight publication. Store deletes,
+  late snapshots and new annotations cannot change the certified source afterward.
+- A failed verification retains the seal after restart. Cancellation reopens admission only after
+  its journal write; refused writes are not retained as future retries. Previously admitted failed
+  publications keep their exact repair input. Checkpoints of unchanged records remain available.
+- Seal-acknowledgement failure never enters verification. Existing release rename/fsync failures
+  still recover the irrevocable release, rather than mistaking the new preceding seal for release.
+- A legacy direct-release regression exposed annotation adoption occurring after the seal. Known
+  checkpoint repairs and adoption now run before it, and final verification repeats inside it.
+  The network fixture removes both revision and annotation coverage metadata before cold recovery.
+- Native/context network cases verify post-release write and delete refusal, failed-verification
+  annotation refusal, cancel/reprepare, changed-witness refusal and earlier-history recovery.
+  These synthetic-provider cases do not prove authenticated or physical-host continuity.
+
+Release admission validation:
+$ npx vitest run src/server/agent/agent-storage.test.ts src/server/handoff/ownership.posix.test.ts --bail=1
+  86 passed, 1 Windows-only case skipped.
+$ npx vitest run src/server/handoff/archive.e2e.test.ts --testNamePattern='legacy directory|preserves unsent restart notes|handoff fenced until prompt annotation' --bail=1
+  Legacy directory and native restart-note cases passed; the first annotation case exposed a test
+  entering preflight repair rather than final verification. It now forces a changed-workspace
+  refusal after valid checkpoints, then asserts the retained seal.
+$ npx vitest run src/server/handoff/archive.e2e.test.ts --testNamePattern='preserves unsent restart notes through context|handoff fenced until prompt annotation' --bail=1
+  3 passed, 27 unrelated cases skipped. All five selected network cases pass across these runs.
+Typecheck, lint and formatting pass. The main daemon was not restarted.
+
 Record revision and rollback validation:
 - The initial regression reproduced a stale full-record write erasing a newer title or archive
   decision. Competing updates now reject the stale candidate, including after a cold load.
@@ -39,7 +67,7 @@ Unsent notes and repeated context transfers:
 - Provider files are synthetic; network version-only executables reject provider turns. Browser
   fixtures use the existing fake provider and seeded transcripts. These establish archive,
   transaction and UI behavior, not fresh authenticated-provider or physical-host continuity.
-- Final writer sealing, remaining writer inventory, uncertain-completion artifact recovery
+- Remaining producer quiescence, writer inventory, uncertain-completion artifact recovery
   and durable process identity remain open under the acceptance plan.
 
 Browser setup and regression:

@@ -1218,9 +1218,22 @@ test.skipIf(process.platform === "win32").each([
       });
     }
     await stopHost(source);
+    if (legacy) {
+      const agentsDirectory = path.join(source.daemon.paseoHome, "agents");
+      const relative = (await readdir(agentsDirectory, { recursive: true })).find((file) =>
+        file.endsWith(`${request.sourceAgentIds[0]}.json`),
+      );
+      if (!relative) throw new Error("Missing legacy agent file");
+      const recordPath = path.join(agentsDirectory, relative);
+      const legacyRecord = JSON.parse(await readFile(recordPath, "utf8"));
+      delete legacyRecord.promptAnnotations;
+      delete legacyRecord.revision;
+      await writeFile(recordPath, JSON.stringify(legacyRecord));
+    }
     source = await startHost("source", true);
     sourceDaemon = source.daemon.daemon;
-    expect(await sourceDaemon.handoffSource.prepare(sourceRequest)).toEqual(prepared);
+    expect(await sourceDaemon.handoffSource.status(transferId)).toEqual(prepared);
+    if (!legacy) expect(await sourceDaemon.handoffSource.prepare(sourceRequest)).toEqual(prepared);
     const binding = { transferId, publicKey: prepared.source.publicKey, manifest };
     const receiving = await destination.daemon.daemon.handoffDestination.bindSource(binding);
     await stopHost(destination);
@@ -1884,15 +1897,21 @@ async function expectContextReleaseChecks(
   );
   const changed = await host.daemon.daemon.agentStorage.get(agentId);
   if (!changed) throw new Error("Missing changed context conversation");
-  await host.daemon.daemon.agentStorage.upsert({
-    ...changed,
-    handoffContext: record.handoffContext,
-  });
+  await expect(
+    host.daemon.daemon.agentStorage.upsert({
+      ...changed,
+      handoffContext: record.handoffContext,
+    }),
+  ).rejects.toMatchObject({ code: "fenced" });
   await cancelWorkspaceHandoff({
     transferId,
     sourceServerId: host.daemon.daemon.getServerId(),
     getSource: () => host.client,
     destination: receiver.client,
+  });
+  await host.daemon.daemon.agentStorage.upsert({
+    ...changed,
+    handoffContext: record.handoffContext,
   });
   transferId = randomUUID();
   await prepareWorkspaceHandoff({
@@ -2336,6 +2355,12 @@ for (const continuationMode of ["native", "context"] as const) {
       });
       expect(active.state).toBe("active");
       expect(active.agentMappings).toEqual(refreshed.agentMappings);
+      await expect(
+        source.daemon.daemon.agentStorage.setTitle(agentId, "Late source write"),
+      ).rejects.toMatchObject({ code: "fenced" });
+      await expect(source.daemon.daemon.agentStorage.remove(agentId)).rejects.toMatchObject({
+        code: "fenced",
+      });
       const destinationAgentId = active.agentMappings[0].destinationAgentId;
       const record = await destination.daemon.daemon.agentStorage.get(destinationAgentId);
       expect(record?.pendingRestartNote).toEqual([...notes, late]);
@@ -2492,8 +2517,38 @@ for (const continuationMode of ["native", "context"] as const) {
         (await source.client.handoffGetSourceStatus({ transferId })).result?.source.state,
       ).toBe("ready");
       await writeFile(annotationPath, original);
-      // An out-of-band publication changes the witness even if its text has no history row.
-      // Source fencing normally prevents this; release still verifies the captured revision.
+      // Valid checkpoints enter final verification; a changed workspace still refuses release.
+      const lateFile = path.join(cwd, "changed-before-release.txt");
+      await writeFile(lateFile, "Late workspace edit");
+      expect((await source.client.handoffReleaseSource({ transferId })).error?.code).toBe(
+        "source_changed",
+      );
+      await rm(lateFile);
+      // The final verification has sealed the store even when it refuses the changed workspace.
+      await expect(
+        new PromptAnnotationStore(annotationDirectory, {
+          records: source.daemon.daemon.agentStorage,
+        }).remember(agentId, {
+          messageId: "not-sent",
+          text: "not in the transcript",
+          annotation: { kind: "notification", level: "info", message: "Not sent" },
+        }),
+      ).rejects.toMatchObject({ code: "fenced" });
+      expect(await readFile(annotationPath, "utf8")).toBe(original);
+      await cancelWorkspaceHandoff({
+        transferId,
+        sourceServerId: source.daemon.daemon.getServerId(),
+        getSource: () => source.client,
+        destination: destination.client,
+      });
+      let refreshedTransferId = randomUUID();
+      await prepareWorkspaceHandoff({
+        ...request,
+        transferId: refreshedTransferId,
+        source: source.client,
+        destination: destination.client,
+      });
+      // Before sealing, a changed witness still invalidates capture even without a new history row.
       await new PromptAnnotationStore(annotationDirectory, {
         records: source.daemon.daemon.agentStorage,
       }).remember(agentId, {
@@ -2501,16 +2556,16 @@ for (const continuationMode of ["native", "context"] as const) {
         text: "not in the transcript",
         annotation: { kind: "notification", level: "info", message: "Not sent" },
       });
-      expect((await source.client.handoffReleaseSource({ transferId })).error?.code).toBe(
-        "source_changed",
-      );
+      expect(
+        (await source.client.handoffReleaseSource({ transferId: refreshedTransferId })).error?.code,
+      ).toBe("source_changed");
       await cancelWorkspaceHandoff({
-        transferId,
+        transferId: refreshedTransferId,
         sourceServerId: source.daemon.daemon.getServerId(),
         getSource: () => source.client,
         destination: destination.client,
       });
-      const refreshedTransferId = randomUUID();
+      refreshedTransferId = randomUUID();
       await prepareWorkspaceHandoff({
         ...request,
         transferId: refreshedTransferId,

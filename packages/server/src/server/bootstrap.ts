@@ -1014,8 +1014,17 @@ export async function createPaseoDaemon(
     serviceProxyListenTarget = parseListenString(config.serviceProxy.standaloneListen);
   }
 
-  const agentStorage = new AgentStorage(config.agentStoragePath, logger, (id) =>
-    handoffDestination.isIdentityVisible(id),
+  const agentStorage = new AgentStorage(
+    config.agentStoragePath,
+    logger,
+    (id) => handoffDestination.isIdentityVisible(id),
+    undefined,
+    (record) =>
+      handoffOwnership.acquireAgentRecordMutation({
+        cwd: record.cwd,
+        workspaceId: record.workspaceId,
+        agentId: record.id,
+      }),
   );
   const projectRegistry = new FileBackedProjectRegistry(
     path.join(config.paseoHome, "projects", "projects.json"),

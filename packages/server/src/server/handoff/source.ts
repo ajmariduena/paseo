@@ -386,11 +386,7 @@ export class HandoffSource {
       if (!sameIds(finalInventory.agentIds, source.agentIds))
         refuse("inventory_changed", "Source conversation set changed while draining admitted work");
       await this.stopWriters(source);
-      const records: StoredAgentRecord[] = [];
-      for (const id of source.agentIds) {
-        await this.options.agentManager.checkpointPromptAnnotations(id);
-        records.push(await this.options.agents.checkpointClosedAgent(id));
-      }
+      const records = await this.checkpointConversations(source.agentIds);
       this.assertReviewedIntegrations(source.integrationReview, records);
       const agents: PreparedSource["agents"] = [];
       const directory = this.captureDirectory(source.id);
@@ -550,6 +546,9 @@ export class HandoffSource {
     return this.serialize(async () => {
       const source = this.options.ownership.status(transferId);
       const prepared = await this.readPrepared(source);
+      // Finish known publication repairs and legacy annotation adoption before sealing writes.
+      // Verification repeats these checkpoints inside the sealed ownership transition.
+      if (source.state === "ready") await this.checkpointConversations(source.agentIds);
       return this.options.ownership.release(
         transferId,
         {
@@ -563,6 +562,15 @@ export class HandoffSource {
         () => this.verify(source, prepared),
       );
     }).finally(() => this.publishTransfer(transferId));
+  }
+
+  private async checkpointConversations(agentIds: string[]): Promise<StoredAgentRecord[]> {
+    const records: StoredAgentRecord[] = [];
+    for (const id of agentIds) {
+      await this.options.agentManager.checkpointPromptAnnotations(id);
+      records.push(await this.options.agents.checkpointClosedAgent(id));
+    }
+    return records;
   }
 
   async fetchTimeline(agentId: string, options: AgentTimelineFetchOptions) {

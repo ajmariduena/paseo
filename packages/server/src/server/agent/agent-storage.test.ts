@@ -240,6 +240,56 @@ describe("AgentStorage", () => {
   });
 
   test.skipIf(process.platform === "win32")(
+    "a mutation fence retains an admitted failed publication without retaining refused writes",
+    async () => {
+      let fenced = false;
+      let failSync = false;
+      storage = new AgentStorage(
+        storagePath,
+        logger,
+        undefined,
+        async (file, publicationRoot) => {
+          if (failSync) throw new Error("sync failed");
+          await syncFilePublication(file, publicationRoot);
+        },
+        () => {
+          if (fenced) throw new Error("record is fenced");
+          return () => {};
+        },
+      );
+      const agent = createManagedAgent({ lifecycle: "closed" });
+      await storage.applySnapshot(agent);
+      failSync = true;
+      const note = { id: "pending-task", kind: "shell", label: "Stopped task" };
+      await expect(storage.addPendingRestartNote(agent.id, [note])).rejects.toThrow("sync failed");
+      fenced = true;
+      failSync = false;
+      await expect(storage.setTitle(agent.id, "Refused while fenced")).rejects.toThrow(
+        "record is fenced",
+      );
+      expect((await storage.get(agent.id))?.pendingRestartNote).toBeUndefined();
+      fenced = false;
+      await storage.repairPendingPersistence(agent.id);
+      expect((await storage.get(agent.id))?.pendingRestartNote).toEqual([note]);
+      expect((await storage.get(agent.id))?.title).toBe(agent.config.title ?? null);
+      fenced = true;
+      await expect(
+        storage.applySnapshot(
+          createManagedAgent({
+            id: agent.id,
+            lifecycle: "closed",
+            config: { model: "late model" },
+          }),
+        ),
+      ).rejects.toThrow("record is fenced");
+      expect(() => storage.beginDelete(agent.id)).toThrow("record is fenced");
+      fenced = false;
+      await storage.setTitle(agent.id, "Allowed after cancellation");
+      expect((await storage.get(agent.id))?.title).toBe("Allowed after cancellation");
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
     "uncertain carried context survives cold reads, snapshots and a replacement generation",
     async () => {
       const agent = createManagedAgent({ id: "uncertain-carried" });

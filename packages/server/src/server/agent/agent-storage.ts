@@ -213,6 +213,7 @@ export class AgentStorage {
     logger: Logger,
     private readonly isVisible: (id: string) => boolean = () => true,
     private readonly syncPublication: typeof syncFilePublication = syncFilePublication,
+    private readonly acquireRecordMutation?: (record: StoredAgentRecord) => () => void,
   ) {
     this.baseDir = baseDir;
     this.logger = logger.child({ module: "agent", component: "agent-storage" });
@@ -552,8 +553,7 @@ export class AgentStorage {
             throw new Error("Agent record revision capacity exceeded");
           record.revision = revision;
         }
-        this.pendingPublications.set(agentId, { record, synchronize });
-        await this.publishPendingRecord(agentId);
+        await this.publishPendingRecord(agentId, { record, synchronize });
         return structuredClone(record);
       });
 
@@ -567,9 +567,44 @@ export class AgentStorage {
     return tracked;
   }
 
-  private async publishPendingRecord(agentId: string): Promise<void> {
-    const publication = this.pendingPublications.get(agentId);
+  private acquireRecordChange(
+    existing: StoredAgentRecord | null,
+    next: StoredAgentRecord | null,
+  ): () => void {
+    if (!this.acquireRecordMutation || (existing && next && sameRecordContent(existing, next)))
+      return () => {};
+    const releases: Array<() => void> = [];
+    const release = () => releases.forEach((finish) => finish());
+    try {
+      if (existing) releases.push(this.acquireRecordMutation(existing));
+      if (next) releases.push(this.acquireRecordMutation(next));
+      return release;
+    } catch (error) {
+      release();
+      throw error;
+    }
+  }
+
+  private async publishPendingRecord(
+    agentId: string,
+    candidate?: PendingRecordPublication,
+  ): Promise<void> {
+    const publication = candidate ?? this.pendingPublications.get(agentId);
     if (!publication) return;
+    const release = this.acquireRecordChange(this.cache.get(agentId) ?? null, publication.record);
+    try {
+      // A refused write was never admitted and must not become a delayed retry.
+      if (candidate) this.pendingPublications.set(agentId, candidate);
+      await this.publishRecord(agentId, publication);
+    } finally {
+      release();
+    }
+  }
+
+  private async publishRecord(
+    agentId: string,
+    publication: PendingRecordPublication,
+  ): Promise<void> {
     const { record, synchronize } = publication;
     const nextPath = this.buildRecordPath(record);
     const previousPath = this.pathById.get(agentId);
@@ -595,11 +630,27 @@ export class AgentStorage {
   }
 
   beginDelete(agentId: string): void {
-    this.deleting.add(agentId);
+    const record = this.cache.get(agentId) ?? this.pendingPublications.get(agentId)?.record ?? null;
+    const release = this.acquireRecordChange(record, null);
+    try {
+      this.deleting.add(agentId);
+    } finally {
+      release();
+    }
   }
 
   async remove(agentId: string): Promise<void> {
     await this.load();
+    const record = this.cache.get(agentId) ?? this.pendingPublications.get(agentId)?.record ?? null;
+    const release = this.acquireRecordChange(record, null);
+    try {
+      await this.removeRecord(agentId);
+    } finally {
+      release();
+    }
+  }
+
+  private async removeRecord(agentId: string): Promise<void> {
     this.beginDelete(agentId);
     await (this.pendingWrites.get(agentId) ?? Promise.resolve()).catch(() => undefined);
     const paths = Array.from(this.pathsById.get(agentId) ?? []);
