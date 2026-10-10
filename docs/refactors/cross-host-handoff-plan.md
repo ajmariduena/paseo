@@ -454,9 +454,13 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   matches; startup can finish that interrupted stop after the owner exits. Launch-only snapshots,
   interrupted inspections and failed publication cannot certify closure. A new OS boot clears old
   process identities without signalling current PIDs. See the [store contract](../data-model.md#managed-process-store)
-  and [process proof evidence](../qa-evidence/handoff-checkpoint-recovery.txt). The spawn-to-ledger
-  gap, descendants that escape before observation, stronger macOS birth identity, complete writer
-  coverage and conversation-generation recovery remain open. This is not full crash-stop proof.
+  and [process proof evidence](../qa-evidence/handoff-checkpoint-recovery.txt). The Claude spawn suite
+  now covers durable launch admission, parent death before admission, closure during publication,
+  failed-registration cleanup and preservation of process identity, streams and executable wrappers.
+  The gate is enabled only on Linux; macOS retains direct launch until its environment can be preserved.
+  This evidence uses harmless Linux processes. macOS durable launch admission, descendants that
+  escape before observation, stronger macOS birth identity, complete writer coverage and
+  conversation-generation recovery remain open. This is not full crash-stop proof.
 - `agent/providers/claude/handoff.ts` captures bounded raw transcripts and sidechains, detects source
   changes and installs under stable import IDs without a runtime. The existing history suite proves
   inactive retries, corruption/limit refusals, source edits and exact-namespace history loading.

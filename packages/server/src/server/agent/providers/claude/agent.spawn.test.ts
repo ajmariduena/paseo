@@ -1,11 +1,11 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   createManagedProcessRegistry,
   createSystemManagedProcessTable,
 } from "../../../managed-processes/managed-processes.js";
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
 import type { ChildProcess } from "node:child_process";
 import type {
   Options,
@@ -14,10 +14,16 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
+import { syncFilePublication } from "../../../atomic-file.js";
 import { asInternals } from "../../../test-utils/class-mocks.js";
 import { createTestLogger } from "../../../../test-utils/test-logger.js";
 import * as spawnUtils from "../../../../utils/spawn.js";
-import { terminateWithTreeKill, type ProcessTerminator } from "../../../../utils/tree-kill.js";
+import {
+  readLinuxProcessEntry,
+  terminateWithTreeKill,
+  type ProcessTerminator,
+} from "../../../../utils/tree-kill.js";
+import { spawnGatedClaudeProcess } from "./process-launch.js";
 import { ClaudeAgentClient } from "./agent.js";
 import type { AgentStreamEvent } from "../../agent-sdk-types.js";
 import type { ClaudeQueryInput } from "./query.js";
@@ -658,6 +664,278 @@ describe("Claude spawn override", () => {
       expect(result.value.return).toHaveBeenCalledTimes(1);
     }
   });
+
+  test.runIf(process.platform === "linux")(
+    "the launch gate preserves PATH lookup and non-shell environment names",
+    async () => {
+      const home = await mkdtemp(path.join(tmpdir(), "paseo launch path-"));
+      await symlink(process.execPath, path.join(home, "provider-fixture"));
+      const launch = spawnGatedClaudeProcess({
+        command: "provider-fixture",
+        args: [
+          "-e",
+          `process.stdout.write(JSON.stringify({ cwd: process.cwd(), value: process.env['non-shell-key'] }));`,
+        ],
+        cwd: home,
+        env: { PATH: home, "non-shell-key": 'quoted " value\n' },
+      });
+      const exited = once(launch.child, "exit");
+      const received = once(launch.child.stdout!, "data");
+      try {
+        await launch.ready;
+        const first = launch.start();
+        expect(launch.start()).toBe(first);
+        await first;
+        const [chunk] = await received;
+        expect(JSON.parse(String(chunk))).toEqual({
+          cwd: await realpath(home),
+          value: 'quoted " value\n',
+        });
+        expect(await exited).toEqual([0, null]);
+      } finally {
+        launch.child.kill("SIGKILL");
+        await exited;
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.runIf(process.platform === "linux")(
+    "the launch gate preserves executable script wrappers without a shebang",
+    async () => {
+      const home = await mkdtemp(path.join(tmpdir(), "paseo launch script-"));
+      const script = path.join(home, "provider-fixture");
+      await writeFile(script, "printf '%s' \"$1\"", { mode: 0o700 });
+      const launch = spawnGatedClaudeProcess({
+        command: script,
+        args: ['quoted " argument'],
+        env: {},
+      });
+      const exited = once(launch.child, "close");
+      let output = "";
+      launch.child.stdout!.on("data", (chunk: Buffer) => (output += chunk.toString()));
+      try {
+        await launch.ready;
+        await launch.start();
+        expect(await exited).toEqual([0, null]);
+        expect(output).toBe('quoted " argument');
+      } finally {
+        launch.child.kill("SIGKILL");
+        await exited;
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.runIf(process.platform === "linux").each(["empty", "partial"])(
+    "provider cannot start after its parent dies with a %s launch packet",
+    async (packetKind) => {
+      const home = await mkdtemp(path.join(tmpdir(), "paseo-launch-parent-death-"));
+      const marker = path.join(home, "provider-started");
+      const launcherUrl = new URL("./process-launch.ts", import.meta.url).href;
+      const targetArgs = [
+        "-e",
+        `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started');`,
+      ];
+      const fragment =
+        packetKind === "partial"
+          ? JSON.stringify({ command: process.execPath, args: targetArgs, env: {} }).slice(0, -1)
+          : "";
+      const parent = spawnUtils.spawnProcess(
+        process.execPath,
+        [
+          "--import",
+          import.meta.resolve("tsx"),
+          "--input-type=module",
+          "-e",
+          `
+        const { spawnGatedClaudeProcess } = await import(${JSON.stringify(launcherUrl)});
+        const launch = spawnGatedClaudeProcess({ command: ${JSON.stringify(process.execPath)}, args: ${JSON.stringify(targetArgs)}, env: {} });
+        await launch.ready;
+        const fragment = ${JSON.stringify(fragment)};
+        if (fragment) await new Promise((resolve, reject) => launch.child.stdio[3].write(fragment, (error) => error ? reject(error) : resolve()));
+        process.stdout.write(String(launch.child.pid));
+        setInterval(() => {}, 1000);
+      `,
+        ],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+      const exited = once(parent, "exit");
+      let gatePid: number | null = null;
+      let gateBirth: string | null = null;
+      try {
+        const [pid] = await Promise.race([
+          once(parent.stdout!, "data"),
+          exited.then(() => {
+            throw new Error("Fixture parent exited before reporting its gate");
+          }),
+        ]);
+        gatePid = Number(String(pid));
+        gateBirth = (await readLinuxProcessEntry(gatePid))!.startedAt;
+        parent.kill("SIGKILL");
+        await exited;
+        await expect
+          .poll(async () => {
+            const entry = await readLinuxProcessEntry(gatePid!);
+            return entry === null || entry.exited || entry.startedAt !== gateBirth;
+          })
+          .toBe(true);
+        await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        parent.kill("SIGKILL");
+        await exited;
+        const entry = gatePid ? await readLinuxProcessEntry(gatePid) : null;
+        if (entry && !entry.exited && entry.startedAt === gateBirth)
+          process.kill(entry.pid, "SIGKILL");
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.runIf(process.platform === "linux")(
+    "closing during registration never releases the provider launch gate",
+    async () => {
+      const home = await mkdtemp(path.join(tmpdir(), "paseo-launch-cancel-"));
+      const marker = path.join(home, "provider-started");
+      const entered = Promise.withResolvers<void>();
+      const publication = Promise.withResolvers<void>();
+      const registry = createManagedProcessRegistry({
+        paseoHome: home,
+        processTable: createSystemManagedProcessTable(),
+        terminateProcess: terminateWithTreeKill,
+        logger: createTestLogger(),
+        syncPublication: async (file, root) => {
+          entered.resolve();
+          await publication.promise;
+          await syncFilePublication(file, root);
+        },
+      });
+      const session = await new ClaudeAgentClient({
+        logger: createTestLogger(),
+        resolveBinary: async () => process.execPath,
+        managedProcesses: registry,
+        queryFactory: ({ options }) => {
+          if (!options.spawnClaudeCodeProcess) throw new Error("Missing launcher");
+          options.spawnClaudeCodeProcess({
+            command: process.execPath,
+            args: [
+              "-e",
+              `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started'); setInterval(() => {}, 1000)`,
+            ],
+            cwd: process.cwd(),
+            env: {},
+            signal: new AbortController().signal,
+          });
+          return createQueryMock([]);
+        },
+      }).createSession({ provider: "claude", cwd: process.cwd() });
+      const opening = session.listCommands();
+      void opening.catch(() => {});
+      try {
+        await entered.promise;
+        const closing = session.close();
+        publication.resolve();
+        await expect(opening).rejects.toThrow("closed before process launch");
+        await closing;
+        await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
+        expect(await registry.list()).toEqual([]);
+      } finally {
+        publication.resolve();
+        await opening.catch(() => {});
+        await session.close();
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.runIf(process.platform === "linux")(
+    "waits for durable registration before executing provider code and preserves exec identity and streams",
+    async () => {
+      const home = await mkdtemp(path.join(tmpdir(), "paseo-launch-gate-"));
+      const marker = path.join(home, "preload-ran");
+      const preload = path.join(home, "preload.cjs");
+      await writeFile(
+        preload,
+        `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started');`,
+      );
+      const entered = Promise.withResolvers<void>();
+      const allowPublication = Promise.withResolvers<void>();
+      let firstPublication = true;
+      const registry = createManagedProcessRegistry({
+        paseoHome: home,
+        processTable: createSystemManagedProcessTable(),
+        terminateProcess: terminateWithTreeKill,
+        logger: createTestLogger(),
+        syncPublication: async (file, root) => {
+          if (firstPublication) {
+            firstPublication = false;
+            entered.resolve();
+            await allowPublication.promise;
+          }
+          await syncFilePublication(file, root);
+        },
+      });
+      const spawn = vi.spyOn(spawnUtils, "spawnProcess");
+      const session = await new ClaudeAgentClient({
+        logger: createTestLogger(),
+        resolveBinary: async () => process.execPath,
+        managedProcesses: registry,
+        queryFactory: ({ options }) => {
+          if (!options.spawnClaudeCodeProcess) throw new Error("Missing launcher");
+          options.spawnClaudeCodeProcess({
+            command: process.execPath,
+            args: [
+              "-e",
+              `
+            process.stdin.once('data', (input) => {
+              process.stdout.write(JSON.stringify({ pid: process.pid, argument: process.argv[1], value: process.env.PASEO_GATE_TEST_VALUE, input: input.toString() }));
+            });
+            setInterval(() => {}, 1000);
+          `,
+              "--",
+              "provider-argument-secret",
+            ],
+            cwd: process.cwd(),
+            env: {
+              NODE_OPTIONS: `--require=${preload}`,
+              PASEO_GATE_TEST_VALUE: 'value with quotes " and newline\n',
+            },
+            signal: new AbortController().signal,
+          });
+          return createQueryMock([]);
+        },
+      }).createSession({ provider: "claude", cwd: process.cwd() });
+      const opening = session.listCommands();
+      void opening.catch(() => {});
+      try {
+        await entered.promise;
+        const child = spawn.mock.results[0]!.value;
+        const commandLine = await readFile(`/proc/${child.pid}/cmdline`, "utf8");
+        expect(commandLine.includes("provider-argument-secret")).toBe(false);
+        await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
+        const [record] = await registry.list();
+        const received = once(child.stdout!, "data");
+        allowPublication.resolve();
+        await opening;
+        child.stdin!.write("SDK input");
+        const [chunk] = await received;
+        expect(JSON.parse(String(chunk))).toEqual({
+          pid: record!.pid,
+          argument: "provider-argument-secret",
+          value: 'value with quotes " and newline\n',
+          input: "SDK input",
+        });
+        expect(await readFile(marker, "utf8")).toBe("started");
+        await session.close();
+        expect(await registry.list()).toEqual([]);
+      } finally {
+        allowPublication.resolve();
+        await opening.catch(() => {});
+        await session.close();
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
 
   test.runIf(process.platform !== "win32")(
     "retries failed process registration during close without launching another query",

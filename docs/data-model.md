@@ -700,6 +700,13 @@ Every `watch_pull_request` watch in one file; each `PullRequestWatchStore` metho
 ## Managed Process Store
 
 Keep OS process ownership in `runtime/managed-processes/`, alongside the existing helper records.
+On Linux, register a gated Claude launcher durably before releasing its command, arguments and environment.
+Only the trusted bootstrap can run before publication; losing its control channel without a complete
+launch message ends it. Closing during publication or repairing failed registration must stop that
+bootstrap without opening the gate. The provider inherits the registered process identity and SDK
+streams when the gate opens. macOS retains its direct launch: its protected `env` executable can
+purge `DYLD_*` variables, so it needs a different gate before claiming this guarantee.
+
 Claude POSIX queries record a bounded tree with a boot identity and process birth identities;
 SDK arguments and command lines are excluded because they can contain inline credentials.
 A launch snapshot does not certify closure: the owner must still match when shutdown first

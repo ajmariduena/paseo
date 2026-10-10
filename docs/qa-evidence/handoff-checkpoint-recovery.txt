@@ -1,3 +1,70 @@
+Durable Claude launch admission — Linux, 2026-10-10
+Baseline: 609617976 (plan-machine-handoff-macbook-vps)
+
+The regression held managed-process synchronization pending and inspected the real child process.
+Before this change its provider argument was already visible in /proc, before registration was
+acknowledged. The trusted bootstrap now receives the provider command/environment only after that
+acknowledgement. The test proves a NODE_OPTIONS preload does not run while publication is pending,
+then verifies the same registered PID, exact argument/environment values and SDK input/output.
+
+Two fixture parents are killed before dispatch: one sent no packet, the other sent incomplete JSON.
+Both bootstraps exit without executing the target. Closure during synchronization and repair of a
+failed registration also leave the provider unstarted. PATH lookup, environment names unsuitable
+for shell assignments, quoted/newline values and executable scripts without a shebang are covered.
+The first direct-exec implementation aborted on that last case; the launcher now delegates execvp
+semantics to the POSIX env utility after admission, without a resident intermediary.
+
+All 27 cases in the owning Claude spawn suite pass. The SDK frames are injected and the processes
+are harmless Node/shell fixtures. These are not authenticated Claude or physical-host handoffs.
+The gate is enabled only on Linux and requires Node's execve API (available since 22.15; the checkout
+specifies 22.20) and /usr/bin/env. macOS keeps direct launch because a protected env executable can
+purge DYLD_* settings; its durable admission needs another implementation. Windows launch is unchanged.
+macOS admission, Electron packaging, escaped descendants and conversation-generation repair remain
+separate gates. The registration-failure test retains its original POSIX coverage; its additional
+nonexecution assertion also passed in the preceding Linux run before narrowing admission to Linux.
+Root typecheck, lint and formatting pass; the server/CLI stack was rebuilt during validation.
+
+Regression before the gate:
+
+ FAIL  src/server/agent/providers/claude/agent.spawn.test.ts > Claude spawn override > waits for durable registration before executing provider code and preserves exec identity and streams
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ src/server/agent/providers/claude/agent.spawn.test.ts:726:66
+    724|         const child = spawn.mock.results[0]!.value;
+    725|         const commandLine = await readFile(`/proc/${child.pid}/cmdline…
+    726|         expect(commandLine.includes("provider-argument-secret")).toBe(…
+       |                                                                  ^
+    727|         await expect(access(marker)).rejects.toMatchObject({ code: "EN…
+    728|         const [record] = await registry.list();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 21 skipped (22)
+   Start at  07:09:35
+   Duration  1.20s (transform 595ms, setup 48ms, import 883ms, tests 140ms, environment 0ms)
+
+
+Final focused run:
+
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  27 passed (27)
+   Start at  07:30:08
+   Duration  3.23s (transform 878ms, setup 95ms, import 1.29s, tests 1.64s, environment 0ms)
+
+
+
 Process registration and shutdown publication retries — Linux, 2026-10-10
 Baseline: 9cc79e9e7 (plan-machine-handoff-macbook-vps)
 

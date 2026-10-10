@@ -2121,12 +2121,23 @@ interface ClaudeQueryCallbacks {
   sealed: boolean;
 }
 
+interface ClaudeManagedProcessOptions {
+  child: ChildProcess;
+  command: string;
+  registry: ManagedProcessRegistry;
+}
+
+interface ClaudeManagedProcess {
+  record: Promise<ManagedProcessRecord>;
+  ready: Promise<void>;
+}
+
 interface ClaudeQueryResources {
   callbacks: ClaudeQueryCallbacks;
   query: Query;
   input: AsyncMessageInput<SDKUserMessage>;
   child: ChildProcess | null;
-  managedProcess: Promise<ManagedProcessRecord> | null;
+  managedProcess: ClaudeManagedProcess | null;
   pump: Promise<void> | null;
   shutdown: Promise<void> | null;
   stopping: Promise<void> | null;
@@ -3446,7 +3457,7 @@ class ClaudeAgentSession implements AgentSession {
     if (this.queryOpening) return this.queryOpening;
     if (this.query && !this.queryRestartNeeded) {
       const query = this.query;
-      await this.queryResources.get(query)?.managedProcess;
+      await this.queryResources.get(query)?.managedProcess?.ready;
       return query;
     }
     const opening = this.openQuery(launchMode);
@@ -3495,19 +3506,32 @@ class ClaudeAgentSession implements AgentSession {
     this.mainTurnInFlight = false;
     let resource: ClaudeQueryResources | null = null;
     let spawnedChild: ChildProcess | null = null;
-    let managedProcess: Promise<ManagedProcessRecord> | null = null;
+    let managedProcess: ClaudeManagedProcess | null = null;
     this.query = claudeQuery(
       { prompt: input.iterable, options },
       {
         runtimeSettings: this.runtimeSettings,
         launchEnv: this.launchEnv,
         queryFactory: this.queryFactory,
-        onChildProcess: (child) => {
+        // macOS's protected env binary strips DYLD_* settings. Keep its existing
+        // launch until a gate can preserve that environment without an intermediary.
+        deferProcessStart: this.managedProcesses !== undefined && process.platform === "linux",
+        onChildProcess: (launch) => {
+          const child = launch.child;
           spawnedChild = child;
           this.childProcess = child;
           if (this.managedProcesses && process.platform !== "win32") {
-            managedProcess = this.recordQueryProcess(child, this.managedProcesses);
-            void managedProcess.catch((err) =>
+            const registry = this.managedProcesses;
+            const record = launch.ready.then(() =>
+              this.recordQueryProcess({ child, command: launch.command, registry }),
+            );
+            const ready = record.then(() => {
+              if (this.closed || resource?.closing)
+                throw new Error("Claude session closed before process launch");
+              return launch.start();
+            });
+            managedProcess = { record, ready };
+            void ready.catch((err) =>
               this.logger.error({ err }, "Claude process registration failed"),
             );
           }
@@ -3535,7 +3559,7 @@ class ClaudeAgentSession implements AgentSession {
       requiresNaturalDrain: spawnedChild !== null,
     };
     this.queryResources.set(this.query, resource);
-    await managedProcess;
+    await resource.managedProcess?.ready;
     const fastMode = this.resolveFastModeSetting();
     if (fastMode !== null) {
       await this.query.applyFlagSettings({ fastMode });
@@ -3548,15 +3572,16 @@ class ClaudeAgentSession implements AgentSession {
     return this.query;
   }
 
-  private async recordQueryProcess(
-    child: ChildProcess,
-    registry: ManagedProcessRegistry,
-  ): Promise<ManagedProcessRecord> {
+  private async recordQueryProcess({
+    child,
+    command,
+    registry,
+  }: ClaudeManagedProcessOptions): Promise<ManagedProcessRecord> {
     const processTree = await captureProcessTree(child);
     return registry.record({
       owner: { provider: "claude", kind: "query" },
       pid: child.pid!,
-      command: child.spawnfile,
+      command,
       // SDK arguments can contain inline MCP credentials. Recovery uses birth identity.
       args: [],
       metadata: { agentId: this.agentId, cwd: this.config.cwd },
@@ -4239,7 +4264,7 @@ class ClaudeAgentSession implements AgentSession {
     resource.callbacks.abort.abort();
     // Inventory descendants before the SDK can reap their root process.
     if (resource.child && resource.managedProcess && this.managedProcesses) {
-      const recordId = await resource.managedProcess.then(
+      const recordId = await resource.managedProcess.record.then(
         (record) => record.id,
         (error: unknown) => {
           if (error instanceof ManagedProcessPublicationError) return error.recordId;
