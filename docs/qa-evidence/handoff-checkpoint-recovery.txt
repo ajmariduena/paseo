@@ -1,3 +1,89 @@
+Process shutdown proof — Linux, 2026-10-10
+Baseline: c5832f85e (plan-machine-handoff-macbook-vps)
+
+The regression creates a Node owner with a detached child, kills only the owner, and confirms that
+its child remains alive. Previously terminateWithTreeKill returned already-exited. Strict shutdown
+now refuses that unobserved tree on both the first attempt and retry. Test cleanup terminates only
+its own fixture processes. Another deterministic case exits the owner during the first inventory
+and supplies a replacement PID; no signal is sent to that replacement.
+
+Claude POSIX shutdown requests this proof and retains the query on failure. A separate real Node
+process case verifies that unexpected root exit cannot certify query closure or close/return the
+query, even on retry. The existing observed-descendant retry now uses strict proof and confirms an
+idempotent third call after a successful tree stop. Other generic cleanup callers keep their
+existing behavior. Windows Claude termination is unchanged; Windows handoff remains disabled.
+The user-facing runtime-exit error no longer claims that all background work was terminated.
+
+38 distinct cases pass across the three changed test files: 13 tree tests and 25 Claude spawn/exit
+cases. One Windows-only tree case was skipped. The initial 31-case run overlapped these final runs.
+The event-only Claude fixtures now inject their simulated terminator explicitly because they have
+no OS PID. Real-process coverage uses harmless Node children, not an authenticated Claude turn.
+Build, typecheck, lint and formatting pass. The main daemon was not restarted.
+
+This is a certification correction, not durable recovery. Launch-time identity, persistent observed
+process inventories, restart repair and other managed writer surfaces remain unfinished. A source
+whose process stop is unconfirmed stays blocked instead of being certified from root exit alone.
+
+Before the fix:
+$ npx vitest run src/utils/tree-kill.test.ts --testNamePattern='strict termination' --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/utils/tree-kill.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: 🛡️ auth for agents: https://vestauth.com
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚡️ secrets for agents: https://dotenvx.com/as2
+
+ ❯ src/utils/tree-kill.test.ts (14 tests | 1 failed | 12 skipped) 70ms
+     × strict termination refuses an exited owner with an unobserved surviving child 68ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/utils/tree-kill.test.ts > terminateWithTreeKill > strict termination refuses an exited owner with an unobserved surviving child
+AssertionError: expected 'already-exited' to be 'kill-timeout' // Object.is equality
+
+Expected: "kill-timeout"
+Received: "already-exited"
+
+ ❯ src/utils/tree-kill.test.ts:156:66
+    154|       expect(isProcessRunning(descendantPid ?? -1)).toBe(true);
+    155|       const options = { gracefulTimeoutMs: 0, forceTimeoutMs: 0, requi…
+    156|       expect(await terminateWithTreeKill(ownerProcess, options)).toBe(…
+       |                                                                  ^
+    157|       expect(await terminateWithTreeKill(ownerProcess, options)).toBe(…
+    158|       expect(isProcessRunning(descendantPid ?? -1)).toBe(true);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 12 skipped (14)
+   Start at  06:18:02
+   Duration  322ms (transform 94ms, setup 42ms, import 85ms, tests 70ms, environment 0ms)
+
+
+After the fix:
+$ npx vitest run src/utils/tree-kill.test.ts --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  13 passed | 1 skipped (14)
+   Start at  06:21:06
+   Duration  827ms (transform 92ms, setup 44ms, import 85ms, tests 570ms, environment 0ms)
+
+
+$ npx vitest run src/server/agent/providers/claude/agent.spawn.test.ts src/server/agent/providers/claude/agent.runtime-exit.test.ts --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  2 passed (2)
+      Tests  25 passed (25)
+   Start at  06:20:09
+   Duration  1.95s (transform 597ms, setup 61ms, import 1.14s, tests 489ms, environment 0ms)
+
+
 Handoff persistence recovery foundations — 2026-10-10
 
 Release record admission:

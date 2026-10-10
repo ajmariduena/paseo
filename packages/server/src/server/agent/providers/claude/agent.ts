@@ -4115,7 +4115,7 @@ class ClaudeAgentSession implements AgentSession {
     this.input = null;
     this.dispatchEvents([
       this.buildTurnFailedEvent(
-        `Claude stopped unexpectedly (${signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`}). Any background shells, monitors or other work it had running were terminated with it.`,
+        `Claude stopped unexpectedly (${signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`}). Its background processes may still be running; their shutdown has not been confirmed.`,
       ),
     ]);
   }
@@ -4194,11 +4194,12 @@ class ClaudeAgentSession implements AgentSession {
     // Inventory descendants before the SDK can reap their root process.
     if (resource.child) {
       const result = await this.processTerminator(resource.child, {
+        requireTreeProof: process.platform !== "win32",
         gracefulTimeoutMs: 2_000,
         forceTimeoutMs: 2_000,
       });
       if (result === "kill-timeout")
-        throw new Error("Claude process tree exit is unconfirmed; retry closing this runtime");
+        throw new Error("Claude process tree exit is unconfirmed; process recovery is required");
       resource.child = null;
     }
     resource.input.end();

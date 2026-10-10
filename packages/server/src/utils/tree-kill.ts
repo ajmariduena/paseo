@@ -19,6 +19,7 @@ export interface ProcessTreeAccess {
 // has exited. This is not a durable inventory across daemon restart.
 const pendingProcessTrees = new WeakMap<TreeKillTarget, Map<number, ProcessTreeEntry>>();
 const activeTreeStops = new WeakMap<TreeKillTarget, Promise<TerminateWithTreeKillResult>>();
+const confirmedProcessTrees = new WeakSet<TreeKillTarget>();
 
 export interface TreeKillTarget {
   pid?: number;
@@ -29,6 +30,8 @@ export interface TreeKillTarget {
 }
 
 export interface TerminateWithTreeKillOptions {
+  /** Root exit without an observed tree cannot certify managed writer shutdown. */
+  requireTreeProof?: boolean;
   gracefulSignal?: NodeJS.Signals;
   forceSignal?: NodeJS.Signals;
   gracefulTimeoutMs: number;
@@ -57,7 +60,12 @@ export async function terminateWithTreeKill(
 ): Promise<TerminateWithTreeKillResult> {
   const active = activeTreeStops.get(child);
   if (active) return active;
+  if (confirmedProcessTrees.has(child)) return "already-exited";
   if (isProcessExited(child) && !pendingProcessTrees.has(child)) {
+    if (options.requireTreeProof) {
+      pendingProcessTrees.set(child, new Map());
+      return "kill-timeout";
+    }
     return "already-exited";
   }
 
@@ -70,6 +78,8 @@ export async function terminateWithTreeKill(
       activeTreeStops.delete(child);
     }
   }
+
+  if (options.requireTreeProof) return "kill-timeout";
 
   const exitPromise = waitForProcessExit(child);
   await signalProcessTree(child, options.gracefulSignal ?? "SIGTERM");
@@ -165,10 +175,10 @@ async function terminateTrackedProcessTree(
     if (tracked.size === 0) {
       const snapshot = await access.list();
       const root = snapshot.find((entry) => entry.pid === rootPid);
-      if (!root || root.exited) {
+      if (!root || root.exited || isProcessExited(child)) {
         // A prior inspection failure left the tree unknown. Root exit cannot
         // turn that missing inventory into proof that its children stopped.
-        if (previous) return "kill-timeout";
+        if (previous || options.requireTreeProof) return "kill-timeout";
         pendingProcessTrees.delete(child);
         return "already-exited";
       }
@@ -177,11 +187,13 @@ async function terminateTrackedProcessTree(
     }
     if (await stopPhase(options.gracefulSignal ?? "SIGTERM", options.gracefulTimeoutMs)) {
       pendingProcessTrees.delete(child);
+      confirmedProcessTrees.add(child);
       return "terminated";
     }
     options.onForceSignal?.();
     if (await stopPhase(options.forceSignal ?? "SIGKILL", options.forceTimeoutMs ?? 1000)) {
       pendingProcessTrees.delete(child);
+      confirmedProcessTrees.add(child);
       return "killed";
     }
     return "kill-timeout";

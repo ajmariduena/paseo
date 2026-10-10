@@ -446,8 +446,13 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   Source decoding still uses the tested Claude codec; other providers and incompatible source
   formats are not yet exportable. External attachments are reported as unavailable, not transported.
 - `utils/tree-kill.test.ts`, `managed-processes.test.ts` and `bootstrap-managed-processes.test.ts`
-  cover observed descendant termination, helper retention and awaited startup recovery. The
-  coordinator still needs launch-time ownership and durable uncertain-stop recovery.
+  cover observed descendant termination, helper retention and awaited startup recovery. A real
+  process regression found that an exited root could leave a detached child alive while termination
+  reported success. Claude POSIX closure now requires an observed tree or an earlier confirmed stop
+  for that handle. Exit during the first inspection cannot authorize signalling a replacement PID.
+  The source keeps unconfirmed closure pending, and its error no longer claims all background work
+  died. See [process proof evidence](../qa-evidence/handoff-checkpoint-recovery.txt). The coordinator
+  still needs launch-time ownership and durable uncertain-stop recovery; this refusal is not repair.
 - `agent/providers/claude/handoff.ts` captures bounded raw transcripts and sidechains, detects source
   changes and installs under stable import IDs without a runtime. The existing history suite proves
   inactive retries, corruption/limit refusals, source edits and exact-namespace history loading.

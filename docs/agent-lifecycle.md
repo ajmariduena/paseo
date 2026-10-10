@@ -37,6 +37,12 @@ checks current liveness. A drain timeout retains the work for retry. An event or
 fault prevents a closed checkpoint, including after a later successful event. Subscriber delivery
 failures are isolated from these authoritative effects.
 
+For Claude on POSIX, a root process that exits before its tree was observed leaves shutdown
+unconfirmed. It may have surviving children. Retain that runtime instead of certifying closure or
+claiming its background work stopped. A successful tree stop can be reused by the same handle;
+durable launch identity and recovery after daemon restart remain in the
+[handoff plan](refactors/cross-host-handoff-plan.md#boundary).
+
 An idle agent releases its runtime after `agents.idleRuntimeTimeoutMs` (default two hours; `0`
 disables it) when its provider opts in and confirms nothing depends on the live process. The agent
 becomes `closed`, not archived, and the next open or prompt resumes the same agent and provider

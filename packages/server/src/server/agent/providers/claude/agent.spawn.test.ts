@@ -658,6 +658,7 @@ describe("Claude spawn override", () => {
     let childExit = Promise.resolve();
     let attempts = 0;
     const processTerminator: ProcessTerminator = async (child, options) => {
+      expect(options.requireTreeProof).toBe(process.platform !== "win32");
       attempts += 1;
       if (attempts === 1) return "kill-timeout";
       return terminateWithTreeKill(child, options);
@@ -699,6 +700,47 @@ describe("Claude spawn override", () => {
     }
   });
 
+  test.skipIf(process.platform === "win32")(
+    "an unexpected root exit cannot certify query closure",
+    async () => {
+      const query = createQueryMock([]);
+      let stop = () => {};
+      let exited = Promise.resolve();
+      const session = await new ClaudeAgentClient({
+        logger: createTestLogger(),
+        resolveBinary: async () => process.execPath,
+        queryFactory: ({ options }) => {
+          const spawn = options.spawnClaudeCodeProcess;
+          if (!spawn) throw new Error("Missing provider process launcher");
+          const child = spawn({
+            command: process.execPath,
+            args: ["-e", "setInterval(() => {}, 1000)"],
+            cwd: process.cwd(),
+            env: {},
+            signal: new AbortController().signal,
+          });
+          stop = () => {
+            child.kill("SIGKILL");
+          };
+          exited = new Promise<void>((resolve) => child.on("exit", () => resolve()));
+          return query;
+        },
+      }).createSession({ provider: "claude", cwd: process.cwd() });
+      try {
+        await session.listCommands();
+        stop();
+        await exited;
+        await expect(session.close()).rejects.toThrow("Claude process tree exit is unconfirmed");
+        await expect(session.close()).rejects.toThrow("Claude process tree exit is unconfirmed");
+        expect(query.close).not.toHaveBeenCalled();
+        expect(query.return).not.toHaveBeenCalled();
+      } finally {
+        stop();
+        await exited;
+      }
+    },
+  );
+
   test("bypasses the shell when spawning Claude Code", async () => {
     let capturedOptions: Options | undefined;
     const queryFactory = vi.fn(({ options }: ClaudeQueryInput) => {
@@ -732,6 +774,7 @@ describe("Claude spawn override", () => {
       logger: createTestLogger(),
       queryFactory,
       resolveBinary: async () => "/test/claude/bin",
+      processTerminator: async () => "already-exited",
     });
     const session = await client.createSession({
       provider: "claude",

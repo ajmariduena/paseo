@@ -139,6 +139,50 @@ afterEach(async () => {
 });
 
 describe("terminateWithTreeKill", () => {
+  test.runIf(process.platform !== "win32")(
+    "strict termination refuses an exited owner with an unobserved surviving child",
+    async () => {
+      tempDir = await mkdtemp(join(tmpdir(), "paseo-tree-unobserved-"));
+      const childPidPath = join(tempDir, "descendant.pid");
+      ownerProcess = spawnOwnerWithDescendant({
+        childPidPath,
+        detachedDescendant: true,
+        ownerIgnoresTerm: false,
+      });
+      await waitForFixtureReady(childPidPath);
+      const exited = new Promise<void>((resolve) => ownerProcess!.once("exit", () => resolve()));
+      ownerProcess.kill("SIGKILL");
+      await exited;
+      expect(isProcessRunning(descendantPid ?? -1)).toBe(true);
+      const options = { gracefulTimeoutMs: 0, forceTimeoutMs: 0, requireTreeProof: true };
+      expect(await terminateWithTreeKill(ownerProcess, options)).toBe("kill-timeout");
+      expect(await terminateWithTreeKill(ownerProcess, options)).toBe("kill-timeout");
+      expect(isProcessRunning(descendantPid ?? -1)).toBe(true);
+    },
+  );
+
+  test("strict termination refuses an owner that exits during first inspection without signalling a replacement", async () => {
+    const owner: TreeKillTarget = { pid: 101, exitCode: null, kill: () => true };
+    const signals: number[] = [];
+    expect(
+      await terminateWithTreeKill(owner, {
+        gracefulTimeoutMs: 0,
+        forceTimeoutMs: 0,
+        requireTreeProof: true,
+        processTree: {
+          list: async () => {
+            owner.exitCode = 0;
+            return [{ pid: 101, parentPid: 1, startedAt: "replacement", exited: false }];
+          },
+          signal: (pid) => {
+            signals.push(pid);
+          },
+        },
+      }),
+    ).toBe("kill-timeout");
+    expect(signals).toEqual([]);
+  });
+
   test.each(["ENOENT", "ESRCH"])(
     "accepts process exit during a kernel identity read (%s)",
     async (code) => {
@@ -331,6 +375,7 @@ describe("terminateWithTreeKill", () => {
     const owner: TreeKillTarget = { pid: 101, exitCode: null, kill: () => true };
     let canKillDescendant = false;
     const options = {
+      requireTreeProof: true,
       gracefulTimeoutMs: 0,
       forceTimeoutMs: 0,
       processTree: {
@@ -349,6 +394,7 @@ describe("terminateWithTreeKill", () => {
     canKillDescendant = true;
     expect(await terminateWithTreeKill(owner, options)).toBe("killed");
     expect([...processes.keys()]).toEqual([]);
+    expect(await terminateWithTreeKill(owner, options)).toBe("already-exited");
   });
 
   test.runIf(process.platform !== "win32")(

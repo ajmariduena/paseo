@@ -8,6 +8,7 @@ import type {
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { createTestLogger } from "../../../../test-utils/test-logger.js";
+import type { ProcessTerminator } from "../../../../utils/tree-kill.js";
 import * as spawnUtils from "../../../../utils/spawn.js";
 import type { AgentStreamEvent } from "../../agent-sdk-types.js";
 import { ClaudeAgentClient } from "./agent.js";
@@ -65,6 +66,12 @@ function createChildProcessStub(): ChildProcess & { killSignals: (NodeJS.Signals
   }) as ChildProcess["kill"];
   return child;
 }
+
+// These event-stream fixtures have no OS PID; model their termination explicitly.
+const stopStub: ProcessTerminator = async (child) => {
+  child.kill("SIGTERM");
+  return "terminated";
+};
 
 const COMPLETED_TURN_EVENTS = [
   {
@@ -143,6 +150,7 @@ describe("Claude runtime exit", () => {
     const child = createChildProcessStub();
     vi.spyOn(spawnUtils, "spawnProcess").mockReturnValue(child);
     const client = new ClaudeAgentClient({
+      processTerminator: stopStub,
       logger: createTestLogger(),
       queryFactory,
       resolveBinary: async () => "/test/claude/bin",
@@ -160,7 +168,9 @@ describe("Claude runtime exit", () => {
 
       const failure = events.find((event) => event.type === "turn_failed");
       expect(failure).toBeDefined();
-      expect(failure && "error" in failure ? failure.error : "").toContain("background shells");
+      expect(failure && "error" in failure ? failure.error : "").toContain(
+        "shutdown has not been confirmed",
+      );
     } finally {
       await session.close();
     }
@@ -175,6 +185,7 @@ describe("Claude runtime exit", () => {
     const child = createChildProcessStub();
     vi.spyOn(spawnUtils, "spawnProcess").mockReturnValue(child);
     const client = new ClaudeAgentClient({
+      processTerminator: stopStub,
       logger: createTestLogger(),
       queryFactory,
       resolveBinary: async () => "/test/claude/bin",
@@ -208,6 +219,7 @@ describe("Claude runtime exit", () => {
     const child = createChildProcessStub();
     vi.spyOn(spawnUtils, "spawnProcess").mockReturnValue(child);
     const client = new ClaudeAgentClient({
+      processTerminator: stopStub,
       logger: createTestLogger(),
       queryFactory,
       resolveBinary: async () => "/test/claude/bin",
@@ -241,6 +253,7 @@ describe("Claude runtime exit", () => {
     });
     vi.spyOn(spawnUtils, "spawnProcess").mockReturnValue(child);
     const client = new ClaudeAgentClient({
+      processTerminator: stopStub,
       logger: createTestLogger(),
       queryFactory,
       resolveBinary: async () => "/test/claude/bin",
@@ -286,6 +299,7 @@ describe("Claude runtime exit", () => {
     const child = createChildProcessStub();
     vi.spyOn(spawnUtils, "spawnProcess").mockReturnValue(child);
     const client = new ClaudeAgentClient({
+      processTerminator: stopStub,
       logger: createTestLogger(),
       queryFactory,
       resolveBinary: async () => "/test/claude/bin",
@@ -320,6 +334,7 @@ describe("Claude runtime exit", () => {
     const child = createChildProcessStub();
     vi.spyOn(spawnUtils, "spawnProcess").mockReturnValue(child);
     const client = new ClaudeAgentClient({
+      processTerminator: stopStub,
       logger: createTestLogger(),
       queryFactory,
       resolveBinary: async () => "/test/claude/bin",
