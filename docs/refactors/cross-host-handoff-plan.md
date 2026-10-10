@@ -589,6 +589,8 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   a failed synchronization after rename. A storage failure cannot replace successful output with
   a failed-execution record. POSIX acknowledgement includes file and directory synchronization;
   handoff waits for pending publication to repair. These retained inputs are process-local.
+  Heartbeats now retain their target identity and distinguish cancellation from successful idle,
+  including after provider closure; see [lifecycle cancellation](../agent-lifecycle.md#cancellation).
   Active-run shutdown and recovery of uncertain run outcomes after a crash remain open. An admitted
   runner can still prevent draining, but the preparation wait now expires with ownership retained
   under the [recovery contract](#ownership-and-recovery). See the scheduler cases in the

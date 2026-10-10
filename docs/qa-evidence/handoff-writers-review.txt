@@ -112,6 +112,19 @@ still lose that evidence; pre-dispatch durability and artifact-based reconciliat
 Other schedule writes retain their existing durability contract. The production handoff capability
 remains unadvertised.
 
+Heartbeat cancellation — Stop and provider Close both reproduced a heartbeat recorded as succeeded
+with no error. The wait result now distinguishes a canceled turn from successful idle. Closing marks
+only still-unsettled work canceled, after draining provider events; a completion or failure emitted
+during shutdown retains its outcome. A third regression found a canceled heartbeat lost its agent
+link. Admission now records the current persisted heartbeat target, so the failed outcome retains it.
+
+The service file passes 79 cases. Seven new manager cases cover cancellation before/during wait,
+both wait modes, a successful turn after cancellation, silent shutdown, and completion/failure
+during shutdown. Two new service cases use the real manager and filesystem with a held test-provider
+turn. The selected manager wait/closure/reload cases pass 20 cases (268 skipped), for 99 distinct
+passing cases. Server-stack build, final server build, root typecheck, lint and formatting pass.
+These are process-local outcome tests, not proof of provider termination or crash recovery.
+
 Queue conservation — source handoff now holds queues before closing writers. The initial runner
 regression reproduced the pending instruction disappearing when the current turn settled under
 the handoff fence (expected held=true, received no queue). Delivery now joins ownership admission

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import path, { join } from "node:path";
 import type { Logger } from "pino";
-import type { AgentManager } from "../agent/agent-manager.js";
+import type { AgentManager, WaitForAgentResult } from "../agent/agent-manager.js";
 import type { AgentSessionConfig } from "../agent/agent-sdk-types.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
 import { curateAgentActivity } from "../agent/activity-curator.js";
@@ -217,6 +217,18 @@ function buildRunOutput(params: {
     return params.timelineText.trim();
   }
   return null;
+}
+
+function assertScheduledAgentSucceeded(agentId: string, result: WaitForAgentResult): void {
+  if (result.canceled) {
+    throw new Error(`Scheduled agent ${agentId} was canceled`);
+  }
+  if (result.permission) {
+    throw new Error(`Scheduled agent ${agentId} is waiting for permission`);
+  }
+  if (result.status === "error") {
+    throw new Error(result.lastMessage ?? `Scheduled agent ${agentId} failed`);
+  }
 }
 
 type ScheduleAgentManager = Pick<
@@ -881,6 +893,7 @@ export class ScheduleService {
               ...current.runs,
               {
                 ...runningRun,
+                agentId: current.target.type === "agent" ? current.target.agentId : null,
                 scheduledFor: manual ? now.toISOString() : (current.nextRunAt ?? now.toISOString()),
               },
             ],
@@ -1098,12 +1111,7 @@ export class ScheduleService {
       const waitResult = await this.agentManager.waitForAgentEvent(agent.id, {
         waitForActive: true,
       });
-      if (waitResult.permission) {
-        throw new Error(`Scheduled agent ${agent.id} is waiting for permission`);
-      }
-      if (waitResult.status === "error") {
-        throw new Error(waitResult.lastMessage ?? `Scheduled agent ${agent.id} failed`);
-      }
+      assertScheduledAgentSucceeded(agent.id, waitResult);
       return {
         agentId: agent.id,
         output: buildRunOutput({
@@ -1167,12 +1175,7 @@ export class ScheduleService {
       if (result.canceled) {
         throw new Error(`Scheduled agent ${agent.id} was canceled`);
       }
-      if (waitResult.permission) {
-        throw new Error(`Scheduled agent ${agent.id} is waiting for permission`);
-      }
-      if (waitResult.status === "error") {
-        throw new Error(waitResult.lastMessage ?? `Scheduled agent ${agent.id} failed`);
-      }
+      assertScheduledAgentSucceeded(agent.id, waitResult);
       const timelineText = curateAgentActivity(result.timeline);
       return {
         agentId: agent.id,

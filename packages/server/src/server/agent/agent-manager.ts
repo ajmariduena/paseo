@@ -526,6 +526,7 @@ export interface WaitForAgentResult {
   status: AgentLifecycleStatus;
   permission: AgentPermissionRequest | null;
   lastMessage: string | null;
+  canceled?: boolean;
 }
 
 export interface WaitForAgentStartOptions {
@@ -4395,6 +4396,7 @@ export class AgentManager {
         status: initialStatus,
         permission: null,
         lastMessage: await this.getLastAssistantMessage(agentId),
+        ...(snapshot.lastTurnOutcome === "canceled" ? { canceled: true } : {}),
       };
     }
     if (waitForActive && !initialBusy && !hasForegroundTurn) {
@@ -4402,6 +4404,7 @@ export class AgentManager {
         status: initialStatus,
         permission: null,
         lastMessage: await this.getLastAssistantMessage(agentId),
+        ...(snapshot.lastTurnOutcome === "canceled" ? { canceled: true } : {}),
       };
     }
 
@@ -4423,6 +4426,7 @@ export class AgentManager {
         Boolean(snapshot.activeForegroundTurnId) ||
         pendingForegroundRun?.start.status === "started";
       let terminalStatusOverride: AgentLifecycleStatus | null = null;
+      let canceled = false;
       let finished = false;
 
       // Bug #3 Fix: Declare unsubscribe and abortHandler upfront so cleanup can reference them
@@ -4463,6 +4467,7 @@ export class AgentManager {
               status: currentStatus,
               permission,
               lastMessage,
+              ...(canceled && !permission ? { canceled: true } : {}),
             });
             return;
           })
@@ -4495,6 +4500,7 @@ export class AgentManager {
               return;
             }
             if (!waitForActive || hasStarted) {
+              canceled ||= event.agent.lastTurnOutcome === "canceled";
               if (terminalStatusOverride) {
                 currentStatus = terminalStatusOverride;
               }
@@ -4518,6 +4524,7 @@ export class AgentManager {
             }
             if (event.event.type === "turn_canceled") {
               hasStarted = true;
+              canceled = true;
             }
           }
         },
@@ -4797,6 +4804,8 @@ export class AgentManager {
     agent: LiveManagedAgent,
     cancelReason: string,
   ): ManagedAgentClosed {
+    // Provider shutdown has drained its events. Only a still-unsettled run is canceled by closure.
+    const lastTurnOutcome = this.hasInFlightRun(agent.id) ? "canceled" : agent.lastTurnOutcome;
     this.agentStreamCoalescer.flushAndDiscard(agent.id);
     this.agents.delete(agent.id);
     this.previousStatuses.delete(agent.id);
@@ -4819,6 +4828,7 @@ export class AgentManager {
     return {
       ...agent,
       lifecycle: "closed",
+      lastTurnOutcome,
       session: null,
       activeForegroundTurnId: null,
       activeTurnId: null,

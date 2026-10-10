@@ -8868,6 +8868,138 @@ test("runAgent refreshes runtimeInfo after completion", async () => {
   expect(refreshed?.runtimeInfo?.model).toBe("gpt-5.2-codex");
 });
 
+test.each([
+  { timing: "before", waitForActive: false },
+  { timing: "before", waitForActive: true },
+  { timing: "during", waitForActive: false },
+  { timing: "during", waitForActive: true },
+])(
+  "waitForAgentEvent reports cancellation $timing waiting (waitForActive=$waitForActive)",
+  async ({ timing, waitForActive }) => {
+    const workdir = mkdtempSync(join(tmpdir(), "agent-manager-wait-canceled-"));
+    const storage = new AgentStorage(join(workdir, "agents"), logger);
+    class HeldSession extends TestAgentSession {
+      override async startTurn(): Promise<{ turnId: string }> {
+        return { turnId: randomUUID() };
+      }
+    }
+    const session = new HeldSession({ provider: "codex", cwd: workdir });
+    class HeldClient extends TestAgentClient {
+      override async createSession(): Promise<AgentSession> {
+        return session;
+      }
+    }
+    const manager = new AgentManager({
+      clients: { codex: new HeldClient() },
+      registry: storage,
+      logger,
+    });
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    try {
+      const stream = manager.streamAgent(agent.id, "will be canceled");
+      const start = await stream.next();
+      if (start.done || start.value.type !== "turn_started")
+        throw new Error("Missing admitted turn");
+      const waiting =
+        timing === "during" ? manager.waitForAgentEvent(agent.id, { waitForActive }) : null;
+      session.pushEvent({
+        type: "turn_canceled",
+        provider: "codex",
+        turnId: start.value.turnId,
+        reason: "stopped for handoff",
+      });
+      await drainAsyncGenerator(stream);
+      const result = await (waiting ?? manager.waitForAgentEvent(agent.id, { waitForActive }));
+      expect(result).toEqual({
+        status: "idle",
+        permission: null,
+        lastMessage: null,
+        canceled: true,
+      });
+
+      // A prior canceled turn must not label the next successful heartbeat as canceled.
+      const nextStream = manager.streamAgent(agent.id, "next heartbeat");
+      const nextStart = await nextStream.next();
+      if (nextStart.done || nextStart.value.type !== "turn_started")
+        throw new Error("Missing next admitted turn");
+      const nextWaiting = manager.waitForAgentEvent(agent.id, { waitForActive });
+      session.pushEvent({
+        type: "turn_completed",
+        provider: "codex",
+        turnId: nextStart.value.turnId,
+      });
+      await drainAsyncGenerator(nextStream);
+      expect(await nextWaiting).toEqual({ status: "idle", permission: null, lastMessage: null });
+    } finally {
+      await manager.closeAgent(agent.id);
+      await manager.flush();
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  },
+);
+
+test.each(["silent", "completed", "failed"] as const)(
+  "waitForAgentEvent preserves the outcome when provider close is %s",
+  async (outcome) => {
+    const workdir = mkdtempSync(join(tmpdir(), "agent-manager-wait-close-"));
+    const storage = new AgentStorage(join(workdir, "agents"), logger);
+    const turnId = randomUUID();
+    class ClosingSession extends TestAgentSession {
+      override async startTurn(): Promise<{ turnId: string }> {
+        return { turnId };
+      }
+      override async close(): Promise<void> {
+        if (outcome === "completed")
+          this.pushEvent({ type: "turn_completed", provider: "codex", turnId });
+        if (outcome === "failed")
+          this.pushEvent({
+            type: "turn_failed",
+            provider: "codex",
+            turnId,
+            error: "provider failure during close",
+          });
+      }
+    }
+    const session = new ClosingSession({ provider: "codex", cwd: workdir });
+    class ClosingClient extends TestAgentClient {
+      override async createSession(): Promise<AgentSession> {
+        return session;
+      }
+    }
+    const manager = new AgentManager({
+      clients: { codex: new ClosingClient() },
+      registry: storage,
+      logger,
+    });
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    try {
+      const stream = manager.streamAgent(agent.id, "scheduled work");
+      await stream.next();
+      const waiting = manager.waitForAgentEvent(agent.id, { waitForActive: true });
+      await manager.closeAgent(agent.id);
+      await drainAsyncGenerator(stream);
+      const expectedOutcome = outcome === "silent" ? "canceled" : outcome;
+      expect(await storage.get(agent.id)).toMatchObject({
+        lastStatus: "closed",
+        lastTurnOutcome: expectedOutcome,
+      });
+      const waited = await waiting;
+      expect(waited.canceled ?? false).toBe(outcome === "silent");
+      expect(waited.permission).toBeNull();
+      const expectedStatuses = { silent: "closed", completed: "idle", failed: "error" };
+      expect(waited.status).toBe(expectedStatuses[outcome]);
+    } finally {
+      await manager.closeAgent(agent.id);
+      await manager.flush();
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  },
+);
+
 test("waitForAgentEvent does not resolve idle until foreground turn is finalized", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-wait-coherence-"));
   const storagePath = join(workdir, "agents");

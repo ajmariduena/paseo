@@ -1056,6 +1056,63 @@ describe("ScheduleService", () => {
     ]);
   });
 
+  test.each(["stop", "close"])(
+    "records a heartbeat canceled by %s as failed instead of successful idle",
+    async (action) => {
+      const manager = new AgentManager({
+        logger: createTestLogger(),
+        clients: createTestAgentClients(),
+        registry: agentStorage,
+      });
+      const agent = await manager.createAgent({ provider: "claude", cwd: tempDir }, undefined, {
+        workspaceId: undefined,
+      });
+      const live = manager.getAgent(agent.id);
+      if (!live?.session) throw new Error("Missing test provider session");
+      // A held test-provider turn leaves cancellation to the real manager lifecycle.
+      vi.spyOn(live.session, "startTurn").mockResolvedValue({ turnId: "heartbeat-turn" });
+      const waiting = Promise.withResolvers<void>();
+      const waitForAgentEvent = manager.waitForAgentEvent.bind(manager);
+      vi.spyOn(manager, "waitForAgentEvent").mockImplementation((id, options) => {
+        const result = waitForAgentEvent(id, options);
+        waiting.resolve();
+        return result;
+      });
+      const service = createScheduleService({
+        paseoHome: tempDir,
+        logger: createTestLogger(),
+        agentManager: manager,
+        agentStorage,
+        providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+        now: () => now,
+      });
+      const schedule = await service.create({
+        prompt: "Check scheduled work",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: { type: "agent", agentId: agent.id },
+      });
+      const running = service.runOnce(schedule.id);
+      try {
+        await waiting.promise;
+        if (action === "close") await manager.closeAgent(agent.id);
+        else await manager.cancelAgentRun(agent.id);
+        await running;
+        expect((await service.inspect(schedule.id)).runs).toEqual([
+          expect.objectContaining({
+            status: "failed",
+            agentId: agent.id,
+            output: null,
+            error: `Scheduled agent ${agent.id} was canceled`,
+          }),
+        ]);
+      } finally {
+        await manager.closeAgent(agent.id);
+        await running;
+        await manager.flush();
+      }
+    },
+  );
+
   test("titles scheduled new agents from the schedule prompt", async () => {
     const manager = new AgentManager({
       logger: createTestLogger(),

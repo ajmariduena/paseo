@@ -100,6 +100,10 @@ their work after an ambiguous interruption would create a split-brain session. S
 It settles the run locally (`turn_canceled`, pending permissions resolved, output so far kept) and
 abandons the turn, so a late provider event for that turn cannot revive or fail the stopped agent.
 
+Closing a runtime preserves a terminal result delivered during provider shutdown. A run still
+unsettled after shutdown is canceled, including for heartbeat history. A cancellation outcome does
+not prove that external effects were undone or clear conversation recovery obligations.
+
 ## Relationships
 
 Agents can launch other agents via the agent-scoped `create_agent` MCP tool. Agent-scoped creation is always asynchronous and always stamps `paseo.parent-agent-id`, pointing back at the caller. Omit `workspaceId` to use the caller's workspace, or pass an existing workspace ID returned by `create_workspace`. Placement never changes parentage.
