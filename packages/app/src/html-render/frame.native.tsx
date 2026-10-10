@@ -78,7 +78,11 @@ export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
   const webviewRef = useRef<WebView>(null);
   const loadedRef = useRef<string | null>(null);
   const [contentHeight, setContentHeight] = useState<number | null>(null);
-  useEffect(() => setContentHeight(null), [props.renderId, visualIdentity]);
+  const [overflowsX, setOverflowsX] = useState(false);
+  useEffect(() => {
+    setContentHeight(null);
+    setOverflowsX(false);
+  }, [props.renderId, visualIdentity]);
   const [frameWidth, setFrameWidth] = useState(728);
   const frameHeight = props.visualization
     ? Math.max(
@@ -148,8 +152,10 @@ export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
       }
       const message = readRenderBridgeMessage(payload, nonce, props.renderId);
       if (!message) return;
-      if (message.method === "ui/notifications/size-changed" && "height" in message.params)
+      if (message.method === "ui/notifications/size-changed" && "height" in message.params) {
         setContentHeight(message.params.height);
+        setOverflowsX(message.params.overflowX === true);
+      }
     },
     [nonce, props.renderId, props.visualization, sendVisualizationReply],
   );
@@ -249,7 +255,10 @@ export function HtmlRenderFrame(props: HtmlRenderFrameProps) {
       onShouldStartLoadWithRequest={allowOnlyDocument}
       onMessage={onMessage}
       onLoad={sendTheme}
-      scrollEnabled={props.fullscreen || overflows}
+      scrollEnabled={props.fullscreen || overflows || overflowsX}
+      // Android only: the page holds vertical drags until it reaches an edge, then
+      // hands them to the feed (patches/react-native-webview). A page that only
+      // overflows sideways leaves vertical drags to the feed.
       nestedScrollEnabled={!props.fullscreen && overflows}
       setSupportMultipleWindows
       javaScriptCanOpenWindowsAutomatically={false}
