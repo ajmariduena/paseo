@@ -1314,6 +1314,7 @@ export async function createPaseoDaemon(
         cwd: workspace.cwd,
         kind: workspace.kind,
         worktreeRoot: workspace.worktreeRoot,
+        incarnation: workspace.incarnation,
         isPaseoOwnedWorktree: workspace.isPaseoOwnedWorktree,
         mainRepoRoot: workspace.mainRepoRoot,
       }));
@@ -1586,7 +1587,10 @@ export async function createPaseoDaemon(
     await emitWorkspaceUpdatesExternal([result.workspace.workspaceId]);
     return result;
   };
-  const archiveScheduleWorkspaceExternal = async (workspaceId: string) => {
+  const archiveScheduleWorkspaceExternal = async (
+    workspaceId: string,
+    expectedIncarnation: string | undefined,
+  ) => {
     await archiveByScope(
       {
         handoffOwnership,
@@ -1619,6 +1623,7 @@ export async function createPaseoDaemon(
       {
         scope: { kind: "workspace", workspaceId },
         requestId: "schedule-run-finish",
+        automatic: { expectedIncarnation },
       },
     );
   };

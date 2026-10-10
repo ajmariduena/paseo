@@ -178,7 +178,6 @@ test("does not fan out a stale merged event when the fresh observation has no PR
   await vi.waitFor(() => expect(getSnapshot).toHaveBeenCalledTimes(1));
   await Promise.resolve();
   expect(archiveIfSafe).not.toHaveBeenCalled();
-  expect(options.listActiveWorkspaces).not.toHaveBeenCalled();
 });
 
 test("logs and skips when the fresh observation cannot be read", async () => {
@@ -197,7 +196,7 @@ test("logs and skips when the fresh observation cannot be read", async () => {
         throw new Error("snapshot failed");
       },
     },
-    listActiveWorkspaces: vi.fn(),
+    listActiveWorkspaces: vi.fn(async () => []),
   } as unknown as AutoArchiveOnMergeOptions;
 
   setupAutoArchiveOnMerge(options, { archiveIfSafe, resolvePath: resolve });
@@ -211,7 +210,6 @@ test("logs and skips when the fresh observation cannot be read", async () => {
     ),
   );
   expect(archiveIfSafe).not.toHaveBeenCalled();
-  expect(options.listActiveWorkspaces).not.toHaveBeenCalled();
 });
 
 test("does not read an observation when auto-archive is disabled", async () => {
@@ -228,7 +226,7 @@ test("does not read an observation when auto-archive is disabled", async () => {
       },
       getSnapshot,
     },
-    listActiveWorkspaces: vi.fn(),
+    listActiveWorkspaces: vi.fn(async () => []),
   } as unknown as AutoArchiveOnMergeOptions;
 
   setupAutoArchiveOnMerge(options, { archiveIfSafe, resolvePath: resolve });
@@ -236,4 +234,45 @@ test("does not read an observation when auto-archive is disabled", async () => {
   onSnapshotUpdated(createSnapshot("/repo/worktree"));
   expect(getSnapshot).not.toHaveBeenCalled();
   expect(archiveIfSafe).not.toHaveBeenCalled();
+});
+
+test("merge cleanup keeps the opening captured before awaiting the fresh snapshot", async () => {
+  let emit!: (snapshot: WorkspaceGitRuntimeSnapshot) => void;
+  const entered = Promise.withResolvers<void>();
+  const resume = Promise.withResolvers<void>();
+  const finished = Promise.withResolvers<void>();
+  let incarnation = "original-opening";
+  const options = {
+    logger: { child: () => ({ warn: vi.fn() }) },
+    daemonConfigStore: { get: () => ({ autoArchiveAfterMerge: true }) },
+    workspaceGitService: {
+      onSnapshotUpdated: (callback: typeof emit) => {
+        emit = callback;
+        return { unsubscribe: () => {} };
+      },
+      getSnapshot: async () => {
+        entered.resolve();
+        await resume.promise;
+        return createSnapshot("/repo/worktree");
+      },
+    },
+    listActiveWorkspaces: async () => [
+      { workspaceId: "workspace", cwd: "/repo/worktree", incarnation },
+    ],
+  } as unknown as AutoArchiveOnMergeOptions;
+  const expected: Array<string | undefined> = [];
+  setupAutoArchiveOnMerge(options, {
+    resolvePath: resolve,
+    archiveIfSafe: async (input) => {
+      expected.push(input.expectedIncarnation);
+      finished.resolve();
+    },
+  });
+  emit(createSnapshot("/repo/worktree", "open"));
+  emit(createSnapshot("/repo/worktree"));
+  await entered.promise;
+  incarnation = "reopened";
+  resume.resolve();
+  await finished.promise;
+  expect(expected).toEqual(["original-opening"]);
 });

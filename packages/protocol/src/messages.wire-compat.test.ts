@@ -129,6 +129,24 @@ test("handoff schedule run provenance does not turn source identities into desti
   expect(ScheduleRunSchema.omit({ origin: true }).parse(current)).toEqual(run);
 });
 
+test("schedule cleanup identities are optional and ignored by older readers", () => {
+  const run = {
+    id: "run",
+    scheduledFor: "2026-10-10T00:00:00Z",
+    startedAt: "2026-10-10T00:00:00Z",
+    endedAt: null,
+    status: "running",
+    agentId: null,
+    workspaceId: "workspace",
+    output: null,
+    error: null,
+  };
+  const current = { ...run, workspaceIncarnation: "original-opening" };
+  expect(ScheduleRunSchema.parse(run)).toEqual(run);
+  expect(ScheduleRunSchema.parse(current)).toEqual(current);
+  expect(ScheduleRunSchema.omit({ workspaceIncarnation: true }).parse(current)).toEqual(run);
+});
+
 test("handoff PR watch dispositions remain optional for older stopped-work reviews", () => {
   const legacy = { agents: [], terminals: [], setupIds: [] };
   expect(HandoffStoppedWorkReviewSchema.parse(legacy)).toEqual(legacy);

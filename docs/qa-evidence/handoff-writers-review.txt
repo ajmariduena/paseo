@@ -22,8 +22,45 @@ $ npx vitest run --config packages/server/vitest.config.ts packages/server/src/s
     Duration  1.99s (tests 1.24s)
 The repaired case proves no setup/terminal stop, archive publication, teardown or file deletion
 before successful inventory recovery, then proves normal cleanup still works after repair.
-This closes the corrupt-inventory path; incarnation-bound callbacks and durable source retention
+This closes the corrupt-inventory path. Durable source retention and backing-checkout identity
 remain separate implementation work.
+
+Opening-bound cleanup — the real worktree regression explicitly archived a workspace, recreated
+its checkout and reopened the same workspace ID. Its old schedule cleanup previously archived and
+deleted the new opening. WorkspaceRegistry now preserves an opening token across metadata edits and
+archive, and rotates it on reopen or placement changes. Automatic schedule cleanup stores that token
+with the run and uses it after restart; merge-triggered and created-agent cleanup capture it before
+waiting. Archive rechecks after admission and reserves the worktree before any writer stop, teardown
+or deletion. Missing, archived or mismatched openings skip automatic cleanup. An explicit archive
+remains available. Destination publication uses its preallocated identity so replay is idempotent.
+
+The real checkout regression now preserves the reopened files with no stop, teardown or archive,
+including a fresh registry instance, then allows cleanup by the new opening. Additional cases cover
+reopening while admission waits, missing legacy tokens, already-archived records, cleanup reservation
+lifetime, metadata edits, relocation and a scheduler outcome replay against the reopened workspace.
+The scheduler suite passed in the producer run; its combined run then exposed outdated merge-test
+inventory stubs, which were corrected and covered by the following successful run.
+
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/workspace-archive-service.test.ts packages/server/src/server/workspace-registry.test.ts packages/server/src/server/auto-archive-on-merge/archive-if-safe.test.ts packages/server/src/server/auto-archive-on-merge/index.test.ts packages/server/src/server/session/workspace-provisioning/workspace-provisioning-service.test.ts --bail=1
+  Test Files  5 passed (5)
+       Tests  134 passed (134)
+A subsequent archive-only run, after adding the reservation-lifetime case, passed all 31 cases.
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/handoff/ownership.posix.test.ts -t 'recovers hidden destination publication|legacy activation' --bail=1
+  Tests  8 passed, 48 skipped
+$ npx vitest run packages/protocol/src/messages.wire-compat.test.ts --bail=1
+  Tests  46 passed
+
+Four focused create-agent WebSocket cases pass with an isolated daemon and test providers: ordinary
+and nested auto-created worktrees, cleanup after failed nested creation, and shared backing retention.
+The first three passed in the combined run. The sibling-reference case initially raced automatic
+cleanup; it now registers the sibling before explicitly starting the turn, then passes on its own.
+This establishes the intended existing-owner case without admitting a new owner during deletion.
+Build:server, root typecheck, lint and formatting pass. These are Linux results; CI owns native
+macOS/Windows coverage. No production daemon restart or real provider call occurred.
+
+This opening token does not identify an externally replaced backing checkout. The per-workspace
+retention marker, fixed-point stop closure, retained-agent continuation gate and physical-stop proof
+remain required before the full source-retained-job contract can be advertised.
 
 The initial network regression reproduced an unreviewed same-name replacement
 terminal being stopped and the transfer reaching staged state. Source preview now

@@ -1,4 +1,5 @@
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { promises as fs } from "node:fs";
 
@@ -58,6 +59,8 @@ const PersistedProjectRecordSchema = z.object({
 
 const PersistedWorkspaceRecordSchema = z.object({
   workspaceId: z.string(),
+  // COMPAT(workspaceIncarnation): added in v0.11.1; keep legacy records readable until 2027-04-10.
+  incarnation: z.string().min(1).optional(),
   projectId: z.string(),
   cwd: z.string(),
   kind: z.enum(["local_checkout", "worktree", "directory"]),
@@ -602,7 +605,9 @@ export class FileBackedWorkspaceRegistry
     workspaceId: string,
     updater: (record: PersistedWorkspaceRecord) => PersistedWorkspaceRecord,
   ): Promise<PersistedWorkspaceRecord | null> {
-    const workspace = await super.update(workspaceId, updater);
+    const workspace = await super.update(workspaceId, (existing) =>
+      this.withIncarnation(existing, updater(existing)),
+    );
     if (workspace) {
       await this.notifyMutation({ kind: "upsert", workspaceId, workspace });
     }
@@ -613,13 +618,38 @@ export class FileBackedWorkspaceRegistry
     record: PersistedWorkspaceRecord,
     context?: WorkspaceMutationContext,
   ): Promise<void> {
-    await super.upsert(record);
+    const workspace = await this.mutateCache((records) => {
+      const next = PersistedWorkspaceRecordSchema.parse(
+        this.withIncarnation(records.get(record.workspaceId), record),
+      );
+      records.set(next.workspaceId, next);
+      return next;
+    });
     await this.notifyMutation({
       kind: "upsert",
       workspaceId: record.workspaceId,
-      workspace: record,
+      workspace,
       ...(context?.expectsInitialAgent ? { expectsInitialAgent: true } : {}),
     });
+  }
+
+  private withIncarnation(
+    existing: PersistedWorkspaceRecord | undefined,
+    next: PersistedWorkspaceRecord,
+  ): PersistedWorkspaceRecord {
+    const reopened = existing?.archivedAt && !next.archivedAt;
+    const relocated =
+      existing &&
+      (existing.cwd !== next.cwd ||
+        existing.worktreeRoot !== next.worktreeRoot ||
+        existing.mainRepoRoot !== next.mainRepoRoot);
+    return {
+      ...next,
+      incarnation:
+        reopened || relocated
+          ? randomUUID()
+          : (existing?.incarnation ?? next.incarnation ?? randomUUID()),
+    };
   }
 
   override async archive(
@@ -728,6 +758,7 @@ export function resolveProjectDisplayName(record: PersistedProjectRecord): strin
 
 export function createPersistedWorkspaceRecord(input: {
   workspaceId: string;
+  incarnation?: string;
   projectId: string;
   cwd: string;
   kind: PersistedWorkspaceKind;
@@ -748,6 +779,7 @@ export function createPersistedWorkspaceRecord(input: {
 }): PersistedWorkspaceRecord {
   return PersistedWorkspaceRecordSchema.parse({
     ...input,
+    incarnation: input.incarnation ?? randomUUID(),
     title: input.title ?? null,
     branch: input.branch ?? null,
     worktreeRoot: input.worktreeRoot ?? null,

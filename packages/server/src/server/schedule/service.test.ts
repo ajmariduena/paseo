@@ -105,6 +105,7 @@ function createScheduleService(options: TestScheduleServiceOptions): ScheduleSer
     const workspaceId = `wks_schedule_test_${++workspaceCounter}`;
     const workspace: PersistedWorkspaceRecord = {
       workspaceId,
+      incarnation: randomUUID(),
       projectId: "test-project",
       cwd: input.cwd,
       kind: "directory",
@@ -124,11 +125,13 @@ function createScheduleService(options: TestScheduleServiceOptions): ScheduleSer
       .filter((workspace) => !workspace.archivedAt)
       .map((workspace) => ({
         workspaceId: workspace.workspaceId,
+        incarnation: workspace.incarnation,
         cwd: workspace.cwd,
         kind: workspace.kind,
       }));
   const archiveDefaultWorkspace: ScheduleServiceOptions["archiveWorkspace"] = async (
     workspaceId,
+    expectedIncarnation,
   ) => {
     workspaceArchiveInProgress = true;
     try {
@@ -157,6 +160,7 @@ function createScheduleService(options: TestScheduleServiceOptions): ScheduleSer
         {
           scope: { kind: "workspace", workspaceId },
           requestId: "schedule-service-test",
+          automatic: { expectedIncarnation },
         },
       );
     } finally {
@@ -232,7 +236,7 @@ async function createRegistryBackedScheduleWorkspaceDeps(rootDir: string): Promi
     },
     createArchiveWorkspace:
       ({ agentManager, agentStorage, logger = createTestLogger() }) =>
-      async (workspaceId) => {
+      async (workspaceId, expectedIncarnation) => {
         workspaceArchiveInProgress = true;
         try {
           await archiveByScope(
@@ -248,6 +252,7 @@ async function createRegistryBackedScheduleWorkspaceDeps(rootDir: string): Promi
                   .filter((workspace) => !workspace.archivedAt)
                   .map((workspace) => ({
                     workspaceId: workspace.workspaceId,
+                    incarnation: workspace.incarnation,
                     cwd: workspace.cwd,
                     kind: workspace.kind,
                   })),
@@ -263,6 +268,7 @@ async function createRegistryBackedScheduleWorkspaceDeps(rootDir: string): Promi
             {
               scope: { kind: "workspace", workspaceId },
               requestId: "schedule-service-test",
+              automatic: { expectedIncarnation },
             },
           );
         } finally {
@@ -1777,6 +1783,78 @@ describe("ScheduleService", () => {
     ]);
   });
 
+  test("a scheduled run records its opening and cannot archive a reopened workspace", async () => {
+    const { workspaceRegistry, createDirectoryWorkspace, createArchiveWorkspace } =
+      await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+    const manager = new AgentManager({
+      logger: createTestLogger(),
+      clients: createTestAgentClients(),
+      registry: agentStorage,
+    });
+    const archive = createArchiveWorkspace({ agentManager: manager, agentStorage });
+    let originalIncarnation: string | undefined;
+    const options = {
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      createDirectoryWorkspace,
+      now: () => now,
+    };
+    const service = createScheduleService({
+      ...options,
+      archiveWorkspace: async (id, expectedIncarnation) => {
+        originalIncarnation = expectedIncarnation;
+        const original = (await workspaceRegistry.get(id))!;
+        await workspaceRegistry.archive(id, now.toISOString());
+        await workspaceRegistry.upsert({ ...original, archivedAt: null });
+        await archive(id, expectedIncarnation);
+      },
+    });
+    const created = await service.create({
+      prompt: "preserve the reopened workspace",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: {
+        type: "new-agent",
+        config: { provider: "claude", model: "test-model", cwd: tempDir },
+      },
+      maxRuns: 1,
+    });
+    await service.tick();
+    const run = (await service.inspect(created.id)).runs[0]!;
+    expect(run.status).toBe("succeeded");
+    expect(run.workspaceIncarnation).toEqual(expect.any(String));
+    expect(run.workspaceIncarnation).toBe(originalIncarnation);
+    const reopened = (await workspaceRegistry.get(run.workspaceId!))!;
+    expect(reopened.archivedAt).toBe(null);
+    expect(reopened.incarnation).not.toBe(run.workspaceIncarnation);
+    expect(await agentStorage.get(run.agentId!)).toMatchObject({ id: run.agentId });
+    expect((await agentStorage.get(run.agentId!))?.archivedAt).toBeUndefined();
+    await service.stop();
+
+    // A crash before the run outcome was recorded must keep the same cleanup binding.
+    const store = new ScheduleStore(join(tempDir, "schedules"), createTestLogger());
+    await store.update(created.id, (schedule) => ({
+      ...schedule,
+      runs: [{ ...run, status: "running", endedAt: null }],
+    }));
+    const restarted = createScheduleService({ ...options, archiveWorkspace: archive });
+    try {
+      await restarted.start();
+      expect((await restarted.inspect(created.id)).runs[0]).toMatchObject({
+        status: "failed",
+        workspaceIncarnation: originalIncarnation,
+      });
+      expect(await workspaceRegistry.get(reopened.workspaceId)).toEqual(reopened);
+      expect(await agentStorage.get(run.agentId!)).toMatchObject({ id: run.agentId });
+      expect((await agentStorage.get(run.agentId!))?.archivedAt).toBeUndefined();
+    } finally {
+      await restarted.stop();
+      await manager.closeAgent(run.agentId!);
+    }
+  });
+
   test("archiveOnFinish=true archives the run workspace through workspace archive", async () => {
     const {
       workspaceRegistry,
@@ -3091,74 +3169,84 @@ describe("ScheduleService", () => {
     await service2.stop();
   });
 
-  test("startup recovery archives an interrupted run workspace with an associated agent", async () => {
-    const service1 = createScheduleService({
-      paseoHome: tempDir,
-      logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
-      agentStorage,
-      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
-      now: () => now,
-      runner: async () => ({ agentId: null, output: "ok" }),
-    });
-    const created = await service1.create({
-      prompt: "Interrupted after creating an agent",
-      cadence: { type: "every", everyMs: 60_000 },
-      target: {
-        type: "new-agent",
-        config: { provider: "claude", cwd: tempDir },
-      },
-      runOnCreate: false,
-    });
-    await service1.stop();
-
-    const interruptedAt = now.toISOString();
-    const associatedAgentId = "11111111-1111-4111-8111-111111111111";
-    const workspaceId = "wks_interrupted_with_agent";
-    const store = new ScheduleStore(join(tempDir, "schedules"), createTestLogger());
-    await store.update(created.id, (schedule) => ({
-      ...schedule,
-      runs: [
-        ...schedule.runs,
-        {
-          id: "run-interrupted-with-agent",
-          scheduledFor: interruptedAt,
-          startedAt: interruptedAt,
-          endedAt: null,
-          status: "running",
-          agentId: associatedAgentId,
-          workspaceId,
-          output: null,
-          error: null,
+  test.each([
+    {
+      incarnation: "original-opening",
+      expectedCalls: [["wks_interrupted_with_agent", "original-opening"]],
+    },
+    { incarnation: undefined, expectedCalls: [] },
+  ])(
+    "startup recovery binds cleanup to the recorded opening: $incarnation",
+    async ({ incarnation, expectedCalls }) => {
+      const service1 = createScheduleService({
+        paseoHome: tempDir,
+        logger: createTestLogger(),
+        agentManager: new AgentManager({ logger: createTestLogger() }),
+        agentStorage,
+        providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+        now: () => now,
+        runner: async () => ({ agentId: null, output: "ok" }),
+      });
+      const created = await service1.create({
+        prompt: "Interrupted after creating an agent",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: {
+          type: "new-agent",
+          config: { provider: "claude", cwd: tempDir },
         },
-      ],
-    }));
+        runOnCreate: false,
+      });
+      await service1.stop();
 
-    const archiveCalls: string[] = [];
-    now = new Date("2026-01-01T00:10:00.000Z");
-    const service2 = createScheduleService({
-      paseoHome: tempDir,
-      logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
-      agentStorage,
-      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
-      now: () => now,
-      runner: async () => ({ agentId: null, output: "ok" }),
-      archiveWorkspace: async (archivedWorkspaceId) => {
-        archiveCalls.push(archivedWorkspaceId);
-      },
-    });
-    await service2.start();
+      const interruptedAt = now.toISOString();
+      const associatedAgentId = "11111111-1111-4111-8111-111111111111";
+      const workspaceId = "wks_interrupted_with_agent";
+      const store = new ScheduleStore(join(tempDir, "schedules"), createTestLogger());
+      await store.update(created.id, (schedule) => ({
+        ...schedule,
+        runs: [
+          ...schedule.runs,
+          {
+            id: "run-interrupted-with-agent",
+            scheduledFor: interruptedAt,
+            startedAt: interruptedAt,
+            endedAt: null,
+            status: "running",
+            agentId: associatedAgentId,
+            workspaceId,
+            workspaceIncarnation: incarnation,
+            output: null,
+            error: null,
+          },
+        ],
+      }));
 
-    expect(archiveCalls).toEqual([workspaceId]);
-    const inspected = await service2.inspect(created.id);
-    expect(inspected.runs[0]).toMatchObject({
-      status: "failed",
-      agentId: associatedAgentId,
-      error: "Daemon restarted before the scheduled run completed",
-    });
-    await service2.stop();
-  });
+      const archiveCalls: Array<[string, string | undefined]> = [];
+      now = new Date("2026-01-01T00:10:00.000Z");
+      const service2 = createScheduleService({
+        paseoHome: tempDir,
+        logger: createTestLogger(),
+        agentManager: new AgentManager({ logger: createTestLogger() }),
+        agentStorage,
+        providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+        now: () => now,
+        runner: async () => ({ agentId: null, output: "ok" }),
+        archiveWorkspace: async (archivedWorkspaceId, expectedIncarnation) => {
+          archiveCalls.push([archivedWorkspaceId, expectedIncarnation]);
+        },
+      });
+      await service2.start();
+
+      expect(archiveCalls).toEqual(expectedCalls);
+      const inspected = await service2.inspect(created.id);
+      expect(inspected.runs[0]).toMatchObject({
+        status: "failed",
+        agentId: associatedAgentId,
+        error: "Daemon restarted before the scheduled run completed",
+      });
+      await service2.stop();
+    },
+  );
 
   test("startup recovery archives an interrupted run workspace even before agent association", async () => {
     const service1 = createScheduleService({
@@ -3196,6 +3284,7 @@ describe("ScheduleService", () => {
           status: "running",
           agentId: null,
           workspaceId,
+          workspaceIncarnation: "original-opening",
           output: null,
           error: null,
         },

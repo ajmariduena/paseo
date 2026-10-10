@@ -51,6 +51,7 @@ const defaultDependencies: ArchiveIfSafeDependencies = {
 
 export async function archiveIfSafe(input: {
   workspaceId: string;
+  expectedIncarnation: string | undefined;
   snapshot: WorkspaceGitRuntimeSnapshot;
   options: AutoArchiveArchiveOptions;
   log: Logger;
@@ -85,7 +86,7 @@ export async function archiveIfSafe(input: {
       return;
     }
 
-    await deps.archiveByScope(
+    const result = await deps.archiveByScope(
       {
         handoffOwnership: options.handoffOwnership,
         paseoHome: options.paseoHome,
@@ -116,8 +117,10 @@ export async function archiveIfSafe(input: {
       {
         scope: { kind: "workspace", workspaceId },
         requestId: "auto-archive-on-merge",
+        automatic: { expectedIncarnation: input.expectedIncarnation },
       },
     );
+    if (!result.archivedWorkspaceIds.includes(workspaceId)) return;
     log.info(
       { workspaceId, cwd, branch: pullRequest.headRefName, pullRequestUrl: pullRequest.url },
       "Auto-archived worktree after PR merge",

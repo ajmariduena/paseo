@@ -609,6 +609,13 @@ unreadable files, invalid records and duplicate identities refuse reads and muta
 repaired. Cleanup uses this inventory to decide whether a checkout still has owners, so treating
 damage as an empty list can delete retained work.
 
+Automatic cleanup belongs to one workspace opening. The registry preserves its `incarnation`
+through metadata edits and archive, then changes it when the record is reopened or relocated.
+Schedules keep that identity with the run, including restart recovery. A callback with no matching
+active opening skips cleanup; an explicit archive can still remove an archived checkout.
+Check after admission and reserve the backing worktree before stopping or tearing down anything.
+The opening token does not prove that an external process has not replaced files at the same path.
+
 | Field                          | Type                                                         | Description                                                                                                                                                                                   |
 | ------------------------------ | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `workspaceId`                  | `string`                                                     | Opaque stable identifier (`wks_<hex>`), generated independently of the directory. MUST NOT be treated as a path; compare by exact equality. Use the `cwd` field for directory access.         |

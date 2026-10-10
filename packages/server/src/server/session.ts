@@ -6775,6 +6775,7 @@ export class Session {
         cwd: workspace.cwd,
         kind: workspace.kind,
         worktreeRoot: workspace.worktreeRoot,
+        incarnation: workspace.incarnation,
         isPaseoOwnedWorktree: workspace.isPaseoOwnedWorktree,
         mainRepoRoot: workspace.mainRepoRoot,
       }));

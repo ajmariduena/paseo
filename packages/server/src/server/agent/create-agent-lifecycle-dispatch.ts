@@ -221,6 +221,7 @@ export class CreateAgentLifecycleDispatch {
       {
         scope: { kind: "workspace", workspaceId: createdWorktree.workspace.workspaceId },
         requestId: randomUUID(),
+        automatic: { expectedIncarnation: createdWorktree.workspace.incarnation },
       },
     );
 

@@ -1,3 +1,4 @@
+import { assertWorktreeNotCleaningUp } from "./worktree-use-lock.js";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -258,6 +259,140 @@ async function handoffArchiveFixture() {
   };
   return { tempDir, repoDir, cwd, workspace, registryPath, registry, deps, ownership, transfer };
 }
+
+test("automatic cleanup from an archived workspace cannot delete its reopened incarnation", async () => {
+  const { repoDir, cwd, workspace, registry, registryPath, deps } = await handoffArchiveFixture();
+  const expectedIncarnation = workspace.incarnation;
+  await archiveByScope(deps, {
+    scope: { kind: "workspace", workspaceId: workspace.workspaceId },
+    requestId: "explicit-archive",
+  });
+  expect(existsSync(cwd)).toBe(false);
+  execFileSync("git", ["worktree", "add", cwd, "handoff-archive"], {
+    cwd: repoDir,
+    stdio: "pipe",
+  });
+  await registry.upsert({ ...workspace, archivedAt: null });
+  const restarted = new FileBackedWorkspaceRegistry(registryPath, createLogger());
+  deps.getWorkspace = (id) => restarted.get(id);
+  deps.listActiveWorkspaces = async () =>
+    (await restarted.list()).filter((record) => !record.archivedAt);
+  deps.archiveWorkspaceRecord = (id) => restarted.archive(id, new Date().toISOString());
+  rmSync(path.join(repoDir, "handoff-teardown.txt"));
+  vi.mocked(deps.stopWorkspaceSetup!).mockClear();
+  vi.mocked(deps.killTerminalsForWorkspace).mockClear();
+  vi.mocked(deps.markWorkspaceArchiving).mockClear();
+
+  const request = {
+    scope: { kind: "workspace" as const, workspaceId: workspace.workspaceId },
+    requestId: "old-schedule-finally",
+    automatic: { expectedIncarnation },
+  };
+  expect(await archiveByScope(deps, request)).toEqual({
+    archivedAgentIds: [],
+    archivedWorkspaceIds: [],
+    removedDirectory: false,
+  });
+  expect(readFileSync(path.join(cwd, "selected", "notes.txt"), "utf8")).toBe("retained content");
+  expect(existsSync(path.join(repoDir, "handoff-teardown.txt"))).toBe(false);
+  expect(deps.stopWorkspaceSetup).not.toHaveBeenCalled();
+  expect(deps.killTerminalsForWorkspace).not.toHaveBeenCalled();
+  expect(deps.markWorkspaceArchiving).not.toHaveBeenCalled();
+  const reopened = await registry.get(workspace.workspaceId);
+  expect(reopened?.archivedAt).toBe(null);
+  expect(reopened?.incarnation).not.toBe(expectedIncarnation);
+  expect(
+    await archiveByScope(deps, {
+      ...request,
+      automatic: { expectedIncarnation: reopened!.incarnation },
+    }),
+  ).toEqual({
+    archivedAgentIds: [],
+    archivedWorkspaceIds: [workspace.workspaceId],
+    removedDirectory: true,
+  });
+});
+
+test("automatic cleanup rechecks the opening after waiting for admission", async () => {
+  const { cwd, workspace, registry, deps, ownership } = await handoffArchiveFixture();
+  const entered = deferred();
+  const resume = deferred();
+  const acquire = ownership.acquireMutation.bind(ownership);
+  const admission = vi.spyOn(ownership, "acquireMutation").mockImplementationOnce(async (scope) => {
+    const release = await acquire(scope);
+    entered.resolve();
+    await resume.promise;
+    return release;
+  });
+  const archive = archiveByScope(deps, {
+    scope: { kind: "workspace", workspaceId: workspace.workspaceId },
+    requestId: "waiting-cleanup",
+    automatic: { expectedIncarnation: workspace.incarnation },
+  });
+  await entered.promise;
+  try {
+    await registry.archive(workspace.workspaceId, new Date().toISOString());
+    await registry.upsert({ ...workspace, archivedAt: null });
+  } finally {
+    resume.resolve();
+    admission.mockRestore();
+  }
+  expect(await archive).toEqual({
+    archivedAgentIds: [],
+    archivedWorkspaceIds: [],
+    removedDirectory: false,
+  });
+  expect(existsSync(cwd)).toBe(true);
+  expect(deps.stopWorkspaceSetup).not.toHaveBeenCalled();
+  expect(deps.killTerminalsForWorkspace).not.toHaveBeenCalled();
+  expect(deps.markWorkspaceArchiving).not.toHaveBeenCalled();
+});
+
+test.each(["archived", "missing-opening"])(
+  "automatic cleanup leaves %s workspaces untouched",
+  async (state) => {
+    const { cwd, workspace, registry, deps } = await handoffArchiveFixture();
+    if (state === "archived")
+      await registry.archive(workspace.workspaceId, new Date().toISOString());
+    expect(
+      await archiveByScope(deps, {
+        scope: { kind: "workspace", workspaceId: workspace.workspaceId },
+        requestId: "stale-cleanup",
+        automatic: {
+          expectedIncarnation: state === "archived" ? workspace.incarnation : undefined,
+        },
+      }),
+    ).toEqual({ archivedAgentIds: [], archivedWorkspaceIds: [], removedDirectory: false });
+    expect(existsSync(cwd)).toBe(true);
+    expect(deps.stopWorkspaceSetup).not.toHaveBeenCalled();
+  },
+);
+
+test("archive reserves the backing worktree before stopping its writers", async () => {
+  const { cwd, workspace, deps } = await handoffArchiveFixture();
+  const entered = deferred();
+  const resume = deferred();
+  deps.stopWorkspaceSetup = async () => {
+    entered.resolve();
+    await resume.promise;
+  };
+  const archiving = archiveByScope(deps, {
+    scope: { kind: "workspace", workspaceId: workspace.workspaceId },
+    requestId: "held-archive",
+    automatic: { expectedIncarnation: workspace.incarnation },
+  });
+  await entered.promise;
+  try {
+    expect(() => assertWorktreeNotCleaningUp(cwd)).toThrow("Worktree is cleaning up");
+    expect(() => assertWorktreeNotCleaningUp(path.join(cwd, "selected"))).toThrow(
+      "Worktree is cleaning up",
+    );
+  } finally {
+    resume.resolve();
+    await archiving;
+  }
+  expect(() => assertWorktreeNotCleaningUp(cwd)).not.toThrow();
+});
 
 test("an unreadable workspace registry refuses cleanup without deleting retained work", async () => {
   const { repoDir, cwd, workspace, registryPath, deps } = await handoffArchiveFixture();

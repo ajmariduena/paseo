@@ -58,6 +58,7 @@ export function createHandoffPublication(stores: PublicationStores): HandoffPubl
       await stores.workspaces.installHandoffRecord(
         createPersistedWorkspaceRecord({
           workspaceId: record.workspaceId,
+          incarnation: record.workspaceId,
           projectId: record.projectId,
           cwd: record.destinationCwd,
           kind: workspace.git ? "local_checkout" : "directory",

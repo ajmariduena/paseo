@@ -22,10 +22,17 @@ import { createRealpathAwarePathMatcher } from "../utils/path.js";
 import { runWithGitCommandPriority } from "../utils/run-git-command.js";
 import { WorkspaceAutomationBlockedError } from "./workspace-automation-gate.js";
 import type { HandoffOwnership } from "./handoff/ownership.js";
+import { withWorktreeCleanupReservation } from "./worktree-use-lock.js";
 
 export type ActiveWorkspaceRef = Pick<
   PersistedWorkspaceRecord,
-  "workspaceId" | "cwd" | "kind" | "worktreeRoot" | "isPaseoOwnedWorktree" | "mainRepoRoot"
+  | "workspaceId"
+  | "incarnation"
+  | "cwd"
+  | "kind"
+  | "worktreeRoot"
+  | "isPaseoOwnedWorktree"
+  | "mainRepoRoot"
 >;
 
 export interface ArchiveDependencies {
@@ -76,6 +83,7 @@ export interface ArchiveResult {
 export interface ArchiveByScopeRequest {
   scope: ArchiveScope;
   requestId: string;
+  automatic?: { expectedIncarnation: string | undefined };
 }
 
 export async function requireActiveWorkspaceForArchive(
@@ -157,7 +165,38 @@ async function archiveByScopeWithPriority(
         );
       }
     }
-    return await archiveResolvedTarget(dependencies, request, target);
+    const archive = async () => {
+      // Admission can wait behind a restore. Resolve again before any stop or
+      // teardown, while provisioning is excluded from this backing worktree.
+      const current = await resolveArchiveTarget(dependencies, request.scope);
+      if (
+        current.backing?.path !== target.backing?.path ||
+        current.backing?.mainRepoRoot !== target.backing?.mainRepoRoot
+      ) {
+        throw new Error("Workspace placement changed during archive; retry the operation");
+      }
+      if (request.automatic) {
+        const scope = request.scope;
+        const workspace =
+          scope.kind === "workspace"
+            ? (await dependencies.listActiveWorkspaces()).find(
+                (record) => record.workspaceId === scope.workspaceId,
+              )
+            : undefined;
+        // COMPAT(workspaceIncarnation): added in v0.11.1; legacy callbacks have
+        // no authority to delete a later opening. Remove after 2027-04-10.
+        if (
+          !request.automatic.expectedIncarnation ||
+          workspace?.incarnation !== request.automatic.expectedIncarnation
+        ) {
+          return { archivedAgentIds: [], archivedWorkspaceIds: [], removedDirectory: false };
+        }
+      }
+      return archiveResolvedTarget(dependencies, request, current);
+    };
+    return await (target.backing?.isPaseoOwnedWorktree
+      ? withWorktreeCleanupReservation(target.backing.path, archive)
+      : archive());
   } finally {
     for (const release of releases.toReversed()) release();
   }

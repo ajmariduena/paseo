@@ -558,7 +558,9 @@ export function createWorkspaceProvisioningService(deps: {
     }
     if (!next) return workspace;
     await workspaceRegistry.upsert(next);
-    return next;
+    const committed = await workspaceRegistry.get(next.workspaceId);
+    if (!committed) throw new Error(`Workspace unavailable after restore: ${next.workspaceId}`);
+    return committed;
   }
 
   async function refreshWorkspaceRecord(
@@ -576,7 +578,10 @@ export function createWorkspaceProvisioningService(deps: {
     });
     if (!update) return workspace;
     await workspaceRegistry.upsert(update.workspace);
-    return update.workspace;
+    const committed = await workspaceRegistry.get(workspace.workspaceId);
+    if (!committed)
+      throw new Error(`Workspace unavailable after reconciliation: ${workspace.workspaceId}`);
+    return committed;
   }
 
   async function refreshProjectKind(

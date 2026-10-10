@@ -177,6 +177,42 @@ describe("workspace registries", () => {
     expect(await cold.get(record.workspaceId)).toMatchObject({ title: "Latest" });
   });
 
+  test("workspace openings survive metadata edits and restart but change on restore and relocation", async () => {
+    const record = createPersistedWorkspaceRecord({
+      workspaceId: "opening",
+      projectId: "project",
+      cwd: tmpDir,
+      kind: "directory",
+      displayName: "Opening",
+      createdAt: "2026-10-10T00:00:00Z",
+      updatedAt: "2026-10-10T00:00:00Z",
+    });
+    await workspaceRegistry.upsert(record);
+    await workspaceRegistry.update(record.workspaceId, (current) => ({
+      ...current,
+      title: "Renamed",
+    }));
+    expect((await workspaceRegistry.get(record.workspaceId))?.incarnation).toBe(record.incarnation);
+    await workspaceRegistry.archive(record.workspaceId, "2026-10-10T01:00:00Z");
+    expect((await workspaceRegistry.get(record.workspaceId))?.incarnation).toBe(record.incarnation);
+    const restored = await workspaceRegistry.update(record.workspaceId, (current) => ({
+      ...current,
+      archivedAt: null,
+    }));
+    expect(restored?.incarnation).toEqual(expect.any(String));
+    expect(restored?.incarnation).not.toBe(record.incarnation);
+    const cold = new FileBackedWorkspaceRegistry(
+      path.join(tmpDir, "projects", "workspaces.json"),
+      logger,
+    );
+    expect(await cold.get(record.workspaceId)).toEqual(restored);
+    const relocated = await cold.update(record.workspaceId, (current) => ({
+      ...current,
+      cwd: path.join(tmpDir, "other"),
+    }));
+    expect(relocated?.incarnation).not.toBe(restored?.incarnation);
+  });
+
   test("creates, updates, archives, deletes, and lists project records", async () => {
     await projectRegistry.initialize();
     await projectRegistry.upsert(

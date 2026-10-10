@@ -117,7 +117,7 @@ function createHarness(overrides?: {
       (async () =>
         ({
           archivedAgentIds: [],
-          archivedWorkspaceIds: [],
+          archivedWorkspaceIds: ["ws-auto-archive"],
           removedDirectory: false,
         }) satisfies ArchiveResult),
   ) as unknown as ArchiveIfSafeDependencies["archiveByScope"];
@@ -154,6 +154,7 @@ async function runArchiveIfSafe(
   },
 ): Promise<void> {
   await archiveIfSafe({
+    expectedIncarnation: "test-opening",
     workspaceId: overrides?.workspaceId ?? "ws-auto-archive",
     snapshot:
       overrides?.snapshot ??
@@ -254,7 +255,10 @@ function createRealOutcomeHarness(input: {
   activeWorkspaces: ActiveWorkspaceRef[];
   archivedWorkspaceIds: Set<string>;
 }) {
-  const active = [...input.activeWorkspaces];
+  const active = input.activeWorkspaces.map((workspace) => ({
+    ...workspace,
+    incarnation: "test-opening",
+  }));
   const autoArchivedChangeRequestUrls = new Map<string, string>();
   const logger = pino({ level: "silent" });
   vi.spyOn(logger, "info").mockImplementation(() => undefined);
@@ -435,6 +439,7 @@ describe("archiveIfSafe", () => {
       {
         scope: { kind: "workspace", workspaceId: "ws-auto-archive" },
         requestId: "auto-archive-on-merge",
+        automatic: { expectedIncarnation: "test-opening" },
       },
     );
     expect(harness.log.info).toHaveBeenCalledWith(
@@ -535,6 +540,7 @@ describe("archiveIfSafe", () => {
     });
     const input = {
       workspaceId,
+      expectedIncarnation: "test-opening",
       snapshot: { ...createSnapshot(), cwd: worktree.worktreePath },
       options: harness.options,
       log: harness.log,
@@ -575,6 +581,7 @@ describe("archiveIfSafe", () => {
     });
 
     await archiveIfSafe({
+      expectedIncarnation: "test-opening",
       workspaceId: workspaceA,
       snapshot: { ...createSnapshot(), cwd: worktree.worktreePath },
       options: harness.options,
@@ -602,6 +609,7 @@ describe("archiveIfSafe", () => {
     });
 
     await archiveIfSafe({
+      expectedIncarnation: "test-opening",
       workspaceId: workspaceA,
       snapshot: { ...createSnapshot(), cwd: worktree.worktreePath },
       options: harness.options,
@@ -637,6 +645,7 @@ describe("archiveIfSafe", () => {
     const mergedSnapshot = { ...createSnapshot(), cwd: worktree.worktreePath };
 
     await archiveIfSafe({
+      expectedIncarnation: "test-opening",
       workspaceId: workspace.workspaceId,
       snapshot: mergedSnapshot,
       options: harness.options,
@@ -646,6 +655,7 @@ describe("archiveIfSafe", () => {
 
     harness.unarchiveWorkspace(workspace);
     await archiveIfSafe({
+      expectedIncarnation: "test-opening",
       workspaceId: workspace.workspaceId,
       snapshot: mergedSnapshot,
       options: harness.options,

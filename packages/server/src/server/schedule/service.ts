@@ -284,7 +284,7 @@ export interface ScheduleServiceOptions {
   createPaseoWorktreeWorkspace: (
     input: ScheduleWorkspaceCreateInput,
   ) => Promise<CreatePaseoWorktreeWorkflowResult>;
-  archiveWorkspace: (workspaceId: string) => Promise<void>;
+  archiveWorkspace: (workspaceId: string, expectedIncarnation: string | undefined) => Promise<void>;
   now?: () => Date;
   runner?: (schedule: StoredSchedule, runId: string) => Promise<ScheduleExecutionResult>;
 }
@@ -304,7 +304,10 @@ export class ScheduleService {
   private readonly createPaseoWorktreeWorkspace: (
     input: ScheduleWorkspaceCreateInput,
   ) => Promise<CreatePaseoWorktreeWorkflowResult>;
-  private readonly archiveWorkspace: (workspaceId: string) => Promise<void>;
+  private readonly archiveWorkspace: (
+    workspaceId: string,
+    expectedIncarnation: string | undefined,
+  ) => Promise<void>;
   private readonly now: () => Date;
   private readonly runner: (
     schedule: StoredSchedule,
@@ -817,6 +820,7 @@ export class ScheduleService {
   private async recoverInterruptedSchedule(scheduleId: string, now: Date): Promise<void> {
     const interruptedWorkspaces: Array<{
       workspaceId: string;
+      workspaceIncarnation: string | undefined;
       agentId: string | null;
       runId: string;
     }> = [];
@@ -838,6 +842,7 @@ export class ScheduleService {
         ) {
           interruptedWorkspaces.push({
             workspaceId: runningRun.workspaceId,
+            workspaceIncarnation: runningRun.workspaceIncarnation,
             agentId: runningRun.agentId,
             runId: runningRun.id,
           });
@@ -876,7 +881,11 @@ export class ScheduleService {
     }
     try {
       const schedule = requireSchedule(recovered, scheduleId);
-      await this.archiveRunWorkspace(schedule, interruptedWorkspace.workspaceId);
+      await this.archiveRunWorkspace(
+        schedule,
+        interruptedWorkspace.workspaceId,
+        interruptedWorkspace.workspaceIncarnation,
+      );
     } catch (error) {
       this.logger.warn(
         {
@@ -1148,6 +1157,7 @@ export class ScheduleService {
     scheduleId: string;
     runId: string;
     workspaceId: string;
+    workspaceIncarnation: string | undefined;
     agentId: string | null;
   }): Promise<void> {
     const updatedSchedule = await this.store.update(
@@ -1160,6 +1170,7 @@ export class ScheduleService {
             ? {
                 ...run,
                 workspaceId: params.workspaceId,
+                workspaceIncarnation: params.workspaceIncarnation,
                 agentId: params.agentId,
               }
             : run,
@@ -1240,6 +1251,7 @@ export class ScheduleService {
         scheduleId: schedule.id,
         runId,
         workspaceId: workspace.workspaceId,
+        workspaceIncarnation: workspace.incarnation,
         agentId: null,
       });
       const runConfig = { ...config, cwd: workspace.cwd };
@@ -1268,6 +1280,7 @@ export class ScheduleService {
         scheduleId: schedule.id,
         runId,
         workspaceId: workspace.workspaceId,
+        workspaceIncarnation: workspace.incarnation,
         agentId,
       });
       if (created.initialPromptError) {
@@ -1299,7 +1312,7 @@ export class ScheduleService {
         shouldArchiveScheduleRunWorkspace({ agentId, archiveOnFinish: config.archiveOnFinish })
       ) {
         try {
-          await this.archiveRunWorkspace(schedule, workspace.workspaceId);
+          await this.archiveRunWorkspace(schedule, workspace.workspaceId, workspace.incarnation);
         } catch (error) {
           this.logger.warn(
             {
@@ -1319,13 +1332,17 @@ export class ScheduleService {
   private async archiveRunWorkspace(
     schedule: Pick<StoredSchedule, "id" | "target">,
     workspaceId: string,
+    expectedIncarnation: string | undefined,
   ): Promise<void> {
+    // COMPAT(workspaceIncarnation): added in v0.11.1; old runs cannot prove
+    // which opening they own. Explicit archive remains available. Remove after 2027-04-10.
+    if (!expectedIncarnation) return;
     // A run's worktree may be outside its scheduled directory. Re-admit cleanup
     // against that source so a handoff cannot trigger destructive automatic archive.
     await this.skipFencedSchedule(async () => {
       const release = await this.acquireTargetMutation(schedule.target, schedule.id);
       try {
-        await this.archiveWorkspace(workspaceId);
+        await this.archiveWorkspace(workspaceId, expectedIncarnation);
       } finally {
         release();
       }
