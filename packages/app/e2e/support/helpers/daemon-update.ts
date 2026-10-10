@@ -3,13 +3,14 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { AgentProviderRuntimeSettingsMap } from "@getpaseo/protocol/provider-config";
 import { killProcessTree } from "./spawn-node";
+import type { AgentPromptInput } from "../../../../server/src/server/agent/agent-sdk-types";
 
 export interface OutdatedDaemon {
   paseoHome: string;
   endpoint: string;
   label: string;
   serverId: string;
-  seedHeldQueue(agentId: string, prompt: string): Promise<void>;
+  seedHeldQueue(agentId: string, prompt: AgentPromptInput): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -88,7 +89,11 @@ export async function startTestDaemon(options?: TestDaemonOptions): Promise<Outd
   }
 }
 
-function seedHeldQueue(child: ChildProcess, agentId: string, prompt: string): Promise<void> {
+function seedHeldQueue(
+  child: ChildProcess,
+  agentId: string,
+  prompt: AgentPromptInput,
+): Promise<void> {
   const requestId = randomUUID();
   return new Promise((resolve, reject) => {
     const finish = (error?: Error) => {

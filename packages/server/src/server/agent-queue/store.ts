@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { readdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
-import { AgentAttachmentSchema } from "@getpaseo/protocol/messages";
+import { AgentAttachmentSchema, type UploadedFileAttachment } from "@getpaseo/protocol/messages";
 import { formatPeerMessage, parsePeerMessage } from "@getpaseo/protocol/peer-message";
 import { z } from "zod";
 
@@ -10,6 +10,12 @@ import { syncFilePublication, writeJsonFileAtomic } from "../atomic-file.js";
 import { readBoundedFile } from "../handoff/artifacts.js";
 import type { AgentPromptInput } from "../agent/agent-sdk-types.js";
 import { formatAgentMessage, parseAgentMessage } from "../agent/agent-messages/index.js";
+import {
+  CapturedUploadSchema,
+  parseCapturedUpload,
+  type CapturedUpload,
+  type FileUploadStore,
+} from "../file-upload/index.js";
 
 const MAX_ENTRIES_PER_AGENT = 200;
 const MAX_PROMPT_BYTES = 32 * 1024 * 1024;
@@ -54,7 +60,8 @@ const PromptSchema = z.union([z.string(), z.array(PromptBlockSchema)]);
 
 export const HANDOFF_QUEUE_MAX_BYTES = 64 * 1024 * 1024;
 const HandoffQueueSchema = z.object({
-  version: z.literal(1),
+  version: z.union([z.literal(1), z.literal(2)]),
+  files: z.array(CapturedUploadSchema).max(2000).optional(),
   entries: z
     .array(
       z.object({
@@ -71,8 +78,9 @@ export type HandoffQueue = z.infer<typeof HandoffQueueSchema>;
 
 export function parseHandoffQueue(value: unknown): HandoffQueue {
   const snapshot = HandoffQueueSchema.parse(value);
-  if (Buffer.byteLength(JSON.stringify(snapshot)) > HANDOFF_QUEUE_MAX_BYTES)
+  if (handoffQueueBytes(snapshot) > HANDOFF_QUEUE_MAX_BYTES)
     throw new Error("Queued messages exceed the handoff byte limit");
+  validateQueueUploads(snapshot);
   const ids = new Set<string>();
   for (const entry of snapshot.entries) {
     if (ids.has(entry.id)) throw new Error("Duplicate queued message in handoff");
@@ -84,17 +92,58 @@ export function parseHandoffQueue(value: unknown): HandoffQueue {
     if (bytes > MAX_PROMPT_BYTES) throw new QueueEntryTooLargeError(bytes);
     if (typeof entry.prompt === "string") continue;
     for (const block of entry.prompt) {
-      if (
-        block.type === "uploaded_file" ||
-        block.type === "review" ||
-        ("projectPath" in block && block.projectPath)
-      )
+      if (block.type === "review" || ("projectPath" in block && block.projectPath))
         throw new Error(
           "Queued attachments with source-local files or paths need a handoff disposition",
         );
     }
   }
   return snapshot;
+}
+
+export function handoffQueueBytes(snapshot: HandoffQueue): number {
+  const blobs = new Map((snapshot.files ?? []).map(({ blob }) => [blob.sha256, blob.size]));
+  return (
+    Buffer.byteLength(JSON.stringify(snapshot)) +
+    [...blobs.values()].reduce((total, size) => total + size, 0)
+  );
+}
+
+function queuedUploads(entries: HandoffQueue["entries"]): UploadedFileAttachment[] {
+  return entries.flatMap(({ prompt }) =>
+    typeof prompt === "string"
+      ? []
+      : prompt.filter((block): block is UploadedFileAttachment => block.type === "uploaded_file"),
+  );
+}
+
+function validateQueueUploads(snapshot: HandoffQueue): void {
+  const files = snapshot.files ?? [];
+  if ((snapshot.version === 2) !== files.length > 0)
+    throw new Error("Queued upload bytes require queue version 2");
+  const references = new Map(
+    queuedUploads(snapshot.entries).map((attachment) => [attachment.path, attachment]),
+  );
+  if (files.length !== references.size)
+    throw new Error("Queued upload inventory differs from its prompt references");
+  const paths = new Set<string>();
+  const blobs = new Map<string, number>();
+  for (const { attachment, blob } of files) {
+    parseCapturedUpload({ attachment, blob });
+    if (
+      paths.has(attachment.path) ||
+      !isDeepStrictEqual(references.get(attachment.path), attachment) ||
+      blob.size !== attachment.size ||
+      (blobs.has(blob.sha256) && blobs.get(blob.sha256) !== blob.size)
+    )
+      throw new Error("Queued upload inventory differs from its prompt references");
+    paths.add(attachment.path);
+    blobs.set(blob.sha256, blob.size);
+  }
+  for (const attachment of queuedUploads(snapshot.entries)) {
+    if (!isDeepStrictEqual(references.get(attachment.path), attachment))
+      throw new Error("Queued upload references conflict");
+  }
 }
 
 export async function readHandoffQueue(filePath: string): Promise<HandoffQueue> {
@@ -219,7 +268,10 @@ export class AgentQueueStore {
 
   constructor(
     private readonly directory: string | null,
-    private readonly options: { sync?: typeof syncFilePublication } = {},
+    private readonly options: {
+      sync?: typeof syncFilePublication;
+      uploads?: Pick<FileUploadStore, "captureForHandoff" | "installForHandoff">;
+    } = {},
   ) {}
 
   /** Reads every queue file so `peek` sees agents that are not loaded. Boot only. */
@@ -253,7 +305,11 @@ export class AgentQueueStore {
   /** A capture must describe the durable queue, including every referenced prompt. */
   async exportForHandoff(
     agentId: string,
-    options: { requireHeld?: boolean; ignoreSystemIds?: readonly string[] } = {},
+    options: {
+      requireHeld?: boolean;
+      ignoreSystemIds?: readonly string[];
+      blobsDirectory?: string;
+    } = {},
   ): Promise<HandoffQueue> {
     return this.serialize(agentId, async () => {
       const cached = this.cache.get(agentId) ?? null;
@@ -282,8 +338,40 @@ export class AgentQueueStore {
       }
       if ((options.requireHeld ?? true) && entries.length && !stored?.held)
         throw new Error("Source queue must be held before handoff capture");
-      return parseHandoffQueue({ version: 1, entries });
+      const files = await this.captureHandoffUploads(entries, options.blobsDirectory);
+      return parseHandoffQueue(
+        files.length ? { version: 2, entries, files } : { version: 1, entries },
+      );
     });
+  }
+
+  private async captureHandoffUploads(
+    entries: HandoffQueue["entries"],
+    directory?: string,
+  ): Promise<CapturedUpload[]> {
+    const attachments = queuedUploads(entries);
+    if (!attachments.length) return [];
+    if (!this.options.uploads)
+      throw new Error(
+        "Queued attachments with source-local files or paths need a handoff disposition",
+      );
+    const files = new Map<string, CapturedUpload>();
+    let bytes = Buffer.byteLength(JSON.stringify(entries));
+    for (const attachment of attachments) {
+      const existing = files.get(attachment.path);
+      if (existing) {
+        if (!isDeepStrictEqual(existing.attachment, attachment))
+          throw new Error("Queued upload references conflict");
+        continue;
+      }
+      const captured = await this.options.uploads.captureForHandoff(attachment, {
+        directory,
+        maxBytes: HANDOFF_QUEUE_MAX_BYTES - bytes,
+      });
+      bytes += captured.blob.size;
+      files.set(attachment.path, captured);
+    }
+    return [...files.values()];
   }
 
   private async readHandoffPrompt(agentId: string, entry: AgentQueueEntry, budget: number) {
@@ -311,45 +399,57 @@ export class AgentQueueStore {
     agentId: string,
     reservationId: string,
     input: HandoffQueue,
+    options: { blobsDirectory?: string } = {},
   ): Promise<void> {
     const snapshot = parseHandoffQueue(input);
     if (!/^[a-zA-Z0-9_-]{1,512}$/.test(agentId))
       throw new Error("Invalid destination queue identity");
     const digest = queueDigest(snapshot);
-    const prompts = new Map<string, AgentPromptInput>();
-    const entries = snapshot.entries.map((entry, index): AgentQueueEntry => {
-      const id = `handoff:${queueDigest([agentId, entry.id])}`;
-      const { prompt } = remapHandoffQueueEntry(entry, entry.senderAgentId, id);
-      const promptFile = `${queueDigest([id, prompt])}.json`;
-      prompts.set(promptFile, prompt);
-      const preview = previewPrompt(prompt);
-      return {
-        textPreview: preview.textPreview,
-        attachmentCount: preview.attachmentCount,
-        id,
-        origin: entry.origin,
-        senderAgentId: entry.senderAgentId,
-        position: index + 1,
-        createdAt: entry.createdAt,
-        promptFile,
-        wake: null,
-      };
-    });
-    const candidate: AgentQueueFile = {
-      version: 1,
-      agentId,
-      held: true,
-      heldReason: "user_stop",
-      entries,
-      handoff: { reservationId, digest },
-    };
     await this.serialize(agentId, async () => {
       const existing = this.directory
         ? await this.readHandoffFile(agentId)
         : this.cache.get(agentId);
+      if (existing && !isDeepStrictEqual(existing.handoff, { reservationId, digest }))
+        throw new Error("Destination queue belongs to a different handoff");
+      const uploads = await this.installHandoffUploads(
+        snapshot,
+        reservationId,
+        options.blobsDirectory,
+      );
+      const prompts = new Map<string, AgentPromptInput>();
+      const entries = snapshot.entries.map((entry, index): AgentQueueEntry => {
+        const id = `handoff:${queueDigest([agentId, entry.id])}`;
+        const remapped = remapHandoffQueueEntry(entry, entry.senderAgentId, id);
+        const prompt =
+          typeof remapped.prompt === "string"
+            ? remapped.prompt
+            : remapped.prompt.map((block) =>
+                block.type === "uploaded_file" ? uploads.get(block.path)! : block,
+              );
+        const promptFile = `${queueDigest([id, prompt])}.json`;
+        prompts.set(promptFile, prompt);
+        const preview = previewPrompt(prompt);
+        return {
+          textPreview: preview.textPreview,
+          attachmentCount: preview.attachmentCount,
+          id,
+          origin: entry.origin,
+          senderAgentId: entry.senderAgentId,
+          position: index + 1,
+          createdAt: entry.createdAt,
+          promptFile,
+          wake: null,
+        };
+      });
+      const candidate: AgentQueueFile = {
+        version: 1,
+        agentId,
+        held: true,
+        heldReason: "user_stop",
+        entries,
+        handoff: { reservationId, digest },
+      };
       if (existing) {
-        if (!isDeepStrictEqual(existing.handoff, candidate.handoff))
-          throw new Error("Destination queue belongs to a different handoff");
         if (!isDeepStrictEqual({ ...existing, heldReason: candidate.heldReason }, candidate))
           throw new Error("Destination queue changed during handoff installation");
       }
@@ -374,6 +474,28 @@ export class AgentQueueStore {
       }
       this.cache.set(agentId, candidate);
     });
+  }
+
+  private async installHandoffUploads(
+    snapshot: HandoffQueue,
+    reservationId: string,
+    directory?: string,
+  ): Promise<Map<string, UploadedFileAttachment>> {
+    const files = snapshot.files ?? [];
+    const installed = new Map<string, UploadedFileAttachment>();
+    if (!files.length) return installed;
+    if (!this.options.uploads || !directory)
+      throw new Error("Verified queued upload files are unavailable");
+    for (const file of files)
+      installed.set(
+        file.attachment.path,
+        await this.options.uploads.installForHandoff(
+          file,
+          path.join(directory, file.blob.sha256),
+          reservationId,
+        ),
+      );
+    return installed;
   }
 
   async enqueue(agentId: string, input: NewQueueEntry, now: string): Promise<AgentQueueEntry> {

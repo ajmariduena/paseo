@@ -38,6 +38,7 @@ const emptyReview = {
     terminals: [],
     setupOperations: 0,
     queuedMessages: 0,
+    queuedBytes: 0,
     review: { agents: [], terminals: [], setupIds: [], pullRequestWatches: [] },
   },
   conversationBytes: 0,

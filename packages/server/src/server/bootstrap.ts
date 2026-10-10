@@ -177,6 +177,7 @@ import { PullRequestWatcher } from "./pull-request-watch/watcher.js";
 import { AgentStop } from "./agent/stop.js";
 import { PromptAnnotationStore } from "./agent/prompt-annotations.js";
 import { AgentQueueStore } from "./agent-queue/store.js";
+import { FileUploadStore } from "./file-upload/index.js";
 import { createRestoredEntryDeliverer } from "./agent/message-dispatch.js";
 import { RestartIntentStore } from "./restart/restart-intent-store.js";
 import { RestartRecovery } from "./restart/restart-recovery.js";
@@ -1118,7 +1119,9 @@ export async function createPaseoDaemon(
       path.join(config.paseoHome, "prompt-annotations"),
       { records: agentStorage },
     ),
-    messageQueueStore: new AgentQueueStore(path.join(config.paseoHome, "agent-queues")),
+    messageQueueStore: new AgentQueueStore(path.join(config.paseoHome, "agent-queues"), {
+      uploads: new FileUploadStore({ paseoHome: config.paseoHome }),
+    }),
     idleRuntimeTimeoutMs: config.idleRuntimeTimeoutMs,
     appendSystemPrompt: config.appendSystemPrompt,
     onWorkspaceStateMayHaveChanged: ({ cwd }) => {

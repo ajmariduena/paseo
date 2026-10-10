@@ -48,21 +48,74 @@ Native and exported-context network cases preserve the exact prompts across sour
 restarts, reject changed prompt files before release, and keep destination agents unloaded.
 
 These queue cases use synthetic Claude artifacts and a version-only executable. They prove
-transport and held installation, not an authenticated continued turn. Source-local uploaded/review
-attachments, path-bearing attachments, senders outside the transfer, delegation wakes and other
+transport and held installation, not an authenticated continued turn. Review attachments,
+path-bearing project attachments, senders outside the transfer, delegation wakes and other
 system notifications require a disposition and currently refuse. Recovery of uncertain delivery
 after a crash remains open. The source retains a fenced copy until retirement is implemented.
 
+Typed uploaded-file blocks now carry their bytes in the verified archive, using queue snapshot
+version 2 inside bundle version 4. Plain self-contained queues remain version 1; older readers reject
+the new queue version before activation. The 64 MiB queue capture limit includes referenced file
+bytes. The source reports queue bytes as an optional wire field and the app includes them in the
+review estimate. Uploaded files retain their name, MIME type and contents, with a new destination
+ID and path.
+The source store accepts only its own upload locations, checks declared size, and refuses symlinked
+files or upload directories. Release detects a same-size content change as well as prompt changes.
 
-Desktop and compact Chromium also show the pending-message review warning, load the destination
-conversation with its held queue and enabled Resume control, and preserve that queue on the return
-transfer. Screenshots: handoff-queue-desktop.png and handoff-queue-compact.png. Desktop passed in
-51.5s and compact in 57.4s, run separately. Earlier desktop attempts failed before the flow on the
-20-second isolated-daemon startup limit, then on a missing required wake:null field in the new
-queue-seeding fixture. The corrected fixture uses the real queue runner through test-process IPC.
-No startup timeout was increased and the production daemon was not restarted.
+The destination upload store publishes a complete file without replacing an existing target, then
+synchronizes the file and directory chain before queue publication. A failed synchronization is not
+acknowledged; restarting and retrying uses the reserved path. Conflicting bytes remain untouched.
+The queue's reservation is checked before installing upload files from a different transfer.
 
-Queue transport checks (222 distinct passing cases, including both browser layouts):
+The native/context two-daemon cases use real binary upload RPCs and verify the paused file prompt,
+exact bytes, new path, source-change refusal, both host restarts and a return transfer to a fresh
+upload path on the original host. The six publication-interruption cases now include an uploaded
+file. A separate archive case omits that file from the signed inventory and proves refusal.
+Unit cases include empty and binary files, Unicode names, lost synchronization acknowledgement,
+changed destination content, foreign source paths, size limits and symlink refusal.
+
+This covers structured uploaded-file blocks still present in pending prompts. It does not recover
+paths already flattened into opaque agent-message text or historical provider transcripts, rebase
+review/project-path attachments, or establish a continued authenticated provider turn. Upload
+retention/garbage collection and stronger exclusion of concurrent external filesystem writers
+remain part of the existing delivery gates.
+
+The browser fixture uses the real queue runner through test-process IPC. Desktop and compact
+Chromium show the pending-message review warning, load the destination conversation with its held
+queue and enabled Resume control, and preserve that queue on the return transfer. The uploaded-file
+regression adds a real 64 KiB upload, checks that review includes its bytes and reads the exact file
+from destination storage. Screenshots: handoff-queue-desktop.png and handoff-queue-compact.png.
+
+The first desktop upload run timed out before opening the flow at the existing 20-second
+isolated-daemon startup limit. A standalone diagnostic loaded the modules in 4.9s and reached
+readiness in 5.1s. The next desktop run passed in 50.2s; compact passed in 56.2s. No startup timeout was increased and the
+production daemon was not restarted. The earlier ac48ab7b1 browser runs passed in 51.5s/57.4s after
+fixing a missing required wake:null field in the fixture; their first attempt also hit startup timeout.
+
+Uploaded-file checks (151 distinct passing cases, including both browser layouts):
+
+Workspace dependency/server/CLI builds, root typecheck, lint and formatting pass. Lint reports
+zero warnings and errors. No full local suite was run.
+
+$ npx vitest run src/server/file-upload/index.test.ts src/server/agent-queue/store.test.ts src/server/handoff/ownership.posix.test.ts --bail=1
+  71 passed (11 upload, 13 queue, 47 ownership/publication).
+  After adding the optional byte estimate, the affected source coordinator case passed again.
+
+$ npx vitest run src/server/handoff/archive.e2e.test.ts --bail=1 -t 'transfers queued text, images and uploaded files'
+  2 passed, 33 skipped. Native and context modes, binary uploads, changed-file refusal,
+  both hosts restarting, paused activation, idempotent retry and a return transfer.
+
+$ npx vitest run src/messages.wire-compat.test.ts --bail=1
+  43 passed. Both the queue count and byte estimate are optional; old and new shapes parse.
+
+$ npx vitest run src/handoff/form-model.test.ts --bail=1
+  33 passed.
+
+$ npm run test:e2e -- e2e/browser/workspace-handoff.spec.ts --grep 'desktop preserves mixed conversation choices' --workers=1
+$ npm run test:e2e -- e2e/browser/workspace-handoff.spec.ts --grep 'compact preserves mixed conversation choices' --workers=1
+  1 passed in each separate run. Verified transfer estimate: 66 KiB with a 64 KiB queued file.
+
+Self-contained queue checks at ac48ab7b1 (222 distinct passing cases, including both browser layouts):
 
 $ npx vitest run packages/server/src/server/agent-queue/store.test.ts packages/server/src/server/handoff/archive.test.ts packages/server/src/server/handoff/ownership.posix.test.ts --config packages/server/vitest.config.ts --bail=1
   100 passed. Includes six interrupted-publication phases, source-local attachment refusal,

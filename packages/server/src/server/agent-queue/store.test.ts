@@ -2,8 +2,9 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { truncate, writeFile } from "node:fs/promises";
+import { mkdir, readFile, truncate, writeFile } from "node:fs/promises";
 import { syncFilePublication } from "../atomic-file.js";
+import { FileUploadStore } from "../file-upload/index.js";
 
 import {
   AgentQueueStore,
@@ -52,6 +53,60 @@ async function drainIds(store: AgentQueueStore, agentId: string): Promise<string
     ids.push(next.entry.id);
   }
 }
+
+test.skipIf(process.platform === "win32")(
+  "handoff moves queued file bytes into the destination upload store before publishing the queue",
+  async () => {
+    const sourceHome = join(root, "source");
+    const uploads = new FileUploadStore({ paseoHome: sourceHome });
+    const source = new AgentQueueStore(join(sourceHome, "agent-queues"), { uploads });
+    const id = "upload_00000000-0000-4000-8000-000000000001";
+    const fileName = "queued.bin";
+    const uploadPath = join(sourceHome, "uploads", id, fileName);
+    await mkdir(join(sourceHome, "uploads", id), { recursive: true });
+    const bytes = Buffer.from([0, 1, 128, 255]);
+    await writeFile(uploadPath, bytes);
+    const attachment = {
+      type: "uploaded_file" as const,
+      id,
+      fileName,
+      mimeType: "application/octet-stream",
+      path: uploadPath,
+      size: bytes.length,
+    };
+    await source.enqueue(
+      "source-agent",
+      userMessage("pending", [{ type: "text", text: "Read this file" }, attachment]),
+      NOW,
+    );
+    await source.hold("source-agent", "user_stop");
+    const blobsDirectory = join(sourceHome, "capture");
+    const captured = await source.exportForHandoff("source-agent", { blobsDirectory });
+    const destinationHome = join(root, "destination");
+    const destination = new AgentQueueStore(join(destinationHome, "agent-queues"), {
+      uploads: new FileUploadStore({ paseoHome: destinationHome }),
+    });
+    await destination.installHandoffQueue("destination-agent", "reservation", captured, {
+      blobsDirectory,
+    });
+    await expect(
+      destination.installHandoffQueue("destination-agent", "another-reservation", captured, {
+        blobsDirectory,
+      }),
+    ).rejects.toThrow("different handoff");
+    expect(readdirSync(join(destinationHome, "uploads"))).toHaveLength(1);
+    expect(await destination.dequeueNext("destination-agent")).toBeNull();
+    await destination.resume("destination-agent");
+    const delivered = (await destination.dequeueNext("destination-agent"))?.prompt;
+    if (!Array.isArray(delivered) || delivered[1].type !== "uploaded_file")
+      throw new Error("Missing installed upload");
+    expect(delivered[1].path.startsWith(destinationHome)).toBe(true);
+    expect(await readFile(delivered[1].path)).toEqual(bytes);
+    expect(delivered[1].path).not.toBe(uploadPath);
+    await writeFile(uploadPath, Buffer.from([0, 1, 127, 255]));
+    expect(await source.exportForHandoff("source-agent")).not.toEqual(captured);
+  },
+);
 
 test.skipIf(process.platform === "win32")(
   "handoff installs the exact queued prompts held and retries after a destination restart",

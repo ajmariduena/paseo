@@ -641,6 +641,7 @@ export class HandoffDestination {
           bundle: content.bundle,
           workspace,
           queues: content.queues,
+          queueBlobsDirectory: archive.blobsDirectory,
         });
         record = { ...record, state: "active" };
         await this.save(record);

@@ -26,12 +26,14 @@ import {
 
 test("handoff queue counts preserve old stopped-work preview parsing", () => {
   const legacy = { agentIds: [], terminals: [], setupOperations: 0 };
-  const current = { ...legacy, queuedMessages: 2 };
+  const current = { ...legacy, queuedMessages: 2, queuedBytes: 1024 };
   expect(HandoffStoppedWorkPreviewSchema.parse(legacy)).toEqual(legacy);
   expect(HandoffStoppedWorkPreviewSchema.parse(current)).toEqual(current);
-  expect(HandoffStoppedWorkPreviewSchema.omit({ queuedMessages: true }).parse(current)).toEqual(
-    legacy,
-  );
+  expect(
+    HandoffStoppedWorkPreviewSchema.omit({ queuedMessages: true, queuedBytes: true }).parse(
+      current,
+    ),
+  ).toEqual(legacy);
 });
 
 test("handoff PR watch dispositions remain optional for older stopped-work reviews", () => {

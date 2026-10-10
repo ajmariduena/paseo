@@ -65,6 +65,7 @@ export interface CapturedConversation {
   artifactDirectory: string;
   historyPath?: string;
   queuePath?: string;
+  queueBlobsDirectory?: string;
   pendingRestartNote?: RestartCancelledWork[];
   mode?: "native" | "context";
   origin?: z.infer<typeof HandoffHistoryOriginSchema>;
@@ -194,7 +195,7 @@ export async function packHandoffArchive(input: PackInput): Promise<HandoffArchi
     const descriptor = await describeFile(manifestPath);
     add(descriptor, manifestPath);
     let history;
-    const queue = await addQueue(conversation.queuePath);
+    const queue = await addQueue(conversation.queuePath, conversation.queueBlobsDirectory);
     if (conversation.historyPath) {
       await readHandoffHistory(
         conversation.historyPath,
@@ -271,9 +272,13 @@ export async function packHandoffArchive(input: PackInput): Promise<HandoffArchi
     blobs.set(blob.sha256, blob);
     files.set(blob.sha256, file);
   }
-  async function addQueue(file?: string): Promise<HandoffBlob | undefined> {
+  async function addQueue(file?: string, directory?: string): Promise<HandoffBlob | undefined> {
     if (!file) return undefined;
-    await readHandoffQueue(file);
+    const captured = await readHandoffQueue(file);
+    for (const upload of captured.files ?? []) {
+      if (!directory) throw new Error("Captured queue upload files are unavailable");
+      add(upload.blob, path.join(directory, upload.blob.sha256));
+    }
     const queue = await describeFile(file, HANDOFF_QUEUE_MAX_BYTES);
     add(queue, file);
     return queue;
@@ -312,26 +317,11 @@ export async function readHandoffBundle(
   const previousSessions = new Map<string, ClaudeSessionArchive>();
   const queues = new Map<string, HandoffQueue>();
   let queueBytes = 0;
+  const queueFiles = new Set<string>();
   let metadataBytes = bytes.length;
   let artifactCount = 0;
   for (const conversation of bundle.conversations) {
-    if (conversation.queue) {
-      requireBlob(conversation.queue);
-      queueBytes += conversation.queue.size;
-      if (queueBytes > HANDOFF_QUEUE_MAX_BYTES)
-        reject("invalid_artifact", "Queued messages exceed the handoff byte limit");
-      const queue = await readHandoffQueue(
-        path.join(archive.blobsDirectory, conversation.queue.sha256),
-      );
-      for (const entry of queue.entries) {
-        if (entry.senderAgentId && !expected.sourceAgentIds.includes(entry.senderAgentId))
-          reject(
-            "invalid_artifact",
-            "Queued message sender is outside the transferred conversations",
-          );
-      }
-      queues.set(conversation.sourceAgentId, queue);
-    }
+    await readQueue(conversation);
     requireBlob(conversation.session);
     if (conversation.history) {
       requireBlob(conversation.history);
@@ -379,6 +369,32 @@ export async function readHandoffBundle(
     }
   }
   return { bundle, sessions, previousSessions, queues };
+  async function readQueue(conversation: HandoffBundle["conversations"][number]): Promise<void> {
+    if (conversation.queue) {
+      requireBlob(conversation.queue);
+      queueBytes += conversation.queue.size;
+      if (queueBytes > HANDOFF_QUEUE_MAX_BYTES)
+        reject("invalid_artifact", "Queued messages exceed the handoff byte limit");
+      const queue = await readHandoffQueue(
+        path.join(archive.blobsDirectory, conversation.queue.sha256),
+      );
+      for (const { blob } of queue.files ?? []) {
+        requireBlob(blob);
+        if (!queueFiles.has(blob.sha256)) queueBytes += blob.size;
+        queueFiles.add(blob.sha256);
+      }
+      if (queueBytes > HANDOFF_QUEUE_MAX_BYTES)
+        reject("invalid_artifact", "Queued messages exceed the handoff byte limit");
+      for (const entry of queue.entries) {
+        if (entry.senderAgentId && !expected.sourceAgentIds.includes(entry.senderAgentId))
+          reject(
+            "invalid_artifact",
+            "Queued message sender is outside the transferred conversations",
+          );
+      }
+      queues.set(conversation.sourceAgentId, queue);
+    }
+  }
   function requireBlob(blob: HandoffBlob): void {
     if (inventory.get(blob.sha256) !== blob.size)
       reject("invalid_artifact", "Handoff references content outside its verified archive");

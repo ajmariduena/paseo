@@ -708,7 +708,7 @@ test.skipIf(process.platform === "win32").each(["reserved", "staged"] as const)(
 );
 
 test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
-  "transfers queued text and images held through %s activation and destination restart",
+  "transfers queued text, images and uploaded files held through %s activation and destination restart",
   async (continuationMode) => {
     let source = await startHost("source", true);
     let destination = await startHost("destination", true);
@@ -751,12 +751,21 @@ test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
     );
     const queue = source.daemon.daemon.agentManager.messageQueue;
     await queue.hold(agentId, "user_stop");
+    const fileBytes = Buffer.from([0, 255, 128, 42]);
+    const uploaded = await source.client.uploadFile({
+      requestId: randomUUID(),
+      fileName: "pending binary.bin",
+      mimeType: "application/octet-stream",
+      bytes: fileBytes,
+    });
+    if (!uploaded.file) throw new Error("Missing queued upload");
     const prompts = [
       "Do not lose the next task",
       [
         { type: "text" as const, text: "Then inspect this image" },
         { type: "image" as const, data: "aGVsbG8=", mimeType: "image/png" },
       ],
+      [{ type: "text" as const, text: "Then read this file" }, uploaded.file],
     ];
     for (const [index, prompt] of prompts.entries()) {
       const queued = await queue.enqueue(
@@ -776,7 +785,8 @@ test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
       void queued.settled.catch(() => undefined);
     }
     const preview = await source.client.handoffPreviewSource({ workspaceId: created.workspace.id });
-    expect(preview.result?.stoppedWork?.queuedMessages).toBe(2);
+    expect(preview.result?.stoppedWork?.queuedMessages).toBe(3);
+    expect(preview.result?.stoppedWork?.queuedBytes).toBeGreaterThan(fileBytes.length);
     const staged = await prepareWorkspaceHandoff({
       transferId: randomUUID(),
       workspaceId: created.workspace.id,
@@ -799,6 +809,11 @@ test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
     const refused = await source.client.handoffReleaseSource({ transferId: staged.transferId });
     expect(refused.error?.code).toBe("source_changed");
     await writeFile(promptPath, capturedPrompt);
+    await writeFile(uploaded.file.path, Buffer.from([0, 255, 127, 42]));
+    expect(
+      (await source.client.handoffReleaseSource({ transferId: staged.transferId })).error?.code,
+    ).toBe("source_changed");
+    await writeFile(uploaded.file.path, fileBytes);
     await stopHost(source);
     await stopHost(destination);
     source = await startHost("source", true);
@@ -817,6 +832,7 @@ test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
       entries: [
         { origin: "user", textPreview: "Do not lose the next task", attachmentCount: 0 },
         { origin: "user", textPreview: "Then inspect this image", attachmentCount: 1 },
+        { origin: "user", textPreview: "Then read this file", attachmentCount: 1 },
       ],
     });
     expect(destination.daemon.daemon.agentManager.getAgent(destinationAgentId)).toBeNull();
@@ -824,8 +840,20 @@ test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
       await destination.daemon.daemon.agentManager.messageQueue.exportForHandoff(
         destinationAgentId,
       );
-    expect(imported.entries.map((entry) => entry.prompt)).toEqual(prompts);
-    expect(imported.entries.map((entry) => entry.id)).not.toEqual(["pending-0", "pending-1"]);
+    expect(imported.entries.slice(0, 2).map((entry) => entry.prompt)).toEqual(prompts.slice(0, 2));
+    const importedFile = imported.files?.[0].attachment;
+    if (!importedFile) throw new Error("Missing destination upload");
+    expect(imported.entries[2].prompt).toEqual([
+      { type: "text", text: "Then read this file" },
+      importedFile,
+    ]);
+    expect(importedFile.path.startsWith(destination.daemon.paseoHome)).toBe(true);
+    expect(await readFile(importedFile.path)).toEqual(fileBytes);
+    expect(imported.entries.map((entry) => entry.id)).not.toEqual([
+      "pending-0",
+      "pending-1",
+      "pending-2",
+    ]);
     await stopHost(destination);
     destination = await startHost("destination", true);
     expect(
@@ -843,6 +871,31 @@ test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
         (entry) => entry.prompt,
       ),
     ).toEqual(prompts);
+    const returning = await prepareWorkspaceHandoff({
+      transferId: randomUUID(),
+      workspaceId: active.workspaceId,
+      destinationParent: root,
+      continuationMode,
+      source: destination.client,
+      destination: source.client,
+    });
+    const returned = await activateWorkspaceHandoff({
+      transferId: returning.transferId,
+      sourceServerId: destination.daemon.daemon.getServerId(),
+      getSource: () => destination.client,
+      destination: source.client,
+    });
+    const returnedQueue = await source.daemon.daemon.agentManager.messageQueue.exportForHandoff(
+      returned.agentMappings[0]!.destinationAgentId,
+    );
+    const returnedFile = returnedQueue.files?.[0].attachment;
+    if (!returnedFile) throw new Error("Missing returned queued upload");
+    expect(returnedFile.path).not.toBe(uploaded.file.path);
+    expect(await readFile(returnedFile.path)).toEqual(fileBytes);
+    expect(
+      (await source.client.listAgentQueue(returned.agentMappings[0]!.destinationAgentId)).queue
+        .held,
+    ).toBe(true);
   },
   30_000,
 );

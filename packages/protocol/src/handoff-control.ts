@@ -82,6 +82,7 @@ export const HandoffStoppedWorkPreviewSchema = z.object({
   terminals: z.array(z.object({ id: z.string().min(1), name: z.string().max(4096) })).max(1000),
   setupOperations: z.number().int().nonnegative(),
   queuedMessages: z.number().int().nonnegative().max(200_000).optional(),
+  queuedBytes: z.number().int().nonnegative().optional(),
   review: HandoffStoppedWorkReviewSchema.optional(),
 });
 export const HandoffIntegrationReviewSchema = z

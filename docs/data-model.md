@@ -154,9 +154,8 @@ handoff certification, including after restart; reopening a runtime is not deliv
 Recovering that uncertainty from provider artifacts remains implementation work.
 
 Unsent background-work notes travel in the verified handoff bundle and stay pending in the destination
-record. Activation does not acknowledge delivery. New bundles use version 3 so older
-readers reject unsupported history semantics explicitly; version 1 and 2 archives remain readable. Source release checks that the
-captured note set is unchanged.
+record. Activation does not acknowledge delivery. Source release checks that the captured note set
+is unchanged. Archive compatibility and delivery gates are in the [handoff plan](refactors/cross-host-handoff-plan.md).
 
 Before a destination opens its first local runtime, another context transfer uses the private
 verified archive and retains the original history identity. Workspace copies may be edited,
@@ -686,6 +685,11 @@ Messages that arrived while the agent's turn was running, delivered one per sett
 - **Hold:** `held` with `heldReason` `failure` (the turn that just ended failed), `user_stop`, or `restart`. What a hold blocks is in [agent-lifecycle.md](agent-lifecycle.md#relationships).
 
 The prompt file is written before the queue file references it and deleted after the queue file stops referencing it. `load` at boot removes prompt files nothing references.
+
+Uploaded-file blocks refer to the upload store under `$PASEO_HOME/uploads/`. During handoff, the
+queue archive must carry those bytes as well as the prompt. Destination publication keeps the
+queue hidden until its uploads and prompt files are durable. The upload store owns installation
+and refuses to overwrite a conflicting file; activation alone never resumes the queue.
 
 ---
 

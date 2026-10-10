@@ -19,6 +19,7 @@ import { syncFilePublication, writeJsonFileAtomic } from "../atomic-file.js";
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import { AgentStorage, type StoredAgentRecord } from "../agent/agent-storage.js";
 import { AgentQueueStore, type HandoffQueue } from "../agent-queue/store.js";
+import { FileUploadStore } from "../file-upload/index.js";
 import { formatAgentMessage, parseAgentMessage } from "../agent/agent-messages/index.js";
 import {
   FileBackedProjectRegistry,
@@ -454,6 +455,7 @@ test("source preparation keeps ownership fenced after uncertain cleanup and retr
     terminals: [],
     setupOperations: 1,
     queuedMessages: 0,
+    queuedBytes: 0,
     review: {
       agents: [],
       terminals: [],
@@ -543,6 +545,30 @@ test("reserves stable destination identities across restart without dropping unp
   });
 });
 
+async function capturedQueuedUpload() {
+  const sourceHome = path.join(root, "upload-source");
+  const id = "upload_fixture-file";
+  const fileName = "queued-file.bin";
+  const sourcePath = path.join(sourceHome, "uploads", id, fileName);
+  await mkdir(path.dirname(sourcePath), { recursive: true });
+  const bytes = Buffer.from([0, 255, 128, 7]);
+  await writeFile(sourcePath, bytes);
+  const attachment = {
+    type: "uploaded_file" as const,
+    id,
+    fileName,
+    path: sourcePath,
+    mimeType: "application/octet-stream",
+    size: bytes.length,
+  };
+  const queueBlobsDirectory = path.join(root, "queue-blobs");
+  const captured = await new FileUploadStore({ paseoHome: sourceHome }).captureForHandoff(
+    attachment,
+    { directory: queueBlobsDirectory, maxBytes: 32 },
+  );
+  return { captured, directory: queueBlobsDirectory, bytes };
+}
+
 async function nativeDestinationFixture(
   input: {
     write?: typeof writeJournal;
@@ -552,6 +578,7 @@ async function nativeDestinationFixture(
     includeHistory?: boolean;
     contextCollision?: boolean;
     queue?: HandoffQueue;
+    queueBlobsDirectory?: string;
   } = {},
 ) {
   const transferId = randomUUID();
@@ -639,6 +666,7 @@ async function nativeDestinationFixture(
         artifactDirectory: sessionDirectory,
         historyPath: input.includeHistory ? historyPath : undefined,
         queuePath,
+        queueBlobsDirectory: input.queueBlobsDirectory,
       },
     ],
   });
@@ -792,7 +820,9 @@ test.each([
   );
   const agents = new InterruptedAgentStorage(path.join(root, "agents"), logger, isVisible);
   const publication = createHandoffPublication({
-    queues: new AgentQueueStore(path.join(root, "agent-queues")),
+    queues: new AgentQueueStore(path.join(root, "agent-queues"), {
+      uploads: new FileUploadStore({ paseoHome: root }),
+    }),
     projects,
     workspaces,
     agents,
@@ -847,8 +877,10 @@ test.each([
       throw new Error("interrupted publication");
     }
   };
+  const upload = await capturedQueuedUpload();
   const queue: HandoffQueue = {
-    version: 1,
+    version: 2,
+    files: [upload.captured],
     entries: [
       {
         id: "queued-user-message",
@@ -884,9 +916,21 @@ test.each([
           { type: "image", mimeType: "image/png", data: "aGVsbG8=" },
         ],
       },
+      {
+        id: "pending-file",
+        origin: "user",
+        senderAgentId: null,
+        createdAt: "2026-10-10T00:00:03Z",
+        prompt: [upload.captured.attachment],
+      },
     ],
   };
-  const fixture = await nativeDestinationFixture({ publication: interrupted, write, queue });
+  const fixture = await nativeDestinationFixture({
+    publication: interrupted,
+    write,
+    queue,
+    queueBlobsDirectory: upload.directory,
+  });
   current = fixture.destination;
   const { transferId, options, reservation, manifest } = fixture;
   await current.stage(transferId);
@@ -924,7 +968,9 @@ test.each([
     { isVisible },
   );
   const recoveredAgents = new AgentStorage(path.join(root, "agents"), logger, isVisible);
-  const recoveredQueues = new AgentQueueStore(path.join(root, "agent-queues"));
+  const recoveredQueues = new AgentQueueStore(path.join(root, "agent-queues"), {
+    uploads: new FileUploadStore({ paseoHome: root }),
+  });
   await recoveredQueues.load();
   const recoveredPublication = createHandoffPublication({
     queues: recoveredQueues,
@@ -955,6 +1001,10 @@ test.each([
   expect(() => current.assertMutationAllowed({ cwd: reservation.destinationCwd })).not.toThrow();
   const agentId = reservation.agentMappings[0].destinationAgentId;
   const importedQueue = await recoveredQueues.exportForHandoff(agentId);
+  const importedUpload = importedQueue.files?.[0].attachment;
+  if (!importedUpload) throw new Error("Missing installed queued file");
+  expect(await readFile(importedUpload.path)).toEqual(upload.bytes);
+  expect(importedUpload.path).not.toBe(upload.captured.attachment.path);
   expect(
     importedQueue.entries.map(({ origin, senderAgentId, prompt }) => ({
       origin,
@@ -986,6 +1036,7 @@ test.each([
         { type: "image", mimeType: "image/png", data: "aGVsbG8=" },
       ],
     },
+    { origin: "user", senderAgentId: null, prompt: [importedUpload] },
   ]);
   expect(parseAgentMessage(String(importedQueue.entries[1].prompt))?.source?.agentId).toBe(agentId);
   expect(await recoveredQueues.dequeueNext(agentId)).toBeNull();
@@ -1030,33 +1081,58 @@ test("refuses a queued sender outside the transferred conversations before publi
   await expect(readdir(reservation.stagingCwd)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
-test("refuses a conversation blob absent from the signed archive inventory", async () => {
-  const { options, transferId, manifest } = await nativeDestinationFixture();
-  await options.archives.withVerifiedArchive(transferId, async (archive) => {
-    const expected = {
-      sourceServerId,
-      sourceWorkspaceId: "source-workspace",
-      sourceAgentIds: ["source-agent"],
-      manifestDigest: manifest.entrypoint.sha256,
-    };
-    const content = await readHandoffBundle(archive, expected);
-    const session = content.sessions.get("source-agent");
-    if (!session) throw new Error("Missing captured session");
-    const omitted = session.files[0].blob.sha256;
-    const incomplete = {
-      ...manifest,
-      blobs: manifest.blobs.filter((blob) => blob.sha256 !== omitted),
-    };
-    const receiver = new HandoffArchiveStore(path.join(root, "incomplete-archive"));
-    const files = new Map(
-      incomplete.blobs.map((blob) => [blob.sha256, path.join(archive.blobsDirectory, blob.sha256)]),
-    );
-    await receiver.importLocal({ id: transferId, manifest: incomplete, files });
-    await expect(
-      receiver.withVerifiedArchive(transferId, (verified) => readHandoffBundle(verified, expected)),
-    ).rejects.toMatchObject({ code: "invalid_artifact" });
-  });
-});
+test.each(["conversation", "queued upload"])(
+  "refuses a %s blob absent from the signed archive inventory",
+  async (kind) => {
+    const upload = await capturedQueuedUpload();
+    const { options, transferId, manifest } = await nativeDestinationFixture({
+      queueBlobsDirectory: upload.directory,
+      queue: {
+        version: 2,
+        files: [upload.captured],
+        entries: [
+          {
+            id: "pending-file",
+            origin: "user",
+            senderAgentId: null,
+            createdAt: "2026-10-10T00:00:00Z",
+            prompt: [upload.captured.attachment],
+          },
+        ],
+      },
+    });
+    await options.archives.withVerifiedArchive(transferId, async (archive) => {
+      const expected = {
+        sourceServerId,
+        sourceWorkspaceId: "source-workspace",
+        sourceAgentIds: ["source-agent"],
+        manifestDigest: manifest.entrypoint.sha256,
+      };
+      const content = await readHandoffBundle(archive, expected);
+      const session = content.sessions.get("source-agent");
+      if (!session) throw new Error("Missing captured session");
+      const omitted =
+        kind === "conversation" ? session.files[0].blob.sha256 : upload.captured.blob.sha256;
+      const incomplete = {
+        ...manifest,
+        blobs: manifest.blobs.filter((blob) => blob.sha256 !== omitted),
+      };
+      const receiver = new HandoffArchiveStore(path.join(root, "incomplete-archive"));
+      const files = new Map(
+        incomplete.blobs.map((blob) => [
+          blob.sha256,
+          path.join(archive.blobsDirectory, blob.sha256),
+        ]),
+      );
+      await receiver.importLocal({ id: transferId, manifest: incomplete, files });
+      await expect(
+        receiver.withVerifiedArchive(transferId, (verified) =>
+          readHandoffBundle(verified, expected),
+        ),
+      ).rejects.toMatchObject({ code: "invalid_artifact" });
+    });
+  },
+);
 
 test("cancellation after source cancellation removes only its inactive native session", async () => {
   const { destination, transferId, importedPath, claudeHome, options } =

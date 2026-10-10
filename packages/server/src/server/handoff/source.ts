@@ -60,7 +60,7 @@ import { HandoffHistorySegmentSchema, HANDOFF_PREVIOUS_SEGMENTS_MAX } from "./hi
 import type { HandoffDestination } from "./destination.js";
 import type { PullRequestWatcher } from "../pull-request-watch/watcher.js";
 import type { AgentQueueRunner } from "../agent-queue/runner.js";
-import { HANDOFF_QUEUE_MAX_BYTES } from "../agent-queue/store.js";
+import { HANDOFF_QUEUE_MAX_BYTES, handoffQueueBytes } from "../agent-queue/store.js";
 import {
   writeHandoffHistory,
   readHandoffHistory,
@@ -269,10 +269,7 @@ export class HandoffSource {
     const workspace = await previewWorkspace({ cwd: inventory.cwd });
     const terminals = await this.sourceTerminals(inventory);
     const review = await this.reviewWriters(inventory, terminals);
-    const queuedMessages = await this.previewQueues(
-      inventory.agentIds,
-      review.pullRequestWatches ?? [],
-    );
+    const queued = await this.previewQueues(inventory.agentIds, review.pullRequestWatches ?? []);
     return {
       workspaceId,
       cwd: inventory.cwd,
@@ -283,7 +280,8 @@ export class HandoffSource {
         agentIds: review.agents.map(({ id }) => id),
         terminals: terminals.map((terminal) => ({ id: terminal.id, name: terminal.name })),
         setupOperations: review.setupIds.length,
-        queuedMessages,
+        queuedMessages: queued.count,
+        queuedBytes: queued.bytes,
         review,
       },
     };
@@ -422,7 +420,13 @@ export class HandoffSource {
         const artifactDirectory = path.join(directory, `conversation-${index}`);
         const historyPath = path.join(directory, `history-${index}.json`);
         const queuePath = path.join(directory, `queue-${index}.json`);
-        await writeJournal(queuePath, await this.options.queues.exportForHandoff(record.id));
+        const queueBlobsDirectory = path.join(directory, "queue-files");
+        await writeJournal(
+          queuePath,
+          await this.options.queues.exportForHandoff(record.id, {
+            blobsDirectory: queueBlobsDirectory,
+          }),
+        );
         if (!record.persistence) {
           const { agent, previous } = await this.contextAgent(record, {
             artifactDirectory,
@@ -436,6 +440,7 @@ export class HandoffSource {
             historyPath,
             pendingRestartNote: agent.pendingRestartNote,
             queuePath,
+            queueBlobsDirectory,
             mode: "context",
             origin: agent.origin,
             previous,
@@ -494,6 +499,7 @@ export class HandoffSource {
           historyPath,
           pendingRestartNote: agent.pendingRestartNote,
           queuePath,
+          queueBlobsDirectory,
           previous,
         });
       }
@@ -631,7 +637,7 @@ export class HandoffSource {
   private async previewQueues(
     agentIds: string[],
     watches: NonNullable<HandoffStoppedWorkReview["pullRequestWatches"]>,
-  ): Promise<number> {
+  ): Promise<{ count: number; bytes: number }> {
     let count = 0;
     let bytes = 0;
     for (const agentId of agentIds) {
@@ -656,11 +662,11 @@ export class HandoffSource {
       )
         refuse("invalid_source", "Queued message sender is outside the transferred conversations");
       count += queue.entries.length;
-      bytes += Buffer.byteLength(JSON.stringify(queue));
+      bytes += handoffQueueBytes(queue);
       if (bytes > HANDOFF_QUEUE_MAX_BYTES)
         refuse("invalid_source", "Queued messages exceed the handoff byte limit");
     }
-    return count;
+    return { count, bytes };
   }
 
   private async stopWatches(source: SourceHandoffStatus) {

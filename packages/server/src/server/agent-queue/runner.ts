@@ -135,8 +135,13 @@ export class AgentQueueRunner {
     return this.store.exportForHandoff(agentId, options);
   }
 
-  installHandoffQueue(agentId: string, reservationId: string, queue: HandoffQueue): Promise<void> {
-    return this.store.installHandoffQueue(agentId, reservationId, queue);
+  installHandoffQueue(
+    agentId: string,
+    reservationId: string,
+    queue: HandoffQueue,
+    options?: Parameters<AgentQueueStore["installHandoffQueue"]>[3],
+  ): Promise<void> {
+    return this.store.installHandoffQueue(agentId, reservationId, queue, options);
   }
 
   async enqueue(

@@ -1,7 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { claudeProjectDirSync } from "../../../server/src/server/agent/providers/claude/project-dir";
-import { mkdir, mkdtemp, readFile, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  rmdir,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { expect, test, type Page } from "../support/fixtures";
 import { pressDirectNewTabShortcut } from "../support/helpers/launcher";
@@ -208,7 +218,17 @@ test.describe("workspace handoff", () => {
           },
         };
         await writeFile(watchFile, JSON.stringify({ version: 1, watches: [watch] }));
-        await host.source.seedHeldQueue(native.id, "Keep this queued task");
+        const uploadBytes = new Uint8Array(64 * 1024).fill(42);
+        const upload = await host.sourceClient.uploadFile({
+          fileName: "pending.dat",
+          mimeType: "application/octet-stream",
+          bytes: uploadBytes,
+        });
+        if (!upload.file) throw new Error("Missing queued upload fixture");
+        await host.source.seedHeldQueue(native.id, [
+          { type: "text", text: "Keep this queued task" },
+          upload.file,
+        ]);
         await openHandoff(page);
         await page.getByTestId("handoff-host-trigger").click();
         await page.getByTestId(`handoff-host-${host.destination.serverId}`).click();
@@ -233,6 +253,9 @@ test.describe("workspace handoff", () => {
           "Claude workflow state needs an explicit disposition before native continuation",
         );
         await expect(page.getByTestId("handoff-submit")).toBeEnabled();
+        const dataReview = page.getByTestId("handoff-data-review");
+        await expect(dataReview).toContainText(/KiB/);
+        expect(Number.parseInt((await dataReview.textContent()) ?? "", 10)).toBeGreaterThan(64);
         await expect(page.getByTestId("handoff-pr-watches-review")).toContainText(
           "#42 · Finish the prior PR task",
         );
@@ -294,6 +317,12 @@ test.describe("workspace handoff", () => {
           held: true,
           entries: [{ origin: "user", textPreview: "Keep this queued task" }],
         });
+        const destinationUploadRoot = path.join(host.destination.paseoHome, "uploads");
+        const uploadDirectories = await readdir(destinationUploadRoot);
+        expect(uploadDirectories).toHaveLength(1);
+        expect(
+          await readFile(path.join(destinationUploadRoot, uploadDirectories[0], "pending.dat")),
+        ).toEqual(Buffer.from(uploadBytes));
         expect(active.result?.conversationModes).toEqual(
           expect.arrayContaining([
             { sourceAgentId: native.id, mode: "native" },

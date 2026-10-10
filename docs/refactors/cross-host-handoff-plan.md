@@ -568,14 +568,19 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   ownership admission; a handoff refusal restores an entry already taken for delivery with its
   prompt intact. Cancellation leaves pending messages held until explicit resume. The queue and
   isolated-daemon regressions are in the same stopped-work evidence. Version 4 bundles carry a
-  verified queue for every conversation. Text and embedded images arrive held at destination;
+  verified queue for every conversation. Text, embedded images and typed uploaded files arrive held
+  at destination;
   installation retries preserve message identity and order without duplicates. Senders moving in
   the same transfer receive their destination identity, including structured reply guidance. Release
   rechecks the captured prompts. Browser checks cover the held destination and return transfer; see
   the [desktop](../qa-evidence/handoff-queue-desktop.png) and
   [compact](../qa-evidence/handoff-queue-compact.png) review screenshots.
-  Source-local attachments and senders outside the transfer refuse preparation. Their portability,
-  delegation and other system-notification dispositions, and uncertain delivery after a crash remain open.
+  Uploaded files travel as verified blobs and receive stable destination upload paths; changed source
+  bytes or conflicting destination files refuse completion. The queue limit and review estimate
+  include file bytes.
+  Review/project-path attachments and senders outside the transfer still refuse preparation. Their
+  portability, paths already flattened into prompt text, delegation and other system-notification
+  dispositions, and uncertain delivery after a crash remain open.
   Twenty-nine form cases cover unavailable modes, inventory changes, lost replies, storage failures,
   exclusion pagination, duplicate submissions, closing during work, cancellation recovery and host journals advancing
   past local state, including destination lookup and selection failures. Reconstructed records retain

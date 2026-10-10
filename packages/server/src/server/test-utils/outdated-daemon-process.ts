@@ -5,6 +5,7 @@ import { AgentProviderRuntimeSettingsMapSchema } from "@getpaseo/protocol/provid
 import { ClaudeAgentClient } from "../agent/providers/claude/agent.js";
 import { createTestAgentClients } from "./fake-agent-client.js";
 import { createTestPaseoDaemon } from "./paseo-daemon.js";
+import type { AgentPromptInput } from "../agent/agent-sdk-types.js";
 
 async function main(): Promise<void> {
   const metroPort = process.env.E2E_METRO_PORT;
@@ -43,7 +44,7 @@ async function main(): Promise<void> {
   // Browser fixtures seed pending work without sending a synthetic provider turn.
   process.on(
     "message",
-    (message: { type?: string; requestId: string; agentId: string; prompt: string }) => {
+    (message: { type?: string; requestId: string; agentId: string; prompt: AgentPromptInput }) => {
       if (message.type !== "seed-held-queue") return;
       void (async () => {
         const queue = daemon.daemon.agentManager.messageQueue;

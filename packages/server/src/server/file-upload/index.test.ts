@@ -1,6 +1,8 @@
 import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { syncFilePublication } from "../atomic-file.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -20,6 +22,123 @@ describe("file uploads", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it.skipIf(process.platform === "win32").each([
+    { label: "binary", bytes: Buffer.from([0, 255, 128, 10]) },
+    { label: "empty", bytes: Buffer.alloc(0) },
+  ])(
+    "captures and durably installs a $label queued upload with a stable destination path",
+    async ({ bytes }) => {
+      const sourceHome = makePaseoHome();
+      const destinationHome = makePaseoHome();
+      const source = new FileUploadStore({ paseoHome: sourceHome });
+      source.beginUpload({
+        type: "file.upload.request",
+        requestId: "handoff-file",
+        fileName: "résumé.bin",
+        mimeType: "application/octet-stream",
+        size: bytes.length,
+      });
+      await source.receiveFrame(uploadBegins("handoff-file"));
+      await source.receiveFrame({
+        ...uploadChunk("handoff-file", ""),
+        payload: bytes,
+      });
+      const completed = await source.receiveFrame(uploadEnds("handoff-file"));
+      const attachment = completed?.payload.file;
+      if (!attachment) throw new Error("Missing uploaded file");
+      const blobs = join(sourceHome, "captured");
+      const captured = await source.captureForHandoff(attachment, {
+        maxBytes: 16,
+        directory: blobs,
+      });
+      expect(captured.attachment).toEqual(attachment);
+      let failOnce = true;
+      const destination = new FileUploadStore({
+        paseoHome: destinationHome,
+        sync: async (file, directory) => {
+          await syncFilePublication(file, directory);
+          if (failOnce) {
+            failOnce = false;
+            throw new Error("upload sync acknowledgement lost");
+          }
+        },
+      });
+      await expect(
+        destination.installForHandoff(captured, join(blobs, captured.blob.sha256), "reservation"),
+      ).rejects.toThrow("upload sync acknowledgement lost");
+      const installed = await new FileUploadStore({ paseoHome: destinationHome }).installForHandoff(
+        captured,
+        join(blobs, captured.blob.sha256),
+        "reservation",
+      );
+      expect(installed).toMatchObject({
+        fileName: "résumé.bin",
+        size: bytes.length,
+        mimeType: "application/octet-stream",
+      });
+      expect(installed.path.startsWith(destinationHome)).toBe(true);
+      expect(installed.id).not.toBe(attachment.id);
+      expect(await readFile(installed.path)).toEqual(bytes);
+      expect(
+        await new FileUploadStore({ paseoHome: destinationHome }).installForHandoff(
+          captured,
+          join(blobs, captured.blob.sha256),
+          "reservation",
+        ),
+      ).toEqual(installed);
+      await writeFile(installed.path, "changed");
+      await expect(
+        destination.installForHandoff(captured, join(blobs, captured.blob.sha256), "reservation"),
+      ).rejects.toThrow("differs");
+      expect(await readFile(installed.path, "utf8")).toBe("changed");
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "refuses foreign paths, changed sizes and symlinked upload files or directories",
+    async () => {
+      const paseoHome = makePaseoHome();
+      const uploads = new FileUploadStore({ paseoHome });
+      const directory = join(paseoHome, "uploads", "upload_legacy-request");
+      await mkdir(directory, { recursive: true });
+      const attachment = {
+        type: "uploaded_file" as const,
+        id: "upload_legacy-request",
+        path: join(directory, "data.bin"),
+        fileName: "data.bin",
+        mimeType: "application/octet-stream",
+        size: 4,
+      };
+      await writeFile(attachment.path, "data");
+      await expect(
+        uploads.captureForHandoff(
+          { ...attachment, path: join(paseoHome, "outside") },
+          { maxBytes: 10 },
+        ),
+      ).rejects.toThrow("outside its source store");
+      await expect(
+        uploads.captureForHandoff({ ...attachment, size: 3 }, { maxBytes: 10 }),
+      ).rejects.toThrow("size differs");
+      await expect(uploads.captureForHandoff(attachment, { maxBytes: 3 })).rejects.toThrow(
+        "file size",
+      );
+      const outside = join(paseoHome, "outside");
+      await mkdir(outside);
+      await writeFile(join(outside, "data.bin"), "data");
+      await rm(attachment.path);
+      await symlink(join(outside, "data.bin"), attachment.path);
+      await expect(uploads.captureForHandoff(attachment, { maxBytes: 10 })).rejects.toMatchObject({
+        code: "ELOOP",
+      });
+      await rm(directory, { recursive: true });
+      await symlink(outside, directory);
+      await expect(uploads.captureForHandoff(attachment, { maxBytes: 10 })).rejects.toThrow(
+        "not a real directory",
+      );
+      expect(await readFile(join(outside, "data.bin"), "utf8")).toBe("data");
+    },
+  );
 
   it("stores chunked upload bytes and returns an uploaded-file attachment", async () => {
     const paseoHome = makePaseoHome();

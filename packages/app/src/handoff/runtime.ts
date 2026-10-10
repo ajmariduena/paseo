@@ -181,10 +181,11 @@ export const handoffFormPorts: HandoffFormPorts = {
       !workspace?.reviewDigest ||
       !stoppedWork?.review?.pullRequestWatches ||
       stoppedWork.queuedMessages === undefined ||
+      stoppedWork.queuedBytes === undefined ||
       !integrationReview
     )
       throw new Error(i18n.t("handoff.updateHosts"));
-    let conversationBytes = 0;
+    let conversationBytes = stoppedWork.queuedBytes;
     for (const conversation of conversations) {
       if (conversation.state !== "available") continue;
       if (conversation.artifactBytes === undefined) throw new Error(i18n.t("handoff.updateHosts"));

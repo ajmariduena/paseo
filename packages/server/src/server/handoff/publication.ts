@@ -19,6 +19,7 @@ export interface HandoffPublicationInput {
   bundle: HandoffBundle;
   workspace: WorkspaceManifest;
   queues: ReadonlyMap<string, HandoffQueue>;
+  queueBlobsDirectory: string;
 }
 export interface HandoffPublication {
   install(input: HandoffPublicationInput): Promise<void>;
@@ -35,7 +36,7 @@ interface PublicationStores {
 /** Registry reads remain gated by the destination journal until every write is durable. */
 export function createHandoffPublication(stores: PublicationStores): HandoffPublication {
   return {
-    async install({ record, workspace, bundle, queues }) {
+    async install({ record, workspace, bundle, queues, queueBlobsDirectory }) {
       if (!record.activationAt) throw new Error("Handoff activation timestamp is missing");
       const timestamp = record.activationAt;
       const displayName =
@@ -127,6 +128,7 @@ export function createHandoffPublication(stores: PublicationStores): HandoffPubl
             mapping.destinationAgentId,
             record.reservationId,
             remapped,
+            { blobsDirectory: queueBlobsDirectory },
           );
         }
       }

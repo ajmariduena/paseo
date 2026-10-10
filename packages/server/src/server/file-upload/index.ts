@@ -1,14 +1,41 @@
-import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, rm, writeFile } from "node:fs/promises";
-import { basename, extname, join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { appendFile, link, lstat, mkdir, open, rm, writeFile } from "node:fs/promises";
+import { basename, extname, join, resolve } from "node:path";
+import { z } from "zod";
 
 import { FileTransferOpcode, type FileTransferFrame } from "@getpaseo/protocol/binary-frames/index";
 import { getErrorMessage } from "@getpaseo/protocol/error-utils";
 import type { FileUploadRequest, FileUploadResponse } from "../messages.js";
+import {
+  UploadedFileAttachmentSchema,
+  type UploadedFileAttachment,
+} from "@getpaseo/protocol/messages";
+import { HandoffBlobSchema } from "@getpaseo/protocol/handoff";
+import { readBoundedFile } from "../handoff/artifacts.js";
+import { syncFilePublication, writeFileAtomic } from "../atomic-file.js";
+
+export const CapturedUploadSchema = z.object({
+  attachment: UploadedFileAttachmentSchema,
+  blob: HandoffBlobSchema,
+});
+export type CapturedUpload = z.infer<typeof CapturedUploadSchema>;
+export const HANDOFF_UPLOAD_MAX_BYTES = 64 * 1024 * 1024;
+
+export function parseCapturedUpload(value: unknown): CapturedUpload {
+  const captured = CapturedUploadSchema.parse(value);
+  validateUploadMetadata(captured.attachment);
+  if (
+    captured.blob.size !== captured.attachment.size ||
+    captured.blob.size > HANDOFF_UPLOAD_MAX_BYTES
+  )
+    throw new Error("Captured upload size differs from its attachment");
+  return captured;
+}
 
 interface FileUploadStoreOptions {
   paseoHome: string;
   staleUploadTimeoutMs?: number;
+  sync?: typeof syncFilePublication;
 }
 
 interface PendingUpload {
@@ -33,13 +60,82 @@ export class FileUploadStore {
 
   private readonly paseoHome: string;
   private readonly staleUploadTimeoutMs: number;
+  private readonly sync: typeof syncFilePublication;
   private readonly defaultSource = {};
   private readonly pending = new Map<object, Map<string, PendingUpload>>();
 
   constructor(options: FileUploadStoreOptions) {
     this.paseoHome = options.paseoHome;
+    this.sync = options.sync ?? syncFilePublication;
     this.staleUploadTimeoutMs =
       options.staleUploadTimeoutMs ?? FileUploadStore.defaultStaleUploadTimeoutMs;
+  }
+
+  /** Read only files owned by this upload store, never a path supplied by an imported archive. */
+  async captureForHandoff(
+    attachment: UploadedFileAttachment,
+    options: { maxBytes: number; directory?: string },
+  ): Promise<CapturedUpload> {
+    validateUploadMetadata(attachment);
+    const root = join(this.paseoHome, "uploads");
+    const directory = join(root, attachment.id);
+    const filePath = join(directory, attachment.fileName);
+    if (resolve(attachment.path) !== resolve(filePath))
+      throw new Error("Queued upload is outside its source store");
+    await requireDirectory(root);
+    await requireDirectory(directory);
+    const bytes = await readBoundedFile(
+      filePath,
+      Math.min(options.maxBytes, HANDOFF_UPLOAD_MAX_BYTES),
+    );
+    if (bytes.length !== attachment.size)
+      throw new Error("Queued upload size differs from its attachment");
+    const blob = { sha256: sha256(bytes), size: bytes.length };
+    if (options.directory) {
+      const capturedPath = join(options.directory, blob.sha256);
+      await writeFileAtomic(capturedPath, bytes);
+      await this.sync(capturedPath, options.directory);
+    }
+    return { attachment, blob };
+  }
+
+  /** Link a complete durable file into its reserved path; a retry cannot replace other bytes. */
+  async installForHandoff(
+    input: CapturedUpload,
+    blobPath: string,
+    reservationId: string,
+  ): Promise<UploadedFileAttachment> {
+    const captured = parseCapturedUpload(input);
+    const bytes = await readBoundedFile(blobPath, captured.blob.size);
+    requireUploadBytes(bytes, captured);
+    const id = `upload_handoff_${sha256(JSON.stringify([reservationId, captured]))}`;
+    const root = join(this.paseoHome, "uploads");
+    await mkdir(root, { recursive: true, mode: 0o700 });
+    await requireDirectory(root);
+    const directory = join(root, id);
+    await mkdir(directory, { mode: 0o700 }).catch((error: unknown) => {
+      if (!hasCode(error, "EEXIST")) throw error;
+    });
+    await requireDirectory(directory);
+    const filePath = join(directory, captured.attachment.fileName);
+    const temporary = join(directory, `.${randomUUID()}.tmp`);
+    const file = await open(temporary, "wx", 0o600);
+    try {
+      try {
+        await file.writeFile(bytes);
+        await file.sync();
+      } finally {
+        await file.close();
+      }
+      await link(temporary, filePath).catch((error: unknown) => {
+        if (!hasCode(error, "EEXIST")) throw error;
+      });
+      requireUploadBytes(await readBoundedFile(filePath, HANDOFF_UPLOAD_MAX_BYTES), captured);
+      await this.sync(filePath, this.paseoHome);
+    } finally {
+      await rm(temporary, { force: true });
+    }
+    return { ...captured.attachment, id, path: filePath };
   }
 
   beginUpload(
@@ -198,6 +294,33 @@ export class FileUploadStore {
   private async removeUploadDirectory(upload: PendingUpload): Promise<void> {
     await rm(join(this.paseoHome, "uploads", upload.id), { recursive: true, force: true });
   }
+}
+
+function hasCode(error: unknown, code: string): boolean {
+  return error instanceof Error && "code" in error && error.code === code;
+}
+
+async function requireDirectory(directory: string): Promise<void> {
+  if (!(await lstat(directory)).isDirectory())
+    throw new Error("Upload directory is not a real directory");
+}
+
+function validateUploadMetadata(attachment: UploadedFileAttachment): void {
+  if (
+    !/^upload_[a-zA-Z0-9_-]{1,240}$/.test(attachment.id) ||
+    !attachment.path ||
+    sanitizeFileName(attachment.fileName) !== attachment.fileName
+  )
+    throw new Error("Invalid queued upload identity or filename");
+}
+
+function sha256(bytes: Buffer | string): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function requireUploadBytes(bytes: Buffer, captured: CapturedUpload): void {
+  if (bytes.length !== captured.blob.size || sha256(bytes) !== captured.blob.sha256)
+    throw new Error("Queued upload content differs from its captured bytes");
 }
 
 function buildUploadResponse(upload: PendingUpload, error: string | null): FileUploadResponse {
