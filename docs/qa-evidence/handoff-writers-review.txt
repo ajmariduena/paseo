@@ -22,8 +22,8 @@ $ npx vitest run --config packages/server/vitest.config.ts packages/server/src/s
     Duration  1.99s (tests 1.24s)
 The repaired case proves no setup/terminal stop, archive publication, teardown or file deletion
 before successful inventory recovery, then proves normal cleanup still works after repair.
-This closes the corrupt-inventory path. Durable source retention and backing-checkout identity
-remain separate implementation work.
+This closes the corrupt-inventory path. The source-retention work below builds on that boundary;
+backing-checkout identity remains separate implementation work.
 
 Opening-bound cleanup — the real worktree regression explicitly archived a workspace, recreated
 its checkout and reopened the same workspace ID. Its old schedule cleanup previously archived and
@@ -58,9 +58,49 @@ This establishes the intended existing-owner case without admitting a new owner 
 Build:server, root typecheck, lint and formatting pass. These are Linux results; CI owns native
 macOS/Windows coverage. No production daemon restart or real provider call occurred.
 
-This opening token does not identify an externally replaced backing checkout. The per-workspace
-retention marker, fixed-point stop closure, retained-agent continuation gate and physical-stop proof
-remain required before the full source-retained-job contract can be advertised.
+This opening token does not identify an externally replaced backing checkout. Fixed-point stop
+closure, retained-agent continuation admission and physical-stop proof remain required before the
+full source-retained-job contract can be advertised.
+
+Durable retained-workspace protection — a second real-worktree regression loaded a retained
+workspace through a fresh registry and requested automatic cleanup with its matching opening.
+Before the change, cleanup returned removedDirectory: true and archived the workspace. The registry
+now preserves a handoff retention marker, checks the expected opening before publishing it, and
+synchronizes file and directory publication before acknowledgement. Failed writes, lost rename
+acknowledgements and failed synchronization keep the exact candidate; later reads and mutations
+must repair it first. Stale upserts and updater snapshots cannot remove the protection. Explicit
+workspace archive clears it, and an old retained snapshot cannot restore it into a new opening.
+
+Automatic workspace/agent cleanup and missing-directory reconciliation preserve retained work.
+Skipped created-worktree cleanup no longer emits an agent-remove notification. The real scheduler
+test creates a managed Git worktree outside its configured source directory, changes tracked bytes,
+publishes retention, stops its held test-provider turn and runs ordinary finally cleanup. It then
+loads a cold registry, exercises interrupted-run cleanup, deletes the schedule, resumes the agent
+explicitly and repeats cleanup. The uncommitted bytes, active workspace and unarchived conversation
+survive. A separate real checkout case proves explicit archive can still remove the retained tree.
+
+$ npx vitest run packages/server/src/server/workspace-archive-service.test.ts -t 'automatic cleanup preserves a source-retained' --bail=1
+  Red: 1 failed, 31 skipped; cleanup archived the retained workspace and removed its directory.
+  Green after the fix: 1 passed, 31 skipped.
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/workspace-registry.test.ts packages/server/src/server/workspace-archive-service.test.ts packages/server/src/server/workspace-reconciliation-service.test.ts packages/server/src/server/schedule/service.test.ts --bail=1
+  Registry, archive and scheduler files passed. Reconciliation exposed a stale exact-object
+  expectation omitting the opening identity added earlier: 166 passed, 1 failed, 15 not run.
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/workspace-reconciliation-service.test.ts --bail=1
+  After correcting that expectation: 27 passed.
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/agent/create-agent-lifecycle-dispatch.test.ts --bail=1
+  3 passed, including agent-only and created-worktree completion with retained records.
+Together the five affected files cover 185 passing cases; no full repository suite was run.
+Root typecheck and lint pass. Initial focused runs also corrected two test-fixture API calls
+before reaching the continuation and lifecycle assertions; those were not product failures.
+
+Limits: the scheduler test publishes retention through the registry operation directly. Source
+preparation still refuses the external-job case; it must calculate the reviewed stop closure,
+publish its temporary scopes in a versioned journal, drain prior destructive admissions, and
+publish these markers before stopping those writers. The queue/agent gate allowing only explicit
+continuation, uncertain stop recovery, backing-checkout identity and physical MacBook/VPS proof
+remain unfinished. These tests use real stores, Git and lifecycle services with controlled providers
+on Linux; they do not establish authenticated provider continuity, power-loss behavior or native
+macOS/Windows behavior. No main daemon restart occurred.
 
 The initial network regression reproduced an unreviewed same-name replacement
 terminal being stopped and the transfer reaching staged state. Source preview now

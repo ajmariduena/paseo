@@ -10,9 +10,11 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { AgentManager } from "../agent/agent-manager.js";
 import { AgentStorage } from "../agent/agent-storage.js";
+import { ensureAgentLoaded } from "../agent/agent-loading.js";
 import { createAgentCommand } from "../agent/create-agent/create.js";
 import type {
   AgentCapabilityFlags,
@@ -41,6 +43,7 @@ import {
   FileBackedWorkspaceRegistry,
 } from "../workspace-registry.js";
 import { archiveByScope, type ActiveWorkspaceRef } from "../workspace-archive-service.js";
+import { createWorktree } from "../../utils/worktree.js";
 import {
   ScheduleService,
   ScheduleTargetGoneError,
@@ -135,6 +138,7 @@ function createScheduleService(options: TestScheduleServiceOptions): ScheduleSer
       .map((workspace) => ({
         workspaceId: workspace.workspaceId,
         incarnation: workspace.incarnation,
+        retention: workspace.retention,
         cwd: workspace.cwd,
         kind: workspace.kind,
       }));
@@ -212,6 +216,7 @@ function createScheduleService(options: TestScheduleServiceOptions): ScheduleSer
 async function createRegistryBackedScheduleWorkspaceDeps(rootDir: string): Promise<{
   workspaceRegistry: FileBackedWorkspaceRegistry;
   createDirectoryWorkspace: ScheduleServiceOptions["createDirectoryWorkspace"];
+  createPaseoWorktreeWorkspace: ScheduleServiceOptions["createPaseoWorktreeWorkspace"];
   createArchiveWorkspace: (input: {
     agentManager: AgentManager;
     agentStorage: AgentStorage;
@@ -243,6 +248,31 @@ async function createRegistryBackedScheduleWorkspaceDeps(rootDir: string): Promi
         input.firstAgentContext.prompt,
       );
     },
+    createPaseoWorktreeWorkspace: async (input) => {
+      const worktree = await createWorktree({
+        cwd: input.cwd,
+        worktreeSlug: "retained-job",
+        paseoHome: rootDir,
+        runSetup: false,
+        source: { kind: "branch-off", baseBranch: "main", branchName: "retained-job" },
+      });
+      const workspace = await workspaceProvisioning.createWorkspaceForWorktree({
+        sourceCwd: input.cwd,
+        repoRoot: input.cwd,
+        cwd: worktree.worktreePath,
+        worktreeRoot: worktree.worktreePath,
+        branch: worktree.branchName,
+        baseBranch: "main",
+        title: input.firstAgentContext.prompt,
+      });
+      return {
+        workspace,
+        worktree,
+        intent: { kind: "branch-off", baseBranch: "main", branchName: worktree.branchName },
+        repoRoot: input.cwd,
+        created: true,
+      };
+    },
     createArchiveWorkspace:
       ({ agentManager, agentStorage, logger = createTestLogger() }) =>
       async (workspaceId, expectedIncarnation) => {
@@ -250,6 +280,7 @@ async function createRegistryBackedScheduleWorkspaceDeps(rootDir: string): Promi
         try {
           await archiveByScope(
             {
+              paseoHome: rootDir,
               github: { invalidate: () => {} } as never,
               workspaceGitService,
               agentManager,
@@ -257,14 +288,8 @@ async function createRegistryBackedScheduleWorkspaceDeps(rootDir: string): Promi
               findWorkspaceIdForCwd: async (cwd) =>
                 resolveWorkspaceIdForPath(cwd, await workspaceRegistry.list()),
               listActiveWorkspaces: async () =>
-                (await workspaceRegistry.list())
-                  .filter((workspace) => !workspace.archivedAt)
-                  .map((workspace) => ({
-                    workspaceId: workspace.workspaceId,
-                    incarnation: workspace.incarnation,
-                    cwd: workspace.cwd,
-                    kind: workspace.kind,
-                  })),
+                (await workspaceRegistry.list()).filter((workspace) => !workspace.archivedAt),
+              getWorkspace: (id) => workspaceRegistry.get(id),
               archiveWorkspaceRecord: async (id) => {
                 await workspaceRegistry.archive(id, new Date().toISOString());
               },
@@ -1802,6 +1827,144 @@ describe("ScheduleService", () => {
       }),
     ]);
   });
+
+  test.skipIf(process.platform === "win32")(
+    "a retained scheduled worktree survives stop, restart cleanup, continuation and schedule deletion",
+    async () => {
+      const repo = join(await realpath(tempDir), "source-project");
+      await mkdir(repo);
+      await writeFile(join(repo, "work.txt"), "Committed work");
+      const git = (args: string[]) =>
+        execFileSync("git", args, {
+          cwd: repo,
+          env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
+          stdio: "pipe",
+        });
+      git(["init", "--initial-branch=main"]);
+      git(["add", "."]);
+      git([
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.test",
+        "-c",
+        "commit.gpgSign=false",
+        "commit",
+        "-m",
+        "Initial work",
+      ]);
+      const workspaceDeps = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+      const manager = new AgentManager({
+        logger: createTestLogger(),
+        clients: createTestAgentClients(),
+        registry: agentStorage,
+      });
+      const options = {
+        paseoHome: tempDir,
+        logger: createTestLogger(),
+        agentManager: manager,
+        agentStorage,
+        providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+        now: () => now,
+        createDirectoryWorkspace: workspaceDeps.createDirectoryWorkspace,
+        createPaseoWorktreeWorkspace: workspaceDeps.createPaseoWorktreeWorkspace,
+      };
+      const service = createScheduleService({
+        ...options,
+        archiveWorkspace: workspaceDeps.createArchiveWorkspace({
+          agentManager: manager,
+          agentStorage,
+        }),
+      });
+      const schedule = await service.create({
+        prompt: "Keep the unfinished implementation",
+        cadence: { type: "every", everyMs: 60_000 },
+        runOnCreate: false,
+        target: {
+          type: "new-agent",
+          config: { provider: "claude", cwd: repo, isolation: "worktree", archiveOnFinish: true },
+        },
+      });
+      const started = holdScheduledTestRun(manager);
+      const execution = service.runOnce(schedule.id);
+      const agentId = await started;
+      try {
+        const run = (await service.inspect(schedule.id)).runs[0]!;
+        const workspace = (await workspaceDeps.workspaceRegistry.get(run.workspaceId!))!;
+        expect(workspace.cwd).not.toBe(repo);
+        await writeFile(join(workspace.cwd, "work.txt"), "Uncommitted retained work");
+        const retained = await workspaceDeps.workspaceRegistry.retainForHandoff({
+          workspaceId: workspace.workspaceId,
+          expectedIncarnation: run.workspaceIncarnation!,
+          transferId: randomUUID(),
+          retainedAt: now.toISOString(),
+        });
+        await manager.closeAgent(agentId);
+        expect((await execution).runs).toMatchObject([
+          { id: run.id, status: "failed", error: `Scheduled agent ${agentId} was canceled` },
+        ]);
+        expect(await readFile(join(workspace.cwd, "work.txt"), "utf8")).toBe(
+          "Uncommitted retained work",
+        );
+        expect((await agentStorage.get(agentId))?.archivedAt).toBeUndefined();
+        expect(await workspaceDeps.workspaceRegistry.get(workspace.workspaceId)).toEqual(retained);
+        await service.stop();
+
+        // Exercise the boot cleanup path with an interrupted run and a cold registry.
+        const store = new ScheduleStore(join(tempDir, "schedules"), createTestLogger());
+        await store.update(schedule.id, (record) => ({
+          ...record,
+          status: "paused",
+          nextRunAt: null,
+          runs: [run],
+        }));
+        const coldDeps = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+        const coldManager = new AgentManager({
+          logger: createTestLogger(),
+          clients: createTestAgentClients(),
+          registry: agentStorage,
+        });
+        const cleanup = coldDeps.createArchiveWorkspace({
+          agentManager: coldManager,
+          agentStorage,
+        });
+        const restarted = createScheduleService({
+          ...options,
+          agentManager: coldManager,
+          archiveWorkspace: cleanup,
+        });
+        try {
+          await restarted.start();
+          expect((await restarted.inspect(schedule.id)).runs[0].status).toBe("failed");
+          expect(await coldDeps.workspaceRegistry.get(workspace.workspaceId)).toEqual(retained);
+          expect((await agentStorage.get(agentId))?.archivedAt).toBeUndefined();
+          await restarted.delete(schedule.id);
+          await ensureAgentLoaded(agentId, {
+            agentManager: coldManager,
+            agentStorage,
+            logger: createTestLogger(),
+          });
+          const continued = await coldManager.runAgent(agentId, "Continue explicitly");
+          expect(continued.canceled).toBe(false);
+          await cleanup(workspace.workspaceId, run.workspaceIncarnation);
+          expect(await coldDeps.workspaceRegistry.get(workspace.workspaceId)).toEqual(retained);
+          expect((await agentStorage.get(agentId))?.archivedAt).toBeUndefined();
+          expect(await readFile(join(workspace.cwd, "work.txt"), "utf8")).toBe(
+            "Uncommitted retained work",
+          );
+        } finally {
+          await coldManager.closeAgent(agentId);
+          await coldManager.flush();
+          await restarted.stop();
+        }
+      } finally {
+        await manager.closeAgent(agentId);
+        await execution;
+        await manager.flush();
+        await service.stop();
+      }
+    },
+  );
 
   test("a scheduled run records its opening and cannot archive a reopened workspace", async () => {
     const { workspaceRegistry, createDirectoryWorkspace, createArchiveWorkspace } =

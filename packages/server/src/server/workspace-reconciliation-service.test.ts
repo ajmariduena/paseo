@@ -483,6 +483,62 @@ describe("WorkspaceReconciliationService", () => {
     });
   });
 
+  test.skipIf(process.platform === "win32")(
+    "reconciliation preserves retained workspace history when its directory is missing",
+    async () => {
+      const root = realpathSync(mkdtempSync(path.join(tmpdir(), "reconcile-retained-")));
+      tempDirs.push(root);
+      const projectRegistry = new FileBackedProjectRegistry(
+        path.join(root, "projects", "projects.json"),
+        createRealTestLogger(),
+      );
+      const file = path.join(root, "projects", "workspaces.json");
+      const registry = new FileBackedWorkspaceRegistry(file, createRealTestLogger());
+      await projectRegistry.upsert(
+        createPersistedProjectRecord({
+          projectId: "project",
+          rootPath: root,
+          kind: "non_git",
+          displayName: "Retained project",
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        }),
+      );
+      const workspace = createPersistedWorkspaceRecord({
+        workspaceId: "retained",
+        projectId: "project",
+        cwd: path.join(root, "missing"),
+        kind: "directory",
+        displayName: "Retained work",
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+      await registry.upsert(workspace);
+      const retained = await registry.retainForHandoff({
+        workspaceId: workspace.workspaceId,
+        expectedIncarnation: workspace.incarnation!,
+        transferId: randomUUID(),
+        retainedAt: timestamp,
+      });
+      const cold = new FileBackedWorkspaceRegistry(file, createRealTestLogger());
+      const archived: string[] = [];
+      const service = new WorkspaceReconciliationService({
+        projectRegistry,
+        workspaceRegistry: cold,
+        logger: createRealTestLogger(),
+        onWorkspaceArchived: (workspaceId) => {
+          archived.push(workspaceId);
+        },
+      });
+      const result = await service.runOnce();
+      expect(
+        result.changesApplied.filter((change) => change.kind === "workspace_archived"),
+      ).toEqual([]);
+      expect(archived).toEqual([]);
+      expect(await cold.get(workspace.workspaceId)).toEqual(retained);
+    },
+  );
+
   test("metadata reconciliation leaves missing workspaces active while a full pass archives them", async () => {
     const projectRoot = realpathSync(mkdtempSync(path.join(tmpdir(), "reconcile-metadata-only-")));
     const missingWorkspace = path.join(projectRoot, "missing-workspace");
@@ -926,6 +982,7 @@ describe("WorkspaceReconciliationService", () => {
     ]);
     expect(workspaces.get("w1")).toEqual({
       workspaceId: "w1",
+      incarnation: expect.any(String),
       projectId: "p1",
       cwd: missingWorkspace,
       kind: "directory",

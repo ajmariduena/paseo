@@ -367,13 +367,18 @@ export class WorkspaceReconciliationService {
     const missingWorkspaces = workspaceDirectoryStates
       .filter(
         ({ workspace, state }) =>
-          state === "missing" && reachableProjectIds.has(workspace.projectId),
+          state === "missing" &&
+          !workspace.retention &&
+          reachableProjectIds.has(workspace.projectId),
       )
       .map(({ workspace }) => workspace);
     await settleReconciliationWork(
       missingWorkspaces.map(async (workspace) => {
         const timestamp = new Date().toISOString();
-        await this.workspaceRegistry.archive(workspace.workspaceId, timestamp);
+        await this.workspaceRegistry.archive(workspace.workspaceId, timestamp, {
+          automatic: { expectedIncarnation: workspace.incarnation },
+        });
+        if (!(await this.workspaceRegistry.get(workspace.workspaceId))?.archivedAt) return;
         await this.onWorkspaceArchived?.(workspace.workspaceId);
         changes.push({
           kind: "workspace_archived",

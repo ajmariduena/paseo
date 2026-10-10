@@ -616,6 +616,15 @@ active opening skips cleanup; an explicit archive can still remove an archived c
 Check after admission and reserve the backing worktree before stopping or tearing down anything.
 The opening token does not prove that an external process has not replaced files at the same path.
 
+Retained source work belongs to the workspace registry, independently of the schedule that created
+it. Its `retention` marker survives continuation, metadata edits and schedule deletion. Automatic
+archive, including missing-directory reconciliation, leaves that workspace and its conversations
+available; explicit workspace archive consumes the marker. Publish retention only after fencing
+and draining earlier destructive operations, and acknowledge it only after file and directory
+synchronization. A failed publication keeps its candidate and must repair before later registry
+reads or writes can proceed. This protection does not certify process shutdown; source integration
+still follows the [handoff recovery contract](refactors/cross-host-handoff-plan.md#ownership-and-recovery).
+
 | Field                          | Type                                                         | Description                                                                                                                                                                                   |
 | ------------------------------ | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `workspaceId`                  | `string`                                                     | Opaque stable identifier (`wks_<hex>`), generated independently of the directory. MUST NOT be treated as a path; compare by exact equality. Use the `cwd` field for directory access.         |

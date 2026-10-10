@@ -260,6 +260,44 @@ async function handoffArchiveFixture() {
   return { tempDir, repoDir, cwd, workspace, registryPath, registry, deps, ownership, transfer };
 }
 
+test("automatic cleanup preserves a source-retained worktree after registry restart", async () => {
+  const { repoDir, cwd, workspace, registryPath, deps } = await handoffArchiveFixture();
+  const retention = {
+    kind: "handoff",
+    transferId: randomUUID(),
+    retainedAt: new Date().toISOString(),
+  };
+  writeFileSync(registryPath, JSON.stringify([{ ...workspace, retention }]));
+  const restarted = new FileBackedWorkspaceRegistry(registryPath, createLogger());
+  deps.getWorkspace = (id) => restarted.get(id);
+  deps.listActiveWorkspaces = async () =>
+    (await restarted.list()).filter((record) => !record.archivedAt);
+  deps.archiveWorkspaceRecord = (id) => restarted.archive(id, new Date().toISOString());
+  const request = {
+    scope: { kind: "workspace" as const, workspaceId: workspace.workspaceId },
+    requestId: "retained-job-finally",
+    automatic: { expectedIncarnation: workspace.incarnation },
+  };
+  expect(await archiveByScope(deps, request)).toEqual({
+    archivedAgentIds: [],
+    archivedWorkspaceIds: [],
+    removedDirectory: false,
+  });
+  expect(readFileSync(path.join(cwd, "selected", "notes.txt"), "utf8")).toBe("retained content");
+  expect(existsSync(path.join(repoDir, "handoff-teardown.txt"))).toBe(false);
+  expect(deps.stopWorkspaceSetup).not.toHaveBeenCalled();
+  expect(deps.killTerminalsForWorkspace).not.toHaveBeenCalled();
+  expect(deps.markWorkspaceArchiving).not.toHaveBeenCalled();
+  expect(await restarted.get(workspace.workspaceId)).toEqual({ ...workspace, retention });
+
+  expect(await archiveByScope(deps, { ...request, automatic: undefined })).toEqual({
+    archivedAgentIds: [],
+    archivedWorkspaceIds: [workspace.workspaceId],
+    removedDirectory: true,
+  });
+  expect((await restarted.get(workspace.workspaceId))?.retention).toBeUndefined();
+});
+
 test("automatic cleanup from an archived workspace cannot delete its reopened incarnation", async () => {
   const { repoDir, cwd, workspace, registry, registryPath, deps } = await handoffArchiveFixture();
   const expectedIncarnation = workspace.incarnation;

@@ -1315,6 +1315,7 @@ export async function createPaseoDaemon(
         kind: workspace.kind,
         worktreeRoot: workspace.worktreeRoot,
         incarnation: workspace.incarnation,
+        retention: workspace.retention,
         isPaseoOwnedWorktree: workspace.isPaseoOwnedWorktree,
         mainRepoRoot: workspace.mainRepoRoot,
       }));

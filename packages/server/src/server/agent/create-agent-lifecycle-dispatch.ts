@@ -180,7 +180,22 @@ export class CreateAgentLifecycleDispatch {
         return;
       }
 
-      await this.dependencies.archiveAgentForClose(agentId);
+      const agent = await this.dependencies.agentStorage.get(agentId);
+      if (!agent) return;
+      const release = await this.dependencies.handoffOwnership?.acquireMutation({
+        cwd: agent.cwd,
+        workspaceId: agent.workspaceId,
+        agentId,
+      });
+      try {
+        const workspace = (await this.dependencies.listActiveWorkspaces()).find(
+          (record) => record.workspaceId === agent.workspaceId,
+        );
+        if (workspace?.retention) return;
+        await this.dependencies.archiveAgentForClose(agentId);
+      } finally {
+        release?.();
+      }
     } catch (error) {
       this.dependencies.logger.warn({ err: error, agentId }, "Failed to auto-archive agent");
     }
@@ -200,7 +215,7 @@ export class CreateAgentLifecycleDispatch {
       throw new Error("Auto-created worktree is not a Paseo-owned worktree");
     }
 
-    await archiveByScope(
+    const archived = await archiveByScope(
       {
         handoffOwnership: this.dependencies.handoffOwnership,
         paseoHome: this.dependencies.paseoHome,
@@ -225,7 +240,7 @@ export class CreateAgentLifecycleDispatch {
       },
     );
 
-    if (options.agentId) {
+    if (options.agentId && archived.archivedAgentIds.includes(options.agentId)) {
       await this.dependencies.emitAgentRemove(options.agentId);
     }
   }

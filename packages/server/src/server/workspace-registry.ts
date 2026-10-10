@@ -61,6 +61,13 @@ const PersistedWorkspaceRecordSchema = z.object({
   workspaceId: z.string(),
   // COMPAT(workspaceIncarnation): added in v0.11.1; keep legacy records readable until 2027-04-10.
   incarnation: z.string().min(1).optional(),
+  retention: z
+    .object({
+      kind: z.literal("handoff"),
+      transferId: z.string().uuid(),
+      retainedAt: z.string().datetime(),
+    })
+    .optional(),
   projectId: z.string(),
   cwd: z.string(),
   kind: z.enum(["local_checkout", "worktree", "directory"]),
@@ -131,6 +138,7 @@ export interface WorkspaceMutationContext {
 
 export interface WorkspaceArchiveContext {
   autoArchivedChangeRequestUrl?: string;
+  automatic?: { expectedIncarnation: string | undefined };
 }
 
 export interface ProjectMutation {
@@ -196,6 +204,10 @@ class FileBackedRegistry<TRecord extends RegistryRecord> {
   private loading: Promise<void> | null = null;
   private readonly cache = new Map<string, TRecord>();
   private mutationQueue: Promise<void> = Promise.resolve();
+  private pendingPublication: {
+    records: Map<string, TRecord>;
+    synchronize: () => Promise<void>;
+  } | null = null;
   private mutationsBlockedUntilRestart = false;
   private readonly writeRecords: (filePath: string, records: readonly TRecord[]) => Promise<void>;
 
@@ -235,11 +247,13 @@ class FileBackedRegistry<TRecord extends RegistryRecord> {
 
   async list(): Promise<TRecord[]> {
     await this.load();
+    if (this.pendingPublication) await this.mutateCache(() => undefined);
     return Array.from(this.cache.values()).filter((record) => this.isVisible(this.getId(record)));
   }
 
   async get(id: string): Promise<TRecord | null> {
     await this.load();
+    if (this.pendingPublication) await this.mutateCache(() => undefined);
     return this.isVisible(id) ? (this.cache.get(id) ?? null) : null;
   }
 
@@ -368,6 +382,7 @@ class FileBackedRegistry<TRecord extends RegistryRecord> {
       beforeWrite?: (records: readonly TRecord[]) => Promise<void>;
       afterWrite?: () => Promise<void>;
       afterCommit?: () => void;
+      retainPublicationOnFailure?: boolean;
     },
   ): Promise<TResult> {
     const previous = this.mutationQueue;
@@ -381,17 +396,24 @@ class FileBackedRegistry<TRecord extends RegistryRecord> {
       if (this.mutationsBlockedUntilRestart) {
         throw new Error("Workspace registry mutations are blocked until daemon restart");
       }
+      await this.repairPendingPublication();
       const staged = new Map(this.cache);
       const result = updater(staged);
       const recordsChanged = !mapsEqual(this.cache, staged);
       if (!recordsChanged && !hooks?.forcePersist?.(result)) return result;
       const records = Array.from(staged.values());
       await hooks?.beforeWrite?.(records);
-      if (recordsChanged) await this.writeRecords(this.filePath, records);
-      await hooks?.afterWrite?.();
-      if (recordsChanged) {
-        this.cache.clear();
-        for (const [id, record] of staged) this.cache.set(id, record);
+      if (hooks?.retainPublicationOnFailure) {
+        if (!hooks.afterWrite) throw new Error("Recoverable publication requires synchronization");
+        this.pendingPublication = { records: staged, synchronize: hooks.afterWrite };
+        await this.repairPendingPublication();
+      } else {
+        if (recordsChanged) await this.writeRecords(this.filePath, records);
+        await hooks?.afterWrite?.();
+        if (recordsChanged) {
+          this.cache.clear();
+          for (const [id, record] of staged) this.cache.set(id, record);
+        }
       }
       hooks?.afterCommit?.();
       return result;
@@ -402,6 +424,22 @@ class FileBackedRegistry<TRecord extends RegistryRecord> {
 
   protected freezeMutationsUntilRestart(): void {
     this.mutationsBlockedUntilRestart = true;
+  }
+
+  private async repairPendingPublication(): Promise<void> {
+    const pending = this.pendingPublication;
+    if (!pending) return;
+    // A failed rename or fsync is unacknowledged. Retain the exact candidate;
+    // a later metadata edit must not overwrite a protection that may be on disk.
+    await this.writeRecords(this.filePath, Array.from(pending.records.values()));
+    await pending.synchronize();
+    this.cache.clear();
+    for (const [id, record] of pending.records) this.cache.set(id, record);
+    this.pendingPublication = null;
+  }
+
+  protected synchronizePublication(): Promise<void> {
+    return syncFilePublication(this.filePath, path.dirname(path.dirname(this.filePath)));
   }
 }
 
@@ -601,6 +639,40 @@ export class FileBackedWorkspaceRegistry
     await this.notifyMutation({ kind: "upsert", workspaceId, workspace });
   }
 
+  async retainForHandoff(input: {
+    workspaceId: string;
+    expectedIncarnation: string;
+    transferId: string;
+    retainedAt: string;
+  }): Promise<PersistedWorkspaceRecord> {
+    if (process.platform === "win32")
+      throw new Error("Durable workspace retention is unavailable on Windows");
+    const workspace = await this.mutateCache(
+      (records) => {
+        const existing = records.get(input.workspaceId);
+        if (!existing || existing.archivedAt || existing.incarnation !== input.expectedIncarnation)
+          throw new Error("Workspace opening changed before handoff retention");
+        const next = PersistedWorkspaceRecordSchema.parse({
+          ...existing,
+          retention: existing.retention ?? {
+            kind: "handoff",
+            transferId: input.transferId,
+            retainedAt: input.retainedAt,
+          },
+        });
+        records.set(input.workspaceId, next);
+        return next;
+      },
+      {
+        forcePersist: () => true,
+        afterWrite: () => this.synchronizePublication(),
+        retainPublicationOnFailure: true,
+      },
+    );
+    await this.notifyMutation({ kind: "upsert", workspaceId: input.workspaceId, workspace });
+    return workspace;
+  }
+
   override async update(
     workspaceId: string,
     updater: (record: PersistedWorkspaceRecord) => PersistedWorkspaceRecord,
@@ -637,6 +709,7 @@ export class FileBackedWorkspaceRegistry
     existing: PersistedWorkspaceRecord | undefined,
     next: PersistedWorkspaceRecord,
   ): PersistedWorkspaceRecord {
+    const { retention: _incomingRetention, ...fields } = next;
     const reopened = existing?.archivedAt && !next.archivedAt;
     const relocated =
       existing &&
@@ -644,7 +717,10 @@ export class FileBackedWorkspaceRegistry
         existing.worktreeRoot !== next.worktreeRoot ||
         existing.mainRepoRoot !== next.mainRepoRoot);
     return {
-      ...next,
+      ...fields,
+      // Retention belongs to the registry, not snapshots held by reconcilers.
+      // Only an explicit archive consumes it; continuation and metadata edits do not.
+      ...(existing?.retention ? { retention: existing.retention } : {}),
       incarnation:
         reopened || relocated
           ? randomUUID()
@@ -657,14 +733,29 @@ export class FileBackedWorkspaceRegistry
     archivedAt: string,
     context?: WorkspaceArchiveContext,
   ): Promise<void> {
-    const workspace = await super.update(workspaceId, (existing) => ({
-      ...existing,
-      updatedAt: archivedAt,
-      archivedAt,
-      ...(context?.autoArchivedChangeRequestUrl
-        ? { autoArchivedChangeRequestUrl: context.autoArchivedChangeRequestUrl }
-        : {}),
-    }));
+    const workspace = await this.mutateCache((records) => {
+      const existing = records.get(workspaceId);
+      if (!existing) return null;
+      if (
+        context?.automatic &&
+        (existing.archivedAt ||
+          existing.retention ||
+          !context.automatic.expectedIncarnation ||
+          existing.incarnation !== context.automatic.expectedIncarnation)
+      )
+        return null;
+      const { retention: _retention, ...fields } = existing;
+      const next = PersistedWorkspaceRecordSchema.parse({
+        ...fields,
+        updatedAt: archivedAt,
+        archivedAt,
+        ...(context?.autoArchivedChangeRequestUrl
+          ? { autoArchivedChangeRequestUrl: context.autoArchivedChangeRequestUrl }
+          : {}),
+      });
+      records.set(workspaceId, next);
+      return next;
+    });
     if (!workspace) return;
     await this.notifyMutation({ kind: "archive", workspaceId, workspace });
   }
@@ -690,7 +781,11 @@ export class FileBackedWorkspaceRegistry
     const committed = await this.mutateCache(
       (records) => {
         const staged = input.stage(records);
-        changed = staged.updates.map((record) => PersistedWorkspaceRecordSchema.parse(record));
+        changed = staged.updates.map((record) =>
+          PersistedWorkspaceRecordSchema.parse(
+            this.withIncarnation(records.get(record.workspaceId), record),
+          ),
+        );
         for (const record of changed) records.set(record.workspaceId, record);
         return { result: staged.result, forcePersist: staged.forcePersist };
       },

@@ -28,6 +28,7 @@ export type ActiveWorkspaceRef = Pick<
   PersistedWorkspaceRecord,
   | "workspaceId"
   | "incarnation"
+  | "retention"
   | "cwd"
   | "kind"
   | "worktreeRoot"
@@ -187,7 +188,8 @@ async function archiveByScopeWithPriority(
         // no authority to delete a later opening. Remove after 2027-04-10.
         if (
           !request.automatic.expectedIncarnation ||
-          workspace?.incarnation !== request.automatic.expectedIncarnation
+          workspace?.incarnation !== request.automatic.expectedIncarnation ||
+          workspace.retention
         ) {
           return { archivedAgentIds: [], archivedWorkspaceIds: [], removedDirectory: false };
         }
