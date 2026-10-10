@@ -64,6 +64,24 @@ const RuntimeGenerationSchema = z.object({
   openedAt: z.string(),
 });
 
+const CarriedPromptSchema = z.object({
+  id: z.string().uuid(),
+  generationId: z.string().uuid(),
+  nativeMessageId: z.string().uuid().optional(),
+  restartNote: z.array(RestartCancelledWorkSchema).max(1024),
+  handoffContext: HandoffContextSchema.optional(),
+});
+const CarriedPromptSettlementSchema = z.object({
+  id: z.string().uuid(),
+  generationId: z.string().uuid(),
+  outcome: z.enum(["completed", "not_completed", "withdrawn"]),
+});
+export type CarriedPrompt = z.infer<typeof CarriedPromptSchema>;
+export interface CarriedPromptSettlement {
+  delivery: CarriedPrompt;
+  outcome: z.infer<typeof CarriedPromptSettlementSchema>["outcome"];
+}
+
 const STORED_AGENT_SCHEMA = z.object({
   id: z.string(),
   provider: z.string(),
@@ -111,6 +129,8 @@ const STORED_AGENT_SCHEMA = z.object({
   unresolvedRuntimeGenerations: z.array(RuntimeGenerationSchema).max(32).optional(),
   promptAnnotations: PromptAnnotationCheckpointSchema.optional(),
   pendingPromptAnnotationPublication: PromptAnnotationPublicationSchema.optional(),
+  carriedPrompt: CarriedPromptSchema.optional(),
+  lastCarriedPromptSettlement: CarriedPromptSettlementSchema.optional(),
 });
 
 export type SerializableAgentConfig = Pick<
@@ -133,6 +153,8 @@ function recordRecoveryState(record: StoredAgentRecord | null) {
     unresolvedRuntimeGenerations: record?.unresolvedRuntimeGenerations,
     promptAnnotations: record?.promptAnnotations,
     pendingPromptAnnotationPublication: record?.pendingPromptAnnotationPublication,
+    carriedPrompt: record?.carriedPrompt,
+    lastCarriedPromptSettlement: record?.lastCarriedPromptSettlement,
   };
 }
 
@@ -273,6 +295,7 @@ export class AgentStorage {
       return {
         ...candidate,
         ...recordRecoveryState(existing),
+        pendingRestartNote: existing ? existing.pendingRestartNote : candidate.pendingRestartNote,
       };
     });
   }
@@ -347,6 +370,8 @@ export class AgentStorage {
           throw new Error("Handoff requires recovery of unresolved runtime generations");
         if (record.pendingPromptAnnotationPublication)
           throw new Error("Handoff requires repair of pending prompt annotation publication");
+        if (record.carriedPrompt)
+          throw new Error("Handoff requires resolution of carried prompt delivery");
         return record;
       },
       this.syncPublication,
@@ -578,12 +603,76 @@ export class AgentStorage {
     });
   }
 
-  async completeHandoffContext(agentId: string): Promise<void> {
+  async prepareCarriedPrompt(agentId: string, delivery: CarriedPrompt): Promise<void> {
+    const input = CarriedPromptSchema.parse(delivery);
+    if (!input.restartNote.length && !input.handoffContext)
+      throw new Error("Carried prompt has no pending context");
+    if (Buffer.byteLength(JSON.stringify(input)) > 64 * 1024)
+      throw new Error("Carried prompt recovery input exceeds capacity");
     await this.load();
-    await this.queueRecordMutation(agentId, (existing) => {
-      if (!existing?.handoffContext) throw new Error(`Agent ${agentId} has no handoff context`);
-      return { ...existing, handoffContext: { ...existing.handoffContext, pending: false } };
+    const committed = await this.queueRecordMutation(
+      agentId,
+      (record) => {
+        if (!record) throw new Error(`Agent ${agentId} not found`);
+        this.assertRuntimeGeneration(record, input.generationId);
+        if (record.lastStatus === "closed") throw new Error("Carried prompt runtime is closed");
+        if (record.carriedPrompt && !isDeepStrictEqual(record.carriedPrompt, input))
+          throw new Error("Prior carried prompt delivery is unresolved");
+        if (
+          input.restartNote.some(
+            (entry) =>
+              !record.pendingRestartNote?.some((pending) => isDeepStrictEqual(entry, pending)),
+          )
+        )
+          throw new Error("Pending restart note changed before dispatch");
+        if (
+          input.handoffContext &&
+          (!input.handoffContext.pending ||
+            !isDeepStrictEqual(record.handoffContext, input.handoffContext))
+        )
+          throw new Error("Handoff context changed before dispatch");
+        return { ...record, carriedPrompt: input };
+      },
+      process.platform === "win32" ? undefined : this.syncPublication,
+    );
+    if (!committed) throw new Error("Agent was deleted before carrying context");
+  }
+
+  async settleCarriedPrompt(agentId: string, settlement: CarriedPromptSettlement): Promise<void> {
+    const delivery = CarriedPromptSchema.parse(settlement.delivery);
+    const receipt = CarriedPromptSettlementSchema.parse({
+      id: delivery.id,
+      generationId: delivery.generationId,
+      outcome: settlement.outcome,
     });
+    await this.load();
+    const committed = await this.queueRecordMutation(
+      agentId,
+      (record) => {
+        if (!record) throw new Error(`Agent ${agentId} not found`);
+        this.assertRuntimeGeneration(record, delivery.generationId);
+        if (isDeepStrictEqual(record.lastCarriedPromptSettlement, receipt)) return record;
+        const neverAdmitted = receipt.outcome === "withdrawn" && !record.carriedPrompt;
+        if (!neverAdmitted && !isDeepStrictEqual(record.carriedPrompt, delivery))
+          throw new Error("Carried prompt settlement does not match the pending delivery");
+        const { carriedPrompt: _settled, ...next } = record;
+        if (receipt.outcome === "completed") {
+          if (delivery.handoffContext) {
+            if (!isDeepStrictEqual(record.handoffContext, delivery.handoffContext))
+              throw new Error("Handoff context changed before completion");
+            next.handoffContext = { ...delivery.handoffContext, pending: false };
+          }
+          const remaining = record.pendingRestartNote?.filter(
+            (entry) =>
+              !delivery.restartNote.some((delivered) => isDeepStrictEqual(entry, delivered)),
+          );
+          next.pendingRestartNote = remaining?.length ? remaining : undefined;
+        }
+        return { ...next, lastCarriedPromptSettlement: receipt };
+      },
+      process.platform === "win32" ? undefined : this.syncPublication,
+    );
+    if (!committed) throw new Error("Agent was deleted during carried prompt settlement");
   }
 
   /** Acknowledgement lets restart recovery consume its retry input; entries dedupe by id. */
@@ -607,25 +696,6 @@ export class AgentStorage {
       },
       process.platform === "win32" ? undefined : this.syncPublication,
     );
-  }
-
-  /** A completed turn carried the note, so the agent has heard it. */
-  async clearPendingRestartNote(
-    agentId: string,
-    delivered: readonly RestartCancelledWork[],
-  ): Promise<void> {
-    const deliveredIds = new Set(delivered.map((entry) => entry.id));
-    await this.load();
-    await this.queueRecordMutation(agentId, (existing) => {
-      if (!existing) {
-        throw new Error(`Agent ${agentId} not found`);
-      }
-      const remaining = (existing.pendingRestartNote ?? []).filter(
-        (entry) => !deliveredIds.has(entry.id),
-      );
-      const { pendingRestartNote: _cleared, ...rest } = existing;
-      return remaining.length > 0 ? { ...rest, pendingRestartNote: remaining } : rest;
-    });
   }
 
   /** Records the idempotency key the agent was created under, for retried create requests. */

@@ -118,7 +118,20 @@ Each agent is stored as a separate JSON file, grouped by project directory.
 | `attentionTimestamp` | `string?` (ISO 8601)                     | When attention was flagged                                                                                                                                                                                                                                                                                                                                                          |
 | `internal`           | `boolean?`                               | Whether this is a system-internal agent                                                                                                                                                                                                                                                                                                                                             |
 | `archivedAt`         | `string?` (ISO 8601)                     | Soft-delete timestamp                                                                                                                                                                                                                                                                                                                                                               |
-| `pendingRestartNote` | `{ kind, label, id }[]?`                 | Background work a daemon restart cancelled. The agent's next foreground turn that is not a `<paseo-system>` envelope gets it prepended, and it is removed once that turn completes.                                                                                                                                                                                                 |
+| `pendingRestartNote` | `{ kind, label, id }[]?`                 | Cancelled background work retained until the carried-context acknowledgement below.                                                                                                                                                                                                                                                                                                 |
+
+### Carried context acknowledgement
+
+Retain the exact restart notes and handoff context before invoking a provider. The agent record
+owns one unfinished delivery, bound to its runtime generation and native prompt identity where
+supported. Only that runtime's completion callback can consume the matching context; newer notes
+and replaced context must survive an older callback. Synchronize the acknowledgement before
+forgetting its retry input.
+
+Known storage failures retry the original outcome without another provider turn. An unadmitted
+prompt can be withdrawn while retaining its notes. An uncertain invocation blocks new turns and
+handoff certification, including after restart; reopening a runtime is not delivery evidence.
+Recovering that uncertainty from provider artifacts remains implementation work.
 
 ### Nested: SerializableConfig
 
@@ -678,6 +691,8 @@ daemon prompt: a notification with its source, or a user message with its sender
 bind that annotation to a caller-assigned native UUID before starting or steering. Prepared and
 withdrawn attempts do not match replayed rows; dispatched attempts match their native UUID even
 when text repeats or continuation context was prepended. A retry gets a separate attempt identity.
+Carried-context prompts also retain an identity entry when there is no presentation annotation;
+that entry checks native history without changing its displayed row.
 Schema: `packages/server/src/server/agent/prompt-annotations.ts`. Internal runtimes keep these
 annotations in memory because they have no durable agent record.
 

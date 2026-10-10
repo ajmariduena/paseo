@@ -66,7 +66,13 @@ import {
   type ListImportableSessionsOptions,
 } from "./agent-sdk-types.js";
 import { buildArchivedAgentRecord, type ArchivedStoredAgentRecord } from "./agent-archive.js";
-import type { StoredAgentRecord, AgentStorage, RestartCancelledWork } from "./agent-storage.js";
+import type {
+  StoredAgentRecord,
+  AgentStorage,
+  RestartCancelledWork,
+  CarriedPrompt,
+  CarriedPromptSettlement,
+} from "./agent-storage.js";
 import { buildSerializableConfig } from "./agent-projections.js";
 import type { AgentOwner } from "./agent-owner.js";
 import {
@@ -553,6 +559,7 @@ interface StreamEventFlags {
 interface AgentRuntimeWork {
   pending: Set<Promise<void>>;
   annotationSettlements: Map<string, SettledNativePromptDispatch>;
+  carriedSettlements: Map<string, CarriedPromptSettlement>;
   failure: Error | null;
 }
 
@@ -930,12 +937,10 @@ export class AgentManager {
   private readonly lifecycleMutationTails = new Map<string, Promise<void>>();
   private readonly inFlightOutOfBand = new Map<string, number>();
   private readonly stopRequests = new Set<string>();
-  /** Turns that carried a pending restart note; it is cleared once that turn completes. */
-  private readonly restartNoteTurns = new Map<
-    string,
-    { turnId: string; work: RestartCancelledWork[] }
+  private readonly carriedPromptTurns = new WeakMap<
+    ActiveManagedAgent,
+    { turnId: string; delivery: CarriedPrompt }
   >();
-  private readonly handoffContextTurns = new Map<string, string>();
   private readonly idleBackendTimers = new Map<
     string,
     { session: AgentSession; timer: NodeJS.Timeout }
@@ -3057,31 +3062,35 @@ export class AgentManager {
     pendingRun: PendingForegroundRun;
     prompt: AgentPromptInput;
     options?: AgentRunOptions;
+    restartNote: RestartCancelledWork[];
   }): Promise<string> {
     const { agent, agentId, pendingRun, prompt, options } = params;
     try {
-      const context = (await this.registry?.get(agentId))?.handoffContext;
+      const stored = await this.registry?.get(agentId);
+      if (stored?.carriedPrompt) throw new Error("Prior carried prompt delivery is unresolved");
+      const context = stored?.handoffContext;
       let submitted = prompt;
       if (context?.pending) {
         submitted = await prependHandoffContext({ cwd: agent.cwd, context, prompt });
       }
-      if (pendingRun.settled) {
-        throw new Error(`Agent ${agentId} run was canceled before its turn started`);
-      }
-      if (this.agents.get(agentId)?.session !== agent.session) {
-        throw new Error(`Agent ${agentId} runtime changed before its turn started`);
-      }
+      const carried = await this.prepareCarriedContext({
+        agent,
+        prompt: submitted,
+        options,
+        restartNote: params.restartNote,
+        handoffContext: context?.pending ? context : undefined,
+      });
       const result = await this.admitProviderStart({
         agent,
         pendingRun,
         prompt: submitted,
-        options,
+        options: carried?.options ?? options,
+        carried: carried?.delivery,
       });
       if (pendingRun.settled) {
         this.runs.abandonTurn(agentId, result.turnId);
         throw new Error(`Agent ${agentId} run was canceled before its turn started`);
       }
-      if (context?.pending) this.handoffContextTurns.set(agentId, result.turnId);
       return result.turnId;
     } catch (error) {
       if (pendingRun.settled) {
@@ -3187,6 +3196,7 @@ export class AgentManager {
     let releaseMutation = () => {};
     try {
       releaseMutation = await this.acquireAgentMutation(agentId);
+      await this.repairCarriedSettlements(agent);
       const restartNote = this.registry ? await this.pendingRestartNote(agentId, prompt) : null;
       const turnId = await this.startPendingForegroundTurn({
         agent,
@@ -3194,10 +3204,8 @@ export class AgentManager {
         pendingRun,
         prompt: restartNote ? prependRestartNote(prompt, restartNote) : prompt,
         options,
+        restartNote: restartNote ?? [],
       });
-      if (restartNote) {
-        this.restartNoteTurns.set(agentId, { turnId, work: restartNote });
-      }
 
       if (isReplacement) {
         agent.pendingReplacement = false;
@@ -3284,31 +3292,101 @@ export class AgentManager {
     return pending && pending.length > 0 ? pending : null;
   }
 
+  private async prepareCarriedContext(input: {
+    agent: ActiveManagedAgent;
+    prompt: AgentPromptInput;
+    options?: AgentRunOptions;
+    restartNote: RestartCancelledWork[];
+    handoffContext?: CarriedPrompt["handoffContext"];
+  }): Promise<{ delivery: CarriedPrompt; options: AgentRunOptions } | null> {
+    const { agent, restartNote, handoffContext } = input;
+    if (!restartNote.length && !handoffContext) return null;
+    if (!this.registry || !agent.runtimeGenerationId)
+      throw new Error("Carried context needs a persistent runtime generation");
+    const nativeMessageId = agent.session.nativeMessageIds ? randomUUID() : undefined;
+    const delivery: CarriedPrompt = {
+      id: randomUUID(),
+      generationId: agent.runtimeGenerationId,
+      nativeMessageId,
+      restartNote,
+      handoffContext,
+    };
+    const options = { ...input.options, nativeMessageId };
+    try {
+      await this.registry.prepareCarriedPrompt(agent.id, delivery);
+      if (nativeMessageId) {
+        options.clientMessageId ??= delivery.id;
+        await this.annotationsFor(agent).remember(agent.id, {
+          messageId: options.clientMessageId,
+          text: submittedPromptText(input.prompt),
+          annotation: { kind: "identity" },
+          nativeMessageIds: true,
+        });
+      }
+      return { delivery, options };
+    } catch (error) {
+      await this.withdrawCarriedContext(agent, delivery);
+      throw error;
+    }
+  }
+
+  private async withdrawCarriedContext(
+    agent: ActiveManagedAgent,
+    delivery: CarriedPrompt,
+  ): Promise<void> {
+    await this.settleCarriedContext(agent, { delivery, outcome: "withdrawn" }).catch(
+      (error: unknown) => {
+        this.logger.warn(
+          { err: error, agentId: agent.id },
+          "Failed to withdraw unadmitted carried context",
+        );
+      },
+    );
+  }
+
+  private settleCarriedContext(
+    agent: ActiveManagedAgent,
+    input: CarriedPromptSettlement,
+  ): Promise<void> {
+    const snapshot = structuredClone(input);
+    const work = this.getRuntimeWork(agent);
+    return this.trackRuntimeWork(agent, async () => {
+      work.carriedSettlements.set(snapshot.delivery.id, snapshot);
+      try {
+        await this.requireRegistry().settleCarriedPrompt(agent.id, snapshot);
+        work.carriedSettlements.delete(snapshot.delivery.id);
+        return { ok: true } as const;
+      } catch (error) {
+        return { ok: false, error } as const;
+      }
+    }).then((outcome) => {
+      if (!outcome.ok) throw outcome.error;
+      return undefined;
+    });
+  }
+
+  private async repairCarriedSettlements(agent: ActiveManagedAgent): Promise<void> {
+    const work = this.getRuntimeWork(agent);
+    for (const settlement of work.carriedSettlements.values())
+      await this.settleCarriedContext(agent, settlement);
+  }
+
   private settleTurnNotes(
     agent: ActiveManagedAgent,
     turnId: string | undefined,
     completed: boolean,
   ): void {
-    const agentId = agent.id;
-    const registry = this.registry;
-    if (turnId && this.handoffContextTurns.get(agentId) === turnId) {
-      this.handoffContextTurns.delete(agentId);
-      if (completed && registry) {
-        void this.trackRuntimeWork(agent, () => registry.completeHandoffContext(agentId)).catch(
-          (error: unknown) => {
-            this.logger.warn({ err: error, agentId }, "Failed to mark handoff context delivered");
-          },
-        );
-      }
-    }
-    const carried = this.restartNoteTurns.get(agentId);
+    const carried = this.carriedPromptTurns.get(agent);
     if (!carried || carried.turnId !== turnId) return;
-    this.restartNoteTurns.delete(agentId);
-    if (!completed || !registry) return;
-    void this.trackRuntimeWork(agent, () =>
-      registry.clearPendingRestartNote(agentId, carried.work),
-    ).catch((error: unknown) => {
-      this.logger.warn({ err: error, agentId }, "Failed to clear the pending restart note");
+    this.carriedPromptTurns.delete(agent);
+    void this.settleCarriedContext(agent, {
+      delivery: carried.delivery,
+      outcome: completed ? "completed" : "not_completed",
+    }).catch((error: unknown) => {
+      this.logger.warn(
+        { err: error, agentId: agent.id },
+        "Failed to settle carried prompt context",
+      );
     });
   }
 
@@ -3556,10 +3634,24 @@ export class AgentManager {
     const attempt: NativePromptDispatch = {
       agentId: agent.id,
       messageId: options.clientMessageId,
-      nativeMessageId: randomUUID(),
+      nativeMessageId: options.nativeMessageId ?? randomUUID(),
     };
-    const prepared = await this.annotationsFor(agent).prepareNativeDispatch(attempt);
-    return prepared ? attempt : null;
+    try {
+      const prepared = await this.annotationsFor(agent).prepareNativeDispatch(attempt);
+      return prepared ? attempt : null;
+    } catch (error) {
+      await this.settleNativePrompt(agent, {
+        ...attempt,
+        state: "withdrawn",
+        unadmitted: true,
+      }).catch((repairError: unknown) => {
+        this.logger.warn(
+          { err: repairError, agentId: agent.id },
+          "Failed to withdraw unadmitted native prompt",
+        );
+      });
+      throw error;
+    }
   }
 
   private settleNativePrompt(
@@ -3586,25 +3678,40 @@ export class AgentManager {
   }
 
   private async admitProviderStart(
-    input: Pick<ForegroundTurnAdmissionInput, "agent" | "pendingRun" | "prompt" | "options">,
+    input: Pick<ForegroundTurnAdmissionInput, "agent" | "pendingRun" | "prompt" | "options"> & {
+      carried?: CarriedPrompt;
+    },
   ): Promise<AgentTurnStart> {
-    const { agent, pendingRun, prompt, options } = input;
-    const attempt = await this.prepareNativePrompt(agent, options);
-    const invalidated = pendingRun.settled || this.agents.get(agent.id) !== agent;
-    if (invalidated) {
-      if (attempt) await this.settleNativePrompt(agent, { ...attempt, state: "withdrawn" });
-      throw new Error(`Agent ${agent.id} run changed before its turn started`);
+    const { agent, pendingRun, prompt, options, carried } = input;
+    let invoked = false;
+    try {
+      const attempt = await this.prepareNativePrompt(agent, options);
+      const invalidated = pendingRun.settled || this.agents.get(agent.id) !== agent;
+      if (invalidated) {
+        if (attempt) await this.settleNativePrompt(agent, { ...attempt, state: "withdrawn" });
+        const reason = pendingRun.settled ? "run was canceled" : "runtime changed";
+        throw new Error(`Agent ${agent.id} ${reason} before its turn started`);
+      }
+      const providerOptions = attempt
+        ? { ...options, nativeMessageId: attempt.nativeMessageId }
+        : options;
+      invoked = true;
+      const result = await agent.session.startTurn(prompt, providerOptions);
+      if (carried) {
+        if (result.promptDisposition === "withdrawn")
+          await this.withdrawCarriedContext(agent, carried);
+        else this.carriedPromptTurns.set(agent, { turnId: result.turnId, delivery: carried });
+      }
+      if (attempt) {
+        if (!result.promptDisposition)
+          throw new Error("Provider did not report native prompt disposition");
+        await this.settleNativePrompt(agent, { ...attempt, state: result.promptDisposition });
+      }
+      return result;
+    } catch (error) {
+      if (!invoked && carried) await this.withdrawCarriedContext(agent, carried);
+      throw error;
     }
-    const providerOptions = attempt
-      ? { ...options, nativeMessageId: attempt.nativeMessageId }
-      : options;
-    const result = await agent.session.startTurn(prompt, providerOptions);
-    if (attempt) {
-      if (!result.promptDisposition)
-        throw new Error("Provider did not report native prompt disposition");
-      await this.settleNativePrompt(agent, { ...attempt, state: result.promptDisposition });
-    }
-    return result;
   }
 
   private async admitProviderSteer(input: ProviderSteerAdmissionInput): Promise<SteerResult> {
@@ -4802,7 +4909,12 @@ export class AgentManager {
   private getRuntimeWork(agent: ActiveManagedAgent): AgentRuntimeWork {
     let work = this.runtimeWork.get(agent);
     if (!work) {
-      work = { pending: new Set(), annotationSettlements: new Map(), failure: null };
+      work = {
+        pending: new Set(),
+        annotationSettlements: new Map(),
+        carriedSettlements: new Map(),
+        failure: null,
+      };
       this.runtimeWork.set(agent, work);
     }
     return work;
@@ -4840,6 +4952,7 @@ export class AgentManager {
     for (const settlement of work.annotationSettlements.values()) {
       await this.settleNativePrompt(agent, settlement);
     }
+    await this.repairCarriedSettlements(agent);
     if (work.failure) throw work.failure;
   }
 
@@ -5554,7 +5667,7 @@ export class AgentManager {
       "agent.manager.turn.completed",
     );
     if (terminalDisposition === "stale") return;
-    this.settleTurnNotes(agent, eventTurnId, true);
+    if (!options?.fromHistory) this.settleTurnNotes(agent, eventTurnId, true);
     if (event.usage) {
       agent.lastUsage = { ...agent.lastUsage, ...event.usage };
     }
@@ -5605,7 +5718,7 @@ export class AgentManager {
       "handleStreamEvent: turn_failed",
     );
     if (terminalDisposition === "stale") return;
-    this.settleTurnNotes(agent, eventTurnId, false);
+    if (!options?.fromHistory) this.settleTurnNotes(agent, eventTurnId, false);
     if (!isForegroundEvent && !agent.activeForegroundTurnId) {
       agent.lifecycle = "error";
     }
@@ -5649,7 +5762,7 @@ export class AgentManager {
       "agent.manager.turn.canceled",
     );
     if (terminalDisposition === "stale") return;
-    this.settleTurnNotes(agent, eventTurnId, false);
+    if (!options?.fromHistory) this.settleTurnNotes(agent, eventTurnId, false);
     if (!isForegroundEvent && !agent.activeForegroundTurnId && !agent.pendingReplacement) {
       agent.lifecycle = "idle";
     }

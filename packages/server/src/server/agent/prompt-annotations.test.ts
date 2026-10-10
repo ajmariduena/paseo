@@ -13,6 +13,36 @@ function notification(message: string): PromptAnnotation {
   return { kind: "notification", level: "info", message };
 }
 
+test("unadmitted cleanup tolerates absent preparation but cannot withdraw a dispatched identity", async () => {
+  const store = new PromptAnnotationStore(null);
+  const attempt = {
+    agentId: "agent",
+    messageId: "carried",
+    nativeMessageId: "00000000-0000-4000-8000-000000000001",
+  } as const;
+  await expect(store.settleNativeDispatch({ ...attempt, state: "withdrawn" })).rejects.toThrow(
+    "not prepared",
+  );
+  await store.settleNativeDispatch({ ...attempt, state: "withdrawn", unadmitted: true });
+  await store.remember("agent", {
+    messageId: "carried",
+    text: "carried context",
+    annotation: { kind: "identity" },
+    nativeMessageIds: true,
+  });
+  await store.prepareNativeDispatch(attempt);
+  await store.settleNativeDispatch({ ...attempt, state: "dispatched" });
+  await expect(
+    store.settleNativeDispatch({ ...attempt, state: "withdrawn", unadmitted: true }),
+  ).rejects.toThrow("cannot change");
+  const matcher = await store.historyMatcherForHandoff("agent");
+  expect(() => matcher.assertNativeDispatchesResolved()).toThrow("absent from provider history");
+  expect(matcher.take("carried context", attempt.nativeMessageId)?.annotation).toEqual({
+    kind: "identity",
+  });
+  expect(() => matcher.assertNativeDispatchesResolved()).not.toThrow();
+});
+
 async function createCheckpointFixture() {
   const root = mkdtempSync(join(tmpdir(), "annotation-checkpoint-"));
   const dir = join(root, "annotations");

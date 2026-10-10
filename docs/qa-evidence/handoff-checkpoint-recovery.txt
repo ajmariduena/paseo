@@ -1,5 +1,36 @@
 Handoff persistence recovery foundations — 2026-10-10
 
+Carried-context preparation and acknowledgement:
+- A provider-entry regression first observed no durable association between restart notes and
+  the receiving turn. The record now retains the exact carried notes/context before admission,
+  bound to its runtime generation and native UUID where supported. Plain native user requests
+  get an identity-only annotation so capture can prove presence without changing the visible row.
+- Runtime completion settles that exact delivery with synchronized publication. New notes survive;
+  replacing context refuses the old acknowledgement. An upsert regression also reproduced loss
+  of pending notes; ordinary upserts now retain the store-owned pending note.
+- Known preparation/disposition/completion storage failures retain exact retry outcomes. Closing
+  repairs them without sending another provider turn. Before provider admission, a failed native
+  preparation can be withdrawn; this cannot downgrade a dispatched identity.
+- An unknown provider invocation keeps its durable marker, blocks new user/background turns and
+  refuses the handoff checkpoint. Cold reads, snapshots and a replacement generation preserve it;
+  a new generation cannot settle the old delivery. Replay events never acknowledge a live delivery.
+- The three changed files pass 339 tests (278 manager, 35 storage, 26 annotation); one Windows-only
+  storage test is skipped. A full manager run found a changed cancellation error; restoring the
+  existing cancellation distinction made the complete focused run pass. Execution used the same
+  verified unsandboxed context required by the manager's Node child-stdout tests. No real-provider
+  call, UI assertion or physical-host continuity is added by these fixtures.
+- Uncertain completion still needs provider-artifact recovery, and unsent source notes/context
+  still need transfer/disposition handling. This does not complete the overall persistence barrier.
+
+Current carried-context validation output:
+RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  3 passed (3)
+      Tests  339 passed | 1 skipped (340)
+   Start at  03:44:35
+   Duration  13.24s (transform 1.13s, setup 63ms, import 2.03s, tests 10.79s, environment 0ms)
+
 Annotation checkpoint and bounded publication repair:
 - The cold-reader regression first reproduced silent acceptance of an annotation file rolled
   back to an older valid prefix. The agent record now witnesses its exact revision/digest/count.

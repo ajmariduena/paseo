@@ -265,17 +265,22 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   failed hook observations refuse certification. Failed or canceled plan approvals settle their
   original SDK callback without a later approval or duplicate resolution. Manager session events
   retain their originating runtime identity. Close and reload join event handlers, runtime-info
-  refreshes and carried-note/context settlement; timeouts retain pending work. A handler or settlement
+  refreshes and carried-note/context settlement; timeouts retain pending work. An unknown handler
   fault still stops the provider but refuses a closed snapshot. Its open generation remains unresolved
   after restart and a later clean generation. Client delivery errors are isolated per subscriber.
   Restart recovery now retains its intent file after pending-note failures, including a declined
   continuation. Later shutdowns preserve unresolved background notes; late continuations cannot
   delete newer shutdown input. POSIX note acknowledgement synchronizes publication before intent
   consumption. A dispatch receipt alone cannot clear an unsaved note. This repairs that storage
-  obligation; it does not establish native delivery or repair unknown manager event/settlement faults.
-  Durable semantic obligations, the remaining manager
-  descendants, record revision guards, presentation coverage and durable process-stop
-  recovery also remain open under the
+  obligation; it does not repair unknown manager event faults. Carried restart notes and handoff
+  context now have a bounded, durable pre-dispatch identity. Completion atomically acknowledges
+  only that delivery; newer notes and replaced context are preserved. Known publication failures
+  retry without another provider call. Unknown invocations survive snapshots, restart and new
+  generations, block subsequent turns and refuse handoff certification. Native carried prompts
+  retain their UUID even without a caller message ID, and capture checks its presence.
+  Artifact-based recovery of uncertain completion, transport/disposition of unsent source notes,
+  remaining manager descendants, record revision guards, presentation coverage and durable
+  process-stop recovery remain open under the
   [conversation persistence contract](#conversation-persistence-contract).
 - New Claude notification/origin annotations bind a prepared attempt to its native UUID before
   provider start or steer, and persist the adapter's dispatched/withdrawn result. Replay uses that

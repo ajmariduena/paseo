@@ -1,5 +1,6 @@
 import { describe, expect, test, beforeEach, afterEach } from "vitest";
 import os from "node:os";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { promises as fs } from "node:fs";
@@ -150,6 +151,121 @@ describe("AgentStorage", () => {
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "uncertain carried context survives cold reads, snapshots and a replacement generation",
+    async () => {
+      const agent = createManagedAgent({ id: "uncertain-carried" });
+      const seed = toStoredAgentRecord(agent);
+      agent.runtimeGenerationId = await storage.beginRuntimeGeneration(seed);
+      const note = { kind: "shell", id: "job", label: "Cancelled job" };
+      await storage.addPendingRestartNote(agent.id, [note]);
+      const delivery = {
+        id: randomUUID(),
+        generationId: agent.runtimeGenerationId,
+        nativeMessageId: randomUUID(),
+        restartNote: [note],
+      };
+      await storage.prepareCarriedPrompt(agent.id, delivery);
+      await storage.upsert({
+        ...seed,
+        runtimeGeneration: (await storage.get(agent.id))?.runtimeGeneration,
+      });
+      await storage.applySnapshot(
+        createManagedAgent({
+          id: agent.id,
+          runtimeGenerationId: agent.runtimeGenerationId,
+          lifecycle: "closed",
+        }),
+      );
+      const cold = new AgentStorage(storagePath, logger);
+      expect((await cold.get(agent.id))?.carriedPrompt).toEqual(delivery);
+      await expect(cold.checkpointClosedAgent(agent.id)).rejects.toThrow("carried prompt delivery");
+      await cold.beginRuntimeGeneration(seed);
+      expect((await cold.get(agent.id))?.carriedPrompt).toEqual(delivery);
+      await expect(
+        cold.settleCarriedPrompt(agent.id, { delivery, outcome: "completed" }),
+      ).rejects.toThrow("different runtime generation");
+      expect((await cold.get(agent.id))?.pendingRestartNote).toEqual([note]);
+    },
+  );
+
+  test("carried completion consumes only the prepared notes and cannot settle a later delivery", async () => {
+    const agent = createManagedAgent({ id: "carried-notes" });
+    const generationId = await storage.beginRuntimeGeneration(toStoredAgentRecord(agent));
+    const first = { kind: "shell", id: "first", label: "First task" };
+    const second = { kind: "shell", id: "second", label: "Second task" };
+    await storage.addPendingRestartNote(agent.id, [first]);
+    const delivery = { id: randomUUID(), generationId, restartNote: [first] };
+    await storage.prepareCarriedPrompt(agent.id, delivery);
+    await storage.addPendingRestartNote(agent.id, [second]);
+    await storage.settleCarriedPrompt(agent.id, { delivery, outcome: "completed" });
+    expect((await storage.get(agent.id))?.pendingRestartNote).toEqual([second]);
+    const next = { id: randomUUID(), generationId, restartNote: [second] };
+    await storage.prepareCarriedPrompt(agent.id, next);
+    await storage.settleCarriedPrompt(agent.id, { delivery, outcome: "completed" });
+    expect((await storage.get(agent.id))?.carriedPrompt).toEqual(next);
+    await expect(
+      storage.settleCarriedPrompt(agent.id, { delivery, outcome: "not_completed" }),
+    ).rejects.toThrow("does not match");
+    await storage.settleCarriedPrompt(agent.id, { delivery: next, outcome: "not_completed" });
+    expect((await storage.get(agent.id))?.pendingRestartNote).toEqual([second]);
+    expect((await storage.get(agent.id))?.carriedPrompt).toBeUndefined();
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "carried completion retains exact repair input until record synchronization succeeds",
+    async () => {
+      let fail = false;
+      storage = new AgentStorage(storagePath, logger, undefined, async (file, parent) => {
+        if (fail) throw new Error("carried completion sync failed");
+        await syncFilePublication(file, parent);
+      });
+      const agent = createManagedAgent({ id: "carried-sync" });
+      const generationId = await storage.beginRuntimeGeneration(toStoredAgentRecord(agent));
+      const note = { kind: "shell", id: "job", label: "Cancelled job" };
+      await storage.addPendingRestartNote(agent.id, [note]);
+      const delivery = { id: randomUUID(), generationId, restartNote: [note] };
+      await storage.prepareCarriedPrompt(agent.id, delivery);
+      fail = true;
+      await expect(
+        storage.settleCarriedPrompt(agent.id, { delivery, outcome: "completed" }),
+      ).rejects.toThrow("carried completion sync failed");
+      expect((await storage.get(agent.id))?.carriedPrompt).toEqual(delivery);
+      expect((await storage.get(agent.id))?.pendingRestartNote).toEqual([note]);
+      fail = false;
+      await storage.settleCarriedPrompt(agent.id, { delivery, outcome: "completed" });
+      const cold = new AgentStorage(storagePath, logger);
+      expect((await cold.get(agent.id))?.pendingRestartNote).toBeUndefined();
+      expect((await cold.get(agent.id))?.carriedPrompt).toBeUndefined();
+      await cold.settleCarriedPrompt(agent.id, { delivery, outcome: "completed" });
+    },
+  );
+
+  test("a carried completion cannot acknowledge replaced handoff context", async () => {
+    const agent = createManagedAgent({ id: "context-replacement" });
+    const generationId = await storage.beginRuntimeGeneration(toStoredAgentRecord(agent));
+    const context = {
+      sourceServerId: "source",
+      sourceAgentId: "conversation",
+      sourceCwd: "/source",
+      directory: `handoff-context-${randomUUID()}/${randomUUID()}`,
+      history: { size: 12, sha256: "a".repeat(64) },
+      pending: true,
+    };
+    const opened = await storage.get(agent.id);
+    if (!opened) throw new Error("Missing agent");
+    await storage.upsert({ ...opened, handoffContext: context });
+    const delivery = { id: randomUUID(), generationId, restartNote: [], handoffContext: context };
+    await storage.prepareCarriedPrompt(agent.id, delivery);
+    const replacement = { ...context, sourceAgentId: "other-conversation" };
+    await storage.upsert({ ...opened, handoffContext: replacement });
+    await expect(
+      storage.settleCarriedPrompt(agent.id, { delivery, outcome: "completed" }),
+    ).rejects.toThrow("context changed before completion");
+    expect((await storage.get(agent.id))?.handoffContext).toEqual(replacement);
+    expect((await storage.get(agent.id))?.carriedPrompt).toEqual(delivery);
   });
 
   test.skipIf(process.platform === "win32")(
@@ -649,14 +765,15 @@ describe("AgentStorage", () => {
     const note = { kind: "turn", label: "Interrupted work", id: "interrupted-turn" };
 
     const outcomes = await Promise.allSettled([
-      storage.completeHandoffContext(agentId),
+      storage.settleCarriedPrompt(agentId, {
+        delivery: { id: randomUUID(), generationId: randomUUID(), restartNote: [] },
+        outcome: "completed",
+      }),
       storage.addPendingRestartNote(agentId, [note]),
     ]);
 
-    expect(outcomes).toEqual([
-      { status: "rejected", reason: new Error(`Agent ${agentId} has no handoff context`) },
-      { status: "fulfilled", value: undefined },
-    ]);
+    expect(outcomes[0].status).toBe("rejected");
+    expect(outcomes[1]).toEqual({ status: "fulfilled", value: undefined });
     const reloaded = new AgentStorage(storagePath, logger);
     expect((await reloaded.get(agentId))?.pendingRestartNote).toEqual([note]);
   });

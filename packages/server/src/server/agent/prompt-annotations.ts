@@ -32,6 +32,7 @@ const OriginAnnotationSchema = z.object({
 const PromptAnnotationSchema = z.discriminatedUnion("kind", [
   NotificationAnnotationSchema,
   OriginAnnotationSchema,
+  z.object({ kind: z.literal("identity") }),
 ]);
 
 const EntrySchema = z.object({
@@ -117,6 +118,8 @@ export interface NativePromptDispatch {
 
 export interface SettledNativePromptDispatch extends NativePromptDispatch {
   state: "dispatched" | "withdrawn";
+  /** Caller proves that provider admission was never invoked for this identity. */
+  unadmitted?: true;
 }
 
 export interface MatchedAnnotation {
@@ -209,7 +212,7 @@ export class PromptAnnotationStore {
   }
 
   settleNativeDispatch(input: SettledNativePromptDispatch): Promise<void> {
-    const { agentId, messageId, nativeMessageId, state } = input;
+    const { agentId, messageId, nativeMessageId, state, unadmitted } = input;
     return this.serialize(agentId, async () => {
       const entries = await this.load(agentId);
       if (!entries) throw new Error("Prompt annotation history is invalid");
@@ -218,6 +221,7 @@ export class PromptAnnotationStore {
       const attempt = entry?.nativeDispatches?.find(
         (candidate) => candidate.messageId === nativeMessageId,
       );
+      if (!attempt && unadmitted && state === "withdrawn") return;
       if (!attempt) throw new Error("Native prompt identity was not prepared");
       if (attempt.state === state) return;
       if (attempt.state !== "prepared") throw new Error("Native prompt disposition cannot change");
