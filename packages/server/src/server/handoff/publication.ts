@@ -97,6 +97,9 @@ export function createHandoffPublication(stores: PublicationStores): HandoffPubl
             archivedAt: null,
             config: {},
             ...(handoffContext ? { handoffContext } : {}),
+            ...(exported.pendingRestartNote
+              ? { pendingRestartNote: exported.pendingRestartNote }
+              : {}),
             persistence:
               conversation.mode === "native"
                 ? {

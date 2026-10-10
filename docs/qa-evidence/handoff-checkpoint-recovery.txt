@@ -1,5 +1,42 @@
 Handoff persistence recovery foundations — 2026-10-10
 
+Unsent restart-note transport:
+- The regression first allowed source release after a pending note was added to the closed
+  record following capture. Preparation now captures the exact note set in its journal and
+  verified bundle, and release refuses a changed set. Cancellation and a fresh capture recover.
+- Native and context activation preserve all pending notes without acknowledging delivery or
+  opening a provider. Both cases restart both hosts before activation and the destination again
+  afterward. The native case then returns to the original host before any provider turn, retaining
+  the same native session ID and both notes.
+- New bundles use version 2. Older readers reject the bundle instead of silently stripping notes;
+  retained version 1 bundles remain readable. Archive cases reject version 1 carrying notes,
+  duplicate note IDs and excess note counts. A workspace-only RPC case also passes with version 2,
+  including a lost release response, host restarts and activation with the source offline after
+  destination receipt acceptance.
+- Validation: 29 archive cases and three selected network cases passed. The network cases use
+  isolated daemons and closed synthetic Claude transcripts; their version-only executable rejects
+  provider-turn launch. They add no authenticated-provider or physical-host continuity claim.
+- Re-exporting prior context/history before a context-mode destination's first provider turn
+  remains open; that destination has no native session for the current source capture. Full
+  record revision guards and the remaining writer inventory also remain open. The release check
+  here proves note-set validation, not an atomic barrier against every remaining writer.
+
+Current restart-note validation output:
+$ npx vitest run src/server/handoff/archive.test.ts --bail=1
+ Test Files  1 passed (1)
+      Tests  29 passed (29)
+   Duration  2.64s
+
+$ npx vitest run src/server/handoff/archive.e2e.test.ts -t 'preserves unsent restart notes' --bail=1
+ Test Files  1 passed (1)
+      Tests  2 passed | 28 skipped (30)
+   Duration  14.20s
+
+$ npx vitest run src/server/handoff/archive.e2e.test.ts -t 'coordinates handoff over RPC and recovers a lost release reply' --bail=1
+ Test Files  1 passed (1)
+      Tests  1 passed | 29 skipped (30)
+   Duration  13.51s
+
 Carried-context preparation and acknowledgement:
 - A provider-entry regression first observed no durable association between restart notes and
   the receiving turn. The record now retains the exact carried notes/context before admission,
@@ -19,8 +56,8 @@ Carried-context preparation and acknowledgement:
   existing cancellation distinction made the complete focused run pass. Execution used the same
   verified unsandboxed context required by the manager's Node child-stdout tests. No real-provider
   call, UI assertion or physical-host continuity is added by these fixtures.
-- Uncertain completion still needs provider-artifact recovery, and unsent source notes/context
-  still need transfer/disposition handling. This does not complete the overall persistence barrier.
+- Uncertain completion still needs provider-artifact recovery, and prior handoff context/history
+  still needs multi-hop transport. This does not complete the overall persistence barrier.
 
 Current carried-context validation output:
 RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server

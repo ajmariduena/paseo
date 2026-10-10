@@ -133,6 +133,11 @@ prompt can be withdrawn while retaining its notes. An uncertain invocation block
 handoff certification, including after restart; reopening a runtime is not delivery evidence.
 Recovering that uncertainty from provider artifacts remains implementation work.
 
+Unsent restart notes travel in the verified handoff bundle and stay pending in the destination
+record. Activation does not acknowledge delivery. New bundles use version 2 so older
+readers reject them explicitly; version 1 archives remain readable. Source release checks that the
+captured note set is unchanged. Prior, unconsumed handoff context still needs multi-hop transport.
+
 ### Nested: SerializableConfig
 
 | Field              | Type                       | Description                  |

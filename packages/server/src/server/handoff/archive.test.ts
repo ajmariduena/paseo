@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { HandoffArchiveStore, HANDOFF_ARCHIVE_LIMITS } from "./archive.js";
 import { readHandoffHistory, HANDOFF_HISTORY_MAX_BYTES } from "./history.js";
+import { readHandoffBundle } from "./bundle.js";
 
 let root: string;
 let store: HandoffArchiveStore;
@@ -21,6 +22,80 @@ beforeEach(async () => {
 afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
+
+async function readNoteBundle(
+  version: number,
+  notes?: Array<{ id: string; kind: string; label: string }>,
+) {
+  const conversations = notes
+    ? [
+        {
+          sourceAgentId: "conversation",
+          title: null,
+          provider: "claude",
+          mode: "native",
+          session: blob,
+          pendingRestartNote: notes,
+        },
+      ]
+    : [];
+  const bytes = Buffer.from(
+    JSON.stringify({
+      version,
+      kind: "workspace_handoff",
+      sourceServerId: "source",
+      sourceWorkspaceId: "workspace",
+      sourceCwd: "/source",
+      workspace: blob,
+      conversations,
+    }),
+  );
+  const entrypoint = {
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    size: bytes.length,
+  };
+  const entryFile = path.join(root, "bundle.json");
+  const payloadFile = path.join(root, "payload");
+  await writeFile(entryFile, bytes);
+  await writeFile(payloadFile, content);
+  const id = randomUUID();
+  await store.importLocal({
+    id,
+    manifest: { version: 1, entrypoint, blobs: [entrypoint, blob] },
+    files: new Map([
+      [entrypoint.sha256, entryFile],
+      [blob.sha256, payloadFile],
+    ]),
+  });
+  return store.withVerifiedArchive(id, (archive) =>
+    readHandoffBundle(archive, {
+      sourceServerId: "source",
+      sourceWorkspaceId: "workspace",
+      sourceAgentIds: conversations.map((conversation) => conversation.sourceAgentId),
+      manifestDigest: entrypoint.sha256,
+    }),
+  );
+}
+
+test.each([1, 2])("reads a workspace-only archive using bundle version %i", async (version) => {
+  expect((await readNoteBundle(version)).bundle.version).toBe(version);
+});
+
+test.each([
+  { version: 1, count: 1, message: "require handoff bundle version 2" },
+  { version: 2, count: 2, message: "Duplicate pending restart note" },
+  { version: 2, count: 1025, message: "Invalid workspace and conversation handoff manifest" },
+])(
+  "rejects unsupported or invalid pending notes: version $version, count $count",
+  async ({ version, count, message }) => {
+    const notes = Array.from({ length: count }, () => ({
+      id: "task",
+      kind: "shell",
+      label: "Interrupted task",
+    }));
+    await expect(readNoteBundle(version, notes)).rejects.toThrow(message);
+  },
+);
 
 test.each([
   { sourceAgentId: "another-agent", seq: 1 },

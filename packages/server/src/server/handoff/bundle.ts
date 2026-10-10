@@ -12,6 +12,7 @@ import type { HandoffArchiveStore, VerifiedHandoffArchive } from "./archive.js";
 import { readBoundedFile, writeJournal } from "./artifacts.js";
 import { workspaceArchiveFiles } from "./workspace.js";
 import { HANDOFF_HISTORY_MAX_BYTES, readHandoffHistory, parseHandoffHistory } from "./history.js";
+import { RestartCancelledWorkSchema, type RestartCancelledWork } from "../agent/agent-storage.js";
 import {
   readClaudeSessionArchive,
   readClaudeSessionManifest,
@@ -25,9 +26,11 @@ const ConversationSchema = z.object({
   mode: z.literal("native"),
   session: HandoffBlobSchema,
   history: HandoffBlobSchema.optional(),
+  pendingRestartNote: z.array(RestartCancelledWorkSchema).max(1024).optional(),
 });
 const BundleSchema = z.object({
-  version: z.literal(1),
+  // COMPAT(handoffBundleV1): added in v0.11.1, remove after 2027-04-10 once retained transfers use v2.
+  version: z.union([z.literal(1), z.literal(2)]),
   kind: z.literal("workspace_handoff"),
   sourceServerId: z.string().min(1).max(512),
   sourceWorkspaceId: z.string().min(1).max(512),
@@ -41,6 +44,7 @@ export interface CapturedConversation {
   title: string | null;
   artifactDirectory: string;
   historyPath?: string;
+  pendingRestartNote?: RestartCancelledWork[];
 }
 interface PackInput {
   store: HandoffArchiveStore;
@@ -78,6 +82,15 @@ function parseBundle(value: unknown): HandoffBundle {
   if (!result.success)
     reject("invalid_artifact", "Invalid workspace and conversation handoff manifest");
   const bundle = result.data;
+  const carriesNotes = bundle.conversations.some((item) => item.pendingRestartNote !== undefined);
+  // Version 1 readers ignore unknown fields. Version 2 makes them refuse rather than lose notes.
+  if (bundle.version === 1 && carriesNotes)
+    reject("invalid_artifact", "Pending restart notes require handoff bundle version 2");
+  for (const conversation of bundle.conversations) {
+    const noteIds = conversation.pendingRestartNote?.map((note) => note.id) ?? [];
+    if (new Set(noteIds).size !== noteIds.length)
+      reject("invalid_artifact", "Duplicate pending restart note in handoff");
+  }
   const ids = bundle.conversations.map((item) => item.sourceAgentId);
   if (new Set(ids).size !== ids.length)
     reject("conversation_mismatch", "Duplicate conversation in handoff");
@@ -111,10 +124,13 @@ export async function packHandoffArchive(input: PackInput): Promise<HandoffArchi
       mode: "native",
       session: descriptor,
       ...(history ? { history } : {}),
+      ...(conversation.pendingRestartNote?.length
+        ? { pendingRestartNote: conversation.pendingRestartNote }
+        : {}),
     });
   }
   const bundle = parseBundle({
-    version: 1,
+    version: 2,
     kind: "workspace_handoff",
     sourceServerId: input.sourceServerId,
     sourceWorkspaceId: input.sourceWorkspaceId,

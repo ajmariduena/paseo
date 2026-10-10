@@ -278,9 +278,12 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   retry without another provider call. Unknown invocations survive snapshots, restart and new
   generations, block subsequent turns and refuse handoff certification. Native carried prompts
   retain their UUID even without a caller message ID, and capture checks its presence.
-  Artifact-based recovery of uncertain completion, transport/disposition of unsent source notes,
-  remaining manager descendants, record revision guards, presentation coverage and durable
-  process-stop recovery remain open under the
+  Unsent restart notes are now part of the verified bundle and remain pending after native or
+  context activation and restart. Source release refuses a changed note set. Version 2 bundles
+  make older readers refuse this metadata; version 1 archives remain readable. See the
+  [carried-context contract](../data-model.md#carried-context-acknowledgement).
+  Artifact-based recovery of uncertain completion, remaining manager descendants, record revision
+  guards, presentation coverage and durable process-stop recovery remain open under the
   [conversation persistence contract](#conversation-persistence-contract).
 - New Claude notification/origin annotations bind a prepared attempt to its native UUID before
   provider start or steer, and persist the adapter's dispatched/withdrawn result. Replay uses that
@@ -434,7 +437,9 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   keeps this host-local pointer separate from portable context. Source release rechecks it after
   restart. Conversations without observed provenance require a source turn before a new capture;
   already prepared journals retain their recorded runtime. Native destination publication records
-  its local installation, allowing review for a return transfer before the first continued turn.
+  its local installation, allowing review for a native return transfer before the first continued
+  turn. A context-mode destination with no provider turn has no saved native session; source
+  capture still rejects it. Re-exporting its prior history/context across another hop remains open.
   Interrupted publication from older journals remains idempotent. Provider and real-daemon tests
   cover changed configuration, different roots/versions in one workspace, final metadata at close,
   legacy recovery and credential-environment preservation; see [runtime evidence](../qa-evidence/handoff-runtime.txt).

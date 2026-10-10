@@ -53,7 +53,7 @@ const PERSISTENCE_HANDLE_SCHEMA = z
   .nullable()
   .optional();
 
-const RestartCancelledWorkSchema = z.object({
+export const RestartCancelledWorkSchema = z.object({
   kind: z.string(),
   label: z.string(),
   id: z.string(),

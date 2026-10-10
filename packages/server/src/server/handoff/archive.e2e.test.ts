@@ -1831,6 +1831,145 @@ test("pausing between chunks keeps verified source data and resumes only missing
 
 for (const continuationMode of ["native", "context"] as const) {
   test.skipIf(process.platform === "win32")(
+    `preserves unsent restart notes through ${continuationMode} activation and restart`,
+    async () => {
+      let source = await startHost("source-notes", true);
+      let destination = await startHost("destination-notes", true);
+      const cwd = path.join(root, "notes-workspace");
+      await mkdir(cwd);
+      const created = await source.client.createWorkspace({
+        source: { kind: "directory", path: cwd },
+      });
+      if (!created.workspace) throw new Error("Missing source workspace");
+      const workspaceId = created.workspace.id;
+      const agentId = randomUUID();
+      const sessionId = randomUUID();
+      const configDir = path.join(root, "source-notes", "claude");
+      const project = claudeProjectDirSync(cwd, { configDir });
+      await mkdir(project, { recursive: true });
+      await writeFile(
+        path.join(project, `${sessionId}.jsonl`),
+        JSON.stringify({
+          type: "user",
+          uuid: randomUUID(),
+          sessionId,
+          message: { role: "user", content: "Earlier work" },
+        }) + "\n",
+      );
+      const timestamp = new Date().toISOString();
+      await source.daemon.daemon.agentStorage.upsert(
+        parseStoredAgentRecord({
+          id: agentId,
+          provider: "claude",
+          cwd,
+          workspaceId,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          lastStatus: "closed",
+          persistence: {
+            provider: "claude",
+            sessionId,
+            metadata: { claudeRuntime: { configDir, cliVersion: "2.1.295" } },
+          },
+        }),
+      );
+      const notes = [
+        { id: "first-task", kind: "shell", label: "Interrupted build — revisar salida" },
+      ];
+      await source.daemon.daemon.agentStorage.addPendingRestartNote(agentId, notes);
+      let transferId = randomUUID();
+      const request = {
+        workspaceId,
+        destinationParent: root,
+        continuationMode,
+        source: source.client,
+        destination: destination.client,
+      };
+      const staged = await prepareWorkspaceHandoff({ ...request, transferId });
+      expect(staged.state).toBe("staged");
+      await source.daemon.daemon.handoffArchives.withVerifiedArchive(
+        transferId,
+        async (archive) => {
+          const { bundle } = await readHandoffBundle(archive, {
+            sourceServerId: source.daemon.daemon.getServerId(),
+            sourceWorkspaceId: workspaceId,
+            sourceAgentIds: [agentId],
+            manifestDigest: archive.manifest.entrypoint.sha256,
+          });
+          expect(bundle.version).toBe(2);
+          expect(bundle.conversations[0].pendingRestartNote).toEqual(notes);
+        },
+      );
+      const late = { id: "later-task", kind: "delegation", label: "Later interrupted review" };
+      await source.daemon.daemon.agentStorage.addPendingRestartNote(agentId, [late]);
+      const rejected = await source.client.handoffReleaseSource({ transferId });
+      expect(rejected.error?.code).toBe("source_changed");
+      await cancelWorkspaceHandoff({
+        transferId,
+        sourceServerId: source.daemon.daemon.getServerId(),
+        getSource: () => source.client,
+        destination: destination.client,
+      });
+      transferId = randomUUID();
+      const refreshed = await prepareWorkspaceHandoff({ ...request, transferId });
+      await stopHost(source);
+      await stopHost(destination);
+      source = await startHost("source-notes", true);
+      destination = await startHost("destination-notes", true);
+      const active = await activateWorkspaceHandoff({
+        transferId,
+        sourceServerId: source.daemon.daemon.getServerId(),
+        getSource: () => source.client,
+        destination: destination.client,
+      });
+      expect(active.state).toBe("active");
+      expect(active.agentMappings).toEqual(refreshed.agentMappings);
+      const destinationAgentId = active.agentMappings[0].destinationAgentId;
+      const record = await destination.daemon.daemon.agentStorage.get(destinationAgentId);
+      expect(record?.pendingRestartNote).toEqual([...notes, late]);
+      expect(record?.carriedPrompt).toBeUndefined();
+      expect(record?.lastStatus).toBe("closed");
+      expect(destination.daemon.daemon.agentManager.getAgent(destinationAgentId)).toBeNull();
+      if (continuationMode === "context") expect(record?.handoffContext?.pending).toBe(true);
+      await stopHost(destination);
+      destination = await startHost("destination-notes", true);
+      expect(
+        (await destination.daemon.daemon.agentStorage.get(destinationAgentId))?.pendingRestartNote,
+      ).toEqual([...notes, late]);
+      expect((await source.daemon.daemon.agentStorage.get(agentId))?.pendingRestartNote).toEqual([
+        ...notes,
+        late,
+      ]);
+      if (continuationMode === "native") {
+        if (!record?.workspaceId) throw new Error("Missing destination workspace");
+        const returnTransferId = randomUUID();
+        await prepareWorkspaceHandoff({
+          transferId: returnTransferId,
+          workspaceId: record.workspaceId,
+          destinationParent: root,
+          continuationMode: "native",
+          source: destination.client,
+          destination: source.client,
+        });
+        const returned = await activateWorkspaceHandoff({
+          transferId: returnTransferId,
+          sourceServerId: destination.daemon.daemon.getServerId(),
+          getSource: () => destination.client,
+          destination: source.client,
+        });
+        expect(returned.state).toBe("active");
+        const returnedAgent = await source.daemon.daemon.agentStorage.get(
+          returned.agentMappings[0].destinationAgentId,
+        );
+        expect(returnedAgent?.pendingRestartNote).toEqual([...notes, late]);
+        expect(returnedAgent?.persistence?.sessionId).toBe(sessionId);
+        expect(returnedAgent?.carriedPrompt).toBeUndefined();
+      }
+    },
+    30_000,
+  );
+
+  test.skipIf(process.platform === "win32")(
     `keeps ${continuationMode} handoff fenced until prompt annotation history is saved and unchanged`,
     async () => {
       let source = await startHost("source", true);

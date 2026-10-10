@@ -14,7 +14,11 @@ import {
 } from "@getpaseo/protocol/handoff-control";
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import type { AgentManager } from "../agent/agent-manager.js";
-import type { AgentStorage, StoredAgentRecord } from "../agent/agent-storage.js";
+import {
+  RestartCancelledWorkSchema,
+  type AgentStorage,
+  type StoredAgentRecord,
+} from "../agent/agent-storage.js";
 import {
   ClaudeSessionRuntimeSchema,
   readClaudeSessionRuntime,
@@ -58,6 +62,7 @@ const AgentSchema = z.object({
   title: z.string().nullable(),
   sessionId: z.string().uuid(),
   projectDirName: z.string().optional(),
+  pendingRestartNote: z.array(RestartCancelledWorkSchema).max(1024).optional(),
   // COMPAT(handoffCapturedRuntime): added in v0.11.1, remove after 2027-02-06 once older prepared transfers expire.
   runtime: ClaudeSessionRuntimeSchema.optional(),
 });
@@ -348,6 +353,7 @@ export class HandoffSource {
           title: agent.title,
           artifactDirectory,
           historyPath,
+          pendingRestartNote: agent.pendingRestartNote,
         });
       }
       const manifest = await packHandoffArchive({
@@ -618,6 +624,8 @@ export class HandoffSource {
         record.persistence?.metadata?.claudeProjectDirName !== captured.projectDirName
       )
         refuse("source_changed", "Source conversation changed after capture");
+      if (!isDeepStrictEqual(record.pendingRestartNote ?? [], captured.pendingRestartNote ?? []))
+        refuse("source_changed", "Pending restart notes changed after capture");
       records.set(id, record);
     }
     return records;
@@ -700,6 +708,7 @@ export class HandoffSource {
       title: record.title ?? null,
       sessionId: record.persistence.sessionId,
       projectDirName: record.persistence.metadata?.claudeProjectDirName,
+      pendingRestartNote: record.pendingRestartNote,
     });
     return { ...agent, runtime };
   }
