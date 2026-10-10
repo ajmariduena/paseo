@@ -153,6 +153,92 @@ describe("AgentStorage", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  test("a stale full-record update cannot overwrite a newer title or archive decision", async () => {
+    const agent = createManagedAgent({ lifecycle: "closed" });
+    await storage.applySnapshot(agent);
+    const original = await storage.get(agent.id);
+    if (!original) throw new Error("Missing stored agent");
+    await storage.setTitle(agent.id, "Newer title");
+    await expect(storage.upsert({ ...original, labels: { work: "old copy" } })).rejects.toThrow(
+      "Agent record revision changed",
+    );
+    const current = await storage.get(agent.id);
+    if (!current) throw new Error("Missing stored agent");
+    await storage.upsert({ ...current, archivedAt: "2026-10-10T00:00:00.000Z" });
+    await expect(storage.upsert({ ...current, title: "Resurrected copy" })).rejects.toThrow(
+      "Agent record revision changed",
+    );
+    expect(await storage.get(agent.id)).toMatchObject({
+      title: "Newer title",
+      archivedAt: "2026-10-10T00:00:00.000Z",
+      labels: {},
+    });
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "closed checkpoints keep the exact committed revision across retries and restart",
+    async () => {
+      const seed = toStoredAgentRecord(createManagedAgent({ lifecycle: "closed" }));
+      await storage.installHandoffRecord(seed);
+      const first = await storage.checkpointClosedAgent(seed.id);
+      expect(first.revision).toBe(1);
+      await storage.installHandoffRecord(seed);
+      expect((await storage.checkpointClosedAgent(seed.id)).revision).toBe(first.revision);
+      const cold = new AgentStorage(storagePath, logger);
+      await cold.installHandoffRecord(seed);
+      expect((await cold.checkpointClosedAgent(seed.id)).revision).toBe(first.revision);
+      await cold.setTitle(seed.id, "A later title");
+      expect((await cold.checkpointClosedAgent(seed.id)).revision).toBe(2);
+    },
+  );
+
+  test("competing full-record updates reject the stale candidate across restart", async () => {
+    const agent = createManagedAgent({ lifecycle: "closed" });
+    await storage.applySnapshot(agent);
+    const original = await storage.get(agent.id);
+    if (!original) throw new Error("Missing stored agent");
+    const updates = await Promise.allSettled([
+      storage.upsert({ ...original, title: "Winner" }),
+      storage.upsert({ ...original, labels: { lost: "update" } }),
+    ]);
+    expect(updates.map((result) => result.status)).toEqual(["fulfilled", "rejected"]);
+    const cold = new AgentStorage(storagePath, logger);
+    await expect(cold.upsert({ ...original, title: "Old snapshot" })).rejects.toThrow(
+      "Agent record revision changed",
+    );
+    expect(await cold.get(agent.id)).toMatchObject({ title: "Winner", labels: {} });
+  });
+
+  test("a legacy record gains a revision on its first mutation", async () => {
+    const seed = toStoredAgentRecord(createManagedAgent({ lifecycle: "closed" }));
+    await fs.mkdir(storagePath, { recursive: true });
+    await fs.writeFile(path.join(storagePath, `${seed.id}.json`), JSON.stringify(seed));
+    const legacy = await storage.get(seed.id);
+    if (!legacy) throw new Error("Missing legacy record");
+    expect(legacy.revision).toBeUndefined();
+    await storage.upsert({ ...legacy, title: "First edit after upgrade" });
+    expect((await storage.get(seed.id))?.revision).toBe(1);
+    await expect(storage.upsert({ ...legacy, title: "Stale legacy edit" })).rejects.toThrow(
+      "Agent record revision changed",
+    );
+  });
+
+  test("revision exhaustion refuses a mutation without wrapping or changing the record", async () => {
+    const seed = {
+      ...toStoredAgentRecord(createManagedAgent({ lifecycle: "closed" })),
+      revision: Number.MAX_SAFE_INTEGER,
+    };
+    await fs.mkdir(storagePath, { recursive: true });
+    await fs.writeFile(path.join(storagePath, `${seed.id}.json`), JSON.stringify(seed));
+    await expect(storage.setTitle(seed.id, "Overflow edit")).rejects.toThrow(
+      "revision capacity exceeded",
+    );
+    expect((await new AgentStorage(storagePath, logger).get(seed.id))?.revision).toBe(
+      seed.revision,
+    );
+    expect((await storage.get(seed.id))?.title).toBe(seed.title);
+  });
+
   test.skipIf(process.platform === "win32")(
     "uncertain carried context survives cold reads, snapshots and a replacement generation",
     async () => {
@@ -170,6 +256,7 @@ describe("AgentStorage", () => {
       await storage.prepareCarriedPrompt(agent.id, delivery);
       await storage.upsert({
         ...seed,
+        revision: (await storage.get(agent.id))?.revision,
         runtimeGeneration: (await storage.get(agent.id))?.runtimeGeneration,
       });
       await storage.applySnapshot(
@@ -260,7 +347,11 @@ describe("AgentStorage", () => {
     const delivery = { id: randomUUID(), generationId, restartNote: [], handoffContext: context };
     await storage.prepareCarriedPrompt(agent.id, delivery);
     const replacement = { ...context, sourceAgentId: "other-conversation" };
-    await storage.upsert({ ...opened, handoffContext: replacement });
+    await storage.upsert({
+      ...opened,
+      revision: (await storage.get(agent.id))?.revision,
+      handoffContext: replacement,
+    });
     await expect(
       storage.settleCarriedPrompt(agent.id, { delivery, outcome: "completed" }),
     ).rejects.toThrow("context changed before completion");
@@ -295,7 +386,11 @@ describe("AgentStorage", () => {
       const prepared = await storage.get(agent.id);
       expect(prepared?.pendingPromptAnnotationPublication).toBeDefined();
       await storage.applySnapshot(agent);
-      await storage.upsert({ ...seed, runtimeGeneration: prepared?.runtimeGeneration });
+      await storage.upsert({
+        ...seed,
+        revision: (await storage.get(agent.id))?.revision,
+        runtimeGeneration: prepared?.runtimeGeneration,
+      });
       await storage.applySnapshot(
         createManagedAgent({
           id: agent.id,
@@ -817,12 +912,15 @@ describe("AgentStorage", () => {
       );
       let failSync = true;
       const publishedTitles: Array<string | null | undefined> = [];
+      const publishedRevisions: number[] = [];
       storage = new AgentStorage(
         storagePath,
         logger,
         undefined,
         async (filePath, publicationRoot) => {
-          publishedTitles.push(JSON.parse(await fs.readFile(filePath, "utf8")).title);
+          const candidate = JSON.parse(await fs.readFile(filePath, "utf8"));
+          publishedTitles.push(candidate.title);
+          publishedRevisions.push(candidate.revision);
           if (failSync) throw new Error("injected directory sync failure");
           await syncFilePublication(filePath, publicationRoot);
         },
@@ -843,10 +941,12 @@ describe("AgentStorage", () => {
       failSync = false;
       await storage.setTitle(record.id, "Changed after repair");
       expect(publishedTitles).toEqual([null, null, null, null]);
+      expect(publishedRevisions).toEqual([1, 1, 1, 1]);
       const reloaded = new AgentStorage(storagePath, logger);
       expect(await reloaded.get(record.id)).toMatchObject({
         title: "Changed after repair",
         lastStatus: "closed",
+        revision: 2,
       });
     },
   );

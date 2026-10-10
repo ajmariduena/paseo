@@ -1839,8 +1839,37 @@ async function contextRecord(host: Host, agentId: string) {
   return { ...record, workspaceId: record.workspaceId, handoffContext: record.handoffContext };
 }
 
+async function expectRecordRevisionReleaseCheck(source: Host, agentId: string, transferId: string) {
+  const preparationPath = path.join(
+    source.daemon.paseoHome,
+    "handoff",
+    "source",
+    transferId,
+    "source.json",
+  );
+  const preparationBytes = await readFile(preparationPath);
+  const preparation = JSON.parse(preparationBytes.toString("utf8"));
+  expect(preparation.version).toBe(3);
+  delete preparation.agents[0].recordRevision;
+  await writeFile(preparationPath, JSON.stringify(preparation));
+  expect((await source.client.handoffReleaseSource({ transferId })).error?.message).toContain(
+    "missing its record revision",
+  );
+  await writeFile(preparationPath, preparationBytes);
+  const capturedRecord = await source.daemon.daemon.agentStorage.get(agentId);
+  if (!capturedRecord) throw new Error("Missing captured conversation");
+  await source.daemon.daemon.agentStorage.setTitle(agentId, "Metadata changed after capture");
+  const changedRecord = await source.daemon.daemon.agentStorage.get(agentId);
+  if (!changedRecord) throw new Error("Missing changed conversation");
+  await source.daemon.daemon.agentStorage.upsert({ ...changedRecord, title: capturedRecord.title });
+  const changedRevision = await source.client.handoffReleaseSource({ transferId });
+  expect(changedRevision.error?.code).toBe("source_changed");
+  expect(changedRevision.error?.message).toContain("record changed after capture");
+}
+
 async function expectContextReleaseChecks(
   host: Host,
+  receiver: Host,
   agentId: string,
   originalTransferId: string,
   transferId: string,
@@ -1853,7 +1882,39 @@ async function expectContextReleaseChecks(
   expect((await host.client.handoffReleaseSource({ transferId })).error?.code).toBe(
     "source_changed",
   );
-  await host.daemon.daemon.agentStorage.upsert(record);
+  const changed = await host.daemon.daemon.agentStorage.get(agentId);
+  if (!changed) throw new Error("Missing changed context conversation");
+  await host.daemon.daemon.agentStorage.upsert({
+    ...changed,
+    handoffContext: record.handoffContext,
+  });
+  await cancelWorkspaceHandoff({
+    transferId,
+    sourceServerId: host.daemon.daemon.getServerId(),
+    getSource: () => host.client,
+    destination: receiver.client,
+  });
+  transferId = randomUUID();
+  await prepareWorkspaceHandoff({
+    transferId,
+    workspaceId: record.workspaceId,
+    destinationParent: root,
+    continuationMode: "context",
+    source: host.client,
+    destination: receiver.client,
+  });
+  // An already-captured v2 context transfer predates record revisions.
+  const preparationPath = path.join(
+    host.daemon.paseoHome,
+    "handoff",
+    "source",
+    transferId,
+    "source.json",
+  );
+  const preparation = JSON.parse(await readFile(preparationPath, "utf8"));
+  preparation.version = 2;
+  for (const agent of preparation.agents) delete agent.recordRevision;
+  await writeFile(preparationPath, JSON.stringify(preparation));
   const original = await host.daemon.daemon.handoffArchives.withVerifiedArchive(
     originalTransferId,
     async (archive) => {
@@ -1866,6 +1927,7 @@ async function expectContextReleaseChecks(
     "integrity_mismatch",
   );
   await writeFile(original.file, original.bytes);
+  return transferId;
 }
 
 async function expectContextReturnPreview(source: Host, destination: Host, workspaceId: string) {
@@ -1919,7 +1981,7 @@ async function expectContextHandoffReturn(input: {
   await rm(path.join(record.cwd, record.handoffContext.directory), { recursive: true });
   await rm(input.originalTranscript);
   await expectContextReturnPreview(destination, source, record.workspaceId);
-  const returnTransferId = randomUUID();
+  let returnTransferId = randomUUID();
   await prepareWorkspaceHandoff({
     transferId: returnTransferId,
     workspaceId: record.workspaceId,
@@ -1928,8 +1990,9 @@ async function expectContextHandoffReturn(input: {
     source: destination.client,
     destination: source.client,
   });
-  await expectContextReleaseChecks(
+  returnTransferId = await expectContextReleaseChecks(
     destination,
+    source,
     input.agentId,
     input.originalTransferId,
     returnTransferId,
@@ -2240,6 +2303,15 @@ for (const continuationMode of ["native", "context"] as const) {
           expect(bundle.conversations[0].pendingRestartNote).toEqual(notes);
         },
       );
+      await expectRecordRevisionReleaseCheck(source, agentId, transferId);
+      await cancelWorkspaceHandoff({
+        transferId,
+        sourceServerId: source.daemon.daemon.getServerId(),
+        getSource: () => source.client,
+        destination: destination.client,
+      });
+      transferId = randomUUID();
+      await prepareWorkspaceHandoff({ ...request, transferId });
       const late = { id: "later-task", kind: "delegation", label: "Later interrupted review" };
       await source.daemon.daemon.agentStorage.addPendingRestartNote(agentId, [late]);
       const rejected = await source.client.handoffReleaseSource({ transferId });

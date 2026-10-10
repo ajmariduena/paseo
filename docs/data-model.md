@@ -120,6 +120,19 @@ Each agent is stored as a separate JSON file, grouped by project directory.
 | `archivedAt`         | `string?` (ISO 8601)                     | Soft-delete timestamp                                                                                                                                                                                                                                                                                                                                                               |
 | `pendingRestartNote` | `{ kind, label, id }[]?`                 | Cancelled background work retained until the carried-context acknowledgement below.                                                                                                                                                                                                                                                                                                 |
 
+### Record revisions
+
+Agent records carry an optional monotonic `revision`. The store assigns it at publication; callers
+must retain it when replacing a full record. A stale replacement fails instead of discarding newer
+metadata. Identical retries retain the committed revision, including across restart. Legacy records
+gain their first revision on the next write, without a migration.
+
+Use a store-owned field operation for a semantic change or rollback. A failed provider import may
+undo its placement and label patch, but must preserve later edits and runtime recovery obligations.
+Handoff preparation binds the exact closed checkpoint revision; changing a record and changing it
+back still requires a fresh preparation. The remaining certification requirements live in the
+[conversation persistence contract](refactors/cross-host-handoff-plan.md#conversation-persistence-contract).
+
 ### Carried context acknowledgement
 
 Retain the exact restart notes and handoff context before invoking a provider. The agent record

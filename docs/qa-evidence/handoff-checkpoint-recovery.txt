@@ -1,5 +1,22 @@
 Handoff persistence recovery foundations — 2026-10-10
 
+Record revision and rollback validation:
+- The initial regression reproduced a stale full-record write erasing a newer title or archive
+  decision. Competing updates now reject the stale candidate, including after a cold load.
+- Closed checkpoints and inactive installation keep the same revision for identical retries.
+  A failed directory sync retains its exact candidate and revision; a later mutation repairs it
+  before advancing. Legacy records acquire a revision on first write; exhaustion refuses to wrap.
+- A manager regression reproduced returning the previous revision after detaching a stored agent.
+  Metadata and archive operations now return the committed record.
+- Failed provider import restores its placement/label patch while retaining concurrent title,
+  label edits and pending restart notes. It no longer writes an old full-record copy.
+- Native and context network cases reject a v3 preparation missing its revision, and reject a
+  record changed then restored to its captured value. A new preparation succeeds. Retained v1
+  native and v2 context preparations still recover across daemon restart.
+- The store/manager selection passes 51 cases (one Windows-only case and 267 unrelated manager
+  cases skipped); import storage cases pass 17; the three selected network cases pass.
+  These fixtures use synthetic providers. Full writer sealing and crash-stop proof remain open.
+
 Unsent notes and repeated context transfers:
 - Source preparation captures pending restart notes; release refuses a changed note set. Native
   and context activation retain those notes without acknowledging delivery. The network cases
@@ -22,7 +39,7 @@ Unsent notes and repeated context transfers:
 - Provider files are synthetic; network version-only executables reject provider turns. Browser
   fixtures use the existing fake provider and seeded transcripts. These establish archive,
   transaction and UI behavior, not fresh authenticated-provider or physical-host continuity.
-- Full record revision guards, remaining writer inventory, uncertain-completion artifact recovery
+- Final writer sealing, remaining writer inventory, uncertain-completion artifact recovery
   and durable process identity remain open under the acceptance plan.
 
 Browser setup and regression:

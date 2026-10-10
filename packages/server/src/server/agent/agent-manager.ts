@@ -2350,8 +2350,10 @@ export class AgentManager {
     record: StoredAgentRecord,
     options: { archivedAt: string; updatedAt?: string },
   ): Promise<ArchivedStoredAgentRecord> {
-    const archivedRecord = buildArchivedAgentRecord(record, options);
-    await this.requireRegistry().upsert(archivedRecord);
+    const committed = await this.requireRegistry().upsert(
+      buildArchivedAgentRecord(record, options),
+    );
+    const archivedRecord = { ...committed, archivedAt: options.archivedAt };
     if (!record.archivedAt && !record.internal) {
       this.pluginLifecycle?.emit("agent.archived", {
         agent: describeHookAgent(archivedRecord),
@@ -2628,8 +2630,7 @@ export class AgentManager {
       ...(patch.labels ? { labels: applyLabelPatch(record.labels, patch.labels) } : {}),
       updatedAt: this.nextStoredUpdatedAt(record),
     };
-    await registry.upsert(nextRecord);
-    return nextRecord;
+    return registry.upsert(nextRecord);
   }
 
   async detachAgent(agentId: string): Promise<{

@@ -84,6 +84,7 @@ export interface CarriedPromptSettlement {
 
 const STORED_AGENT_SCHEMA = z.object({
   id: z.string(),
+  revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
   provider: z.string(),
   cwd: z.string(),
   workspaceId: z.string().optional(),
@@ -146,6 +147,27 @@ export type SerializableAgentConfig = Pick<
 >;
 
 export type StoredAgentRecord = z.infer<typeof STORED_AGENT_SCHEMA>;
+
+export class AgentRecordConflictError extends Error {
+  constructor(
+    readonly agentId: string,
+    readonly expectedRevision: number,
+    readonly actualRevision: number,
+  ) {
+    super(
+      `Agent record revision changed for ${agentId}: expected ${expectedRevision}, found ${actualRevision}`,
+    );
+    this.name = "AgentRecordConflictError";
+  }
+}
+
+function sameRecordContent(left: StoredAgentRecord, right: StoredAgentRecord): boolean {
+  // Compare the persisted representation: optional undefined fields disappear on disk.
+  return isDeepStrictEqual(
+    JSON.parse(JSON.stringify({ ...left, revision: undefined })),
+    JSON.parse(JSON.stringify({ ...right, revision: undefined })),
+  );
+}
 
 function recordRecoveryState(record: StoredAgentRecord | null) {
   return {
@@ -278,7 +300,7 @@ export class AgentStorage {
     await this.queueRecordMutation(
       parsed.id,
       (existing) => {
-        if (existing && !isDeepStrictEqual(existing, parsed))
+        if (existing && !sameRecordContent(existing, parsed))
           throw new Error("Handoff agent identity is already occupied");
         return parsed;
       },
@@ -286,18 +308,28 @@ export class AgentStorage {
     );
   }
 
-  async upsert(record: StoredAgentRecord): Promise<void> {
+  async upsert(record: StoredAgentRecord): Promise<StoredAgentRecord> {
     const candidate = structuredClone(record);
     await this.load();
-    await this.queueRecordMutation(candidate.id, (existing) => {
+    const committed = await this.queueRecordMutation(candidate.id, (existing) => {
       this.assertRuntimeGeneration(existing, candidate.runtimeGeneration?.id);
       this.assertRuntimeNotReopened(existing, candidate);
-      return {
+      const next = {
         ...candidate,
         ...recordRecoveryState(existing),
         pendingRestartNote: existing ? existing.pendingRestartNote : candidate.pendingRestartNote,
       };
+      // Identical retries reuse the committed revision, including after publication repair.
+      if (existing && sameRecordContent(existing, next)) return existing;
+      // COMPAT(agentRecordRevision): added in v0.11.1, remove after 2027-04-10 once legacy records have been written.
+      const expectedRevision = candidate.revision ?? 0;
+      const actualRevision = existing?.revision ?? 0;
+      if (expectedRevision !== actualRevision)
+        throw new AgentRecordConflictError(candidate.id, expectedRevision, actualRevision);
+      return next;
     });
+    if (!committed) throw new Error("Agent was deleted before its record could be saved");
+    return committed;
   }
 
   async beginRuntimeGeneration(seed: StoredAgentRecord): Promise<string> {
@@ -335,6 +367,32 @@ export class AgentStorage {
     );
     if (!opened) throw new Error("Agent was deleted before opening its runtime");
     return generation.id;
+  }
+
+  async restoreArchivedImportPlacement(
+    original: StoredAgentRecord,
+    imported: { workspaceId: string; labels: Record<string, string | null> },
+  ): Promise<void> {
+    const before = structuredClone(original);
+    const applied = structuredClone(imported);
+    await this.load();
+    await this.queueRecordMutation(before.id, (record) => {
+      if (!record || !before.archivedAt || record.archivedAt !== before.archivedAt)
+        throw new Error("Imported agent must be re-archived before restoring its placement");
+      const labels = { ...record.labels };
+      // Undo only this import's patch; a concurrent edit owns its newer value.
+      for (const [key, value] of Object.entries(applied.labels)) {
+        if (labels[key] !== (value ?? undefined)) continue;
+        if (Object.hasOwn(before.labels, key)) labels[key] = before.labels[key];
+        else delete labels[key];
+      }
+      return {
+        ...record,
+        workspaceId:
+          record.workspaceId === applied.workspaceId ? before.workspaceId : record.workspaceId,
+        labels,
+      };
+    });
   }
 
   private assertRuntimeGeneration(record: StoredAgentRecord | null, generationId?: string): void {
@@ -482,7 +540,18 @@ export class AgentStorage {
         // Later mutations cannot overwrite it or evaluate against an uncommitted cache.
         await this.publishPendingRecord(agentId);
         if (!mutate) return undefined;
-        const record = structuredClone(mutate(this.cache.get(agentId) ?? null));
+        const existing = this.cache.get(agentId) ?? null;
+        const record = structuredClone(mutate(existing));
+        const unchanged = existing && sameRecordContent(existing, record);
+        if (unchanged && existing.revision !== undefined) {
+          record.revision = existing.revision;
+        } else {
+          // Revisions belong to this serialized publication, never to a caller's candidate.
+          const revision = (existing?.revision ?? 0) + 1;
+          if (!Number.isSafeInteger(revision))
+            throw new Error("Agent record revision capacity exceeded");
+          record.revision = revision;
+        }
         this.pendingPublications.set(agentId, { record, synchronize });
         await this.publishPendingRecord(agentId);
         return structuredClone(record);

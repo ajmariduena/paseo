@@ -618,6 +618,7 @@ class ProviderImportHarness {
   timeline: AgentTimelineItem[] = [];
   activeAgent: ManagedAgent | null = null;
   resumeError: Error | null = null;
+  beforeResume: (() => Promise<void>) | null = null;
   resumeAttempts = 0;
   private unarchiveWait: Promise<void> | null = null;
   private releaseUnarchive: (() => void) | null = null;
@@ -671,6 +672,7 @@ class ProviderImportHarness {
         _options?: unknown,
       ) => {
         this.resumeAttempts += 1;
+        await this.beforeResume?.();
         if (this.resumeError) {
           this.activeAgent = this.snapshot;
           throw this.resumeError;
@@ -845,7 +847,7 @@ test("importProviderSession rejects an archived session from a different cwd bef
   await expect(
     harness.import({ providerHandleId: "thread-other-cwd", cwd: "/tmp/target-agent" }),
   ).rejects.toThrow("Provider session cwd does not match import cwd: thread-other-cwd");
-  expect(await harness.storage.get(harness.snapshot.id)).toEqual(archived);
+  expect(await harness.storage.get(harness.snapshot.id)).toEqual({ ...archived, revision: 1 });
   expect(harness.resumeAttempts).toBe(0);
 });
 
@@ -863,9 +865,54 @@ test("importProviderSession restores storage and closes a partial runtime when l
     harness.import({ providerHandleId: "thread-stale", cwd: harness.snapshot.cwd }),
   ).rejects.toThrow("provider session is unavailable");
 
-  expect(await harness.storage.get(harness.snapshot.id)).toEqual(archived);
+  expect(await harness.storage.get(harness.snapshot.id)).toEqual({ ...archived, revision: 4 });
   expect(harness.activeAgent).toBeNull();
   expect(harness.closedAgentIds).toEqual([harness.snapshot.id]);
+});
+
+test("failed provider import rolls back placement without overwriting concurrent metadata", async () => {
+  const harness = await ProviderImportHarness.create({ sessionId: "thread-concurrent" });
+  const archived = makeStoredProviderSession({
+    id: harness.snapshot.id,
+    cwd: harness.snapshot.cwd,
+    sessionId: "thread-concurrent",
+    labels: {
+      retained: "before",
+      changed: "before",
+      removed: "before",
+      [PARENT_AGENT_ID_LABEL]: "old-parent",
+    },
+  });
+  await harness.seed(archived);
+  harness.beforeResume = async () => {
+    const current = await harness.storage.get(archived.id);
+    if (!current) throw new Error("Missing imported agent");
+    await harness.storage.upsert({
+      ...current,
+      title: "Edited during import",
+      labels: { ...current.labels, changed: "newer edit", additional: "concurrent" },
+    });
+    await harness.storage.addPendingRestartNote(archived.id, [
+      { id: "work", kind: "shell", label: "Build" },
+    ]);
+  };
+  harness.resumeError = new Error("provider session is unavailable");
+  await expect(
+    harness.import({
+      providerHandleId: "thread-concurrent",
+      cwd: archived.cwd,
+      labels: { changed: "import", removed: "import", added: "import" },
+    }),
+  ).rejects.toThrow("provider session is unavailable");
+  expect(await harness.storage.get(archived.id)).toMatchObject({
+    archivedAt: archived.archivedAt,
+    workspaceId: archived.workspaceId,
+    title: "Edited during import",
+    labels: { ...archived.labels, changed: "newer edit", additional: "concurrent" },
+    pendingRestartNote: [{ id: "work", kind: "shell", label: "Build" }],
+  });
+  expect((await harness.storage.get(archived.id))?.labels).not.toHaveProperty("added");
+  expect(harness.activeAgent).toBeNull();
 });
 
 test("importProviderSession serializes legacy and native aliases for one archived session", async () => {

@@ -7502,7 +7502,9 @@ test("detachAgent removes relationship lifecycle labels from a stored-only agent
   expect(result.previousParentAgentId).toBe(parent.id);
   expect(result.live).toBe(false);
   expect(result.record.labels).toEqual({ role: "reviewer" });
-  expect((await storage.get(child.id))?.labels).toEqual({ role: "reviewer" });
+  expect(result.record).toEqual(await storage.get(child.id));
+  await storage.upsert({ ...result.record, title: "Detached reviewer" });
+  expect((await storage.get(child.id))?.title).toBe("Detached reviewer");
 });
 
 test("archiveAgent does not cascade to a detached former child", async () => {
@@ -7881,6 +7883,7 @@ test("archiveSnapshot clears persisted attention and normalizes running status",
   expect(archivedRecord.attentionTimestamp).toBeNull();
 
   const persisted = await storage.get(snapshot.id);
+  expect(archivedRecord).toEqual(persisted);
   expect(persisted?.archivedAt).toBe(archivedAt);
   expect(persisted?.lastStatus).toBe("closed");
   expect(persisted?.requiresAttention).toBe(false);

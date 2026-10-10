@@ -74,6 +74,7 @@ import {
 
 const AgentIdentitySchema = z.object({
   id: z.string().min(1),
+  recordRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
   cwd: z.string().min(1),
   title: z.string().nullable(),
   pendingRestartNote: z.array(RestartCancelledWorkSchema).max(1024).optional(),
@@ -102,8 +103,8 @@ const ContextAgentSchema = AgentIdentitySchema.extend({
 });
 const AgentSchema = z.discriminatedUnion("mode", [NativeAgentSchema, ContextAgentSchema]);
 const PreparedSchema = z.object({
-  // COMPAT(handoffPreparedHistory): added in v0.11.1, remove after 2027-04-10 once retained v1 preparations finish.
-  version: z.union([z.literal(1), z.literal(2)]),
+  // COMPAT(handoffPreparedHistory): added in v0.11.1, remove after 2027-04-10 once retained v1/v2 preparations finish.
+  version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
   transferId: HandoffTransferIdSchema,
   cwd: z.string().min(1),
   agents: z.array(AgentSchema).max(1000),
@@ -141,6 +142,27 @@ interface SourceRequest {
   workspaceReviewDigest?: string;
   stoppedWorkReview?: HandoffStoppedWorkReview;
   integrationReview?: HandoffIntegrationReview;
+}
+
+function verifyCapturedRecord(
+  record: StoredAgentRecord,
+  captured: PreparedSource["agents"][number],
+) {
+  if (captured.mode === "context") {
+    if (record.persistence || !isDeepStrictEqual(record.handoffContext, captured.context))
+      refuse("source_changed", "Source carried context changed after capture");
+  } else if (
+    record.persistence?.sessionId !== captured.sessionId ||
+    record.persistence?.metadata?.claudeProjectDirName !== captured.projectDirName ||
+    !isDeepStrictEqual(record.handoffContext, captured.context)
+  ) {
+    refuse("source_changed", "Source conversation changed after capture");
+  }
+  if (!isDeepStrictEqual(record.pendingRestartNote ?? [], captured.pendingRestartNote ?? []))
+    refuse("source_changed", "Pending restart notes changed after capture");
+  // COMPAT(handoffRecordRevision): added in v0.11.1, remove after 2027-04-10 once v1/v2 preparations finish.
+  if (captured.recordRevision !== undefined && record.revision !== captured.recordRevision)
+    refuse("source_changed", "Source conversation record changed after capture");
 }
 
 export class HandoffSourceError extends Error {
@@ -451,7 +473,7 @@ export class HandoffSource {
         conversations,
       });
       const prepared: PreparedSource = {
-        version: 2,
+        version: 3,
         transferId: source.id,
         cwd: source.cwd,
         agents,
@@ -702,18 +724,7 @@ export class HandoffSource {
       const captured = prepared.agents.find((agent) => agent.id === id);
       if (!record || !captured || record.lastStatus !== "closed" || record.cwd !== captured.cwd)
         refuse("source_changed", "Source conversation changed after capture");
-      if (captured.mode === "context") {
-        if (record.persistence || !isDeepStrictEqual(record.handoffContext, captured.context))
-          refuse("source_changed", "Source carried context changed after capture");
-      } else if (
-        record.persistence?.sessionId !== captured.sessionId ||
-        record.persistence?.metadata?.claudeProjectDirName !== captured.projectDirName ||
-        !isDeepStrictEqual(record.handoffContext, captured.context)
-      ) {
-        refuse("source_changed", "Source conversation changed after capture");
-      }
-      if (!isDeepStrictEqual(record.pendingRestartNote ?? [], captured.pendingRestartNote ?? []))
-        refuse("source_changed", "Pending restart notes changed after capture");
+      verifyCapturedRecord(record, captured);
       records.set(id, record);
     }
     return records;
@@ -744,14 +755,19 @@ export class HandoffSource {
       if (!record) refuse("source_changed", "Captured conversation is missing from the source");
       if (agent.mode === "context") {
         const current = await this.contextAgent(record);
-        if (!isDeepStrictEqual(current.agent, agent))
+        if (
+          !isDeepStrictEqual(
+            { ...current.agent, recordRevision: agent.recordRevision },
+            { ...agent, recordRevision: agent.recordRevision },
+          )
+        )
           refuse("source_changed", "Source carried history changed after capture");
         continue;
       }
       const previous = await this.previousSegments(record, agent.sessionId);
       if (
         // COMPAT(handoffPreparedHistory): v1 did not bind a prior native import when it contained no earlier segments.
-        (prepared.version === 2 && !isDeepStrictEqual(previous.binding, agent.previousBinding)) ||
+        (prepared.version >= 2 && !isDeepStrictEqual(previous.binding, agent.previousBinding)) ||
         !isDeepStrictEqual(
           previous.previous.map((item) => item.segment),
           agent.previous ?? [],
@@ -859,6 +875,7 @@ export class HandoffSource {
           refuse("source_changed", "Carried context differs from its original verified archive");
         const agent = ContextAgentSchema.parse({
           id: record.id,
+          recordRevision: record.revision,
           cwd: record.cwd,
           title: record.title ?? null,
           mode: "context",
@@ -1007,6 +1024,7 @@ export class HandoffSource {
     const agent = NativeAgentSchema.parse({
       mode: "native",
       id: record.id,
+      recordRevision: record.revision,
       cwd: record.cwd,
       title: record.title ?? null,
       sessionId: record.persistence.sessionId,
@@ -1041,6 +1059,11 @@ export class HandoffSource {
       20 * 1024 * 1024,
     );
     const prepared = PreparedSchema.parse(JSON.parse(bytes.toString("utf8")));
+    if (
+      prepared.version === 3 &&
+      prepared.agents.some((agent) => agent.recordRevision === undefined)
+    )
+      refuse("source_changed", "Source preparation is missing its record revision");
     if (
       prepared.transferId !== source.id ||
       prepared.cwd !== source.cwd ||
