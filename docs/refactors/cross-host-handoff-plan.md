@@ -337,10 +337,19 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   compares installed URLs independently of host authentication rewrites. Focused tests cover
   worktrees, unborn branches, malformed manifests, forge identity resolution, transport and
   activation after destination restart; see [remote evidence](../qa-evidence/handoff-remotes.txt).
-  Branch upstreams, custom refspecs, remote-tracking refs and push policies are not reconstructed;
-  their fidelity/dispositions and authenticated forge operations remain open. SSH aliases and
-  credentials must exist on the destination. No remote network request runs during capture or
-  restore. Git owns rewrite resolution through [remote get-url](https://git-scm.com/docs/git-remote).
+  Version 2 workspace archives also retain local branches, tags, notes, remote-tracking refs and
+  symbolic refs, with an inventory bound to review, the history bundle and release. Unborn HEAD
+  can coexist with saved references. Version 1 HEAD-only archives remain readable; older readers
+  reject version 2 instead of discarding its additional Git state.
+  Branch upstreams, named push destinations, fully qualified fetch/push refspecs (including
+  negative fetch patterns), and selected explicit fetch/pull/push policies travel separately
+  from host configuration. Local bare-repository tests exercise fetch mapping, exclusion and
+  push destination selection. Stashes, replacement/custom namespaces, dangling/cyclic refs,
+  mirror policies and custom merge options require preflight resolution. Reflog-only history,
+  remaining Git configuration, destination-global policy interactions and authenticated forge
+  operations remain open. SSH aliases and credentials must exist on the destination. No remote
+  network request runs during capture or restore. Git owns rewrite resolution through
+  [remote get-url](https://git-scm.com/docs/git-remote).
 - `archive.ts`, `archive.test.ts` and `archive.e2e.test.ts` cover persistent receive offsets,
   checksums, local capture import, and real two-daemon transport. The client coordinator in
   `packages/client/src/handoff-transfer.ts` holds one chunk in flight. The network suite transfers

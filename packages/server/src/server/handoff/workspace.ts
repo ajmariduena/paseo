@@ -25,6 +25,22 @@ import {
   validateWorkspaceRemotes,
   type WorkspaceRemotes,
 } from "./workspace-remotes.js";
+import {
+  GitObjectIdSchema,
+  WorkspaceReferencesSchema,
+  captureWorkspaceReferences,
+  restoreWorkspaceReferences,
+  validateWorkspaceReferences,
+  verifyWorkspaceBundle,
+  type WorkspaceReferences,
+} from "./workspace-references.js";
+import {
+  WorkspaceTrackingSchema,
+  captureWorkspaceTracking,
+  restoreWorkspaceTracking,
+  validateWorkspaceTracking,
+  type WorkspaceTracking,
+} from "./workspace-tracking.js";
 import type { HandoffArchiveStore, VerifiedHandoffArchive } from "./archive.js";
 import {
   HandoffBlobSchema as BlobSchema,
@@ -53,26 +69,35 @@ const FileSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("symlink"), path: z.string(), target: z.string() }),
   z.object({ kind: z.literal("directory"), path: z.string() }),
 ]);
-const ManifestSchema = z.object({
-  version: z.literal(1),
-  git: z
-    .object({
-      objectFormat: z.enum(["sha1", "sha256"]),
-      normalization: GitNormalizationSchema,
-      head: z
-        .string()
-        .regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/)
-        .nullable(),
-      branch: z.string().nullable(),
-      // COMPAT(handoffGitRemotes): added in v0.11.1, remove after 2027-04-09 once archived transfers include remotes.
-      remotes: WorkspaceRemotesSchema.optional(),
-      bundle: BlobSchema.nullable(),
-      indexPatch: BlobSchema,
-      indexFingerprint: DigestSchema,
-    })
-    .nullable(),
+const GitManifestSchema = z.object({
+  objectFormat: z.enum(["sha1", "sha256"]),
+  normalization: GitNormalizationSchema,
+  head: GitObjectIdSchema.nullable(),
+  branch: z.string().nullable(),
+  // COMPAT(handoffGitRemotes): added in v0.11.1, remove after 2027-04-09 once archived transfers include remotes.
+  remotes: WorkspaceRemotesSchema.optional(),
+  bundle: BlobSchema.nullable(),
+  indexPatch: BlobSchema,
+  indexFingerprint: DigestSchema,
+});
+const CurrentManifestSchema = z.object({
+  version: z.literal(2),
+  git: GitManifestSchema.extend({
+    remotes: WorkspaceRemotesSchema,
+    references: WorkspaceReferencesSchema,
+    tracking: WorkspaceTrackingSchema,
+  }).nullable(),
   files: z.array(FileSchema),
 });
+const ManifestSchema = z.discriminatedUnion("version", [
+  // COMPAT(handoffWorkspaceV1): added in v0.11.1, remove after 2027-04-10 once HEAD-only archives expire.
+  z.object({
+    version: z.literal(1),
+    git: GitManifestSchema.nullable(),
+    files: z.array(FileSchema),
+  }),
+  CurrentManifestSchema,
+]);
 
 export type WorkspaceManifest = z.infer<typeof ManifestSchema>;
 type Blob = z.infer<typeof BlobSchema>;
@@ -130,6 +155,8 @@ interface GitState {
   head: string | null;
   branch: string | null;
   remotes: WorkspaceRemotes;
+  references: WorkspaceReferences;
+  tracking: WorkspaceTracking;
   paths: string[];
   index: string;
 }
@@ -288,14 +315,19 @@ async function runGit(cwd: string, args: string[], acceptExitCodes?: number[]): 
   return decodeGitOutput(result);
 }
 
+interface RestoreGitOptions {
+  acceptExitCodes?: number[];
+  input?: string;
+}
+
 async function runRestoreGit(
   cwd: string,
   args: string[],
-  acceptExitCodes?: number[],
+  options: RestoreGitOptions = {},
 ): Promise<string> {
   const result = await runGitCommandBytes(["-c", "core.hooksPath=", ...args], {
     cwd,
-    acceptExitCodes,
+    ...options,
     envOverlay: {
       GIT_CONFIG_NOSYSTEM: "1",
       // Git for Windows maps /dev/null itself; Node's \\.\nul path is rejected by Git.
@@ -348,11 +380,14 @@ async function getGitState(
     acceptExitCodes: [0, 1],
   });
   const refs = headResult.stdout;
-  const branchResult = await git(["symbolic-ref", "--quiet", "--short", "HEAD"], {
+  const branchResult = await git(["symbolic-ref", "--quiet", "HEAD"], {
     cwd,
     acceptExitCodes: [0, 1],
   });
-  const branch = branchResult.exitCode === 0 ? branchResult.stdout.trim() : null;
+  const headReference = branchResult.stdout.trim();
+  if (branchResult.exitCode === 0 && !headReference.startsWith("refs/heads/"))
+    reject("unsupported_workspace", "Git HEAD must name a local branch or a detached commit");
+  const branch = branchResult.exitCode === 0 ? headReference.slice("refs/heads/".length) : null;
   const objectFormat = (await runGit(cwd, ["rev-parse", "--show-object-format"])).trim();
   if (objectFormat !== "sha1" && objectFormat !== "sha256")
     reject("unsupported_workspace", "Unsupported Git object format");
@@ -368,17 +403,46 @@ async function getGitState(
     autocrlf: autocrlf.stdout.trim() || "false",
     eol: isNativeEol ? nativeEol : configuredEol,
   });
+  const references = await captureWorkspaceReferences({
+    run: (args) => runGit(cwd, args),
+    refuse: (message) => reject("unsupported_workspace", message),
+  });
+  const head = refs.trim() || null;
+  validateWorkspaceReferences({
+    references,
+    head,
+    branch,
+    objectFormat,
+    refuse: (message) => reject("unsupported_workspace", message),
+  });
+  validatePaths(
+    references.map((ref) => ref.name),
+    "unsupported_workspace",
+  );
+  if (branch)
+    validatePaths(
+      [
+        ...references.filter((ref) => ref.name !== `refs/heads/${branch}`).map((ref) => ref.name),
+        `refs/heads/${branch}`,
+      ],
+      "unsupported_workspace",
+    );
+  const run = (args: string[], accepted?: number[]) =>
+    isolatedRemotes
+      ? runRestoreGit(cwd, args, { acceptExitCodes: accepted })
+      : runGit(cwd, args, accepted);
+  const refuse = (message: string) => reject("unsupported_workspace", message);
+  const tracking = await captureWorkspaceTracking({ run, refuse });
+  const remotes = await captureWorkspaceRemotes({ run, refuse });
   return {
     kind: "git",
     objectFormat,
     normalization,
-    head: refs.trim() || null,
+    head,
     branch,
-    remotes: await captureWorkspaceRemotes({
-      run: (args, accepted) =>
-        isolatedRemotes ? runRestoreGit(cwd, args, accepted) : runGit(cwd, args, accepted),
-      refuse: (message) => reject("unsupported_workspace", message),
-    }),
+    references,
+    remotes,
+    tracking,
     paths,
     index,
   };
@@ -495,8 +559,11 @@ async function reviewWorkspace(input: WorkspaceReviewInput) {
 export async function previewWorkspace(input: WorkspaceReviewInput) {
   const { cwd, state, files, omittedPaths, reviewDigest } = await reviewWorkspace(input);
   let gitHistoryBytes = 0;
-  if (state.kind === "git" && state.head) {
-    const bytes = (await runGit(cwd, ["rev-list", "--disk-usage", "--objects", "HEAD"])).trim();
+  if (state.kind === "git" && (state.head || state.references.length)) {
+    const revisions = ["--single-worktree", "--all"];
+    const bytes = (
+      await runGit(cwd, ["rev-list", "--disk-usage", "--objects", ...revisions])
+    ).trim();
     if (!/^\d+$/.test(bytes) || !Number.isSafeInteger(Number(bytes)))
       reject("unsupported_workspace", "Cannot estimate Git history size");
     gitHistoryBytes = Number(bytes);
@@ -556,6 +623,8 @@ function workspaceReviewDigest(
           head: state.head,
           branch: state.branch,
           remotes: state.remotes,
+          references: state.references,
+          tracking: state.tracking,
           index: state.index,
           normalization: state.normalization,
         }
@@ -724,6 +793,15 @@ async function validateGitCapture(cwd: string, paths: string[]): Promise<void> {
       `Finish the in-progress Git operation before moving: ${marker}`,
     );
   }
+  const connectivity = await git(["fsck", "--connectivity-only", "--no-reflogs", "--no-dangling"], {
+    cwd,
+    acceptExitCodes: [0, 1, 2, 4, 8, 16, 32, 64, 128],
+  });
+  if (connectivity.exitCode !== 0)
+    reject(
+      "unsupported_workspace",
+      "Repair broken Git references or missing history before moving the workspace",
+    );
 }
 
 async function validateExternalAttributes(cwd: string): Promise<void> {
@@ -810,6 +888,7 @@ async function copyBlob(source: string, capture: BlobCapture): Promise<Blob> {
 }
 
 interface GitArtifactInput {
+  input?: string;
   cwd: string;
   args: string[];
   outputPath: string;
@@ -822,6 +901,7 @@ async function captureGitArtifact(input: GitArtifactInput): Promise<Blob> {
     {
       cwd: input.cwd,
       outputPath: input.outputPath,
+      input: input.input,
       maxOutputBytes: Math.min(input.capture.maxFileBytes, input.capture.remainingBytes),
       envOverlay: { GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" },
       timeout: 120_000,
@@ -850,8 +930,25 @@ function validateManifest(manifest: WorkspaceManifest, limits: WorkspaceSnapshot
   if (manifest.files.length > limits.maxFiles)
     reject("limit_exceeded", "Workspace contains too many files");
   validateFiles(manifest.files);
-  if (manifest.git && (manifest.git.head === null) !== (manifest.git.bundle === null))
-    reject("invalid_artifact", "History bundle does not match HEAD");
+  if (manifest.git) {
+    const hasReferences = manifest.version === 2 && manifest.git.references.length > 0;
+    if (Boolean(manifest.git.head || hasReferences) !== Boolean(manifest.git.bundle))
+      reject("invalid_artifact", "History bundle does not match Git references");
+  }
+  if (manifest.version === 2 && manifest.git) {
+    validateWorkspaceReferences({
+      ...manifest.git,
+      refuse: (message) => reject("invalid_artifact", message),
+    });
+    const names = manifest.git.references.map((ref) => ref.name);
+    if (manifest.git.branch && !names.includes(`refs/heads/${manifest.git.branch}`))
+      names.push(`refs/heads/${manifest.git.branch}`);
+    validatePaths(names, "invalid_artifact");
+    validateWorkspaceTracking({
+      ...manifest.git,
+      refuse: (message) => reject("invalid_artifact", message),
+    });
+  }
   if (manifest.git?.remotes)
     validateWorkspaceRemotes({
       remotes: manifest.git.remotes,
@@ -863,6 +960,42 @@ function validateManifest(manifest: WorkspaceManifest, limits: WorkspaceSnapshot
     if (blob.size > limits.maxFileBytes || total > limits.maxTotalBytes)
       reject("limit_exceeded", "Workspace exceeds handoff byte limits");
   }
+}
+
+interface CaptureHistoryInput {
+  cwd: string;
+  artifact: string;
+  capture: BlobCapture;
+  state: GitState;
+}
+
+async function captureWorkspaceHistory({
+  cwd,
+  artifact,
+  capture,
+  state,
+}: CaptureHistoryInput): Promise<Blob | null> {
+  let bundle: Blob | null = null;
+  if (state.head || state.references.length > 0) {
+    const bundlePath = path.join(artifact, "history.bundle");
+    bundle = await captureGitArtifact({
+      cwd,
+      outputPath: bundlePath,
+      capture,
+      args: ["bundle", "create", "-", "--stdin"],
+      input:
+        [...state.references.map((ref) => ref.name), ...(state.head ? ["HEAD"] : [])].join("\n") +
+        "\n",
+    });
+    await verifyWorkspaceBundle({
+      run: (args) => runGit(cwd, args),
+      bundlePath: path.join(capture.directory, bundle.sha256),
+      references: state.references,
+      head: state.head,
+      refuse: (message) => reject("source_changed", message),
+    });
+  }
+  return bundle;
 }
 
 /** Capture only after the handoff owner has fenced and stopped workspace writers. */
@@ -903,7 +1036,7 @@ export async function captureWorkspace(input: CaptureInput): Promise<WorkspaceMa
       maxFileBytes: limits.maxFileBytes,
       remainingBytes: limits.maxTotalBytes,
     };
-    let gitManifest: WorkspaceManifest["git"] = null;
+    let gitManifest: z.infer<typeof CurrentManifestSchema>["git"] = null;
     if (before.kind === "git") {
       const patchPath = path.join(artifact, "index.patch");
       const indexPatch = await captureGitArtifact({
@@ -922,22 +1055,15 @@ export async function captureWorkspace(input: CaptureInput): Promise<WorkspaceMa
           "--no-textconv",
         ],
       });
-      let bundle: Blob | null = null;
-      if (before.head) {
-        const bundlePath = path.join(artifact, "history.bundle");
-        bundle = await captureGitArtifact({
-          cwd,
-          outputPath: bundlePath,
-          capture,
-          args: ["bundle", "create", "-", "HEAD"],
-        });
-      }
+      const bundle = await captureWorkspaceHistory({ cwd, artifact, capture, state: before });
       gitManifest = {
         objectFormat: before.objectFormat,
         normalization: before.normalization,
         head: before.head,
         branch: before.branch,
         remotes: before.remotes,
+        references: before.references,
+        tracking: before.tracking,
         bundle,
         indexPatch,
         indexFingerprint: createHash("sha256").update(before.index).digest("hex"),
@@ -971,7 +1097,7 @@ export async function captureWorkspace(input: CaptureInput): Promise<WorkspaceMa
     if (JSON.stringify(before) !== JSON.stringify(after))
       reject("source_changed", "Workspace state changed during capture");
     const manifest: WorkspaceManifest = {
-      version: 1,
+      version: 2,
       git: gitManifest,
       files,
     };
@@ -1187,6 +1313,48 @@ export async function restoreWorkspace(input: RestoreInput): Promise<WorkspaceMa
   return restoreWorkspaceContents({ manifest, blobs, destination: input.destination });
 }
 
+interface RestoreHistoryInput {
+  destination: string;
+  blobs: string;
+  manifest: WorkspaceManifest;
+}
+
+async function restoreWorkspaceHistory({
+  destination,
+  blobs,
+  manifest,
+}: RestoreHistoryInput): Promise<void> {
+  if (!manifest.git) return;
+  if (manifest.version === 2 && manifest.git.bundle) {
+    await restoreWorkspaceReferences({
+      run: (args, input) => runRestoreGit(destination, args, { input }),
+      bundlePath: path.resolve(blobs, manifest.git.bundle.sha256),
+      references: manifest.git.references,
+      head: manifest.git.head,
+      branch: manifest.git.branch,
+      refuse: (message) => reject("invalid_artifact", message),
+    });
+  } else if (manifest.git.bundle && manifest.git.head) {
+    // COMPAT(handoffWorkspaceV1): added in v0.11.1, remove after 2027-04-10 once HEAD-only archives expire.
+    await runRestoreGit(destination, [
+      "fetch",
+      "--no-tags",
+      "--",
+      path.resolve(blobs, manifest.git.bundle.sha256),
+      "HEAD",
+    ]);
+    const fetched = (await runRestoreGit(destination, ["rev-parse", "FETCH_HEAD"])).trim();
+    if (fetched !== manifest.git.head)
+      reject("invalid_artifact", "Bundle HEAD differs from the manifest");
+    if (manifest.git.branch) {
+      await runRestoreGit(destination, ["update-ref", "HEAD", fetched]);
+    } else {
+      await runRestoreGit(destination, ["update-ref", "--no-deref", "HEAD", fetched]);
+    }
+    await runRestoreGit(destination, ["read-tree", "HEAD"]);
+  }
+}
+
 async function restoreWorkspaceContents(input: {
   manifest: WorkspaceManifest;
   blobs: string;
@@ -1231,26 +1399,7 @@ async function restoreWorkspaceContents(input: {
           `refs/heads/${manifest.git.branch}`,
         ]);
       }
-      if (manifest.git.bundle && manifest.git.head) {
-        await runRestoreGit(input.destination, [
-          "fetch",
-          "--no-tags",
-          "--",
-          path.resolve(blobs, manifest.git.bundle.sha256),
-          "HEAD",
-        ]);
-        const fetched = (
-          await runRestoreGit(input.destination, ["rev-parse", "FETCH_HEAD"])
-        ).trim();
-        if (fetched !== manifest.git.head)
-          reject("invalid_artifact", "Bundle HEAD differs from the manifest");
-        if (manifest.git.branch) {
-          await runRestoreGit(input.destination, ["update-ref", "HEAD", fetched]);
-        } else {
-          await runRestoreGit(input.destination, ["update-ref", "--no-deref", "HEAD", fetched]);
-        }
-        await runRestoreGit(input.destination, ["read-tree", "HEAD"]);
-      }
+      await restoreWorkspaceHistory({ destination: input.destination, blobs, manifest });
       if (manifest.git.indexPatch.size > 0) {
         await runRestoreGit(input.destination, [
           "apply",
@@ -1268,6 +1417,13 @@ async function restoreWorkspaceContents(input: {
     if (manifest.git?.remotes)
       await restoreWorkspaceRemotes({
         run: (args) => runRestoreGit(input.destination, args),
+        remotes: manifest.git.remotes,
+      });
+    if (manifest.version === 2 && manifest.git)
+      await restoreWorkspaceTracking({
+        run: (args, accepted) =>
+          runRestoreGit(input.destination, args, { acceptExitCodes: accepted }),
+        tracking: manifest.git.tracking,
         remotes: manifest.git.remotes,
       });
     for (const file of manifest.files)
@@ -1363,6 +1519,10 @@ async function verifyWorkspaceContents({
     if (
       state.head !== manifest.git.head ||
       state.branch !== manifest.git.branch ||
+      (manifest.version === 2 &&
+        JSON.stringify(state.references) !== JSON.stringify(manifest.git.references)) ||
+      (manifest.version === 2 &&
+        JSON.stringify(state.tracking) !== JSON.stringify(manifest.git.tracking)) ||
       (manifest.git.remotes !== undefined &&
         JSON.stringify(state.remotes) !== JSON.stringify(manifest.git.remotes)) ||
       JSON.stringify(state.normalization) !== JSON.stringify(manifest.git.normalization) ||

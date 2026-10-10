@@ -71,6 +71,220 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
+test("preserves other branches, annotated tags, notes and symbolic remote references", async () => {
+  await git(source, "branch", "topic");
+  await git(source, "tag", "-a", "release", "-m", "Release annotation");
+  await git(source, "tag", "work");
+  await git(source, "notes", "add", "-m", "Review note");
+  const commit = (await git(source, "rev-parse", "HEAD")).trim();
+  await git(source, "update-ref", "refs/remotes/origin/work", commit);
+  await git(source, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/work");
+  const refs = await git(source, "for-each-ref", "--format=%(refname) %(objectname) %(symref)");
+  await captureWorkspace({ cwd: source, artifactDirectory: artifact });
+  await restoreWorkspace({ artifactDirectory: artifact, destination });
+  expect(
+    await git(destination, "for-each-ref", "--format=%(refname) %(objectname) %(symref)"),
+  ).toBe(refs);
+  expect(await git(destination, "notes", "show")).toBe("Review note\n");
+  expect(await git(destination, "cat-file", "-t", "release")).toBe("tag\n");
+  await verifyCapturedWorkspace({ cwd: destination, artifactDirectory: artifact });
+});
+
+test("preserves upstreams, custom fetch refspecs and explicit push policy", async () => {
+  await git(source, "remote", "add", "origin", "https://github.com/org/repo.git");
+  await git(source, "remote", "add", "publish", "git@github.com:me/repo.git");
+  await git(source, "config", "--unset-all", "remote.origin.fetch");
+  await git(
+    source,
+    "config",
+    "--add",
+    "remote.origin.fetch",
+    "+refs/heads/*:refs/remotes/origin/team/*",
+  );
+  await git(source, "config", "--add", "remote.origin.fetch", "^refs/heads/private/*");
+  await git(source, "config", "--add", "remote.publish.push", "refs/heads/work:refs/heads/review");
+  await git(source, "config", "branch.work.remote", "origin");
+  await git(source, "config", "branch.work.merge", "refs/heads/work");
+  await git(source, "config", "branch.work.pushRemote", "publish");
+  await git(source, "config", "branch.work.rebase", "merges");
+  await git(source, "config", "remote.pushDefault", "publish");
+  await git(source, "config", "push.default", "nothing");
+  const head = (await git(source, "rev-parse", "HEAD")).trim();
+  await git(source, "update-ref", "refs/remotes/origin/team/work", head);
+  await captureWorkspace({ cwd: source, artifactDirectory: artifact });
+  await restoreWorkspace({ artifactDirectory: artifact, destination });
+  expect(await git(destination, "rev-parse", "--symbolic-full-name", "@{upstream}")).toBe(
+    "refs/remotes/origin/team/work\n",
+  );
+  const pattern =
+    "^(branch\\..*\\.(remote|merge|pushremote|rebase)|remote\\..*\\.(fetch|push)|remote\\.pushdefault|push\\.default)$";
+  expect((await git(destination, "config", "--get-regexp", pattern)).split("\n").sort()).toEqual(
+    (await git(source, "config", "--get-regexp", pattern)).split("\n").sort(),
+  );
+  expect(await git(destination, "config", "--get-all", "remote.origin.fetch")).toBe(
+    "+refs/heads/*:refs/remotes/origin/team/*\n^refs/heads/private/*\n",
+  );
+  await verifyCapturedWorkspace({ cwd: destination, artifactDirectory: artifact });
+  const origin = path.join(root, "origin.git");
+  const publish = path.join(root, "publish.git");
+  await git(root, "clone", "--bare", source, origin);
+  await git(root, "init", "--bare", publish);
+  await git(origin, "branch", "topic");
+  await git(origin, "branch", "private/secret");
+  // Exercise the installed policy against local bare repositories, without forge credentials.
+  await git(
+    destination,
+    "-c",
+    `url.${pathToFileURL(origin).href}.insteadOf=https://github.com/org/repo.git`,
+    "fetch",
+    "origin",
+  );
+  expect(await git(destination, "rev-parse", "refs/remotes/origin/team/topic")).toBe(`${head}\n`);
+  expect(await git(destination, "for-each-ref", "refs/remotes/origin/team/private")).toBe("");
+  await git(
+    destination,
+    "-c",
+    `url.${pathToFileURL(publish).href}.insteadOf=git@github.com:me/repo.git`,
+    "push",
+  );
+  expect(await git(publish, "rev-parse", "refs/heads/review")).toBe(`${head}\n`);
+});
+
+test.each(["unborn", "detached"])("preserves references with a %s HEAD", async (kind) => {
+  const original = (await git(source, "rev-parse", "HEAD")).trim();
+  if (kind === "unborn") await git(source, "symbolic-ref", "HEAD", "refs/heads/unborn");
+  else {
+    await git(source, "checkout", "--detach");
+    await writeFile(path.join(source, "detached.txt"), "Detached commit\n");
+    await git(source, "add", "detached.txt");
+    await git(source, "commit", "-m", "Detached only");
+  }
+  const blob = (await git(source, "rev-parse", `${original}:tracked.txt`)).trim();
+  await git(source, "tag", "blob-tag", blob);
+  const manifest = await captureWorkspace({ cwd: source, artifactDirectory: artifact });
+  await restoreWorkspace({ artifactDirectory: artifact, destination });
+  expect(await git(destination, "rev-parse", "refs/heads/work")).toBe(`${original}\n`);
+  expect(await git(destination, "cat-file", "-t", "blob-tag")).toBe("blob\n");
+  expect(manifest.git?.bundle?.size).toBeGreaterThan(0);
+  await verifyCapturedWorkspace({ cwd: destination, artifactDirectory: artifact });
+});
+
+test("preserves the absence of a fetch mapping and a local branch upstream", async () => {
+  await git(source, "branch", "base");
+  await git(source, "branch", "--set-upstream-to=base");
+  await git(source, "remote", "add", "origin", "https://github.com/org/repo.git");
+  await git(source, "config", "--unset-all", "remote.origin.fetch");
+  await captureWorkspace({ cwd: source, artifactDirectory: artifact });
+  await restoreWorkspace({ artifactDirectory: artifact, destination });
+  expect(await git(destination, "rev-parse", "--symbolic-full-name", "@{upstream}")).toBe(
+    "refs/heads/base\n",
+  );
+  await expect(
+    git(destination, "config", "--get-all", "remote.origin.fetch"),
+  ).rejects.toMatchObject({ code: 1 });
+  await verifyCapturedWorkspace({ cwd: destination, artifactDirectory: artifact });
+});
+
+test("binds non-HEAD references and tracking policy to review and release", async () => {
+  const review = await previewWorkspace({ cwd: source, scratchParent: root });
+  await git(source, "tag", "after-review");
+  await expect(
+    captureWorkspace({
+      cwd: source,
+      artifactDirectory: artifact,
+      expectedReviewDigest: review.reviewDigest,
+    }),
+  ).rejects.toMatchObject({ code: "review_changed" });
+  await captureWorkspace({ cwd: source, artifactDirectory: artifact });
+  await git(source, "config", "push.default", "matching");
+  await expect(
+    verifyCapturedWorkspace({ cwd: source, artifactDirectory: artifact }),
+  ).rejects.toMatchObject({ code: "source_changed" });
+  await git(source, "config", "--unset", "push.default");
+  await git(source, "tag", "-d", "after-review");
+  await expect(
+    verifyCapturedWorkspace({ cwd: source, artifactDirectory: artifact }),
+  ).rejects.toMatchObject({ code: "source_changed" });
+});
+
+test.each(["stash", "replace", "custom", "dangling", "cycle"])(
+  "refuses unsupported %s reference state during preflight",
+  async (kind) => {
+    const head = (await git(source, "rev-parse", "HEAD")).trim();
+    if (kind === "stash") {
+      await writeFile(path.join(source, "tracked.txt"), "Stashed\n");
+      await git(source, "stash", "push");
+    } else if (kind === "dangling")
+      await git(source, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/missing");
+    else if (kind === "cycle") {
+      await git(source, "symbolic-ref", "refs/remotes/a", "refs/remotes/b");
+      await git(source, "symbolic-ref", "refs/remotes/b", "refs/remotes/a");
+    } else await git(source, "update-ref", `refs/${kind}/saved`, head);
+    await expect(previewWorkspace({ cwd: source, scratchParent: root })).rejects.toMatchObject({
+      code: "unsupported_workspace",
+    });
+    await expect(lstat(artifact)).rejects.toMatchObject({ code: "ENOENT" });
+  },
+);
+
+test.each([
+  ["branch.work.remote", "https://PRIVATE_TOKEN@host/repo"],
+  ["branch.work.mergeoptions", "--strategy=PRIVATE_COMMAND"],
+  ["remote.origin.mirror", "true"],
+  ["remote.origin.fetch", "+refs/heads/*:../../outside"],
+])("refuses unsupported tracking without exporting its value: %s", async (key, value) => {
+  await git(source, "remote", "add", "origin", "https://github.com/org/repo.git");
+  await git(source, "config", key, value);
+  const error = await previewWorkspace({ cwd: source, scratchParent: root }).catch(
+    (reason: unknown) => reason,
+  );
+  expect(error).toMatchObject({ code: "unsupported_workspace" });
+  expect(String(error)).not.toContain("PRIVATE_");
+});
+
+test.each([
+  "different-oid",
+  "missing-ref",
+  "symbolic-cycle",
+  "config-command",
+  "config-url",
+  "new-version",
+])("rejects inconsistent Git metadata on receipt: %s", async (kind) => {
+  await git(source, "tag", "saved");
+  await captureWorkspace({ cwd: source, artifactDirectory: artifact });
+  const file = path.join(artifact, "manifest.json");
+  const manifest = JSON.parse(await readFile(file, "utf8"));
+  if (kind === "different-oid") manifest.git.references[1].oid = "a".repeat(40);
+  else if (kind === "missing-ref") manifest.git.references.pop();
+  else if (kind === "symbolic-cycle")
+    manifest.git.references[1].target = manifest.git.references[1].name;
+  else if (kind === "new-version") manifest.version = 3;
+  else
+    manifest.git.tracking.push({
+      key: kind === "config-command" ? "core.sshcommand" : "branch.work.remote",
+      values: ["PRIVATE_COMMAND"],
+    });
+  await writeFile(file, JSON.stringify(manifest));
+  await expect(
+    restoreWorkspace({ artifactDirectory: artifact, destination }),
+  ).rejects.toMatchObject({ code: "invalid_artifact" });
+  await expect(lstat(destination)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test("reads a legacy HEAD-only workspace archive", async () => {
+  await captureWorkspace({ cwd: source, artifactDirectory: artifact });
+  const file = path.join(artifact, "manifest.json");
+  const manifest = JSON.parse(await readFile(file, "utf8"));
+  manifest.version = 1;
+  delete manifest.git.references;
+  delete manifest.git.tracking;
+  delete manifest.git.remotes;
+  await writeFile(file, JSON.stringify(manifest));
+  await restoreWorkspace({ artifactDirectory: artifact, destination });
+  expect(await git(destination, "rev-parse", "HEAD")).toBe(await git(source, "rev-parse", "HEAD"));
+  await verifyCapturedWorkspace({ cwd: destination, artifactDirectory: artifact });
+});
+
 test("preserves the exact remote SSH path when removing a password", async () => {
   await git(
     source,
@@ -499,7 +713,7 @@ test("restores an entirely empty non-Git workspace", async () => {
   await rm(source, { recursive: true });
   await mkdir(source);
   expect(await captureWorkspace({ cwd: source, artifactDirectory: artifact })).toEqual({
-    version: 1,
+    version: 2,
     git: null,
     files: [],
   });

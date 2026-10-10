@@ -3546,17 +3546,48 @@ for (const continuationMode of ["native", "context"] as const) {
 }
 
 test.skipIf(process.platform === "win32")(
-  "retains sanitized Git remotes through transport, restart and activation",
+  "retains Git references, tracking and sanitized remotes through transport, restart and activation",
   async () => {
+    // Fixture commits and tags must not invoke the host's signing program or hooks.
+    const runGit = (args: string[], cwd: string | undefined) =>
+      exec("git", args, {
+        cwd,
+        env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
+      });
     const source = await startHost("source");
     let destination = await startHost("destination");
     const cwd = path.join(root, "remote-workspace");
     await mkdir(cwd);
-    await exec("git", ["init", "--initial-branch=work"], { cwd });
+    await runGit(["init", "--initial-branch=work"], cwd);
     await writeFile(path.join(cwd, "work.txt"), "local work\n");
-    await exec("git", ["add", "work.txt"], { cwd });
+    await runGit(["add", "work.txt"], cwd);
+    await runGit(
+      [
+        "-c",
+        "user.name=Handoff Test",
+        "-c",
+        "user.email=handoff@example.com",
+        "-c",
+        "core.hooksPath=",
+        "commit",
+        "--no-gpg-sign",
+        "-m",
+        "Work before transfer",
+      ],
+      cwd,
+    );
     const url = "https://PRIVATE_REMOTE_TOKEN@github.com/org/repo.git";
-    await exec("git", ["remote", "add", "origin", url], { cwd });
+    await runGit(["remote", "add", "origin", url], cwd);
+    await runGit(["branch", "topic"], cwd);
+    await runGit(["tag", "saved"], cwd);
+    const head = (await runGit(["rev-parse", "HEAD"], cwd)).stdout.trim();
+    await runGit(["update-ref", "refs/remotes/origin/work", head], cwd);
+    await runGit(["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/work"], cwd);
+    await runGit(["branch", "--set-upstream-to=origin/work"], cwd);
+    await runGit(["config", "push.default", "current"], cwd);
+    const refs = (
+      await runGit(["for-each-ref", "--format=%(refname) %(objectname) %(symref)"], cwd)
+    ).stdout;
     const created = await source.client.createWorkspace({
       source: { kind: "directory", path: cwd },
     });
@@ -3572,16 +3603,28 @@ test.skipIf(process.platform === "win32")(
     });
     expect(staged.state).toBe("staged");
     const stagingCwd = destination.daemon.daemon.handoffDestination.status(transferId).stagingCwd;
-    expect((await exec("git", ["remote", "get-url", "origin"], { cwd: stagingCwd })).stdout).toBe(
+    expect((await runGit(["remote", "get-url", "origin"], stagingCwd)).stdout).toBe(
       "https://github.com/org/repo.git\n",
     );
-    await exec("git", ["remote", "set-url", "origin", "https://github.com/changed/repo.git"], {
-      cwd,
-    });
+    expect(
+      (await runGit(["for-each-ref", "--format=%(refname) %(objectname) %(symref)"], stagingCwd))
+        .stdout,
+    ).toBe(refs);
+    await runGit(["config", "push.default", "matching"], cwd);
+    expect((await source.client.handoffReleaseSource({ transferId })).error?.code).toBe(
+      "source_changed",
+    );
+    await runGit(["config", "push.default", "current"], cwd);
+    await runGit(["tag", "-d", "saved"], cwd);
+    expect((await source.client.handoffReleaseSource({ transferId })).error?.code).toBe(
+      "source_changed",
+    );
+    await runGit(["tag", "saved", head], cwd);
+    await runGit(["remote", "set-url", "origin", "https://github.com/changed/repo.git"], cwd);
     const refused = await source.client.handoffReleaseSource({ transferId });
     expect(refused.error?.code).toBe("source_changed");
     expect(source.daemon.daemon.handoffOwnership.status(transferId).state).toBe("ready");
-    await exec("git", ["remote", "set-url", "origin", url], { cwd });
+    await runGit(["remote", "set-url", "origin", url], cwd);
     await stopHost(destination);
     destination = await startHost("destination");
     const activated = await activateWorkspaceHandoff({
@@ -3591,13 +3634,27 @@ test.skipIf(process.platform === "win32")(
       destination: destination.client,
     });
     expect(activated.state).toBe("active");
-    expect(
-      (await exec("git", ["remote", "get-url", "origin"], { cwd: activated.destinationCwd }))
-        .stdout,
-    ).toBe("https://github.com/org/repo.git\n");
+    expect((await runGit(["remote", "get-url", "origin"], activated.destinationCwd)).stdout).toBe(
+      "https://github.com/org/repo.git\n",
+    );
     expect(
       await readFile(path.join(activated.destinationCwd, ".git", "config"), "utf8"),
     ).not.toContain("PRIVATE_REMOTE_TOKEN");
+    expect(
+      (
+        await runGit(
+          ["for-each-ref", "--format=%(refname) %(objectname) %(symref)"],
+          activated.destinationCwd,
+        )
+      ).stdout,
+    ).toBe(refs);
+    expect(
+      (await runGit(["rev-parse", "--symbolic-full-name", "@{upstream}"], activated.destinationCwd))
+        .stdout,
+    ).toBe("refs/remotes/origin/work\n");
+    expect((await runGit(["config", "push.default"], activated.destinationCwd)).stdout).toBe(
+      "current\n",
+    );
   },
   30_000,
 );

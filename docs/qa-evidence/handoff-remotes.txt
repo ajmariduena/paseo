@@ -1,49 +1,62 @@
-Git remotes during workspace handoff
-Date: 2026-10-09
-Baseline: 243b49962 (plan-machine-handoff-macbook-vps)
-Platform: Linux; real Git, temporary files, isolated daemon homes and WebSocket clients.
+Git references, tracking and remotes during workspace handoff
+Date: 2026-10-10
+Baselines: 243b49962 (remote URLs), 7782ef99e (references/tracking).
+Platform: Linux; real Git, temporary repositories, isolated daemon homes and WebSocket clients.
 
 Behavior proved
-- The baseline lost origin when reconstructing a checkout; the first regression failed with
-  "No such remote 'origin'".
-- Effective fetch/push destinations survive capture and restoration, including source insteadOf
-  and pushInsteadOf rewrites, multiple fetch URLs, distinct SSH push destinations and implicit
-  push following a later fetch-URL change. SSH login names, ports and the exact path remain
-  intact; a regression first reproduced dot segments being normalized during password removal.
-- HTTP userinfo and passwords are absent from the manifest and installed Git configuration.
-  Synthetic credential helpers, SSH commands and source rewrites are not copied or invoked.
-- Worktrees and unborn branches retain remote URLs. Restored origin resolves to the expected
-  forge identity using the existing resolver, without querying that forge.
-- Sanitized destination changes invalidate review or source release; rotating embedded
-  credentials alone does not invalidate review. Installed-URL verification permits a different
-  global authentication rewrite on the destination.
-- Local/file/helper/query/fragment/control-character URLs fail read-only preflight. Incoming
-  credentials/helpers, colliding or nonportable names and oversized URL lists fail before the
-  destination checkout is created. Error text does not expose the synthetic secret markers.
-- A real two-daemon transfer preserves sanitized origin in staging, refuses source release
-  after an origin change, and activates after destination restart once the source matches again.
+- The initial URL regression lost origin. The reference regression then reproduced loss of
+  non-HEAD branches, annotated tags, notes and symbolic remote refs. The tracking regression
+  reproduced a restored branch with no upstream.
+- Version 2 workspace manifests bind an explicit reference inventory to the bundle header,
+  review and release. Restoration retains direct and symbolic refs, annotated/lightweight
+  tags, blob tags and notes. An unborn HEAD can coexist with saved history; detached HEAD,
+  SHA-256 and a branch sharing a name with a tag are covered. Direct refs install in one Git
+  transaction. Legacy HEAD-only version 1 archives remain readable; unknown versions refuse.
+- Named branch upstreams (including local upstreams), selected explicit fetch/pull/push policies,
+  and fully qualified refspecs survive. Tests exercise an actual fetch with custom mapping and
+  a negative branch pattern, followed by an actual push using a separate publication remote
+  and configured refspec. These operations use local bare repositories through test-only URL
+  rewrites; they make no external-network or authenticated-forge claim. An absent fetch mapping
+  stays absent instead of receiving the default synthesized by git remote add.
+- Stashes, replacement/custom namespaces, dangling/cyclic refs, URL-valued branch remotes,
+  mirror policies and custom merge options refuse in preflight. Incoming mismatched/missing
+  refs, symbolic cycles, unknown configuration keys and URL-valued branch remotes refuse
+  publication. Ref and policy changes invalidate source review/release.
+- Effective fetch/push destinations survive source insteadOf/pushInsteadOf rewrites, multiple
+  URLs and distinct push targets. SSH login, port and exact path remain intact. HTTP userinfo,
+  passwords, credential helpers, SSH commands and source rewrites are absent from installed
+  configuration. Source credential rotation does not invalidate review. Destination URL
+  verification permits host authentication rewrites. Unsupported remote forms and colliding
+  names refuse before checkout creation; errors do not expose synthetic secret markers.
+- The real two-daemon case checks the inventory in staging and after destination restart and
+  activation, including symbolic origin/HEAD and the upstream/push configuration. Changing a
+  tag, push policy or origin independently prevents release until the captured state is restored.
 
 Execution notes
-- The workspace file passed all 88 cases before the additional name/limit and SSH path cases.
-  The final focused remote run passed all 22 remote cases (71 unrelated cases skipped; 93 total
-  in the file). The full local suite was not run.
-- The first network attempt read the wrong cwd because the public destination snapshot does
-  not expose stagingCwd. The test now reads the private staging path from the isolated daemon.
-  The corrected network case passed. The mistaken operation was a read-only git remote get-url;
-  it made no repository change. The final network run follows the SSH path correction.
-- The helper-signature cleanup initially exposed a TypeScript narrowing error in the URL
-  rejection branch. Returning the never-returning rejection explicitly fixed it; final typecheck
-  and all 22 remote cases pass. Typecheck/lint and formatting output follows. No browser UI, provider turn, external fetch/push
-  or authenticated forge operation was exercised in this slice. No main daemon was restarted.
+- The workspace file passed all 115 cases. Six cases covering reference installation, tracking,
+  absent mappings, unborn/detached HEAD and legacy reading passed again after the private Git
+  runner's optional arguments were consolidated into an options object. No full suite ran.
+- The network case initially timed out at 30 seconds, including an isolated repeat. Temporary
+  phase logging stopped between host startup and workspace creation, before any daemon Git
+  command. The host globally enables SSH signatures for both commits and tags. Disabling only
+  commit signing was insufficient. Isolating all fixture Git commands from global/system config
+  removed the dependency; the case then passed in 2.97 seconds with the original timeout.
+  Diagnostic phase writes were removed. No host Git configuration or main daemon was changed.
+- Early failures also exposed a configuration-order-only test assumption and an outdated empty
+  directory manifest version assertion. Assertions now compare cross-key configuration without
+  ordering it, preserve within-key refspec order, and expect the new archive version. Malformed
+  refspecs are validated before Git remote commands so errors carry no configuration value.
+- Server-stack build, root typecheck and lint passed. No browser or provider continuation was
+  exercised in this slice. Earlier remote-URL execution output is retained below.
 
 Limits
-- Branch upstreams, custom refspecs, remote-tracking refs and push policies are not reconstructed.
-  Source SSH alias definitions and credentials are not transferred. Their availability on the
-  destination and authenticated forge behavior need separate evidence/dispositions.
-- Physical MacBook/VPS, native/mobile, Electron and version-drift gates remain open. Windows
-  ownership release/activation remains unavailable pending directory durability.
-- Complete handoff remains unadvertised and PR #30 remains a draft. This closes remote-URL
-  transport coverage, not the complete acceptance plan.
+- Reflog-only/unreachable history, remaining Git configuration, short/revision-expression
+  refspecs, destination-global policy interactions and authenticated forge behavior still need
+  evidence or dispositions. Unsupported stashes and custom refs require user resolution.
+- Source SSH aliases and credentials are not transferred. Physical MacBook/VPS, native/mobile,
+  Electron and version-drift gates remain open. Windows ownership release/activation remains
+  unavailable pending directory durability.
+- Complete handoff remains unadvertised and PR #30 remains a draft.
 
 Raw output
 
@@ -231,3 +244,192 @@ $ npm run format
 > oxfmt .
 
 Finished in 4073ms on 5373 files using 4 threads.
+
+
+$ Reference regression (expected failure)
+
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/handoff/workspace.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  suppress all logs with { quiet: true }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: 🔐 prevent building .env in docker: https://dotenvx.com/prebuild
+
+ ❯ src/server/handoff/workspace.test.ts (94 tests | 1 failed | 93 skipped) 215ms
+   × preserves other branches, annotated tags, notes and symbolic remote references 213ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/handoff/workspace.test.ts > preserves other branches, annotated tags, notes and symbolic remote references
+AssertionError: expected 'refs/heads/work 527687bb918b9334972c7…' to be 'refs/heads/topic 527687bb918b9334972c…' // Object.is equality
+
+- Expected
++ Received
+
+- refs/heads/topic 527687bb918b9334972c770c95bf20d3ead00dc3
+- refs/heads/work 527687bb918b9334972c770c95bf20d3ead00dc3
+- refs/notes/commits c3caace10e72db84787015dabd52b39034739d3b
+- refs/remotes/origin/HEAD 527687bb918b9334972c770c95bf20d3ead00dc3 refs/remotes/origin/work
+- refs/remotes/origin/work 527687bb918b9334972c770c95bf20d3ead00dc3
+- refs/tags/release 0db3e1e77e4dd66eff895d2721fa2e378587cfaf
++ refs/heads/work 527687bb918b9334972c770c95bf20d3ead00dc3
+
+
+ ❯ src/server/handoff/workspace.test.ts:84:97
+     82|   await captureWorkspace({ cwd: source, artifactDirectory: artifact });
+     83|   await restoreWorkspace({ artifactDirectory: artifact, destination });
+     84|   expect(await git(destination, "for-each-ref", "--format=%(refname) %…
+       |                                                                                                 ^
+     85|   expect(await git(destination, "notes", "show")).toBe("Review note\n"…
+     86|   expect(await git(destination, "cat-file", "-t", "release")).toBe("ta…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 93 skipped (94)
+   Start at  12:04:14
+   Duration  978ms (transform 464ms, setup 47ms, import 591ms, tests 215ms, environment 0ms)
+
+
+
+$ Tracking regression (expected failure)
+
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/handoff/workspace.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  write to custom object with { processEnv: myObject }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  write to custom object with { processEnv: myObject }
+
+ ❯ src/server/handoff/workspace.test.ts (95 tests | 1 failed | 94 skipped) 434ms
+   × preserves upstreams, custom fetch refspecs and explicit push policy 431ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/handoff/workspace.test.ts > preserves upstreams, custom fetch refspecs and explicit push policy
+Error: Command failed: git rev-parse --symbolic-full-name @{upstream}
+fatal: no upstream configured for branch 'work'
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 94 skipped (95)
+   Start at  12:06:56
+   Duration  1.21s (transform 468ms, setup 48ms, import 599ms, tests 434ms, environment 0ms)
+
+
+
+$ Workspace file: 115 cases
+
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  115 passed (115)
+   Start at  12:12:17
+   Duration  50.65s (transform 651ms, setup 51ms, import 825ms, tests 49.57s, environment 0ms)
+
+
+
+$ Final focused runner check
+
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  6 passed | 109 skipped (115)
+   Start at  12:19:14
+   Duration  3.46s (transform 404ms, setup 39ms, import 508ms, tests 2.81s, environment 0ms)
+
+
+
+$ Two-daemon reference/tracking transport
+
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 34 skipped (35)
+   Start at  12:18:13
+   Duration  13.35s (transform 8.25s, setup 37ms, import 10.23s, tests 2.97s, environment 0ms)
+
+
+
+$ Root typecheck
+
+
+> paseo@0.11.1 typecheck
+> npm run typecheck --workspaces --if-present
+
+
+> @getpaseo/builtin-plugins@0.11.1 typecheck
+> tsgo -p tsconfig.json --noEmit
+
+
+> @getpaseo/expo-two-way-audio@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/highlight@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/plugin@0.11.1 typecheck
+> tsgo --noEmit && tsgo -p tsconfig.examples.json --noEmit
+
+
+> @getpaseo/protocol@0.11.1 pretypecheck
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/client@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/server@0.11.1 typecheck
+> tsgo -p tsconfig.server.typecheck.json --noEmit
+
+
+> @getpaseo/app@0.11.0-beta.36 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/relay@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/website@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/desktop@0.11.1 typecheck
+> tsgo --noEmit -p tsconfig.json
+
+
+> @getpaseo/cli@0.11.1 typecheck
+> tsgo --noEmit
+
+
+
+$ Final lint
+
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 2.9s on 5034 files with 177 rules using 4 threads.
