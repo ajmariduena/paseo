@@ -9,6 +9,8 @@ import { GptLiveCall } from "./live-call.js";
  * each session with its own key and controls it through a sideband, so the call does not
  * depend on the phone's connection to this host.
  */
+const VOCABULARY_WAIT_MS = 700;
+
 export class LiveWebrtcHub {
   private readonly calls = new Map<string, GptLiveCall>();
 
@@ -28,15 +30,29 @@ export class LiveWebrtcHub {
     const { orchestrator, logger } = this.options;
     const engine = orchestrator.liveEngine;
     if (!engine) throw new Error("GPT-Live is not configured on this host.");
-    await orchestrator.ensureAgent();
+    orchestrator.noteCallStarting();
+    if (orchestrator.hasFastBrain) {
+      // The fast brain answers on its own; the agent is only needed for escalated work.
+      void orchestrator.ensureAgent().catch((error: unknown) => {
+        logger.warn({ err: error }, "Voice agent unavailable; escalated requests will fail");
+      });
+    } else {
+      await orchestrator.ensureAgent();
+    }
     this.endAll();
     const history = orchestrator.takeRecentHistory("messages");
+    // The vocabulary goes into the session's instructions, which can't change after startup;
+    // a slow first model listing must not hold the call, so it gets a short head start.
+    await Promise.race([
+      orchestrator.refreshVocabulary(),
+      new Promise((resolve) => setTimeout(resolve, VOCABULARY_WAIT_MS)),
+    ]);
     const createSession = this.options.createSession ?? createGptLiveWebrtcSession;
     const answer = await createSession({
       apiKey: engine.apiKey,
       model: engine.model,
       voice: engine.voice,
-      instructions: buildLiveInstructions(orchestrator.language),
+      instructions: buildLiveInstructions(orchestrator.language, orchestrator.voiceVocabulary()),
       sdp: params.sdp,
       history,
     });

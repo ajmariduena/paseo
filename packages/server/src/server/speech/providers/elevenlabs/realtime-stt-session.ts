@@ -51,6 +51,7 @@ export function buildRealtimeUrl(params: {
   baseUrl: string;
   model: string;
   language?: string;
+  keyterms?: readonly string[];
 }): URL {
   const url = new URL("/v1/speech-to-text/realtime", params.baseUrl);
   url.protocol = url.protocol === "http:" ? "ws:" : "wss:";
@@ -60,6 +61,9 @@ export function buildRealtimeUrl(params: {
   if (params.language) {
     url.searchParams.set("language_code", params.language);
   }
+  for (const keyterm of params.keyterms ?? []) {
+    url.searchParams.append("keyterms", keyterm);
+  }
   return url;
 }
 
@@ -68,6 +72,7 @@ export function createElevenLabsRealtimeSession(params: {
   baseUrl: string;
   model: string;
   language?: string;
+  keyterms?: readonly string[];
   logger: pino.Logger;
 }): StreamingTranscriptionSession {
   const emitter = new EventEmitter();

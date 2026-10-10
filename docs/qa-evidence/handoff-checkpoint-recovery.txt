@@ -85,6 +85,12 @@ corrected before the loaded-agent refusal passed. The first close-during-publica
 an admission attempt after closure; the launch now checks closure again after membership settles.
 The server-stack build, root typecheck, lint and formatting are recorded with this change.
 
+Base integration: origin/main e403dbbea introduced overlapping imports, service wiring and store
+documentation. The resolution retains both handoff and glance services, and stops glance precomputation
+before awaiting handoff shutdown. The integrated server stack builds. Protocol wire/validator files
+pass 84 cases, client summary correlation passes two, session summary routing passes three, and all
+five retained-job network cases pass again (overlapping the handoff evidence above).
+
 These tests use real file stores, Node subprocesses and isolated daemons with controlled provider
 frames and injected storage/process-table faults. Terminal/setup launch coverage, unknown callback
 outcomes and conversation recovery remain separate gates. This is not fresh authenticated-provider

@@ -1,5 +1,6 @@
 import type { z } from "zod";
 import type { ProviderPaseoToolsPolicy } from "@getpaseo/protocol/provider-config";
+import type { VoiceCallerContext } from "../../voice-types.js";
 
 export interface PaseoToolExecutionContext {
   signal?: AbortSignal;
@@ -50,6 +51,8 @@ export interface PaseoToolRuntimeContext {
   paseoToolPolicy?: ProviderPaseoToolsPolicy;
   enableVoiceTools?: boolean;
   voiceOnly?: boolean;
+  /** Context for a catalog with no calling agent, e.g. the voice call's own tools. */
+  callerContext?: VoiceCallerContext;
 }
 
 export type PaseoToolCatalogFactory = (

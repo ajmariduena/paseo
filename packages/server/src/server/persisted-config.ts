@@ -79,11 +79,22 @@ const ElevenLabsProviderSchema = z
   })
   .strict();
 
+const ApiKeyProviderSchema = z
+  .object({
+    apiKey: z.string().trim().min(1).optional(),
+    baseUrl: z.string().trim().min(1).optional(),
+  })
+  .strict();
+
 const ProvidersSchema = z
   .object({
     openai: OpenAiProviderSchema.optional(),
     local: LocalSpeechProviderSchema.optional(),
     elevenlabs: ElevenLabsProviderSchema.optional(),
+    cerebras: ApiKeyProviderSchema.optional(),
+    groq: ApiKeyProviderSchema.optional(),
+    sambanova: ApiKeyProviderSchema.optional(),
+    google: ApiKeyProviderSchema.optional(),
   })
   .strict();
 
@@ -125,6 +136,14 @@ const FeatureDictationSchema = z
   })
   .strict();
 
+// Entries are checked and trimmed by the daemon config store, so a hand edit never blocks startup.
+const FeatureDictionarySchema = z
+  .object({
+    words: z.array(z.string()).optional(),
+    replacements: z.array(z.object({ from: z.string(), to: z.string() }).strict()).optional(),
+  })
+  .strict();
+
 const FeatureVoiceModeSchema = z
   .object({
     enabled: z.boolean().optional(),
@@ -142,6 +161,37 @@ const FeatureVoiceModeSchema = z
         provider: z.string().optional(),
         model: z.string().min(1).optional(),
         thinking: z.string().trim().min(1).optional(),
+      })
+      .strict()
+      .optional(),
+    /** The fast model that turns a call's requests into actions; "off" uses the llm agent. */
+    router: z
+      .object({
+        provider: z
+          .enum(["cerebras", "groq", "sambanova", "openai", "google", "custom", "off"])
+          .optional(),
+        model: z.string().trim().min(1).optional(),
+        reasoningEffort: z.string().trim().min(1).optional(),
+        /** Answers when the model fails or stalls; false turns the default backup off. */
+        backup: z
+          .union([
+            z
+              .object({
+                provider: z.enum(["cerebras", "groq", "sambanova", "openai", "google", "custom"]),
+                model: z.string().trim().min(1),
+              })
+              .strict(),
+            z.literal(false),
+          ])
+          .optional(),
+        /** Any OpenAI-compatible endpoint, for the custom provider. */
+        custom: z
+          .object({
+            baseUrl: z.string().trim().min(1),
+            apiKey: z.string().trim().min(1).optional(),
+          })
+          .strict()
+          .optional(),
       })
       .strict()
       .optional(),
@@ -375,6 +425,7 @@ export const PersistedConfigSchema = z
     features: z
       .object({
         dictation: FeatureDictationSchema.optional(),
+        dictionary: FeatureDictionarySchema.optional(),
         voiceMode: FeatureVoiceModeSchema.optional(),
         readAloud: FeatureReadAloudSchema.optional(),
         webUi: FeatureWebUiSchema.optional(),

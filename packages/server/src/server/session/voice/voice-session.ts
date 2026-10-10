@@ -1,3 +1,4 @@
+import type { Dictionary } from "@getpaseo/protocol/messages";
 import { v4 as uuidv4 } from "uuid";
 import { z } from "zod";
 import type pino from "pino";
@@ -155,6 +156,7 @@ export interface VoiceSessionOptions {
     stt?: Resolvable<SpeechToTextProvider | null>;
     sttLanguage?: string;
     getSpeechReadiness?: () => SpeechReadinessSnapshot;
+    dictionary?: () => Dictionary | undefined;
   };
   orchestrator?: VoiceOrchestrator | null;
 }
@@ -246,6 +248,7 @@ export class VoiceSession {
       language: dictation?.sttLanguage,
       finalTimeoutMs: dictation?.finalTimeoutMs,
       onIdle: this.onIdle,
+      dictionary: dictation?.dictionary,
     });
   }
 

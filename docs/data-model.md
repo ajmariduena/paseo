@@ -66,6 +66,9 @@ $PASEO_HOME/
 │   ├── {agentId}.json                   # Messages waiting for the agent's running turn
 │   └── {agentId}/{uuid}.json            # Full prompt of one queued message
 ├── pull-request-watches.json            # Pull requests agents asked Paseo to watch
+├── glance/
+│   ├── state.json                       # When the host was first paired with glasses
+│   └── summaries.json                   # Glance summary cache, least recently used first
 ├── projects/
 │   ├── projects.json                    # Project registry
 │   ├── workspaces.json                  # Workspace registry
@@ -319,7 +322,8 @@ snapshot so a mixed edit can apply its live subset and still name the paths that
       tts?: { apiKey?: string, baseUrl?: string }
     },
     local: { modelsDir: string },
-    elevenlabs: { apiKey?: string, baseUrl?: string }
+    elevenlabs: { apiKey?: string, baseUrl?: string },
+    cerebras: { apiKey?: string, baseUrl?: string }  // or CEREBRAS_API_KEY; the voice call's router
   },
   agents: {
     skills?: {
@@ -338,7 +342,13 @@ snapshot so a mixed edit can apply its live subset and still name the paths that
   plugins: Record<pluginId, { source: "directory", path: string, enabled?: boolean }>,
   features: {
     dictation: { enabled, stt: { provider, model, language, confidenceThreshold } },
-    voiceMode: { enabled, llm, stt: { provider, model, language }, turnDetection, tts: { provider, model, voice, speakerId, speed } },
+    voiceMode: {
+      enabled, engine: "chained" | "gpt-live", live: { model, voice, language }, llm,
+      // The fast model that turns a call's requests into tool calls. Defaults to Cerebras
+      // qwen-3.8-27b with a Cerebras key, else OpenAI gpt-6-luna; "off" uses the llm agent.
+      router: { provider: "cerebras" | "openai" | "off", model, reasoningEffort },
+      stt: { provider, model, language }, turnDetection, tts: { provider, model, voice, speakerId, speed }
+    },
     readAloud: {
       enabled,
       tts: { provider: "elevenlabs", model, voiceId, speed, stability, similarityBoost, style },
@@ -824,6 +834,16 @@ A different OS boot proves the prior processes are gone without signalling reuse
 does not repair a conversation's unresolved persistence obligations.
 The [handoff boundary](refactors/cross-host-handoff-plan.md#boundary) tracks the remaining launch
 and process-coverage gaps.
+
+---
+
+## Glance Store
+
+**Path:** `$PASEO_HOME/glance/`
+
+`state.json` records `glassesPairedAt`, written the first time a client says hello with `glance_summary`. From then on the daemon summarizes each finished turn and pending question in the background, even with no glasses connected. It sits outside `config.json` because older daemons reject unknown config keys. `summaries.json` holds up to 1000 `[sha256(role + "\n" + text), line]` pairs, least recently used first. It is written a couple of seconds after new lines land and again at shutdown, so summaries survive a restart. Schema: `packages/server/src/server/glance/store.ts`.
+
+---
 
 ## Restart Intents
 

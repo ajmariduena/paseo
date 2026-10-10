@@ -135,13 +135,13 @@ function connection(
   };
 }
 
-test("a plain client advertises every protocol capability and no browser host", async () => {
+test("a plain client advertises every protocol capability, no browser host and no glasses", async () => {
   const h = connection();
   try {
     const ready = h.client.connect();
     h.open();
     await ready;
-    const { browserHost: _browser, ...protocolCapabilities } = CLIENT_CAPS;
+    const { browserHost: _browser, glanceSummary: _glasses, ...protocolCapabilities } = CLIENT_CAPS;
     // Every new capability needs a deliberate default or a host-owned exception.
     expect(h.sent).toHaveLength(1);
     expect(h.sent[0].capabilities).toEqual(

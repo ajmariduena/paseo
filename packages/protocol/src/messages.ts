@@ -52,6 +52,15 @@ import {
 } from "./handoff.js";
 import { QuickPromptSchema } from "./quick-prompt.js";
 export { QuickPromptSchema, validateQuickPrompts, type QuickPrompt } from "./quick-prompt.js";
+import { DictionarySchema } from "./dictionary.js";
+export {
+  DICTIONARY_LIMITS,
+  DictionarySchema,
+  DictionaryReplacementSchema,
+  validateDictionary,
+  type Dictionary,
+  type DictionaryReplacement,
+} from "./dictionary.js";
 import { AgentMessageSchema } from "./agent-message.js";
 import { PluginRegistryIdentitySchema } from "./plugin-registry.js";
 import { AgentProfileSchema, AgentSkillSelectionSchema } from "./agent-profile.js";
@@ -135,6 +144,27 @@ import {
   HostMetricsGetRequestSchema,
   HostMetricsGetResponseSchema,
 } from "./host-metrics/rpc-schemas.js";
+import {
+  VoiceCourierExecuteMessageSchema,
+  VoiceCourierResultRequestSchema,
+  VoiceCourierResultResponseSchema,
+  VoiceFleetDigestRequestSchema,
+  VoiceFleetDigestResponseSchema,
+  VoiceFleetSyncRequestSchema,
+  VoiceFleetSyncResponseSchema,
+  VoiceToolsInvokeRequestSchema,
+  VoiceToolsInvokeResponseSchema,
+} from "./voice-fleet/rpc-schemas.js";
+import {
+  VoiceCommandsGetSettingsRequestSchema,
+  VoiceCommandsGetSettingsResponseSchema,
+  VoiceCommandsSetKeyRequestSchema,
+  VoiceCommandsSetKeyResponseSchema,
+  VoiceCommandsSetModelRequestSchema,
+  VoiceCommandsSetModelResponseSchema,
+  VoiceCommandsTestModelRequestSchema,
+  VoiceCommandsTestModelResponseSchema,
+} from "./voice-commands/rpc-schemas.js";
 import {
   LoopRunRequestSchema,
   LoopListRequestSchema,
@@ -319,6 +349,8 @@ export const MutableDaemonConfigSchema = z
     plugins: z.record(PluginIdSchema, PluginSourceSchema).optional(),
     // COMPAT(dictationSelection): added in v0.11.0; absent on older daemons, remove optional after 2027-10-04.
     dictation: MutableDictationConfigSchema.optional(),
+    // COMPAT(dictionary): added in v0.11.1; absent on older daemons, remove optional after 2027-10-09.
+    dictionary: DictionarySchema.optional(),
   })
   .passthrough();
 
@@ -344,6 +376,7 @@ export const MutableDaemonConfigPatchSchema = z
     pluginsEnabled: z.boolean().optional(),
     plugins: z.record(PluginIdSchema, PluginSourceSchema).optional(),
     dictation: MutableDictationConfigSchema.optional(),
+    dictionary: DictionarySchema.optional(),
   })
   .partial()
   .passthrough();
@@ -2973,6 +3006,34 @@ export const WorkspaceMarkUnreadRequestSchema = z.object({
   requestId: z.string(),
 });
 
+export const GlanceSummaryItemSchema = z.object({
+  id: z.string(),
+  role: z.enum(["user", "assistant"]),
+  text: z.string(),
+});
+
+export const GlanceSummaryLineSchema = z.object({ id: z.string(), line: z.string() });
+
+export const GlanceSummaryPushItemSchema = z.object({
+  id: z.string(),
+  role: z.enum(["user", "assistant"]),
+  line: z.string(),
+  /** sha256 hex of `${role}\n${text}`, text trimmed and cut to 3000 characters. */
+  textHash: z.string(),
+});
+
+export const GlanceSummarizeRequestSchema = z.object({
+  type: z.literal("glance.summarize.request"),
+  requestId: z.string(),
+  agentId: z.string().optional(),
+  items: z.array(GlanceSummaryItemSchema).max(20),
+});
+
+export type GlanceSummaryItem = z.infer<typeof GlanceSummaryItemSchema>;
+export type GlanceSummaryLine = z.infer<typeof GlanceSummaryLineSchema>;
+export type GlanceSummaryPushItem = z.infer<typeof GlanceSummaryPushItemSchema>;
+export type GlanceSummarizeRequest = z.infer<typeof GlanceSummarizeRequestSchema>;
+
 export const SpeechReadAloudPrepareRequestSchema = z.object({
   type: z.literal("speech.read_aloud.prepare.request"),
   text: z.string(),
@@ -2985,6 +3046,14 @@ export const VoiceOrchestratorStartRequestSchema = z.object({
   language: z.string().optional(),
   /** The user's chosen mode per provider id, for agents the voice assistant creates. */
   agentModes: z.record(z.string(), z.string()).optional(),
+  /** The user's preferred provider, and model and thinking per provider, for new agents. */
+  agentDefaults: z
+    .object({
+      provider: z.string().optional(),
+      models: z.record(z.string(), z.string()).optional(),
+      thinking: z.record(z.string(), z.string()).optional(),
+    })
+    .optional(),
   requestId: z.string(),
 });
 
@@ -3755,6 +3824,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   CreationSubscribeRequestSchema,
   WorkspaceClearAttentionRequestSchema,
   WorkspaceMarkUnreadRequestSchema,
+  GlanceSummarizeRequestSchema,
   SpeechReadAloudPrepareRequestSchema,
   SpeechReadAloudSynthesizeRequestSchema,
   VoiceOrchestratorStartRequestSchema,
@@ -3767,6 +3837,14 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   VoiceLiveConnectRequestSchema,
   VoiceLiveEndRequestSchema,
   VoiceCallSetMuteRequestSchema,
+  VoiceFleetDigestRequestSchema,
+  VoiceFleetSyncRequestSchema,
+  VoiceToolsInvokeRequestSchema,
+  VoiceCourierResultRequestSchema,
+  VoiceCommandsGetSettingsRequestSchema,
+  VoiceCommandsSetModelRequestSchema,
+  VoiceCommandsSetKeyRequestSchema,
+  VoiceCommandsTestModelRequestSchema,
   FileExplorerRequestSchema,
   FileSubscribeRequestSchema,
   FileUnsubscribeRequestSchema,
@@ -3964,6 +4042,13 @@ export const ServerCapabilityStateSchema = z.object({
   reason: z.string(),
 });
 
+export const GlanceSummaryCapabilitySchema = ServerCapabilityStateSchema.extend({
+  // COMPAT(glanceSummaryPrecompute): added in v0.11.1; absent on daemons that only summarize on request, remove optional after 2027-10-10.
+  precompute: z.boolean().optional(),
+});
+
+export type GlanceSummaryCapability = z.infer<typeof GlanceSummaryCapabilitySchema>;
+
 export const ServerVoiceCapabilitiesSchema = z.object({
   dictation: ServerCapabilityStateSchema,
   voice: ServerCapabilityStateSchema,
@@ -3997,6 +4082,8 @@ export const ServerCapabilitiesSchema = z
     voice: ServerVoiceCapabilitiesSchema.optional(),
     // COMPAT(readAloud): added in v0.10.3; absent on older daemons, remove optional after 2027-09-29.
     readAloud: ServerCapabilityStateSchema.optional(),
+    // COMPAT(glanceSummary): added in v0.11.1; absent on older daemons, remove optional after 2027-10-10.
+    glanceSummary: GlanceSummaryCapabilitySchema.optional(),
     // COMPAT(dictationSelection): added in v0.11.0; absent on older daemons, remove optional after 2027-10-04.
     dictationStt: ServerDictationSttSchema.optional(),
   })
@@ -4156,6 +4243,12 @@ export const ServerInfoStatusPayloadSchema = z
         voiceLiveWebrtc: z.boolean().optional(),
         // COMPAT(voiceCallMute): added in v0.11.0, remove gate after 2027-10-03.
         voiceCallMute: z.boolean().optional(),
+        // COMPAT(voiceFleet): added in v0.11.1, remove gate after 2027-10-09.
+        voiceFleet: z.boolean().optional(),
+        // COMPAT(dictionary): added in v0.11.1, remove gate after 2027-10-09.
+        dictionary: z.boolean().optional(),
+        // COMPAT(voiceCommands): added in v0.11.1, remove gate after 2027-10-09.
+        voiceCommands: z.boolean().optional(),
         // COMPAT(serverMessageQueue): added in v0.11.0, remove gate after 2027-10-04.
         serverMessageQueue: z.boolean().optional(),
         // COMPAT(restartContinuation): added in v0.11.0, remove gate after 2027-10-04.
@@ -5541,6 +5634,25 @@ export const WorkspaceMarkUnreadResponseSchema = z.object({
     error: z.string().nullable(),
   }),
 });
+
+export const GlanceSummarizeResponseSchema = z.object({
+  type: z.literal("glance.summarize.response"),
+  payload: z.object({
+    requestId: z.string(),
+    lines: z.array(GlanceSummaryLineSchema),
+    error: z.string().nullable(),
+  }),
+});
+
+export const GlanceSummaryMessageSchema = z.object({
+  type: z.literal("glance.summary"),
+  payload: z.object({
+    agentId: z.string(),
+    items: z.array(GlanceSummaryPushItemSchema),
+  }),
+});
+
+export type GlanceSummaryMessage = z.infer<typeof GlanceSummaryMessageSchema>;
 
 export const SpeechReadAloudPrepareResponseSchema = z.object({
   type: z.literal("speech.read_aloud.prepare.response"),
@@ -7809,6 +7921,8 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   CreationSubscribeResponseSchema,
   WorkspaceClearAttentionResponseSchema,
   WorkspaceMarkUnreadResponseSchema,
+  GlanceSummarizeResponseSchema,
+  GlanceSummaryMessageSchema,
   SpeechReadAloudPrepareResponseSchema,
   SpeechReadAloudSynthesizeResponseSchema,
   VoiceOrchestratorStartResponseSchema,
@@ -7822,6 +7936,15 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   VoiceLiveConnectResponseSchema,
   VoiceLiveEndResponseSchema,
   VoiceCallSetMuteResponseSchema,
+  VoiceFleetDigestResponseSchema,
+  VoiceFleetSyncResponseSchema,
+  VoiceCourierExecuteMessageSchema,
+  VoiceToolsInvokeResponseSchema,
+  VoiceCourierResultResponseSchema,
+  VoiceCommandsGetSettingsResponseSchema,
+  VoiceCommandsSetModelResponseSchema,
+  VoiceCommandsSetKeyResponseSchema,
+  VoiceCommandsTestModelResponseSchema,
   SendAgentMessageResponseMessageSchema,
   SetVoiceModeResponseMessageSchema,
   DaemonGetStatusResponseSchema,
@@ -8500,6 +8623,7 @@ export const WSHelloMessageSchema = z.object({
       [CLIENT_CAPS.timelineReplacementInvalidation]: z.boolean().optional(),
       [CLIENT_CAPS.timelineNotifications]: z.boolean().optional(),
       [CLIENT_CAPS.browserHost]: BrowserAutomationHostCapabilitySchema.optional(),
+      [CLIENT_CAPS.glanceSummary]: z.boolean().optional(),
     })
     .passthrough()
     .optional(),

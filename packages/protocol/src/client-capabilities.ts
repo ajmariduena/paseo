@@ -46,6 +46,9 @@ export const CLIENT_CAPS = {
   // COMPAT(workspaceSetupBlocked): added in v0.8.0, remove after 2027-03-07 once client floor >= v0.8.0.
   workspaceSetupBlocked: "workspace_setup_blocked",
   browserHost: "browser_host",
+  // Glasses clients opt in: the first hello carrying it pairs the host with glasses for good,
+  // and only clients carrying it receive glance.summary pushes.
+  glanceSummary: "glance_summary",
 } as const;
 
 export type ClientCapability = (typeof CLIENT_CAPS)[keyof typeof CLIENT_CAPS];

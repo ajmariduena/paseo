@@ -26,6 +26,11 @@ const patchedPackages = [
     nodeModulesPath: "node_modules/react-native-gesture-handler",
     patchPrefix: "react-native-gesture-handler+",
   },
+  // Android: a nested page hands vertical drags back to the feed at its scroll edge.
+  {
+    nodeModulesPath: "node_modules/react-native-webview",
+    patchPrefix: "react-native-webview+",
+  },
   {
     nodeModulesPath: "node_modules/react-native-svg",
     patchPrefix: "react-native-svg+",

@@ -4,6 +4,7 @@ import type { HandoffSource } from "./handoff/source.js";
 import type { HandoffDestination } from "./handoff/destination.js";
 import type { NoteStore } from "./notes/store.js";
 import type { HostMetricsSampler } from "./host-metrics/sampler.js";
+import type { GlanceSummaryService } from "./glance/service.js";
 import { stat } from "node:fs/promises";
 import type { CreationSnapshot } from "@getpaseo/protocol/messages";
 import { CreationService } from "./creation/index.js";
@@ -701,6 +702,7 @@ export class VoiceAssistantWebSocketServer {
     handoffOwnership?: HandoffOwnership,
     private readonly handoffSource?: HandoffSource,
     private readonly handoffDestination?: HandoffDestination,
+    private readonly glanceSummaryService?: GlanceSummaryService,
   ) {
     this.handoffOwnership = handoffOwnership;
     this.logger = logger.child({ module: "websocket-server" });
@@ -1048,10 +1050,13 @@ export class VoiceAssistantWebSocketServer {
   private buildCurrentServerCapabilities(
     readiness: SpeechReadinessSnapshot | null,
   ): ServerCapabilities | undefined {
-    return buildServerCapabilities({
+    const capabilities = buildServerCapabilities({
       readiness,
       readAloud: this.readAloudService?.getCapability() ?? null,
     });
+    return this.glanceSummaryService
+      ? { ...capabilities, glanceSummary: this.glanceSummaryService.getCapability() }
+      : capabilities;
   }
 
   public updateServerCapabilities(capabilities: ServerCapabilities | null | undefined): void {
@@ -1557,6 +1562,7 @@ export class VoiceAssistantWebSocketServer {
       noteStore: this.noteStore,
       hostMetricsSampler: this.hostMetricsSampler,
       readAloud: this.readAloudService ?? undefined,
+      glanceSummary: this.glanceSummaryService,
       voiceOrchestrator: this.voiceOrchestrator,
       delegations: this.delegations,
       agentStop: this.agentStop,
@@ -1960,6 +1966,12 @@ export class VoiceAssistantWebSocketServer {
         voiceLiveWebrtc: this.voiceOrchestrator?.webrtc.available ?? false,
         // COMPAT(voiceCallMute): added in v0.11.0, remove gate after 2027-10-03.
         voiceCallMute: Boolean(this.voiceOrchestrator),
+        // COMPAT(voiceFleet): added in v0.11.1, remove gate after 2027-10-09.
+        voiceFleet: Boolean(this.voiceOrchestrator),
+        // COMPAT(dictionary): added in v0.11.1, remove gate after 2027-10-09.
+        dictionary: true,
+        // COMPAT(voiceCommands): added in v0.11.1, remove gate after 2027-10-09.
+        voiceCommands: Boolean(this.voiceOrchestrator?.commands),
         // COMPAT(serverMessageQueue): added in v0.11.0, remove gate after 2027-10-04.
         serverMessageQueue: true,
         // COMPAT(restartContinuation): added in v0.11.0, remove gate after 2027-10-04.

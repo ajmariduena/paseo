@@ -12,6 +12,7 @@ interface FakeOrchestrator {
   runDelegation(params: { request: string; history: string[] }): Promise<string>;
   narrate(params: { kind: string; lines: string[] }): Promise<string>;
   saveCallHistory(): void;
+  speechKeyterms(): string[];
 }
 
 function createOrchestrator(): FakeOrchestrator {
@@ -19,6 +20,7 @@ function createOrchestrator(): FakeOrchestrator {
     language: "es",
     call: null,
     requests: [],
+    speechKeyterms: () => ["Fable", "worktree"],
     narrations: [],
     attachCall(call) {
       fake.call = call;
@@ -43,6 +45,7 @@ function createCall(params: {
   orchestrator: FakeOrchestrator;
   transcribed?: string;
   pushes?: unknown[];
+  seenKeyterms?: string[];
 }) {
   const updates: VoiceMessagesItem[] = [];
   const call = new VoiceMessagesCall({
@@ -54,7 +57,14 @@ function createCall(params: {
         createSession: () => {
           throw new Error("not used");
         },
-        transcribeClip: async () => ({ text: params.transcribed ?? "" }),
+        transcribeClip: async (
+          _clip: unknown,
+          _language: unknown,
+          options?: { keyterms?: readonly string[] },
+        ) => {
+          params.seenKeyterms?.push(...(options?.keyterms ?? []));
+          return { text: params.transcribed ?? "" };
+        },
       }),
       resolveTts: () => ({
         synthesizeSpeech: async () => {
@@ -104,7 +114,8 @@ describe("VoiceMessagesCall", () => {
 
   it("prefers the host transcription when the whole recording arrives", async () => {
     const orchestrator = createOrchestrator();
-    const { call } = createCall({ orchestrator, transcribed: "cómo va security" });
+    const seenKeyterms: string[] = [];
+    const { call } = createCall({ orchestrator, transcribed: "cómo va security", seenKeyterms });
 
     call.receive({ utteranceId: "u1", text: "como va secu ritty" });
     call.receive({
@@ -117,6 +128,7 @@ describe("VoiceMessagesCall", () => {
     await vi.advanceTimersByTimeAsync(10);
 
     expect(orchestrator.requests).toEqual(["cómo va security"]);
+    expect(seenKeyterms).toEqual(["Fable", "worktree"]);
   });
 
   it("processes a retried utterance once", async () => {

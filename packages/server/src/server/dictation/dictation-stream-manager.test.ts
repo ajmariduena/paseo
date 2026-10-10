@@ -54,11 +54,13 @@ class FakeRealtimeSession extends EventEmitter implements StreamingTranscription
 class FakeSttProvider implements SpeechToTextProvider {
   public readonly id = "fake";
   public lastLanguage?: string;
+  public lastParams?: Parameters<SpeechToTextProvider["createSession"]>[0];
   constructor(private readonly session: FakeRealtimeSession) {}
   createSession(
     params: Parameters<SpeechToTextProvider["createSession"]>[0],
   ): StreamingTranscriptionSession {
     this.lastLanguage = params.language;
+    this.lastParams = params;
     return this.session;
   }
 }
@@ -584,4 +586,48 @@ it("closes every dictation stream when one provider cleanup fails", async () => 
   expect(first.closed).toBe(true);
   expect(second.closed).toBe(true);
   expect(manager.hasDemand).toBe(false);
+});
+
+describe("DictationStreamManager (dictionary)", () => {
+  it("writes what the user taught it and tells the recognizer the words", async () => {
+    const session = new FakeRealtimeSession();
+    const provider = new FakeSttProvider(session);
+    const emitted: Array<{ type: string; payload: unknown }> = [];
+    const manager = new DictationStreamManager({
+      logger: pino({ level: "silent" }),
+      emit: (msg) => emitted.push(msg),
+      sessionId: "s1",
+      stt: provider,
+      finalTimeoutMs: 5000,
+      dictionary: () => ({
+        words: ["Zentrix"],
+        replacements: [{ from: "Hello", to: "Jelou" }],
+      }),
+    });
+
+    await manager.handleStart("d1", "audio/pcm;rate=24000;bits=16");
+    expect(provider.lastParams?.keyterms).toEqual(["Zentrix", "Jelou"]);
+    expect(provider.lastParams?.prompt).toContain("Vocabulary that may appear: Zentrix, Jelou.");
+
+    await manager.handleChunk({
+      dictationId: "d1",
+      seq: 0,
+      audioBase64: buildPcmBase64(2000, 2400),
+      format: "audio/pcm;rate=24000;bits=16",
+    });
+    session.emitTranscript("seg-1", "abre el repo de hello", false);
+    await manager.handleFinish("d1", 0);
+    session.emitCommitted("seg-1");
+    session.emitTranscript("seg-1", "abre el repo de Hello", true);
+    await tick();
+
+    const texts = emitted
+      .filter(
+        (msg) => msg.type === "dictation_stream_partial" || msg.type === "dictation_stream_final",
+      )
+      .map((msg) => (msg.payload as { text: string }).text);
+    expect(texts.length).toBeGreaterThan(0);
+    expect(texts.every((text) => text === "abre el repo de Jelou")).toBe(true);
+    expect(emitted.some((msg) => msg.type === "dictation_stream_final")).toBe(true);
+  });
 });

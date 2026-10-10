@@ -1,4 +1,7 @@
-import type { QuickPrompt } from "@getpaseo/protocol/messages";
+import type { Dictionary, QuickPrompt } from "@getpaseo/protocol/messages";
+import { GlanceSummaryService } from "./glance/service.js";
+import { GlancePrecomputer } from "./glance/precompute.js";
+import { GlanceStore } from "./glance/store.js";
 import type { PluginRegistries } from "@getpaseo/protocol/plugin-registry";
 import { describeHookWorkspace } from "./plugins/lifecycle/index.js";
 import express from "express";
@@ -152,6 +155,7 @@ import { describeDictationStt } from "./speech/dictation-selection.js";
 import type { ReadAloudConfig } from "./speech/read-aloud/config.js";
 import { ReadAloudService } from "./speech/read-aloud/service.js";
 import { VoiceOrchestrator, type GptLiveEngineConfig } from "./voice-orchestrator/orchestrator.js";
+import type { FastLlmConfig } from "./voice-orchestrator/fast-brain/llm-client.js";
 import { AgentManager } from "./agent/agent-manager.js";
 import { AgentStorage } from "./agent/agent-storage.js";
 import { attachAgentStoragePersistence } from "./persistence-hooks.js";
@@ -482,6 +486,9 @@ export interface PaseoDaemonConfig {
   voiceLlmModel?: string | null;
   voiceLlmThinking?: string | null;
   voiceLive?: GptLiveEngineConfig | null;
+  voiceRouter?: FastLlmConfig | null;
+  voiceRouterBackup?: FastLlmConfig | null;
+  dictionary?: Dictionary;
   voiceLanguage?: string | null;
   dictationFinalTimeoutMs?: number;
   downloadTokenTtlMs?: number;
@@ -629,12 +636,17 @@ function createInitialMutableDaemonConfig(config: PaseoDaemonConfig): MutableDae
   }
 
   initialConfig.quickPrompts = config.quickPrompts;
+  initialConfig.dictionary = config.dictionary;
   initialConfig.quickPromptUndoMs = config.quickPromptUndoMs;
   if (config.agentProfiles !== undefined) {
     initialConfig.agentProfiles = config.agentProfiles;
   }
 
   return initialConfig;
+}
+
+function voiceCommandsOptions(config: PaseoDaemonConfig) {
+  return { paseoHome: config.paseoHome, env: config.configReload?.env ?? process.env };
 }
 
 function createInitialDictationConfig(
@@ -1809,6 +1821,7 @@ export async function createPaseoDaemon(
     voiceOnly: runtime.voiceOnly,
     resolveSpeakHandler: (agentId) => wsServer?.resolveVoiceSpeakHandler(agentId) ?? null,
     resolveCallerContext: (agentId) => wsServer?.resolveVoiceCallerContext(agentId) ?? null,
+    callerContext: runtime.callerContext,
     logger,
   });
   const createAgentToolCatalog = (runtime: PaseoToolRuntimeContext) =>
@@ -1950,6 +1963,23 @@ export async function createPaseoDaemon(
 
   const speechService = createDictationAwareSpeechService({ config, logger, daemonConfigStore });
   logger.info({ elapsed: elapsed() }, "Speech service created");
+  const glanceSummaryService = new GlanceSummaryService({
+    agentManager,
+    providerSnapshotManager,
+    getConfig: () => daemonConfigStore.get(),
+    logger,
+    store: GlanceStore.forPaseoHome(config.paseoHome),
+  });
+  await glanceSummaryService.load();
+  const glancePrecomputer = new GlancePrecomputer({
+    agents: agentManager,
+    service: glanceSummaryService,
+    logger,
+    publish: (push) => {
+      for (const session of wsServer?.listSessions() ?? []) session.emitGlanceSummary(push);
+    },
+  });
+  glancePrecomputer.start();
   const readAloudService = config.readAloud
     ? new ReadAloudService({
         config: config.readAloud,
@@ -1970,6 +2000,14 @@ export async function createPaseoDaemon(
     language: config.voiceLanguage,
     live: config.voiceLive,
     speech: speechService,
+    projectRegistry,
+    router: config.voiceRouter,
+    routerBackup: config.voiceRouterBackup,
+    voiceCommands: voiceCommandsOptions(config),
+    dictionary: () => daemonConfigStore.get().dictionary,
+    createToolCatalog: async (callerContext) =>
+      createAgentToolCatalog({ callerContext, transport: "native" }),
+    hostMetrics: () => hostMetricsSampler.getSnapshot(),
     logger,
   });
 
@@ -2134,6 +2172,7 @@ export async function createPaseoDaemon(
               handoffOwnership,
               handoffSource,
               handoffDestination,
+              glanceSummaryService,
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();
@@ -2224,6 +2263,7 @@ export async function createPaseoDaemon(
     // Freeze both ingress and registration before taking the agent closure snapshot.
     wsServer?.prepareForShutdown();
     agentManager.prepareForShutdown();
+    glancePrecomputer.stop();
     await handoffDestination.dispose();
     await handoffSource.dispose();
     await restartRecovery
@@ -2245,6 +2285,7 @@ export async function createPaseoDaemon(
     await pluginRuntime.stopAllPlugins();
     terminalManager.killAll();
     await speechService.stop();
+    await glanceSummaryService.flush();
     await scheduleService.stop().catch(() => undefined);
     await relayRuntime?.stop().catch(() => undefined);
     if (wsServer) {

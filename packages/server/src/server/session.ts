@@ -4,6 +4,8 @@ import type { HandoffSource } from "./handoff/source.js";
 import type { HandoffDestination } from "./handoff/destination.js";
 import { dispatchHandoffControlMessage } from "./handoff/control-rpc.js";
 import { dispatchHandoffArchiveMessage } from "./handoff/rpc.js";
+import type { GlanceSummaryService } from "./glance/service.js";
+import type { GlanceSummaryPush } from "./glance/precompute.js";
 import { searchTimeline } from "./agent/chat-search/index.js";
 import type { BrowserToolsBroker } from "./browser-tools/broker.js";
 import type { BrowserScreencastBroker } from "./browser-screencast/stream-broker.js";
@@ -262,6 +264,10 @@ import {
   VoiceMessagesSessionHandler,
   isVoiceMessagesRequest,
 } from "./session/voice/voice-messages-handler.js";
+import {
+  handleVoiceCommandsRequest,
+  isVoiceCommandsRequest,
+} from "./session/voice/voice-commands-handler.js";
 import type pino from "pino";
 import { ScheduleService } from "./schedule/service.js";
 import {
@@ -568,6 +574,7 @@ export interface SessionOptions {
   handoffSource?: HandoffSource;
   handoffDestination?: HandoffDestination;
   readAloud?: ReadAloudService;
+  glanceSummary?: GlanceSummaryService;
   voiceOrchestrator?: VoiceOrchestrator | null;
   delegations?: Pick<DelegationService, "stopAll" | "disposeQueuedWake"> | null;
   /** Shared with the agent tools, which refuse calls from a run the user stopped. */
@@ -897,6 +904,7 @@ export class Session {
   private readonly handoffSource: HandoffSource | undefined;
   private readonly handoffDestination: HandoffDestination | undefined;
   private readonly workspaceLabelService: WorkspaceLabelService | null;
+  private readonly glanceSummary: GlanceSummaryService | undefined;
   private readonly readAloud: ReadAloudService | undefined;
   private readonly voiceOrchestrator: VoiceOrchestrator | null | undefined;
   private readonly delegations:
@@ -969,6 +977,7 @@ export class Session {
       directorySync,
       workspaceLabelService,
       readAloud,
+      glanceSummary,
       voiceOrchestrator,
       delegations,
       filesystem,
@@ -1055,6 +1064,7 @@ export class Session {
     this.handoffDestination = options.handoffDestination;
     this.workspaceLabelService = resolveWorkspaceLabelService(workspaceLabelService);
     this.readAloud = readAloud;
+    this.glanceSummary = glanceSummary;
     this.voiceOrchestrator = voiceOrchestrator;
     this.delegations = delegations;
     this.agentStop = resolveAgentStop(options, this.sessionLogger);
@@ -1395,7 +1405,7 @@ export class Session {
         stt,
         voice,
         voiceBridge,
-        dictation,
+        dictation: { ...dictation, dictionary: () => this.daemonConfigStore.get().dictionary },
         orchestrator: this.voiceOrchestrator,
       },
       this.delivery,
@@ -1417,6 +1427,9 @@ export class Session {
     appVersion = this.appVersion,
   ): void {
     this.clientCapabilities = parseClientCapabilities(capabilities);
+    if (this.clientCapabilities.has(CLIENT_CAPS.glanceSummary)) {
+      void this.glanceSummary?.enableGlassesMode();
+    }
     if (source) {
       this.delivery.attach(source, capabilities?.[CLIENT_CAPS.ownedSubscriptions] === true);
       this.clientSources.set(source, {
@@ -1535,6 +1548,21 @@ export class Session {
       this.timelineSubscriptions.size === 0
     )
       this.emit(message);
+  }
+
+  /** Only clients that advertised glance_summary parse this message. */
+  emitGlanceSummary(payload: GlanceSummaryPush): void {
+    const message: SessionOutboundMessage = { type: "glance.summary", payload };
+    if (!this.authorization.allowsOutbound(message)) return;
+    if (this.onMessageToSource && this.clientSources.size > 0) {
+      for (const source of this.clientSources.keys()) {
+        if (this.supportsForSource(CLIENT_CAPS.glanceSummary, source)) {
+          this.onMessageToSource(source, message);
+        }
+      }
+      return;
+    }
+    if (this.clientCapabilities.has(CLIENT_CAPS.glanceSummary)) this.onMessage(message);
   }
 
   supports(capability: ClientCapability): boolean {
@@ -2954,6 +2982,24 @@ export class Session {
     };
   }
 
+  private async handleGlanceSummarizeRequest(
+    request: Extract<SessionInboundMessage, { type: "glance.summarize.request" }>,
+  ): Promise<void> {
+    const { requestId, items, agentId } = request;
+    try {
+      if (!this.glanceSummary) throw new Error("Glance summaries are unavailable on this host");
+      const agent = agentId ? this.agentManager.getAgent(agentId) : null;
+      const lines = await this.glanceSummary.summarize({ items, cwd: agent?.cwd ?? homedir() });
+      this.emit({ type: "glance.summarize.response", payload: { requestId, lines, error: null } });
+    } catch (error) {
+      this.sessionLogger.warn({ err: error, agentId }, "Failed to summarize for glance");
+      this.emit({
+        type: "glance.summarize.response",
+        payload: { requestId, lines: [], error: getErrorMessage(error) },
+      });
+    }
+  }
+
   private async handleReadAloudPrepareRequest(
     request: Extract<SessionInboundMessage, { type: "speech.read_aloud.prepare.request" }>,
   ): Promise<void> {
@@ -3027,7 +3073,9 @@ export class Session {
       }
       this.voiceOrchestrator.setPreferredLanguage(request.language ?? null);
       this.voiceOrchestrator.setPreferredAgentModes(request.agentModes);
-      const agentId = await this.voiceOrchestrator.ensureAgent();
+      this.voiceOrchestrator.setPreferredAgentDefaults(request.agentDefaults);
+      this.voiceOrchestrator.noteCallStarting();
+      const agentId = await this.voiceOrchestrator.agentIdForCall();
       this.emit({
         type: "voice.orchestrator.start.response",
         payload: { requestId, agentId, language: this.voiceOrchestrator.language, error: null },
@@ -3050,6 +3098,12 @@ export class Session {
 
   private dispatchVoiceAndControlMessage(msg: SessionInboundMessage): Promise<void> | undefined {
     if (isVoiceMessagesRequest(msg)) return this.voiceMessages.handle(msg);
+    if (isVoiceCommandsRequest(msg)) {
+      return handleVoiceCommandsRequest(msg, {
+        service: this.voiceOrchestrator?.commands ?? null,
+        emit: (message) => this.emit(message),
+      });
+    }
     switch (msg.type) {
       case "voice_audio_chunk":
       case "abort_request":
@@ -3782,6 +3836,9 @@ export class Session {
     switch (msg.type) {
       case "list_commands_request":
         await this.handleListCommandsRequest(msg);
+        return;
+      case "glance.summarize.request":
+        await this.handleGlanceSummarizeRequest(msg);
         return;
       case "register_push_token":
         this.handleRegisterPushToken(msg.token);
