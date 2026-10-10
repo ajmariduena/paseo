@@ -260,8 +260,11 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   persistence handle after provider shutdown. Closure also joins admitted provider control, opening
   and rewind work before removing subscribers; a timeout retains that work for retry. New public
   mutations are refused during closure, while repeated interruption joins the close. Concurrent
-  control requests share one query opening. SDK hook callbacks and manager descendants still need
-  a complete generation boundary. Record revision guards, semantic obligations and durable process-stop
+  control requests share one query opening. Each query owns its SDK permission and hook callbacks;
+  retirement cancels pending permissions and joins callbacks after SDK cleanup. Late callbacks and
+  failed hook observations refuse certification. Failed or canceled plan approvals settle their
+  original SDK callback without a later approval or duplicate resolution. Manager descendants still
+  need a complete generation boundary. Record revision guards, semantic obligations and durable process-stop
   recovery also remain open under the
   [conversation persistence contract](#conversation-persistence-contract).
 - `server/handoff/workspace.ts` and its neighboring tests cover Git and directory snapshots,

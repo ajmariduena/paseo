@@ -647,6 +647,7 @@ describe("ClaudeAgentSession features", () => {
       return: queryReturn,
       applyFlagSettings: vi.fn(async () => undefined),
       setModel: vi.fn(async () => undefined),
+      setPermissionMode: vi.fn(async () => undefined),
       getContextUsage: vi.fn(async () => undefined),
       [Symbol.asyncIterator](): AsyncIterator<SDKMessage, void> {
         return {
@@ -738,6 +739,117 @@ describe("ClaudeAgentSession features", () => {
       await session.close();
     }
   });
+
+  test("a failed plan approval settles its SDK callback and permits closure", async () => {
+    vi.useFakeTimers();
+    const { queryFactory, queryMock } = createQueryMock();
+    const session = await new ClaudeAgentClient({
+      logger,
+      queryFactory,
+      resolveBinary: async () => "/test/claude/bin",
+    }).createSession({ provider: "claude", cwd: process.cwd(), modeId: "plan" });
+    const events: AgentStreamEvent[] = [];
+    const unsubscribe = session.subscribe((event) => events.push(event));
+    try {
+      await session.startTurn("prepare the plan");
+      const canUseTool = queryFactory.mock.calls[0][0].options.canUseTool;
+      if (!canUseTool) throw new Error("Expected canUseTool callback");
+      let permissionOutcome: unknown = "pending";
+      const permission = canUseTool(
+        "ExitPlanMode",
+        { plan: "Implement the change" },
+        { signal: new AbortController().signal, toolUseID: "plan-failed" },
+      ).then(
+        (result) => (permissionOutcome = result),
+        (error: unknown) => (permissionOutcome = error),
+      );
+      const [request] = session.getPendingPermissions();
+      queryMock.setPermissionMode.mockRejectedValueOnce(new Error("mode refused"));
+      await expect(
+        session.respondToPermission(request.id, {
+          behavior: "allow",
+          selectedActionId: "implement",
+        }),
+      ).rejects.toThrow("mode refused");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(permissionOutcome).toMatchObject({ message: "mode refused" });
+      await permission;
+      expect(session.getPendingPermissions()).toEqual([]);
+      expect(events.filter(isPermissionResolvedEvent)).toEqual([
+        expect.objectContaining({
+          requestId: request.id,
+          resolution: { behavior: "deny", message: "mode refused" },
+        }),
+      ]);
+      await session.close();
+    } finally {
+      unsubscribe();
+      const cleanup = session.close().catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(3_000);
+      await cleanup;
+      vi.useRealTimers();
+    }
+  });
+
+  test.each(["close", "SDK abort"])(
+    "%s cancels an in-flight plan approval exactly once",
+    async (cancellation) => {
+      const { queryFactory, queryMock } = createQueryMock();
+      const session = await new ClaudeAgentClient({
+        logger,
+        queryFactory,
+        resolveBinary: async () => "/test/claude/bin",
+      }).createSession({ provider: "claude", cwd: process.cwd(), modeId: "plan" });
+      const entered = Promise.withResolvers<void>();
+      const finishMode = Promise.withResolvers<void>();
+      const events: AgentStreamEvent[] = [];
+      session.subscribe((event) => events.push(event));
+      try {
+        await session.startTurn("prepare the plan");
+        const canUseTool = queryFactory.mock.calls[0][0].options.canUseTool;
+        if (!canUseTool) throw new Error("Expected canUseTool callback");
+        const abort = new AbortController();
+        const permission = canUseTool(
+          "ExitPlanMode",
+          { plan: "Implement the change" },
+          { signal: abort.signal, toolUseID: "plan-canceled" },
+        ).catch((error: unknown) => error);
+        const [request] = session.getPendingPermissions();
+        queryMock.setPermissionMode.mockImplementationOnce(async () => {
+          entered.resolve();
+          await finishMode.promise;
+        });
+        const responding = session
+          .respondToPermission(request.id, {
+            behavior: "allow",
+            selectedActionId: "implement",
+          })
+          .catch((error: unknown) => error);
+        await entered.promise;
+        await expect(
+          session.respondToPermission(request.id, { behavior: "allow" }),
+        ).rejects.toThrow("already being answered");
+        let closing: Promise<void> | undefined;
+        if (cancellation === "close") closing = session.close();
+        else abort.abort();
+        expect(await permission).toBeInstanceOf(Error);
+        finishMode.resolve();
+        expect(await responding).toMatchObject({ message: "Permission request canceled" });
+        await closing;
+        expect(session.getPendingPermissions()).toEqual([]);
+        expect(events.filter(isPermissionResolvedEvent)).toEqual([
+          expect.objectContaining({
+            requestId: request.id,
+            resolution: expect.objectContaining({ behavior: "deny" }),
+          }),
+        ]);
+        expect(queryMock.setPermissionMode).toHaveBeenCalledTimes(1);
+      } finally {
+        finishMode.resolve();
+        await session.close();
+      }
+    },
+  );
 
   test("passes exact configured Fable 5 IDs through to Claude Code", async () => {
     const { queryFactory, queryMock } = createQueryMock();

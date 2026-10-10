@@ -1,6 +1,23 @@
 Handoff persistence recovery foundations — 2026-10-10
 
-Admitted provider operations during closure:
+SDK callback ownership and permission settlement:
+- Queries retain their own admitted hooks and permission callbacks through retirement.
+  The pinned SDK invokes control callbacks without awaiting them in its message reader;
+  EOF alone does not join their async bodies. Shutdown cancels that query's permissions,
+  completes SDK cleanup, seals callback admission and joins admitted callbacks.
+- A failed plan-mode change reproduced an orphaned permission callback. Responses now
+  retain cancellation ownership while awaiting the provider, reject duplicate answers,
+  settle failures and avoid publishing approval after cancellation.
+- The two affected suites passed 110 cases. After adding shutdown-time permissions and
+  adjusting denial settlement, all 16 selected permission/failure cases passed (95 skipped).
+  These cover failed and concurrent plan approvals, SDK abort, query replacement without
+  SDK abort delivery, callbacks arriving during stop, and refusal of retired callbacks.
+
+These tests inject SDK queries and control replies. Manager descendants, semantic repair,
+presentation coverage and durable process recovery remain unfinished. No fresh authenticated
+provider or physical-host continuity is claimed.
+
+Admitted provider operations during closure (bbc880006):
 - A held mode-change response reproduced successful closure before the operation had
   finished. Closure now waits for admitted public mutations, query opening, detached
   slash-command rewind and cancellation work. A timeout keeps the work owned for retry.
@@ -13,10 +30,9 @@ Admitted provider operations during closure:
   skipped), covering mode, model, thinking, features, permissions, steering and interrupt.
 
 These tests inject SDK streams and fork/control replies. They prove operation settlement
-and admission, not durable repair of an operation with an unknown partial outcome. SDK
-hook callbacks, manager descendants, semantic obligations and process recovery remain
-part of the unfinished conversation barrier. No fresh real-provider or physical-host
-continuity is claimed.
+and admission, not durable repair of an operation with an unknown partial outcome. The SDK
+callback follow-up above adds per-query ownership; manager descendants, semantic obligations
+and process recovery remain part of the unfinished conversation barrier.
 
 Claude query shutdown and final session handles (37b74831f):
 - The regression first reproduced buffered assistant rows disappearing during close.
@@ -70,6 +86,100 @@ repair evidence; callback quiescence and process-stop recovery; durable presenta
 coverage. The retained predecessor identities report uncertainty but do not implement
 its repair proof. A generation and lastStatus=closed are not a complete certificate.
 Internal agents and transient provider probes still need resource dispositions.
+
+Failed plan approval before callback settlement
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/providers/claude/agent.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: 🛡️ auth for agents: https://vestauth.com
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  override existing env vars with { override: true }
+
+ ❯ src/server/agent/providers/claude/agent.test.ts (91 tests | 1 failed | 90 skipped) 21ms
+     × a failed plan approval settles its SDK callback and permits closure 19ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/providers/claude/agent.test.ts > ClaudeAgentSession features > a failed plan approval settles its SDK callback and permits closure
+AssertionError: expected 'pending' to match object { message: 'mode refused' }
+
+- Expected:
+{
+  "message": "mode refused",
+}
+
++ Received:
+"pending"
+
+ ❯ src/server/agent/providers/claude/agent.test.ts:772:33
+    770|       ).rejects.toThrow("mode refused");
+    771|       await vi.advanceTimersByTimeAsync(0);
+    772|       expect(permissionOutcome).toMatchObject({ message: "mode refused…
+       |                                 ^
+    773|       await permission;
+    774|       expect(session.getPendingPermissions()).toEqual([]);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 90 skipped (91)
+   Start at  02:01:18
+   Duration  1.04s (transform 590ms, setup 45ms, import 856ms, tests 21ms, environment 0ms)
+
+
+
+Affected provider suites before final settlement adjustment
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  2 passed (2)
+      Tests  110 passed (110)
+   Start at  02:04:18
+   Duration  3.08s (transform 851ms, setup 89ms, import 1.87s, tests 745ms, environment 0ms)
+
+
+
+Final permission and callback regressions
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  2 passed (2)
+      Tests  16 passed | 95 skipped (111)
+   Start at  02:05:36
+   Duration  1.57s (transform 672ms, setup 53ms, import 1.22s, tests 66ms, environment 0ms)
+
+
+
+SDK callback final checks
+$ npm run typecheck
+Completed successfully for all workspaces.
+
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 17 skipped (18)
+   Start at  02:07:00
+   Duration  3.44s (transform 1.83s, setup 121ms, import 2.67s, tests 39ms, environment 0ms)
+
+
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 2.1s on 5029 files with 177 rules using 4 threads.
+
+
+> paseo@0.11.1 format
+> oxfmt .
+
+Finished in 6842ms on 5374 files using 4 threads.
+
 
 Held mode-change regression before operation draining
 

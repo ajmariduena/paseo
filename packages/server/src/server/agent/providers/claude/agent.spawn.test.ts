@@ -331,8 +331,11 @@ describe("Claude spawn override", () => {
     await session.listCommands();
     await expect(session.close()).rejects.toThrow("message processing failed");
     expect(query.close).toHaveBeenCalledTimes(1);
+    // for-await returns on the handler error; shutdown also finishes SDK cleanup.
+    expect(query.return).toHaveBeenCalledTimes(2);
     handler.mockRestore();
     await expect(session.close()).rejects.toThrow("message processing failed");
+    expect(query.return).toHaveBeenCalledTimes(2);
     await expect(session.listCommands()).rejects.toThrow("Claude session is closed");
   });
 
@@ -528,6 +531,124 @@ describe("Claude spawn override", () => {
       await expect(session.interrupt()).resolves.toBeUndefined();
     } finally {
       await session.close();
+    }
+  });
+
+  test("retiring a query cancels its permissions without waiting for an SDK abort", async () => {
+    const queryFactory = vi.fn((_input: ClaudeQueryInput) => createQueryMock([]));
+    const session = await new ClaudeAgentClient({
+      logger: createTestLogger(),
+      resolveBinary: async () => "/test/claude/bin",
+      queryFactory,
+    }).createSession({ provider: "claude", cwd: process.cwd() });
+    const events: AgentStreamEvent[] = [];
+    session.subscribe((event) => events.push(event));
+    try {
+      await session.listCommands();
+      const canUseTool = queryFactory.mock.calls[0][0].options.canUseTool;
+      if (!canUseTool) throw new Error("Missing permission callback");
+      const permission = canUseTool(
+        "Bash",
+        { command: "printf test" },
+        { signal: new AbortController().signal, toolUseID: "retired-tool" },
+      ).catch((error: unknown) => error);
+      const [request] = session.getPendingPermissions();
+      await session.setThinkingOption(null);
+      await session.listCommands();
+      expect(await permission).toMatchObject({ message: "Permission request aborted" });
+      expect(queryFactory).toHaveBeenCalledTimes(2);
+      expect(session.getPendingPermissions()).toEqual([]);
+      expect(events.filter((event) => event.type === "permission_resolved")).toEqual([
+        expect.objectContaining({
+          requestId: request.id,
+          resolution: { behavior: "deny", message: "Permission request canceled" },
+        }),
+      ]);
+    } finally {
+      await session.close();
+    }
+  });
+
+  test("permissions arriving while a query stops settle before closure completes", async () => {
+    let permissionOutcome: unknown = "pending";
+    function recordPermissionOutcome(outcome: unknown): unknown {
+      permissionOutcome = outcome;
+      return outcome;
+    }
+    const queryFactory = vi.fn((input: ClaudeQueryInput) =>
+      createQueryMock([], {
+        onClose: () => {
+          const canUseTool = input.options.canUseTool;
+          if (!canUseTool) throw new Error("Missing permission callback");
+          void canUseTool(
+            "Bash",
+            { command: "printf test" },
+            {
+              signal: new AbortController().signal,
+              toolUseID: "stopping-tool",
+            },
+          ).then(recordPermissionOutcome, recordPermissionOutcome);
+        },
+      }),
+    );
+    const session = await new ClaudeAgentClient({
+      logger: createTestLogger(),
+      resolveBinary: async () => "/test/claude/bin",
+      queryFactory,
+    }).createSession({ provider: "claude", cwd: process.cwd() });
+    const events: AgentStreamEvent[] = [];
+    session.subscribe((event) => events.push(event));
+    try {
+      await session.listCommands();
+      await session.close();
+      expect(permissionOutcome).toEqual({
+        behavior: "deny",
+        message: "Claude runtime is closing",
+        interrupt: true,
+      });
+      expect(session.getPendingPermissions()).toEqual([]);
+      expect(events.filter((event) => event.type === "permission_requested")).toEqual([]);
+    } finally {
+      await session.close();
+    }
+  });
+
+  test("callbacks from a retired query cannot change its replacement", async () => {
+    const queryFactory = vi.fn((_input: ClaudeQueryInput) => createQueryMock([]));
+    const session = await new ClaudeAgentClient({
+      logger: createTestLogger(),
+      resolveBinary: async () => "/test/claude/bin",
+      queryFactory,
+    }).createSession({ provider: "claude", cwd: process.cwd() });
+    await session.listCommands();
+    const hook = queryFactory.mock.calls[0][0].options.hooks?.Stop?.[0]?.hooks[0];
+    if (!hook) throw new Error("Missing Stop hook");
+    await session.setThinkingOption(null);
+    await session.listCommands();
+    await expect(
+      hook(
+        {
+          hook_event_name: "Stop",
+          session_id: "retired-session",
+          transcript_path: "/tmp/session.jsonl",
+          cwd: process.cwd(),
+          stop_hook_active: false,
+          last_assistant_message: "done",
+        },
+        undefined,
+        { signal: new AbortController().signal },
+      ),
+    ).rejects.toThrow("Claude callback arrived after its query was sealed");
+    await expect(session.close()).rejects.toThrow(
+      "Claude callback arrived after its query was sealed",
+    );
+    await expect(session.close()).rejects.toThrow(
+      "Claude callback arrived after its query was sealed",
+    );
+    expect(queryFactory).toHaveBeenCalledTimes(2);
+    for (const result of queryFactory.mock.results) {
+      expect(result.value.close).toHaveBeenCalledTimes(1);
+      expect(result.value.return).toHaveBeenCalledTimes(1);
     }
   });
 

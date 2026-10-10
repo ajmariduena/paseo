@@ -870,6 +870,7 @@ export function extractUserMessageText(content: unknown): string | null {
 
 interface PendingPermission {
   request: AgentPermissionRequest;
+  responding: boolean;
   resolve: (result: PermissionResult) => void;
   reject: (error: Error) => void;
   cleanup?: () => void;
@@ -2098,7 +2099,14 @@ class ClaudeContextUsageState {
 // Task and workflow children already surface as provider subagents with their own status.
 const PROVIDER_SUBAGENT_TASK_TYPES = new Set(["local_agent", "local_workflow"]);
 
+interface ClaudeQueryCallbacks {
+  pending: Set<Promise<void>>;
+  abort: AbortController;
+  sealed: boolean;
+}
+
 interface ClaudeQueryResources {
+  callbacks: ClaudeQueryCallbacks;
   query: Query;
   input: AsyncMessageInput<SDKUserMessage>;
   child: ChildProcess | null;
@@ -2800,11 +2808,12 @@ class ClaudeAgentSession implements AgentSession {
       if (!pending) {
         throw new Error(`No pending permission request with id '${requestId}'`);
       }
-      this.pendingPermissions.delete(requestId);
-      pending.cleanup?.();
-
-      if (response.behavior === "allow") {
-        if (pending.request.kind === "plan") {
+      if (pending.responding) {
+        throw new Error(`Permission request '${requestId}' is already being answered`);
+      }
+      pending.responding = true;
+      try {
+        if (response.behavior === "allow" && pending.request.kind === "plan") {
           const selectedActionId = response.selectedActionId;
           const shouldResumePriorMode =
             selectedActionId === "implement_resume" && this.planResumeMode === "bypassPermissions";
@@ -2812,44 +2821,71 @@ class ClaudeAgentSession implements AgentSession {
             ? "bypassPermissions"
             : "acceptEdits";
           await this.setMode(targetMode);
-          this.pushToolCall(
-            mapClaudeCompletedToolCall({
-              name: "ExitPlanMode",
-              callId: this.planToolCallId(pending.request),
-              input: pending.request.input ?? null,
-              output: {
-                approved: true,
-                actionId: selectedActionId ?? "implement",
-              },
-            }),
-          );
         }
-        const updatedInput =
-          pending.request.kind === "question"
-            ? normalizeClaudeAskUserQuestionUpdatedInput(
-                response.updatedInput,
-                pending.request.input ?? undefined,
-              )
-            : (response.updatedInput ?? pending.request.input ?? {});
-        const updatedPermissions = this.normalizePermissionUpdates(response.updatedPermissions);
-        this.runtimeResidency.observePermissionUpdates(updatedPermissions);
-        const result: PermissionResult = {
-          behavior: "allow",
-          updatedInput,
-          updatedPermissions,
-        };
-        pending.resolve(result);
-      } else {
-        pending.resolve(this.resolveDeniedPermission(pending.request, response));
-        return;
+        // Cancellation retains ownership while plan approval awaits the provider.
+        if (this.pendingPermissions.get(requestId) !== pending || this.closed) {
+          throw new Error("Permission request canceled");
+        }
+        if (response.behavior === "allow") {
+          this.approvePermission(pending, response);
+        } else {
+          this.pendingPermissions.delete(requestId);
+          pending.cleanup?.();
+          pending.resolve(this.resolveDeniedPermission(pending.request, response));
+        }
+      } catch (error) {
+        const failure = error instanceof Error ? error : new Error(String(error));
+        pending.reject(failure);
+        if (this.pendingPermissions.get(requestId) === pending) {
+          this.pendingPermissions.delete(requestId);
+          pending.cleanup?.();
+          this.pushEvent({
+            type: "permission_resolved",
+            provider: "claude",
+            requestId,
+            resolution: { behavior: "deny", message: failure.message },
+          });
+        }
+        throw error;
       }
+    });
+  }
 
-      this.pushEvent({
-        type: "permission_resolved",
-        provider: "claude",
-        requestId,
-        resolution: response,
-      });
+  private approvePermission(
+    pending: PendingPermission,
+    response: Extract<AgentPermissionResponse, { behavior: "allow" }>,
+  ): void {
+    const updatedInput =
+      pending.request.kind === "question"
+        ? normalizeClaudeAskUserQuestionUpdatedInput(
+            response.updatedInput,
+            pending.request.input ?? undefined,
+          )
+        : (response.updatedInput ?? pending.request.input ?? {});
+    const updatedPermissions = this.normalizePermissionUpdates(response.updatedPermissions);
+    this.runtimeResidency.observePermissionUpdates(updatedPermissions);
+    const result: PermissionResult = { behavior: "allow", updatedInput, updatedPermissions };
+    this.pendingPermissions.delete(pending.request.id);
+    pending.cleanup?.();
+    pending.resolve(result);
+    if (pending.request.kind === "plan") {
+      this.pushToolCall(
+        mapClaudeCompletedToolCall({
+          name: "ExitPlanMode",
+          callId: this.planToolCallId(pending.request),
+          input: pending.request.input ?? null,
+          output: {
+            approved: true,
+            actionId: response.selectedActionId ?? "implement",
+          },
+        }),
+      );
+    }
+    this.pushEvent({
+      type: "permission_resolved",
+      provider: "claude",
+      requestId: pending.request.id,
+      resolution: response,
     });
   }
 
@@ -2879,24 +2915,27 @@ class ClaudeAgentSession implements AgentSession {
     return this.trackSessionOperation(operation);
   }
 
-  private async trackSessionOperation<T>(operation: () => Promise<T>): Promise<T> {
+  private async trackSessionOperation<T>(
+    operation: () => Promise<T>,
+    pending = this.pendingSessionOperations,
+  ): Promise<T> {
     // Register before invoking: subscribers can request closure synchronously.
     let complete = () => {};
     const completion = new Promise<void>((resolve) => {
       complete = resolve;
     });
-    this.pendingSessionOperations.add(completion);
+    pending.add(completion);
     try {
       return await operation();
     } finally {
-      this.pendingSessionOperations.delete(completion);
+      pending.delete(completion);
       complete();
     }
   }
 
-  private async drainSessionOperations(): Promise<void> {
-    while (this.pendingSessionOperations.size > 0) {
-      await Promise.all(this.pendingSessionOperations);
+  private async drainSessionOperations(pending = this.pendingSessionOperations): Promise<void> {
+    while (pending.size > 0) {
+      await Promise.all(pending);
     }
   }
 
@@ -3406,7 +3445,12 @@ class ClaudeAgentSession implements AgentSession {
     this.runtimeResidency.reset();
     this.clearBackgroundTasks();
     const input = createAsyncMessageInput<SDKUserMessage>();
-    const options = await this.buildOptions(launchMode);
+    const callbacks: ClaudeQueryCallbacks = {
+      pending: new Set(),
+      abort: new AbortController(),
+      sealed: false,
+    };
+    const options = await this.buildOptions(launchMode, callbacks);
     if (this.closed) throw new Error("Claude session is closed");
     this.logger.debug({ options: summarizeClaudeOptionsForLog(options) }, "claude query");
     this.input = input;
@@ -3432,6 +3476,7 @@ class ClaudeAgentSession implements AgentSession {
       },
     );
     resource = {
+      callbacks,
       query: this.query,
       input,
       child: spawnedChild,
@@ -3575,7 +3620,10 @@ class ClaudeAgentSession implements AgentSession {
     }
   }
 
-  private async buildOptions(permissionMode: PermissionMode): Promise<ClaudeOptions> {
+  private async buildOptions(
+    permissionMode: PermissionMode,
+    callbacks: ClaudeQueryCallbacks,
+  ): Promise<ClaudeOptions> {
     this.assertSessionStorage();
     const { thinking, effort, ultracode } = this.resolveThinkingConfig();
     const appendedSystemPrompt = this.buildAppendedSystemPrompt();
@@ -3614,7 +3662,15 @@ class ClaudeAgentSession implements AgentSession {
       // calls do not fail after a model/thinking/rewind-driven restart.
       allowDangerouslySkipPermissions: true,
       agents: this.defaults?.agents,
-      canUseTool: this.handlePermissionRequest,
+      canUseTool: (toolName, input, options) =>
+        this.trackQueryCallback(callbacks, async () => {
+          if (callbacks.abort.signal.aborted)
+            return { behavior: "deny", message: "Claude runtime is closing", interrupt: true };
+          return this.handlePermissionRequest(toolName, input, {
+            ...options,
+            signal: AbortSignal.any([options.signal, callbacks.abort.signal]),
+          });
+        }),
       pathToClaudeCodeExecutable: claudeBinary,
       // Use Claude Code preset system prompt and load CLAUDE.md files
       // Append provider-agnostic system prompts for agents.
@@ -3644,8 +3700,12 @@ class ClaudeAgentSession implements AgentSession {
       // Claude stops a helper itself with its TaskStop tool.
       perTaskStopAffordance: true,
       hooks: {
-        ...this.buildSubagentEffortHooks(),
-        Stop: [{ hooks: [this.observeStopHook] }],
+        ...this.buildSubagentEffortHooks(callbacks),
+        Stop: [
+          {
+            hooks: [(input) => this.observeQueryHook(callbacks, () => this.observeStopHook(input))],
+          },
+        ],
       },
       ...(this.persistSession === undefined ? {} : { persistSession: this.persistSession }),
       env: sdkEnv,
@@ -4110,6 +4170,7 @@ class ClaudeAgentSession implements AgentSession {
   }
 
   private async finishStoppingQueryWriter(resource: ClaudeQueryResources): Promise<void> {
+    resource.callbacks.abort.abort();
     // Inventory descendants before the SDK can reap their root process.
     if (resource.child) {
       const result = await this.processTerminator(resource.child, {
@@ -4128,8 +4189,8 @@ class ClaudeAgentSession implements AgentSession {
 
   private async finishQueryShutdown(resource: ClaudeQueryResources): Promise<void> {
     await this.stopQueryWriter(resource);
-    await withTimeout(
-      this.pumpQuery(resource),
+    const [drained] = await withTimeout(
+      Promise.allSettled([this.pumpQuery(resource)]),
       3_000,
       "Claude message pump did not settle during close",
     );
@@ -4143,6 +4204,16 @@ class ClaudeAgentSession implements AgentSession {
       });
     }
     await withTimeout(resource.returned, 3_000, "Claude query return did not settle during close");
+    // The SDK invokes callbacks directly from its reader. EOF plus returned cleanup
+    // ends admission; their async bodies can still be outstanding.
+    resource.callbacks.sealed = true;
+    await withTimeout(
+      this.drainSessionOperations(resource.callbacks.pending),
+      3_000,
+      "Claude SDK callbacks did not settle during close",
+    );
+    if (drained.status === "rejected") throw drained.reason;
+    if (this.semanticDrainError) throw this.semanticDrainError;
     this.queryResources.delete(resource.query);
   }
 
@@ -5178,6 +5249,7 @@ class ClaudeAgentSession implements AgentSession {
 
       this.pendingPermissions.set(requestId, {
         request,
+        responding: false,
         resolve,
         reject,
         cleanup,
@@ -5244,19 +5316,18 @@ class ClaudeAgentSession implements AgentSession {
    * These are observation-only: they record what they see and always return an empty result, so
    * they can never alter tool execution or turn control.
    */
-  private buildSubagentEffortHooks(): NonNullable<ClaudeOptions["hooks"]> {
-    const observe = async (input: unknown): Promise<Record<string, never>> => {
-      try {
+  private buildSubagentEffortHooks(
+    callbacks: ClaudeQueryCallbacks,
+  ): NonNullable<ClaudeOptions["hooks"]> {
+    const observe = (input: unknown): Promise<Record<string, never>> =>
+      this.observeQueryHook(callbacks, async () => {
         for (const event of foldSubagentObservations(
           this.taskProtocolSource.observeHook(input as ClaudeHookObservationInput),
         )) {
           this.notifySubscribers({ type: "provider_subagent", provider: "claude", event });
         }
-      } catch (error) {
-        this.logger.debug({ err: error }, "Failed to read subagent effort from hook");
-      }
-      return {};
-    };
+        return {};
+      });
 
     // SubagentStart carries no effort (documented as absent for lifecycle hooks), so the value
     // lands on the child's first tool use. SubagentStop covers a child that used no tools.
@@ -5265,6 +5336,33 @@ class ClaudeAgentSession implements AgentSession {
       PostToolUse: [{ hooks: [observe] }],
       SubagentStop: [{ hooks: [observe] }],
     };
+  }
+
+  private trackQueryCallback<T>(
+    callbacks: ClaudeQueryCallbacks,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    if (callbacks.sealed) {
+      const error = new Error("Claude callback arrived after its query was sealed");
+      this.semanticDrainError ??= error;
+      return Promise.reject(error);
+    }
+    return this.trackSessionOperation(operation, callbacks.pending);
+  }
+
+  private observeQueryHook(
+    callbacks: ClaudeQueryCallbacks,
+    operation: () => Promise<Record<string, never>>,
+  ): Promise<Record<string, never>> {
+    return this.trackQueryCallback(callbacks, async () => {
+      try {
+        return await operation();
+      } catch (error) {
+        this.semanticDrainError ??= error instanceof Error ? error : new Error(String(error));
+        this.logger.warn({ err: error }, "Claude hook observation failed");
+        return {};
+      }
+    });
   }
 
   // Observation-only, like the effort hooks: it never alters turn control.
