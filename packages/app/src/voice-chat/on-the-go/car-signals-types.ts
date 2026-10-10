@@ -18,6 +18,8 @@ export interface CarSignals {
   getCarMode: () => boolean;
   getMotionAuthorization: () => MotionAuthorization;
   requestMotionAuthorization: () => Promise<MotionAuthorization>;
+  /** Opens the system output picker (speaker, Bluetooth, CarPlay); null where there is none. */
+  showAudioRoutePicker: (() => void) | null;
   /** Starts the native observers and returns their teardown. */
   observe: (handlers: CarSignalHandlers, options: { motion: boolean }) => () => void;
 }

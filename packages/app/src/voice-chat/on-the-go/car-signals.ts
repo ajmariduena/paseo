@@ -12,6 +12,7 @@ interface PaseoCarContextModule {
   getMotionAuthorization(): MotionAuthorization;
   requestMotionAuthorization(): Promise<MotionAuthorization>;
   startObserving(motion: boolean): Promise<void>;
+  showAudioRoutePicker?: () => Promise<void>;
   stopObserving(): void;
   addListener(
     eventName: "onAudioRouteChanged",
@@ -44,6 +45,13 @@ export function getCarSignals(): CarSignals | null {
     getCarMode: () => native.getCarMode(),
     getMotionAuthorization: () => native.getMotionAuthorization(),
     requestMotionAuthorization: () => native.requestMotionAuthorization(),
+    showAudioRoutePicker: native.showAudioRoutePicker
+      ? () => {
+          native.showAudioRoutePicker?.().catch((error: unknown) => {
+            console.warn("[OnTheGo] Could not open the audio route picker", error);
+          });
+        }
+      : null,
     observe: (handlers, options) => {
       const subscriptions = [
         native.addListener("onAudioRouteChanged", (event) => handlers.onRoute(event.outputs)),

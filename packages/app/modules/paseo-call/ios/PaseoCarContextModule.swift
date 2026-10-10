@@ -1,4 +1,5 @@
 import AVFoundation
+import AVKit
 import CoreMotion
 import ExpoModulesCore
 
@@ -46,6 +47,24 @@ public class PaseoCarContextModule: Module {
         from: now.addingTimeInterval(-60), to: now, to: .main
       ) { _, _ in
         promise.resolve(Self.motionAuthorization())
+      }
+    }.runOnQueue(.main)
+
+    // AVKit has no API to open the route picker; tapping the button of an AVRoutePickerView is
+    // the supported way, so a throwaway picker is attached to the window and tapped once.
+    AsyncFunction("showAudioRoutePicker") {
+      let window = UIApplication.shared.connectedScenes
+        .compactMap { $0 as? UIWindowScene }
+        .flatMap { $0.windows }
+        .first { $0.isKeyWindow }
+      guard let window else { return }
+      let picker = AVRoutePickerView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
+      picker.prioritizesVideoDevices = false
+      picker.alpha = 0.011
+      window.addSubview(picker)
+      picker.subviews.compactMap { $0 as? UIButton }.first?.sendActions(for: .touchUpInside)
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+        picker.removeFromSuperview()
       }
     }.runOnQueue(.main)
 
