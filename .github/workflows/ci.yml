@@ -234,6 +234,9 @@ jobs:
             packages/server/src/server/handoff/archive.e2e.test.ts \
             --bail=1 --maxWorkers=1
           npx vitest run --config packages/server/vitest.config.ts \
+            packages/server/src/server/agent/providers/claude/agent.spawn.test.ts \
+            --bail=1 --maxWorkers=1
+          npx vitest run --config packages/server/vitest.config.ts \
             packages/server/src/server/agent/agent-manager.test.ts \
             packages/server/src/server/agent/mcp-server.test.ts \
             packages/server/src/server/bootstrap.smoke.test.ts \

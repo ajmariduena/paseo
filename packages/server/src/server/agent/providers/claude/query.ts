@@ -108,6 +108,9 @@ function applyRuntimeSettingsToClaudeOptions(
               shell: false,
             }),
             command,
+            get killed() {
+              return this.child.killed;
+            },
             ready: Promise.resolve(),
             start: async () => {},
           };
@@ -121,7 +124,27 @@ function applyRuntimeSettingsToClaudeOptions(
       if (!isChildProcessWithStreams(child)) {
         throw new Error("Claude process was spawned without stdio streams");
       }
-      return child;
+      if (!context.deferProcessStart) return child;
+      // A supervised provider can receive an SDK signal over IPC while its
+      // registered OS root remains alive to join it. Expose provider transport
+      // state without mutating Node's readonly ChildProcess.killed property.
+      return {
+        stdin: child.stdin,
+        stdout: child.stdout,
+        get killed() {
+          return launch.killed;
+        },
+        get exitCode() {
+          return child.exitCode;
+        },
+        get signalCode() {
+          return child.signalCode;
+        },
+        kill: child.kill.bind(child),
+        on: child.on.bind(child),
+        once: child.once.bind(child),
+        off: child.off.bind(child),
+      };
     },
   };
 }

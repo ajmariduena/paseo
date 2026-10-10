@@ -5,6 +5,7 @@ import { spawnProcess } from "../../../../utils/spawn.js";
 export interface ClaudeProcessLaunch {
   child: ChildProcess;
   command: string;
+  readonly killed: boolean;
   ready: Promise<void>;
   start(): Promise<void>;
 }
@@ -15,19 +16,23 @@ interface GatedClaudeLaunchOptions {
   cwd?: string;
   env: NodeJS.ProcessEnv;
   signal?: AbortSignal;
+  strategy?: "replace" | "supervise";
 }
 
 const MAX_LAUNCH_BYTES = 8 * 1024 * 1024;
 
 // This bootstrap receives no provider environment or arguments until registration
-// is durable. execve keeps its recorded PID/birth identity and leaves no resident
-// intermediary. Keep it self-contained: resolving modules in the workspace could
+// is durable. Keep it self-contained: resolving modules in the workspace could
 // execute user code before the gate opens.
 const BOOTSTRAP = String.raw`
 const { Socket } = require('node:net');
+const { spawn } = require('node:child_process');
+const strategy = process.argv[1];
 const control = new Socket({ fd: 3 });
 let size = 0;
 const chunks = [];
+const signals = ['SIGTERM', 'SIGINT', 'SIGHUP'];
+let target = null;
 function fail() {
   process.stderr.write('Claude process launch failed before exec\n');
   process.exit(1);
@@ -42,18 +47,46 @@ control.on('end', () => {
   if (size === 0) process.exit(0);
   try {
     const { command, args, env } = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-    // env uses execvp: preserve PATH lookup and executable script wrappers,
-    // including the shell fallback that direct execve does not provide.
-    process.execve('/usr/bin/env', ['env', '--', command, ...args], env);
-    fail();
+    if (strategy === 'replace') {
+      // env uses execvp: preserve PATH lookup and executable script wrappers,
+      // including the shell fallback that direct execve does not provide.
+      process.execve('/usr/bin/env', ['env', '--', command, ...args], env);
+      fail();
+    } else {
+      // macOS protected intermediaries strip DYLD_* values. Native spawn passes
+      // the provider's environment directly, with this registered root retained
+      // until its child exits. Its standard streams go straight to the SDK.
+      target = spawn(command, args, { env, stdio: 'inherit', shell: false });
+      control.destroy();
+      chunks.length = 0;
+      target.once('error', fail);
+      target.once('exit', (code, signal) => {
+        for (const name of signals) process.removeAllListeners(name);
+        if (signal) process.kill(process.pid, signal);
+        process.exit(code ?? 1);
+      });
+    }
   } catch { fail(); }
 });
-if (typeof process.execve !== 'function') fail();
+if (strategy === 'replace' && typeof process.execve !== 'function') fail();
+if (strategy === 'supervise') {
+  // Tree shutdown signals descendants itself. Relaying its OS signal would send
+  // the provider a second signal and can interrupt its cleanup handler.
+  for (const signal of signals) process.on(signal, () => {
+    if (!target) process.exit(0);
+  });
+  process.on('message', (message) => {
+    if (message.kind !== 'signal') return;
+    if (!target) process.exit(0);
+    target.kill(message.signal);
+  });
+}
 control.write('ready\n');
 `;
 
 export function spawnGatedClaudeProcess(options: GatedClaudeLaunchOptions): ClaudeProcessLaunch {
-  if (!("execve" in process) || typeof process.execve !== "function") {
+  const strategy = options.strategy ?? (process.platform === "darwin" ? "supervise" : "replace");
+  if (strategy === "replace" && (!("execve" in process) || typeof process.execve !== "function")) {
     throw new Error("Durable Claude launch requires a runtime with process.execve (Node 22.15+)");
   }
   const values = [
@@ -67,14 +100,14 @@ export function spawnGatedClaudeProcess(options: GatedClaudeLaunchOptions): Clau
   const packet = JSON.stringify({ command: options.command, args: options.args, env: options.env });
   if (Buffer.byteLength(packet) > MAX_LAUNCH_BYTES)
     throw new Error("Claude launch configuration exceeds its byte limit");
-  const child = spawnProcess(process.execPath, ["--no-warnings", "-e", BOOTSTRAP], {
+  const child = spawnProcess(process.execPath, ["--no-warnings", "-e", BOOTSTRAP, "--", strategy], {
     cwd: options.cwd,
     // The target's NODE_OPTIONS, loader hooks and credentials arrive only in the
     // private control channel. The helper itself runs with a fixed environment.
     env: { ELECTRON_RUN_AS_NODE: "1" },
     envMode: "internal",
     signal: options.signal,
-    stdio: ["pipe", "pipe", "pipe", "pipe"],
+    stdio: ["pipe", "pipe", "pipe", "pipe", ...(strategy === "supervise" ? ["ipc" as const] : [])],
     shell: false,
   });
   const control = child.stdio[3];
@@ -95,9 +128,27 @@ export function spawnGatedClaudeProcess(options: GatedClaudeLaunchOptions): Clau
     });
   });
   let started: Promise<void> | null = null;
+  let signalRequested = false;
+  if (strategy === "supervise") {
+    const signalBootstrap = child.kill.bind(child);
+    child.kill = (signal) => {
+      // Before dispatch only the trusted bootstrap exists. After dispatch SDK
+      // signals go over IPC; registry shutdown uses OS signals for the full tree.
+      if (!started || signal === 0) return signalBootstrap(signal);
+      if (!child.connected || child.exitCode !== null || child.signalCode !== null) return false;
+      child.send!({ kind: "signal", signal: signal ?? "SIGTERM" }, (error: Error | null) => {
+        if (error) child.emit("error", error);
+      });
+      signalRequested = true;
+      return true;
+    };
+  }
   return {
     child,
     command: options.command,
+    get killed() {
+      return signalRequested || child.killed;
+    },
     ready,
     start() {
       if (!started) {

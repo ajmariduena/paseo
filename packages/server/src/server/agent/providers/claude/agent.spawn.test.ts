@@ -19,6 +19,7 @@ import { asInternals } from "../../../test-utils/class-mocks.js";
 import { createTestLogger } from "../../../../test-utils/test-logger.js";
 import * as spawnUtils from "../../../../utils/spawn.js";
 import {
+  captureProcessTree,
   readLinuxProcessEntry,
   terminateWithTreeKill,
   type ProcessTerminator,
@@ -665,7 +666,7 @@ describe("Claude spawn override", () => {
     }
   });
 
-  test.runIf(process.platform === "linux")(
+  test.runIf(process.platform !== "win32")(
     "the launch gate preserves PATH lookup and non-shell environment names",
     async () => {
       const home = await mkdtemp(path.join(tmpdir(), "paseo launch path-"));
@@ -700,7 +701,213 @@ describe("Claude spawn override", () => {
     },
   );
 
-  test.runIf(process.platform === "linux")(
+  test.runIf(process.platform !== "win32")(
+    "the supervised launch preserves provider environment and joins its child",
+    async () => {
+      const home = await mkdtemp(path.join(tmpdir(), "paseo-supervised-launch-"));
+      const marker = path.join(home, "preload-ran");
+      const preload = path.join(home, "preload.cjs");
+      await writeFile(
+        preload,
+        `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started');`,
+      );
+      const launch = spawnGatedClaudeProcess({
+        strategy: "supervise",
+        command: process.execPath,
+        args: [
+          "-e",
+          `process.stdin.once('data', (input) => {
+            process.stdout.write(JSON.stringify({ ppid: process.ppid, dylib: process.env.DYLD_LIBRARY_PATH, input: input.toString() }));
+            process.stderr.write('provider stderr');
+            process.exitCode = 37;
+          });`,
+        ],
+        env: { NODE_OPTIONS: `--require=${preload}`, DYLD_LIBRARY_PATH: home },
+      });
+      const closed = once(launch.child, "close");
+      let output = "";
+      let errors = "";
+      launch.child.stdout!.on("data", (chunk: Buffer) => (output += chunk.toString()));
+      launch.child.stderr!.on("data", (chunk: Buffer) => (errors += chunk.toString()));
+      try {
+        await launch.ready;
+        await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
+        await launch.start();
+        launch.child.stdin!.end("SDK input");
+        expect(await closed).toEqual([37, null]);
+        expect(JSON.parse(output)).toEqual({
+          ppid: launch.child.pid,
+          dylib: home,
+          input: "SDK input",
+        });
+        expect(errors).toBe("provider stderr");
+        expect(await readFile(marker, "utf8")).toBe("started");
+      } finally {
+        launch.child.kill("SIGKILL");
+        await closed;
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.runIf(process.platform !== "win32").each(["SIGTERM", "SIGINT"] as const)(
+    "the supervised launch forwards %s and reports the child's signal",
+    async (signal) => {
+      const launch = spawnGatedClaudeProcess({
+        strategy: "supervise",
+        command: process.execPath,
+        args: ["-e", "process.stdout.write('ready'); setInterval(() => {}, 1000)"],
+        env: {},
+      });
+      const closed = once(launch.child, "close");
+      const received = once(launch.child.stdout!, "data");
+      await launch.ready;
+      await launch.start();
+      await received;
+      const tree = await captureProcessTree(launch.child);
+      try {
+        expect(launch.child.kill(signal)).toBe(true);
+        expect(launch.killed).toBe(true);
+        expect(await closed).toEqual([null, signal]);
+      } finally {
+        await terminateWithTreeKill(launch.child, {
+          initialTree: tree,
+          requireTreeProof: true,
+          gracefulTimeoutMs: 1_000,
+          forceTimeoutMs: 1_000,
+        });
+        await closed;
+      }
+    },
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "a fresh registry stops a supervised provider from its durable launch root",
+    async () => {
+      const home = await mkdtemp(path.join(tmpdir(), "paseo-supervised-recovery-"));
+      const marker = path.join(home, "provider-stopped");
+      const registryOptions = {
+        paseoHome: home,
+        processTable: createSystemManagedProcessTable(),
+        terminateProcess: terminateWithTreeKill,
+        logger: createTestLogger(),
+      };
+      const registry = createManagedProcessRegistry(registryOptions);
+      const launch = spawnGatedClaudeProcess({
+        strategy: "supervise",
+        command: process.execPath,
+        args: [
+          "-e",
+          `process.once('SIGTERM', () => {
+            require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'stopped');
+            process.exit(0);
+          }); process.stdout.write('ready'); setInterval(() => {}, 1000);`,
+        ],
+        env: {},
+      });
+      const closed = once(launch.child, "close");
+      const received = once(launch.child.stdout!, "data");
+      await launch.ready;
+      const tree = await captureProcessTree(launch.child);
+      try {
+        await registry.record({
+          owner: { provider: "claude", kind: "query" },
+          pid: launch.child.pid!,
+          command: process.execPath,
+          args: [],
+          processTree: tree,
+        });
+        await launch.start();
+        await received;
+        const recovered = createManagedProcessRegistry(registryOptions);
+        expect(await recovered.reapStale()).toEqual({
+          checked: 1,
+          dead: 0,
+          mismatched: 0,
+          removed: 1,
+          terminated: 1,
+          errors: [],
+        });
+        await closed;
+        expect(await readFile(marker, "utf8")).toBe("stopped");
+        expect(await recovered.list()).toEqual([]);
+      } finally {
+        await terminateWithTreeKill(launch.child, {
+          initialTree: tree,
+          requireTreeProof: true,
+          gracefulTimeoutMs: 1_000,
+          forceTimeoutMs: 1_000,
+        });
+        await closed;
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "the supervised launch reports a missing executable without hanging",
+    async () => {
+      const home = await mkdtemp(path.join(tmpdir(), "paseo-supervised-missing-"));
+      const launch = spawnGatedClaudeProcess({
+        strategy: "supervise",
+        command: path.join(home, "missing-provider"),
+        args: ["private-argument"],
+        env: {},
+      });
+      const closed = once(launch.child, "close");
+      let errors = "";
+      launch.child.stderr!.on("data", (chunk: Buffer) => (errors += chunk.toString()));
+      try {
+        await launch.ready;
+        await launch.start();
+        expect(await closed).toEqual([1, null]);
+        expect(errors).toBe("Claude process launch failed before exec\n");
+      } finally {
+        launch.child.kill("SIGKILL");
+        await closed;
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "tree shutdown forcibly stops an unresponsive supervised provider",
+    async () => {
+      const launch = spawnGatedClaudeProcess({
+        strategy: "supervise",
+        command: process.execPath,
+        args: [
+          "-e",
+          "process.on('SIGTERM', () => {}); process.stdout.write('ready'); setInterval(() => {}, 1000)",
+        ],
+        env: {},
+      });
+      const closed = once(launch.child, "close");
+      const received = once(launch.child.stdout!, "data");
+      try {
+        await launch.ready;
+        await launch.start();
+        await received;
+        expect(
+          await terminateWithTreeKill(launch.child, {
+            requireTreeProof: true,
+            gracefulTimeoutMs: 50,
+            forceTimeoutMs: 1_000,
+          }),
+        ).toBe("killed");
+        expect(await closed).toEqual([null, "SIGKILL"]);
+      } finally {
+        await terminateWithTreeKill(launch.child, {
+          requireTreeProof: true,
+          gracefulTimeoutMs: 50,
+          forceTimeoutMs: 1_000,
+        });
+        await closed;
+      }
+    },
+  );
+
+  test.runIf(process.platform !== "win32")(
     "the launch gate preserves executable script wrappers without a shebang",
     async () => {
       const home = await mkdtemp(path.join(tmpdir(), "paseo launch script-"));
@@ -792,7 +999,7 @@ describe("Claude spawn override", () => {
     },
   );
 
-  test.runIf(process.platform === "linux")(
+  test.runIf(process.platform !== "win32")(
     "closing during registration never releases the provider launch gate",
     async () => {
       const home = await mkdtemp(path.join(tmpdir(), "paseo-launch-cancel-"));

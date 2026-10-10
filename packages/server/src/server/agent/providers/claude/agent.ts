@@ -3513,9 +3513,7 @@ class ClaudeAgentSession implements AgentSession {
         runtimeSettings: this.runtimeSettings,
         launchEnv: this.launchEnv,
         queryFactory: this.queryFactory,
-        // macOS's protected env binary strips DYLD_* settings. Keep its existing
-        // launch until a gate can preserve that environment without an intermediary.
-        deferProcessStart: this.managedProcesses !== undefined && process.platform === "linux",
+        deferProcessStart: this.managedProcesses !== undefined && process.platform !== "win32",
         onChildProcess: (launch) => {
           const child = launch.child;
           spawnedChild = child;

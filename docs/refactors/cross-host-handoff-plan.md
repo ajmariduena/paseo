@@ -457,8 +457,10 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   and [process proof evidence](../qa-evidence/handoff-checkpoint-recovery.txt). The Claude spawn suite
   now covers durable launch admission, parent death before admission, closure during publication,
   failed-registration cleanup and preservation of process identity, streams and executable wrappers.
-  The gate is enabled only on Linux; macOS retains direct launch until its environment can be preserved.
-  This evidence uses harmless Linux processes. macOS durable launch admission, descendants that
+  macOS now uses a registered supervisor to retain its provider environment; the same suite runs in
+  the macOS CI job. Local evidence exercises both launch strategies with harmless Linux processes,
+  including cold registry recovery, SDK signals, forced shutdown and memory overhead. Native macOS
+  results and packaged-runtime memory still need verification. Descendants that
   escape before observation, stronger macOS birth identity, complete writer coverage and
   conversation-generation recovery remain open. This is not full crash-stop proof.
 - `agent/providers/claude/handoff.ts` captures bounded raw transcripts and sidechains, detects source

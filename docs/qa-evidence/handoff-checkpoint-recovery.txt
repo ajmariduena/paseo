@@ -1,3 +1,169 @@
+macOS-compatible supervised launch — Linux, 2026-10-10
+Baseline: 9e7ac2173 (plan-machine-handoff-macbook-vps)
+
+macOS now selects a registered Node supervisor rather than executing a protected system intermediary.
+The provider receives its environment directly, including DYLD_LIBRARY_PATH, only after admission;
+stdin/stdout/stderr remain inherited pipes. The supervisor joins its child and propagates exit code
+or signal. Linux retains process replacement without a resident supervisor. Windows is unchanged.
+
+The new recovery test first failed because tree shutdown and the supervisor both sent SIGTERM.
+That duplicate interrupted a once-only provider cleanup handler before its marker was written.
+SDK signals now use the supervisor's private IPC channel; OS tree shutdown signals each process
+itself. A fresh registry reads the on-disk root, captures its live child, stops both and removes the
+record. Other cases cover exact environment/streams, signal status, missing executables and forced
+shutdown of a provider that ignores SIGTERM. All 33 cases in the owning Claude spawn suite pass.
+The suite is now included in the existing macOS handoff CI step; its native result is pending.
+These are real Node/shell processes with injected SDK frames, not fresh authenticated Claude turns.
+
+Memory observation: three sequential samples per strategy on Linux/Node 24.21.0. The combined PSS
+increase was 16.59 MiB for this harmless Node provider. PSS apportions shared pages; RSS is also
+recorded below. This is an overhead observation, not a macOS/Electron estimate or a hard bound.
+Each fixture tree was terminated before the next sample. Production packaging and actual MacBook
+memory still need evidence. Boot/generation recovery and unobserved descendants remain separate.
+
+Cold-recovery regression before separating signals:
+
+ FAIL  src/server/agent/providers/claude/agent.spawn.test.ts > Claude spawn override > a fresh registry stops a supervised provider from its durable launch root
+Error: ENOENT: no such file or directory, open '/tmp/paseo-supervised-recovery-OakiHL/provider-stopped'
+ ❯ src/server/agent/providers/claude/agent.spawn.test.ts:831:16
+    829|         });
+    830|         await closed;
+    831|         expect(await readFile(marker, "utf8")).toBe("stopped");
+       |                ^
+    832|         expect(await recovered.list()).toEqual([]);
+    833|       } finally {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 30 skipped (31)
+   Start at  07:39:25
+   Duration  1.25s (transform 619ms, setup 49ms, import 898ms, tests 187ms, environment 0ms)
+
+
+Final focused run:
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  33 passed (33)
+   Start at  07:47:56
+   Duration  3.48s (transform 690ms, setup 71ms, import 980ms, tests 2.29s, environment 0ms)
+
+
+Memory samples (KiB):
+{
+  "platform": "linux",
+  "node": "v24.21.0",
+  "memoryUnit": "KiB",
+  "runs": [
+    {
+      "strategy": "replace",
+      "startupMs": 27.06,
+      "registeredRoot": {
+        "Rss": 46456,
+        "Pss": 23494,
+        "Private_Clean": 72,
+        "Private_Dirty": 10812
+      },
+      "provider": {
+        "Rss": 46456,
+        "Pss": 23494,
+        "Private_Clean": 72,
+        "Private_Dirty": 10812
+      },
+      "residentIntermediary": false
+    },
+    {
+      "strategy": "replace",
+      "startupMs": 27.23,
+      "registeredRoot": {
+        "Rss": 46296,
+        "Pss": 23466,
+        "Private_Clean": 68,
+        "Private_Dirty": 10816
+      },
+      "provider": {
+        "Rss": 46296,
+        "Pss": 23466,
+        "Private_Clean": 68,
+        "Private_Dirty": 10816
+      },
+      "residentIntermediary": false
+    },
+    {
+      "strategy": "replace",
+      "startupMs": 28.2,
+      "registeredRoot": {
+        "Rss": 46344,
+        "Pss": 23471,
+        "Private_Clean": 68,
+        "Private_Dirty": 10812
+      },
+      "provider": {
+        "Rss": 46344,
+        "Pss": 23471,
+        "Private_Clean": 68,
+        "Private_Dirty": 10812
+      },
+      "residentIntermediary": false
+    },
+    {
+      "strategy": "supervise",
+      "startupMs": 29.03,
+      "registeredRoot": {
+        "Rss": 47456,
+        "Pss": 20563,
+        "Private_Clean": 68,
+        "Private_Dirty": 11140
+      },
+      "provider": {
+        "Rss": 46312,
+        "Pss": 19901,
+        "Private_Clean": 68,
+        "Private_Dirty": 10812
+      },
+      "residentIntermediary": true
+    },
+    {
+      "strategy": "supervise",
+      "startupMs": 34.58,
+      "registeredRoot": {
+        "Rss": 47492,
+        "Pss": 20570,
+        "Private_Clean": 68,
+        "Private_Dirty": 11144
+      },
+      "provider": {
+        "Rss": 46356,
+        "Pss": 19904,
+        "Private_Clean": 68,
+        "Private_Dirty": 10816
+      },
+      "residentIntermediary": true
+    },
+    {
+      "strategy": "supervise",
+      "startupMs": 24.59,
+      "registeredRoot": {
+        "Rss": 47492,
+        "Pss": 20567,
+        "Private_Clean": 68,
+        "Private_Dirty": 11140
+      },
+      "provider": {
+        "Rss": 46340,
+        "Pss": 19899,
+        "Private_Clean": 68,
+        "Private_Dirty": 10816
+      },
+      "residentIntermediary": true
+    }
+  ]
+}
+
 Durable Claude launch admission — Linux, 2026-10-10
 Baseline: 609617976 (plan-machine-handoff-macbook-vps)
 
