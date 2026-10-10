@@ -29,9 +29,14 @@ describe("ScheduleStore", () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
-  test.skipIf(process.platform === "win32").each(["succeeded", "failed"] as const)(
-    "handoff binds a reviewed heartbeat run while accepting its %s outcome",
-    async (status) => {
+  test.skipIf(process.platform === "win32").each([
+    { kind: "heartbeat", status: "succeeded" },
+    { kind: "heartbeat", status: "failed" },
+    { kind: "schedule", status: "succeeded" },
+    { kind: "schedule", status: "failed" },
+  ] as const)(
+    "handoff binds a reviewed $kind run while accepting its $status outcome",
+    async ({ kind, status }) => {
       const previous = "2026-01-01T00:00:00.000Z";
       const started = "2026-01-01T00:01:00.000Z";
       const ended = "2026-01-01T00:02:00.000Z";
@@ -41,7 +46,13 @@ describe("ScheduleStore", () => {
         name: "Heartbeat",
         prompt: "Continue",
         cadence: { type: "every", everyMs: 60_000 },
-        target: { type: "agent", agentId },
+        target:
+          kind === "heartbeat"
+            ? { type: "agent", agentId }
+            : {
+                type: "new-agent",
+                config: { provider: "claude", cwd: tempDir },
+              },
         status: "active",
         createdAt: previous,
         updatedAt: started,
@@ -105,7 +116,7 @@ describe("ScheduleStore", () => {
       ).not.toBe(review.digest);
       expect(() =>
         scheduleHandoffDigest({ ...completed, runs: [completed.runs[0]] }, activeRun),
-      ).toThrow("reviewed heartbeat");
+      ).toThrow("reviewed scheduled run");
       await store.update(schedule.id, () => completed);
       const paused = await store.pauseForHandoff({
         id: schedule.id,
@@ -116,7 +127,7 @@ describe("ScheduleStore", () => {
       expect(paused).toEqual(completed);
       const snapshot = captureHandoffSchedules({
         records: [paused],
-        relativeCwds: new Map(),
+        relativeCwds: new Map([[schedule.id, "."]]),
         reviews: [review],
       });
       expect(snapshot.schedules[0]).toMatchObject({
@@ -127,7 +138,7 @@ describe("ScheduleStore", () => {
       expect(() =>
         captureHandoffSchedules({
           records: [{ ...schedule, status: "paused", nextRunAt: null }],
-          relativeCwds: new Map(),
+          relativeCwds: new Map([[schedule.id, "."]]),
           reviews: [review],
         }),
       ).toThrow("still active");

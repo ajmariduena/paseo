@@ -24,11 +24,14 @@ import type {
 import type { AgentPermissionRequest, AgentPermissionResponse } from "../agent/agent-sdk-types.js";
 import { isLikelyExternalToolName } from "@getpaseo/protocol/tool-name-normalization";
 import type { ClaudeSessionRuntime } from "../agent/providers/claude/session-runtime.js";
+import type { AgentManager } from "../agent/agent-manager.js";
+import { claudeProjectDirSync } from "../agent/providers/claude/project-dir.js";
 
 interface HeldClaudeTestTurn {
   session: AgentSession;
   sessionId: string;
   transcriptFile: string;
+  generateMessageId?: boolean;
 }
 
 // A controlled writer for handoff transport tests, not a real provider/process boundary.
@@ -37,17 +40,44 @@ export function holdNextClaudeTestTurn(input: HeldClaudeTestTurn): void {
   Object.defineProperty(input.session, "nativeMessageIds", { value: true });
   input.session.startTurn = async (prompt, options) => {
     input.session.startTurn = originalStart;
-    if (!options?.nativeMessageId) throw new Error("Missing native test prompt identity");
+    const messageId = options?.nativeMessageId ?? (input.generateMessageId ? randomUUID() : null);
+    if (!messageId) throw new Error("Missing native test prompt identity");
     await appendFile(
       input.transcriptFile,
       JSON.stringify({
         type: "user",
-        uuid: options.nativeMessageId,
+        uuid: messageId,
         sessionId: input.sessionId,
         message: { role: "user", content: prompt },
       }) + "\n",
     );
     return { turnId: randomUUID(), promptDisposition: "dispatched" };
+  };
+}
+
+export function holdNextScheduledClaudeTestTurn(input: {
+  manager: AgentManager;
+  scheduleId: string;
+  configDir: string;
+}): void {
+  const create = input.manager.createAgent.bind(input.manager);
+  input.manager.createAgent = async (...args) => {
+    if (args[2].labels?.["paseo.schedule-id"] !== input.scheduleId) return create(...args);
+    input.manager.createAgent = create;
+    const agent = await create(...args);
+    const sessionId = agent.persistence?.sessionId;
+    if (!agent.session || !sessionId) throw new Error("Missing scheduled test session");
+    const directory = claudeProjectDirSync(agent.config.cwd, { configDir: input.configDir });
+    await mkdir(directory, { recursive: true });
+    const transcriptFile = path.join(directory, `${sessionId}.jsonl`);
+    await appendFile(transcriptFile, "");
+    holdNextClaudeTestTurn({
+      session: agent.session,
+      sessionId,
+      transcriptFile,
+      generateMessageId: true,
+    });
+    return agent;
   };
 }
 

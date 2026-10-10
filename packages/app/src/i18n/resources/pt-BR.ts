@@ -3,6 +3,8 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ptBR: TranslationResources = {
   handoff: {
+    activeScheduleStops:
+      "Esta tarefa agendada está em execução. A preparação interrompe o agente e salva o resultado antes da transferência.",
     activeHeartbeatStops:
       "Este lembrete está em execução. A preparação o interrompe e salva o resultado antes da transferência.",
     automationPaused:

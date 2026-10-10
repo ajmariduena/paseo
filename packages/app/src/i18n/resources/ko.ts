@@ -3,6 +3,8 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ko: TranslationResources = {
   handoff: {
+    activeScheduleStops:
+      "이 예약 작업이 실행 중입니다. 이전 준비 과정에서 에이전트를 중지하고 결과를 저장합니다.",
     activeHeartbeatStops:
       "이 하트비트가 실행 중입니다. 준비 과정에서 실행을 중지하고 결과를 저장한 후 이동합니다.",
     automationPaused:

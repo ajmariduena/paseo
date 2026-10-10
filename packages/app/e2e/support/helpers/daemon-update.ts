@@ -12,6 +12,7 @@ export interface OutdatedDaemon {
   serverId: string;
   seedHeldQueue(agentId: string, prompt: AgentPromptInput): Promise<void>;
   holdNextClaudeTurn(agentId: string): Promise<void>;
+  holdNextScheduledClaudeTurn(scheduleId: string): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -82,7 +83,8 @@ export async function startTestDaemon(options?: TestDaemonOptions): Promise<Outd
       label: options?.desktopManaged === true ? "outdated Desktop host" : "outdated host",
       serverId: ready.serverId,
       seedHeldQueue: (agentId, prompt) => seedHeldQueue(child, agentId, prompt),
-      holdNextClaudeTurn: (agentId) => holdNextClaudeTurn(child, agentId),
+      holdNextClaudeTurn: (agentId) => holdNextClaudeTurn(child, { agentId }),
+      holdNextScheduledClaudeTurn: (scheduleId) => holdNextClaudeTurn(child, { scheduleId }),
       close: () => killProcessTree(child),
     };
   } catch (error) {
@@ -91,7 +93,10 @@ export async function startTestDaemon(options?: TestDaemonOptions): Promise<Outd
   }
 }
 
-function holdNextClaudeTurn(child: ChildProcess, agentId: string): Promise<void> {
+function holdNextClaudeTurn(
+  child: ChildProcess,
+  target: { agentId: string } | { scheduleId: string },
+): Promise<void> {
   const requestId = randomUUID();
   return new Promise((resolve, reject) => {
     const finish = (error?: Error) => {
@@ -109,7 +114,7 @@ function holdNextClaudeTurn(child: ChildProcess, agentId: string): Promise<void>
     const timeout = setTimeout(() => finish(new Error("Timed out holding a Claude turn")), 10_000);
     child.on("message", onMessage);
     child.once("exit", onExit);
-    child.send({ type: "hold-next-claude-turn", requestId, agentId }, (error) => {
+    child.send({ type: "hold-next-claude-turn", requestId, ...target }, (error) => {
       if (error) finish(error);
     });
   });

@@ -582,11 +582,13 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   until activation is durable. Interrupted installation retries without duplicate records. Completed
   schedules remain completed. Review names omitted MCP connections and warns that permissions
   and advanced provider settings need destination configuration before resume.
-  A running heartbeat can be reviewed when its exact run and loaded session are known. Preparation
-  closes that session, joins durable outcome publication, then captures the paused automation and
-  its terminal result. Its notification is persisted before dispatch so exported history can retain
-  it. Review refuses replaced or unknown runs; capture still refuses unfinished runs, active jobs
-  that create separate agents, ancestor-directory schedules, outside heartbeat owners, damaged
+  A running heartbeat or job whose agent belongs to the selected workspace can be reviewed when
+  its exact run and loaded session are known. Preparation closes that session, joins durable outcome
+  publication, then captures the paused automation and its terminal result. Each job creates its own
+  workspace; selecting that workspace also transfers its conversation and files. Heartbeat notifications
+  are persisted before dispatch so exported history can retain them. Review refuses replaced or
+  unknown runs; capture still refuses unfinished runs, active jobs outside the transferred conversation
+  set, ancestor-directory schedules, outside heartbeat owners, damaged
   inventory, more than 1,000 transferred schedules or metadata beyond 32 MiB. Two-daemon tests cover
   both continuation modes, readable notifications, source changes, restarts and interrupted installation.
   Known completed outcomes now retry failed publication from immutable retained inputs, including
@@ -598,7 +600,7 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   [lifecycle cancellation](../agent-lifecycle.md#cancellation). Job cleanup rechecks the scheduled
   source's ownership before automatic archive, including during startup recovery. A worktree outside
   that directory must remain available when the source is fenced.
-  Reviewed shutdown and workspace disposition for active jobs that create separate agents, and
+  Reviewed shutdown and workspace disposition for jobs running in another workspace, and
   recovery of uncertain run outcomes after a crash, remain open. An admitted runner can still
   prevent draining, but the preparation wait expires with
   ownership retained under the [recovery contract](#ownership-and-recovery). See the scheduler cases in the

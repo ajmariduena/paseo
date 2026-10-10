@@ -88,17 +88,17 @@ export function scheduleHandoffDigest(
     if (
       !run ||
       record.runs.filter((entry) => entry.id === activeRun.id).length !== 1 ||
-      record.target.type !== "agent" ||
-      run.agentId !== record.target.agentId
+      !run.agentId ||
+      (record.target.type === "agent" && run.agentId !== record.target.agentId)
     )
-      throw new Error("The reviewed heartbeat execution changed");
+      throw new Error("The reviewed scheduled run execution changed");
     const ended = run.status !== "running";
     if (
       (ended && (!run.endedAt || record.lastRunAt !== run.endedAt)) ||
       (!ended &&
         (record.lastRunAt !== activeRun.previousLastRunAt || record.status === "completed"))
     )
-      throw new Error("The reviewed heartbeat outcome is inconsistent");
+      throw new Error("The reviewed scheduled run outcome is inconsistent");
   }
   // Pause and the reviewed run's terminal result may change during preparation.
   // Bind its identity, prior history and definition; release separately checks the full capture.

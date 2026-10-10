@@ -3,6 +3,8 @@ import { pluginSettings } from "./plugin-settings";
 
 export const fr: TranslationResources = {
   handoff: {
+    activeScheduleStops:
+      "Cette tâche planifiée est en cours. La préparation arrête son agent et enregistre le résultat avant le transfert.",
     activeHeartbeatStops:
       "Ce rappel est en cours. La préparation l’arrête et enregistre son résultat avant le transfert.",
     automationPaused:

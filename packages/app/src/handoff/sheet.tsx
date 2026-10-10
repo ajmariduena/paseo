@@ -490,8 +490,12 @@ function ReviewWorkspace({
                     {schedule.name ?? schedule.id} · {schedule.cadence}
                   </Text>
                   {schedule.activeRun ? (
-                    <Text style={styles.text} testID="handoff-active-heartbeat-review">
-                      {t("handoff.activeHeartbeatStops")}
+                    <Text style={styles.text} testID={`handoff-active-${schedule.kind}-review`}>
+                      {t(
+                        schedule.kind === "heartbeat"
+                          ? "handoff.activeHeartbeatStops"
+                          : "handoff.activeScheduleStops",
+                      )}
                     </Text>
                   ) : null}
                   {schedule.omittedSettings.length || schedule.omittedMcpServers.length ? (

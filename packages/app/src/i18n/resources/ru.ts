@@ -3,6 +3,8 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ru: TranslationResources = {
   handoff: {
+    activeScheduleStops:
+      "Эта запланированная задача выполняется. Подготовка останавливает её агента и сохраняет результат перед переносом.",
     activeHeartbeatStops:
       "Это напоминание выполняется. При подготовке оно будет остановлено, а результат сохранён перед переносом.",
     automationPaused:

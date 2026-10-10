@@ -497,6 +497,74 @@ describe("ScheduleService", () => {
   );
 
   test.skipIf(process.platform === "win32")(
+    "handoff reviews a created agent in the selected workspace and retains its stopped run",
+    async () => {
+      const { ownership, transfer, schedule, options } = await handoffFixture();
+      const manager = new AgentManager({
+        logger: createTestLogger(),
+        clients: createTestAgentClients(),
+        registry: agentStorage,
+      });
+      const started = holdScheduledTestRun(manager);
+      const archiveWorkspace = vi.fn(async () => {});
+      const service = createScheduleService({
+        ...options,
+        agentManager: manager,
+        archiveWorkspace,
+      });
+      const running = service.runOnce(schedule.id);
+      const agentId = await started;
+      transfer.agentIds.push(agentId);
+      try {
+        const schedules = await service.reviewForHandoff(transfer);
+        const review = schedules.find((entry) => entry.id === schedule.id);
+        expect(review).toMatchObject({
+          kind: "schedule",
+          activeRun: {
+            id: (await service.logs(schedule.id))[0].id,
+            previousLastRunAt: null,
+          },
+        });
+        await expect(service.reviewForHandoff({ ...transfer, agentIds: [] })).rejects.toThrow(
+          "outside the transferred conversations",
+        );
+        await expect(createScheduleService(options).reviewForHandoff(transfer)).rejects.toThrow(
+          "cannot be stopped by this handoff",
+        );
+        const source = await ownership.prepare({
+          ...transfer,
+          stoppedWorkReview: { agents: [], terminals: [], setupIds: [], schedules },
+        });
+        await expect(service.exportForHandoff(source)).rejects.toThrow("still active");
+        await manager.closeAgent(agentId);
+        expect((await running).runs).toMatchObject([
+          { agentId, status: "failed", error: `Scheduled agent ${agentId} was canceled` },
+        ]);
+        await ownership.drain(source.id);
+        await service.pauseForHandoff(source);
+        const captured = await service.exportForHandoff(source);
+        expect(captured.schedules).toMatchObject([
+          {
+            id: schedule.id,
+            status: "paused",
+            reviewDigest: review?.digest,
+            runs: [{ agentId, workspaceId: "wks_schedule_test_1", status: "failed" }],
+          },
+        ]);
+        expect(archiveWorkspace).not.toHaveBeenCalled();
+        const restarted = createScheduleService(options);
+        expect(await restarted.exportForHandoff(source)).toEqual(captured);
+        await ownership.cancel(source.id);
+        expect((await restarted.inspect(schedule.id)).status).toBe("paused");
+      } finally {
+        await manager.closeAgent(agentId);
+        await running;
+        await manager.flush();
+      }
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
     "handoff automation pause survives retries, cancellation and restart until explicit resume",
     async () => {
       const runner = vi.fn(async () => ({ agentId: null, output: "resumed" }));
@@ -1767,21 +1835,14 @@ describe("ScheduleService", () => {
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       createAgent: async (input) => {
         createdInputs.push(input);
-        const snapshot = {
-          id: "00000000-0000-0000-0000-000000000322",
-          provider: "claude",
-          cwd: input.cwd ?? tempDir,
-          workspaceId: input.workspaceId,
-          status: "idle",
-          lifecycle: "idle",
-        };
+        const snapshot = await manager.createAgent(
+          { provider: "claude", cwd: input.cwd ?? tempDir },
+          undefined,
+          { workspaceId: input.workspaceId },
+        );
         return {
-          snapshot: snapshot as Awaited<
-            ReturnType<ScheduleServiceOptions["createAgent"]>
-          >["snapshot"],
-          liveSnapshot: snapshot as Awaited<
-            ReturnType<ScheduleServiceOptions["createAgent"]>
-          >["liveSnapshot"],
+          snapshot,
+          liveSnapshot: snapshot,
           background: true,
           initialPromptStarted: false,
           initialPromptError: null,
@@ -1842,24 +1903,14 @@ describe("ScheduleService", () => {
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       createAgent: async (input) => {
-        const snapshot = {
-          id:
-            runCount === 0
-              ? "00000000-0000-0000-0000-000000000323"
-              : "00000000-0000-0000-0000-000000000324",
-          provider: "claude",
-          cwd: input.cwd ?? tempDir,
-          workspaceId: input.workspaceId,
-          status: "idle",
-          lifecycle: "idle",
-        };
+        const snapshot = await manager.createAgent(
+          { provider: "claude", cwd: input.cwd ?? tempDir },
+          undefined,
+          { workspaceId: input.workspaceId },
+        );
         return {
-          snapshot: snapshot as Awaited<
-            ReturnType<ScheduleServiceOptions["createAgent"]>
-          >["snapshot"],
-          liveSnapshot: snapshot as Awaited<
-            ReturnType<ScheduleServiceOptions["createAgent"]>
-          >["liveSnapshot"],
+          snapshot,
+          liveSnapshot: snapshot,
           background: true,
           initialPromptStarted: false,
           initialPromptError: null,
@@ -2007,21 +2058,14 @@ describe("ScheduleService", () => {
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       createAgent: async (input) => {
-        const snapshot = {
-          id: agentId,
-          provider: "claude",
-          cwd: input.cwd ?? tempDir,
-          workspaceId: input.workspaceId,
-          status: "idle",
-          lifecycle: "idle",
-        };
+        const snapshot = await manager.createAgent(
+          { provider: "claude", cwd: input.cwd ?? tempDir },
+          agentId,
+          { workspaceId: input.workspaceId },
+        );
         return {
-          snapshot: snapshot as Awaited<
-            ReturnType<ScheduleServiceOptions["createAgent"]>
-          >["snapshot"],
-          liveSnapshot: snapshot as Awaited<
-            ReturnType<ScheduleServiceOptions["createAgent"]>
-          >["liveSnapshot"],
+          snapshot,
+          liveSnapshot: snapshot,
           background: true,
           initialPromptStarted: false,
           initialPromptError: null,

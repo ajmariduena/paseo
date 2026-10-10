@@ -3,6 +3,8 @@ import { pluginSettings } from "./plugin-settings";
 
 export const es: TranslationResources = {
   handoff: {
+    activeScheduleStops:
+      "Esta tarea programada está en ejecución. La preparación detiene su agente y guarda el resultado antes del traslado.",
     activeHeartbeatStops:
       "Este recordatorio está en ejecución. La preparación lo detiene y guarda su resultado antes del traslado.",
     automationPaused:

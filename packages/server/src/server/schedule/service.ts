@@ -48,7 +48,7 @@ import type { FirstAgentContext } from "@getpaseo/protocol/messages";
 const SCHEDULE_TICK_INTERVAL_MS = 1000;
 
 type HandoffScheduleSource = Pick<SourceHandoffStatus, "cwd" | "agentIds" | "stoppedWorkReview">;
-interface ActiveHeartbeat {
+interface ActiveScheduledRun {
   activeRun: HandoffActiveRun;
   agentId: string;
   session: AgentSession;
@@ -287,7 +287,7 @@ export interface ScheduleServiceOptions {
 }
 
 export class ScheduleService {
-  private readonly activeHeartbeats = new Map<string, ActiveHeartbeat>();
+  private readonly activeScheduledRuns = new Map<string, ActiveScheduledRun>();
   private readonly store: ScheduleStore;
   private readonly handoffOwnership: HandoffOwnership | null;
   private readonly isHandoffIdentityVisible: (id: string) => boolean;
@@ -475,26 +475,29 @@ export class ScheduleService {
       (entry) => entry.id === record.id,
     )?.activeRun;
     const running = record.runs.filter((run) => run.status === "running");
-    const tracked = this.activeHeartbeats.get(record.id);
+    const tracked = this.activeScheduledRuns.get(record.id);
     if (running.length || this.runningScheduleIds.has(record.id)) {
       if (
-        record.target.type !== "agent" ||
         !tracked ||
         running.length > 1 ||
-        (running.length === 1 && running[0].id !== tracked.activeRun.id)
+        running.some((run) => run.id !== tracked.activeRun.id || run.agentId !== tracked.agentId)
       )
         throw new Error(
           "A scheduled run is still active and cannot be stopped by this handoff; stop or finish it before handoff",
         );
+      if (!source.agentIds.includes(tracked.agentId))
+        throw new Error(
+          "The scheduled agent is outside the transferred conversations; this task needs a separate workspace review",
+        );
       const currentSession = this.agentManager.getAgent(tracked.agentId)?.session;
       if (currentSession !== tracked.session && (!approved || currentSession))
-        throw new Error("The active heartbeat runtime changed after review");
+        throw new Error("The active scheduled runtime changed after review");
       if (
         approved &&
         (approved.id !== tracked.activeRun.id ||
           approved.previousLastRunAt !== tracked.activeRun.previousLastRunAt)
       )
-        throw new Error("The active heartbeat execution changed after review");
+        throw new Error("The active scheduled execution changed after review");
     }
     return reviewScheduleForHandoff(record, approved ?? tracked?.activeRun);
   }
@@ -982,7 +985,7 @@ export class ScheduleService {
     } finally {
       release?.();
       this.runningScheduleIds.delete(schedule.id);
-      this.activeHeartbeats.delete(schedule.id);
+      this.activeScheduledRuns.delete(schedule.id);
     }
   }
 
@@ -1160,7 +1163,7 @@ export class ScheduleService {
       });
       if (this.agentManager.getAgent(agent.id)?.session !== session)
         throw new Error(`Scheduled agent ${agent.id} runtime changed during dispatch`);
-      this.activeHeartbeats.set(schedule.id, {
+      this.activeScheduledRuns.set(schedule.id, {
         activeRun: { id: runId, previousLastRunAt: schedule.lastRunAt },
         agentId: agent.id,
         session,
@@ -1225,6 +1228,13 @@ export class ScheduleService {
       if (created.initialPromptError) {
         throw created.initialPromptError;
       }
+      const session = this.agentManager.getAgent(agent.id)?.session;
+      if (!session) throw new Error(`Scheduled agent ${agent.id} has no active runtime`);
+      this.activeScheduledRuns.set(schedule.id, {
+        activeRun: { id: runId, previousLastRunAt: schedule.lastRunAt },
+        agentId: agent.id,
+        session,
+      });
       const result = await this.agentManager.runAgent(agent.id, schedule.prompt);
       if (result.canceled) {
         throw new Error(`Scheduled agent ${agent.id} was canceled`);

@@ -30,7 +30,11 @@ import { captureWorkspace, packWorkspaceArchive, restoreWorkspaceArchive } from 
 import { ScheduleStore } from "../schedule/store.js";
 import { handoffScheduleId } from "../schedule/handoff.js";
 import { createTestLogger } from "../../test-utils/test-logger.js";
-import { createTestAgentClient, holdNextClaudeTestTurn } from "../test-utils/fake-agent-client.js";
+import {
+  createTestAgentClient,
+  holdNextClaudeTestTurn,
+  holdNextScheduledClaudeTestTurn,
+} from "../test-utils/fake-agent-client.js";
 
 const exec = promisify(execFile);
 
@@ -429,6 +433,142 @@ test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
     });
     expect((await destination.client.scheduleList()).schedules).toEqual(schedules);
     await expect(source.client.scheduleResume({ id: periodicId })).rejects.toThrow("handoff");
+  },
+  30_000,
+);
+
+test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
+  "%s handoff stops a scheduled created agent and moves its own workspace and history",
+  async (continuationMode) => {
+    let source = await startHost("source", true);
+    let destination = await startHost("destination", true);
+    const cwd = path.join(await realpath(root), "created-job");
+    await mkdir(cwd);
+    await writeFile(path.join(cwd, "unfinished.txt"), "Keep this scheduled work");
+    const configDir = path.join(root, "source", "claude");
+    const manager = source.daemon.daemon.agentManager;
+    manager.registerClient(
+      "claude",
+      createTestAgentClient("claude", {
+        claudeRuntime: { configDir, cliVersion: "2.1.295" },
+      }),
+    );
+    const prompt = "Continue the unfinished scheduled task";
+    const created = await source.client.scheduleCreate({
+      name: "Scheduled implementation",
+      prompt,
+      cadence: { type: "cron", expression: "0 0 1 1 *", timezone: "UTC" },
+      runOnCreate: false,
+      target: { type: "new-agent", config: { provider: "claude", cwd } },
+    });
+    if (!created.schedule) throw new Error("Missing schedule");
+    const scheduleId = created.schedule.id;
+    holdNextScheduledClaudeTestTurn({ manager, scheduleId, configDir });
+    const execution = source.client
+      .scheduleRunOnce({ id: scheduleId })
+      .catch((error: unknown) => error);
+    await expect
+      .poll(async () => (await source.client.scheduleInspect({ id: scheduleId })).schedule?.runs)
+      .toEqual([
+        expect.objectContaining({
+          status: "running",
+          agentId: expect.any(String),
+          workspaceId: expect.any(String),
+        }),
+      ]);
+    const run = (await source.client.scheduleInspect({ id: scheduleId })).schedule?.runs[0];
+    if (!run?.agentId || !run.workspaceId) throw new Error("Missing created workspace and agent");
+    const { agentId, workspaceId } = run;
+    await expect
+      .poll(() => source.client.handoffPreviewSource({ workspaceId }))
+      .toMatchObject({
+        error: null,
+        result: {
+          conversations: [{ agentId, state: "available" }],
+          stoppedWork: {
+            review: {
+              schedules: [{ id: scheduleId, kind: "schedule", activeRun: { id: run.id } }],
+            },
+          },
+        },
+      });
+    const review = (await source.client.handoffPreviewSource({ workspaceId })).result;
+    if (!review?.stoppedWork?.review) throw new Error("Missing created job review");
+    const transferId = randomUUID();
+    const staged = await prepareWorkspaceHandoff({
+      transferId,
+      workspaceId,
+      destinationParent: root,
+      continuationMode,
+      source: source.client,
+      destination: destination.client,
+      stoppedWorkReview: review.stoppedWork.review,
+    });
+    expect(await execution).toMatchObject({
+      schedule: {
+        runs: [
+          {
+            id: run.id,
+            agentId,
+            workspaceId,
+            status: "failed",
+            error: `Scheduled agent ${agentId} was canceled`,
+          },
+        ],
+      },
+    });
+    expect(manager.getAgent(agentId)).toBeNull();
+    expect(await readFile(path.join(cwd, "unfinished.txt"), "utf8")).toBe(
+      "Keep this scheduled work",
+    );
+    await stopHost(source);
+    await stopHost(destination);
+    source = await startHost("source", true);
+    destination = await startHost("destination", true);
+    const active = await activateWorkspaceHandoff({
+      transferId,
+      sourceServerId: source.daemon.daemon.getServerId(),
+      getSource: () => source.client,
+      destination: destination.client,
+    });
+    const destinationAgentId = active.agentMappings[0].destinationAgentId;
+    expect(
+      (
+        await destination.client.scheduleInspect({
+          id: handoffScheduleId(staged.reservationId, scheduleId),
+        })
+      ).schedule,
+    ).toMatchObject({
+      status: "paused",
+      target: { type: "new-agent", config: { cwd: active.destinationCwd } },
+      runs: [
+        {
+          id: run.id,
+          status: "failed",
+          agentId: destinationAgentId,
+          workspaceId: active.workspaceId,
+        },
+      ],
+    });
+    expect(await readFile(path.join(active.destinationCwd, "unfinished.txt"), "utf8")).toBe(
+      "Keep this scheduled work",
+    );
+    const history = await destination.client.handoffGetConversationHistory({
+      agentId: destinationAgentId,
+    });
+    expect(history.error).toBeNull();
+    expect(history.result).toMatchObject({
+      mode: continuationMode,
+      timeline: {
+        entries: [
+          expect.objectContaining({
+            item: expect.objectContaining({ type: "user_message", text: prompt }),
+          }),
+        ],
+      },
+    });
+    expect(destination.daemon.daemon.agentManager.getAgent(destinationAgentId)).toBeNull();
+    await expect(source.client.scheduleRunOnce({ id: scheduleId })).rejects.toThrow("handoff");
   },
   30_000,
 );

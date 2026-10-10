@@ -3,6 +3,8 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ja: TranslationResources = {
   handoff: {
+    activeScheduleStops:
+      "このスケジュール済みタスクは実行中です。転送の準備中にエージェントを停止し、結果を保存します。",
     activeHeartbeatStops:
       "このハートビートは実行中です。準備時に実行を停止し、結果を保存してから移動します。",
     automationPaused:

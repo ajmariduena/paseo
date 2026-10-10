@@ -87,9 +87,9 @@ These interruptions remain environment observations; their underlying causes wer
 npm run build:server, root npm run typecheck, npm run lint and npm run format passed.
 The existing CI jobs own platform and full-suite verification; no new feature-specific job was added.
 
-Strict capture refuses running jobs, ancestor-directory schedules, outside heartbeat owners sharing
+Strict capture refuses unfinished or untracked runs, ancestor-directory schedules, outside heartbeat owners sharing
 the checkout, damaged inventory, more than 1,000 selected records or metadata beyond 32 MiB. This
-slice does not certify a running job's outcome after a crash. Jobs that create separate agents and
+slice does not certify a running job's outcome after a crash. Jobs in other workspaces and
 recovery of uncertain outcomes remain open; an admitted runner can still prevent drain completion,
 with the preparation wait bounded as tested above.
 Completed-outcome recovery — an injected failure writing a successful run reproduced the runner
@@ -152,8 +152,53 @@ Commands (from packages/server):
 These are 93 distinct passing cases: 84 service cases and 9 selected manager cases. They use the
 real manager, stores and filesystem with controlled provider sessions. The worktree fixture uses a
 registry-backed directory and an injected archive that deletes it; it does not exercise Git worktree
-creation or prove OS-process termination. Active new-agent handoff remains refused until reviewed
-shutdown and workspace disposition are implemented. Crash outcome reconciliation remains open.
+creation or prove OS-process termination. This closure fix alone did not enable active new-agent
+transfer; the next slice covers jobs in the selected workspace. Crash outcome reconciliation remains open.
+
+Created-agent transfer — the initial service regression refused a running job even when its agent
+belonged to the transferred conversations. Review now binds that job's run and exact loaded session.
+The coordinator's existing conversation shutdown closes it, drains outcome publication and captures
+paused automation. The service refuses unknown runners and jobs outside the selected conversation
+set. The store accepts only the reviewed run's terminal transition; definition and prior history
+changes still invalidate review. Automatic cleanup stays fenced, preserving the source workspace.
+
+The two new network cases start a job through scheduleRunOnce, select its newly created workspace,
+prepare the transfer, restart both daemons and activate the destination. Both native and exported
+context modes retain the prompt, failed/canceled run, remapped agent/workspace identities and file
+bytes. The destination schedule remains paused and its provider stays unloaded; the source refuses
+another manual dispatch. The controlled provider writes a synthetic Claude transcript and holds the
+turn until manager closure. These are transport and lifecycle results, not authenticated continuity
+or OS-process termination evidence.
+
+Commands (from packages/server unless stated):
+  npx vitest run src/server/schedule/service.test.ts src/server/schedule/store.test.ts --bail=1
+    Test Files 2 passed (2); Tests 102 passed (102); Duration 7.88s
+  npx vitest run src/server/schedule/service.test.ts -t 'handoff.*(active heartbeat|created agent)|failed new-agent run keeps run error' --bail=1
+    Test Files 1 passed (1); Tests 3 passed | 82 skipped (85); Duration 3.23s
+  npx vitest run src/server/handoff/archive.e2e.test.ts -t 'handoff stops a scheduled created agent' --bail=1
+    Test Files 1 passed (1); Tests 2 passed | 37 skipped (39); Duration 21.31s
+  npx vitest run src/i18n/resources.test.ts --bail=1 (packages/app)
+    Test Files 1 passed (1); Tests 40 passed (40); Duration 2.71s
+  FONTCONFIG_FILE=/tmp/handoff-browser-fonts.conf LD_LIBRARY_PATH=/tmp/handoff-browser-libs/extracted/usr/lib/x86_64-linux-gnu npm run test:e2e -- e2e/browser/workspace-handoff.spec.ts --grep 'reviews and stops a scheduled created agent' --workers=1 --max-failures=1 (packages/app)
+    Desktop passed (39.4s); compact passed (42.6s); 2 passed (1.8m)
+  npm run build:server; npm run typecheck; npm run lint; npm run format (repository root)
+    All completed successfully. Lint: 0 warnings, 0 errors.
+
+There are 146 distinct passing cases: 85 service, 17 store, 40 translation, 2 network and 2 browser.
+The browser cases use the same controlled provider through real app RPCs. They verify the visible
+review warning, preparation, activation, paused automation, remapped history and file bytes. Both
+handoff-active-job-desktop.png and handoff-active-job-compact.png were inspected; the warning wraps
+without clipping and the preparation action remains visible. The first browser attempt exited before
+opening the app because libnspr4.so was unavailable. The unchanged retry used the existing isolated
+libraries and fonts, with no assertion or timeout changes.
+The final server-only build was terminated with exit 143 and no compiler diagnostic. Its handle was
+terminal and no compiler remained; the unchanged isolated retry completed successfully.
+
+The service suite initially exposed three fixture creators returning agent snapshots without a
+runtime. They now create real manager sessions before controlling run output. This adds no production
+fallback. The new review warning distinguishes scheduled jobs from heartbeats in all nine locales.
+Jobs running in a different workspace, shared-checkout ownership and uncertain outcomes after a crash
+still need their stated dispositions and recovery evidence.
 
 Active heartbeat transfer — review now binds the observed run and loaded provider session. The
 allowed review change is that run's terminal outcome plus the pause. Prior history, target and
@@ -200,7 +245,7 @@ An earlier browser process was interrupted without a result; its missing handle 
 were confirmed before retry. None of these attempts relaxed an assertion or increased a timeout.
 
 These tests use synthetic transcripts and a held adapter, not authenticated provider execution or
-proof of OS process termination. Active new-agent jobs and crash outcome reconciliation remain open.
+proof of OS process termination. Jobs in other workspaces and crash outcome reconciliation remain open.
 
 Queue conservation — source handoff now holds queues before closing writers. The initial runner
 regression reproduced the pending instruction disappearing when the current turn settled under

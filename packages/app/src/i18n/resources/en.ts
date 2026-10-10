@@ -1,5 +1,7 @@
 export const en = {
   handoff: {
+    activeScheduleStops:
+      "This scheduled task is running. Preparation stops its agent and saves the result before moving.",
     activeHeartbeatStops:
       "This heartbeat is running. Preparation stops it and saves its result before moving.",
     automationPaused:
