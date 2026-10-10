@@ -75,11 +75,15 @@ describe("managed process registry", () => {
       });
       await registry.retireStoppedRuntime(runtime);
       expect(await registry.list()).toEqual([record]);
-      await expect(registry.stop(record.id)).rejects.toThrow("receipt sync failed");
+      await expect(registry.stopRuntime({ runtime, processIds: [record.id] })).rejects.toThrow(
+        "receipt sync failed",
+      );
       const recovered = restart ? createManagedProcessRegistry(options) : registry;
-      await expect(recovered.stop(record.id)).rejects.toThrow("receipt sync failed");
+      await expect(recovered.stopRuntime({ runtime, processIds: [record.id] })).rejects.toThrow(
+        "receipt sync failed",
+      );
       failReceipt = false;
-      await recovered.stop(record.id);
+      await recovered.stopRuntime({ runtime, processIds: [record.id] });
       expect(signals).toEqual([root.pid]);
       await recovered.retireStoppedRuntime(runtime);
       expect(await recovered.list({ includeStopped: true })).toEqual([]);
@@ -135,6 +139,63 @@ describe("managed process registry", () => {
       await recovered.retireStoppedRuntime(runtime);
       expect(await recovered.list({ includeStopped: true })).toEqual([]);
       await expect(recovered.stop(record.id)).rejects.toThrow("Managed process record is missing");
+    },
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "handoff runtime shutdown verifies ownership and stops every registered launch",
+    async () => {
+      tempHome = await mkdtemp(path.join(tmpdir(), "paseo-runtime-stop-"));
+      const runtime = { agentId: "agent", generationId: "b5992186-a159-4d19-85e7-2b6331180ee7" };
+      const roots = [4101, 4102].map((pid) => ({
+        pid,
+        parentPid: 1,
+        startedAt: `owner-${pid}`,
+        exited: false,
+      }));
+      let entries = [...roots];
+      const signals: number[] = [];
+      const registry = createManagedProcessRegistry({
+        paseoHome: tempHome,
+        processTable: new FakeProcessTable([]),
+        terminateProcess: terminateWithTreeKill,
+        logger: createTestLogger(),
+        processTree: {
+          bootId: async () => "boot",
+          list: async () => entries,
+          signal: (pid) => {
+            signals.push(pid);
+            entries = entries.filter((entry) => entry.pid !== pid);
+          },
+        },
+      });
+      const processIds: string[] = [];
+      for (const root of roots) {
+        const record = await registry.record({
+          owner: { provider: "claude", kind: "query" },
+          runtime,
+          pid: root.pid,
+          command: "claude",
+          args: [],
+          processTree: { bootId: "boot", entries: [root] },
+        });
+        processIds.push(record.id);
+      }
+      await expect(
+        registry.stopRuntime({ runtime: { ...runtime, agentId: "other-agent" }, processIds }),
+      ).rejects.toThrow("belongs to another runtime");
+      await expect(
+        registry.stopRuntime({
+          runtime: { ...runtime, generationId: "72251853-fffd-4cde-91b4-966815f2b25c" },
+          processIds,
+        }),
+      ).rejects.toThrow("belongs to another runtime");
+      expect(signals).toEqual([]);
+      await registry.stopRuntime({ runtime, processIds });
+      await registry.stopRuntime({ runtime, processIds });
+      expect(signals).toEqual(roots.map((entry) => entry.pid));
+      expect(await registry.list()).toEqual([]);
+      expect(await registry.list({ includeStopped: true })).toHaveLength(2);
     },
   );
 

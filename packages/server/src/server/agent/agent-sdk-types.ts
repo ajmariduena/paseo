@@ -637,6 +637,8 @@ export interface AgentSessionConfig {
 export interface AgentLaunchContext {
   agentId?: string;
   runtimeGenerationId?: string;
+  /** Resolve durable owner membership before admitting this process launch. */
+  registerManagedProcess?: (processId: string) => Promise<void>;
   env?: Record<string, string>;
   /**
    * Runtime-only internal Paseo tools. This must never be persisted into
@@ -776,6 +778,8 @@ export interface ResolveAgentDefaultModeInput {
 export interface AgentClient {
   readonly provider: AgentProvider;
   readonly capabilities: AgentCapabilityFlags;
+  /** Every session writer process is registered before its admission gate opens. */
+  readonly tracksManagedProcesses?: boolean;
   createSession(
     config: AgentSessionConfig,
     launchContext?: AgentLaunchContext,

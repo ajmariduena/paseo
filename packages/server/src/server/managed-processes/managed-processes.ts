@@ -29,6 +29,11 @@ const ManagedRuntimeSchema = z.object({
   generationId: z.string().uuid(),
 });
 export type ManagedRuntime = z.infer<typeof ManagedRuntimeSchema>;
+export const ManagedProcessIdsSchema = z.array(z.string().uuid()).max(1024);
+export interface ManagedRuntimeStop {
+  runtime: ManagedRuntime;
+  processIds: string[];
+}
 
 const ManagedProcessRecordSchema = z
   .object({
@@ -119,7 +124,8 @@ export interface ManagedProcessRegistry {
   record(input: ManagedProcessRecordInput): Promise<ManagedProcessRecord>;
   admitLaunch(id: string): Promise<void>;
   remove(id: string): Promise<void>;
-  stop(id: string): Promise<void>;
+  stop(id: string, runtime?: ManagedRuntime): Promise<void>;
+  stopRuntime(input: ManagedRuntimeStop): Promise<void>;
   list(options?: { includeStopped?: boolean }): Promise<ManagedProcessRecord[]>;
   /** Only after the owner's closed record, or its successor opening, is durable. */
   retireStoppedRuntime(runtime: ManagedRuntime): Promise<void>;
@@ -156,6 +162,13 @@ class ManagedProcessLaunchStateError extends Error {
   constructor(readonly recordId: string) {
     super(`Managed process launch cannot be admitted: ${recordId}`);
     this.name = "ManagedProcessLaunchStateError";
+  }
+}
+
+class ManagedProcessRuntimeMismatchError extends Error {
+  constructor(readonly recordId: string) {
+    super(`Managed process belongs to another runtime: ${recordId}`);
+    this.name = "ManagedProcessRuntimeMismatchError";
   }
 }
 
@@ -392,11 +405,18 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
     });
   }
 
-  async stop(id: string): Promise<void> {
+  async stop(id: string, runtime?: ManagedRuntime): Promise<void> {
+    const expected = runtime ? ManagedRuntimeSchema.parse(runtime) : undefined;
     return this.serialize(id, async () => {
       await this.repairPublication(id);
       const stored = await this.readRecord(id);
       if (!stored) throw new ManagedProcessRecordMissingError(id);
+      if (
+        expected &&
+        (stored.runtime?.agentId !== expected.agentId ||
+          stored.runtime.generationId !== expected.generationId)
+      )
+        throw new ManagedProcessRuntimeMismatchError(id);
       let record = stored;
       if (!record.tree) throw new ManagedProcessInspectionError(record.pid);
       if (record.tree.state === "stopped") {
@@ -448,6 +468,14 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
       });
     } else {
       await fs.rm(this.recordPath(record.id), { force: true });
+    }
+  }
+
+  async stopRuntime(input: ManagedRuntimeStop): Promise<void> {
+    const runtime = ManagedRuntimeSchema.parse(input.runtime);
+    const ids = ManagedProcessIdsSchema.parse(input.processIds);
+    for (const id of ids) {
+      await this.stop(id, runtime);
     }
   }
 

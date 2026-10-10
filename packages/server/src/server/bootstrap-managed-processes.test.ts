@@ -160,6 +160,9 @@ describe("daemon managed process bootstrap", () => {
 });
 
 class FakeManagedProcesses implements ManagedProcessRegistry {
+  async stopRuntime(): Promise<void> {
+    throw new Error("No tracked runtime in this fixture");
+  }
   async retireStoppedRuntime(): Promise<void> {}
 
   reapCount = 0;

@@ -452,6 +452,7 @@ interface ClaudeAgentSessionOptions {
   handle?: AgentPersistenceHandle;
   agentId?: string;
   runtimeGenerationId?: string;
+  registerManagedProcess?: AgentLaunchContext["registerManagedProcess"];
   launchEnv?: Record<string, string>;
   persistSession?: boolean;
   logger: Logger;
@@ -1559,6 +1560,7 @@ export function readEventIdentifiers(message: SDKMessage): EventIdentifiers {
 export class ClaudeAgentClient implements AgentClient {
   readonly provider = "claude" as const;
   readonly capabilities = CLAUDE_CAPABILITIES;
+  readonly tracksManagedProcesses: boolean;
 
   private readonly defaults?: { agents?: Record<string, AgentDefinition> };
   private readonly logger: Logger;
@@ -1577,6 +1579,8 @@ export class ClaudeAgentClient implements AgentClient {
     this.queryFactory = options.queryFactory;
     this.processTerminator = options.processTerminator ?? terminateWithTreeKill;
     this.managedProcesses = options.managedProcesses;
+    this.tracksManagedProcesses =
+      options.managedProcesses !== undefined && process.platform !== "win32";
     this.resolveBinary = options.resolveBinary ?? (() => resolveClaudeBinary(this.runtimeSettings));
     this.resolveVersion =
       options.resolveVersion ??
@@ -1599,6 +1603,7 @@ export class ClaudeAgentClient implements AgentClient {
       runtimeSettings: this.runtimeSettings,
       agentId: launchContext?.agentId,
       runtimeGenerationId: launchContext?.runtimeGenerationId,
+      registerManagedProcess: launchContext?.registerManagedProcess,
       launchEnv: launchContext?.env,
       persistSession: options?.persistSession,
       logger: this.logger,
@@ -1632,6 +1637,7 @@ export class ClaudeAgentClient implements AgentClient {
       handle,
       agentId: launchContext?.agentId,
       runtimeGenerationId: launchContext?.runtimeGenerationId,
+      registerManagedProcess: launchContext?.registerManagedProcess,
       launchEnv: launchContext?.env,
       logger: this.logger,
       queryFactory: this.queryFactory,
@@ -2166,6 +2172,7 @@ class ClaudeAgentSession implements AgentSession {
   private readonly launchEnv?: Record<string, string>;
   private readonly agentId?: string;
   private readonly runtimeGenerationId?: string;
+  private readonly registerManagedProcess?: AgentLaunchContext["registerManagedProcess"];
   private readonly defaults?: { agents?: Record<string, AgentDefinition> };
   private readonly runtimeSettings?: ProviderRuntimeSettings;
   private readonly persistSession?: boolean;
@@ -2274,6 +2281,7 @@ class ClaudeAgentSession implements AgentSession {
     this.launchEnv = options.launchEnv;
     this.agentId = options.agentId;
     this.runtimeGenerationId = options.runtimeGenerationId;
+    this.registerManagedProcess = options.registerManagedProcess;
     this.defaults = options.defaults;
     this.runtimeSettings = options.runtimeSettings;
     const projectDirName = options.handle?.metadata?.claudeProjectDirName;
@@ -3556,6 +3564,9 @@ class ClaudeAgentSession implements AgentSession {
                   throw new Error("Claude session closed before process launch");
                 if (child.exitCode !== null || child.signalCode !== null)
                   throw new Error("Claude bootstrap exited before process launch");
+                await this.registerManagedProcess?.(registered.id);
+                if (this.closed || resource.closing)
+                  throw new Error("Claude session closed before process launch");
                 await registry.admitLaunch(registered.id);
                 if (this.closed || resource.closing)
                   throw new Error("Claude session closed before process launch");

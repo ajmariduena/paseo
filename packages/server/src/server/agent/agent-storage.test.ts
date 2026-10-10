@@ -638,6 +638,47 @@ describe("AgentStorage", () => {
   });
 
   test.skipIf(process.platform === "win32")(
+    "handoff launch membership survives snapshots and unresolved generation replacement",
+    async () => {
+      const agent = createManagedAgent({ id: "launch-membership" });
+      const seed = toStoredAgentRecord(agent);
+      const generationId = await storage.beginRuntimeGeneration(seed, { trackProcesses: true });
+      agent.runtimeGenerationId = generationId;
+      const processId = randomUUID();
+      expect(
+        (await new AgentStorage(storagePath, logger).get(agent.id))?.runtimeGeneration,
+      ).toMatchObject({ id: generationId, managedProcessIds: [] });
+      const launch = { agentId: agent.id, generationId, processId };
+      await storage.registerManagedProcess(launch);
+      await storage.registerManagedProcess(launch);
+      await storage.applySnapshot(agent);
+      const cold = new AgentStorage(storagePath, logger);
+      expect((await cold.get(agent.id))?.runtimeGeneration).toMatchObject({
+        id: generationId,
+        managedProcessIds: [processId],
+      });
+      const replacementId = await cold.beginRuntimeGeneration(seed, { trackProcesses: true });
+      await expect(cold.registerManagedProcess(launch)).rejects.toThrow(
+        "different runtime generation",
+      );
+      expect(await cold.get(agent.id)).toMatchObject({
+        runtimeGeneration: { id: replacementId, managedProcessIds: [] },
+        unresolvedRuntimeGenerations: [{ id: generationId, managedProcessIds: [processId] }],
+      });
+      await cold.applySnapshot(
+        createManagedAgent({
+          id: agent.id,
+          runtimeGenerationId: replacementId,
+          lifecycle: "closed",
+        }),
+      );
+      await expect(
+        cold.registerManagedProcess({ ...launch, generationId: replacementId }),
+      ).rejects.toThrow("already closed");
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
     "a new runtime and clean close cannot clear an unresolved predecessor",
     async () => {
       const agent = createManagedAgent({ id: "unresolved-generation" });

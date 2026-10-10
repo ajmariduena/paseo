@@ -9,6 +9,8 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
+import { AgentStorage } from "../../agent-storage.js";
 import path from "node:path";
 import {
   createManagedProcessRegistry,
@@ -1037,6 +1039,109 @@ describe("Claude spawn override", () => {
         const entry = gatePid ? await readLinuxProcessEntry(gatePid) : null;
         if (entry && !entry.exited && entry.startedAt === gateBirth)
           process.kill(entry.pid, "SIGKILL");
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.runIf(process.platform !== "win32").each(["launch", "close", "failure"] as const)(
+    "handoff agent process membership gates provider dispatch during %s",
+    async (outcome) => {
+      const home = await mkdtemp(path.join(tmpdir(), "paseo-launch-membership-"));
+      const marker = path.join(home, "provider-started");
+      const entered = Promise.withResolvers<void>();
+      const publication = Promise.withResolvers<void>();
+      const started = Promise.withResolvers<void>();
+      const logger = createTestLogger();
+      const storagePath = path.join(home, "agents");
+      const agents = new AgentStorage(storagePath, logger, undefined, async (file, root) => {
+        const saved = JSON.parse(await readFile(file, "utf8"));
+        if (saved.runtimeGeneration.managedProcessIds.length > 0) {
+          entered.resolve();
+          await publication.promise;
+          if (outcome === "failure") throw new Error("Membership sync failed");
+        }
+        await syncFilePublication(file, root);
+      });
+      const agentId = randomUUID();
+      const generationId = await agents.beginRuntimeGeneration(
+        {
+          id: agentId,
+          provider: "claude",
+          cwd: home,
+          labels: {},
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          lastStatus: "closed",
+        },
+        { trackProcesses: true },
+      );
+      const registry = createManagedProcessRegistry({
+        paseoHome: home,
+        processTable: createSystemManagedProcessTable(),
+        terminateProcess: terminateWithTreeKill,
+        logger,
+      });
+      const query = createQueryMock([]);
+      const session = await new ClaudeAgentClient({
+        logger,
+        resolveBinary: async () => process.execPath,
+        managedProcesses: registry,
+        queryFactory: ({ options }) => {
+          if (!options.spawnClaudeCodeProcess) throw new Error("Missing launcher");
+          const child = options.spawnClaudeCodeProcess({
+            command: process.execPath,
+            args: [
+              "-e",
+              `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started'); process.stdout.write('started'); setInterval(() => {}, 1000)`,
+            ],
+            cwd: home,
+            env: {},
+            signal: new AbortController().signal,
+          });
+          child.stdout.once("data", () => started.resolve());
+          return query;
+        },
+      }).createSession(
+        { provider: "claude", cwd: home },
+        {
+          agentId,
+          runtimeGenerationId: generationId,
+          registerManagedProcess: (processId) =>
+            agents.registerManagedProcess({ agentId, generationId, processId }),
+        },
+      );
+      const opening = session.listCommands();
+      void opening.catch(() => {});
+      try {
+        await entered.promise;
+        const [launch] = await registry.list();
+        expect(launch.tree?.state).toBe("gated");
+        await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
+        const closing = outcome === "close" ? session.close() : undefined;
+        publication.resolve();
+        if (outcome === "launch") {
+          await opening;
+          await started.promise;
+          const stored = await new AgentStorage(storagePath, logger).get(agentId);
+          expect(stored?.runtimeGeneration?.managedProcessIds).toEqual([launch.id]);
+          expect(await readFile(marker, "utf8")).toBe("started");
+        } else {
+          await expect(opening).rejects.toThrow(
+            outcome === "close" ? "closed before process launch" : "Membership sync failed",
+          );
+          expect(query.supportedCommands).not.toHaveBeenCalled();
+          await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
+        }
+        await (closing ?? session.close());
+        expect(await registry.list()).toEqual([]);
+        expect(await registry.list({ includeStopped: true })).toMatchObject([
+          { id: launch.id, tree: { state: "stopped" } },
+        ]);
+      } finally {
+        publication.resolve();
+        await opening.catch(() => {});
+        await session.close();
         await rm(home, { recursive: true, force: true });
       }
     },

@@ -1643,8 +1643,16 @@ export class AgentManager {
       storedConfig,
       options,
     );
-    launchContext.runtimeGenerationId = runtimeGenerationId;
-    const session = await client.createSession(providerLaunchConfig, launchContext, createOptions);
+    const runtimeLaunchContext = this.bindRuntimeGeneration(
+      launchContext,
+      client,
+      runtimeGenerationId,
+    );
+    const session = await client.createSession(
+      providerLaunchConfig,
+      runtimeLaunchContext,
+      createOptions,
+    );
     await this.requireExternalMcpSupport(session, storedConfig);
     const agent = await this.registerSession(session, storedConfig, resolvedAgentId, {
       runtimeGenerationId,
@@ -1809,7 +1817,7 @@ export class AgentManager {
         const session = await client.resumeSession(
           handle,
           providerLaunchConfig,
-          { ...launchContext, runtimeGenerationId },
+          this.bindRuntimeGeneration(launchContext, client, runtimeGenerationId),
           currentResumeOptions,
         );
         await this.requireExternalMcpSupport(session, storedConfig);
@@ -1881,7 +1889,7 @@ export class AgentManager {
       {
         config: providerLaunchConfig,
         storedConfig,
-        launchContext: { ...launchContext, runtimeGenerationId },
+        launchContext: this.bindRuntimeGeneration(launchContext, client, runtimeGenerationId),
       },
     );
     let handedToRegistration = false;
@@ -2005,10 +2013,14 @@ export class AgentManager {
         owner: existing.owner,
         persistence: handle,
       });
-      launchContext.runtimeGenerationId = runtimeGenerationId;
+      const runtimeLaunchContext = this.bindRuntimeGeneration(
+        launchContext,
+        client,
+        runtimeGenerationId,
+      );
       session = handle
-        ? await client.resumeSession(handle, providerLaunchConfig, launchContext)
-        : await client.createSession(providerLaunchConfig, launchContext);
+        ? await client.resumeSession(handle, providerLaunchConfig, runtimeLaunchContext)
+        : await client.createSession(providerLaunchConfig, runtimeLaunchContext);
       await this.requireExternalMcpSupport(session, storedConfig);
       this.assertAcceptingAgentRegistrations();
 
@@ -5126,25 +5138,44 @@ export class AgentManager {
     if (!this.registry || config.internal) return undefined;
     const previous = await this.registry.get(agentId);
     const now = new Date().toISOString();
-    const generationId = await this.registry.beginRuntimeGeneration({
-      id: agentId,
-      provider: config.provider,
-      cwd: config.cwd,
-      workspaceId: options.workspaceId,
-      labels: options.labels ?? {},
-      owner: options.owner,
-      title: config.title?.trim() || options.initialTitle || null,
-      config: buildSerializableConfig(config),
-      persistence: options.persistence,
-      createdAt: now,
-      updatedAt: now,
-      lastStatus: "initializing",
-    });
+    const generationId = await this.registry.beginRuntimeGeneration(
+      {
+        id: agentId,
+        provider: config.provider,
+        cwd: config.cwd,
+        workspaceId: options.workspaceId,
+        labels: options.labels ?? {},
+        owner: options.owner,
+        title: config.title?.trim() || options.initialTitle || null,
+        config: buildSerializableConfig(config),
+        persistence: options.persistence,
+        createdAt: now,
+        updatedAt: now,
+        lastStatus: "initializing",
+      },
+      { trackProcesses: this.requireClient(config.provider).tracksManagedProcesses === true },
+    );
     // The new durable opening preserves the preceding closed outcome. Unclosed
     // predecessors remain unresolved and keep their process acknowledgements.
     if (previous?.lastStatus === "closed" && previous.runtimeGeneration)
       await this.retireStoppedRuntime(agentId, previous.runtimeGeneration.id);
     return generationId;
+  }
+
+  private bindRuntimeGeneration(
+    context: AgentLaunchContext,
+    client: AgentClient,
+    generationId?: string,
+  ): AgentLaunchContext {
+    const launch = { ...context, runtimeGenerationId: generationId };
+    if (!client.tracksManagedProcesses || !generationId) return launch;
+    const agentId = context.agentId;
+    if (!agentId) throw new Error("Tracked runtime requires an agent identity");
+    return {
+      ...launch,
+      registerManagedProcess: (processId) =>
+        this.requireRegistry().registerManagedProcess({ agentId, generationId, processId }),
+    };
   }
 
   private async persistSnapshot(

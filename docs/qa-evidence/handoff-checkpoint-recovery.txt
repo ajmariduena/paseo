@@ -53,6 +53,43 @@ SDK frames, process tables and storage faults. They preserve a known stop; they 
 unknown process inventories, callback outcomes or conversation state after a crash. No authenticated
 provider or physical MacBook/VPS transfer ran. The complete feature remains unadvertised.
 
+Launch membership and source cancellation — Linux, 2026-10-10, baseline 53ba92f6b
+
+Reproduced: cold source cancellation released the fence despite a missing launch stop record.
+A tracked agent generation now binds its launch IDs before provider admission. Cancellation
+requires the exact owner's proof for every current or unresolved launch. It can finish a recorded
+live stop, acknowledge a saved stop without signalling a reused PID, or accept a deliberately
+empty tracked generation. Unknown coverage, missing records and loaded agents remain fenced.
+Wrong destination reservations are rejected before attempting recovery; cancellation retries use
+only the already-published receipt. Physical stop does not fabricate a closed conversation record.
+
+Focused verification (215 distinct passing cases across full files and selections):
+- Claude spawn: 49 passed, including real Node gates held during membership synchronization,
+  successful launch afterward, failed synchronization and close while publication is pending.
+- Managed-process store: 41 passed; the ownership-mismatch case was repeated after giving that
+  refusal its own error. Tests cover every expected launch and repeated receipt synchronization.
+- Agent storage: 48 passed, one platform skip. Launch membership survives snapshots, restart and
+  generation replacement; registration into a stale or closed generation refuses.
+- Source ownership: 62 cases passed across the full-file and changed-case runs. Six new cases
+  cover live/stopped cold recovery, missing/restored records, tracked emptiness, unknown tracking,
+  unresolved predecessors, loaded agents, destination binding and cancellation retry.
+- Agent manager: 10 focused cases passed. A tracking provider receives its registration callback
+  only after its empty inventory is durable; providers without coverage retain unknown tracking.
+- Five retained-job network cases passed using the server's existing Vitest configuration: activate,
+  cancel, nested jobs, cancel after failed history publication and continue after that failure.
+  The initial root-config invocation timed out at its unrelated 5-second default before completing
+  the first case. No product assertion or configured server timeout was relaxed.
+
+The test fixtures initially needed the manager's required workspace option and UUID; both were
+corrected before the loaded-agent refusal passed. The first close-during-publication case exposed
+an admission attempt after closure; the launch now checks closure again after membership settles.
+The server-stack build, root typecheck, lint and formatting are recorded with this change.
+
+These tests use real file stores, Node subprocesses and isolated daemons with controlled provider
+frames and injected storage/process-table faults. Terminal/setup launch coverage, unknown callback
+outcomes and conversation recovery remain separate gates. This is not fresh authenticated-provider
+or physical MacBook/VPS evidence; production feature advertisement remains disabled.
+
 Earlier cold recovery regression (generated record ID and PID redacted):
 
  FAIL  src/server/managed-processes/managed-processes.test.ts > managed process registry > cold recovery removes a gated launch that exited before admission

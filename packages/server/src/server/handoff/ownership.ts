@@ -446,7 +446,10 @@ export class HandoffOwnership {
   }
 
   /** A tombstone also prevents a delayed prepare when cancellation arrives first. */
-  cancelReservation(input: HandoffCancellationInput): Promise<HandoffCancellationProof> {
+  cancelReservation(
+    input: HandoffCancellationInput,
+    beforeCancel?: (source: SourceHandoffStatus) => Promise<void>,
+  ): Promise<HandoffCancellationProof> {
     const binding = HandoffCancellationBindingSchema.parse({
       ...input,
       version: 1,
@@ -475,6 +478,7 @@ export class HandoffOwnership {
       }
       if (this.cancellations.size >= 10_000)
         reject("invalid_state", "Ownership cancellation journal reached its transfer limit");
+      if (source && source.state !== "cancelled") await beforeCancel?.(publicStatus(source));
       const keys = source ?? signingKeys();
       const cancellation: CancellationRecord = {
         ...binding,

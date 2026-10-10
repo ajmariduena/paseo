@@ -2658,42 +2658,60 @@ test("flush waits for rejected session cleanup that starts after shutdown", asyn
   expect(manager.listAgents()).toEqual([]);
 });
 
-test("publishes an open runtime generation before creating a provider session", async () => {
-  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-opening-marker-"));
-  const storagePath = join(workdir, "agents");
-  const storage = new AgentStorage(storagePath, logger);
-  const agentId = randomUUID();
-  let observed: StoredAgentRecord | null = null;
-  const client = new (class extends TestAgentClient {
-    override async createSession(
-      _config: AgentSessionConfig,
-      launchContext?: AgentLaunchContext,
-    ): Promise<AgentSession> {
-      observed = await new AgentStorage(storagePath, logger).get(agentId);
-      expect(launchContext?.runtimeGenerationId).toBe(observed?.runtimeGeneration?.id);
-      throw new Error("interrupted before registration");
-    }
-  })();
-  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
-  try {
-    await expect(
-      manager.createAgent({ provider: "codex", cwd: workdir }, agentId, {
+test.each(process.platform === "win32" ? [false] : [false, true])(
+  "publishes an open runtime generation before creating a provider session (tracking: %s)",
+  async (tracksManagedProcesses) => {
+    const workdir = mkdtempSync(join(tmpdir(), "agent-manager-opening-marker-"));
+    const storagePath = join(workdir, "agents");
+    const storage = new AgentStorage(storagePath, logger);
+    const agentId = randomUUID();
+    const processId = randomUUID();
+    let observed: StoredAgentRecord | null = null;
+    const client = new (class extends TestAgentClient {
+      readonly tracksManagedProcesses = tracksManagedProcesses;
+      override async createSession(
+        _config: AgentSessionConfig,
+        launchContext?: AgentLaunchContext,
+      ): Promise<AgentSession> {
+        observed = await new AgentStorage(storagePath, logger).get(agentId);
+        expect(launchContext?.runtimeGenerationId).toBe(observed?.runtimeGeneration?.id);
+        expect(observed?.runtimeGeneration?.managedProcessIds).toEqual(
+          tracksManagedProcesses ? [] : undefined,
+        );
+        if (tracksManagedProcesses) {
+          expect(launchContext?.registerManagedProcess).toBeTypeOf("function");
+          await launchContext!.registerManagedProcess!(processId);
+          expect(
+            (await new AgentStorage(storagePath, logger).get(agentId))?.runtimeGeneration
+              ?.managedProcessIds,
+          ).toEqual([processId]);
+        } else {
+          expect(launchContext?.registerManagedProcess).toBeUndefined();
+        }
+        throw new Error("interrupted before registration");
+      }
+    })();
+    const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+    try {
+      await expect(
+        manager.createAgent({ provider: "codex", cwd: workdir }, agentId, {
+          workspaceId: "marker-workspace",
+        }),
+      ).rejects.toThrow("interrupted before registration");
+      expect(observed).toMatchObject({
+        id: agentId,
         workspaceId: "marker-workspace",
-      }),
-    ).rejects.toThrow("interrupted before registration");
-    expect(observed).toMatchObject({
-      id: agentId,
-      workspaceId: "marker-workspace",
-      lastStatus: "initializing",
-      runtimeGeneration: { id: expect.any(String), openedAt: expect.any(String) },
-    });
-    expect(manager.getAgent(agentId)).toBeNull();
-    await expect(storage.checkpointClosedAgent(agentId)).rejects.toThrow();
-  } finally {
-    await manager.flush();
-    rmSync(workdir, { recursive: true, force: true });
-  }
-});
+        lastStatus: "initializing",
+        runtimeGeneration: { id: expect.any(String), openedAt: expect.any(String) },
+      });
+      expect(manager.getAgent(agentId)).toBeNull();
+      await expect(storage.checkpointClosedAgent(agentId)).rejects.toThrow();
+    } finally {
+      await manager.flush();
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  },
+);
 
 test.each(["resume", "reload"] as const)(
   "publishes a replacement runtime generation before provider %s",

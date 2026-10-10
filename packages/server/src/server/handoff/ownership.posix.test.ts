@@ -17,6 +17,8 @@ import { HandoffOwnership, verifyHandoffRelease, verifyHandoffCancellation } fro
 import { writeJournal } from "./artifacts.js";
 import { syncFilePublication, writeJsonFileAtomic } from "../atomic-file.js";
 import { createTestLogger } from "../../test-utils/test-logger.js";
+import { AgentManager } from "../agent/agent-manager.js";
+import { ControlledAgentClient } from "../test-utils/controlled-agent-client.js";
 import { AgentStorage, type StoredAgentRecord } from "../agent/agent-storage.js";
 import { AgentQueueStore, type HandoffQueue } from "../agent-queue/store.js";
 import { FileUploadStore } from "../file-upload/index.js";
@@ -36,6 +38,11 @@ import { captureWorkspace } from "./workspace.js";
 import { HandoffSource } from "./source.js";
 import { WorkspaceSetupRuntime } from "../workspace-setup-runtime.js";
 import { writeHandoffHistory } from "./history.js";
+import {
+  createManagedProcessRegistry,
+  createSystemManagedProcessTable,
+} from "../managed-processes/managed-processes.js";
+import { terminateWithTreeKill } from "../../utils/tree-kill.js";
 
 const test = platformTest.skipIf(process.platform === "win32");
 let root: string;
@@ -450,6 +457,164 @@ function createSourceFixture(
     },
   };
 }
+
+test.each(["live", "stopped"] as const)(
+  "handoff cold cancellation requires every registered %s process acknowledgement",
+  async (state) => {
+    const logger = createTestLogger();
+    const agents = new AgentStorage(path.join(root, "agents"), logger);
+    const { request } = createSourceFixture();
+    const seed = await agents.upsert({
+      id: "stopped-agent",
+      cwd,
+      workspaceId: request.workspaceId,
+      provider: "claude",
+      labels: {},
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      lastStatus: "closed",
+    });
+    const generationId = await agents.beginRuntimeGeneration(seed, { trackProcesses: true });
+    const entry = { pid: 4101, parentPid: 1, startedAt: "owner", exited: false };
+    let entries = [entry];
+    const signals: number[] = [];
+    const processOptions = {
+      paseoHome: root,
+      logger,
+      processTable: createSystemManagedProcessTable(),
+      terminateProcess: terminateWithTreeKill,
+      processTree: {
+        bootId: async () => "boot",
+        list: async () => entries,
+        signal: (pid: number) => {
+          signals.push(pid);
+          entries = [];
+        },
+      },
+    };
+    const registry = createManagedProcessRegistry(processOptions);
+    const processRecord = await registry.record({
+      owner: { provider: "claude", kind: "query" },
+      runtime: { agentId: seed.id, generationId },
+      pid: entry.pid,
+      command: "claude",
+      args: [],
+      processTree: { bootId: "boot", entries: [entry] },
+    });
+    await agents.registerManagedProcess({
+      agentId: seed.id,
+      generationId,
+      processId: processRecord.id,
+    });
+    await ownership.prepare({
+      id: request.transferId,
+      cwd,
+      workspaceId: request.workspaceId,
+      agentIds: [seed.id],
+      destinationServerId: request.destinationServerId,
+      reservationId: request.reservationId,
+    });
+    if (state === "stopped") await registry.stop(processRecord.id);
+    const receiptPath = path.join(root, "runtime", "managed-processes", `${processRecord.id}.json`);
+    const receipt = await readFile(receiptPath);
+    await rm(receiptPath);
+    const recoveredOwnership = new HandoffOwnership({ directory, sourceServerId });
+    await recoveredOwnership.initialize();
+    const recoveredRegistry = createManagedProcessRegistry(processOptions);
+    const { source } = createSourceFixture({
+      ownership: recoveredOwnership,
+      agents: new AgentStorage(path.join(root, "agents"), logger),
+      managedProcesses: recoveredRegistry,
+    });
+    await expect(source.cancel({ ...request, reservationId: randomUUID() })).rejects.toMatchObject({
+      code: "conflict",
+    });
+    await expect(source.cancel(request)).rejects.toMatchObject({ code: "stop_uncertain" });
+    await expect(recoveredOwnership.acquireMutation({ cwd })).rejects.toMatchObject({
+      code: "fenced",
+    });
+    expect(recoveredOwnership.cancellation(request.transferId)).toBeNull();
+    await writeFile(receiptPath, receipt);
+    if (state === "stopped") entries = [{ ...entry, startedAt: "unrelated replacement" }];
+    expect((await source.cancel(request)).receipt.outcome).toBe("cancelled");
+    expect(signals).toEqual([entry.pid]);
+    expect((await agents.get(seed.id))?.lastStatus).toBe("initializing");
+    const release = await recoveredOwnership.acquireMutation({ cwd });
+    release();
+    await source.dispose();
+  },
+);
+
+test.each(["empty", "untracked", "predecessor", "loaded"] as const)(
+  "handoff cancellation distinguishes %s runtime evidence",
+  async (state) => {
+    const logger = createTestLogger();
+    const agents = new AgentStorage(path.join(root, "agents"), logger);
+    const seed = await agents.upsert({
+      id: randomUUID(),
+      provider: "claude",
+      cwd,
+      labels: {},
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      lastStatus: "closed",
+    });
+    await agents.beginRuntimeGeneration(seed, {
+      trackProcesses: state !== "untracked" && state !== "predecessor",
+    });
+    if (state === "predecessor")
+      await agents.beginRuntimeGeneration(seed, { trackProcesses: true });
+    const registry = createManagedProcessRegistry({
+      paseoHome: root,
+      logger,
+      processTable: createSystemManagedProcessTable(),
+      terminateProcess: terminateWithTreeKill,
+    });
+    const manager = new AgentManager({
+      clients: { claude: new ControlledAgentClient("claude", { steerable: false }) },
+      registry: agents,
+      logger,
+    });
+    if (state === "loaded")
+      await manager.createAgent({ provider: "claude", cwd }, seed.id, {
+        workspaceId: "source-workspace",
+      });
+    const fixture = createSourceFixture({
+      agents,
+      managedProcesses: registry,
+      ...(state === "loaded" ? { agentManager: manager } : {}),
+    });
+    const { request } = fixture;
+    await ownership.prepare({
+      id: request.transferId,
+      cwd,
+      workspaceId: request.workspaceId,
+      agentIds: [seed.id],
+      destinationServerId: request.destinationServerId,
+      reservationId: request.reservationId,
+    });
+    const source = fixture.source;
+    try {
+      if (state === "empty") {
+        const cancelled = await source.cancel(request);
+        expect(cancelled.receipt.outcome).toBe("cancelled");
+        // A retry uses the durable cancellation, even if owner evidence is later unavailable.
+        await agents.remove(seed.id);
+        expect(await source.cancel(request)).toEqual(cancelled);
+        const release = await ownership.acquireMutation({ cwd });
+        release();
+      } else {
+        await expect(source.cancel(request)).rejects.toMatchObject({ code: "stop_uncertain" });
+        expect(ownership.cancellation(request.transferId)).toBeNull();
+        await expect(ownership.acquireMutation({ cwd })).rejects.toMatchObject({ code: "fenced" });
+      }
+    } finally {
+      await source.dispose();
+      await manager.closeAgent(seed.id);
+      await manager.flush();
+    }
+  },
+);
 
 test.each(["writers", "watches", "schedules"])(
   "source stop timeout during %s retains cleanup and joins the same stop on retry",

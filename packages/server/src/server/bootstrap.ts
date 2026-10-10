@@ -1672,6 +1672,7 @@ export async function createPaseoDaemon(
   logger.info({ elapsed: elapsed() }, "Schedule service initialized");
   await handoffDestination.recoverActivations();
   const handoffSource = new HandoffSource({
+    managedProcesses,
     delegations,
     schedules: scheduleService,
     pullRequestWatches,

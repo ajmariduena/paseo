@@ -19,6 +19,7 @@ import {
 } from "@getpaseo/protocol/handoff-control";
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import type { AgentManager, ManagedAgent } from "../agent/agent-manager.js";
+import type { ManagedProcessRegistry } from "../managed-processes/managed-processes.js";
 import {
   RestartCancelledWorkSchema,
   type AgentStorage,
@@ -124,6 +125,7 @@ const PreparedSchema = z.object({
 });
 type PreparedSource = z.infer<typeof PreparedSchema>;
 interface SourceOptions {
+  managedProcesses?: Pick<ManagedProcessRegistry, "stopRuntime">;
   delegations: Pick<DelegationService, "checkpointRetainedResults">;
   schedules: Pick<
     ScheduleService,
@@ -602,8 +604,59 @@ export class HandoffSource {
           "stop_uncertain",
           "Source shutdown is still pending; retry cancellation after it finishes. Handoff remains fenced.",
         );
-      return this.options.ownership.cancelReservation(input);
+      return this.options.ownership.cancelReservation(input, (source) =>
+        this.stopRecoveredAgentWriters(source),
+      );
     }).finally(() => this.publishTransfer(input.transferId));
+  }
+
+  private async stopRecoveredAgentWriters(source: SourceHandoffStatus): Promise<void> {
+    for (const agentId of this.stoppedAgentIds(source)) {
+      await this.options.queues.holdForHandoff(agentId);
+      if (this.options.agentManager.getAgent(agentId))
+        refuse(
+          "stop_uncertain",
+          "A source agent has not finished closing. Retry preparation before cancelling.",
+        );
+      await this.options.agentManager.closeAgent(agentId);
+      const record = await this.options.agents.get(agentId);
+      if (!record)
+        refuse(
+          "stop_uncertain",
+          "A source agent record is missing; its process shutdown cannot be confirmed.",
+        );
+      const generations = [...(record.unresolvedRuntimeGenerations ?? [])];
+      if (record.lastStatus !== "closed") {
+        if (!record.runtimeGeneration)
+          refuse(
+            "stop_uncertain",
+            "The interrupted source runtime has no durable process inventory.",
+          );
+        generations.push(record.runtimeGeneration);
+      }
+      for (const generation of generations) {
+        if (generation.managedProcessIds === undefined || !this.options.managedProcesses)
+          refuse(
+            "stop_uncertain",
+            "The interrupted source runtime has no complete process inventory. Handoff remains fenced.",
+          );
+        try {
+          await this.options.managedProcesses.stopRuntime({
+            runtime: { agentId, generationId: generation.id },
+            processIds: generation.managedProcessIds,
+          });
+        } catch (error) {
+          this.options.logger.warn(
+            { err: error, agentId, generationId: generation.id },
+            "Recovered source process shutdown is unconfirmed",
+          );
+          refuse(
+            "stop_uncertain",
+            "Source process shutdown could not be confirmed. Handoff remains fenced; restore missing stop records or retry shutdown.",
+          );
+        }
+      }
+    }
   }
 
   release(transferId: string) {

@@ -474,7 +474,12 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   retain a durable acknowledgement bound to their owning runtime generation until agent closure is
   durable. Tests cover receipt synchronization failure, retry after restart and PID reuse, failed
   agent closure, generation propagation and startup retirement without discarding unresolved owners.
-  This preserves positive stop evidence; it does not reconcile unknown runtime outcomes.
+  Tracked agent generations now retain each process ID before launch admission. Cold cancellation
+  consumes that exact inventory, including unresolved predecessors, and refuses missing records,
+  mismatched owners, unknown coverage or a still-loaded runtime. Tests cover stopping a live recorded
+  launch, reusing its saved stop after PID reuse, a tracked generation with no launches, cancellation
+  retries and closure or synchronization failure during membership publication. This recovers known
+  agent process stops; terminal/setup coverage and unknown conversation outcomes remain open.
   The Claude spawn suite
   now covers durable launch admission, parent death before admission, closure during publication,
   failed-registration cleanup, SDK construction failure after spawning, initial inspection failure

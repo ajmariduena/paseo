@@ -808,7 +808,13 @@ candidate, so closure can repair publication and stop that process without launc
 If the inspection marker itself failed, the live store knows inspection never started and can retry;
 after a crash, a pending marker for an admitted launch does not carry that evidence. Never clear it from a smaller current
 process list. A missing record does not prove exit. Registered Claude launches bind their record to
-the agent's durable runtime generation. After a confirmed stop, keep a synchronized `stopped` record
+the agent's durable runtime generation. That generation retains each launch ID before admission.
+An absent launch list means unknown coverage; an explicitly empty list means this tracked generation
+has not admitted a provider. Preserve the list through snapshots and unresolved generation replacement,
+and refuse further launches at its bound rather than evicting evidence. Cold source cancellation
+checks every expected launch against its agent and generation. Missing records or unknown coverage
+keep ownership fenced; a known closed record can repair its publication without opening a provider.
+After a confirmed stop, keep a synchronized `stopped` record
 while SDK cleanup and agent closure are unfinished. Retrying that exact launch acknowledges the saved
 outcome without signalling current PIDs. Ordinary process cleanup cannot erase it. Retire these records
 only after the owning generation's closed snapshot is durable; startup retries this retirement for

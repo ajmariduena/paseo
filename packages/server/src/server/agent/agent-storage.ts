@@ -5,6 +5,10 @@ import { promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import type { Logger } from "pino";
+import {
+  ManagedProcessIdsSchema,
+  type ManagedRuntime,
+} from "../managed-processes/managed-processes.js";
 
 import { writeJsonFileAtomic, syncFilePublication } from "../atomic-file.js";
 import { AGENT_TURN_OUTCOMES } from "@getpaseo/protocol/agent-lifecycle";
@@ -22,6 +26,10 @@ import {
   type PromptAnnotationCheckpoint,
   type PromptAnnotationPublication,
 } from "./prompt-annotations.js";
+
+interface ManagedProcessRegistration extends ManagedRuntime {
+  processId: string;
+}
 
 const SERIALIZABLE_CONFIG_SCHEMA = z
   .object({
@@ -64,6 +72,7 @@ export const RestartCancelledWorkSchema = z.object({
 const RuntimeGenerationSchema = z.object({
   id: z.string().uuid(),
   openedAt: z.string(),
+  managedProcessIds: ManagedProcessIdsSchema.optional(),
 });
 
 const CarriedPromptSchema = z.object({
@@ -354,9 +363,16 @@ export class AgentStorage {
     return committed;
   }
 
-  async beginRuntimeGeneration(seed: StoredAgentRecord): Promise<string> {
+  async beginRuntimeGeneration(
+    seed: StoredAgentRecord,
+    options?: { trackProcesses: boolean },
+  ): Promise<string> {
     const input = structuredClone(seed);
-    const generation = { id: randomUUID(), openedAt: new Date().toISOString() };
+    const generation = {
+      id: randomUUID(),
+      openedAt: new Date().toISOString(),
+      managedProcessIds: options?.trackProcesses ? [] : undefined,
+    };
     await this.load();
     const opened = await this.queueRecordMutation(
       input.id,
@@ -390,6 +406,37 @@ export class AgentStorage {
     );
     if (!opened) throw new Error("Agent was deleted before opening its runtime");
     return generation.id;
+  }
+
+  async registerManagedProcess(input: ManagedProcessRegistration): Promise<void> {
+    const { agentId, generationId } = input;
+    const processId = z.string().uuid().parse(input.processId);
+    await this.load();
+    await this.queueRecordMutation(
+      agentId,
+      (record) => {
+        this.assertRuntimeGeneration(record, generationId);
+        if (!record || !record.runtimeGeneration)
+          throw new Error("Managed runtime record is missing");
+        if (record.lastStatus === "closed")
+          throw new Error("Agent runtime generation is already closed");
+        const ids = record.runtimeGeneration.managedProcessIds;
+        if (!ids) throw new Error("Runtime process tracking is unavailable");
+        if (ids.includes(processId)) return record;
+        if (ids.length === 1024)
+          throw new Error(
+            "Runtime process inventory is full; close this runtime before another launch",
+          );
+        return {
+          ...record,
+          runtimeGeneration: {
+            ...record.runtimeGeneration,
+            managedProcessIds: [...ids, processId],
+          },
+        };
+      },
+      this.syncPublication,
+    );
   }
 
   async restoreArchivedImportPlacement(
