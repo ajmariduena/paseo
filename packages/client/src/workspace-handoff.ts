@@ -181,6 +181,7 @@ export async function prepareWorkspaceHandoff(
     progress("activating");
     return reserved;
   }
+  if (reserved.state === "staged") return stageWorkspaceHandoff(input);
   progress("preparing_source");
   const priorSource = await handoffRequest(
     () => source.handoffGetSourceStatus({ transferId }),
@@ -237,11 +238,18 @@ export async function prepareWorkspaceHandoff(
     signal,
     onProgress: (transfer) => input.onProgress?.({ phase: "transferring", transfer }),
   });
-  progress("preparing_destination");
+  return stageWorkspaceHandoff(input);
+}
+
+async function stageWorkspaceHandoff(
+  input: Pick<PrepareWorkspaceHandoffInput, "destination" | "transferId" | "signal" | "onProgress">,
+) {
+  const { destination, transferId, signal, onProgress } = input;
+  onProgress?.({ phase: "preparing_destination" });
   const staged = handoffResult(
     await handoffRequest(() => destination.handoffStageDestination({ transferId }), signal),
   );
-  progress("ready");
+  onProgress?.({ phase: "ready" });
   return staged;
 }
 

@@ -1,3 +1,60 @@
+Release recovery after local and source capture loss — Linux, 2026-10-10
+
+The network regression first failed because released-source status tried to read a deleted capture.
+After release, status and receipt retries now use the durable ownership record. The test restarts
+both daemons, removes the source checkout and capture directory, checks the identical signature,
+alters destination staging, and verifies repair from the destination's private archive. It then
+restarts the destination after receipt acceptance and finishes activation with the source stopped.
+
+The browser case now shuts down the source after destination receipt acceptance, deletes the
+local transfer record, reloads the page, selects that transfer on the destination, restores its
+original identity and completes activation. Recovery exposes Resume and no cancellation action.
+The screenshot handoff-release-offline.png shows the restored plan before activation. This still
+starts from a known source workspace in the app; global discovery without that workspace is open.
+
+The 26 form cases include released, activating and active recovery, preservation of context mode,
+and refusals for pre-release states, absent digest, wrong workspace/source or identical hosts.
+The network and browser cases use isolated Linux daemons and a workspace without conversations.
+They establish transaction and UI behavior, not authenticated-provider or physical-host continuity.
+This update ran desktop Chromium only; Electron, native mobile and MacBook/VPS remain untested.
+The main daemon was not restarted. Workspace declarations were rebuilt; typecheck/lint/format pass.
+
+$ npx vitest run src/handoff/form-model.test.ts --bail=1
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+
+
+ Test Files  1 passed (1)
+      Tests  26 passed (26)
+   Start at  05:55:36
+   Duration  380ms (transform 153ms, setup 53ms, import 180ms, tests 35ms, environment 0ms)
+
+
+$ npx vitest run src/server/handoff/archive.e2e.test.ts --testNamePattern="coordinates handoff over RPC" --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 29 skipped (30)
+   Start at  05:53:28
+   Duration  12.84s (transform 9.03s, setup 52ms, import 11.27s, tests 1.39s, environment 0ms)
+
+
+Browser environment:
+  FONTCONFIG_FILE=/tmp/handoff-browser-fonts.conf
+  LD_LIBRARY_PATH=/tmp/handoff-browser-libs/extracted/usr/lib/x86_64-linux-gnu
+  PLAYWRIGHT_BROWSERS_PATH=/tmp/handoff-website-browsers
+  PATH=/tmp/handoff-lsof/extracted/usr/bin:$PATH
+$ npm run test:e2e --workspace=@getpaseo/app -- workspace-handoff.spec.ts --grep 'losing local transfer state' --workers=1
+  ✓  1 [browser] › e2e/browser/workspace-handoff.spec.ts:570:7 › workspace handoff › recovers preparation errors and finishes offline after losing local transfer state (48.8s)
+[e2e] Worker 0 daemon stopped
+[e2e] Metro stopped
+
+  1 passed (1.3m)
+
+Earlier browser validation:
+
 Handoff app validation — Linux, 2026-10-09
 
 Browser fixtures use two isolated hosts and a directory workspace without conversations.

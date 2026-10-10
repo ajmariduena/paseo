@@ -63,7 +63,9 @@ cleanup requires that proof and the previously pinned source key when content is
 After release, a lost acknowledgement leaves the source fenced: query/retry the same transfer,
 never infer rollback from a timeout. Once the destination has durably accepted the signed receipt,
 finish activation using its journal even when the source is offline. Until that acceptance, recovery
-still needs the source to resend its receipt. Returning ownership requires a new handoff. Journals load
+still needs the source to resend its receipt. Resending uses the durable ownership record, without
+requiring the source checkout or temporary capture. A staged destination revalidates its own archive.
+Returning ownership requires a new handoff. Journals load
 before agent resume, schedules, queues, delegation wakes, or public mutations at daemon boot.
 Corrupt or unreadable journals fail closed with a recoverable error, rather than dropping fences.
 Reading a journal after a process restart does not prove its last rename was synchronized. Finish
@@ -362,8 +364,10 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   `packages/client/src/workspace-handoff.ts` coordinates inspection, reservation, source preparation,
   transfer, staging, signed release and activation through correlated `workspace.handoff.*` RPCs.
   Retry reuses the hosts' journals and transfer ID. A network regression loses the release reply,
-  restarts both hosts and removes the original directory before recovering the same destination
-  workspace. It also restarts the destination after accepting release and activates with the source
+  restarts both hosts and removes the original directory and temporary capture. Source status remains
+  readable without a manifest; retry returns the same signed receipt. The destination repairs altered
+  staging from its verified archive before recovering the same workspace. The case also restarts the
+  destination after accepting release and activates with the source
   stopped. Activation without a stored receipt and mismatched source identities are refused.
   Invalid release signatures are refused. The app retains the transfer ID and operation
   intent before sending mutating RPCs. Source-journal discovery finds the held transfer by workspace
@@ -526,7 +530,7 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   completed. Other connected clients' buffers, concurrent windows and unsent conversation draft
   transfer remain open. Other workspace mutation surfaces need inventory.
   Source retirement still needs tombstones to replace broad path fences.
-  Twenty-one form cases cover unavailable modes, inventory changes, lost replies, storage failures,
+  Twenty-six form cases cover unavailable modes, inventory changes, lost replies, storage failures,
   exclusion pagination, duplicate submissions, closing during work, cancellation recovery and host journals advancing
   past local state, including destination lookup and selection failures. Reconstructed records retain
   the reserved mode and reject mismatched host, workspace, reservation, conversation set or digest;
@@ -536,7 +540,9 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   A matching source cancellation tombstone or cancelled destination record restores cancellation
   intent. Pending cleanup offers Resume; starting a new transfer requires completed cleanup.
   The workspace menu keeps saved recovery accessible after an offline reload. A damaged local
-  record opens the form's load error instead of hiding the action. The network regression
+  record opens the form's load error instead of hiding the action. If the destination has accepted
+  release, its authenticated journal also restores the original plan with the source offline and no
+  local transfer record. Earlier phases still require source confirmation. The network regression
   discovers twenty-one reservations after destination restart,
   verifies both scope filters and excludes completed cancellation.
   The network suite covers matching/mismatched Claude versions, missing source
@@ -610,10 +616,12 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   [real-provider browser results](../qa-evidence/handoff-app-real.txt),
   [recovery app results](../qa-evidence/handoff-app.txt)
   and [review](../qa-evidence/handoff-review-compact.png), [pending transfers](../qa-evidence/handoff-existing-transfers.png), [desktop](../qa-evidence/handoff-app-desktop.png) / [compact](../qa-evidence/handoff-app-compact.png)
-  screenshots. Recovery without local state currently requires both paired hosts online. Destination
-  lookup starts only after selecting that host. Cleanup with the source offline is covered after
-  recovering and persisting the local transfer intent. Reopening recovery when the source workspace
-  is unavailable without that local record, pinned-key client persistence,
+  screenshots. The desktop recovery case now deletes local transfer state, reloads with the source
+  shut down, selects the destination's accepted release and finishes activation; see the
+  [recovered delivery](../qa-evidence/handoff-release-offline.png). Destination lookup starts after
+  selecting that host from a known source workspace. Cleanup with the source offline is covered after
+  recovering and persisting the local transfer intent. Discovery when the source workspace itself
+  is absent from the app, pinned-key client persistence,
   provider-discovered integration/resource dispositions,
   concurrent windows and other connected clients' unsaved buffers and conversation draft transfer,
   complete source mutation affordances and native-platform evidence remain open. Provider-discovered

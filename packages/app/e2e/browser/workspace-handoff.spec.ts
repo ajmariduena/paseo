@@ -567,10 +567,10 @@ test.describe("workspace handoff", () => {
     });
   }
 
-  test("recovers preparation and activation errors, reloads a transfer and finishes with source offline", async ({
+  test("recovers preparation errors and finishes offline after losing local transfer state", async ({
     page,
   }, testInfo) => {
-    test.setTimeout(120_000);
+    test.setTimeout(160_000);
     const host = await hosts(page);
     try {
       await writeFile(path.join(host.workspace.repoPath, ".gitignore"), ".env\n");
@@ -723,6 +723,23 @@ test.describe("workspace handoff", () => {
       await expect(page.getByTestId("handoff-submit")).toHaveText("Resume");
       await expect(page).toHaveURL(new RegExp(host.route));
       await host.source.close();
+      await forgetTransfer(page, host.source.serverId, host.workspace.workspaceId);
+      await page
+        .getByTestId("handoff-sheet")
+        .getByRole("button", { name: "Close", exact: true })
+        .click();
+      await page.reload();
+      await openHandoff(page);
+      await page.getByTestId("handoff-host-trigger").click();
+      await page.getByTestId(`handoff-host-${host.destination.serverId}`).click();
+      await page.getByTestId("handoff-recovery-trigger").click();
+      await page.getByTestId(`handoff-recovery-${transferId}`).click();
+      await expect(page.getByTestId("handoff-submit")).toHaveText("Resume");
+      await expect(page.getByTestId("handoff-cancel")).toHaveCount(0);
+      expect(await savedTransfer(page, host.source.serverId, host.workspace.workspaceId)).toBe(
+        transferId,
+      );
+      await page.screenshot({ path: testInfo.outputPath("handoff-offline-recovery.png") });
       await rmdir(staged.result.destinationCwd);
       await page.getByTestId("handoff-submit").click();
       await expect(page.getByTestId("handoff-status")).toHaveText(

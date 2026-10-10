@@ -485,8 +485,8 @@ export class HandoffSource {
 
   async status(transferId: string) {
     const source = this.options.ownership.status(transferId);
-    const captured = source.state === "ready" || source.state === "released";
-    const manifest = captured ? (await this.readPrepared(source)).manifest : null;
+    // Released ownership survives loss of the source checkout and temporary capture.
+    const manifest = source.state === "ready" ? (await this.readPrepared(source)).manifest : null;
     return { source, manifest };
   }
 
@@ -545,7 +545,9 @@ export class HandoffSource {
   release(transferId: string) {
     return this.serialize(async () => {
       const source = this.options.ownership.status(transferId);
-      const prepared = await this.readPrepared(source);
+      const prepared = source.state === "released" ? null : await this.readPrepared(source);
+      if (!source.manifestDigest)
+        refuse("invalid_source", "Source capture is not ready for release");
       // Finish known publication repairs and legacy annotation adoption before sealing writes.
       // Verification repeats these checkpoints inside the sealed ownership transition.
       if (source.state === "ready") await this.checkpointConversations(source.agentIds);
@@ -557,9 +559,13 @@ export class HandoffSource {
           sourceServerId: this.options.serverId,
           destinationServerId: source.destinationServerId,
           reservationId: source.reservationId,
-          manifestDigest: prepared.manifest.entrypoint.sha256,
+          manifestDigest: source.manifestDigest,
         },
-        () => this.verify(source, prepared),
+        () => {
+          if (!prepared)
+            refuse("source_changed", "Released handoff cannot repeat source verification");
+          return this.verify(source, prepared);
+        },
       );
     }).finally(() => this.publishTransfer(transferId));
   }

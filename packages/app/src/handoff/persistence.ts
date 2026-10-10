@@ -91,6 +91,24 @@ export function restoreReservedHandoffRecord(input: {
   return restoredRecord(origin, destination, snapshot, "prepare");
 }
 
+/** The authenticated destination owns the verified release receipt in these states. */
+export function restoreReleasedHandoffRecord(input: {
+  origin: HandoffOrigin;
+  destination: { serverId: string; label: string };
+  snapshot: HandoffDestinationSnapshot;
+}): HandoffRecord {
+  const { origin, destination, snapshot } = input;
+  if (
+    destination.serverId === origin.sourceServerId ||
+    snapshot.sourceServerId !== origin.sourceServerId ||
+    snapshot.sourceWorkspaceId !== origin.workspaceId ||
+    !["released", "activating", "active"].includes(snapshot.state) ||
+    !snapshot.manifestDigest
+  )
+    throw new Error("Destination has not accepted this workspace's release");
+  return restoredRecord(origin, destination, snapshot, "activate");
+}
+
 export function restoreCancelledHandoffRecord(input: {
   origin: HandoffOrigin;
   destination: { serverId: string; label: string };

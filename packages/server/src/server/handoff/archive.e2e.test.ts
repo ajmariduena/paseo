@@ -762,6 +762,7 @@ test.skipIf(process.platform === "win32")(
     await stopHost(source);
     await stopHost(destination);
     await rm(cwd, { recursive: true });
+    await rm(path.join(source.daemon.paseoHome, "handoff"), { recursive: true });
     destination = await startHost("destination");
     await expect(
       activateWorkspaceHandoff({
@@ -773,12 +774,23 @@ test.skipIf(process.platform === "win32")(
     ).rejects.toThrow("Connect both handoff hosts before continuing");
     expect((await destination.client.fetchWorkspaces()).entries).toEqual([]);
     source = await startHost("source");
+    expect(await source.client.handoffGetSourceStatus({ transferId })).toMatchObject({
+      error: null,
+      result: { source: { state: "released" }, manifest: null },
+    });
+    expect(await source.client.handoffReleaseSource({ transferId })).toMatchObject({
+      error: null,
+      result: release.result,
+    });
+    const staging = destination.daemon.daemon.handoffDestination.status(transferId);
+    await writeFile(path.join(staging.stagingCwd, "work.txt"), "Interrupted destination write");
     const resumed = await prepareWorkspaceHandoff({
       ...request,
       source: source.client,
       destination: destination.client,
     });
     expect(resumed).toEqual(staged);
+    expect(await readFile(path.join(staging.stagingCwd, "work.txt"), "utf8")).toBe("Pending work");
     expect(await source.client.handoffFindSource(workspaceLookup)).toMatchObject({
       error: null,
       result: { ...discovered.result, state: "released" },

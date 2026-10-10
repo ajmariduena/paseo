@@ -12,6 +12,7 @@ import {
 import {
   createHandoffPersistence,
   restoreHandoffRecord,
+  restoreReleasedHandoffRecord,
   restoreCancelledHandoffRecord,
 } from "./persistence";
 import { HandoffReviewChangedError } from "@getpaseo/client/internal/workspace-handoff";
@@ -409,6 +410,54 @@ describe("handoff form recovery", () => {
         }),
       ).toThrow("Source and destination handoff records do not match");
     }
+  });
+
+  it.each([
+    { state: "released", primary: "retry" },
+    { state: "activating", primary: "retry" },
+    { state: "active", primary: "open" },
+  ] as const)(
+    "recovers destination $state without a source record or local transfer state",
+    async ({ state, primary }) => {
+      const { ports, persistence, calls } = fixture();
+      const record = restoreReleasedHandoffRecord({
+        origin,
+        destination: { serverId: "destination", label: "VPS" },
+        snapshot: { ...destination, state, continuationMode: "context" },
+      });
+      expect(record).toMatchObject({ transferId, continuationMode: "context", intent: "activate" });
+      await persistence.save(record);
+      const model = openHandoffForm(origin, ports);
+      await model.load();
+      expect(handoffFormActions(model.getState()).canCancel).toBe(false);
+      await model.cancel();
+      expect(calls).toEqual([]);
+      expect(handoffFormActions(model.getState()).primary).toBe(primary);
+    },
+  );
+
+  it("refuses offline recovery before release acceptance or for another workspace", () => {
+    const input = { origin, destination: { serverId: "destination", label: "VPS" } };
+    const released = { ...destination, state: "released" as const };
+    for (const snapshot of [
+      { ...released, state: "reserved" as const },
+      { ...released, state: "receiving" as const },
+      { ...released, state: "staged" as const },
+      { ...released, state: "cancelled" as const },
+      { ...released, sourceServerId: "other-host" },
+      { ...released, sourceWorkspaceId: "other-workspace" },
+      { ...released, manifestDigest: null },
+    ])
+      expect(() => restoreReleasedHandoffRecord({ ...input, snapshot })).toThrow(
+        "has not accepted",
+      );
+    expect(() =>
+      restoreReleasedHandoffRecord({
+        ...input,
+        snapshot: released,
+        destination: { serverId: origin.sourceServerId, label: "Source" },
+      }),
+    ).toThrow("has not accepted");
   });
 
   it("returns to review when the conversation inventory changes before any host mutation", async () => {

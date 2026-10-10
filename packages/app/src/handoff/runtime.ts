@@ -16,6 +16,7 @@ import {
   createHandoffPersistence,
   restoreHandoffRecord,
   restoreReservedHandoffRecord,
+  restoreReleasedHandoffRecord,
   restoreCancelledHandoffRecord,
   type HandoffRecord,
   type HandoffOrigin,
@@ -92,6 +93,8 @@ export const handoffFormPorts: HandoffFormPorts = {
     const snapshot = response.result;
     if (snapshot.state === "cancelled")
       return restoreCancelledHandoffRecord({ origin, destination, snapshot });
+    if (["released", "activating", "active"].includes(snapshot.state))
+      return restoreReleasedHandoffRecord({ origin, destination, snapshot });
     const previous = await connectedClient(origin.sourceServerId).handoffGetSourceStatus({
       transferId,
     });
@@ -116,6 +119,8 @@ export const handoffFormPorts: HandoffFormPorts = {
   async load(origin) {
     const saved = await persistence.load(origin);
     if (saved) return saved;
+    if (!isHostRuntimeConnected(getHostRuntimeStore().getSnapshot(origin.sourceServerId)))
+      return null;
     const record = await readSourceHandoffRecord(origin);
     if (!record) return null;
     await persistence.save(record);

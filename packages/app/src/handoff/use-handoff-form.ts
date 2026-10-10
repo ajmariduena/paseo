@@ -13,7 +13,11 @@ function savedHandoffQueryKey(origin: HandoffOrigin) {
 export function useHandoffAvailable(origin: HandoffOrigin): boolean {
   const supported = useSessionStore(
     (state) =>
-      state.sessions[origin.sourceServerId]?.serverInfo?.features?.workspaceHandoff === true,
+      state.sessions[origin.sourceServerId]?.serverInfo?.features?.workspaceHandoff === true ||
+      Object.entries(state.sessions).some(
+        ([id, session]) =>
+          id !== origin.sourceServerId && session.serverInfo?.features?.workspaceHandoff === true,
+      ),
   );
   const saved = useFetchQuery({
     dataShape: "value",
@@ -24,7 +28,7 @@ export function useHandoffAvailable(origin: HandoffOrigin): boolean {
     enabled: !supported,
     retry: false,
   });
-  // Recovery stays reachable offline; damaged local records open the form's visible load error.
+  // A capable destination can recover its accepted release without source or local transfer state.
   return supported || saved.isError || Boolean(saved.data);
 }
 
