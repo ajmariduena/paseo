@@ -3,6 +3,8 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ko: TranslationResources = {
   handoff: {
+    retainedSchedule:
+      "이 일정은 원본 호스트의 {{cwd}}에 남습니다. 완료되지 않았다면 일시 중지되며, 워크스페이스와 대화만 이동합니다.",
     activeScheduleStops:
       "이 예약 작업이 실행 중입니다. 이전 준비 과정에서 에이전트를 중지하고 결과를 저장합니다.",
     activeHeartbeatStops:

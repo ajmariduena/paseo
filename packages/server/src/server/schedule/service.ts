@@ -47,7 +47,10 @@ import type { FirstAgentContext } from "@getpaseo/protocol/messages";
 
 const SCHEDULE_TICK_INTERVAL_MS = 1000;
 
-type HandoffScheduleSource = Pick<SourceHandoffStatus, "cwd" | "agentIds" | "stoppedWorkReview">;
+type HandoffScheduleSource = Pick<
+  SourceHandoffStatus,
+  "cwd" | "workspaceId" | "agentIds" | "stoppedWorkReview"
+>;
 interface ActiveScheduledRun {
   activeRun: HandoffActiveRun;
   agentId: string;
@@ -439,6 +442,10 @@ export class ScheduleService {
     const cwd = await resolveHandoffPath(source.cwd);
     const records: StoredSchedule[] = [];
     const relativeCwds = new Map<string, string>();
+    const retainedOnSource = new Map<
+      string,
+      NonNullable<HandoffScheduleReview["retainedOnSource"]>
+    >();
     for (const record of await this.store.listForHandoff()) {
       if (record.target.type === "agent") {
         if (!source.agentIds.includes(record.target.agentId)) {
@@ -451,7 +458,21 @@ export class ScheduleService {
         }
       } else {
         const targetCwd = await resolveHandoffPath(record.target.config.cwd);
-        if (!handoffPathsOverlap(cwd, targetCwd)) continue;
+        if (!handoffPathsOverlap(cwd, targetCwd)) {
+          const runsHere = record.runs.some(
+            (run) =>
+              run.status === "running" &&
+              (run.workspaceId === source.workspaceId ||
+                source.agentIds.includes(run.agentId ?? "")),
+          );
+          const reviewed = source.stoppedWorkReview?.schedules?.find(
+            (entry) => entry.id === record.id,
+          )?.retainedOnSource;
+          if (!runsHere && !reviewed) continue;
+          retainedOnSource.set(record.id, { cwd: targetCwd });
+          records.push(record);
+          continue;
+        }
         const relativeCwd = path.relative(cwd, targetCwd);
         if (
           relativeCwd === ".." ||
@@ -463,7 +484,12 @@ export class ScheduleService {
       }
       records.push(record);
     }
-    const reviews = records.map((record) => this.reviewSchedule(record, source));
+    const reviews = records.map((record) => ({
+      ...this.reviewSchedule(record, source),
+      ...(retainedOnSource.has(record.id)
+        ? { retainedOnSource: retainedOnSource.get(record.id) }
+        : {}),
+    }));
     return { records, relativeCwds, reviews };
   }
 
@@ -523,17 +549,32 @@ export class ScheduleService {
       current.length !== approved.length ||
       current.some(
         (record, index) =>
-          record.id !== approved[index].id || record.digest !== approved[index].digest,
+          record.id !== approved[index].id ||
+          record.digest !== approved[index].digest ||
+          record.retainedOnSource?.cwd !== approved[index].retainedOnSource?.cwd,
       )
     )
       throw new Error("Scheduled automation changed after handoff review");
-    for (const record of approved)
-      await this.store.pauseForHandoff({
+    for (const record of approved) {
+      const paused = await this.store.pauseForHandoff({
         id: record.id,
         digest: record.digest,
         pausedAt: this.now().toISOString(),
         activeRun: record.activeRun,
       });
+      if (record.retainedOnSource) {
+        const resume =
+          paused.status === "paused" ? " Resume it on the source explicitly if needed." : "";
+        for (const agentId of source.agentIds)
+          await this.agentStorage.addPendingRestartNote(agentId, [
+            {
+              id: `handoff:${source.id}:schedule:${record.id}`,
+              kind: "handoff_retained_schedule",
+              label: `Schedule ${record.name ?? record.id} (${record.id}) remains ${paused.status} on the source host in ${record.retainedOnSource.cwd}. It was not installed on the destination.${resume}`,
+            },
+          ]);
+      }
+    }
   }
 
   async exportForHandoff(source: HandoffScheduleSource) {
@@ -835,7 +876,7 @@ export class ScheduleService {
     }
     try {
       const schedule = requireSchedule(recovered, scheduleId);
-      await this.archiveRunWorkspace(schedule.target, interruptedWorkspace.workspaceId);
+      await this.archiveRunWorkspace(schedule, interruptedWorkspace.workspaceId);
     } catch (error) {
       this.logger.warn(
         {
@@ -989,7 +1030,10 @@ export class ScheduleService {
     }
   }
 
-  private async acquireTargetMutation(target: ScheduleTarget): Promise<() => void> {
+  private async acquireTargetMutation(
+    target: ScheduleTarget,
+    scheduleId: string,
+  ): Promise<() => void> {
     if (target.type === "agent" && !this.isHandoffIdentityVisible(target.agentId))
       throw new HandoffDestinationError(
         "invalid_state",
@@ -997,7 +1041,7 @@ export class ScheduleService {
       );
     if (!this.handoffOwnership) return () => {};
     if (target.type === "new-agent") {
-      return this.handoffOwnership.acquireMutation({ cwd: target.config.cwd });
+      return this.handoffOwnership.acquireMutation({ cwd: target.config.cwd, scheduleId });
     }
     const record = await this.agentStorage.get(target.agentId);
     // A deleted target can still belong to a released transfer. Its durable fence
@@ -1008,6 +1052,7 @@ export class ScheduleService {
       cwd: source.cwd,
       workspaceId: source.workspaceId,
       agentId: target.agentId,
+      scheduleId,
     });
   }
 
@@ -1021,9 +1066,9 @@ export class ScheduleService {
       for (const finish of releases) finish();
     };
     try {
-      if (previous) releases.push(await this.acquireTargetMutation(previous.target));
+      if (previous) releases.push(await this.acquireTargetMutation(previous.target, previous.id));
       if (next && (!previous || targetChanged))
-        releases.push(await this.acquireTargetMutation(next.target));
+        releases.push(await this.acquireTargetMutation(next.target, next.id));
       return release;
     } catch (error) {
       release();
@@ -1254,7 +1299,7 @@ export class ScheduleService {
         shouldArchiveScheduleRunWorkspace({ agentId, archiveOnFinish: config.archiveOnFinish })
       ) {
         try {
-          await this.archiveRunWorkspace(schedule.target, workspace.workspaceId);
+          await this.archiveRunWorkspace(schedule, workspace.workspaceId);
         } catch (error) {
           this.logger.warn(
             {
@@ -1271,11 +1316,14 @@ export class ScheduleService {
     }
   }
 
-  private async archiveRunWorkspace(target: ScheduleTarget, workspaceId: string): Promise<void> {
+  private async archiveRunWorkspace(
+    schedule: Pick<StoredSchedule, "id" | "target">,
+    workspaceId: string,
+  ): Promise<void> {
     // A run's worktree may be outside its scheduled directory. Re-admit cleanup
     // against that source so a handoff cannot trigger destructive automatic archive.
     await this.skipFencedSchedule(async () => {
-      const release = await this.acquireTargetMutation(target);
+      const release = await this.acquireTargetMutation(schedule.target, schedule.id);
       try {
         await this.archiveWorkspace(workspaceId);
       } finally {

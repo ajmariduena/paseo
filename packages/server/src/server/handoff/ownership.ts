@@ -59,6 +59,7 @@ export interface HandoffMutationScope {
   cwd: string;
   workspaceId?: string;
   agentId?: string;
+  scheduleId?: string;
 }
 export interface HandoffMutationGuard {
   acquire(): () => void;
@@ -98,10 +99,14 @@ export function handoffPathsOverlap(left: string, right: string): boolean {
   return within(left, right) || within(right, left);
 }
 function protects(record: SourceRecord, scope: HandoffMutationScope): boolean {
+  const schedule = record.stoppedWorkReview?.schedules?.find(
+    (entry) => entry.id === scope.scheduleId,
+  );
   return (
     record.state !== "cancelled" &&
     (record.workspaceId === scope.workspaceId ||
       record.agentIds.includes(scope.agentId ?? "") ||
+      (schedule && (record.state !== "released" || !schedule.retainedOnSource)) ||
       handoffPathsOverlap(record.cwd, scope.cwd))
   );
 }
@@ -246,6 +251,8 @@ export class HandoffOwnership {
         reject("invalid_state", "Ownership journal reached its transfer limit");
       this.assertAllowed({ cwd: source.cwd, workspaceId: source.workspaceId });
       for (const agentId of source.agentIds) this.assertAllowed({ cwd: source.cwd, agentId });
+      for (const schedule of source.stoppedWorkReview?.schedules ?? [])
+        this.assertAllowed({ cwd: source.cwd, scheduleId: schedule.id });
       const record: SourceRecord = {
         ...source,
         state: "preparing",

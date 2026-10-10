@@ -46,6 +46,7 @@ const PortableScheduleSchema = StoredScheduleSchema.omit({ target: true }).exten
   ),
   target: z.discriminatedUnion("type", [
     ScheduleTargetSchema.options[0],
+    z.object({ type: z.literal("source"), cwd: z.string().min(1).max(8192) }),
     z.object({
       type: z.literal("new-agent"),
       relativeCwd: z.string().min(1).max(8192),
@@ -54,7 +55,8 @@ const PortableScheduleSchema = StoredScheduleSchema.omit({ target: true }).exten
   ]),
 });
 const HandoffSchedulesSchema = z.object({
-  version: z.literal(1),
+  // COMPAT(handoffScheduleV1): added in v0.11.1, remove after 2027-04-10 once retained v1 archives finish.
+  version: z.union([z.literal(1), z.literal(2)]),
   schedules: z.array(PortableScheduleSchema).max(HANDOFF_SCHEDULE_MAX_COUNT),
 });
 export type HandoffSchedules = z.infer<typeof HandoffSchedulesSchema>;
@@ -157,23 +159,27 @@ interface HandoffScheduleCaptureInput {
 
 function projectHandoffSchedules(input: HandoffScheduleCaptureInput): HandoffSchedules {
   return HandoffSchedulesSchema.parse({
-    version: 1,
+    version: input.reviews?.some((review) => review.retainedOnSource) ? 2 : 1,
     schedules: input.records.map((record) => ({
       ...record,
       reviewDigest: scheduleHandoffDigest(
         record,
         input.reviews?.find((review) => review.id === record.id)?.activeRun,
       ),
-      target:
-        record.target.type === "agent"
-          ? record.target
-          : {
-              type: "new-agent",
-              relativeCwd: input.relativeCwds.get(record.id),
-              config: PortableNewAgentConfigSchema.parse(record.target.config),
-            },
+      target: portableScheduleTarget(record, input),
     })),
   });
+}
+
+function portableScheduleTarget(record: StoredSchedule, input: HandoffScheduleCaptureInput) {
+  const retained = input.reviews?.find((review) => review.id === record.id)?.retainedOnSource;
+  if (retained) return { type: "source", cwd: retained.cwd };
+  if (record.target.type === "agent") return record.target;
+  return {
+    type: "new-agent",
+    relativeCwd: input.relativeCwds.get(record.id),
+    config: PortableNewAgentConfigSchema.parse(record.target.config),
+  };
 }
 
 export function captureHandoffSchedules(input: HandoffScheduleCaptureInput): HandoffSchedules {
@@ -200,6 +206,15 @@ export function parseHandoffSchedules(value: unknown): HandoffSchedules {
     if (schedule.runs.some((run) => run.status === "running"))
       throw new Error("A scheduled run is still active; stop or finish it before handoff");
     if (schedule.target.type === "new-agent") assertRelativeCwd(schedule.target.relativeCwd);
+    if (schedule.target.type === "source") {
+      if (snapshot.version !== 2)
+        throw new Error("Source-retained automation requires schedule snapshot version 2");
+      if (
+        !path.posix.isAbsolute(schedule.target.cwd) &&
+        !path.win32.isAbsolute(schedule.target.cwd)
+      )
+        throw new Error("Source schedule directory must be absolute");
+    }
   }
   return snapshot;
 }
@@ -222,7 +237,8 @@ export interface InstallHandoffSchedulesInput {
 
 export function remapHandoffSchedules(input: InstallHandoffSchedulesInput): StoredSchedule[] {
   const snapshot = parseHandoffSchedules(input.snapshot);
-  return snapshot.schedules.map((schedule) => {
+  return snapshot.schedules.flatMap((schedule) => {
+    if (schedule.target.type === "source") return [];
     let target: StoredSchedule["target"];
     if (schedule.target.type === "agent") {
       const agentId = input.agentMappings.get(schedule.target.agentId);
@@ -237,24 +253,26 @@ export function remapHandoffSchedules(input: InstallHandoffSchedulesInput): Stor
         },
       };
     }
-    return StoredScheduleSchema.parse({
-      ...schedule,
-      id: handoffScheduleId(input.reservationId, schedule.id),
-      target,
-      updatedAt: input.activationAt,
-      pausedAt: schedule.status === "paused" ? input.activationAt : schedule.pausedAt,
-      runs: schedule.runs.map((run) => ({
-        ...run,
-        agentId: run.agentId ? (input.agentMappings.get(run.agentId) ?? null) : null,
-        workspaceId:
-          run.workspaceId === input.sourceWorkspaceId ? input.destinationWorkspaceId : null,
-        origin: run.origin ?? {
-          serverId: input.sourceServerId,
-          scheduleId: schedule.id,
-          agentId: run.agentId,
-          workspaceId: run.workspaceId ?? null,
-        },
-      })),
-    });
+    return [
+      StoredScheduleSchema.parse({
+        ...schedule,
+        id: handoffScheduleId(input.reservationId, schedule.id),
+        target,
+        updatedAt: input.activationAt,
+        pausedAt: schedule.status === "paused" ? input.activationAt : schedule.pausedAt,
+        runs: schedule.runs.map((run) => ({
+          ...run,
+          agentId: run.agentId ? (input.agentMappings.get(run.agentId) ?? null) : null,
+          workspaceId:
+            run.workspaceId === input.sourceWorkspaceId ? input.destinationWorkspaceId : null,
+          origin: run.origin ?? {
+            serverId: input.sourceServerId,
+            scheduleId: schedule.id,
+            agentId: run.agentId,
+            workspaceId: run.workspaceId ?? null,
+          },
+        })),
+      }),
+    ];
   });
 }

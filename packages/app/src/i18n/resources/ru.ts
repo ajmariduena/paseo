@@ -3,6 +3,8 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ru: TranslationResources = {
   handoff: {
+    retainedSchedule:
+      "Это расписание остаётся на исходном хосте в {{cwd}}. Если оно не завершено, оно будет приостановлено; переносятся только рабочая область и разговор.",
     activeScheduleStops:
       "Эта запланированная задача выполняется. Подготовка останавливает её агента и сохраняет результат перед переносом.",
     activeHeartbeatStops:

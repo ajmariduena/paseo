@@ -197,8 +197,67 @@ terminal and no compiler remained; the unchanged isolated retry completed succes
 The service suite initially exposed three fixture creators returning agent snapshots without a
 runtime. They now create real manager sessions before controlling run output. This adds no production
 fallback. The new review warning distinguishes scheduled jobs from heartbeats in all nine locales.
-Jobs running in a different workspace, shared-checkout ownership and uncertain outcomes after a crash
-still need their stated dispositions and recovery evidence.
+Moving a parent schedule directory while a job runs outside the selected workspace, shared-checkout
+ownership and uncertain outcomes after a crash still need disposition and recovery evidence.
+
+Source-retained schedule — the first service regression returned an empty schedule review when
+moving an active job workspace whose schedule targeted another directory. Review now includes that
+outside definition, keeps it paused on the source and captures its terminal result without installing
+it on the destination. The schedule identity participates in existing admission, including an already
+admitted run, so preparation drains publication and prevents automatic workspace deletion. Cancel and
+release permit explicit source schedule resume; the released worktree and conversation remain fenced.
+Unrelated work in the source schedule directory stays available. A carried note identifies the retained
+schedule and source path on the destination.
+
+A second regression paused creation after the agent existed but before its run link was persisted.
+Review again returned an empty array. Selection now also uses the already-persisted workspace ID,
+so the incomplete execution refuses review instead of disappearing from it. No provider turn is used
+to discover or repair an unknown outcome.
+
+Both native/context network cases create a real Git worktree through scheduleRunOnce, retain its
+uncommitted file bytes, prepare and restart both daemons, then activate with readable prompt history
+and the carried note. They reject a stripped source-retention approval and an altered schedule after
+capture. Destination schedule inventory stays empty; the parent source schedule remains paused until
+explicit resume. The provider session and Claude transcript writer are controlled test adapters;
+these cases do not prove authenticated continuation or provider process termination.
+
+The optional wire field preserves older parsers. Source preparation rejects an approval that loses
+that disposition. Captures with source-retained records use schedule snapshot version 2, which older
+version-1 readers reject; normal transferred definitions still use version 1. Import skips source
+records and retains transferred heartbeats. This is schema coverage, not released-binary drift QA.
+
+Source-retained validation commands (packages/server unless stated):
+  npx vitest run src/server/schedule/service.test.ts --bail=1
+    Test Files 1 passed (1); Tests 87 passed (87); Duration 6.91s
+  npx vitest run src/server/handoff/ownership.test.ts --bail=1
+    Test Files 1 passed (1); Tests 14 passed (14); Duration 367ms
+  npx vitest run src/server/handoff/ownership.test.ts src/server/schedule/store.test.ts src/server/schedule/service.test.ts --bail=1
+    The store's 17 cases and then-current service's 86 cases passed. The new ownership fixture
+    initially failed because its second transfer directory did not exist; creating that directory
+    fixed the fixture, and the complete ownership file passed as recorded above.
+  npx vitest run src/server/handoff/archive.e2e.test.ts -t 'retains the parent schedule' --bail=1
+    Test Files 1 passed (1); Tests 2 passed | 39 skipped (41); Duration 23.79s
+  npx vitest run src/messages.wire-compat.test.ts --bail=1 (packages/protocol)
+    Test Files 1 passed (1); Tests 45 passed (45); Duration 1.38s
+  npx vitest run src/i18n/resources.test.ts --bail=1 (packages/app)
+    Test Files 1 passed (1); Tests 40 passed (40); Duration 2.14s
+  npm run build:server; npm run typecheck; npm run lint (repository root)
+    All completed successfully. Final server-only build and root typecheck also passed after adding
+    the workspace-ID startup check. Its first build found the source review helper's narrower Pick;
+    that helper now retains workspaceId. Lint: 0 warnings, 0 errors.
+
+  FONTCONFIG_FILE=/tmp/handoff-browser-fonts.conf LD_LIBRARY_PATH=/tmp/handoff-browser-libs/extracted/usr/lib/x86_64-linux-gnu npm run test:e2e -- e2e/browser/workspace-handoff.spec.ts --grep 'reviews a schedule retained on the source' --workers=1 --max-failures=1 (packages/app)
+    Desktop passed (43.3s); compact passed (44.6s); 2 passed (1.9m).
+
+There are 207 distinct passing cases in this slice: service 87, store 17, ownership 14, wire 45,
+translations 40, network 2 and browser 2. The browser cases use real app RPCs and Git worktrees with
+the controlled provider. They verify the visible source-retention notice, preparation, activation,
+retained source files, prompt history and absence of a destination schedule. Both screenshots were
+inspected: handoff-retained-schedule-desktop.png and handoff-retained-schedule-compact.png. The notice
+wraps inside the sheet and the preparation action stays visible in both layouts.
+The first browser attempt timed out starting an isolated fixture daemon, before opening the flow.
+Cleanup finished; no fixture process remained. The unchanged retry passed without relaxed checks or
+timeouts. No main daemon restart, physical-host test or authenticated provider continuation was run.
 
 Active heartbeat transfer — review now binds the observed run and loaded provider session. The
 allowed review change is that run's terminal outcome plus the pause. Prior history, target and
@@ -840,3 +899,408 @@ PASS — npm run format
 > oxfmt .
 
 Finished in 3468ms on 5372 files using 4 threads.
+
+
+Source-retained regression: omitted outside schedule
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/schedule/service.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: 🔐 prevent committing .env to code: https://dotenvx.com/precommit
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: 🔐 prevent committing .env to code: https://dotenvx.com/precommit
+
+ ❯ src/server/schedule/service.test.ts (86 tests | 1 failed | 85 skipped) 71ms
+     × handoff retains and fences an outside schedule while moving its active job workspace 68ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/schedule/service.test.ts > ScheduleService > handoff retains and fences an outside schedule while moving its active job workspace
+AssertionError: expected [] to match object [ { id: 'a08bfa73', …(3) } ]
+
+- Expected
++ Received
+
+- [
+-   {
+-     "activeRun": {
+-       "id": "21217914-2f63-4b29-8e53-0c18bec8d5c2",
+-     },
+-     "id": "a08bfa73",
+-     "kind": "schedule",
+-     "retainedOnSource": {
+-       "cwd": "/tmp/schedule-service-test-yKNWg8/moving",
+-     },
+-   },
+- ]
++ []
+
+ ❯ src/server/schedule/service.test.ts:587:27
+    585|       try {
+    586|         const schedules = await service.reviewForHandoff(moving);
+    587|         expect(schedules).toMatchObject([{
+       |                           ^
+    588|           id: schedule.id, kind: "schedule", activeRun: { id: (await s…
+    589|           retainedOnSource: { cwd: transfer.cwd },
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 85 skipped (86)
+   Start at  15:33:57
+   Duration  2.26s (transform 1.45s, setup 39ms, import 2.04s, tests 71ms, environment 0ms)
+
+
+
+Source-retained regression: missing published agent link
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/schedule/service.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: 🤖 agentic secret storage: https://dotenvx.com/as2
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  suppress all logs with { quiet: true }
+
+ ❯ src/server/schedule/service.test.ts (87 tests | 1 failed | 86 skipped) 65ms
+     × handoff refuses an outside scheduled workspace before its created agent link is published 63ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/schedule/service.test.ts > ScheduleService > handoff refuses an outside scheduled workspace before its created agent link is published
+AssertionError: promise resolved "[]" instead of rejecting
+
+- Expected:
+Error {
+  "message": "rejected promise",
+}
+
++ Received:
+[]
+
+ ❯ src/server/schedule/service.test.ts:683:54
+    681|           { status: "running", workspaceId: agent.workspaceId, agentId…
+    682|         ]);
+    683|         await expect(service.reviewForHandoff(moving)).rejects.toThrow…
+       |                                                      ^
+    684|       } finally {
+    685|         await manager.closeAgent(agent.id);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 86 skipped (87)
+   Start at  15:47:29
+   Duration  2.09s (transform 1.35s, setup 36ms, import 1.87s, tests 65ms, environment 0ms)
+
+
+
+Source-retained startup and paused-note verification
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla
+
+
+ Test Files  1 passed (1)
+      Tests  2 passed | 85 skipped (87)
+   Start at  15:47:42
+   Duration  2.05s (transform 1.27s, setup 34ms, import 1.82s, tests 87ms, environment 0ms)
+
+
+
+Source-retained service regression file
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  87 passed (87)
+   Start at  15:47:58
+   Duration  6.91s (transform 1.51s, setup 35ms, import 2.08s, tests 4.69s, environment 0ms)
+
+
+
+Source-retained ownership regression file
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  14 passed (14)
+   Start at  15:42:13
+   Duration  367ms (transform 121ms, setup 39ms, import 159ms, tests 68ms, environment 0ms)
+
+
+
+Source-retained network validation
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  2 passed | 39 skipped (41)
+   Start at  15:45:42
+   Duration  23.79s (transform 8.46s, setup 45ms, import 10.52s, tests 13.13s, environment 0ms)
+
+
+
+Source-retained wire compatibility
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/protocol
+
+
+ Test Files  1 passed (1)
+      Tests  45 passed (45)
+   Start at  15:44:22
+   Duration  1.38s (transform 680ms, setup 0ms, import 1.09s, tests 150ms, environment 0ms)
+
+
+
+Source-retained translations
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+
+
+ Test Files  1 passed (1)
+      Tests  40 passed (40)
+   Start at  15:45:03
+   Duration  2.14s (transform 1.03s, setup 57ms, import 1.15s, tests 802ms, environment 0ms)
+
+
+
+Source-retained final root typecheck
+
+> paseo@0.11.1 typecheck
+> npm run typecheck --workspaces --if-present
+
+
+> @getpaseo/builtin-plugins@0.11.1 typecheck
+> tsgo -p tsconfig.json --noEmit
+
+
+> @getpaseo/expo-two-way-audio@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/highlight@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/plugin@0.11.1 typecheck
+> tsgo --noEmit && tsgo -p tsconfig.examples.json --noEmit
+
+
+> @getpaseo/protocol@0.11.1 pretypecheck
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/client@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/server@0.11.1 typecheck
+> tsgo -p tsconfig.server.typecheck.json --noEmit
+
+
+> @getpaseo/app@0.11.0-beta.36 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/relay@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/website@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/desktop@0.11.1 typecheck
+> tsgo --noEmit -p tsconfig.json
+
+
+> @getpaseo/cli@0.11.1 typecheck
+> tsgo --noEmit
+
+
+
+Source-retained root lint
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 2.0s on 5035 files with 177 rules using 4 threads.
+
+
+Source-retained browser: first startup failure
+
+> @getpaseo/app@0.11.0-beta.36 test:e2e
+> playwright test --project=browser e2e/browser/workspace-handoff.spec.ts --grep reviews a schedule retained on the source --workers=1 --max-failures=1
+
+[metro] Starting project at /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+[metro] Using src/app as the root directory for Expo Router.
+[metro] Experimental Expo Autolinking module resolver is enabled.
+[metro] React Compiler enabled
+[metro] Starting Metro Bundler
+[metro] Waiting on http://localhost:33111
+[metro] Logs for your project will appear below.
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] | (node:1011887) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[metro] | (Use `node --trace-warnings ...` to show where the warning was created)
+[metro] | (node:1011881) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[metro] | (Use `node --trace-warnings ...` to show where the warning was created)
+[metro] | (node:1011888) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[metro] | (Use `node --trace-warnings ...` to show where the warning was created)
+[metro] Web packages/app/index.ts ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.9% (5630/5631)
+[metro] Web packages/app/index.ts ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.9% (5631/5631)
+[metro] Web Bundled 24251ms packages/app/index.ts (5632 modules)
+[e2e] Metro warmed on port 33111
+
+Running 2 tests using 1 worker
+
+(node:1012024) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:1012024) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[e2e] Worker 0 daemon started on port 46037, home: /tmp/paseo-e2e-worker-0-H4wttD
+[e2e] Worker 0 daemon stopped
+  ✘  1 [browser] › e2e/browser/workspace-handoff.spec.ts:450:9 › workspace handoff › desktop reviews a schedule retained on the source while moving its job worktree (27.8s)
+[31mTesting stopped early after 1 maximum allowed failures.[39m
+[e2e] Metro stopped
+
+
+  1) [browser] › e2e/browser/workspace-handoff.spec.ts:450:9 › workspace handoff › desktop reviews a schedule retained on the source while moving its job worktree
+
+    Error: Timed out starting outdated daemon. (node:1012154) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+    (Use `node --trace-warnings ...` to show where the warning was created)
+    (node:1012154) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+    (Use `node --trace-warnings ...` to show where the warning was created)
+
+
+       at ../support/helpers/daemon-update.ts:157
+
+      155 |   return new Promise((resolve, reject) => {
+      156 |     const timeout = setTimeout(() => {
+    > 157 |       reject(new Error(`Timed out starting outdated daemon. ${stderr.join("")}`));
+          |              ^
+      158 |     }, 20_000);
+      159 |
+      160 |     child.once("exit", (code, signal) => {
+        at Timeout.<anonymous> (/home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app/e2e/support/helpers/daemon-update.ts:157:14)
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    test-results/workspace-handoff-workspac-beb52-ile-moving-its-job-worktree-browser/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #2: video (video/webm) ──────────────────────────────────────────────────────────────
+    test-results/workspace-handoff-workspac-beb52-ile-moving-its-job-worktree-browser/video.webm
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #3: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results/workspace-handoff-workspac-beb52-ile-moving-its-job-worktree-browser/trace.zip
+    Usage:
+
+        npx playwright show-trace test-results/workspace-handoff-workspac-beb52-ile-moving-its-job-worktree-browser/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  1 failed
+    [browser] › e2e/browser/workspace-handoff.spec.ts:450:9 › workspace handoff › desktop reviews a schedule retained on the source while moving its job worktree
+  1 did not run
+  1 error was not a part of any test, see above for details
+npm error Lifecycle script `test:e2e` failed with error:
+npm error code 1
+npm error path /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+npm error workspace @getpaseo/app@0.11.0-beta.36
+npm error location /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+npm error command failed
+npm error command sh -c playwright test --project=browser e2e/browser/workspace-handoff.spec.ts --grep 'reviews a schedule retained on the source' --workers=1 --max-failures=1
+
+
+Source-retained browser: unchanged retry
+
+> @getpaseo/app@0.11.0-beta.36 test:e2e
+> playwright test --project=browser e2e/browser/workspace-handoff.spec.ts --grep reviews a schedule retained on the source --workers=1 --max-failures=1
+
+[metro] Starting project at /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+[metro] Using src/app as the root directory for Expo Router.
+[metro] Experimental Expo Autolinking module resolver is enabled.
+[metro] React Compiler enabled
+[metro] Starting Metro Bundler
+[metro] Waiting on http://localhost:37075
+[metro] Logs for your project will appear below.
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 3823ms packages/app/index.ts (5631 modules)
+[metro] Web packages/app/index.ts ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.9% (5631/5631)
+[e2e] Metro warmed on port 37075
+
+Running 2 tests using 1 worker
+
+(node:1012485) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:1012485) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[e2e] Worker 0 daemon started on port 35009, home: /tmp/paseo-e2e-worker-0-DimYLY
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 263ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 90ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro] Web Bundled 317ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 10ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 245ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 8ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 277ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 22ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 320ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 22ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+  ✓  1 [browser] › e2e/browser/workspace-handoff.spec.ts:450:9 › workspace handoff › desktop reviews a schedule retained on the source while moving its job worktree (43.3s)
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 300ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 7ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 261ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 5ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 257ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 8ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 218ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 7ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 246ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 6ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+  ✓  2 [browser] › e2e/browser/workspace-handoff.spec.ts:450:9 › workspace handoff › compact reviews a schedule retained on the source while moving its job worktree (44.6s)
+[e2e] Worker 0 daemon stopped
+[e2e] Metro stopped
+
+  2 passed (1.9m)
+
+
+Source-retained formatting before commit
+
+> paseo@0.11.1 format
+> oxfmt .
+
+Finished in 3757ms on 5380 files using 4 threads.

@@ -634,7 +634,7 @@ export class HandoffSource {
 
   private async requireAutomationReview(
     input: SourceRequest,
-    inventory: Pick<SourceHandoffStatus, "agentIds" | "cwd">,
+    inventory: Pick<SourceHandoffStatus, "agentIds" | "cwd" | "workspaceId">,
   ) {
     if (
       !input.stoppedWorkReview &&
@@ -878,7 +878,10 @@ export class HandoffSource {
       (current.schedules ?? []).some(
         (record) =>
           !(approved.schedules ?? []).some(
-            (entry) => entry.id === record.id && entry.digest === record.digest,
+            (entry) =>
+              entry.id === record.id &&
+              entry.digest === record.digest &&
+              entry.retainedOnSource?.cwd === record.retainedOnSource?.cwd,
           ),
       )
     )

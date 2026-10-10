@@ -585,11 +585,18 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   A running heartbeat or job whose agent belongs to the selected workspace can be reviewed when
   its exact run and loaded session are known. Preparation closes that session, joins durable outcome
   publication, then captures the paused automation and its terminal result. Each job creates its own
-  workspace; selecting that workspace also transfers its conversation and files. Heartbeat notifications
+  workspace; selecting that workspace also transfers its conversation and files. When a running job's
+  worktree is separate from its schedule's target directory, keep the definition paused on the source
+  and show that disposition before preparation. A job still creating its agent cannot pass review.
+  Fence that schedule by identity through outcome
+  publication and source release; do not fence unrelated work in its target directory. The captured
+  source record and carried conversation note preserve where it remains. Only transferred definitions
+  are installed at the destination. Source-retained definitions can be resumed explicitly after release
+  or cancellation; completed definitions stay completed. Heartbeat notifications
   are persisted before dispatch so exported history can retain them. Review refuses replaced or
   unknown runs; capture still refuses unfinished runs, active jobs outside the transferred conversation
   set, ancestor-directory schedules, outside heartbeat owners, damaged
-  inventory, more than 1,000 transferred schedules or metadata beyond 32 MiB. Two-daemon tests cover
+  inventory, more than 1,000 reviewed schedules or metadata beyond 32 MiB. Two-daemon tests cover
   both continuation modes, readable notifications, source changes, restarts and interrupted installation.
   Known completed outcomes now retry failed publication from immutable retained inputs, including
   a failed synchronization after rename. A storage failure cannot replace successful output with
@@ -600,7 +607,7 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   [lifecycle cancellation](../agent-lifecycle.md#cancellation). Job cleanup rechecks the scheduled
   source's ownership before automatic archive, including during startup recovery. A worktree outside
   that directory must remain available when the source is fenced.
-  Reviewed shutdown and workspace disposition for jobs running in another workspace, and
+  Moving a schedule's parent directory while its job runs in a workspace outside the transfer, and
   recovery of uncertain run outcomes after a crash, remain open. An admitted runner can still
   prevent draining, but the preparation wait expires with
   ownership retained under the [recovery contract](#ownership-and-recovery). See the scheduler cases in the

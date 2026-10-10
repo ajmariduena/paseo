@@ -3,6 +3,8 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ar: TranslationResources = {
   handoff: {
+    retainedSchedule:
+      "يبقى هذا الجدول على المضيف المصدر في {{cwd}}. سيُوقف مؤقتًا إذا لم يكتمل؛ تُنقل مساحة عمله ومحادثته فقط.",
     activeScheduleStops:
       "هذه المهمة المجدولة قيد التشغيل. يوقف التحضير وكيلها ويحفظ النتيجة قبل النقل.",
     activeHeartbeatStops: "هذا التذكير قيد التشغيل. يوقفه التحضير ويحفظ نتيجته قبل النقل.",

@@ -573,6 +573,211 @@ test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
   30_000,
 );
 
+test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
+  "%s handoff retains the parent schedule while moving its running Git worktree",
+  async (continuationMode) => {
+    let source = await startHost("source", true);
+    let destination = await startHost("destination", true);
+    const cwd = path.join(await realpath(root), "scheduled-project");
+    await mkdir(cwd);
+    await writeFile(path.join(cwd, "unfinished.txt"), "Keep this scheduled work");
+    const git = (args: string[]) =>
+      exec("git", args, {
+        cwd,
+        env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
+      });
+    await git(["init", "--initial-branch=main"]);
+    await git(["add", "unfinished.txt"]);
+    await git([
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.test",
+      "-c",
+      "commit.gpgSign=false",
+      "commit",
+      "-m",
+      "Initial work",
+    ]);
+    const configDir = path.join(root, "source", "claude");
+    const manager = source.daemon.daemon.agentManager;
+    manager.registerClient(
+      "claude",
+      createTestAgentClient("claude", {
+        claudeRuntime: { configDir, cliVersion: "2.1.295" },
+      }),
+    );
+    const prompt = "Continue the unfinished scheduled task";
+    const created = await source.client.scheduleCreate({
+      name: "Scheduled implementation",
+      prompt,
+      cadence: { type: "cron", expression: "0 0 1 1 *", timezone: "UTC" },
+      runOnCreate: false,
+      target: { type: "new-agent", config: { provider: "claude", cwd, isolation: "worktree" } },
+    });
+    if (!created.schedule) throw new Error("Missing schedule");
+    const scheduleId = created.schedule.id;
+    holdNextScheduledClaudeTestTurn({ manager, scheduleId, configDir });
+    const execution = source.client
+      .scheduleRunOnce({ id: scheduleId })
+      .catch((error: unknown) => error);
+    await expect
+      .poll(async () => (await source.client.scheduleInspect({ id: scheduleId })).schedule?.runs)
+      .toEqual([
+        expect.objectContaining({
+          status: "running",
+          agentId: expect.any(String),
+          workspaceId: expect.any(String),
+        }),
+      ]);
+    const run = (await source.client.scheduleInspect({ id: scheduleId })).schedule?.runs[0];
+    if (!run?.agentId || !run.workspaceId) throw new Error("Missing created workspace and agent");
+    const { agentId, workspaceId } = run;
+    const worktree = manager.getAgent(agentId)?.cwd;
+    if (!worktree) throw new Error("Missing scheduled worktree");
+    expect(worktree).not.toBe(cwd);
+    await writeFile(path.join(worktree, "unfinished.txt"), "Keep the job's uncommitted changes");
+    await expect
+      .poll(() => source.client.handoffPreviewSource({ workspaceId }))
+      .toMatchObject({
+        error: null,
+        result: {
+          conversations: [{ agentId, state: "available" }],
+          stoppedWork: {
+            review: {
+              schedules: [
+                {
+                  id: scheduleId,
+                  kind: "schedule",
+                  activeRun: { id: run.id },
+                  retainedOnSource: { cwd },
+                },
+              ],
+            },
+          },
+        },
+      });
+    const review = (await source.client.handoffPreviewSource({ workspaceId })).result;
+    if (!review?.stoppedWork?.review) throw new Error("Missing created job review");
+    const strippedReview = {
+      ...review.stoppedWork.review,
+      schedules: review.stoppedWork.review.schedules?.map(
+        ({ retainedOnSource: _retained, ...schedule }) => schedule,
+      ),
+    };
+    expect(
+      (
+        await source.client.handoffPrepareSource({
+          transferId: randomUUID(),
+          workspaceId,
+          agentIds: [agentId],
+          destinationServerId: destination.daemon.daemon.getServerId(),
+          reservationId: randomUUID(),
+          stoppedWorkReview: strippedReview,
+        })
+      ).error?.code,
+    ).toBe("review_changed");
+    expect((await source.client.handoffFindSource({ workspaceId })).result).toBeNull();
+    const transferId = randomUUID();
+    await prepareWorkspaceHandoff({
+      transferId,
+      workspaceId,
+      destinationParent: root,
+      continuationMode,
+      source: source.client,
+      destination: destination.client,
+      stoppedWorkReview: review.stoppedWork.review,
+    });
+    expect(await execution).toMatchObject({
+      schedule: {
+        runs: [
+          {
+            id: run.id,
+            agentId,
+            workspaceId,
+            status: "failed",
+            error: `Scheduled agent ${agentId} was canceled`,
+          },
+        ],
+      },
+    });
+    expect(manager.getAgent(agentId)).toBeNull();
+    expect(await readFile(path.join(cwd, "unfinished.txt"), "utf8")).toBe(
+      "Keep this scheduled work",
+    );
+    const sourceStore = new ScheduleStore(
+      path.join(source.daemon.daemon.config.paseoHome, "schedules"),
+      createTestLogger(),
+    );
+    const capturedSchedule = await sourceStore.get(scheduleId);
+    if (!capturedSchedule) throw new Error("Missing retained source schedule");
+    await sourceStore.update(scheduleId, (record) => ({ ...record, prompt: "Unreviewed change" }));
+    expect((await source.client.handoffReleaseSource({ transferId })).error?.code).toBe(
+      "source_changed",
+    );
+    await sourceStore.update(scheduleId, () => capturedSchedule);
+    await stopHost(source);
+    await stopHost(destination);
+    source = await startHost("source", true);
+    destination = await startHost("destination", true);
+    const active = await activateWorkspaceHandoff({
+      transferId,
+      sourceServerId: source.daemon.daemon.getServerId(),
+      getSource: () => source.client,
+      destination: destination.client,
+    });
+    const destinationAgentId = active.agentMappings[0].destinationAgentId;
+    expect((await destination.client.scheduleList()).schedules).toEqual([]);
+    expect((await source.client.scheduleInspect({ id: scheduleId })).schedule).toMatchObject({
+      status: "paused",
+      target: { type: "new-agent", config: { cwd } },
+      runs: [{ id: run.id, agentId, workspaceId, status: "failed" }],
+    });
+    expect(await readFile(path.join(worktree, "unfinished.txt"), "utf8")).toBe(
+      "Keep the job's uncommitted changes",
+    );
+    expect(await readFile(path.join(active.destinationCwd, "unfinished.txt"), "utf8")).toBe(
+      "Keep the job's uncommitted changes",
+    );
+    expect(
+      (await destination.daemon.daemon.agentStorage.get(destinationAgentId))?.pendingRestartNote,
+    ).toEqual([
+      expect.objectContaining({
+        kind: "handoff_retained_schedule",
+        label: expect.stringContaining(`remains paused on the source host in ${cwd}`),
+      }),
+    ]);
+    const history = await destination.client.handoffGetConversationHistory({
+      agentId: destinationAgentId,
+    });
+    expect(history.error).toBeNull();
+    expect(history.result).toMatchObject({
+      mode: continuationMode,
+      timeline: {
+        entries: [
+          expect.objectContaining({
+            item: expect.objectContaining({ type: "user_message", text: prompt }),
+          }),
+        ],
+      },
+    });
+    expect(destination.daemon.daemon.agentManager.getAgent(destinationAgentId)).toBeNull();
+    expect((await source.client.scheduleResume({ id: scheduleId })).schedule?.status).toBe(
+      "active",
+    );
+    const release = await source.daemon.daemon.handoffOwnership.acquireMutation({ cwd });
+    release();
+    await expect(
+      source.daemon.daemon.handoffOwnership.acquireMutation({
+        cwd: worktree,
+        agentId,
+        workspaceId,
+      }),
+    ).rejects.toMatchObject({ code: "fenced" });
+  },
+  30_000,
+);
+
 async function storedNativeRecord(host: Host, agentId: string) {
   const record = await host.daemon.daemon.agentStorage.get(agentId);
   if (!record?.persistence) throw new Error("Missing native record");

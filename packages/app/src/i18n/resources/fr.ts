@@ -3,6 +3,8 @@ import { pluginSettings } from "./plugin-settings";
 
 export const fr: TranslationResources = {
   handoff: {
+    retainedSchedule:
+      "Cette planification reste sur l’hôte source dans {{cwd}}. Elle sera suspendue si elle n’est pas terminée ; seuls son espace de travail et sa conversation sont transférés.",
     activeScheduleStops:
       "Cette tâche planifiée est en cours. La préparation arrête son agent et enregistre le résultat avant le transfert.",
     activeHeartbeatStops:

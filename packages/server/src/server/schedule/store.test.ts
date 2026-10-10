@@ -489,6 +489,23 @@ describe("ScheduleStore", () => {
         schedules: [{ ...snapshot.schedules[0], cadence: { type: "cron", expression: "invalid" } }],
       }),
     ).toThrow();
+    const retained = captureHandoffSchedules({
+      records: [schedule, heartbeat],
+      relativeCwds: new Map(),
+      reviews: [{ ...reviewScheduleForHandoff(schedule), retainedOnSource: { cwd: tempDir } }],
+    });
+    expect(retained.version).toBe(2);
+    expect(retained.schedules[0].target).toEqual({ type: "source", cwd: tempDir });
+    expect(retained.schedules[0].runs).toEqual(schedule.runs);
+    expect(JSON.stringify(retained)).not.toContain("private-value");
+    expect(remapHandoffSchedules({ ...input, snapshot: retained })).toEqual([installed[1]]);
+    expect(() => parseHandoffSchedules({ ...retained, version: 1 })).toThrow("version 2");
+    expect(() =>
+      parseHandoffSchedules({
+        ...retained,
+        schedules: [{ ...retained.schedules[0], target: { type: "source", cwd: "relative" } }],
+      }),
+    ).toThrow("absolute");
   });
 
   test("handoff mutation admission checks the latest queued target before deletion", async () => {

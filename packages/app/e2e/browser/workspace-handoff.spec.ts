@@ -447,6 +447,166 @@ test.describe("workspace handoff", () => {
       }
     });
 
+    test(`${layout} reviews a schedule retained on the source while moving its job worktree`, async ({
+      page,
+    }) => {
+      test.setTimeout(120_000);
+      if (layout === "compact") await page.setViewportSize({ width: 390, height: 844 });
+      const fixtureDirectory = await mkdtemp(path.join(tmpdir(), "handoff-created-job-browser-"));
+      const versionCommand = path.join(fixtureDirectory, "version.cjs");
+      await writeFile(
+        versionCommand,
+        "if (process.argv[2] !== '--version') throw new Error('No real provider turns in this fixture'); console.log('2.1.295');\n",
+      );
+      const host = await hosts(page, {
+        git: true,
+        providerSettings: {
+          source: {
+            claude: {
+              command: { mode: "replace", argv: [process.execPath, versionCommand] },
+              env: { CLAUDE_CONFIG_DIR: path.join(fixtureDirectory, "source") },
+            },
+          },
+          destination: {
+            claude: {
+              command: { mode: "replace", argv: [process.execPath, versionCommand] },
+              env: { CLAUDE_CONFIG_DIR: path.join(fixtureDirectory, "destination") },
+            },
+          },
+        },
+      }).catch(async (error: unknown) => {
+        await rm(fixtureDirectory, { recursive: true, force: true });
+        throw error;
+      });
+      try {
+        const cwd = host.workspace.repoPath;
+        const prompt = "Continue the unfinished scheduled task";
+        const created = await host.sourceClient.scheduleCreate({
+          name: "Scheduled implementation",
+          prompt,
+          runOnCreate: false,
+          cadence: { type: "cron", expression: "0 0 1 1 *", timezone: "UTC" },
+          target: { type: "new-agent", config: { provider: "claude", cwd, isolation: "worktree" } },
+        });
+        if (!created.schedule) throw new Error("Missing schedule");
+        const scheduleId = created.schedule.id;
+        await host.source.holdNextScheduledClaudeTurn(scheduleId);
+        const running = host.sourceClient
+          .scheduleRunOnce({ id: scheduleId })
+          .catch((error: unknown) => error);
+        await expect
+          .poll(
+            async () =>
+              (await host.sourceClient.scheduleInspect({ id: scheduleId })).schedule?.runs,
+          )
+          .toEqual([
+            expect.objectContaining({
+              status: "running",
+              agentId: expect.any(String),
+              workspaceId: expect.any(String),
+            }),
+          ]);
+        const run = (await host.sourceClient.scheduleInspect({ id: scheduleId })).schedule?.runs[0];
+        if (!run?.agentId || !run.workspaceId)
+          throw new Error("Missing created workspace and agent");
+        const { agentId, workspaceId } = run;
+        const jobCwd = (await host.sourceClient.fetchAgent(agentId))?.agent.cwd;
+        if (!jobCwd) throw new Error("Missing scheduled worktree");
+        expect(jobCwd).not.toBe(cwd);
+        await writeFile(path.join(jobCwd, "unfinished.txt"), "Keep this scheduled work");
+        await expect
+          .poll(() => host.sourceClient.handoffPreviewSource({ workspaceId }))
+          .toMatchObject({
+            error: null,
+            result: {
+              conversations: [{ agentId, state: "available" }],
+              stoppedWork: {
+                review: {
+                  schedules: [
+                    {
+                      id: scheduleId,
+                      kind: "schedule",
+                      activeRun: { id: run.id },
+                      retainedOnSource: { cwd },
+                    },
+                  ],
+                },
+              },
+            },
+          });
+        await page.goto(
+          `/h/${host.source.serverId}/workspace/${workspaceId}?open=${encodeURIComponent(`agent:${agentId}`)}`,
+        );
+        await openHandoff(page);
+        await page.getByTestId("handoff-host-trigger").click();
+        await page.getByTestId(`handoff-host-${host.destination.serverId}`).click();
+        await page.getByTestId("handoff-parent").fill(host.destinationParent);
+        await page.getByTestId("handoff-submit").click();
+        const warning = page.getByTestId("handoff-retained-schedule-review");
+        await expect(warning).toHaveText(
+          `This schedule stays on the source host at ${cwd}. It will be paused if unfinished; only its workspace and conversation move.`,
+        );
+        await warning.scrollIntoViewIfNeeded();
+        await waitForSettledPosition(warning);
+        await page.screenshot({
+          path: path.join(
+            __dirname,
+            `../../../../docs/qa-evidence/handoff-retained-schedule-${layout}.png`,
+          ),
+        });
+        await page.getByTestId("handoff-submit").click();
+        await expect(page.getByTestId("handoff-submit")).toHaveText("Move workspace", {
+          timeout: 30_000,
+        });
+        expect(await running).toMatchObject({
+          schedule: {
+            runs: [
+              {
+                status: "failed",
+                agentId,
+                error: `Scheduled agent ${agentId} was canceled`,
+              },
+            ],
+          },
+        });
+        const transferId = await savedTransfer(page, host.source.serverId, workspaceId);
+        await page.getByTestId("handoff-submit").click();
+        await expect(page.getByTestId("handoff-submit")).toHaveText("Open destination", {
+          timeout: 30_000,
+        });
+        const { result: active } = await host.destinationClient.handoffGetDestinationStatus({
+          transferId,
+        });
+        if (!active) throw new Error("Missing activated destination");
+        expect(active.state).toBe("active");
+        const destinationAgentId = active.agentMappings[0].destinationAgentId;
+        expect((await host.destinationClient.scheduleList()).schedules).toEqual([]);
+        expect(
+          (await host.sourceClient.scheduleInspect({ id: scheduleId })).schedule,
+        ).toMatchObject({
+          status: "paused",
+          target: { type: "new-agent", config: { cwd } },
+          runs: [{ status: "failed", agentId, workspaceId }],
+        });
+        expect(await readFile(path.join(jobCwd, "unfinished.txt"), "utf8")).toBe(
+          "Keep this scheduled work",
+        );
+        expect(await readFile(path.join(active.destinationCwd, "unfinished.txt"), "utf8")).toBe(
+          "Keep this scheduled work",
+        );
+        const history = await host.destinationClient.handoffGetConversationHistory({
+          agentId: destinationAgentId,
+        });
+        expect(history.error).toBeNull();
+        expect(history.result?.timeline.entries.map((entry) => entry.item)).toEqual([
+          expect.objectContaining({ type: "user_message", text: prompt }),
+        ]);
+      } finally {
+        await host.close();
+        await rm(fixtureDirectory, { recursive: true, force: true });
+      }
+    });
+
     test(`${layout} preserves mixed conversation choices through recovery and activation`, async ({
       page,
     }, testInfo) => {

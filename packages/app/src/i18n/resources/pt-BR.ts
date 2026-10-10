@@ -3,6 +3,8 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ptBR: TranslationResources = {
   handoff: {
+    retainedSchedule:
+      "Este agendamento permanece no host de origem em {{cwd}}. Será pausado se não tiver terminado; apenas seu workspace e sua conversa serão transferidos.",
     activeScheduleStops:
       "Esta tarefa agendada está em execução. A preparação interrompe o agente e salva o resultado antes da transferência.",
     activeHeartbeatStops:

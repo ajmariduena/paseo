@@ -483,12 +483,19 @@ function ReviewWorkspace({
           ) : null}
           {stoppedWork.review?.schedules?.length ? (
             <View style={styles.status} testID="handoff-schedules-review">
-              <Text style={styles.text}>{t("handoff.automationPaused")}</Text>
+              {stoppedWork.review.schedules.some((schedule) => !schedule.retainedOnSource) ? (
+                <Text style={styles.text}>{t("handoff.automationPaused")}</Text>
+              ) : null}
               {stoppedWork.review.schedules.map((schedule) => (
                 <View key={schedule.id} style={styles.status}>
                   <Text selectable style={styles.value}>
                     {schedule.name ?? schedule.id} · {schedule.cadence}
                   </Text>
+                  {schedule.retainedOnSource ? (
+                    <Text selectable style={styles.text} testID="handoff-retained-schedule-review">
+                      {t("handoff.retainedSchedule", { cwd: schedule.retainedOnSource.cwd })}
+                    </Text>
+                  ) : null}
                   {schedule.activeRun ? (
                     <Text style={styles.text} testID={`handoff-active-${schedule.kind}-review`}>
                       {t(
@@ -498,10 +505,11 @@ function ReviewWorkspace({
                       )}
                     </Text>
                   ) : null}
-                  {schedule.omittedSettings.length || schedule.omittedMcpServers.length ? (
+                  {!schedule.retainedOnSource &&
+                  (schedule.omittedSettings.length || schedule.omittedMcpServers.length) ? (
                     <Text style={styles.text}>{t("handoff.automationSettingsOmitted")}</Text>
                   ) : null}
-                  {schedule.omittedMcpServers.length ? (
+                  {!schedule.retainedOnSource && schedule.omittedMcpServers.length ? (
                     <Text style={styles.text}>
                       {t("handoff.omittedMcpServers", {
                         names: schedule.omittedMcpServers.join(", "),

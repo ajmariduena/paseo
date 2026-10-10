@@ -1,5 +1,7 @@
 export const en = {
   handoff: {
+    retainedSchedule:
+      "This schedule stays on the source host at {{cwd}}. It will be paused if unfinished; only its workspace and conversation move.",
     activeScheduleStops:
       "This scheduled task is running. Preparation stops its agent and saves the result before moving.",
     activeHeartbeatStops:

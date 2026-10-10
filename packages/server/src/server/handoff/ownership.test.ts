@@ -95,6 +95,76 @@ test("releasing an explicit lease twice cannot release another in-flight mutatio
   expect((await ownership.markReady(input.id, "a".repeat(64))).state).toBe("ready");
 });
 
+test.skipIf(process.platform === "win32").each(["retained", "transferred"] as const)(
+  "%s schedule identity fences outside-directory work through restart and release",
+  async (disposition) => {
+    const outside = path.join(root, "schedule-target");
+    await mkdir(outside);
+    const scheduleId = "1234abcd";
+    const schedule = {
+      id: scheduleId,
+      name: "Build",
+      kind: "schedule" as const,
+      status: "active" as const,
+      cadence: "60000 ms",
+      digest: "b".repeat(64),
+      runCount: 1,
+      omittedSettings: [],
+      omittedMcpServers: [],
+      ...(disposition === "retained" ? { retainedOnSource: { cwd: outside } } : {}),
+    };
+    const input = {
+      ...source(),
+      stoppedWorkReview: { agents: [], terminals: [], setupIds: [], schedules: [schedule] },
+    };
+    const scope = { cwd: outside, scheduleId };
+    const finish = await ownership.acquireMutation(scope);
+    await ownership.prepare(input);
+    await expect(ownership.markReady(input.id, "a".repeat(64))).rejects.toMatchObject({
+      code: "invalid_state",
+    });
+    finish();
+    await ownership.drain(input.id);
+    ownership = new HandoffOwnership({ directory, sourceServerId });
+    await ownership.initialize();
+    await expect(ownership.withMutation(scope, async () => 1)).rejects.toMatchObject({
+      code: "fenced",
+    });
+    expect(
+      await ownership.withMutation({ cwd: outside, scheduleId: "unrelated" }, async () => 2),
+    ).toBe(2);
+    await expect(
+      ownership.prepare({
+        ...input,
+        id: randomUUID(),
+        cwd: outside,
+        workspaceId: "other",
+        agentIds: [],
+      }),
+    ).rejects.toMatchObject({ code: "fenced" });
+    await ownership.markReady(input.id, "a".repeat(64));
+    await ownership.release(
+      input.id,
+      {
+        version: 1,
+        transferId: input.id,
+        sourceServerId,
+        destinationServerId: input.destinationServerId,
+        reservationId: input.reservationId,
+        manifestDigest: "a".repeat(64),
+      },
+      async () => {},
+    );
+    ownership = new HandoffOwnership({ directory, sourceServerId });
+    await ownership.initialize();
+    const admitted = ownership.withMutation(scope, async () => "allowed").catch(() => "fenced");
+    expect(await admitted).toBe(disposition === "retained" ? "allowed" : "fenced");
+    await expect(ownership.withMutation({ cwd }, async () => 1)).rejects.toMatchObject({
+      code: "fenced",
+    });
+  },
+);
+
 test("a bound runtime checks current fences synchronously and keeps independent input leases", async () => {
   const guard = await ownership.bindMutation({ cwd });
   const first = guard.acquire();

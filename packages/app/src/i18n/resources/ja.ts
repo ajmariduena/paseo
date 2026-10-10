@@ -3,6 +3,8 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ja: TranslationResources = {
   handoff: {
+    retainedSchedule:
+      "このスケジュールは元のホストの {{cwd}} に残ります。未完了の場合は一時停止され、ワークスペースと会話のみが移動します。",
     activeScheduleStops:
       "このスケジュール済みタスクは実行中です。転送の準備中にエージェントを停止し、結果を保存します。",
     activeHeartbeatStops:

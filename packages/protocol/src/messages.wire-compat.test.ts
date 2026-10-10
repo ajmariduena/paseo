@@ -67,6 +67,18 @@ test("handoff schedule review and size remain optional for older clients and dae
     },
   };
   expect(HandoffScheduleReviewSchema.parse(activeReview)).toEqual(activeReview);
+  const retainedReview = {
+    ...currentReview.schedules[0],
+    activeRun: activeReview.activeRun,
+    retainedOnSource: { cwd: "/source/project" },
+  };
+  expect(HandoffScheduleReviewSchema.parse(retainedReview)).toEqual(retainedReview);
+  expect(
+    HandoffScheduleReviewSchema.omit({ retainedOnSource: true }).parse(retainedReview),
+  ).toEqual({
+    ...currentReview.schedules[0],
+    activeRun: activeReview.activeRun,
+  });
   expect(HandoffScheduleReviewSchema.omit({ activeRun: true }).parse(activeReview)).toEqual({
     ...currentReview.schedules[0],
     kind: "heartbeat",

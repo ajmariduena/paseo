@@ -565,6 +565,140 @@ describe("ScheduleService", () => {
   );
 
   test.skipIf(process.platform === "win32")(
+    "handoff retains and fences an outside schedule while moving its active job workspace",
+    async () => {
+      const { ownership, transfer, schedule, options, otherCwd } = await handoffFixture();
+      const manager = new AgentManager({
+        logger: createTestLogger(),
+        clients: createTestAgentClients(),
+        registry: agentStorage,
+      });
+      const started = holdScheduledTestRun(manager);
+      const workspaceDeps = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+      const archiveWorkspace = vi.fn(async () => {
+        await rm(otherCwd, { recursive: true });
+      });
+      const service = createScheduleService({
+        ...options,
+        agentManager: manager,
+        archiveWorkspace,
+        createDirectoryWorkspace: (input) =>
+          workspaceDeps.createDirectoryWorkspace({ ...input, cwd: otherCwd }),
+      });
+      await writeFile(join(otherCwd, "unfinished.txt"), "work to move");
+      const running = service.runOnce(schedule.id);
+      const agentId = await started;
+      const workspaceId = manager.getAgent(agentId)?.workspaceId;
+      if (!workspaceId) throw new Error("Missing job workspace");
+      const moving = { ...transfer, cwd: otherCwd, workspaceId, agentIds: [agentId] };
+      try {
+        const schedules = await service.reviewForHandoff(moving);
+        expect(schedules).toMatchObject([
+          {
+            id: schedule.id,
+            kind: "schedule",
+            activeRun: { id: (await service.logs(schedule.id))[0].id },
+            retainedOnSource: { cwd: transfer.cwd },
+          },
+        ]);
+        const source = await ownership.prepare({
+          ...moving,
+          stoppedWorkReview: { agents: [], terminals: [], setupIds: [], schedules },
+        });
+        await expect(
+          service.update({ id: schedule.id, prompt: "changed during transfer" }),
+        ).rejects.toMatchObject({ code: "fenced" });
+        await expect(ownership.markReady(source.id, "a".repeat(64))).rejects.toThrow(
+          "still running",
+        );
+        await manager.closeAgent(agentId);
+        expect((await running).runs).toMatchObject([{ agentId, status: "failed" }]);
+        await ownership.drain(source.id);
+        await service.pauseForHandoff(source);
+        await service.pauseForHandoff(source);
+        expect((await agentStorage.get(agentId))?.pendingRestartNote).toEqual([
+          {
+            id: `handoff:${source.id}:schedule:${schedule.id}`,
+            kind: "handoff_retained_schedule",
+            label: expect.stringContaining(`remains paused on the source host in ${transfer.cwd}`),
+          },
+        ]);
+        const captured = await service.exportForHandoff(source);
+        expect(captured).toMatchObject({
+          version: 2,
+          schedules: [
+            {
+              id: schedule.id,
+              status: "paused",
+              target: { type: "source", cwd: transfer.cwd },
+              runs: [{ agentId, workspaceId, status: "failed" }],
+            },
+          ],
+        });
+        expect(archiveWorkspace).not.toHaveBeenCalled();
+        expect(await readFile(join(otherCwd, "unfinished.txt"), "utf8")).toBe("work to move");
+        await expect(service.resume(schedule.id)).rejects.toMatchObject({ code: "fenced" });
+        const restarted = createScheduleService(options);
+        expect(await restarted.exportForHandoff(source)).toEqual(captured);
+        await ownership.cancel(source.id);
+        expect((await restarted.inspect(schedule.id)).status).toBe("paused");
+        await restarted.resume(schedule.id);
+        expect((await restarted.inspect(schedule.id)).status).toBe("active");
+      } finally {
+        await manager.closeAgent(agentId);
+        await running;
+        await manager.flush();
+      }
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff refuses an outside scheduled workspace before its created agent link is published",
+    async () => {
+      const { transfer, schedule, options, otherCwd } = await handoffFixture();
+      const manager = new AgentManager({
+        logger: createTestLogger(),
+        clients: createTestAgentClients(),
+        registry: agentStorage,
+      });
+      const entered = Promise.withResolvers<Awaited<ReturnType<AgentManager["createAgent"]>>>();
+      const finish = Promise.withResolvers<void>();
+      const create = manager.createAgent.bind(manager);
+      vi.spyOn(manager, "createAgent").mockImplementation(async (...args) => {
+        const agent = await create(...args);
+        entered.resolve(agent);
+        await finish.promise;
+        return agent;
+      });
+      const workspaceDeps = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+      const service = createScheduleService({
+        ...options,
+        agentManager: manager,
+        createDirectoryWorkspace: (input) =>
+          workspaceDeps.createDirectoryWorkspace({ ...input, cwd: otherCwd }),
+      });
+      const running = service.runOnce(schedule.id);
+      const agent = await entered.promise;
+      const workspaceId = agent.workspaceId;
+      if (!workspaceId) throw new Error("Missing created workspace");
+      const moving = { ...transfer, cwd: otherCwd, workspaceId, agentIds: [agent.id] };
+      try {
+        expect((await service.inspect(schedule.id)).runs).toMatchObject([
+          { status: "running", workspaceId: agent.workspaceId, agentId: null },
+        ]);
+        await expect(service.reviewForHandoff(moving)).rejects.toThrow(
+          "cannot be stopped by this handoff",
+        );
+      } finally {
+        await manager.closeAgent(agent.id);
+        finish.resolve();
+        await running;
+        await manager.flush();
+      }
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
     "handoff automation pause survives retries, cancellation and restart until explicit resume",
     async () => {
       const runner = vi.fn(async () => ({ agentId: null, output: "resumed" }));

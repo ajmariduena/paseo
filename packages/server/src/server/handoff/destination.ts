@@ -697,9 +697,9 @@ export class HandoffDestination {
 
   private scheduleIdentities(record: DestinationHandoffStatus): string[] {
     // COMPAT(handoffSchedules): added in v0.11.1, remove after 2027-04-10 once pre-v5 reservations finish.
-    return (record.stoppedWorkReview?.schedules ?? []).map((schedule) =>
-      handoffScheduleId(record.reservationId, schedule.id),
-    );
+    return (record.stoppedWorkReview?.schedules ?? [])
+      .filter((schedule) => !schedule.retainedOnSource)
+      .map((schedule) => handoffScheduleId(record.reservationId, schedule.id));
   }
 
   status(transferId: string): DestinationHandoffStatus {
@@ -965,7 +965,9 @@ export class HandoffDestination {
       content.schedules.schedules.some(
         (schedule, index) =>
           schedule.id !== expectedSchedules[index].id ||
-          schedule.reviewDigest !== expectedSchedules[index].digest,
+          schedule.reviewDigest !== expectedSchedules[index].digest ||
+          (schedule.target.type === "source" ? schedule.target.cwd : undefined) !==
+            expectedSchedules[index].retainedOnSource?.cwd,
       )
     )
       fail("invalid_state", "Scheduled automation differs from the destination reservation review");
