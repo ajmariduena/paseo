@@ -78,8 +78,26 @@ Strict capture refuses running jobs, ancestor-directory schedules, outside heart
 the checkout, damaged inventory, more than 1,000 selected records or metadata beyond 32 MiB. This
 slice does not certify a running job's outcome after a crash. Bounded runner shutdown and recovery
 of uncertain outcomes remain open; an admitted runner can still delay draining indefinitely.
-Ordinary schedule writes retain their existing durability contract. The production handoff
-capability remains unadvertised.
+Completed-outcome recovery — an injected failure writing a successful run reproduced the runner
+resolving with status=failed, output=null and error="outcome publication unavailable". That replaced
+the provider's only retained result with an I/O error. Execution and publication now have separate
+failure handling. The store retains immutable previous/candidate records, retries under its existing
+per-schedule queue and requires POSIX file/directory synchronization before acknowledging completion.
+Reads through the service, ticks, later writes and handoff inventory retry pending publication.
+Unexpected disk changes refuse repair instead of overwriting another writer.
+
+The service/store suites pass 90 cases, including three new cases covering successful and failed
+provider outcomes, repeated unavailable writes, no second provider call, failed synchronization after
+rename, immutable retry input, blocked later mutation/deletion and an external record change. The
+initial regression failed as described; the corrected case retained the original output/error.
+A retry with an optional undefined config field also reproduced a false conflict after rename; the
+retained candidate now matches JSON serialization. The three final selected cases pass (87 skipped).
+Server-stack build, the final server build, root typecheck, lint and formatting pass. No browser
+suite was repeated for this storage change; CI owns broader and platform verification.
+This is recovery from known retained inputs in the same process. A crash before publication can
+still lose that evidence; pre-dispatch durability and artifact-based reconciliation remain open.
+Other schedule writes retain their existing durability contract. The production handoff capability
+remains unadvertised.
 
 Queue conservation — source handoff now holds queues before closing writers. The initial runner
 regression reproduced the pending instruction disappearing when the current turn settled under

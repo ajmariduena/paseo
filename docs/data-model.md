@@ -501,6 +501,14 @@ Keep run admission through workspace cleanup and the outcome write; changing its
 agent requires the run to finish first. Startup recovery and expiration leave fenced records
 unchanged.
 
+Keep execution failure separate from failure to save its result. Retain an immutable completed
+outcome until publication succeeds; retrying storage must not rerun the provider or replace its
+output with an I/O error. On POSIX, acknowledgement includes file and directory synchronization.
+Later writes to that schedule and handoff inventory repair pending publication first. Refuse repair
+if another writer changed the record. Retained inputs cover the current process; a crash before
+durable publication still needs evidence from the provider. Windows keeps atomic-write semantics
+while source handoff remains unavailable.
+
 Handoff reads a strict inventory and durably pauses the reviewed records before capture. Cancel
 leaves them paused. Destination IDs derive from the reservation so interrupted installation can
 retry without duplicates. Keep imported records hidden and unrunnable until the destination journal

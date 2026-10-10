@@ -306,6 +306,7 @@ export class ScheduleService {
   }
 
   async start(): Promise<void> {
+    await this.store.repairPendingPersistence();
     await this.recoverInterruptedRuns();
     await this.sweepOrphanedSchedules();
     if (this.tickTimer) {
@@ -407,6 +408,7 @@ export class ScheduleService {
   }
 
   async list(): Promise<StoredSchedule[]> {
+    await this.store.repairPendingPersistence();
     return this.store.list();
   }
 
@@ -507,6 +509,7 @@ export class ScheduleService {
   }
 
   async inspect(id: string): Promise<StoredSchedule> {
+    await this.store.repairPendingPersistence(id);
     const schedule = await this.store.get(id);
     if (!schedule) {
       throw new Error(`Schedule not found: ${id}`);
@@ -672,6 +675,7 @@ export class ScheduleService {
   }
 
   async tick(): Promise<void> {
+    await this.store.repairPendingPersistence();
     const now = this.now();
     const schedules = await this.store.list();
     for (const schedule of schedules) {
@@ -895,18 +899,9 @@ export class ScheduleService {
       const scheduleWithRun = requireSchedule(updated, schedule.id);
       if (!scheduleWithRun.runs.some((run) => run.id === runId)) return;
 
+      let result: ScheduleExecutionResult;
       try {
-        const result = await this.runner(scheduleWithRun, runId);
-        await this.finishRun({
-          scheduleId: schedule.id,
-          runId,
-          status: "succeeded",
-          agentId: result.agentId,
-          output: result.output,
-          error: null,
-          targetGone: false,
-          manual,
-        });
+        result = await this.runner(scheduleWithRun, runId);
       } catch (error) {
         await this.finishRun({
           scheduleId: schedule.id,
@@ -918,7 +913,20 @@ export class ScheduleService {
           targetGone: error instanceof ScheduleTargetGoneError,
           manual,
         });
+        return;
       }
+      // Provider execution and outcome publication have separate failure domains.
+      // Retrying storage must preserve this result, not invent a failed execution.
+      await this.finishRun({
+        scheduleId: schedule.id,
+        runId,
+        status: "succeeded",
+        agentId: result.agentId,
+        output: result.output,
+        error: null,
+        targetGone: false,
+        manual,
+      });
     } finally {
       release?.();
       this.runningScheduleIds.delete(schedule.id);
@@ -1030,7 +1038,7 @@ export class ScheduleService {
 
         return updated;
       },
-      { admitMutation: async () => () => {} },
+      { admitMutation: async () => () => {}, durable: true },
     );
     requireSchedule(updatedSchedule, params.scheduleId);
   }

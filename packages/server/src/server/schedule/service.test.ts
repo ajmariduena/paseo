@@ -38,6 +38,7 @@ import {
   type ScheduleServiceOptions,
 } from "./service.js";
 import { ScheduleStore } from "./store.js";
+import * as atomicFile from "../atomic-file.js";
 import { randomUUID } from "node:crypto";
 import { HandoffOwnership, HandoffOwnershipError } from "../handoff/ownership.js";
 import type { ScheduleExecutionResult, StoredSchedule } from "@getpaseo/protocol/schedule/types";
@@ -461,6 +462,47 @@ describe("ScheduleService", () => {
         target: { type: "agent", agentId },
       });
       await expect(service.reviewForHandoff(transfer)).rejects.toThrow("another conversation");
+    },
+  );
+
+  test.skipIf(process.platform === "win32").each(["succeeded", "failed"] as const)(
+    "handoff repairs a %s schedule outcome without replacing it with a storage failure or rerunning work",
+    async (status) => {
+      const runner = vi.fn(async () => {
+        if (status === "failed") throw new Error("Actual execution failure");
+        return { agentId: null, output: "Only copy of the completed result" };
+      });
+      const { service, schedule, transfer } = await handoffFixture(runner);
+      const write = atomicFile.writeJsonFileAtomic;
+      const failedWrite = vi
+        .spyOn(atomicFile, "writeJsonFileAtomic")
+        .mockImplementation(async (file, value) => {
+          const parsed = value as StoredSchedule;
+          if (file.endsWith(`${schedule.id}.json`) && parsed.runs[0]?.status === status)
+            throw new Error("outcome publication unavailable");
+          return write(file, value);
+        });
+      try {
+        await expect(service.runOnce(schedule.id)).rejects.toThrow(
+          "outcome publication unavailable",
+        );
+        await expect(service.reviewForHandoff(transfer)).rejects.toThrow(
+          "outcome publication unavailable",
+        );
+      } finally {
+        failedWrite.mockRestore();
+      }
+      const review = await service.reviewForHandoff(transfer);
+      expect(review).toHaveLength(1);
+      const saved = await service.inspect(schedule.id);
+      expect(saved.runs).toMatchObject([
+        {
+          status,
+          output: status === "succeeded" ? "Only copy of the completed result" : null,
+          error: status === "failed" ? "Actual execution failure" : null,
+        },
+      ]);
+      expect(runner).toHaveBeenCalledTimes(1);
     },
   );
 

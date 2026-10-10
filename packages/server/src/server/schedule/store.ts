@@ -31,6 +31,12 @@ export interface ScheduleMutation {
 
 interface ScheduleMutationOptions {
   admitMutation?: (mutation: ScheduleMutation) => Promise<() => void>;
+  durable?: boolean;
+}
+
+interface PendingSchedulePublication {
+  previous: StoredSchedule;
+  record: StoredSchedule;
 }
 
 interface ScheduleStoreOptions extends ScheduleMutationOptions {
@@ -123,6 +129,7 @@ function parseStoredSchedule(
 }
 
 export class ScheduleStore {
+  private readonly pendingPublications = new Map<string, PendingSchedulePublication>();
   private readonly scheduleMutations = new Map<string, Promise<unknown>>();
   private readonly identityMutations = new Map<string, Promise<unknown>>();
   private reportedInvalidFiles = new Set<string>();
@@ -195,6 +202,7 @@ export class ScheduleStore {
   }
 
   async listForHandoff(): Promise<StoredSchedule[]> {
+    await this.repairPendingPersistence();
     await this.ensureDir();
     const entries = await readdir(this.dir, { withFileTypes: true });
     if (entries.length > 10_000) throw new Error("Schedule inventory exceeds the handoff limit");
@@ -224,6 +232,7 @@ export class ScheduleStore {
   }): Promise<StoredSchedule> {
     HandoffScheduleIdSchema.parse(input.id);
     return this.serializeScheduleMutation(input.id, async () => {
+      await this.publishPending(input.id);
       if (this.options.isVisible?.(input.id) === false)
         throw new Error("Schedule is not yet active on this host");
       const bytes = await readBoundedFile(this.filePath(input.id), HANDOFF_SCHEDULE_MAX_BYTES);
@@ -282,6 +291,7 @@ export class ScheduleStore {
     options: ScheduleMutationOptions = this.options,
   ): Promise<StoredSchedule | null> {
     return this.serializeScheduleMutation(id, async () => {
+      await this.publishPending(id);
       const current = await this.get(id);
       if (!current) {
         return null;
@@ -296,7 +306,18 @@ export class ScheduleStore {
         next: updated,
         options,
         operation: async () => {
-          if (updated !== current) await this.write(updated);
+          if (updated === current) return;
+          if (options.durable) {
+            this.pendingPublications.set(id, {
+              previous: structuredClone(current),
+              // Match JSON's omission of optional undefined values when checking
+              // a renamed file after its synchronization acknowledgement failed.
+              record: StoredScheduleSchema.parse(JSON.parse(JSON.stringify(updated))),
+            });
+            await this.publishPending(id);
+          } else {
+            await this.write(updated);
+          }
         },
       });
       return updated;
@@ -343,8 +364,36 @@ export class ScheduleStore {
     await writeJsonFileAtomic(this.filePath(schedule.id), schedule);
   }
 
+  async repairPendingPersistence(id?: string): Promise<void> {
+    const ids = id === undefined ? [...this.pendingPublications.keys()] : [id];
+    await Promise.all(
+      ids.map((key) => this.serializeScheduleMutation(key, () => this.publishPending(key))),
+    );
+  }
+
+  private async publishPending(id: string): Promise<void> {
+    const pending = this.pendingPublications.get(id);
+    if (!pending) return;
+    const limit = Math.max(
+      Buffer.byteLength(JSON.stringify(pending.previous, null, 2)),
+      Buffer.byteLength(JSON.stringify(pending.record, null, 2)),
+    );
+    const bytes = await readBoundedFile(this.filePath(id), limit);
+    const current = StoredScheduleSchema.parse(JSON.parse(bytes.toString("utf8")));
+    if (!isDeepStrictEqual(current, pending.record)) {
+      if (!isDeepStrictEqual(current, pending.previous))
+        throw new Error("Schedule changed while its completed outcome awaited persistence");
+      await this.write(pending.record);
+    }
+    // Windows keeps ordinary atomic-write semantics; source handoff remains disabled there.
+    if (process.platform !== "win32")
+      await syncFilePublication(this.filePath(id), dirname(this.dir));
+    this.pendingPublications.delete(id);
+  }
+
   async delete(id: string): Promise<void> {
     await this.serializeScheduleMutation(id, async () => {
+      await this.publishPending(id);
       const current = await this.get(id);
       if (!current) return;
       await this.withMutation({
@@ -408,6 +457,7 @@ export class ScheduleStore {
     updater: ScheduleUpdater,
   ): Promise<StoredSchedule | null> {
     return this.serializeScheduleMutation(id, async () => {
+      await this.publishPending(id);
       const current = await this.get(id);
       if (!current || !matchesNameAndTarget(current, name, target)) {
         return null;

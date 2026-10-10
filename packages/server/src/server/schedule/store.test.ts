@@ -29,6 +29,104 @@ describe("ScheduleStore", () => {
   });
 
   test.skipIf(process.platform === "win32")(
+    "handoff outcome repair keeps exact inputs after rename and gates later mutations on synchronization",
+    async () => {
+      const timestamp = "2026-01-01T00:00:00.000Z";
+      const schedule = await store.create({
+        name: null,
+        prompt: "Continue",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: { type: "new-agent", config: { provider: "claude", cwd: tempDir } },
+        status: "active",
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        nextRunAt: timestamp,
+        lastRunAt: null,
+        pausedAt: null,
+        expiresAt: null,
+        maxRuns: 1,
+        runs: [
+          {
+            id: "run",
+            scheduledFor: timestamp,
+            startedAt: timestamp,
+            endedAt: null,
+            status: "running",
+            agentId: null,
+            output: null,
+            error: null,
+          },
+        ],
+      });
+      const candidate = {
+        ...schedule,
+        status: "completed" as const,
+        nextRunAt: null,
+        target: {
+          type: "new-agent" as const,
+          config: { provider: "claude", cwd: tempDir, model: undefined },
+        },
+        runs: [
+          {
+            ...schedule.runs[0],
+            status: "succeeded" as const,
+            endedAt: timestamp,
+            output: "Exact output",
+          },
+        ],
+      };
+      const failedAck = vi
+        .spyOn(atomicFile, "syncFilePublication")
+        .mockRejectedValue(new Error("outcome synchronization unavailable"));
+      const laterMutation = vi.fn((record: typeof schedule) => ({
+        ...record,
+        name: "Later title",
+      }));
+      try {
+        await expect(store.update(schedule.id, () => candidate, { durable: true })).rejects.toThrow(
+          "outcome synchronization unavailable",
+        );
+        candidate.runs[0].output = "Changed after rejection";
+        await expect(store.update(schedule.id, laterMutation)).rejects.toThrow(
+          "outcome synchronization unavailable",
+        );
+        await expect(store.delete(schedule.id)).rejects.toThrow(
+          "outcome synchronization unavailable",
+        );
+        await expect(store.listForHandoff()).rejects.toThrow("outcome synchronization unavailable");
+        expect(laterMutation).not.toHaveBeenCalled();
+      } finally {
+        failedAck.mockRestore();
+      }
+      await store.repairPendingPersistence(schedule.id);
+      const reloaded = new ScheduleStore(tempDir, createTestLogger());
+      expect((await reloaded.get(schedule.id))?.runs).toEqual([
+        { ...candidate.runs[0], output: "Exact output" },
+      ]);
+      await store.update(schedule.id, laterMutation);
+      expect((await reloaded.get(schedule.id))?.name).toBe("Later title");
+      expect(laterMutation).toHaveBeenCalledTimes(1);
+
+      const failedWrite = vi
+        .spyOn(atomicFile, "writeJsonFileAtomic")
+        .mockRejectedValueOnce(new Error("publication unavailable"));
+      try {
+        await expect(
+          store.update(schedule.id, (record) => ({ ...record, name: "Owned title" }), {
+            durable: true,
+          }),
+        ).rejects.toThrow("publication unavailable");
+      } finally {
+        failedWrite.mockRestore();
+      }
+      const external = { ...(await reloaded.get(schedule.id)), name: "Other title" };
+      await writeFile(join(tempDir, `${schedule.id}.json`), JSON.stringify(external));
+      await expect(store.repairPendingPersistence(schedule.id)).rejects.toThrow("changed while");
+      expect(await reloaded.get(schedule.id)).toEqual(external);
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
     "handoff pause reacknowledges a surviving rename after a failed synchronization",
     async () => {
       const timestamp = "2026-01-01T00:00:00.000Z";
