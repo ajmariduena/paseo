@@ -911,6 +911,7 @@ export class AgentManager {
   private readonly registry?: AgentStorage;
   private readonly durableTimelineStore?: AgentTimelineStore;
   private readonly promptAnnotations: PromptAnnotationStore;
+  private readonly internalPromptAnnotations = new WeakMap<ManagedAgent, PromptAnnotationStore>();
   /** Messages waiting for an agent's running turn to end. */
   readonly messageQueue: AgentQueueRunner;
   private readonly previousStatuses = new Map<string, AgentLifecycleStatus>();
@@ -1442,6 +1443,17 @@ export class AgentManager {
   fetchTimeline(id: string, options?: AgentTimelineFetchOptions): AgentTimelineFetchResult {
     this.requireAgent(id);
     return this.timelineStore.fetch(id, options);
+  }
+
+  private annotationsFor(agent: ManagedAgent): PromptAnnotationStore {
+    if (!agent.internal) return this.promptAnnotations;
+    // Internal runtimes are ephemeral and never have an AgentStorage record to witness.
+    let annotations = this.internalPromptAnnotations.get(agent);
+    if (!annotations) {
+      annotations = new PromptAnnotationStore(null);
+      this.internalPromptAnnotations.set(agent, annotations);
+    }
+    return annotations;
   }
 
   checkpointPromptAnnotations(agentId: string): Promise<void> {
@@ -3546,7 +3558,7 @@ export class AgentManager {
       messageId: options.clientMessageId,
       nativeMessageId: randomUUID(),
     };
-    const prepared = await this.promptAnnotations.prepareNativeDispatch(attempt);
+    const prepared = await this.annotationsFor(agent).prepareNativeDispatch(attempt);
     return prepared ? attempt : null;
   }
 
@@ -3559,7 +3571,7 @@ export class AgentManager {
     return this.trackRuntimeWork(agent, async () => {
       work.annotationSettlements.set(snapshot.nativeMessageId, snapshot);
       try {
-        await this.promptAnnotations.settleNativeDispatch(snapshot);
+        await this.annotationsFor(agent).settleNativeDispatch(snapshot);
         work.annotationSettlements.delete(snapshot.nativeMessageId);
         return { ok: true } as const;
       } catch (error) {
@@ -3695,7 +3707,7 @@ export class AgentManager {
   ): Promise<void> {
     if (
       !clientMessageId ||
-      this.promptAnnotations.forMessage(agent.id, clientMessageId)?.kind !== "notification"
+      this.annotationsFor(agent).forMessage(agent.id, clientMessageId)?.kind !== "notification"
     ) {
       this.systemTurnAgents.delete(agent.id);
     }
@@ -4102,7 +4114,7 @@ export class AgentManager {
   async annotatePrompt(agentId: string, input: PromptToAnnotate): Promise<void> {
     await this.withAgentMutation(agentId, async () => {
       const agent = this.requireSessionAgent(agentId);
-      await this.promptAnnotations.remember(agentId, {
+      await this.annotationsFor(agent).remember(agentId, {
         messageId: input.messageId,
         text: submittedPromptText(input.prompt),
         annotation: input.annotation,
@@ -5062,7 +5074,7 @@ export class AgentManager {
   ): Promise<void> {
     const historyEvents: Extract<AgentStreamEvent, { type: "timeline" }>[] = [];
     const providerSubagentEvents: Extract<AgentStreamEvent, { type: "provider_subagent" }>[] = [];
-    const annotations = await this.promptAnnotations.historyMatcher(agent.id);
+    const annotations = await this.annotationsFor(agent).historyMatcher(agent.id);
     for await (const rawEvent of agent.session.streamHistory()) {
       const event = limitAgentStreamEventContent(rawEvent);
       if (event.type === "timeline") {
@@ -5124,7 +5136,7 @@ export class AgentManager {
     const historySubagentEvents: Extract<AgentStreamEvent, { type: "provider_subagent" }>[] = [];
     agent.historyPrimed = false;
     try {
-      const annotations = await this.promptAnnotations.historyMatcher(agent.id);
+      const annotations = await this.annotationsFor(agent).historyMatcher(agent.id);
       // Collect the whole replay before touching either store. A stream that fails
       // halfway then leaves the committed timeline as it was, instead of a partial
       // copy the next attempt would append to.
@@ -5787,7 +5799,7 @@ export class AgentManager {
     if (this.timelineStore.getSubmittedUserMessage(agent.id, clientMessageId)) {
       return;
     }
-    const annotation = this.promptAnnotations.forMessage(agent.id, clientMessageId);
+    const annotation = this.annotationsFor(agent).forMessage(agent.id, clientMessageId);
     if (annotation?.kind === "notification") {
       this.recordNotificationPrompt(agent, {
         messageId: clientMessageId,
@@ -6037,7 +6049,7 @@ export class AgentManager {
   private trackTurnOrigin(agentId: string, options: AgentRunOptions | undefined): void {
     const clientMessageId = options?.clientMessageId;
     const annotation = clientMessageId
-      ? this.promptAnnotations.forMessage(agentId, clientMessageId)
+      ? this.annotationsFor(this.requireAgent(agentId)).forMessage(agentId, clientMessageId)
       : null;
     if (annotation?.kind === "notification") {
       this.systemTurnAgents.add(agentId);

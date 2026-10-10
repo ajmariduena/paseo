@@ -549,6 +549,53 @@ class TestAgentSession implements AgentSession {
   async close(): Promise<void> {}
 }
 
+test("internal prompts retain presentation without creating a durable agent record", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "internal-annotations-"));
+  const storage = new AgentStorage(join(directory, "agents"), logger);
+  const annotations = new PromptAnnotationStore(join(directory, "annotations"), {
+    records: storage,
+  });
+  const manager = new AgentManager({
+    clients: { codex: new TestAgentClient() },
+    registry: storage,
+    promptAnnotations: annotations,
+    logger,
+  });
+  let agentId: string | undefined;
+  try {
+    const agent = await manager.createAgent(
+      { provider: "codex", cwd: directory, internal: true },
+      undefined,
+      { workspaceId: undefined },
+    );
+    agentId = agent.id;
+    await manager.annotatePrompt(agent.id, {
+      messageId: "internal-wake",
+      prompt: "task finished",
+      annotation: { kind: "notification", level: "info", message: "Task finished" },
+    });
+    await drainAsyncGenerator(
+      manager.streamAgent(agent.id, "task finished", { clientMessageId: "internal-wake" }),
+    );
+    const rows = await manager.getTimelineRows(agent.id);
+    expect(rows.map((row) => row.item)).toContainEqual({
+      type: "notification",
+      level: "info",
+      message: "Task finished",
+      messageId: "internal-wake",
+    });
+    expect(await storage.get(agent.id)).toBeNull();
+    await expect(annotations.checkpointForHandoff(agent.id)).rejects.toThrow("not found");
+  } finally {
+    if (agentId) {
+      await manager.closeAgent(agentId);
+      await manager.deleteAgentState(agentId);
+    }
+    await manager.flush();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test.skipIf(process.platform === "win32")(
   "closing retries a known annotation disposition without sending another provider turn",
   async () => {

@@ -678,7 +678,8 @@ daemon prompt: a notification with its source, or a user message with its sender
 bind that annotation to a caller-assigned native UUID before starting or steering. Prepared and
 withdrawn attempts do not match replayed rows; dispatched attempts match their native UUID even
 when text repeats or continuation context was prepended. A retry gets a separate attempt identity.
-Schema: `packages/server/src/server/agent/prompt-annotations.ts`.
+Schema: `packages/server/src/server/agent/prompt-annotations.ts`. Internal runtimes keep these
+annotations in memory because they have no durable agent record.
 
 Older entries and adapters without native identity support retain text-hash matching in send order.
 That preserves available presentation without proving lifetime coverage. A replayed system envelope

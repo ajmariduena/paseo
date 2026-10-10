@@ -10,11 +10,14 @@ Annotation checkpoint and bounded publication repair:
   runtimes preserve the witness and pending input. Legacy adoption remains explicitly scoped.
 - Known native-disposition storage failures retry on close without another provider turn. The
   manager still retains unknown event faults and native prepared-attempt uncertainty.
+- A separate regression reproduced record lookup failure for ephemeral internal prompts. Their
+  annotations now remain runtime-owned in memory, without creating a durable agent or allowing
+  a handoff checkpoint. The notification still appears in the internal timeline.
 - Native/context two-daemon cases restart both hosts, reject corrupted annotation bytes, reject a
   changed witness even when the projected rows are unchanged, and activate after a fresh transfer.
   Their closed synthetic conversations are seeded through the store; production annotation admission
   still requires a live, unfenced runtime. Neither case invokes a real provider.
-- Focused validation: 273 manager cases, 31 storage cases and 25 annotation cases passed; one
+- Focused validation: 274 manager cases, 31 storage cases and 25 annotation cases passed; one
   Windows-only storage case was skipped. Both affected network cases passed (26 unrelated skipped).
   Full manager execution used the unsandboxed context because the established Node child-stdout
   sandbox issue affects its process cases. The main daemon was not restarted.
@@ -26,9 +29,9 @@ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/serv
 
 
  Test Files  1 passed (1)
-      Tests  273 passed (273)
-   Start at  03:25:11
-   Duration  11.89s (transform 1.20s, setup 58ms, import 1.60s, tests 10.09s, environment 0ms)
+      Tests  274 passed (274)
+   Start at  03:29:52
+   Duration  11.63s (transform 1.06s, setup 39ms, import 1.42s, tests 10.05s, environment 0ms)
 
 Annotation and agent stores
 RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
