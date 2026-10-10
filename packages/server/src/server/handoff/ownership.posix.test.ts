@@ -401,6 +401,12 @@ test("source preparation keeps ownership fenced after uncertain cleanup and retr
   const failure = new Error("setup exit is unconfirmed");
   const createSource = (sourceOwnership = ownership) =>
     new HandoffSource({
+      schedules: {
+        reviewForHandoff: async () => [],
+        pauseForHandoff: async () => {},
+        exportForHandoff: async () => ({ version: 1, schedules: [] }),
+        estimateForHandoff: async () => 28,
+      },
       pullRequestWatches: { reviewForHandoff: async () => [], stopForHandoff: async () => {} },
       queues: {
         holdForHandoff: async () => {},
@@ -456,11 +462,13 @@ test("source preparation keeps ownership fenced after uncertain cleanup and retr
     setupOperations: 1,
     queuedMessages: 0,
     queuedBytes: 0,
+    scheduledBytes: 28,
     review: {
       agents: [],
       terminals: [],
       setupIds: setup.activeIds(workspace.workspaceId),
       pullRequestWatches: [],
+      schedules: [],
     },
   });
   const reviewedRequest = { ...request, stoppedWorkReview: preview.stoppedWork?.review };
@@ -543,6 +551,45 @@ test("reserves stable destination identities across restart without dropping unp
   await expect(restarted.stage(transferId)).rejects.toMatchObject({
     code: "invalid_state",
   });
+});
+
+test("refuses invalid or duplicate schedule reviews before reserving destination identities", async () => {
+  const destination = new HandoffDestination({
+    directory: path.join(root, "destination-journal"),
+    serverId: "destination-host",
+    archives: new HandoffArchiveStore(path.join(root, "archives")),
+  });
+  await destination.initialize();
+  const schedule = {
+    id: "1234abcd",
+    name: "Build",
+    kind: "schedule" as const,
+    status: "active" as const,
+    cadence: "0 0 1 1 * (UTC)",
+    digest: "a".repeat(64),
+    runCount: 0,
+    omittedSettings: [],
+    omittedMcpServers: [],
+  };
+  const transferId = randomUUID();
+  const request = {
+    transferId,
+    sourceServerId,
+    sourceWorkspaceId: "source-workspace",
+    sourceAgentIds: [],
+    destinationParent: root,
+    stoppedWorkReview: { agents: [], setupIds: [], terminals: [], schedules: [schedule] },
+  };
+  for (const schedules of [[schedule, schedule], [{ ...schedule, id: "../escape" }]]) {
+    await expect(
+      destination.reserve({
+        ...request,
+        stoppedWorkReview: { ...request.stoppedWorkReview, schedules },
+      }),
+    ).rejects.toMatchObject({ code: "invalid_state" });
+    expect(() => destination.status(transferId)).toThrow();
+  }
+  expect((await destination.reserve(request)).state).toBe("reserved");
 });
 
 async function capturedQueuedUpload() {
@@ -820,6 +867,7 @@ test.each([
   );
   const agents = new InterruptedAgentStorage(path.join(root, "agents"), logger, isVisible);
   const publication = createHandoffPublication({
+    schedules: { installHandoffSchedules: async () => {} },
     queues: new AgentQueueStore(path.join(root, "agent-queues"), {
       uploads: new FileUploadStore({ paseoHome: root }),
     }),
@@ -973,6 +1021,7 @@ test.each([
   });
   await recoveredQueues.load();
   const recoveredPublication = createHandoffPublication({
+    schedules: { installHandoffSchedules: async () => {} },
     queues: recoveredQueues,
     projects: recoveredProjects,
     workspaces: recoveredWorkspaces,

@@ -1,5 +1,9 @@
 export const en = {
   handoff: {
+    automationPaused:
+      "Schedules and heartbeats move paused. Completed schedules stay completed. If you cancel, resume source schedules manually.",
+    automationSettingsOmitted:
+      "Connections, permissions and advanced provider settings stay on this host. Configure them on the destination before resuming.",
     previousTransfers: "Previous page",
     nextTransfers: "Next page",
     noPendingTransfers: "No unfinished transfers.",

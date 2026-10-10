@@ -1,7 +1,7 @@
 import { formatSystemNotificationPrompt } from "../agent/agent-messages/index.js";
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
-import { join } from "node:path";
+import path, { join } from "node:path";
 import type { Logger } from "pino";
 import type { AgentManager } from "../agent/agent-manager.js";
 import type { AgentSessionConfig } from "../agent/agent-sdk-types.js";
@@ -14,7 +14,23 @@ import { type BoundCreateAgentCommand, formatProviderModel } from "../agent/crea
 import type { PersistedWorkspaceRecord } from "../workspace-registry.js";
 import type { CreatePaseoWorktreeWorkflowResult } from "../worktree-session.js";
 import { ScheduleStore, type ScheduleMutation } from "./store.js";
-import { HandoffOwnershipError, type HandoffOwnership } from "../handoff/ownership.js";
+import {
+  HandoffOwnershipError,
+  handoffPathsOverlap,
+  resolveHandoffPath,
+  type HandoffOwnership,
+  type SourceHandoffStatus,
+} from "../handoff/ownership.js";
+import { HandoffDestinationError } from "../handoff/destination.js";
+import {
+  captureHandoffSchedules,
+  reviewScheduleForHandoff,
+  type InstallHandoffSchedulesInput,
+} from "./handoff.js";
+import {
+  HandoffScheduleReviewSchema,
+  type HandoffScheduleReview,
+} from "@getpaseo/protocol/handoff-control";
 import { computeNextRunAt, validateScheduleCadence } from "./cron.js";
 import type {
   CreateScheduleInput,
@@ -232,6 +248,7 @@ interface ScheduleWorkspaceCreateInput {
 export interface ScheduleServiceOptions {
   paseoHome: string;
   handoffOwnership: HandoffOwnership | null;
+  isHandoffIdentityVisible: (id: string) => boolean;
   logger: Logger;
   agentManager: ScheduleAgentManager;
   agentStorage: AgentStorage;
@@ -250,6 +267,7 @@ export interface ScheduleServiceOptions {
 export class ScheduleService {
   private readonly store: ScheduleStore;
   private readonly handoffOwnership: HandoffOwnership | null;
+  private readonly isHandoffIdentityVisible: (id: string) => boolean;
   private readonly logger: Logger;
   private readonly agentManager: ScheduleAgentManager;
   private readonly agentStorage: AgentStorage;
@@ -272,8 +290,10 @@ export class ScheduleService {
   constructor(options: ScheduleServiceOptions) {
     this.logger = options.logger.child({ module: "schedule-service" });
     this.handoffOwnership = options.handoffOwnership;
+    this.isHandoffIdentityVisible = options.isHandoffIdentityVisible;
     this.store = new ScheduleStore(join(options.paseoHome, "schedules"), this.logger, {
       admitMutation: (mutation) => this.acquireScheduleMutation(mutation),
+      isVisible: options.isHandoffIdentityVisible,
     });
     this.agentManager = options.agentManager;
     this.agentStorage = options.agentStorage;
@@ -388,6 +408,102 @@ export class ScheduleService {
 
   async list(): Promise<StoredSchedule[]> {
     return this.store.list();
+  }
+
+  private async schedulesForHandoff(source: Pick<SourceHandoffStatus, "cwd" | "agentIds">) {
+    const cwd = await resolveHandoffPath(source.cwd);
+    const records: StoredSchedule[] = [];
+    const relativeCwds = new Map<string, string>();
+    for (const record of await this.store.listForHandoff()) {
+      if (record.target.type === "agent") {
+        if (!source.agentIds.includes(record.target.agentId)) {
+          const agent = await this.agentStorage.get(record.target.agentId);
+          if (agent && handoffPathsOverlap(cwd, await resolveHandoffPath(agent.cwd)))
+            throw new Error(
+              "A heartbeat belongs to another conversation sharing the source directory",
+            );
+          continue;
+        }
+      } else {
+        const targetCwd = await resolveHandoffPath(record.target.config.cwd);
+        if (!handoffPathsOverlap(cwd, targetCwd)) continue;
+        const relativeCwd = path.relative(cwd, targetCwd);
+        if (
+          relativeCwd === ".." ||
+          relativeCwd.startsWith(`..${path.sep}`) ||
+          path.isAbsolute(relativeCwd)
+        )
+          throw new Error("A schedule targets an ancestor of the transferred workspace");
+        relativeCwds.set(record.id, relativeCwd.split(path.sep).join("/") || ".");
+      }
+      if (
+        record.runs.some((run) => run.status === "running") ||
+        this.runningScheduleIds.has(record.id)
+      )
+        throw new Error("A scheduled run is still active; stop or finish it before handoff");
+      records.push(record);
+    }
+    return { records, relativeCwds };
+  }
+
+  async reviewForHandoff(
+    source: Pick<SourceHandoffStatus, "cwd" | "agentIds">,
+  ): Promise<HandoffScheduleReview[]> {
+    const { records } = await this.schedulesForHandoff(source);
+    return HandoffScheduleReviewSchema.array()
+      .max(1000)
+      .parse(records.map(reviewScheduleForHandoff));
+  }
+
+  async pauseForHandoff(source: SourceHandoffStatus): Promise<void> {
+    const held = this.handoffOwnership?.status(source.id);
+    if (
+      !held ||
+      held.state !== "preparing" ||
+      held.cwd !== source.cwd ||
+      held.workspaceId !== source.workspaceId
+    )
+      throw new Error("Schedule pause requires the matching source handoff fence");
+    // COMPAT(handoffSchedules): added in v0.11.1, remove after 2027-04-10 once pre-v5 transfers finish.
+    const approved = held.stoppedWorkReview?.schedules ?? [];
+    const current = await this.reviewForHandoff(held);
+    if (
+      current.length !== approved.length ||
+      current.some(
+        (record, index) =>
+          record.id !== approved[index].id || record.digest !== approved[index].digest,
+      )
+    )
+      throw new Error("Scheduled automation changed after handoff review");
+    for (const record of approved)
+      await this.store.pauseForHandoff({
+        id: record.id,
+        digest: record.digest,
+        pausedAt: this.now().toISOString(),
+      });
+  }
+
+  async exportForHandoff(source: Pick<SourceHandoffStatus, "cwd" | "agentIds">) {
+    return captureHandoffSchedules(await this.schedulesForHandoff(source));
+  }
+
+  async estimateForHandoff(source: Pick<SourceHandoffStatus, "cwd" | "agentIds">): Promise<number> {
+    const selected = await this.schedulesForHandoff(source);
+    const pausedAt = this.now().toISOString();
+    // Inventory records are fresh disk reads; estimating never writes the store.
+    for (const record of selected.records) {
+      if (record.status !== "active") continue;
+      record.status = "paused";
+      record.nextRunAt = null;
+      record.pausedAt = pausedAt;
+      record.updatedAt = pausedAt;
+    }
+    const snapshot = captureHandoffSchedules(selected);
+    return Buffer.byteLength(JSON.stringify(snapshot));
+  }
+
+  async installHandoffSchedules(input: InstallHandoffSchedulesInput): Promise<void> {
+    await this.store.installHandoffSchedules(input);
   }
 
   async inspect(id: string): Promise<StoredSchedule> {
@@ -695,7 +811,10 @@ export class ScheduleService {
     } catch (error) {
       // A fenced schedule keeps its cadence and run budget. Other schedules still
       // tick and startup still serves unrelated work; storage faults remain errors.
-      if (!(error instanceof HandoffOwnershipError && error.code === "fenced")) throw error;
+      const sourceFenced = error instanceof HandoffOwnershipError && error.code === "fenced";
+      const destinationFenced =
+        error instanceof HandoffDestinationError && error.code === "invalid_state";
+      if (!sourceFenced && !destinationFenced) throw error;
     }
   }
 
@@ -807,6 +926,11 @@ export class ScheduleService {
   }
 
   private async acquireTargetMutation(target: ScheduleTarget): Promise<() => void> {
+    if (target.type === "agent" && !this.isHandoffIdentityVisible(target.agentId))
+      throw new HandoffDestinationError(
+        "invalid_state",
+        "Destination handoff must finish activation before scheduling this conversation",
+      );
     if (!this.handoffOwnership) return () => {};
     if (target.type === "new-agent") {
       return this.handoffOwnership.acquireMutation({ cwd: target.config.cwd });

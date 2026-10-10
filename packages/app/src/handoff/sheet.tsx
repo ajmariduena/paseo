@@ -481,6 +481,28 @@ function ReviewWorkspace({
               ))}
             </View>
           ) : null}
+          {stoppedWork.review?.schedules?.length ? (
+            <View style={styles.status} testID="handoff-schedules-review">
+              <Text style={styles.text}>{t("handoff.automationPaused")}</Text>
+              {stoppedWork.review.schedules.map((schedule) => (
+                <View key={schedule.id} style={styles.status}>
+                  <Text selectable style={styles.value}>
+                    {schedule.name ?? schedule.id} · {schedule.cadence}
+                  </Text>
+                  {schedule.omittedSettings.length || schedule.omittedMcpServers.length ? (
+                    <Text style={styles.text}>{t("handoff.automationSettingsOmitted")}</Text>
+                  ) : null}
+                  {schedule.omittedMcpServers.length ? (
+                    <Text style={styles.text}>
+                      {t("handoff.omittedMcpServers", {
+                        names: schedule.omittedMcpServers.join(", "),
+                      })}
+                    </Text>
+                  ) : null}
+                </View>
+              ))}
+            </View>
+          ) : null}
         </View>
       </Field>
     </>

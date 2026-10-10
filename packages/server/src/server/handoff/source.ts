@@ -60,6 +60,7 @@ import { HandoffHistorySegmentSchema, HANDOFF_PREVIOUS_SEGMENTS_MAX } from "./hi
 import type { HandoffDestination } from "./destination.js";
 import type { PullRequestWatcher } from "../pull-request-watch/watcher.js";
 import type { AgentQueueRunner } from "../agent-queue/runner.js";
+import type { ScheduleService } from "../schedule/service.js";
 import { HANDOFF_QUEUE_MAX_BYTES, handoffQueueBytes } from "../agent-queue/store.js";
 import {
   writeHandoffHistory,
@@ -116,6 +117,10 @@ const PreparedSchema = z.object({
 });
 type PreparedSource = z.infer<typeof PreparedSchema>;
 interface SourceOptions {
+  schedules: Pick<
+    ScheduleService,
+    "reviewForHandoff" | "pauseForHandoff" | "exportForHandoff" | "estimateForHandoff"
+  >;
   directory: string;
   serverId: string;
   logger: Logger;
@@ -282,6 +287,7 @@ export class HandoffSource {
         setupOperations: review.setupIds.length,
         queuedMessages: queued.count,
         queuedBytes: queued.bytes,
+        scheduledBytes: await this.options.schedules.estimateForHandoff(inventory),
         review,
       },
     };
@@ -367,7 +373,7 @@ export class HandoffSource {
             "Work that will stop changed after review; cancel this transfer and review again",
           );
       }
-      await this.requireWatchReview(input, inventory.agentIds);
+      await this.requireAutomationReview(input, inventory);
       await this.previewQueues(
         inventory,
         await this.options.pullRequestWatches.reviewForHandoff(inventory.agentIds),
@@ -401,6 +407,7 @@ export class HandoffSource {
         refuse("inventory_changed", "Source conversation set changed while draining admitted work");
       await this.stopWriters(source);
       await this.stopWatches(source);
+      await this.options.schedules.pauseForHandoff(source);
       const records = await this.checkpointConversations(source.agentIds);
       this.assertReviewedIntegrations(source.integrationReview, records);
       const agents: PreparedSource["agents"] = [];
@@ -504,6 +511,8 @@ export class HandoffSource {
           previous,
         });
       }
+      const schedulesPath = path.join(directory, "schedules.json");
+      await writeJournal(schedulesPath, await this.options.schedules.exportForHandoff(source));
       const manifest = await packHandoffArchive({
         store: this.options.archives,
         transferId: source.id,
@@ -512,6 +521,7 @@ export class HandoffSource {
         sourceCwd: source.cwd,
         workspaceDirectory,
         conversations,
+        schedulesPath,
       });
       const prepared: PreparedSource = {
         version: 3,
@@ -624,15 +634,23 @@ export class HandoffSource {
     return records;
   }
 
-  private async requireWatchReview(input: SourceRequest, agentIds: string[]) {
+  private async requireAutomationReview(
+    input: SourceRequest,
+    inventory: Pick<SourceHandoffStatus, "agentIds" | "cwd">,
+  ) {
     if (
       !input.stoppedWorkReview &&
-      (await this.options.pullRequestWatches.reviewForHandoff(agentIds)).length > 0
+      (await this.options.pullRequestWatches.reviewForHandoff(inventory.agentIds)).length > 0
     )
       refuse(
         "review_changed",
         "Review the PR watches that will stop before preparing this transfer",
       );
+    if (
+      (await this.options.schedules.reviewForHandoff(inventory)).length &&
+      !input.stoppedWorkReview?.schedules
+    )
+      refuse("review_changed", "Review scheduled automation before preparing the handoff");
   }
 
   private async previewQueues(
@@ -763,7 +781,7 @@ export class HandoffSource {
   }
 
   private async reviewWriters(
-    source: { workspaceId: string; agentIds: string[] },
+    source: { workspaceId: string; agentIds: string[]; cwd: string },
     terminals: TerminalSession[],
   ): Promise<HandoffStoppedWorkReview> {
     const instanceId = (writer: object) => {
@@ -787,6 +805,7 @@ export class HandoffSource {
       })),
       setupIds: this.options.setup.activeIds(source.workspaceId),
       pullRequestWatches: await this.options.pullRequestWatches.reviewForHandoff(source.agentIds),
+      schedules: await this.options.schedules.reviewForHandoff(source),
     };
     if (review.setupIds.length > 1000)
       refuse("invalid_source", "Too many setup operations to review for handoff");
@@ -803,11 +822,18 @@ export class HandoffSource {
       const entries = new Set(allowed.map((value) => JSON.stringify(value)));
       return values.every((value) => entries.has(JSON.stringify(value)));
     };
+    // COMPAT(handoffSchedules): added in v0.11.1, remove after 2027-04-10 once pre-v5 reviews finish.
     if (
       !has(approved.agents, current.agents) ||
       !has(approved.terminals, current.terminals) ||
       !has(approved.setupIds, current.setupIds) ||
-      !has(approved.pullRequestWatches ?? [], current.pullRequestWatches ?? [])
+      !has(approved.pullRequestWatches ?? [], current.pullRequestWatches ?? []) ||
+      (current.schedules ?? []).some(
+        (record) =>
+          !(approved.schedules ?? []).some(
+            (entry) => entry.id === record.id && entry.digest === record.digest,
+          ),
+      )
     )
       refuse(
         "review_changed",
@@ -939,12 +965,14 @@ export class HandoffSource {
     await this.options.archives.withVerifiedArchive(source.id, async (archive) => {
       if (archive.manifest.entrypoint.sha256 !== prepared.manifest.entrypoint.sha256)
         refuse("source_changed", "Source archive changed after capture");
-      const { bundle, queues } = await readHandoffBundle(archive, {
+      const { bundle, queues, schedules } = await readHandoffBundle(archive, {
         sourceServerId: this.options.serverId,
         sourceWorkspaceId: source.workspaceId,
         sourceAgentIds: source.agentIds,
         manifestDigest: prepared.manifest.entrypoint.sha256,
       });
+      if (!isDeepStrictEqual(await this.options.schedules.exportForHandoff(source), schedules))
+        refuse("source_changed", "Scheduled automation changed after capture");
       for (const agent of prepared.agents) {
         const queue = await this.options.queues.exportForHandoff(agent.id, {
           workspaceCwd: source.cwd,

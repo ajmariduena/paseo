@@ -3,6 +3,10 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ko: TranslationResources = {
   handoff: {
+    automationPaused:
+      "일정과 알림은 일시 중지된 상태로 이동합니다. 완료된 일정은 그대로 유지됩니다. 취소한 경우 원본 호스트에서 수동으로 재개하세요.",
+    automationSettingsOmitted:
+      "연결, 권한 및 공급자 고급 설정은 이 호스트에 남습니다. 재개하기 전에 대상 호스트에서 설정하세요.",
     previousTransfers: "이전 페이지",
     nextTransfers: "다음 페이지",
     noPendingTransfers: "미완료 전송이 없습니다.",

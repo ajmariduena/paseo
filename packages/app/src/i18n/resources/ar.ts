@@ -3,6 +3,10 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ar: TranslationResources = {
   handoff: {
+    automationPaused:
+      "تُنقل المهام المجدولة والتذكيرات بحالة الإيقاف المؤقت، وتبقى المهام المكتملة مكتملة. إذا ألغيت النقل، فاستأنفها يدويًا على المضيف المصدر.",
+    automationSettingsOmitted:
+      "تبقى الاتصالات والأذونات وإعدادات المزوّد المتقدمة على هذا المضيف. اضبطها على المضيف الوجهة قبل الاستئناف.",
     previousTransfers: "الصفحة السابقة",
     nextTransfers: "الصفحة التالية",
     noPendingTransfers: "لا توجد عمليات نقل غير مكتملة.",

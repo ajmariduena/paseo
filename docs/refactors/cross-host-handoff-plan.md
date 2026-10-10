@@ -572,10 +572,19 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   Schedules and heartbeats now obey source admission for controls, automatic/manual runs,
   expiration and startup recovery. A run holds admission through its outcome write and workspace
   cleanup. Tests cover stale tick inventories, target changes, aliases, uncertain journals and a
-  released heartbeat whose source record was removed. Reviewed durable pause, strict automation
-  inventory, interrupted-run proof, bounded shutdown, cancellation disposition and paused destination
-  remapping remain open; the source fence alone does not provide them. See the scheduler cases in
-  the [stopped-work evidence](../qa-evidence/handoff-writers-review.txt).
+  released heartbeat whose source record was removed. Preparation now strictly inventories and
+  durably pauses the reviewed schedules before capture; cancellation leaves them paused until
+  explicit resume. Version 5 bundles carry definitions, cadence, run budgets and history. Destination
+  installation remaps directories and heartbeat targets, retains run provenance and stays hidden
+  until activation is durable. Interrupted installation retries without duplicate records. Completed
+  schedules remain completed. Review names omitted MCP connections and warns that permissions
+  and advanced provider settings need destination configuration before resume.
+  Capture refuses active runs, ancestor-directory schedules, heartbeats owned by outside conversations
+  sharing the directory, damaged inventory, more than 1,000 transferred schedules or metadata beyond
+  32 MiB. Two-daemon tests cover cancellation, source changes, restarts and interrupted installation.
+  Recovery of uncertain run outcomes and bounded shutdown remain open; an admitted runner can
+  still delay draining. See the scheduler cases in the
+  [stopped-work evidence](../qa-evidence/handoff-writers-review.txt).
   PR watches now have a reviewed stop disposition. Preparation durably removes the selected watches,
   cancels their queued notifications and joins dispatched wakes. Registration participates in source
   admission and rechecks before publication; late forge reads cannot revive a removed watch. The

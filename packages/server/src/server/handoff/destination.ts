@@ -51,6 +51,7 @@ import { claudeConfigDir } from "../agent/providers/claude/project-dir.js";
 
 import type { HandoffPublication } from "./publication.js";
 import { handoffContextFiles } from "./context.js";
+import { handoffScheduleId, HandoffScheduleIdSchema } from "../schedule/handoff.js";
 import type {
   HandoffConversationPreview,
   HandoffDestinationPreview,
@@ -279,6 +280,7 @@ export class HandoffDestination {
           record.workspaceId,
           record.projectId,
           ...destinationIds,
+          ...this.scheduleIdentities(record),
         ]) {
           if (identities.has(identity)) fail("storage_uncertain", "Reused destination identity");
           identities.add(identity);
@@ -306,6 +308,7 @@ export class HandoffDestination {
       );
       const canonical = { ...request, sourceAgentIds, destinationParent, conversationModes };
       this.validateConversationModes(canonical, "invalid_state");
+      this.validateScheduleReview(canonical, "invalid_state");
       const existing = this.records.get(request.transferId);
       if (existing) {
         if (JSON.stringify(ReservationSchema.parse(existing)) !== JSON.stringify(canonical))
@@ -641,6 +644,7 @@ export class HandoffDestination {
           bundle: content.bundle,
           workspace,
           queues: content.queues,
+          schedules: content.schedules,
           queueBlobsDirectory: archive.blobsDirectory,
         });
         record = { ...record, state: "active" };
@@ -686,8 +690,16 @@ export class HandoffDestination {
       record.projectId,
       record.workspaceId,
       ...record.agentMappings.map((mapping) => mapping.destinationAgentId),
+      ...this.scheduleIdentities(record),
     ])
       this.identityOwners.set(id, record.transferId);
+  }
+
+  private scheduleIdentities(record: DestinationHandoffStatus): string[] {
+    // COMPAT(handoffSchedules): added in v0.11.1, remove after 2027-04-10 once pre-v5 reservations finish.
+    return (record.stoppedWorkReview?.schedules ?? []).map((schedule) =>
+      handoffScheduleId(record.reservationId, schedule.id),
+    );
   }
 
   status(transferId: string): DestinationHandoffStatus {
@@ -813,6 +825,7 @@ export class HandoffDestination {
 
   private validateRecord(record: DestinationHandoffStatus): void {
     this.validateCancellation(record);
+    this.validateScheduleReview(record, "storage_uncertain");
     if (
       !path.isAbsolute(record.destinationParent) ||
       record.stagingCwd !== path.join(containerPath(record), "checkout") ||
@@ -857,6 +870,20 @@ export class HandoffDestination {
       JSON.stringify(ids) !== JSON.stringify([...record.sourceAgentIds].sort())
     )
       fail(code, "Continuation choices must cover each reserved conversation exactly once");
+  }
+
+  private validateScheduleReview(
+    record: Pick<DestinationHandoffStatus, "stoppedWorkReview">,
+    code: "invalid_state" | "storage_uncertain",
+  ): void {
+    // COMPAT(handoffSchedules): added in v0.11.1, remove after 2027-04-10 once pre-v5 reservations finish.
+    const schedules = record.stoppedWorkReview?.schedules ?? [];
+    const ids = new Set<string>();
+    for (const schedule of schedules) {
+      if (!HandoffScheduleIdSchema.safeParse(schedule.id).success || ids.has(schedule.id))
+        fail(code, "Invalid or duplicate reviewed schedule identity");
+      ids.add(schedule.id);
+    }
   }
 
   private validateConversationRecords(record: DestinationHandoffStatus): void {
@@ -931,6 +958,17 @@ export class HandoffDestination {
       sourceAgentIds: record.sourceAgentIds,
       manifestDigest: record.binding.manifest.entrypoint.sha256,
     });
+    // COMPAT(handoffSchedules): added in v0.11.1, remove after 2027-04-10 once pre-v5 transfers finish.
+    const expectedSchedules = record.stoppedWorkReview?.schedules ?? [];
+    if (
+      expectedSchedules.length !== content.schedules.schedules.length ||
+      content.schedules.schedules.some(
+        (schedule, index) =>
+          schedule.id !== expectedSchedules[index].id ||
+          schedule.reviewDigest !== expectedSchedules[index].digest,
+      )
+    )
+      fail("invalid_state", "Scheduled automation differs from the destination reservation review");
     for (const conversation of content.bundle.conversations) {
       if (
         conversation.mode === "context" &&

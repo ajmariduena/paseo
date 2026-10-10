@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import { HANDOFF_CHUNK_BASE64_CHARS } from "./handoff.js";
+import { ScheduleRunSchema } from "./schedule/types.js";
 import {
   HandoffConversationPreviewSchema,
   HandoffDestinationPageSchema,
@@ -34,6 +35,66 @@ test("handoff queue counts preserve old stopped-work preview parsing", () => {
       current,
     ),
   ).toEqual(legacy);
+});
+
+test("handoff schedule review and size remain optional for older clients and daemons", () => {
+  const review = { agents: [], terminals: [], setupIds: [] };
+  const currentReview = {
+    ...review,
+    schedules: [
+      {
+        id: "1234abcd",
+        name: "Build",
+        kind: "schedule",
+        status: "active",
+        cadence: "0 0 * * * (UTC)",
+        digest: "a".repeat(64),
+        runCount: 1,
+        omittedSettings: [],
+        omittedMcpServers: [],
+      },
+    ],
+  };
+  expect(HandoffStoppedWorkReviewSchema.parse(review)).toEqual(review);
+  expect(HandoffStoppedWorkReviewSchema.parse(currentReview)).toEqual(currentReview);
+  expect(HandoffStoppedWorkReviewSchema.omit({ schedules: true }).parse(currentReview)).toEqual(
+    review,
+  );
+  const preview = { agentIds: [], terminals: [], setupOperations: 0 };
+  expect(HandoffStoppedWorkPreviewSchema.parse(preview)).toEqual(preview);
+  expect(
+    HandoffStoppedWorkPreviewSchema.omit({ scheduledBytes: true }).parse({
+      ...preview,
+      scheduledBytes: 128,
+    }),
+  ).toEqual(preview);
+});
+
+test("handoff schedule run provenance does not turn source identities into destination links", () => {
+  const timestamp = "2026-01-01T00:00:00Z";
+  const run = {
+    id: "run",
+    scheduledFor: timestamp,
+    startedAt: timestamp,
+    endedAt: timestamp,
+    status: "succeeded",
+    agentId: null,
+    workspaceId: null,
+    output: "Previous output",
+    error: null,
+  };
+  const current = {
+    ...run,
+    origin: {
+      serverId: "source",
+      scheduleId: "1234abcd",
+      agentId: "old-agent",
+      workspaceId: "old-workspace",
+    },
+  };
+  expect(ScheduleRunSchema.parse(run)).toEqual(run);
+  expect(ScheduleRunSchema.parse(current)).toEqual(current);
+  expect(ScheduleRunSchema.omit({ origin: true }).parse(current)).toEqual(run);
 });
 
 test("handoff PR watch dispositions remain optional for older stopped-work reviews", () => {

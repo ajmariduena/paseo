@@ -13,6 +13,8 @@ import type { WorkspaceManifest } from "./workspace.js";
 import { handoffContextDirectory } from "./context.js";
 import { remapHandoffQueueEntry, type HandoffQueue } from "../agent-queue/store.js";
 import type { AgentQueueRunner } from "../agent-queue/runner.js";
+import type { HandoffSchedules } from "../schedule/handoff.js";
+import type { ScheduleService } from "../schedule/service.js";
 
 export interface HandoffPublicationInput {
   record: DestinationHandoffStatus;
@@ -20,12 +22,14 @@ export interface HandoffPublicationInput {
   workspace: WorkspaceManifest;
   queues: ReadonlyMap<string, HandoffQueue>;
   queueBlobsDirectory: string;
+  schedules: HandoffSchedules;
 }
 export interface HandoffPublication {
   install(input: HandoffPublicationInput): Promise<void>;
   publish(record: DestinationHandoffStatus): Promise<void>;
 }
 interface PublicationStores {
+  schedules: Pick<ScheduleService, "installHandoffSchedules">;
   projects: FileBackedProjectRegistry;
   workspaces: FileBackedWorkspaceRegistry;
   agents: AgentStorage;
@@ -36,7 +40,7 @@ interface PublicationStores {
 /** Registry reads remain gated by the destination journal until every write is durable. */
 export function createHandoffPublication(stores: PublicationStores): HandoffPublication {
   return {
-    async install({ record, workspace, bundle, queues, queueBlobsDirectory }) {
+    async install({ record, workspace, bundle, queues, queueBlobsDirectory, schedules }) {
       if (!record.activationAt) throw new Error("Handoff activation timestamp is missing");
       const timestamp = record.activationAt;
       const displayName =
@@ -135,6 +139,21 @@ export function createHandoffPublication(stores: PublicationStores): HandoffPubl
           );
         }
       }
+      await stores.schedules.installHandoffSchedules({
+        snapshot: schedules,
+        reservationId: record.reservationId,
+        sourceServerId: bundle.sourceServerId,
+        sourceWorkspaceId: bundle.sourceWorkspaceId,
+        destinationWorkspaceId: record.workspaceId,
+        destinationCwd: record.destinationCwd,
+        activationAt: timestamp,
+        agentMappings: new Map(
+          record.agentMappings.map((mapping) => [
+            mapping.sourceAgentId,
+            mapping.destinationAgentId,
+          ]),
+        ),
+      });
     },
     async publish(record) {
       await stores.projects.publishHandoffRecord(record.projectId);

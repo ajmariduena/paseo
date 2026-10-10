@@ -87,6 +87,10 @@ async function inspectContinuedHistory(
     }) + "\n",
   );
   const returnId = randomUUID();
+  const returnReview = (
+    await host.destinationClient.handoffPreviewSource({ workspaceId: active.workspaceId })
+  ).result;
+  if (!returnReview?.stoppedWork?.review) throw new Error("Missing return automation review");
   await prepareWorkspaceHandoff({
     transferId: returnId,
     workspaceId: active.workspaceId,
@@ -94,6 +98,7 @@ async function inspectContinuedHistory(
     continuationMode: "native",
     source: host.destinationClient,
     destination: host.sourceClient,
+    stoppedWorkReview: returnReview.stoppedWork.review,
   });
   const returned = await activateWorkspaceHandoff({
     transferId: returnId,
@@ -105,6 +110,14 @@ async function inspectContinuedHistory(
     (mapping) => mapping.sourceAgentId === importedId,
   )?.destinationAgentId;
   if (!returnedId) throw new Error("Missing returned conversation");
+  const returnedIds = new Set(returned.agentMappings.map((mapping) => mapping.destinationAgentId));
+  const returnedSchedules = (await host.sourceClient.scheduleList()).schedules.filter((schedule) =>
+    schedule.target.type === "agent"
+      ? returnedIds.has(schedule.target.agentId)
+      : schedule.target.config.cwd === returned.destinationCwd,
+  );
+  expect(returnedSchedules).toHaveLength(2);
+  expect(returnedSchedules.map((schedule) => schedule.status)).toEqual(["paused", "paused"]);
   await page.goto(
     `/h/${host.source.serverId}/workspace/${returned.workspaceId}?open=${encodeURIComponent(`agent:${returnedId}`)}`,
   );
@@ -174,6 +187,27 @@ test.describe("workspace handoff", () => {
           cwd: host.workspace.repoPath,
           workspaceId: host.workspace.workspaceId,
           title: "Conversation with a workflow",
+        });
+        await host.sourceClient.scheduleCreate({
+          name: "Check this conversation",
+          prompt: "Review the task",
+          runOnCreate: false,
+          cadence: { type: "cron", expression: "0 0 1 1 *", timezone: "UTC" },
+          target: { type: "agent", agentId: native.id },
+        });
+        await host.sourceClient.scheduleCreate({
+          name: "Workspace build",
+          prompt: "Check the build",
+          runOnCreate: false,
+          cadence: { type: "cron", expression: "0 0 1 1 *", timezone: "UTC" },
+          target: {
+            type: "new-agent",
+            config: {
+              provider: "claude",
+              cwd: host.workspace.repoPath,
+              modeId: "source-only-permissions",
+            },
+          },
         });
         const project = claudeProjectDirSync(host.workspace.repoPath, {
           configDir: sourceConfigDir,
@@ -330,6 +364,21 @@ test.describe("workspace handoff", () => {
         await expect(page.getByTestId("handoff-pr-watches-review")).toContainText(
           "These PR watches will stop.",
         );
+        const automationReview = page.getByTestId("handoff-schedules-review");
+        await expect(automationReview).toContainText("Check this conversation");
+        await expect(automationReview).toContainText("Workspace build");
+        await expect(automationReview).toContainText("Schedules and heartbeats move paused.");
+        await expect(automationReview).toContainText(
+          "Connections, permissions and advanced provider settings stay on this host.",
+        );
+        await automationReview.scrollIntoViewIfNeeded();
+        await waitForSettledPosition(automationReview);
+        await page.screenshot({
+          path: path.join(
+            __dirname,
+            `../../../../docs/qa-evidence/handoff-schedules-${layout}.png`,
+          ),
+        });
         await contextChoice.scrollIntoViewIfNeeded();
         await waitForSettledPosition(contextChoice);
         await page.screenshot({

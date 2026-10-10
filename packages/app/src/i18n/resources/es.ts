@@ -3,6 +3,10 @@ import { pluginSettings } from "./plugin-settings";
 
 export const es: TranslationResources = {
   handoff: {
+    automationPaused:
+      "Los horarios y recordatorios se trasladan en pausa. Los horarios completados conservan su estado. Si cancelas, reanúdalos manualmente en el origen.",
+    automationSettingsOmitted:
+      "Las conexiones, los permisos y los ajustes avanzados del proveedor permanecen en este host. Configúralos en el destino antes de reanudar.",
     previousTransfers: "Página anterior",
     nextTransfers: "Página siguiente",
     noPendingTransfers: "No hay traslados pendientes.",

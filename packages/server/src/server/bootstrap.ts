@@ -1101,6 +1101,7 @@ export async function createPaseoDaemon(
   function publication() {
     if (!workspaceRegistry) throw new Error("Workspace registry is unavailable");
     return createHandoffPublication({
+      schedules: scheduleService,
       queues: agentManager.messageQueue,
       projects: projectRegistry,
       workspaces: workspaceRegistry,
@@ -1622,6 +1623,7 @@ export async function createPaseoDaemon(
   const scheduleService = new ScheduleService({
     paseoHome: config.paseoHome,
     handoffOwnership,
+    isHandoffIdentityVisible: (id) => handoffDestination.isIdentityVisible(id),
     logger,
     agentManager,
     agentStorage,
@@ -1651,6 +1653,7 @@ export async function createPaseoDaemon(
   logger.info({ elapsed: elapsed() }, "Schedule service initialized");
   await handoffDestination.recoverActivations();
   const handoffSource = new HandoffSource({
+    schedules: scheduleService,
     pullRequestWatches,
     queues: agentManager.messageQueue,
     directory: path.join(config.paseoHome, "handoff", "source"),

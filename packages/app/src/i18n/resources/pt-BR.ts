@@ -3,6 +3,10 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ptBR: TranslationResources = {
   handoff: {
+    automationPaused:
+      "Agendamentos e lembretes são transferidos pausados. Os concluídos mantêm seu estado. Se cancelar, retome-os manualmente na origem.",
+    automationSettingsOmitted:
+      "As conexões, permissões e configurações avançadas do provedor ficam neste host. Configure-as no destino antes de retomar.",
     previousTransfers: "Página anterior",
     nextTransfers: "Próxima página",
     noPendingTransfers: "Nenhuma transferência pendente.",

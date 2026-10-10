@@ -27,6 +27,9 @@ import { PromptAnnotationStore } from "../agent/prompt-annotations.js";
 import { PullRequestWatchStore } from "../pull-request-watch/watch-store.js";
 import { parseStoredAgentRecord, type StoredAgentRecord } from "../agent/agent-storage.js";
 import { captureWorkspace, packWorkspaceArchive, restoreWorkspaceArchive } from "./workspace.js";
+import { ScheduleStore } from "../schedule/store.js";
+import { handoffScheduleId } from "../schedule/handoff.js";
+import { createTestLogger } from "../../test-utils/test-logger.js";
 
 const exec = promisify(execFile);
 
@@ -85,6 +88,246 @@ async function stopHost(host: Host): Promise<void> {
   await host.client.close();
   await host.daemon.close();
 }
+
+test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
+  "%s handoff moves reviewed schedules and heartbeats paused through cancellation and interrupted activation",
+  async (continuationMode) => {
+    let source = await startHost("source", true);
+    let destination = await startHost("destination", true);
+    const cwd = path.join(await realpath(root), "automation-workspace");
+    await mkdir(path.join(cwd, "nested"), { recursive: true });
+    await writeFile(path.join(cwd, "nested", "work.txt"), "scheduled work");
+    const created = await source.client.createWorkspace({
+      source: { kind: "directory", path: cwd },
+    });
+    if (!created.workspace) throw new Error("Missing workspace");
+    const workspaceId = created.workspace.id;
+    const agentId = randomUUID();
+    const sessionId = randomUUID();
+    const configDir = path.join(root, "source", "claude");
+    const project = claudeProjectDirSync(cwd, { configDir });
+    await mkdir(project, { recursive: true });
+    await writeFile(
+      path.join(project, `${sessionId}.jsonl`),
+      JSON.stringify({
+        type: "user",
+        uuid: randomUUID(),
+        sessionId,
+        message: { role: "user", content: "Continue the scheduled task" },
+      }) + "\n",
+    );
+    const timestamp = new Date().toISOString();
+    await source.daemon.daemon.agentStorage.upsert(
+      parseStoredAgentRecord({
+        id: agentId,
+        provider: "claude",
+        cwd,
+        workspaceId,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        lastStatus: "closed",
+        persistence: {
+          provider: "claude",
+          sessionId,
+          metadata: { cwd, claudeRuntime: { configDir, cliVersion: "2.1.295" } },
+        },
+      }),
+    );
+    const cadence = { type: "cron" as const, expression: "0 0 1 1 *", timezone: "Europe/Berlin" };
+    const periodic = await source.client.scheduleCreate({
+      name: "Annual build",
+      prompt: "Run the build",
+      cadence,
+      runOnCreate: false,
+      maxRuns: 4,
+      target: {
+        type: "new-agent",
+        config: { provider: "claude", cwd: path.join(cwd, "nested"), model: "test-model" },
+      },
+    });
+    const heartbeat = await source.client.scheduleCreate({
+      name: "Annual reminder",
+      prompt: "Review progress",
+      cadence,
+      runOnCreate: false,
+      maxRuns: 3,
+      target: { type: "agent", agentId },
+    });
+    if (!periodic.schedule || !heartbeat.schedule) throw new Error("Missing schedules");
+    const parent = (
+      await destination.client.scheduleCreate({
+        name: "Existing parent schedule",
+        prompt: "Unrelated work",
+        cadence,
+        runOnCreate: false,
+        target: { type: "new-agent", config: { provider: "claude", cwd: root } },
+      })
+    ).schedule;
+    if (!parent) throw new Error("Missing existing destination schedule");
+    const periodicId = periodic.schedule.id;
+    const heartbeatId = heartbeat.schedule.id;
+    const sourceStore = new ScheduleStore(
+      path.join(source.daemon.daemon.config.paseoHome, "schedules"),
+      createTestLogger(),
+    );
+    await sourceStore.update(periodicId, (record) => ({
+      ...record,
+      runs: [
+        {
+          id: randomUUID(),
+          scheduledFor: timestamp,
+          startedAt: timestamp,
+          endedAt: timestamp,
+          status: "succeeded",
+          agentId,
+          workspaceId,
+          output: "Prior build output",
+          error: null,
+        },
+      ],
+    }));
+    const review = (await source.client.handoffPreviewSource({ workspaceId })).result;
+    if (!review?.stoppedWork?.review) throw new Error("Missing schedule review");
+    expect(review.stoppedWork.review.schedules).toHaveLength(2);
+    expect(review.stoppedWork.scheduledBytes).toBeGreaterThan(0);
+    const prepare = (transferId: string, stoppedWorkReview = review.stoppedWork!.review) =>
+      prepareWorkspaceHandoff({
+        transferId,
+        workspaceId,
+        destinationParent: root,
+        continuationMode,
+        source: source.client,
+        destination: destination.client,
+        stoppedWorkReview,
+      });
+    const cancelledId = randomUUID();
+    await prepare(cancelledId);
+    expect((await source.client.scheduleInspect({ id: periodicId })).schedule?.status).toBe(
+      "paused",
+    );
+    await cancelWorkspaceHandoff({
+      transferId: cancelledId,
+      sourceServerId: source.daemon.daemon.getServerId(),
+      getSource: () => source.client,
+      destination: destination.client,
+    });
+    expect((await source.client.scheduleInspect({ id: periodicId })).schedule?.status).toBe(
+      "paused",
+    );
+    expect((await destination.client.scheduleList()).schedules).toEqual([parent]);
+    await source.client.scheduleResume({ id: periodicId });
+    await source.client.scheduleResume({ id: heartbeatId });
+    const fresh = (await source.client.handoffPreviewSource({ workspaceId })).result;
+    if (!fresh?.stoppedWork?.review) throw new Error("Missing fresh schedule review");
+    const transferId = randomUUID();
+    const staged = await prepare(transferId, fresh.stoppedWork.review);
+    const retained = await sourceStore.get(periodicId);
+    if (!retained) throw new Error("Missing paused source schedule");
+    await sourceStore.update(periodicId, (record) => ({ ...record, prompt: "Unreviewed change" }));
+    expect((await source.client.handoffReleaseSource({ transferId })).error?.code).toBe(
+      "source_changed",
+    );
+    await sourceStore.update(periodicId, () => retained);
+    await stopHost(source);
+    await stopHost(destination);
+    source = await startHost("source", true);
+    destination = await startHost("destination", true);
+    const sourceServerId = source.daemon.daemon.getServerId();
+    const orderedIds = [periodicId, heartbeatId].sort();
+    const firstImportedId = handoffScheduleId(staged.reservationId, orderedIds[0]);
+    const obstruction = path.join(
+      destination.daemon.daemon.config.paseoHome,
+      "schedules",
+      `${handoffScheduleId(staged.reservationId, orderedIds[1])}.json`,
+    );
+    await mkdir(obstruction);
+    await expect(
+      activateWorkspaceHandoff({
+        transferId,
+        sourceServerId,
+        getSource: () => source.client,
+        destination: destination.client,
+      }),
+    ).rejects.toThrow();
+    expect((await source.client.handoffGetSourceStatus({ transferId })).result?.source.state).toBe(
+      "released",
+    );
+    expect(
+      (await destination.client.handoffGetDestinationStatus({ transferId })).result?.state,
+    ).toBe("activating");
+    expect((await destination.client.scheduleList()).schedules).toEqual([parent]);
+    await expect(destination.client.scheduleResume({ id: firstImportedId })).rejects.toThrow(
+      "not found",
+    );
+    await expect(
+      destination.client.scheduleCreate({
+        prompt: "Must not wake a private import",
+        cadence,
+        runOnCreate: false,
+        target: { type: "agent", agentId: staged.agentMappings[0].destinationAgentId },
+      }),
+    ).rejects.toThrow("finish activation");
+    const privateStore = new ScheduleStore(
+      path.join(destination.daemon.daemon.config.paseoHome, "schedules"),
+      createTestLogger(),
+    );
+    expect((await privateStore.get(firstImportedId))?.status).toBe("paused");
+    await stopHost(destination);
+    await rm(obstruction, { recursive: true });
+    destination = await startHost("destination", true);
+    const active = (await destination.client.handoffGetDestinationStatus({ transferId })).result;
+    if (!active) throw new Error("Missing recovered activation");
+    expect(active.state).toBe("active");
+    const schedules = (await destination.client.scheduleList()).schedules;
+    expect(schedules).toHaveLength(3);
+    expect(
+      schedules.filter((record) => record.id !== parent.id).map((record) => record.status),
+    ).toEqual(["paused", "paused"]);
+    const imported = await destination.client.scheduleInspect({
+      id: handoffScheduleId(staged.reservationId, periodicId),
+    });
+    expect(imported.schedule).toMatchObject({
+      cadence,
+      maxRuns: 4,
+      nextRunAt: null,
+      target: {
+        type: "new-agent",
+        config: {
+          cwd: path.join(active.destinationCwd, "nested"),
+          provider: "claude",
+          model: "test-model",
+        },
+      },
+      runs: [
+        {
+          output: "Prior build output",
+          agentId: active.agentMappings[0].destinationAgentId,
+          workspaceId: active.workspaceId,
+          origin: { serverId: sourceServerId, scheduleId: periodicId, agentId, workspaceId },
+        },
+      ],
+    });
+    expect(
+      (
+        await destination.client.scheduleInspect({
+          id: handoffScheduleId(staged.reservationId, heartbeatId),
+        })
+      ).schedule?.target,
+    ).toEqual({ type: "agent", agentId: active.agentMappings[0].destinationAgentId });
+    expect(
+      destination.daemon.daemon.agentManager.getAgent(active.agentMappings[0].destinationAgentId),
+    ).toBeNull();
+    await activateWorkspaceHandoff({
+      transferId,
+      sourceServerId,
+      getSource: () => source.client,
+      destination: destination.client,
+    });
+    expect((await destination.client.scheduleList()).schedules).toEqual(schedules);
+    await expect(source.client.scheduleResume({ id: periodicId })).rejects.toThrow("handoff");
+  },
+  30_000,
+);
 
 async function storedNativeRecord(host: Host, agentId: string) {
   const record = await host.daemon.daemon.agentStorage.get(agentId);
@@ -262,9 +505,14 @@ test.skipIf(process.platform === "win32")(
     expect(preview.result?.stoppedWork).toEqual({
       agentIds: [],
       setupOperations: 0,
+      queuedMessages: 0,
+      queuedBytes: 0,
+      scheduledBytes: Buffer.byteLength(JSON.stringify({ version: 1, schedules: [] })),
       review: {
         agents: [],
         setupIds: [],
+        pullRequestWatches: [],
+        schedules: [],
         terminals: terminals
           .map(({ id, name }) => ({ id, name, instanceId: expect.any(String) }))
           .sort((a, b) => a.id.localeCompare(b.id)),

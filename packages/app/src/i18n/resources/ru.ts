@@ -3,6 +3,10 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ru: TranslationResources = {
   handoff: {
+    automationPaused:
+      "Расписания и напоминания переносятся на паузе. Завершённые расписания остаются завершёнными. При отмене возобновите их на исходном хосте вручную.",
+    automationSettingsOmitted:
+      "Подключения, разрешения и расширенные настройки провайдера остаются на этом хосте. Настройте их на целевом хосте перед возобновлением.",
     previousTransfers: "Предыдущая страница",
     nextTransfers: "Следующая страница",
     noPendingTransfers: "Нет незавершённых переносов.",

@@ -62,6 +62,18 @@ export const HandoffPullRequestWatchReviewSchema = z.object({
   startedAt: z.string().min(1).max(128),
 });
 export type HandoffPullRequestWatchReview = z.infer<typeof HandoffPullRequestWatchReviewSchema>;
+export const HandoffScheduleReviewSchema = z.object({
+  id: z.string().min(1).max(128),
+  name: z.string().max(4096).nullable(),
+  kind: z.enum(["schedule", "heartbeat"]),
+  status: z.enum(["active", "paused", "completed"]),
+  cadence: z.string().min(1).max(4096),
+  digest: HandoffDigestSchema,
+  runCount: z.number().int().nonnegative(),
+  omittedSettings: z.array(z.string().min(1).max(4096)).max(1000),
+  omittedMcpServers: z.array(z.string().min(1).max(4096)).max(1000),
+});
+export type HandoffScheduleReview = z.infer<typeof HandoffScheduleReviewSchema>;
 export const HandoffStoppedWorkReviewSchema = z.object({
   agents: z.array(z.object({ id: z.string().min(1), instanceId: z.string().uuid() })).max(1000),
   terminals: z
@@ -75,6 +87,7 @@ export const HandoffStoppedWorkReviewSchema = z.object({
     .max(1000),
   setupIds: z.array(z.string().uuid()).max(1000),
   pullRequestWatches: z.array(HandoffPullRequestWatchReviewSchema).max(1000).optional(),
+  schedules: z.array(HandoffScheduleReviewSchema).max(1000).optional(),
 });
 export type HandoffStoppedWorkReview = z.infer<typeof HandoffStoppedWorkReviewSchema>;
 export const HandoffStoppedWorkPreviewSchema = z.object({
@@ -83,6 +96,7 @@ export const HandoffStoppedWorkPreviewSchema = z.object({
   setupOperations: z.number().int().nonnegative(),
   queuedMessages: z.number().int().nonnegative().max(200_000).optional(),
   queuedBytes: z.number().int().nonnegative().optional(),
+  scheduledBytes: z.number().int().nonnegative().optional(),
   review: HandoffStoppedWorkReviewSchema.optional(),
 });
 export const HandoffIntegrationReviewSchema = z

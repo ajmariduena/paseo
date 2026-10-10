@@ -3,6 +3,10 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ja: TranslationResources = {
   handoff: {
+    automationPaused:
+      "スケジュールとリマインダーは一時停止した状態で移動します。完了済みのものは完了済みのままです。キャンセルした場合は、移動元で手動で再開してください。",
+    automationSettingsOmitted:
+      "接続、権限、プロバイダーの詳細設定はこのホストに残ります。再開する前に移動先で設定してください。",
     previousTransfers: "前のページ",
     nextTransfers: "次のページ",
     noPendingTransfers: "未完了の転送はありません。",

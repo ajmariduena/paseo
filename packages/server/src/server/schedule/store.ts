@@ -1,13 +1,22 @@
-import { randomBytes } from "node:crypto";
-import { mkdir, readFile, readdir, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { randomBytes, randomUUID } from "node:crypto";
+import { link, mkdir, readFile, readdir, rm } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type { Logger } from "pino";
 import {
   StoredScheduleSchema,
   type ScheduleTarget,
   type StoredSchedule,
 } from "@getpaseo/protocol/schedule/types";
-import { writeJsonFileAtomic } from "../atomic-file.js";
+import { syncFilePublication, writeJsonFileAtomic } from "../atomic-file.js";
+import { readBoundedFile, writeJournal } from "../handoff/artifacts.js";
+import {
+  HANDOFF_SCHEDULE_MAX_BYTES,
+  HandoffScheduleIdSchema,
+  remapHandoffSchedules,
+  scheduleHandoffDigest,
+  type InstallHandoffSchedulesInput,
+} from "./handoff.js";
 
 function generateScheduleId(): string {
   return randomBytes(4).toString("hex");
@@ -22,6 +31,10 @@ export interface ScheduleMutation {
 
 interface ScheduleMutationOptions {
   admitMutation?: (mutation: ScheduleMutation) => Promise<() => void>;
+}
+
+interface ScheduleStoreOptions extends ScheduleMutationOptions {
+  isVisible?: (id: string) => boolean;
 }
 
 interface ScheduleNameTargetUpsert {
@@ -117,7 +130,7 @@ export class ScheduleStore {
   constructor(
     private readonly dir: string,
     private readonly logger: Logger,
-    private readonly options: ScheduleMutationOptions = {},
+    private readonly options: ScheduleStoreOptions = {},
   ) {}
 
   private filePath(id: string): string {
@@ -145,7 +158,7 @@ export class ScheduleStore {
     const invalidFiles = new Set<string>();
     for (const { filePath, parsed } of files) {
       if (parsed.success) {
-        schedules.push(parsed.data);
+        if (this.options.isVisible?.(parsed.data.id) !== false) schedules.push(parsed.data);
         continue;
       }
       invalidFiles.add(filePath);
@@ -158,6 +171,7 @@ export class ScheduleStore {
   }
 
   async get(id: string): Promise<StoredSchedule | null> {
+    if (this.options.isVisible?.(id) === false) return null;
     await this.ensureDir();
     try {
       const content = await readFile(this.filePath(id), "utf-8");
@@ -178,6 +192,88 @@ export class ScheduleStore {
       operation: () => this.write(created),
     });
     return created;
+  }
+
+  async listForHandoff(): Promise<StoredSchedule[]> {
+    await this.ensureDir();
+    const entries = await readdir(this.dir, { withFileTypes: true });
+    if (entries.length > 10_000) throw new Error("Schedule inventory exceeds the handoff limit");
+    const records: StoredSchedule[] = [];
+    let bytes = 0;
+    for (const entry of entries) {
+      if (!entry.name.endsWith(".json")) continue;
+      if (!entry.isFile()) throw new Error("Schedule inventory contains a non-regular record");
+      const data = await readBoundedFile(join(this.dir, entry.name), HANDOFF_SCHEDULE_MAX_BYTES);
+      bytes += data.length;
+      if (bytes > HANDOFF_SCHEDULE_MAX_BYTES)
+        throw new Error("Schedule inventory exceeds the handoff byte limit");
+      const record = StoredScheduleSchema.parse(JSON.parse(data.toString("utf8")));
+      HandoffScheduleIdSchema.parse(record.id);
+      if (entry.name !== `${record.id}.json`)
+        throw new Error("Schedule identity differs from its file");
+      if (this.options.isVisible?.(record.id) !== false) records.push(record);
+    }
+    return records.sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  /** The service must hold the matching durable source fence before entering this path. */
+  async pauseForHandoff(input: {
+    id: string;
+    digest: string;
+    pausedAt: string;
+  }): Promise<StoredSchedule> {
+    HandoffScheduleIdSchema.parse(input.id);
+    return this.serializeScheduleMutation(input.id, async () => {
+      if (this.options.isVisible?.(input.id) === false)
+        throw new Error("Schedule is not yet active on this host");
+      const bytes = await readBoundedFile(this.filePath(input.id), HANDOFF_SCHEDULE_MAX_BYTES);
+      const record = StoredScheduleSchema.parse(JSON.parse(bytes.toString("utf8")));
+      if (record.id !== input.id || scheduleHandoffDigest(record) !== input.digest)
+        throw new Error("Scheduled automation changed after handoff review");
+      if (record.runs.some((run) => run.status === "running"))
+        throw new Error("A scheduled run is still active; stop or finish it before handoff");
+      const paused: StoredSchedule =
+        record.status === "active"
+          ? {
+              ...record,
+              status: "paused",
+              nextRunAt: null,
+              pausedAt: input.pausedAt,
+              updatedAt: input.pausedAt,
+            }
+          : record;
+      if (paused !== record) await this.write(paused);
+      // Retry the acknowledgement even when the prior rename already survived.
+      await syncFilePublication(this.filePath(record.id), dirname(this.dir));
+      return paused;
+    });
+  }
+
+  async installHandoffSchedules(input: InstallHandoffSchedulesInput): Promise<void> {
+    const records = remapHandoffSchedules(input);
+    await this.ensureDir();
+    for (const record of records) {
+      await this.serializeScheduleMutation(record.id, async () => {
+        const file = this.filePath(record.id);
+        const temporary = join(this.dir, `.handoff-${randomUUID()}.tmp`);
+        try {
+          await writeJournal(temporary, record);
+          try {
+            await link(temporary, file);
+          } catch (error) {
+            if (!(error instanceof Error && "code" in error && error.code === "EEXIST"))
+              throw error;
+            const bytes = await readBoundedFile(file, HANDOFF_SCHEDULE_MAX_BYTES);
+            const existing = StoredScheduleSchema.parse(JSON.parse(bytes.toString("utf8")));
+            if (!isDeepStrictEqual(existing, record))
+              throw new Error("Destination schedule identity is already in use", { cause: error });
+          }
+          await syncFilePublication(file, dirname(this.dir));
+        } finally {
+          await rm(temporary, { force: true });
+        }
+      });
+    }
   }
 
   async update(

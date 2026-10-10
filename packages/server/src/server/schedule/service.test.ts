@@ -77,8 +77,10 @@ type TestScheduleServiceOptions = Omit<
   | "createPaseoWorktreeWorkspace"
   | "archiveWorkspace"
   | "handoffOwnership"
+  | "isHandoffIdentityVisible"
 > & {
   handoffOwnership?: HandoffOwnership;
+  isHandoffIdentityVisible?: (id: string) => boolean;
   agentManager: AgentManager;
   providerSnapshotManager: Pick<ProviderSnapshotManager, "resolveCreateConfig">;
   createAgent?: ScheduleServiceOptions["createAgent"];
@@ -159,6 +161,7 @@ function createScheduleService(options: TestScheduleServiceOptions): ScheduleSer
   return new ScheduleService({
     ...options,
     handoffOwnership: options.handoffOwnership ?? null,
+    isHandoffIdentityVisible: options.isHandoffIdentityVisible ?? (() => true),
     createAgent:
       options.createAgent ??
       ((input) =>
@@ -350,6 +353,116 @@ describe("ScheduleService", () => {
     };
     return { ownership, service, schedule, transfer, otherCwd, options };
   }
+
+  test.skipIf(process.platform === "win32")(
+    "handoff automation pause survives retries, cancellation and restart until explicit resume",
+    async () => {
+      const runner = vi.fn(async () => ({ agentId: null, output: "resumed" }));
+      const { ownership, service, schedule, transfer, options } = await handoffFixture(runner);
+      const schedules = await service.reviewForHandoff(transfer);
+      const source = await ownership.prepare({
+        ...transfer,
+        stoppedWorkReview: { agents: [], terminals: [], setupIds: [], schedules },
+      });
+      await service.pauseForHandoff(source);
+      const captured = await service.exportForHandoff(source);
+      expect(captured.schedules).toMatchObject([
+        { id: schedule.id, status: "paused", nextRunAt: null, reviewDigest: schedules[0].digest },
+      ]);
+      now = new Date(now.getTime() + 60_000);
+      await service.pauseForHandoff(source);
+      expect(await service.exportForHandoff(source)).toEqual(captured);
+      await ownership.cancel(transfer.id);
+      const restartedOwnership = new HandoffOwnership({
+        directory: join(tempDir, "handoff"),
+        sourceServerId: "source",
+      });
+      await restartedOwnership.initialize();
+      const restarted = createScheduleService({ ...options, handoffOwnership: restartedOwnership });
+      try {
+        await restarted.start();
+        await restarted.tick();
+        expect(runner).not.toHaveBeenCalled();
+        expect(await restarted.exportForHandoff(transfer)).toEqual(captured);
+        await restarted.resume(schedule.id);
+        now = new Date(now.getTime() + 60_000);
+        await restarted.tick();
+        expect(runner).toHaveBeenCalledTimes(1);
+      } finally {
+        await restarted.stop();
+      }
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff refuses changed automation review without pausing unreviewed work",
+    async () => {
+      const { ownership, service, schedule, transfer } = await handoffFixture();
+      const schedules = await service.reviewForHandoff(transfer);
+      await service.update({ id: schedule.id, prompt: "Changed instructions" });
+      const source = await ownership.prepare({
+        ...transfer,
+        stoppedWorkReview: { agents: [], terminals: [], setupIds: [], schedules },
+      });
+      await expect(service.pauseForHandoff(source)).rejects.toThrow("changed after handoff review");
+      expect((await service.inspect(schedule.id)).status).toBe("active");
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff requires a complete automation inventory and refuses running jobs",
+    async () => {
+      const entered = Promise.withResolvers<void>();
+      const finish = Promise.withResolvers<void>();
+      const { service, schedule, transfer } = await handoffFixture(async () => {
+        entered.resolve();
+        await finish.promise;
+        return { agentId: null, output: "done" };
+      });
+      const run = service.runOnce(schedule.id);
+      await entered.promise;
+      try {
+        await expect(service.reviewForHandoff(transfer)).rejects.toThrow("still active");
+      } finally {
+        finish.resolve();
+        await run;
+      }
+      await writeFile(join(tempDir, "schedules", "broken.json"), "not json");
+      await expect(service.reviewForHandoff(transfer)).rejects.toThrow();
+      expect((await service.inspect(schedule.id)).status).toBe("active");
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff refuses ancestor schedules and external heartbeat targets sharing the checkout",
+    async () => {
+      const { service, transfer } = await handoffFixture();
+      const ancestor = await service.create({
+        prompt: "Parent work",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: { type: "new-agent", config: { provider: "claude", cwd: tempDir } },
+      });
+      await expect(service.reviewForHandoff(transfer)).rejects.toThrow("ancestor");
+      await service.delete(ancestor.id);
+      const agentId = randomUUID();
+      await agentStorage.upsert({
+        id: agentId,
+        provider: "claude",
+        cwd: transfer.cwd,
+        workspaceId: "other-workspace",
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+        lastStatus: "closed",
+        labels: {},
+      });
+      await service.create({
+        prompt: "External work",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: { type: "agent", agentId },
+      });
+      await expect(service.reviewForHandoff(transfer)).rejects.toThrow("another conversation");
+    },
+  );
 
   test.skipIf(process.platform === "win32")(
     "handoff waits for an admitted schedule outcome and preserves it after fencing",

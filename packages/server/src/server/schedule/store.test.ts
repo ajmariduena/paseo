@@ -6,6 +6,14 @@ import pino from "pino";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import { ScheduleStore } from "./store.js";
+import {
+  captureHandoffSchedules,
+  remapHandoffSchedules,
+  reviewScheduleForHandoff,
+  parseHandoffSchedules,
+  scheduleHandoffDigest,
+} from "./handoff.js";
+import * as atomicFile from "../atomic-file.js";
 
 describe("ScheduleStore", () => {
   let tempDir: string;
@@ -18,6 +26,254 @@ describe("ScheduleStore", () => {
 
   afterEach(async () => {
     await rm(tempDir, { recursive: true, force: true });
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "handoff pause reacknowledges a surviving rename after a failed synchronization",
+    async () => {
+      const timestamp = "2026-01-01T00:00:00.000Z";
+      const schedule = await store.create({
+        name: null,
+        prompt: "Continue",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: { type: "new-agent", config: { provider: "claude", cwd: tempDir } },
+        status: "active",
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        nextRunAt: timestamp,
+        lastRunAt: null,
+        pausedAt: null,
+        expiresAt: null,
+        maxRuns: 2,
+        runs: [],
+      });
+      const input = {
+        id: schedule.id,
+        digest: scheduleHandoffDigest(schedule),
+        pausedAt: timestamp,
+      };
+      const failedAck = vi
+        .spyOn(atomicFile, "syncFilePublication")
+        .mockRejectedValueOnce(new Error("lost synchronization acknowledgement"));
+      try {
+        await expect(store.pauseForHandoff(input)).rejects.toThrow("lost synchronization");
+      } finally {
+        failedAck.mockRestore();
+      }
+      const reloaded = new ScheduleStore(tempDir, createTestLogger());
+      expect((await reloaded.get(schedule.id))?.status).toBe("paused");
+      expect(await reloaded.pauseForHandoff(input)).toMatchObject({
+        status: "paused",
+        nextRunAt: null,
+      });
+      await expect(reloaded.pauseForHandoff({ ...input, digest: "a".repeat(64) })).rejects.toThrow(
+        "changed",
+      );
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff installation is hidden, durable, idempotent and never overwrites a collision",
+    async () => {
+      const timestamp = "2026-01-01T00:00:00.000Z";
+      const sourceId = "00000000-0000-4000-8000-000000000001";
+      const destinationId = "00000000-0000-4000-8000-000000000002";
+      const schedule = await store.create({
+        name: null,
+        prompt: "Continue",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: { type: "agent", agentId: sourceId },
+        status: "paused",
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        nextRunAt: null,
+        lastRunAt: null,
+        pausedAt: timestamp,
+        expiresAt: null,
+        maxRuns: 2,
+        runs: [],
+      });
+      const input = {
+        snapshot: captureHandoffSchedules({ records: [schedule], relativeCwds: new Map() }),
+        reservationId: "reservation",
+        sourceServerId: "source",
+        sourceWorkspaceId: "old",
+        destinationWorkspaceId: "new",
+        destinationCwd: tempDir,
+        activationAt: timestamp,
+        agentMappings: new Map([[sourceId, destinationId]]),
+      };
+      let active = false;
+      const directory = join(tempDir, "incoming");
+      const destination = new ScheduleStore(directory, createTestLogger(), {
+        isVisible: () => active,
+      });
+      const [expected] = remapHandoffSchedules(input);
+      await destination.installHandoffSchedules(input);
+      await destination.installHandoffSchedules(input);
+      expect(await destination.list()).toEqual([]);
+      expect(await destination.get(expected.id)).toBeNull();
+      await destination.delete(expected.id);
+      expect(await new ScheduleStore(directory, createTestLogger()).get(expected.id)).toEqual(
+        expected,
+      );
+      active = true;
+      expect(await destination.list()).toEqual([expected]);
+      await destination.update(expected.id, (record) => ({ ...record, prompt: "Other work" }));
+      await expect(destination.installHandoffSchedules(input)).rejects.toThrow("already in use");
+      expect((await destination.get(expected.id))?.prompt).toBe("Other work");
+    },
+  );
+
+  test("handoff remaps paused automation and preserves run provenance without importing host authority", async () => {
+    const sourceAgentId = "00000000-0000-4000-8000-000000000001";
+    const destinationAgentId = "00000000-0000-4000-8000-000000000002";
+    const timestamp = "2026-01-01T00:00:00.000Z";
+    const schedule = await store.create({
+      name: "Nightly",
+      prompt: "Check the build",
+      cadence: { type: "cron", expression: "0 2 * * *", timezone: "Europe/Berlin" },
+      target: {
+        type: "new-agent",
+        config: {
+          provider: "claude",
+          cwd: join(tempDir, "nested"),
+          model: "model",
+          modeId: "unrestricted",
+          providerOptions: { secret: "private-value" },
+          featureValues: { permissions: true },
+          mcpServers: { private: { command: "host-only" } },
+        },
+      },
+      status: "paused",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      nextRunAt: null,
+      lastRunAt: timestamp,
+      pausedAt: timestamp,
+      expiresAt: "2027-01-01T00:00:00.000Z",
+      maxRuns: 4,
+      runs: [
+        {
+          id: "run",
+          scheduledFor: timestamp,
+          startedAt: timestamp,
+          endedAt: timestamp,
+          status: "succeeded",
+          agentId: sourceAgentId,
+          workspaceId: "old-workspace",
+          output: "saved output",
+          error: null,
+        },
+      ],
+    });
+    const heartbeat = await store.create({
+      ...schedule,
+      target: { type: "agent", agentId: sourceAgentId },
+    });
+    const snapshot = captureHandoffSchedules({
+      records: [schedule, heartbeat],
+      relativeCwds: new Map([[schedule.id, "nested"]]),
+    });
+    expect(JSON.stringify(snapshot)).not.toContain("private-value");
+    expect(reviewScheduleForHandoff(schedule).omittedSettings).toEqual([
+      "modeId",
+      "providerOptions",
+      "featureValues",
+    ]);
+    expect(reviewScheduleForHandoff(schedule).omittedMcpServers).toEqual(["private"]);
+    const input = {
+      snapshot,
+      reservationId: "reservation",
+      sourceServerId: "source",
+      sourceWorkspaceId: "old-workspace",
+      destinationWorkspaceId: "new-workspace",
+      destinationCwd: join(tempDir, "destination"),
+      activationAt: "2026-02-01T00:00:00.000Z",
+      agentMappings: new Map([[sourceAgentId, destinationAgentId]]),
+    };
+    const installed = remapHandoffSchedules(input);
+    expect(installed).toEqual(remapHandoffSchedules(input));
+    expect(installed[0]).toMatchObject({
+      status: "paused",
+      nextRunAt: null,
+      maxRuns: 4,
+      target: {
+        type: "new-agent",
+        config: { provider: "claude", cwd: join(input.destinationCwd, "nested"), model: "model" },
+      },
+      runs: [
+        {
+          agentId: destinationAgentId,
+          workspaceId: "new-workspace",
+          output: "saved output",
+          origin: {
+            serverId: "source",
+            scheduleId: schedule.id,
+            agentId: sourceAgentId,
+            workspaceId: "old-workspace",
+          },
+        },
+      ],
+    });
+    expect(installed[0].target).toEqual({
+      type: "new-agent",
+      config: { provider: "claude", cwd: join(input.destinationCwd, "nested"), model: "model" },
+    });
+    expect(installed[1].target).toEqual({ type: "agent", agentId: destinationAgentId });
+    expect(installed[0].cadence).toEqual(schedule.cadence);
+    expect(installed[0].expiresAt).toBe(schedule.expiresAt);
+    const returned = remapHandoffSchedules({
+      ...input,
+      snapshot: captureHandoffSchedules({
+        records: [installed[1]],
+        relativeCwds: new Map(),
+      }),
+      reservationId: "return-reservation",
+      sourceServerId: "second-host",
+      sourceWorkspaceId: "new-workspace",
+      destinationWorkspaceId: "returned-workspace",
+      agentMappings: new Map([[destinationAgentId, sourceAgentId]]),
+    });
+    expect(returned[0].id).not.toBe(installed[1].id);
+    expect(returned[0].runs[0]).toEqual({
+      ...installed[1].runs[0],
+      agentId: sourceAgentId,
+      workspaceId: "returned-workspace",
+    });
+    const completed = remapHandoffSchedules({
+      ...input,
+      snapshot: captureHandoffSchedules({
+        records: [{ ...heartbeat, status: "completed", pausedAt: null }],
+        relativeCwds: new Map(),
+      }),
+      agentMappings: new Map([[sourceAgentId, destinationAgentId]]),
+    });
+    expect(completed[0]).toMatchObject({ status: "completed", nextRunAt: null, pausedAt: null });
+    expect(() =>
+      parseHandoffSchedules({
+        ...snapshot,
+        schedules: [snapshot.schedules[0], snapshot.schedules[0]],
+      }),
+    ).toThrow("Duplicate");
+    expect(() => remapHandoffSchedules({ ...input, agentMappings: new Map() })).toThrow("outside");
+    expect(() =>
+      parseHandoffSchedules({
+        ...snapshot,
+        schedules: [
+          {
+            ...snapshot.schedules[0],
+            target: { ...snapshot.schedules[0].target, relativeCwd: "../escape" },
+          },
+        ],
+      }),
+    ).toThrow("inside");
+    expect(() =>
+      parseHandoffSchedules({
+        ...snapshot,
+        schedules: [{ ...snapshot.schedules[0], cadence: { type: "cron", expression: "invalid" } }],
+      }),
+    ).toThrow();
   });
 
   test("handoff mutation admission checks the latest queued target before deletion", async () => {

@@ -493,18 +493,25 @@ A key restricted to the Text to Speech permission is enough to speak. Listing vo
 
 **Path:** `$PASEO_HOME/schedules/{id}.json`
 
-One file per schedule. ID is 8 hex characters.
+One file per schedule. New local IDs use 8 hex characters; handoff imports use 32.
 
 Use the persisted target when admitting schedule changes and runs into workspace ownership.
 Checking a prior list result lets a concurrent retarget bypass the source handoff fence.
 Keep run admission through workspace cleanup and the outcome write; changing its directory or
 agent requires the run to finish first. Startup recovery and expiration leave fenced records
-unchanged. This admission does not certify durable run outcomes or transport automation; the
-[handoff plan](refactors/cross-host-handoff-plan.md#delivery-gates) owns those remaining gates.
+unchanged.
+
+Handoff reads a strict inventory and durably pauses the reviewed records before capture. Cancel
+leaves them paused. Destination IDs derive from the reservation so interrupted installation can
+retry without duplicates. Keep imported records hidden and unrunnable until the destination journal
+publishes activation; a heartbeat must also respect its target conversation's visibility. Run history
+keeps original host identities in `origin`, separately from links remapped into the destination.
+The [handoff plan](refactors/cross-host-handoff-plan.md#delivery-gates) owns limits and outstanding
+interrupted-run recovery and shutdown gates.
 
 | Field       | Type                                  | Description                      |
 | ----------- | ------------------------------------- | -------------------------------- |
-| `id`        | `string`                              | 8-char hex ID                    |
+| `id`        | `string`                              | Local or imported hex ID         |
 | `name`      | `string?`                             | Human-readable name              |
 | `prompt`    | `string`                              | The prompt to send               |
 | `cadence`   | `ScheduleCadence`                     | Timing (see below)               |
@@ -531,16 +538,17 @@ unchanged. This admission does not certify durable run outcomes or transport aut
 
 ### Nested: ScheduleRun
 
-| Field          | Type                                   | Description             |
-| -------------- | -------------------------------------- | ----------------------- |
-| `id`           | `string`                               | Run ID                  |
-| `scheduledFor` | `string` (ISO 8601)                    | Intended execution time |
-| `startedAt`    | `string` (ISO 8601)                    |                         |
-| `endedAt`      | `string?` (ISO 8601)                   |                         |
-| `status`       | `"running" \| "succeeded" \| "failed"` |                         |
-| `agentId`      | `string?` (UUID)                       | Agent used for this run |
-| `output`       | `string?`                              | Agent output text       |
-| `error`        | `string?`                              | Error message if failed |
+| Field          | Type                                              | Description                             |
+| -------------- | ------------------------------------------------- | --------------------------------------- |
+| `id`           | `string`                                          | Run ID                                  |
+| `scheduledFor` | `string` (ISO 8601)                               | Intended execution time                 |
+| `startedAt`    | `string` (ISO 8601)                               |                                         |
+| `endedAt`      | `string?` (ISO 8601)                              |                                         |
+| `status`       | `"running" \| "succeeded" \| "failed"`            |                                         |
+| `agentId`      | `string?` (UUID)                                  | Agent used for this run                 |
+| `output`       | `string?`                                         | Agent output text                       |
+| `error`        | `string?`                                         | Error message if failed                 |
+| `origin`       | `{ serverId, scheduleId, agentId, workspaceId }?` | Original run provenance across handoffs |
 
 ---
 

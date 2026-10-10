@@ -29,19 +29,57 @@ but cannot move its directory or agent. A refused automatic tick consumes no run
 unrelated schedules continue. Manual requests return the refusal. Startup recovery and expiration
 leave fenced records unchanged, including a released heartbeat with no remaining source agent record.
 
-The focused service and store suites pass 80 cases, including 12 new handoff cases. They cover
-stale tick inventories after pause/retarget, symlink targets, concurrent run refusal, run completion
-under a fence, an uncertain ownership journal, release/restart, queued deletion against a changed
-record and cleanup after a failed publication. One case uses the real schedule executor and agent
-manager with a test provider, holding workspace cleanup open while readiness refuses. The existing
-concurrent provider-setting update regression also passes. npm run build:server, npm run typecheck,
-npm run lint and npm run format pass. macOS uses the existing filtered handoff job; it was not run locally.
+The service/store cases cover stale tick inventories after pause/retarget, symlink targets,
+concurrent run refusal, run completion under a fence, an uncertain ownership journal,
+release/restart, queued deletion against a changed record and cleanup after failed publication.
+One case uses the real schedule executor and agent manager with a test provider, holding workspace
+cleanup open while readiness refuses. Concurrent provider-setting updates remain supported.
 
-This is admission coverage, not automation transfer or durable outcome certification. Schedule
-files still use ordinary atomic writes, and the default list still skips invalid records. Durable
-reviewed pause, strict inventory, recovery of interrupted runs, bounded shutdown, cancellation
-disposition and paused destination installation remain open. An in-flight runner can still delay
-draining indefinitely. The production handoff capability remains unadvertised.
+Schedule transfer — source preview strictly reads the inventory and binds the selected definitions
+and run histories to review. Preparation pauses and synchronizes them before capture; a failed
+synchronization after rename can be acknowledged again after restart. Cancellation leaves them
+paused. Version 5 bundles include the snapshot and byte estimate. Destination installation remaps
+workspace paths and heartbeat targets, preserves cadence, run budgets and outputs, and records
+original run identities separately from destination links. Completed records remain completed.
+Host MCP connections, permission modes and advanced provider settings are omitted; review names
+the connections and explains that destination setup is required before resume.
+
+Imported records use stable reservation-derived IDs and no-replace publication. Partially installed
+schedules cannot be listed or resumed; their private conversations cannot be used as heartbeat targets. An existing destination schedule
+whose directory contains the private import does not prevent daemon boot. Activation recovers
+from the persisted timestamp and identities without duplicate automation or a provider launch.
+Release refuses a post-capture schedule change. A returned transfer remaps the imported IDs again.
+
+Validation for this slice:
+- Service, store and ownership suites: 135 cases passed; one additional invalid/duplicate review
+  reservation case passed after that run.
+- Wire compatibility: 45 cases passed, including old shapes and optional automation/provenance fields.
+- App form and translation suites: 73 cases passed across the supported language resources.
+- Three isolated two-daemon cases passed: native and exported-context automation transfer through
+  cancellation, host restarts and interrupted installation; unchanged files/terminal review behavior.
+  These use synthetic provider transcripts and a version-only executable, not a provider turn.
+- Desktop and compact Chromium each passed the mixed-continuation case, including automation review,
+  recovery, activation and a return transfer with both records still paused. Captures:
+  handoff-schedules-desktop.png and handoff-schedules-compact.png. The watch-review captures also
+  show the automation disposition. The other regenerated images were unchanged in scope and retained.
+- After the bundle validation refactor and completed/return-provenance assertions, all 19 selected
+  scheduler handoff cases passed (68 unrelated cases skipped).
+
+The first desktop attempt timed out waiting 20 seconds for an isolated daemon, before entering the
+flow. A standalone startup measured 3.9 seconds; the unchanged test then passed in 53.6 seconds.
+The first compact process exited with signal status 143 without a test result. Its traced retry passed
+in about one minute, with normal browser/daemon/Metro shutdown. No assertion or timeout was relaxed.
+These interruptions remain environment observations; their underlying causes were not established.
+
+npm run build:server, root npm run typecheck, npm run lint and npm run format passed.
+The existing CI jobs own platform and full-suite verification; no new feature-specific job was added.
+
+Strict capture refuses running jobs, ancestor-directory schedules, outside heartbeat owners sharing
+the checkout, damaged inventory, more than 1,000 selected records or metadata beyond 32 MiB. This
+slice does not certify a running job's outcome after a crash. Bounded runner shutdown and recovery
+of uncertain outcomes remain open; an admitted runner can still delay draining indefinitely.
+Ordinary schedule writes retain their existing durability contract. The production handoff
+capability remains unadvertised.
 
 Queue conservation — source handoff now holds queues before closing writers. The initial runner
 regression reproduced the pending instruction disappearing when the current turn settled under

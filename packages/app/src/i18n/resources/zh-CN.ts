@@ -3,6 +3,10 @@ import { pluginSettings } from "./plugin-settings";
 
 export const zhCN: TranslationResources = {
   handoff: {
+    automationPaused:
+      "计划任务和提醒将以暂停状态迁移，已完成的任务保持完成。如果取消迁移，请在源主机上手动恢复。",
+    automationSettingsOmitted:
+      "连接、权限和提供商高级设置保留在此主机上。恢复任务前，请在目标主机上配置。",
     previousTransfers: "上一页",
     nextTransfers: "下一页",
     noPendingTransfers: "没有未完成的转移。",

@@ -3,6 +3,10 @@ import { pluginSettings } from "./plugin-settings";
 
 export const fr: TranslationResources = {
   handoff: {
+    automationPaused:
+      "Les tâches planifiées et les rappels sont transférés en pause. Les tâches terminées le restent. En cas d’annulation, reprenez-les manuellement sur l’hôte source.",
+    automationSettingsOmitted:
+      "Les connexions, les autorisations et les paramètres avancés du fournisseur restent sur cet hôte. Configurez-les sur la destination avant de reprendre.",
     previousTransfers: "Page précédente",
     nextTransfers: "Page suivante",
     noPendingTransfers: "Aucun transfert en attente.",

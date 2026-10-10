@@ -110,7 +110,7 @@ function publicStatus(record: SourceRecord): SourceHandoffStatus {
   return structuredClone(status);
 }
 
-async function mutationPath(cwd: string): Promise<string> {
+export async function resolveHandoffPath(cwd: string): Promise<string> {
   let existing = path.resolve(cwd);
   const missing: string[] = [];
   for (;;) {
@@ -274,7 +274,7 @@ export class HandoffOwnership {
 
   /** Bind a long-lived runtime once; input admission must not stat the filesystem per keystroke. */
   async bindMutation(scope: HandoffMutationScope): Promise<HandoffMutationGuard> {
-    const canonical = { ...scope, cwd: await mutationPath(scope.cwd) };
+    const canonical = { ...scope, cwd: await resolveHandoffPath(scope.cwd) };
     return { acquire: () => this.acquireCanonicalMutation(canonical) };
   }
 

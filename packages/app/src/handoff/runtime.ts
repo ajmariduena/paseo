@@ -2,6 +2,8 @@ import { fileEditorDraftStorage } from "@/file-pane/editor/drafts";
 import { FileEditorSaveError } from "@/file-pane/editor/model";
 import { workspaceFileEditors } from "@/file-pane/editor/registry";
 import { i18n } from "@/i18n/i18next";
+import { queryClient } from "@/data/query-client";
+import { schedulesQueryBaseKey } from "@/schedules/aggregated-schedules";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { randomUUID } from "expo-crypto";
 import {
@@ -180,12 +182,14 @@ export const handoffFormPorts: HandoffFormPorts = {
     if (
       !workspace?.reviewDigest ||
       !stoppedWork?.review?.pullRequestWatches ||
+      !stoppedWork.review.schedules ||
       stoppedWork.queuedMessages === undefined ||
       stoppedWork.queuedBytes === undefined ||
+      stoppedWork.scheduledBytes === undefined ||
       !integrationReview
     )
       throw new Error(i18n.t("handoff.updateHosts"));
-    let conversationBytes = stoppedWork.queuedBytes;
+    let conversationBytes = stoppedWork.queuedBytes + stoppedWork.scheduledBytes;
     for (const conversation of conversations) {
       if (conversation.state !== "available") continue;
       if (conversation.artifactBytes === undefined) throw new Error(i18n.t("handoff.updateHosts"));
@@ -260,24 +264,36 @@ export const handoffFormPorts: HandoffFormPorts = {
         });
       }
       throw error;
+    } finally {
+      if (handoffStarted) void queryClient.invalidateQueries({ queryKey: schedulesQueryBaseKey });
     }
   },
-  activate: (record, options) =>
-    activateWorkspaceHandoff({
-      ...options,
-      checkpoint: savedCheckpoint(record),
-      sourceServerId: record.sourceServerId,
-      getSource: () => connectedClient(record.sourceServerId),
-      destination: connectedClient(record.destinationServerId),
-      transferId: record.transferId,
-    }),
-  cancel: (record, options) =>
-    cancelWorkspaceHandoff({
-      ...options,
-      checkpoint: savedCheckpoint(record),
-      sourceServerId: record.sourceServerId,
-      getSource: () => connectedClient(record.sourceServerId),
-      destination: connectedClient(record.destinationServerId),
-      transferId: record.transferId,
-    }),
+  activate: async (record, options) => {
+    try {
+      return await activateWorkspaceHandoff({
+        ...options,
+        checkpoint: savedCheckpoint(record),
+        sourceServerId: record.sourceServerId,
+        getSource: () => connectedClient(record.sourceServerId),
+        destination: connectedClient(record.destinationServerId),
+        transferId: record.transferId,
+      });
+    } finally {
+      void queryClient.invalidateQueries({ queryKey: schedulesQueryBaseKey });
+    }
+  },
+  cancel: async (record, options) => {
+    try {
+      return await cancelWorkspaceHandoff({
+        ...options,
+        checkpoint: savedCheckpoint(record),
+        sourceServerId: record.sourceServerId,
+        getSource: () => connectedClient(record.sourceServerId),
+        destination: connectedClient(record.destinationServerId),
+        transferId: record.transferId,
+      });
+    } finally {
+      void queryClient.invalidateQueries({ queryKey: schedulesQueryBaseKey });
+    }
+  },
 };
