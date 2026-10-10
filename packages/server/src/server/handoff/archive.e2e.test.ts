@@ -24,6 +24,7 @@ import { HandoffArchiveStore } from "./archive.js";
 import { readHandoffBundle } from "./bundle.js";
 import { prependHandoffContext } from "./context.js";
 import { PromptAnnotationStore } from "../agent/prompt-annotations.js";
+import { PullRequestWatchStore } from "../pull-request-watch/watch-store.js";
 import { parseStoredAgentRecord, type StoredAgentRecord } from "../agent/agent-storage.js";
 import { captureWorkspace, packWorkspaceArchive, restoreWorkspaceArchive } from "./workspace.js";
 
@@ -702,6 +703,146 @@ test.skipIf(process.platform === "win32").each(["reserved", "staged"] as const)(
       readdir(path.join(root, `.paseo-handoff-${result.reservationId}`)),
     ).rejects.toMatchObject({ code: "ENOENT" });
     expect((await destination.client.fetchWorkspaces()).entries).toEqual([]);
+  },
+  30_000,
+);
+
+test.skipIf(process.platform === "win32")(
+  "reviews and durably stops source PR watches before capture without restarting them on destination",
+  async () => {
+    let source = await startHost("source", true);
+    let destination = await startHost("destination", true);
+    const cwd = path.join(root, "watched-workspace");
+    await mkdir(cwd);
+    await writeFile(path.join(cwd, "work.txt"), "Prior work");
+    const created = await source.client.createWorkspace({
+      source: { kind: "directory", path: cwd },
+    });
+    if (!created.workspace) throw new Error("Missing workspace");
+    const agentId = randomUUID();
+    const sessionId = randomUUID();
+    const configDir = path.join(root, "source", "claude");
+    const project = claudeProjectDirSync(cwd, { configDir });
+    await mkdir(project, { recursive: true });
+    await writeFile(
+      path.join(project, `${sessionId}.jsonl`),
+      JSON.stringify({
+        type: "user",
+        uuid: randomUUID(),
+        sessionId,
+        message: { role: "user", content: "Keep the PR task" },
+      }) + "\n",
+    );
+    await source.daemon.daemon.agentStorage.upsert(
+      parseStoredAgentRecord({
+        id: agentId,
+        provider: "claude",
+        cwd,
+        workspaceId: created.workspace.id,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lastStatus: "closed",
+        persistence: {
+          provider: "claude",
+          sessionId,
+          metadata: { cwd, claudeRuntime: { configDir, cliVersion: "2.1.295" } },
+        },
+      }),
+    );
+    const watches = new PullRequestWatchStore(
+      path.join(source.daemon.paseoHome, "pull-request-watches.json"),
+    );
+    const watch = {
+      id: randomUUID(),
+      agentId,
+      cwd,
+      number: 42,
+      url: "https://github.com/example/work/pull/42",
+      title: "Prior PR task",
+      headRefName: "work",
+      startedAt: new Date().toISOString(),
+      progress: {
+        headSha: null,
+        failedChecks: [],
+        passed: false,
+        passedChecks: [],
+        remarksThrough: 0,
+        remarkIds: [],
+        conflicting: false,
+        wakes: 0,
+      },
+    };
+    await watches.add(watch);
+    const preview = (
+      await source.client.handoffPreviewSource({ workspaceId: created.workspace.id })
+    ).result;
+    if (!preview?.stoppedWork?.review) throw new Error("Missing review");
+    expect(preview.stoppedWork.review.pullRequestWatches).toEqual([
+      expect.objectContaining({ id: watch.id, agentId, number: 42 }),
+    ]);
+    const replacement = { ...watch, id: randomUUID() };
+    await watches.remove(watch.id);
+    await watches.add(replacement);
+    const request = {
+      transferId: randomUUID(),
+      workspaceId: created.workspace.id,
+      destinationParent: root,
+      continuationMode: "native" as const,
+      stoppedWorkReview: preview.stoppedWork.review,
+    };
+    await expect(
+      prepareWorkspaceHandoff({
+        ...request,
+        source: source.client,
+        destination: destination.client,
+      }),
+    ).rejects.toThrow("Work that will stop changed");
+    expect(
+      (await source.client.handoffFindSource({ workspaceId: created.workspace.id })).result,
+    ).toBeNull();
+    const refreshed = (
+      await source.client.handoffPreviewSource({ workspaceId: created.workspace.id })
+    ).result;
+    if (!refreshed?.stoppedWork?.review) throw new Error("Missing fresh review");
+    const staged = await prepareWorkspaceHandoff({
+      ...request,
+      stoppedWorkReview: refreshed.stoppedWork.review,
+      source: source.client,
+      destination: destination.client,
+    });
+    expect(await watches.list()).toEqual([]);
+    expect(staged.stoppedWorkReview?.pullRequestWatches).toEqual(
+      refreshed.stoppedWork.review.pullRequestWatches,
+    );
+    await stopHost(source);
+    await stopHost(destination);
+    source = await startHost("source", true);
+    destination = await startHost("destination", true);
+    expect(await watches.list()).toEqual([]);
+    const active = await activateWorkspaceHandoff({
+      transferId: request.transferId,
+      sourceServerId: source.daemon.daemon.getServerId(),
+      getSource: () => source.client,
+      destination: destination.client,
+    });
+    expect(active.state).toBe("active");
+    const moved = await destination.daemon.daemon.agentStorage.get(
+      active.agentMappings[0]!.destinationAgentId,
+    );
+    expect(moved?.pendingRestartNote).toEqual([
+      {
+        id: `handoff:${request.transferId}:pr-watch:${replacement.id}`,
+        kind: "handoff_pull_request_watch",
+        label:
+          "PR #42 (https://github.com/example/work/pull/42). Restart this watch explicitly if needed.",
+      },
+    ]);
+    expect(
+      await new PullRequestWatchStore(
+        path.join(destination.daemon.paseoHome, "pull-request-watches.json"),
+      ).list(),
+    ).toEqual([]);
+    expect(await readFile(path.join(active.destinationCwd, "work.txt"), "utf8")).toBe("Prior work");
   },
   30_000,
 );

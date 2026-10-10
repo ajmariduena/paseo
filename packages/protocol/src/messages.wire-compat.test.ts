@@ -5,6 +5,7 @@ import {
   HandoffConversationPreviewSchema,
   HandoffDestinationPageSchema,
   HandoffDestinationSnapshotSchema,
+  HandoffStoppedWorkReviewSchema,
 } from "./handoff-control.js";
 import {
   AgentSnapshotPayloadSchema,
@@ -21,6 +22,28 @@ import {
   validateQuickPrompts,
   HandoffGetConversationHistoryResponseSchema,
 } from "./messages.js";
+
+test("handoff PR watch dispositions remain optional for older stopped-work reviews", () => {
+  const legacy = { agents: [], terminals: [], setupIds: [] };
+  expect(HandoffStoppedWorkReviewSchema.parse(legacy)).toEqual(legacy);
+  const current = {
+    ...legacy,
+    pullRequestWatches: [
+      {
+        id: "watch",
+        agentId: "agent",
+        number: 42,
+        url: "https://github.com/example/work/pull/42",
+        title: "Work",
+        startedAt: "2026-10-10T00:00:00Z",
+      },
+    ],
+  };
+  expect(HandoffStoppedWorkReviewSchema.parse(current)).toEqual(current);
+  expect(HandoffStoppedWorkReviewSchema.omit({ pullRequestWatches: true }).parse(current)).toEqual(
+    legacy,
+  );
+});
 
 test("handoff destination signing keys remain optional for older wire snapshots", () => {
   const legacy = {

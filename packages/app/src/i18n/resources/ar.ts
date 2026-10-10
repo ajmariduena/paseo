@@ -24,6 +24,8 @@ export const ar: TranslationResources = {
     previousOmissions: "السابق",
     nextOmissions: "التالي",
     omittedDirectories: "يشمل استبعاد المجلد جميع محتوياته.",
+    prWatchesStop:
+      "ستتوقف متابعة طلبات السحب هذه. أعد تشغيلها يدوياً إذا ألغيت النقل أو تابعت العمل على المضيف الوجهة.",
     workToStop: "العمل الذي سيتوقف",
     activeWork: "الوكلاء النشطون: {{agents}} · عمليات الإعداد: {{setup}}",
     noTerminals: "لا توجد طرفيات مفتوحة.",

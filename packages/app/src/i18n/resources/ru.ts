@@ -26,6 +26,8 @@ export const ru: TranslationResources = {
     previousOmissions: "Назад",
     nextOmissions: "Далее",
     omittedDirectories: "Исключённая папка включает всё её содержимое.",
+    prWatchesStop:
+      "Отслеживание этих PR будет остановлено. Запустите его вручную, если отмените перенос или продолжите работу на целевом хосте.",
     workToStop: "Работа, которая будет остановлена",
     activeWork: "Активных агентов: {{agents}} · Операций настройки: {{setup}}",
     noTerminals: "Нет открытых терминалов.",

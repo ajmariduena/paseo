@@ -397,6 +397,7 @@ test("source preparation keeps ownership fenced after uncertain cleanup and retr
   const failure = new Error("setup exit is unconfirmed");
   const createSource = (sourceOwnership = ownership) =>
     new HandoffSource({
+      pullRequestWatches: { reviewForHandoff: async () => [], stopForHandoff: async () => {} },
       directory: captures,
       serverId: sourceServerId,
       logger: createTestLogger(),
@@ -444,7 +445,12 @@ test("source preparation keeps ownership fenced after uncertain cleanup and retr
     agentIds: [],
     terminals: [],
     setupOperations: 1,
-    review: { agents: [], terminals: [], setupIds: setup.activeIds(workspace.workspaceId) },
+    review: {
+      agents: [],
+      terminals: [],
+      setupIds: setup.activeIds(workspace.workspaceId),
+      pullRequestWatches: [],
+    },
   });
   const reviewedRequest = { ...request, stoppedWorkReview: preview.stoppedWork?.review };
   await expect(source.prepare(reviewedRequest)).rejects.toMatchObject({ errors: [failure] });

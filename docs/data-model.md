@@ -153,7 +153,7 @@ prompt can be withdrawn while retaining its notes. An uncertain invocation block
 handoff certification, including after restart; reopening a runtime is not delivery evidence.
 Recovering that uncertainty from provider artifacts remains implementation work.
 
-Unsent restart notes travel in the verified handoff bundle and stay pending in the destination
+Unsent background-work notes travel in the verified handoff bundle and stay pending in the destination
 record. Activation does not acknowledge delivery. New bundles use version 3 so older
 readers reject unsupported history semantics explicitly; version 1 and 2 archives remain readable. Source release checks that the
 captured note set is unchanged.

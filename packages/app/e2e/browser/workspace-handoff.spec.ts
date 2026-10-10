@@ -184,6 +184,29 @@ test.describe("workspace handoff", () => {
         const workflows = path.join(project, context.persistence.sessionId, "workflows");
         await mkdir(workflows, { recursive: true });
         await writeFile(path.join(workflows, "state.json"), JSON.stringify({ type: "state" }));
+        // Seed a persisted watch without invoking a live forge or mixing TS/CJS with the ESM client.
+        const watchFile = path.join(host.source.paseoHome, "pull-request-watches.json");
+        const watch = {
+          id: randomUUID(),
+          agentId: native.id,
+          cwd: host.workspace.repoPath,
+          number: 42,
+          url: "https://github.com/example/work/pull/42",
+          title: "Finish the prior PR task",
+          headRefName: "work",
+          startedAt: new Date().toISOString(),
+          progress: {
+            headSha: null,
+            failedChecks: [],
+            passed: false,
+            passedChecks: [],
+            remarksThrough: 0,
+            remarkIds: [],
+            conflicting: false,
+            wakes: 0,
+          },
+        };
+        await writeFile(watchFile, JSON.stringify({ version: 1, watches: [watch] }));
         await openHandoff(page);
         await page.getByTestId("handoff-host-trigger").click();
         await page.getByTestId(`handoff-host-${host.destination.serverId}`).click();
@@ -208,15 +231,28 @@ test.describe("workspace handoff", () => {
           "Claude workflow state needs an explicit disposition before native continuation",
         );
         await expect(page.getByTestId("handoff-submit")).toBeEnabled();
+        await expect(page.getByTestId("handoff-pr-watches-review")).toContainText(
+          "#42 · Finish the prior PR task",
+        );
+        await expect(page.getByTestId("handoff-pr-watches-review")).toContainText(
+          "These PR watches will stop.",
+        );
         await contextChoice.scrollIntoViewIfNeeded();
         await waitForSettledPosition(contextChoice);
         await page.screenshot({
           path: path.join(__dirname, `../../../../docs/qa-evidence/handoff-mixed-${layout}.png`),
         });
+        const watchReview = page.getByTestId("handoff-pr-watches-review");
+        await watchReview.scrollIntoViewIfNeeded();
+        await waitForSettledPosition(watchReview);
+        await page.screenshot({
+          path: path.join(__dirname, `../../../../docs/qa-evidence/handoff-watches-${layout}.png`),
+        });
         await page.getByTestId("handoff-submit").click();
         await expect(page.getByTestId("handoff-submit")).toHaveText("Move workspace", {
           timeout: 30_000,
         });
+        expect(JSON.parse(await readFile(watchFile, "utf8")).watches).toEqual([]);
         const transferId = await savedTransfer(
           page,
           host.source.serverId,

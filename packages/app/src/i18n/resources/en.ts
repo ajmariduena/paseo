@@ -21,6 +21,8 @@ export const en = {
     previousOmissions: "Previous",
     nextOmissions: "Next",
     omittedDirectories: "An excluded directory includes all its contents.",
+    prWatchesStop:
+      "These PR watches will stop. Restart them manually if you cancel the transfer or continue on the destination.",
     workToStop: "Work that will stop",
     activeWork: "Active agents: {{agents}} · Setup operations: {{setup}}",
     noTerminals: "No open terminals.",

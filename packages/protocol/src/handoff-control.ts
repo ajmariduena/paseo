@@ -53,6 +53,15 @@ export const HandoffWorkspacePreviewSchema = z.object({
   omittedPathCount: z.number().int().nonnegative(),
   reviewDigest: HandoffDigestSchema.optional(),
 });
+export const HandoffPullRequestWatchReviewSchema = z.object({
+  id: z.string().min(1).max(512),
+  agentId: z.string().min(1).max(512),
+  number: z.number().int().positive(),
+  url: z.string().min(1).max(8192),
+  title: z.string().max(4096),
+  startedAt: z.string().min(1).max(128),
+});
+export type HandoffPullRequestWatchReview = z.infer<typeof HandoffPullRequestWatchReviewSchema>;
 export const HandoffStoppedWorkReviewSchema = z.object({
   agents: z.array(z.object({ id: z.string().min(1), instanceId: z.string().uuid() })).max(1000),
   terminals: z
@@ -65,6 +74,7 @@ export const HandoffStoppedWorkReviewSchema = z.object({
     )
     .max(1000),
   setupIds: z.array(z.string().uuid()).max(1000),
+  pullRequestWatches: z.array(HandoffPullRequestWatchReviewSchema).max(1000).optional(),
 });
 export type HandoffStoppedWorkReview = z.infer<typeof HandoffStoppedWorkReviewSchema>;
 export const HandoffStoppedWorkPreviewSchema = z.object({

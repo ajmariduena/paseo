@@ -466,6 +466,16 @@ function ReviewWorkspace({
               {terminal.name}
             </Text>
           ))}
+          {stoppedWork.review?.pullRequestWatches?.length ? (
+            <View style={styles.status} testID="handoff-pr-watches-review">
+              <Text style={styles.text}>{t("handoff.prWatchesStop")}</Text>
+              {stoppedWork.review.pullRequestWatches.map((watch) => (
+                <Text key={watch.id} selectable style={styles.value}>
+                  #{watch.number} · {watch.title}
+                </Text>
+              ))}
+            </View>
+          ) : null}
         </View>
       </Field>
     </>

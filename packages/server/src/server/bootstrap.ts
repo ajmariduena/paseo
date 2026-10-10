@@ -1135,6 +1135,7 @@ export async function createPaseoDaemon(
     logger,
   });
   const pullRequestWatches = new PullRequestWatcher({
+    handoffOwnership,
     store: new PullRequestWatchStore(path.join(config.paseoHome, "pull-request-watches.json")),
     agentManager,
     agentStorage,
@@ -1645,6 +1646,7 @@ export async function createPaseoDaemon(
   logger.info({ elapsed: elapsed() }, "Schedule service initialized");
   await handoffDestination.recoverActivations();
   const handoffSource = new HandoffSource({
+    pullRequestWatches,
     directory: path.join(config.paseoHome, "handoff", "source"),
     serverId,
     logger,

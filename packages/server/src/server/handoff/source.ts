@@ -58,6 +58,7 @@ import {
 import { HandoffContextSchema, handoffContextDirectory } from "./context.js";
 import { HandoffHistorySegmentSchema, HANDOFF_PREVIOUS_SEGMENTS_MAX } from "./history-segments.js";
 import type { HandoffDestination } from "./destination.js";
+import type { PullRequestWatcher } from "../pull-request-watch/watcher.js";
 import {
   writeHandoffHistory,
   readHandoffHistory,
@@ -132,6 +133,7 @@ interface SourceOptions {
   >;
   terminals: Pick<TerminalManager, "listDirectories" | "getTerminals" | "killTerminalAndWait">;
   setup: Pick<WorkspaceSetupRuntime, "stop" | "activeIds">;
+  pullRequestWatches: Pick<PullRequestWatcher, "reviewForHandoff" | "stopForHandoff">;
   onWorkspaceChanged?: (workspaceId: string) => Promise<void>;
 }
 interface SourceRequest {
@@ -263,7 +265,7 @@ export class HandoffSource {
     }
     const workspace = await previewWorkspace({ cwd: inventory.cwd });
     const terminals = await this.sourceTerminals(inventory);
-    const review = this.reviewWriters(inventory, terminals);
+    const review = await this.reviewWriters(inventory, terminals);
     return {
       workspaceId,
       cwd: inventory.cwd,
@@ -352,13 +354,14 @@ export class HandoffSource {
         input.stoppedWorkReview &&
         this.options.ownership.forWorkspace(input.workspaceId)?.id !== input.transferId
       ) {
-        const current = this.reviewWriters(inventory, await this.sourceTerminals(inventory));
+        const current = await this.reviewWriters(inventory, await this.sourceTerminals(inventory));
         if (JSON.stringify(current) !== JSON.stringify(input.stoppedWorkReview))
           refuse(
             "review_changed",
             "Work that will stop changed after review; cancel this transfer and review again",
           );
       }
+      await this.requireWatchReview(input, inventory.agentIds);
       this.assertReviewedIntegrations(
         input.integrationReview,
         await this.options.agents.listByWorkspaceForHandoff(input.workspaceId),
@@ -387,6 +390,7 @@ export class HandoffSource {
       if (!sameIds(finalInventory.agentIds, source.agentIds))
         refuse("inventory_changed", "Source conversation set changed while draining admitted work");
       await this.stopWriters(source);
+      await this.stopWatches(source);
       const records = await this.checkpointConversations(source.agentIds);
       this.assertReviewedIntegrations(source.integrationReview, records);
       const agents: PreparedSource["agents"] = [];
@@ -597,6 +601,32 @@ export class HandoffSource {
     return records;
   }
 
+  private async requireWatchReview(input: SourceRequest, agentIds: string[]) {
+    if (
+      !input.stoppedWorkReview &&
+      (await this.options.pullRequestWatches.reviewForHandoff(agentIds)).length > 0
+    )
+      refuse(
+        "review_changed",
+        "Review the PR watches that will stop before preparing this transfer",
+      );
+  }
+
+  private async stopWatches(source: SourceHandoffStatus) {
+    const watches = source.stoppedWorkReview?.pullRequestWatches ?? [];
+    await this.options.pullRequestWatches.stopForHandoff(source.agentIds, watches);
+    for (const agentId of source.agentIds) {
+      const stopped = watches
+        .filter((watch) => watch.agentId === agentId)
+        .map((watch) => ({
+          id: `handoff:${source.id}:pr-watch:${watch.id}`,
+          kind: "handoff_pull_request_watch",
+          label: `PR #${watch.number} (${watch.url}). Restart this watch explicitly if needed.`,
+        }));
+      if (stopped.length) await this.options.agents.addPendingRestartNote(agentId, stopped);
+    }
+  }
+
   async fetchTimeline(agentId: string, options: AgentTimelineFetchOptions) {
     const source = this.options.ownership.forAgent(agentId);
     if (!source) return null;
@@ -651,7 +681,10 @@ export class HandoffSource {
 
   private async stopWriters(source: SourceHandoffStatus): Promise<void> {
     const terminals = await this.sourceTerminals(source);
-    this.assertReviewedWriters(source.stoppedWorkReview, this.reviewWriters(source, terminals));
+    this.assertReviewedWriters(
+      source.stoppedWorkReview,
+      await this.reviewWriters(source, terminals),
+    );
     const stops = [() => this.options.setup.stop(source.workspaceId)];
     for (const id of source.agentIds) {
       const session = this.options.agentManager.getAgent(id)?.session;
@@ -669,10 +702,10 @@ export class HandoffSource {
       );
   }
 
-  private reviewWriters(
+  private async reviewWriters(
     source: { workspaceId: string; agentIds: string[] },
     terminals: TerminalSession[],
-  ): HandoffStoppedWorkReview {
+  ): Promise<HandoffStoppedWorkReview> {
     const instanceId = (writer: object) => {
       let id = this.writerInstances.get(writer);
       if (!id) {
@@ -693,6 +726,7 @@ export class HandoffSource {
         name: terminal.name,
       })),
       setupIds: this.options.setup.activeIds(source.workspaceId),
+      pullRequestWatches: await this.options.pullRequestWatches.reviewForHandoff(source.agentIds),
     };
     if (review.setupIds.length > 1000)
       refuse("invalid_source", "Too many setup operations to review for handoff");
@@ -712,7 +746,8 @@ export class HandoffSource {
     if (
       !has(approved.agents, current.agents) ||
       !has(approved.terminals, current.terminals) ||
-      !has(approved.setupIds, current.setupIds)
+      !has(approved.setupIds, current.setupIds) ||
+      !has(approved.pullRequestWatches ?? [], current.pullRequestWatches ?? [])
     )
       refuse(
         "review_changed",
@@ -747,6 +782,8 @@ export class HandoffSource {
   }
 
   private async verifyStoppedConversations(source: SourceHandoffStatus, prepared: PreparedSource) {
+    if ((await this.options.pullRequestWatches.reviewForHandoff(source.agentIds)).length > 0)
+      refuse("stop_uncertain", "Source PR watches have not stopped");
     const records = new Map<string, StoredAgentRecord>();
     for (const id of source.agentIds) {
       if (this.options.agentManager.getAgent(id))

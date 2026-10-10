@@ -24,6 +24,7 @@ export const zhCN: TranslationResources = {
     previousOmissions: "上一页",
     nextOmissions: "下一页",
     omittedDirectories: "排除目录时也会排除其中的所有内容。",
+    prWatchesStop: "这些 PR 监控将停止。如果取消传输或在目标主机继续工作，请手动重新启动监控。",
     workToStop: "将停止的工作",
     activeWork: "活动代理：{{agents}} · 设置任务：{{setup}}",
     noTerminals: "没有打开的终端。",

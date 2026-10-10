@@ -556,6 +556,14 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   completed. Other connected clients' buffers, concurrent windows and unsent conversation draft
   transfer remain open. Other workspace mutation surfaces need inventory.
   Source retirement still needs tombstones to replace broad path fences.
+  PR watches now have a reviewed stop disposition. Preparation durably removes the selected watches,
+  cancels their queued notifications and joins dispatched wakes. Registration participates in source
+  admission and rechecks before publication; late forge reads cannot revive a removed watch. The
+  destination receives carried notes naming the stopped PRs, and no watch starts automatically there
+  or after source cancellation. The existing bounded carried-note presentation still applies.
+  See the [stopped-work evidence](../qa-evidence/handoff-writers-review.txt) and its
+  [desktop](../qa-evidence/handoff-watches-desktop.png) and
+  [compact](../qa-evidence/handoff-watches-compact.png) review screenshots.
   Twenty-nine form cases cover unavailable modes, inventory changes, lost replies, storage failures,
   exclusion pagination, duplicate submissions, closing during work, cancellation recovery and host journals advancing
   past local state, including destination lookup and selection failures. Reconstructed records retain
@@ -666,7 +674,7 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   integrations and resources outside the current provider-session/terminal/setup inventory still
   need review binding and dispositions. Native rotation and wide-native Explorer dock transitions still need device
   evidence. Final transfer size is not shown separately.
-- Source retirement/tombstones and automation dispositions remain unimplemented.
+- Source retirement/tombstones and the remaining automation dispositions remain unimplemented.
   The composite archive currently captures Claude conversations;
   other provider codecs remain open. Complete handoff is not advertised.
 

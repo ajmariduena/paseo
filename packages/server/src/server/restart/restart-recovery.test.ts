@@ -93,6 +93,20 @@ test.each<[string, Parameters<typeof decideContinuation>[0], ContinuationDecisio
   expect(decideContinuation(input)).toEqual(expected);
 });
 
+test("handoff watch notes identify stopped source watches without claiming a daemon restart", () => {
+  expect(
+    restartCancelledWorkNote([
+      {
+        id: "transfer:watch",
+        kind: "handoff_pull_request_watch",
+        label: "PR #42. Restart explicitly if needed.",
+      },
+    ]),
+  ).toBe(
+    "Note: these PR watches were stopped for the workspace handoff. They have not been restarted:\n- PR #42. Restart explicitly if needed.",
+  );
+});
+
 test("the background-work note lists ten entries, trims labels, and counts the rest", () => {
   const work = cancelledWorkFromTasks(
     Array.from({ length: 12 }, (_, index) => ({

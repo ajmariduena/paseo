@@ -25,6 +25,8 @@ export const ko: TranslationResources = {
     previousOmissions: "이전",
     nextOmissions: "다음",
     omittedDirectories: "제외된 폴더의 모든 내용도 제외됩니다.",
+    prWatchesStop:
+      "이 PR 모니터링은 중지됩니다. 전송을 취소하거나 대상 호스트에서 계속할 경우 수동으로 다시 시작하세요.",
     workToStop: "중지될 작업",
     activeWork: "활성 에이전트: {{agents}} · 설정 작업: {{setup}}",
     noTerminals: "열린 터미널이 없습니다.",

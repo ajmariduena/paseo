@@ -24,6 +24,8 @@ export const ja: TranslationResources = {
     previousOmissions: "前へ",
     nextOmissions: "次へ",
     omittedDirectories: "除外されたフォルダ内のすべての内容も除外されます。",
+    prWatchesStop:
+      "これらのPR監視は停止します。転送をキャンセルする場合や転送先で続ける場合は、手動で再開してください。",
     workToStop: "停止する作業",
     activeWork: "実行中のエージェント: {{agents}} · セットアップ処理: {{setup}}",
     noTerminals: "開いているターミナルはありません。",

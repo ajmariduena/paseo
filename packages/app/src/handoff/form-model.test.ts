@@ -37,7 +37,7 @@ const emptyReview = {
     agentIds: [],
     terminals: [],
     setupOperations: 0,
-    review: { agents: [], terminals: [], setupIds: [] },
+    review: { agents: [], terminals: [], setupIds: [], pullRequestWatches: [] },
   },
   conversationBytes: 0,
   unsavedFiles: [],

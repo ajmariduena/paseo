@@ -25,6 +25,8 @@ export const es: TranslationResources = {
     previousOmissions: "Anterior",
     nextOmissions: "Siguiente",
     omittedDirectories: "Un directorio excluido incluye todo su contenido.",
+    prWatchesStop:
+      "Estas vigilancias de PR se detendrán. Reinícialas manualmente si cancelas el traslado o continúas en el destino.",
     workToStop: "Trabajo que se detendrá",
     activeWork: "Agentes activos: {{agents}} · Tareas de configuración: {{setup}}",
     noTerminals: "No hay terminales abiertos.",

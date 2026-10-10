@@ -1,6 +1,4 @@
-Stopped-work review binding — 2026-10-09
-
-Baseline: 9281a7355 (workspace file-selection review binding).
+Stopped-work review binding — 2026-10-10
 
 Coverage: Linux, real filesystem, isolated two-daemon RPCs and focused manager
 lifecycle tests with a test provider. No real provider turn, physical MacBook/VPS
@@ -23,11 +21,63 @@ both journals, refusal to drop that approval and successful activation. The setu
 regression reloads the ownership journal after failed cleanup and refuses a
 replacement with the same active count. It also tests active setup blocking release.
 
+PR watch disposition now participates in the same review. The list includes both stored watches
+and final notifications already waiting for the agent. Preparation durably removes the approved
+watches, cancels their queued notifications and joins admitted delivery. Registration holds an
+admission lease while reading the forge and rechecks it before publication. Later forge results
+cannot revive a removed watch, including after cancelling the transfer. Cancellation leaves the
+watches stopped, as stated in review. A carried note names each stopped PR at destination; it uses
+the existing bounded note presentation and does not claim that the daemon restarted.
+
+The initial focused test failed because handoff had no watch-disposition operation. The service
+cases now cover queued progress and final wakes, late registration, delayed final forge failure
+after cancellation, and retry after removal reached disk but synchronization failed. The full
+changed watcher, ownership and restart-note files pass 91 cases. The two-daemon case rejects a
+replacement watch before fencing, then prepares, restarts both daemons and activates with the
+review and carried note intact. Neither host automatically restarts the watch. The terminal-review
+and signing-checkpoint network cases also pass. Wire compatibility passes 42 cases; form and
+translation resources pass 73. These tests use synthetic forge data and provider artifacts.
+
+Desktop and compact Chromium show the watch title and stopped disposition, then verify removal
+during preparation and complete the existing mixed native/context recovery, activation and history
+flow. Screenshots: handoff-watches-desktop.png and handoff-watches-compact.png. The first desktop
+attempt failed before opening the app because importing the server's TypeScript store mixed CJS
+and ESM protocol modules in Playwright. The fixture now seeds the persisted watch file, as it does
+for native transcripts; production continues to use the store API. Desktop passed in 46.9s and
+compact in 51.7s. This is browser viewport evidence, not native mobile validation.
+
+Current focused checks (211 distinct cases):
+
+$ npx vitest run src/server/pull-request-watch/watcher.test.ts src/server/handoff/ownership.posix.test.ts src/server/restart/restart-recovery.test.ts --bail=1
+  Test Files  3 passed (3)
+       Tests  91 passed (91)
+
+$ npx vitest run src/server/handoff/archive.e2e.test.ts --bail=1 -t 'reviews and durably stops|requires a fresh review when a terminal|persists client signing'
+  Test Files  1 passed (1)
+       Tests  3 passed | 29 skipped (32)
+  The new watch-disposition case passed again after adding destination carried-note assertions.
+
+$ npx vitest run src/messages.wire-compat.test.ts --bail=1
+  Test Files  1 passed (1)
+       Tests  42 passed (42)
+
+$ npx vitest run src/handoff/form-model.test.ts src/i18n/resources.test.ts --bail=1
+  Test Files  2 passed (2)
+       Tests  73 passed (73)
+
+$ npm run test:e2e -- e2e/browser/workspace-handoff.spec.ts --grep 'desktop preserves mixed conversation' --workers=1
+  1 passed (1.2m)
+
+$ npm run test:e2e -- e2e/browser/workspace-handoff.spec.ts --grep 'compact preserves mixed conversation' --workers=1
+  1 passed (1.3m)
+
 These are stop-approval identities, not persisted OS process identities. Uncertain
 process-stop recovery after daemon restart, complete resource/integration inventory
 and dispositions remain open. Optional wire fields preserve old message parsing;
-the unfinished app feature requires the review while lower-level programmatic
-calls can omit it. Production hosts still do not advertise complete handoff.
+the unfinished app feature requires the review. Lower-level programmatic calls can omit it only
+when no PR watches need a disposition. Queues unrelated to PR notifications, schedules, goals,
+delegations, plugins, retirement tombstones and complete conversation recovery remain open.
+Production hosts still do not advertise complete handoff.
 
 
 RED — a replacement terminal was stopped without a fresh review

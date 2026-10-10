@@ -23,9 +23,22 @@ export function cancelledWorkFromTasks(
 /** Bounded, so it cannot crowd out the turn it rides on. Port of T3 `RestartBackgroundNote`. */
 export function restartCancelledWorkNote(work: readonly RestartCancelledWork[]): string {
   const omitted = work.length - MAX_NOTE_ENTRIES;
+  const visible = work.slice(0, MAX_NOTE_ENTRIES);
+  const handoff = visible.filter((entry) => entry.kind === "handoff_pull_request_watch");
+  const restarted = visible.filter((entry) => entry.kind !== "handoff_pull_request_watch");
   return [
-    "Note: the Paseo daemon restarted, and this background work was cancelled before it finished. It will not report back:",
-    ...work.slice(0, MAX_NOTE_ENTRIES).map((entry) => `- ${entry.kind}: ${entry.label}`),
+    ...(restarted.length
+      ? [
+          "Note: the Paseo daemon restarted, and this background work was cancelled before it finished. It will not report back:",
+          ...restarted.map((entry) => `- ${entry.kind}: ${entry.label}`),
+        ]
+      : []),
+    ...(handoff.length
+      ? [
+          "Note: these PR watches were stopped for the workspace handoff. They have not been restarted:",
+          ...handoff.map((entry) => `- ${entry.label}`),
+        ]
+      : []),
     ...(omitted > 0 ? [`- and ${omitted} more`] : []),
   ].join("\n");
 }
