@@ -27,12 +27,15 @@ const MAX_LAUNCH_BYTES = 8 * 1024 * 1024;
 const BOOTSTRAP = String.raw`
 const { Socket } = require('node:net');
 const { spawn } = require('node:child_process');
+const { accessSync, constants, statSync } = require('node:fs');
+const { resolve } = require('node:path');
 const strategy = process.argv[1];
 const control = new Socket({ fd: 3 });
 let size = 0;
 const chunks = [];
 const signals = ['SIGTERM', 'SIGINT', 'SIGHUP'];
 let target = null;
+let stopping = false;
 function fail() {
   process.stderr.write('Claude process launch failed before exec\n');
   process.exit(1);
@@ -56,15 +59,36 @@ control.on('end', () => {
       // macOS protected intermediaries strip DYLD_* values. Native spawn passes
       // the provider's environment directly, with this registered root retained
       // until its child exits. Its standard streams go straight to the SDK.
-      target = spawn(command, args, { env, stdio: 'inherit', shell: false });
+      const watchTarget = (child, allowScriptFallback) => {
+        target = child;
+        child.once('error', (error) => {
+          if (!allowScriptFallback || error.code !== 'ENOEXEC') return fail();
+          if (stopping) return process.exit(1);
+          // Darwin's posix_spawn does not provide execvp's ENOEXEC shell fallback.
+          // Resolve PATH before passing an exact file to sh: sh itself can prefer
+          // a same-named file in cwd. Never concatenate provider arguments into code.
+          let script = command.includes('/') ? resolve(command) : null;
+          if (!script) {
+            for (const directory of (env.PATH ?? '/usr/bin:/bin').split(':')) {
+              const candidate = resolve(directory || '.', command);
+              try {
+                accessSync(candidate, constants.X_OK);
+                if (statSync(candidate).isFile()) { script = candidate; break; }
+              } catch {}
+            }
+          }
+          if (!script) return fail();
+          watchTarget(spawn('/bin/sh', [script, ...args], { env, stdio: 'inherit', shell: false }), false);
+        });
+        child.once('exit', (code, signal) => {
+          for (const name of signals) process.removeAllListeners(name);
+          if (signal) process.kill(process.pid, signal);
+          process.exit(code ?? 1);
+        });
+      };
+      watchTarget(spawn(command, args, { env, stdio: 'inherit', shell: false }), true);
       control.destroy();
       chunks.length = 0;
-      target.once('error', fail);
-      target.once('exit', (code, signal) => {
-        for (const name of signals) process.removeAllListeners(name);
-        if (signal) process.kill(process.pid, signal);
-        process.exit(code ?? 1);
-      });
     }
   } catch { fail(); }
 });
@@ -73,10 +97,12 @@ if (strategy === 'supervise') {
   // Tree shutdown signals descendants itself. Relaying its OS signal would send
   // the provider a second signal and can interrupt its cleanup handler.
   for (const signal of signals) process.on(signal, () => {
+    stopping = true;
     if (!target) process.exit(0);
   });
   process.on('message', (message) => {
     if (message.kind !== 'signal') return;
+    stopping = true;
     if (!target) process.exit(0);
     target.kill(message.signal);
   });

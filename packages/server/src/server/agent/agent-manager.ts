@@ -65,7 +65,7 @@ import {
   type ImportableProviderSession,
   type ListImportableSessionsOptions,
 } from "./agent-sdk-types.js";
-import { buildArchivedAgentRecord, type ArchivedStoredAgentRecord } from "./agent-archive.js";
+import type { ArchivedStoredAgentRecord } from "./agent-archive.js";
 import type {
   StoredAgentRecord,
   AgentStorage,
@@ -2388,10 +2388,10 @@ export class AgentManager {
     record: StoredAgentRecord,
     options: { archivedAt: string; updatedAt?: string },
   ): Promise<ArchivedStoredAgentRecord> {
-    const committed = await this.requireRegistry().upsert(
-      buildArchivedAgentRecord(record, options),
-    );
-    const archivedRecord = { ...committed, archivedAt: options.archivedAt };
+    const archivedRecord = await this.requireRegistry().archive(record.id, {
+      ...options,
+      runtimeGenerationId: record.runtimeGeneration?.id,
+    });
     if (!record.archivedAt && !record.internal) {
       this.pluginLifecycle?.emit("agent.archived", {
         agent: describeHookAgent(archivedRecord),

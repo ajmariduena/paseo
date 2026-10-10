@@ -1,3 +1,4 @@
+import { buildArchivedAgentRecord, type ArchivedStoredAgentRecord } from "./agent-archive.js";
 import { isDeepStrictEqual } from "node:util";
 import { randomUUID } from "node:crypto";
 import { promises as fs, type Dirent } from "node:fs";
@@ -867,6 +868,20 @@ export class AgentStorage {
       }
     }
     return null;
+  }
+
+  async archive(
+    agentId: string,
+    options: { archivedAt: string; updatedAt?: string; runtimeGenerationId?: string },
+  ): Promise<ArchivedStoredAgentRecord> {
+    await this.load();
+    const committed = await this.queueRecordMutation(agentId, (record) => {
+      if (!record || !this.isVisible(agentId)) throw new Error(`Agent ${agentId} not found`);
+      this.assertRuntimeGeneration(record, options.runtimeGenerationId);
+      return buildArchivedAgentRecord(record, options);
+    });
+    if (!committed) throw new Error("Agent was deleted before it could be archived");
+    return { ...committed, archivedAt: options.archivedAt };
   }
 
   async setTitle(agentId: string, title: string): Promise<void> {

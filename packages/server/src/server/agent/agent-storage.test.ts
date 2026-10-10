@@ -175,6 +175,20 @@ describe("AgentStorage", () => {
     });
   });
 
+  test("archiving serializes with snapshots and preserves the newest record fields", async () => {
+    const agent = createManagedAgent({ lifecycle: "running" });
+    await storage.applySnapshot(agent);
+    const archivedAt = "2026-10-10T00:00:00.000Z";
+    await Promise.all([
+      storage.setTitle(agent.id, "Latest title"),
+      storage.applySnapshot(agent),
+      storage.archive(agent.id, { archivedAt }),
+      storage.applySnapshot(agent),
+    ]);
+    const cold = new AgentStorage(storagePath, logger);
+    expect(await cold.get(agent.id)).toMatchObject({ title: "Latest title", archivedAt });
+  });
+
   test.skipIf(process.platform === "win32")(
     "closed checkpoints keep the exact committed revision across retries and restart",
     async () => {

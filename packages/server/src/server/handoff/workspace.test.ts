@@ -53,6 +53,13 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
   return result.stdout;
 }
 
+async function verifyRestoredWorkspace(): Promise<void> {
+  const store = new HandoffArchiveStore(path.join(root, "archives"));
+  const transferId = randomUUID();
+  await packWorkspaceArchive({ store, transferId, artifactDirectory: artifact });
+  await verifyWorkspaceArchive({ store, transferId, cwd: destination });
+}
+
 beforeEach(async () => {
   root = await realpath(await mkdtemp(path.join(os.tmpdir(), "paseo-handoff-workspace-")));
   source = path.join(root, "source");
@@ -87,7 +94,7 @@ test("preserves other branches, annotated tags, notes and symbolic remote refere
   ).toBe(refs);
   expect(await git(destination, "notes", "show")).toBe("Review note\n");
   expect(await git(destination, "cat-file", "-t", "release")).toBe("tag\n");
-  await verifyCapturedWorkspace({ cwd: destination, artifactDirectory: artifact });
+  await verifyRestoredWorkspace();
 });
 
 test("preserves upstreams, custom fetch refspecs and explicit push policy", async () => {
@@ -124,7 +131,7 @@ test("preserves upstreams, custom fetch refspecs and explicit push policy", asyn
   expect(await git(destination, "config", "--get-all", "remote.origin.fetch")).toBe(
     "+refs/heads/*:refs/remotes/origin/team/*\n^refs/heads/private/*\n",
   );
-  await verifyCapturedWorkspace({ cwd: destination, artifactDirectory: artifact });
+  await verifyRestoredWorkspace();
   const origin = path.join(root, "origin.git");
   const publish = path.join(root, "publish.git");
   await git(root, "clone", "--bare", source, origin);
@@ -166,7 +173,7 @@ test.each(["unborn", "detached"])("preserves references with a %s HEAD", async (
   expect(await git(destination, "rev-parse", "refs/heads/work")).toBe(`${original}\n`);
   expect(await git(destination, "cat-file", "-t", "blob-tag")).toBe("blob\n");
   expect(manifest.git?.bundle?.size).toBeGreaterThan(0);
-  await verifyCapturedWorkspace({ cwd: destination, artifactDirectory: artifact });
+  await verifyRestoredWorkspace();
 });
 
 test("preserves the absence of a fetch mapping and a local branch upstream", async () => {
@@ -182,7 +189,7 @@ test("preserves the absence of a fetch mapping and a local branch upstream", asy
   await expect(
     git(destination, "config", "--get-all", "remote.origin.fetch"),
   ).rejects.toMatchObject({ code: 1 });
-  await verifyCapturedWorkspace({ cwd: destination, artifactDirectory: artifact });
+  await verifyRestoredWorkspace();
 });
 
 test("binds non-HEAD references and tracking policy to review and release", async () => {
@@ -282,7 +289,7 @@ test("reads a legacy HEAD-only workspace archive", async () => {
   await writeFile(file, JSON.stringify(manifest));
   await restoreWorkspace({ artifactDirectory: artifact, destination });
   expect(await git(destination, "rev-parse", "HEAD")).toBe(await git(source, "rev-parse", "HEAD"));
-  await verifyCapturedWorkspace({ cwd: destination, artifactDirectory: artifact });
+  await verifyRestoredWorkspace();
 });
 
 test("preserves the exact remote SSH path when removing a password", async () => {
@@ -299,17 +306,28 @@ test("preserves the exact remote SSH path when removing a password", async () =>
   expect(await git(destination, "remote", "get-url", "origin")).toBe(
     "ssh://git@example.com/link/../repo.git\n",
   );
-  await verifyCapturedWorkspace({ cwd: destination, artifactDirectory: artifact });
+  await verifyRestoredWorkspace();
 });
 
-test("verifies installed remotes without overriding destination authentication rewrites", async () => {
+test("verifies installed remotes and tracking without importing destination host policy", async () => {
+  const sourceConfig = path.join(root, "source.gitconfig");
+  await writeFile(sourceConfig, "[pull]\n\trebase = false\n");
+  vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
+  vi.stubEnv("GIT_CONFIG_GLOBAL", sourceConfig);
   await git(source, "remote", "add", "origin", "https://github.com/org/repo.git");
-  await captureWorkspace({ cwd: source, artifactDirectory: artifact });
+  const manifest = await captureWorkspace({ cwd: source, artifactDirectory: artifact });
+  expect(manifest).toMatchObject({
+    version: 2,
+    git: { tracking: expect.arrayContaining([{ key: "pull.rebase", values: ["false"] }]) },
+  });
   const store = new HandoffArchiveStore(path.join(root, "archives"));
   const transferId = randomUUID();
   await packWorkspaceArchive({ store, transferId, artifactDirectory: artifact });
   const config = path.join(root, "destination.gitconfig");
-  await writeFile(config, '[url "ssh://git@github.com/"]\n\tinsteadOf = https://github.com/\n');
+  await writeFile(
+    config,
+    '[url "ssh://git@github.com/"]\n\tinsteadOf = https://github.com/\n[pull]\n\trebase = true\n',
+  );
   vi.stubEnv("GIT_CONFIG_GLOBAL", config);
   await restoreWorkspaceArchive({ store, transferId, destination });
   expect(
@@ -320,6 +338,13 @@ test("verifies installed remotes without overriding destination authentication r
   expect(await git(destination, "config", "--local", "--get", "remote.origin.url")).toBe(
     "https://github.com/org/repo.git\n",
   );
+  expect(await git(destination, "config", "--local", "--get-all", "pull.rebase")).toBe("false\n");
+  await git(destination, "config", "pull.rebase", "true");
+  await expect(
+    verifyWorkspaceArchive({ store, transferId, cwd: destination }),
+  ).rejects.toMatchObject({
+    code: "source_changed",
+  });
 });
 
 test("preserves effective fetch and push remotes without transferring credentials or host config", async () => {
@@ -376,14 +401,12 @@ test("preserves effective fetch and push remotes without transferring credential
     host: "github.com",
   });
   await verifyCapturedWorkspace({ cwd: source, artifactDirectory: artifact });
-  await verifyCapturedWorkspace({ cwd: destination, artifactDirectory: artifact });
+  await verifyRestoredWorkspace();
   await git(destination, "remote", "set-url", "upstream", "git@gitlab.com:other/repo.git");
   expect(await git(destination, "remote", "get-url", "--push", "upstream")).toBe(
     "git@gitlab.com:other/repo.git\n",
   );
-  await expect(
-    verifyCapturedWorkspace({ cwd: destination, artifactDirectory: artifact }),
-  ).rejects.toMatchObject({ code: "source_changed" });
+  await expect(verifyRestoredWorkspace()).rejects.toMatchObject({ code: "source_changed" });
 });
 
 test("retains a pushInsteadOf destination and binds reviewed remote changes without binding credentials", async () => {
@@ -419,7 +442,7 @@ test("retains a pushInsteadOf destination and binds reviewed remote changes with
   expect(await git(destination, "remote", "get-url", "--push", "origin")).toBe(
     "git@github.com:org/repo.git\n",
   );
-  await verifyCapturedWorkspace({ cwd: destination, artifactDirectory: artifact });
+  await verifyRestoredWorkspace();
   await git(source, "remote", "set-url", "origin", "https://github.com/other/repo.git");
   await expect(
     verifyCapturedWorkspace({ cwd: source, artifactDirectory: artifact }),
@@ -442,7 +465,7 @@ test.each(["linked", "unborn"])("preserves remote URLs in a %s Git workspace", a
   expect(await git(destination, "remote", "get-url", "origin")).toBe(
     "ssh://git@[2001:db8::1]:2222/org/repo.git\n",
   );
-  await verifyCapturedWorkspace({ cwd: destination, artifactDirectory: artifact });
+  await verifyRestoredWorkspace();
 });
 
 test.each([

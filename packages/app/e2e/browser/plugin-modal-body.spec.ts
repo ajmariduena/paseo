@@ -122,6 +122,7 @@ async function openWideExamples(page: Page) {
 
 async function openCompactExamples(page: Page) {
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByTestId("plugin-surface-close").click();
   await openMobileAgentSidebar(page);
   await expectMobileAgentSidebarVisible(page);
   await page.getByRole("button", { name: "Modal examples", exact: true }).click();

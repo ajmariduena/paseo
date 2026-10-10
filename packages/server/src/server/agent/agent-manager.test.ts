@@ -909,7 +909,11 @@ test.each(["completed", "unknown"] as const)(
               },
             },
           ]),
-        ).rejects.toThrow("resolution of carried prompt delivery");
+        ).rejects.toThrow(
+          process.platform === "win32"
+            ? "Durable directory publication is unavailable on Windows"
+            : "resolution of carried prompt delivery",
+        );
         expect(await storage.get(agentId)).toEqual(pending);
       } else {
         await manager.runAgent(agentId, "Continue");
@@ -11712,16 +11716,12 @@ test("archiveAgent cascade surfaces partial child archive failures", async () =>
   const storagePath = join(workdir, "agents");
   let failingChildId: string | null = null;
 
-  class FailingChildArchiveStorage extends AgentStorage {
-    override async upsert(record: StoredAgentRecord): Promise<void> {
-      if (record.id === failingChildId && record.archivedAt) {
-        throw new Error(`Injected cascade archive failure for ${record.id}`);
-      }
-      await super.upsert(record);
+  const storage = new AgentStorage(storagePath, logger, undefined, undefined, (record) => {
+    if (record.id === failingChildId && record.archivedAt) {
+      throw new Error(`Injected cascade archive failure for ${record.id}`);
     }
-  }
-
-  const storage = new FailingChildArchiveStorage(storagePath, logger);
+    return () => {};
+  });
   const manager = new AgentManager({
     clients: {
       codex: new TestAgentClient(),

@@ -1,4 +1,13 @@
-import { access, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -909,16 +918,25 @@ describe("Claude spawn override", () => {
     },
   );
 
-  test.runIf(process.platform !== "win32")(
-    "the launch gate preserves executable script wrappers without a shebang",
-    async () => {
+  test.runIf(process.platform !== "win32").each([
+    { strategy: "replace" as const, lookup: "absolute" },
+    { strategy: "supervise" as const, lookup: "absolute" },
+    { strategy: "supervise" as const, lookup: "PATH" },
+  ])(
+    "the $strategy launch gate preserves a script without a shebang via $lookup",
+    async ({ strategy, lookup }) => {
       const home = await mkdtemp(path.join(tmpdir(), "paseo launch script-"));
       const script = path.join(home, "provider-fixture");
       await writeFile(script, "printf '%s' \"$1\"", { mode: 0o700 });
+      const shadow = path.join(home, "shadow");
+      await mkdir(shadow);
+      await writeFile(path.join(shadow, "provider-fixture"), "exit 42", { mode: 0o700 });
       const launch = spawnGatedClaudeProcess({
-        command: script,
-        args: ['quoted " argument'],
-        env: {},
+        strategy,
+        cwd: shadow,
+        command: lookup === "PATH" ? path.basename(script) : script,
+        args: ['quoted " argument; $(exit 42)'],
+        env: { PATH: home },
       });
       const exited = once(launch.child, "close");
       let output = "";
@@ -927,7 +945,7 @@ describe("Claude spawn override", () => {
         await launch.ready;
         await launch.start();
         expect(await exited).toEqual([0, null]);
-        expect(output).toBe('quoted " argument');
+        expect(output).toBe('quoted " argument; $(exit 42)');
       } finally {
         launch.child.kill("SIGKILL");
         await exited;

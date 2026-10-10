@@ -273,6 +273,20 @@ shutdown of a provider that ignores SIGTERM. All 33 cases in the owning Claude s
 The suite is now included in the existing macOS handoff CI step; its native result is pending.
 These are real Node/shell processes with injected SDK frames, not fresh authenticated Claude turns.
 
+CI follow-up at 20e11a9f8 (run 38064594811, macOS job 114249684359): the supervisor
+suite reached a script without a shebang and exited 1 instead of 0. Darwin's posix_spawn path
+returns ENOEXEC instead of supplying execvp's shell fallback. The supervisor now invokes sh only
+for that error, after the registration gate, retaining literal argv and resolving PATH before sh
+can prefer a same-named file in cwd. Binary providers still receive their environment directly.
+The expanded script cases cover replace/supervise, absolute/PATH lookup, a shadow executable in
+cwd, spaces, quotes and shell metacharacters. All 44 spawn cases pass on Linux, including the
+existing environment, signal and tree-stop cases. Native macOS confirmation remains pending CI.
+
+$ npx vitest run src/server/agent/providers/claude/agent.spawn.test.ts --bail=1
+  Test Files  1 passed (1)
+       Tests  44 passed (44)
+    Duration  7.41s (tests 6.51s)
+
 Memory observation: three sequential samples per strategy on Linux/Node 24.21.0. The combined PSS
 increase was 16.59 MiB for this harmless Node provider. PSS apportions shared pages; RSS is also
 recorded below. This is an overhead observation, not a macOS/Electron estimate or a hard bound.
@@ -761,6 +775,96 @@ Record revision and rollback validation:
   before advancing. Legacy records acquire a revision on first write; exhaustion refuses to wrap.
 - A manager regression reproduced returning the previous revision after detaching a stored agent.
   Metadata and archive operations now return the committed record.
+- Ubuntu job 114249684360 in run 38064594811 exposed archive acknowledgement while a
+  background snapshot advanced the record revision (expected 7, found 8 locally). Archiving now
+  applies its fields against the latest record inside the storage queue, with the generation
+  check retained. The isolated Hub WebSocket file passes all 19 cases, including all three CI
+  archive failures. A store regression checks concurrent title/snapshot/archive writes through
+  a fresh store. Full-record stale writes still reject. All 17 selected manager archive,
+  unarchive and cascade cases also pass. Their child-failure fixture now injects at the store's
+  mutation-admission port; overriding upsert no longer exercises the serialized archive path.
+- The same Ubuntu job's seven permission-notification failures came from a fixture replacing
+  manager methods and fabricating non-UUID agents outside its registry. Prompt annotation now
+  goes through the real manager, so that fixture failed before provider dispatch. It now creates
+  registered agents and uses a controlled provider with real storage, subscriptions, annotation
+  and prompt dispatch. The permission/storage selection passes 63 cases, with one platform case
+  skipped. These tests exercise provider rejection, repeated/concurrent permissions, stale
+  notifications and archived callers without bypassing the mutation guard.
+- Windows job 114249684484 in the same run repeated those permission failures and one archive
+  failure. Its carried-prompt case reached the platform's earlier directory-durability refusal;
+  the assertion now checks that Windows error while retaining the unresolved-delivery refusal
+  on POSIX. Recovery remains unavailable on Windows and the persisted obligation is unchanged.
+- Ten Windows workspace checks applied the source verifier to restored destinations. An
+  inherited global pull.rebase value reproduces the same failure on Linux: restoration writes
+  the captured policy locally, and the source verifier reads both global and local entries.
+  Destination assertions now use the archive verifier that destination activation uses. The
+  authentication-rewrite case also captures source-global tracking, changes destination-global
+  policy, verifies installed values and refuses a later local policy change. All 115 workspace
+  cases pass with a nonempty global pull.rebase setting. Source verification stays unchanged.
+  Native Windows verification of these repairs remains pending.
+
+  $ npx vitest run src/server/hub/execution-session.websocket.test.ts --bail=1
+    Test Files  1 passed (1)
+         Tests  19 passed (19)
+      Duration  28.59s (tests 16.98s)
+  $ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/agent/agent-manager.test.ts -t 'archiveAgent|archiveSnapshot|unarchiveSnapshot|archive.*runtime' --bail=1
+    Test Files  1 passed (1)
+         Tests  17 passed | 274 skipped (291)
+      Duration  1.71s (tests 119ms)
+  $ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/agent/agent-prompt.test.ts packages/server/src/server/agent/agent-storage.test.ts --bail=1
+    Test Files  2 passed (2)
+         Tests  63 passed | 1 skipped (64)
+      Duration  2.40s (tests 837ms)
+  $ GIT_CONFIG_GLOBAL=/tmp/handoff-windows-gitconfig GIT_CONFIG_NOSYSTEM=1 npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/handoff/workspace.test.ts --bail=1
+    Test Files  1 passed (1)
+         Tests  115 passed (115)
+      Duration  19.87s (tests 19.19s)
+  $ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/agent/agent-manager.test.ts -t 'a native carried note records its identity' --bail=1
+    Test Files  1 passed (1)
+         Tests  2 passed | 289 skipped (291)
+      Duration  1.60s (tests 72ms)
+
+- Playwright shard 3 (job 114249684474, same run) separately failed two compact plugin
+  navigation cases and retried a single-project filter case. Error snapshots show a plugin
+  screen with Close plugin, no Open menu, and a leftover projects-settings-empty project.
+  Compact cases now close the plugin before reopening it through the sidebar. The empty-project
+  fixture uses the daemon project ID for cleanup instead of the sidebar's cross-host view key.
+  The automatic leak check now enumerates listProjects, including projects with zero workspaces.
+  All four affected/cause cases pass consecutively on one worker, preserving audio, context,
+  clipboard, scrolling and single-project visibility assertions. These fixture repairs do not
+  change app UI behavior.
+
+  $ npm run test:e2e -- e2e/browser/plugin-host-ui.spec.ts e2e/browser/plugin-modal-body.spec.ts e2e/browser/projects-settings.spec.ts e2e/browser/sidebar-project-filter.spec.ts --grep 'plugin modal adapts|plugin bodies support|freshly-added project|hides the filter row' --workers=1 --max-failures=1
+    4 passed (1.4m)
+  Local Chromium used the installed browser library path and font config; isolated test daemon
+  and Metro both stopped normally.
+
+- Playwright shard 1 (job 114249684480, same run) failed image-adjacent text selection on all
+  attempts. A real mouse drag stayed captured by its initial image wrapper even after the pointer
+  reached the text below. The retained mobile-panel detectors still installed web pointer handlers
+  with enabled(false). Disabled web opening gestures now use an empty composition, keeping the
+  navigator's ancestors mounted while removing those handlers. Native and enabled compact
+  gestures keep their existing behavior. The image case verifies the native range and exact
+  clipboard contents, then repeats after a desktop/compact/desktop round trip.
+- The same shard's directory-search retry raced input focus. Its keyboard case now waits for
+  focus and verifies the typed query before checking results. That case and the Markdown-structure
+  selection case pass. The first combined run then caught an over-strict new native-range
+  assertion: the browser includes a gap newline. Only the native range assertion trims that gap;
+  clipboard assertions still require the exact text. The image case subsequently passes (11.9s).
+  That run was interrupted before the two handoff resize cases finished; its image result is
+  retained, and only the unfinished resize cases are rerun.
+
+  $ npm run test:e2e -- e2e/browser/assistant-selection-copy.spec.ts e2e/browser/add-project-flow.spec.ts --grep 'copying .*selection|keyboard directory search' --workers=1 --max-failures=1
+    2 passed; image case failed on the newly added native-range gap assertion.
+  $ npm run test:e2e -- e2e/browser/assistant-selection-copy.spec.ts e2e/browser/workspace-handoff.spec.ts --grep 'copying a selection across an assistant image|pages all exclusions' --workers=1 --max-failures=1
+    Image case passed (11.9s); run interrupted before resize results.
+  $ npm run test:e2e -- e2e/browser/workspace-handoff.spec.ts --grep 'pages all exclusions' --workers=1 --max-failures=1
+    2 passed (1.8m)
+    Desktop 36.3s; compact 44.7s. Both preserve review and preparation across repeated
+    breakpoint changes, then activate the destination with excluded files absent.
+    Isolated daemon and Metro stopped normally.
+  Nine distinct browser cases pass across these focused runs, including the four shard-3 cases.
+
 - Failed provider import restores its placement/label patch while retaining concurrent title,
   label edits and pending restart notes. It no longer writes an old full-record copy.
 - Native and context network cases reject a v3 preparation missing its revision, and reject a
@@ -831,8 +935,10 @@ Unsent notes and repeated context transfers:
     Test Files  1 passed (1)
          Tests  2 passed | 39 skipped (41)
       Duration  15.95s (tests 5.76s)
-  These are isolated Linux daemon tests with synthetic provider files. Native macOS verification
-  remains with CI; production path handling was unchanged.
+  These are isolated Linux daemon tests with synthetic provider files. macOS job 114249684359
+  at 20e11a9f8 subsequently passed all 278 handoff cases (two skipped), including this correction.
+  That job later failed the separate launch-wrapper case documented above. Production path
+  handling was unchanged.
 - Context-only re-export reads the private verified archive after visible copies are deleted or
   ignored. Three unused-context hops retain original history, artifacts and pending notes. A
   forced native choice refuses and can be cancelled; damaged history or changed context refuses

@@ -40,8 +40,10 @@ also retain identity across appearance hydration and settings changes. Do not wr
 appearance keys; see [Unistyles appearance boundaries](unistyles.md#runtime-theme-patching-for-user-preferences).
 
 Keep the navigator's ancestors mounted across compact/wide breakpoints too. Disable opening
-gestures on wide layouts instead of removing their wrappers. Changing that ancestry remounts
-the navigation tree and discards open forms, including an unprepared handoff review.
+gestures on wide layouts instead of removing their wrappers. On web, disabled detectors attach
+an empty gesture composition: `.enabled(false)` still captures mouse pointers and prevents text
+selection across message blocks. Changing the wrapper ancestry remounts the navigation tree and
+discards open forms, including an unprepared handoff review.
 
 ## Why one position
 

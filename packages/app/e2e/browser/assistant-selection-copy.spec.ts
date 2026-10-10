@@ -737,8 +737,22 @@ test("copying a selection across an assistant image keeps its Markdown source an
     expect((await readRichClipboard(page)).plainText).toBe(`![chart](${image})`);
 
     await dragFromBelowImageTo(page, "After the");
+    await expect
+      .poll(() => page.evaluate(() => window.getSelection()?.toString().trim()))
+      .toBe("After the");
     await copySelection(page);
 
+    expect((await readRichClipboard(page)).plainText).toBe("After the");
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.getByRole("button", { name: "Open menu", exact: true })).toBeVisible();
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await expect(page.getByRole("button", { name: "Open menu", exact: true })).not.toBeVisible();
+    await dragFromBelowImageTo(page, "After the");
+    await expect
+      .poll(() => page.evaluate(() => window.getSelection()?.toString().trim()))
+      .toBe("After the");
+    await copySelection(page);
     expect((await readRichClipboard(page)).plainText).toBe("After the");
   } finally {
     await agent.cleanup();
