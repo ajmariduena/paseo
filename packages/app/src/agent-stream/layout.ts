@@ -1,5 +1,6 @@
 import type { TurnTiming } from "@/timeline/turn-time";
 import type { StreamItem } from "@/types/stream";
+import { isOwnUserMessage, isPeerNote } from "@/peer-notes/model";
 import { getAssistantBlockSpacing, getGapBetweenStreamItems } from "./spacing";
 import type { StreamFrameChildOrder, StreamStrategy } from "./strategy";
 import { continuesResponse, continuesTurn, isResponseBoundary } from "./turn-membership";
@@ -187,6 +188,11 @@ function isToolSequenceItem(
   return item?.kind === "tool_call" || item?.kind === "thought" || item?.kind === "todo_list";
 }
 
+/** A peer note is drawn as a collapsible row between tool calls, so it spaces like one. */
+function isToolRhythmItem(item: StreamItem | null): boolean {
+  return isToolSequenceItem(item) || isPeerNote(item);
+}
+
 function getToolSequence(input: {
   item: StreamItem;
   aboveItem: StreamItem | null;
@@ -326,11 +332,10 @@ function layoutSegmentItem(
     assistantSpacing,
     completedFooter,
     toolSequence: getToolSequence({ item, aboveItem, belowItem }),
-    isFirstInUserGroup: item.kind === "user_message" && aboveItem?.kind !== "user_message",
-    isLastInUserGroup: item.kind === "user_message" && belowItem?.kind !== "user_message",
+    isFirstInUserGroup: isOwnUserMessage(item) && !isOwnUserMessage(aboveItem),
+    isLastInUserGroup: isOwnUserMessage(item) && !isOwnUserMessage(belowItem),
     isLastInToolSequence:
-      isToolSequenceItem(item) &&
-      !(isToolSequenceItem(belowItem) && continuesTurn(item, belowItem)),
+      isToolRhythmItem(item) && !(isToolRhythmItem(belowItem) && continuesTurn(item, belowItem)),
     frameOrder: input.frameOrder,
     phase: input.phase,
   });

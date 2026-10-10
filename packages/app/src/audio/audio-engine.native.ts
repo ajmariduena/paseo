@@ -1,5 +1,6 @@
 import type { AudioEngine, AudioEngineCallbacks, AudioPlaybackSource } from "./audio-engine-types";
 
+import { Platform } from "react-native";
 import { createAudioPlayer, setAudioModeAsync } from "expo-audio";
 import { File, Paths } from "expo-file-system";
 import { reportCapturedPcm16 } from "./audio-levels";
@@ -62,10 +63,10 @@ export function createAudioEngine(
     },
   );
 
+  // The native engine is one singleton shared by every JS engine (the voice call's and
+  // dictation's), and a sibling's destroy() tears it down. initialize() is idempotent natively,
+  // so ask every time instead of trusting this instance's memory of having initialized.
   async function ensureInitialized(): Promise<void> {
-    if (refs.initialized) {
-      return;
-    }
     const success = await native.initialize();
     if (!success) {
       throw new Error("expo-two-way-audio: native initialize() returned false");
@@ -185,7 +186,9 @@ export function createAudioEngine(
         const isRecording = native.toggleRecording(true);
         if (!isRecording) {
           throw new Error(
-            "Microphone capture could not start because Android audio focus is unavailable.",
+            Platform.OS === "android"
+              ? "Microphone capture could not start because Android audio focus is unavailable."
+              : "Microphone capture could not start because the audio engine is unavailable.",
           );
         }
         refs.captureActive = true;

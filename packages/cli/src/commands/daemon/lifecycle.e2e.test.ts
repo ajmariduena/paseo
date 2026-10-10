@@ -112,6 +112,18 @@ async function fixture() {
   return { root, homes, env, run, ok, liveStatus, configure, close };
 }
 
+/** Every home starts with the daemon's scratch project, which the user did not create. */
+async function userProjects(
+  f: Awaited<ReturnType<typeof fixture>>,
+  home: string,
+  overrides?: NodeJS.ProcessEnv,
+): Promise<unknown[]> {
+  const rows = (await f.ok(["project", "ls", "--home", home], overrides)) as Array<{
+    path?: string;
+  }>;
+  return rows.filter((row) => row.path !== path.join(home, "scratch"));
+}
+
 test("managed two-home restart retains its supervisor and never routes ordinary commands or stop to the other home", async () => {
   const f = await fixture();
   const [a, b] = f.homes as [string, string];
@@ -143,10 +155,10 @@ test("managed two-home restart retains its supervisor and never routes ordinary 
     const repoB = path.join(f.root, "project-b");
     await mkdir(repoB);
     await f.ok(["project", "create", repoB, "--home", b], poisoned);
-    expect(await f.ok(["project", "ls", "--home", a])).toEqual([]);
-    expect((await f.ok(["project", "ls", "--home", b], poisoned)).length).toBe(1);
+    expect(await userProjects(f, a)).toEqual([]);
+    expect((await userProjects(f, b, poisoned)).length).toBe(1);
     const stream = await f.run(["logs", "missing-agent", "--follow", "--home", b], poisoned);
-    expect(stream.stderr).toContain("Agent not found: missing-agent");
+    expect(stream.stderr).toContain("No agent found matching: missing-agent");
     const restart = await f.ok(["restart", "--home", b, "--timeout", "30"], poisoned);
     expect(restart.supervisorPid).toBe(launchB.pid);
     expect(restart.workerPid).not.toBe(beforeB.workerPid);
@@ -166,7 +178,7 @@ test("managed two-home restart retains its supervisor and never routes ordinary 
     const afterA = await f.liveStatus(a);
     expect(afterA.workerPid).toBe(beforeA.workerPid);
     expect(afterA.pid).toBe(beforeA.pid);
-    expect(await f.ok(["project", "ls", "--home", a])).toEqual([]);
+    expect(await userProjects(f, a)).toEqual([]);
   } finally {
     await f.close();
   }
@@ -358,14 +370,21 @@ test.skipIf(process.platform === "win32").each([["start"], ["daemon", "run"]])(
         stdio: "ignore",
       });
       const exited = new Promise((resolve) => child!.once("exit", resolve));
+      // The lock file exists before its contents identify the supervisor.
+      let supervisorPid: number | undefined;
       await expect
-        .poll(async () => existsSync(path.join(home, "paseo.pid")), { timeout: 10_000 })
-        .toBe(true);
-      const lock = JSON.parse(await readFile(path.join(home, "paseo.pid"), "utf8"));
+        .poll(
+          async () => {
+            supervisorPid = (await readDaemonInstance(home))?.pid;
+            return supervisorPid;
+          },
+          { timeout: 10_000 },
+        )
+        .toBeTypeOf("number");
       await f.ok(["status", "--home", home]);
       child.kill("SIGINT");
       await exited;
-      expect(() => process.kill(lock.pid, 0)).toThrow();
+      expect(() => process.kill(supervisorPid!, 0)).toThrow();
       expect((await f.ok(["status", "--home", home])).localDaemon).toBe("stopped");
     } finally {
       child?.kill("SIGTERM");
@@ -429,6 +448,37 @@ test("empty explicit selectors never select the ambient daemon or create local s
   }
 }, 60_000);
 
+test.skipIf(process.platform === "win32")(
+  "restart confirms the replacement worker when a provider probe is slow",
+  async () => {
+    const f = await fixture();
+    const home = f.homes[0]!;
+    try {
+      await f.configure(home, `127.0.0.1:${await port()}`);
+      const provider = path.join(f.root, "slow-provider");
+      await writeFile(
+        provider,
+        `#!${process.execPath}\nsetTimeout(() => console.log("provider 1.0.0"), 1800);\n`,
+        { mode: 0o700 },
+      );
+      const configPath = path.join(home, "config.json");
+      const config = JSON.parse(await readFile(configPath, "utf8"));
+      config.agents = {
+        ...config.agents,
+        providers: { claude: { command: { mode: "replace", argv: [provider] } } },
+      };
+      await writeFile(configPath, JSON.stringify(config));
+      const launch = await f.ok(["start", "--home", home, "--timeout", "30"]);
+      const restarted = await f.ok(["restart", "--home", home, "--timeout", "30"]);
+      expect(restarted.supervisorPid).toBe(launch.pid);
+      expect(restarted.workerPid).not.toBe(restarted.previousWorkerPid);
+    } finally {
+      await f.close();
+    }
+  },
+  60_000,
+);
+
 test("IPv6 publication supports home-selected query and worker restart", async () => {
   const f = await fixture();
   const home = f.homes[0]!;
@@ -437,7 +487,7 @@ test("IPv6 publication supports home-selected query and worker restart", async (
     await f.configure(home, endpoint);
     const launch = await f.ok(["start", "--home", home, "--timeout", "30"]);
     expect(launch.listen).toBe(endpoint);
-    expect(await f.ok(["project", "ls", "--home", home])).toEqual([]);
+    expect(await userProjects(f, home)).toEqual([]);
     const restarted = await f.ok(["restart", "--home", home, "--timeout", "30"]);
     expect(restarted.supervisorPid).toBe(launch.pid);
     expect(restarted.workerPid).not.toBe(restarted.previousWorkerPid);
@@ -472,7 +522,7 @@ test("raw log following subscribes to a stored agent that exists only in B", asy
     const launchA = await f.ok(["start", "--home", a]);
     await f.ok(["start", "--home", b]);
     const absent = await f.run(["logs", agentId, "--home", a]);
-    expect(absent.stderr).toContain("Agent not found");
+    expect(absent.stderr).toContain(`No agent found matching: ${agentId}`);
     follower = spawn(
       process.execPath,
       [cli, "logs", agentId, "--follow", "--tail", "0", "--home", b],
@@ -491,7 +541,7 @@ test("raw log following subscribes to a stored agent that exists only in B", asy
       errors += data;
     });
     await expect.poll(() => output, { timeout: 15_000 }).toContain("Following logs (no history;");
-    expect(errors).not.toContain("Agent not found");
+    expect(errors).not.toContain("No agent found matching");
   } finally {
     if (follower && follower.exitCode === null) {
       const exited = new Promise((resolve) => follower!.once("exit", resolve));

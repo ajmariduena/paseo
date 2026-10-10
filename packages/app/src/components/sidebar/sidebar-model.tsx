@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import React, { createContext, useContext, useEffect, useMemo, type ReactNode } from "react";
 import {
   useSidebarWorkspacesList,
@@ -6,6 +7,12 @@ import {
   type SidebarWorkspacesListResult,
 } from "@/hooks/use-sidebar-workspaces-list";
 import { useSidebarWorkspaceEntries } from "@/hooks/use-sidebar-workspace-entries";
+import {
+  createPendingSidebarWorkspaceEntry,
+  overlayPendingWorkspaceCreationStatus,
+} from "@/hooks/sidebar-workspaces-view-model";
+import { usePendingWorkspaceCreationStore } from "@/stores/pending-workspace-creation";
+import { PendingWorkspaceCreationReconciler } from "@/runtime/pending-workspace-creations";
 import { usePinnedSidebarKeys, type PinnedSidebarGroups } from "@/hooks/use-sidebar-pins";
 import { useSidebarCollapsedSectionsStore } from "@/stores/sidebar-collapsed-sections-store";
 import {
@@ -54,7 +61,10 @@ export function SidebarModelProvider({
   active?: boolean;
   children: ReactNode;
 }) {
+  const { t } = useTranslation();
   const list = useSidebarWorkspacesList({ enabled: active });
+  const pendingCreations = usePendingWorkspaceCreationStore((state) => state.byKey);
+  const hostFilters = useSidebarViewStore((state) => state.hostFilters);
   const groupMode = useSidebarViewStore((state) => state.groupMode);
   const labelFilter = useSidebarViewStore((state) => state.labelFilter);
   const projectFilters = useSidebarViewStore((state) => state.projectFilters);
@@ -81,13 +91,62 @@ export function SidebarModelProvider({
     reconcileLabelFilter(availableLabelNames);
   }, [availableLabelNames, hasAuthoritativeLabelCatalog, reconcileLabelFilter]);
   const hasActiveLabelFilter = hasActiveSidebarLabelFilter(labelFilter);
+  const pendingProjection = useMemo(() => {
+    const projects = [...list.projects];
+    const placements = [...list.workspacePlacements];
+    const entries = new Map<string, SidebarWorkspaceEntry>();
+    const realKeys = new Set(placements.map((placement) => placement.workspaceKey));
+    for (const creation of Object.values(pendingCreations)) {
+      if (hostFilters.length > 0 && !hostFilters.includes(creation.serverId)) continue;
+      const entry = createPendingSidebarWorkspaceEntry(creation);
+      if (realKeys.has(entry.workspaceKey)) continue;
+      const projectIndex = projects.findIndex((item) => item.viewKey === creation.projectViewKey);
+      let project = projects[projectIndex];
+      if (!project) {
+        project = {
+          viewKey: creation.projectViewKey,
+          projectName: creation.projectName,
+          projectKind: creation.projectKind,
+          iconWorkingDir: creation.sourceDirectory,
+          hosts: [
+            {
+              serverId: creation.serverId,
+              projectId: creation.projectId,
+              iconWorkingDir: creation.sourceDirectory,
+              worktreeSupport: "unknown",
+            },
+          ],
+          workspaces: [],
+        };
+        projects.push(project);
+      } else {
+        project = { ...project, workspaces: [...project.workspaces] };
+        projects[projectIndex] = project;
+      }
+      const placement = {
+        workspaceKey: entry.workspaceKey,
+        serverId: entry.serverId,
+        workspaceId: entry.workspaceId,
+        projectViewKey: entry.projectViewKey,
+        projectName: entry.projectName,
+        projectRootPath: entry.projectRootPath,
+        projectKind: entry.projectKind,
+        workspaceKind: entry.workspaceKind,
+        name: entry.name,
+      };
+      project.workspaces.unshift(placement);
+      placements.push(placement);
+      entries.set(entry.workspaceKey, entry);
+    }
+    return { projects, placements, entries };
+  }, [hostFilters, list.projects, list.workspacePlacements, pendingCreations]);
   const resolvedProjectFilters = useMemo(
     () =>
       resolveActiveProjectFilters(
         projectFilters,
-        new Set(list.projects.map((project) => project.viewKey)),
+        new Set(pendingProjection.projects.map((project) => project.viewKey)),
       ),
-    [projectFilters, list.projects],
+    [projectFilters, pendingProjection.projects],
   );
   const hasActiveProjectFilter = resolvedProjectFilters.length > 0;
   // The project filter is deliberately absent from this gate. It reads `projectViewKey`, which
@@ -100,14 +159,22 @@ export function SidebarModelProvider({
     list.workspacePlacements,
     active !== false || needsWorkspaceEntries,
   );
+  const projectedWorkspaceEntriesByKey = useMemo(
+    () =>
+      new Map([
+        ...overlayPendingWorkspaceCreationStatus(workspaceEntriesByKey, pendingCreations),
+        ...pendingProjection.entries,
+      ]),
+    [pendingCreations, pendingProjection.entries, workspaceEntriesByKey],
+  );
   const filteredWorkspaceEntriesByKey = useMemo(() => {
     const byProject = filterWorkspacesByProjects({
-      workspaces: [...workspaceEntriesByKey.values()],
+      workspaces: [...projectedWorkspaceEntriesByKey.values()],
       projectFilters: resolvedProjectFilters,
     });
     const filtered = filterWorkspacesByLabels({ workspaces: byProject, ...labelFilter });
     return new Map(filtered.map((workspace) => [workspace.workspaceKey, workspace]));
-  }, [labelFilter, resolvedProjectFilters, workspaceEntriesByKey]);
+  }, [labelFilter, resolvedProjectFilters, projectedWorkspaceEntriesByKey]);
   const visibleWorkspaceKeys = useMemo(
     () => new Set(filteredWorkspaceEntriesByKey.keys()),
     [filteredWorkspaceEntriesByKey],
@@ -117,7 +184,7 @@ export function SidebarModelProvider({
   // a header row you can create your first workspace under. The label filter can only ask about
   // workspaces, so a project it empties has nothing left to show.
   const filteredProjects = useMemo(() => {
-    let projects = list.projects;
+    let projects = pendingProjection.projects;
     if (hasActiveProjectFilter) {
       const included = new Set(resolvedProjectFilters);
       projects = projects.filter((project) => included.has(project.viewKey));
@@ -135,42 +202,51 @@ export function SidebarModelProvider({
     hasActiveLabelFilter,
     hasActiveProjectFilter,
     resolvedProjectFilters,
-    list.projects,
+    pendingProjection.projects,
     visibleWorkspaceKeys,
   ]);
   const pinnedKeys = usePinnedSidebarKeys(filteredProjects);
+  const projectNamesByViewKey = useMemo(
+    () =>
+      new Map(pendingProjection.projects.map((project) => [project.viewKey, project.projectName])),
+    [pendingProjection.projects],
+  );
   const projectionInput = useMemo(
     () => ({
       projects: filteredProjects,
       pinnedKeys,
       pinnedWorkspaceOrder,
       workspaceEntriesByKey: filteredWorkspaceEntriesByKey,
-      projectNamesByViewKey: list.projectNamesByViewKey,
+      projectNamesByViewKey,
       groupMode,
       pinnedCollapsed,
       collapsedProjectKeys,
       collapsedWorkspaceGroupKeys,
+      t,
     }),
     [
       collapsedProjectKeys,
       collapsedWorkspaceGroupKeys,
       groupMode,
-      list.projectNamesByViewKey,
+      projectNamesByViewKey,
       filteredProjects,
       pinnedCollapsed,
       pinnedKeys,
       pinnedWorkspaceOrder,
       filteredWorkspaceEntriesByKey,
+      t,
     ],
   );
   const projection = useMemo(() => buildSidebarProjection(projectionInput), [projectionInput]);
   const value = useMemo(
     () => ({
       ...list,
+      workspacePlacements: pendingProjection.placements,
+      projectNamesByViewKey,
       projects: filteredProjects,
-      allProjects: list.projects,
+      allProjects: pendingProjection.projects,
       resolvedProjectFilters,
-      hasProjectsBeforeFilter: list.projects.length > 0,
+      hasProjectsBeforeFilter: pendingProjection.projects.length > 0,
       workspaceEntriesByKey: filteredWorkspaceEntriesByKey,
       groupMode,
       workspaceGroups: projection.workspaceGroups,
@@ -185,6 +261,8 @@ export function SidebarModelProvider({
       collapsedProjectKeys,
       groupMode,
       list,
+      pendingProjection,
+      projectNamesByViewKey,
       filteredProjects,
       projection,
       toggleProjectCollapsed,
@@ -192,7 +270,12 @@ export function SidebarModelProvider({
     ],
   );
 
-  return <SidebarModelContext.Provider value={value}>{children}</SidebarModelContext.Provider>;
+  return (
+    <SidebarModelContext.Provider value={value}>
+      <PendingWorkspaceCreationReconciler />
+      {children}
+    </SidebarModelContext.Provider>
+  );
 }
 
 export function useSidebarModel(): SidebarModel {

@@ -23,7 +23,7 @@ import {
 } from "@/composer/submission/model";
 import type { PendingPermission } from "@/types/shared";
 import type { ComposerAttachment } from "@/attachments/types";
-import type { AgentLifecycleStatus } from "@getpaseo/protocol/agent-lifecycle";
+import type { AgentLifecycleStatus, AgentTurnOutcome } from "@getpaseo/protocol/agent-lifecycle";
 import type {
   AgentPermissionRequest,
   AgentFeature,
@@ -92,6 +92,8 @@ export interface Agent {
   /** The daemon's queue; absent from daemons without serverMessageQueue and when empty. */
   queue?: AgentQueueSnapshot;
   lastError?: string | null;
+  /** Absent from daemons that predate it. */
+  lastTurnOutcome?: AgentTurnOutcome;
   title: string | null;
   cwd: string;
   workspaceId?: string;
@@ -125,6 +127,7 @@ export interface WorkspaceDescriptor {
   labels?: string[];
   status: WorkspaceDescriptorPayload["status"];
   waitingOnSubagents?: WorkspaceDescriptorPayload["waitingOnSubagents"];
+  delegatedByAgentId?: string;
   statusEnteredAt: Date | null;
   archivingAt: string | null;
   diffStat: { additions: number; deletions: number } | null;
@@ -165,6 +168,7 @@ export function normalizeWorkspaceDescriptor(
     labels: payload.labels ?? [],
     status: payload.status,
     waitingOnSubagents: payload.waitingOnSubagents,
+    delegatedByAgentId: payload.delegatedByAgentId,
     statusEnteredAt,
     archivingAt: payload.archivingAt ?? null,
     diffStat: payload.diffStat ?? null,

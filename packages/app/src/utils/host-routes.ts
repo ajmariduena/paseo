@@ -428,8 +428,23 @@ export function buildSchedulesRoute() {
   return "/schedules" as const;
 }
 
-export function buildUsageRoute() {
-  return "/usage" as const;
+export function buildNotesRoute(options: { serverId?: string; noteId?: string } = {}) {
+  const params = new URLSearchParams();
+  const serverId = trimNonEmpty(options.serverId);
+  const noteId = trimNonEmpty(options.noteId);
+  if (serverId && noteId) {
+    params.set("serverId", serverId);
+    params.set("noteId", noteId);
+  }
+  const query = params.toString();
+  return query ? (`/notes?${query}` as const) : ("/notes" as const);
+}
+
+export function buildHostHealthRoute(serverId?: string) {
+  const normalized = trimNonEmpty(serverId);
+  return normalized
+    ? (`/host-health?serverId=${encodeSegment(normalized)}` as const)
+    : ("/host-health" as const);
 }
 
 export function buildOpenProjectRoute() {

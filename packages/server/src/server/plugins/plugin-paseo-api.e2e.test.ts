@@ -351,7 +351,11 @@ export default function contribute(server: PluginServerContext) {
     await client.patchDaemonConfig({ pluginsEnabled: true });
     await client.installDirectoryPlugin(pluginDirectory);
     const original = await client.invokePluginRpc("reconnecting", "probe", {});
-    expect(original).toEqual({ pid: expect.any(Number), projectIds: [projectId] });
+    // The daemon also lists its scratch parent, so only require the opened project.
+    expect(original).toEqual({
+      pid: expect.any(Number),
+      projectIds: expect.arrayContaining([projectId]),
+    });
     const initialId = await client.invokePluginRpc("reconnecting", "observe", {});
     const app = await client.fetchWorkspaces({ subscribe: {} });
     const appUpdates = new EventEmitter();

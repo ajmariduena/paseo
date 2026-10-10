@@ -1,4 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
+import { HtmlRenderStore, MAX_HTML_CHARS, prepareHtmlPreview } from "../html-render/store.js";
+import {
+  ensureHeadlessShell,
+  headlessShellPlatform,
+  headlessShellStatus,
+} from "../html-render/browser-install.js";
+import { captureHtmlPreview, measureHtmlRenderHeights } from "../html-render/headless-preview.js";
+import { STOCK_RENDER_THEMES } from "../html-render/stock-theme.js";
+import { RENDER_WIDTHS } from "@getpaseo/protocol/html-render";
 import { stat } from "node:fs/promises";
 import { z } from "zod";
 import { ensureValidJson } from "../../json-utils.js";
@@ -7,6 +16,7 @@ import type { Logger } from "pino";
 import type {
   AgentMode,
   AgentPermissionRequest,
+  AgentPromptInput,
   AgentProvider,
   AgentSessionConfig,
   ProviderSnapshotEntry,
@@ -83,6 +93,7 @@ import {
   waitForAgentWithTimeout,
 } from "../mcp-shared.js";
 import { prepareAgentForPrompt, waitForAgentRunStartWithTimeout } from "../agent-prompt.js";
+import { prepareAgentMessage, type AgentPromptSource } from "../agent-messages/index.js";
 import {
   dispatchAgentMessageInBackground,
   isMessageAlreadyDispatched,
@@ -93,9 +104,9 @@ import {
 import type { DelegationService } from "../../delegation/delegation-service.js";
 import type { PullRequestWatcher } from "../../pull-request-watch/watcher.js";
 import { respondToAgentPermission } from "../permission-response.js";
+import { AgentStop } from "../stop.js";
 import {
   archiveAgentCommand,
-  cancelAgentRunCommand,
   closeAgentCommand,
   setAgentModeCommand,
   updateAgentCommand,
@@ -125,6 +136,8 @@ import type {
   PaseoToolRuntimeContext,
 } from "./types.js";
 import { READ_ONLY_TOOL_ANNOTATIONS } from "./read-only-tools.js";
+import type { NoteStore } from "../../notes/store.js";
+import { NoteSchema, NoteTodoStateSchema, type Note } from "@getpaseo/protocol/notes/types";
 import type { ProviderPaseoToolsPolicy } from "@getpaseo/protocol/provider-config";
 import { isPaseoToolEnabled } from "../paseo-tool-policy.js";
 
@@ -134,6 +147,7 @@ export interface PaseoToolHostDependencies {
   terminalManager?: TerminalManager | null;
   getDaemonTcpPort?: () => number | null;
   scheduleService?: ScheduleService | null;
+  noteStore?: NoteStore | null;
   providerSnapshotManager: ProviderSnapshotManager;
   daemonConfigStore?: Pick<DaemonConfigStore, "get">;
   github?: ForgeService;
@@ -165,6 +179,7 @@ export interface PaseoToolHostDependencies {
   browserToolsBroker?: BrowserToolsBroker | null;
   paseoToolPolicy?: ProviderPaseoToolsPolicy;
   paseoHome?: string;
+  previewBrowserExecutable?: string;
   worktreesRoot?: string;
   delegations?: Pick<
     DelegationService,
@@ -175,8 +190,11 @@ export interface PaseoToolHostDependencies {
     | "beginWait"
     | "endWait"
     | "waitForChildResult"
+    | "stopAll"
   >;
   pullRequestWatches?: Pick<PullRequestWatcher, "watch" | "unwatch">;
+  /** Shared with Stop in the session, so a run the user stopped cannot start more work. */
+  agentStop?: Pick<AgentStop, "stop" | "assertRunNotStopped">;
   transport?: PaseoToolRuntimeContext["transport"];
   /**
    * ID of the agent that is using this tool catalog.
@@ -189,6 +207,8 @@ export interface PaseoToolHostDependencies {
    */
   resolveSpeakHandler?: (callerAgentId: string) => VoiceSpeakHandler | null;
   resolveCallerContext?: (callerAgentId: string) => VoiceCallerContext | null;
+  /** The caller's context when no agent is calling, e.g. the voice call's own tools. */
+  callerContext?: VoiceCallerContext;
   enableVoiceTools?: boolean;
   voiceOnly?: boolean;
   logger: Logger;
@@ -220,6 +240,31 @@ interface ProviderSummary {
   modes: AgentMode[];
   status: string;
   error?: string;
+}
+
+const AgentDirectoryItemSchema = AgentListItemPayloadSchema.extend({
+  workspaceId: z.string().optional(),
+  workspaceTitle: z.string().optional(),
+  branch: z.string().nullable().optional(),
+  currentRequest: z.string().optional(),
+  currentStep: z.string().optional(),
+  relation: z.enum(["you", "parent", "child", "peer"]).optional(),
+});
+type AgentDirectoryItem = z.infer<typeof AgentDirectoryItemSchema>;
+
+function resolveAgentRelation(
+  agent: AgentListItemPayload,
+  callerAgentId: string,
+  callerParentId: string | null,
+): NonNullable<AgentDirectoryItem["relation"]> {
+  if (agent.id === callerAgentId) return "you";
+  if (agent.id === callerParentId) return "parent";
+  if (getParentAgentIdFromLabels(agent.labels) === callerAgentId) return "child";
+  return "peer";
+}
+
+function truncateText(text: string, maxChars: number): string {
+  return text.length > maxChars ? `${text.slice(0, maxChars - 1)}…` : text;
 }
 
 const WorkspaceAutomationSummarySchema = z.object({
@@ -744,6 +789,7 @@ async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Prom
   }
 }
 
+// eslint-disable-next-line complexity
 export function createPaseoToolCatalog(options: PaseoToolHostDependencies): PaseoToolCatalog {
   const {
     agentManager,
@@ -759,7 +805,18 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     logger,
   } = options;
   const childLogger = logger.child({ module: "agent", component: "paseo-tool-catalog" });
-  const callerContext = callerAgentId ? (resolveCallerContext?.(callerAgentId) ?? null) : null;
+  const agentStop =
+    options.agentStop ??
+    new AgentStop({
+      agentManager,
+      agentStorage,
+      delegations: options.delegations ?? null,
+      pullRequestWatches: null,
+      logger: childLogger,
+    });
+  const callerContext = callerAgentId
+    ? (resolveCallerContext?.(callerAgentId) ?? null)
+    : (options.callerContext ?? null);
 
   const parseToolInput = async (tool: PaseoToolDefinition, input: unknown): Promise<unknown> => {
     const inputSchema = tool.inputSchema;
@@ -812,6 +869,177 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       return tool.handler(await parseToolInput(tool, input), context);
     },
   });
+
+  if (callerAgentId && options.paseoHome && !options.voiceOnly) {
+    const caller = agentManager.getAgent(callerAgentId);
+    const previewSupported =
+      headlessShellPlatform() !== null &&
+      !(
+        options.transport === "native" &&
+        caller?.provider === "opencode" &&
+        caller.capabilities.supportsToolResultImages !== true
+      );
+    if (previewSupported)
+      registerTool(
+        "html_preview",
+        {
+          title: "Preview an HTML page",
+          description:
+            "Render a self-contained HTML page in Paseo's headless browser and receive a PNG screenshot, contentHeight, and console output, including uncaught exceptions with stacks pointing into page.html. console.log is a fine way to report your own checks. Use it to check and iterate before html_render. " +
+            "The first call may install the preview browser; if Paseo says it is still installing, call again in a minute. Local images under your cwd or the OS temp directory are inlined; unreadable images appear in missingImages. HTTPS scripts, styles, images, fonts and media follow the same CSP as the reader's page. The preview uses Paseo's default light or dark theme; a reader's custom theme may differ. Try width 390 for phones. Resource loads can make outbound HTTPS requests.",
+          inputSchema: {
+            html: z
+              .string()
+              .min(1)
+              .max(MAX_HTML_CHARS)
+              .describe("Complete self-contained HTML document"),
+            width: z
+              .number()
+              .int()
+              .min(240)
+              .max(1600)
+              .optional()
+              .describe("Width in CSS pixels, 240–1600; defaults to 728"),
+            appearance: z
+              .enum(["dark", "light"])
+              .optional()
+              .describe("Default stock theme, dark or light; defaults to dark"),
+          },
+          annotations: {
+            readOnlyHint: true,
+            destructiveHint: false,
+            idempotentHint: true,
+            openWorldHint: true,
+          },
+        },
+        async (input: { html: string; width?: number; appearance?: "dark" | "light" }, context) => {
+          try {
+            const agent = agentManager.getAgent(callerAgentId);
+            if (!agent) throw new Error("Preview requires an agent caller");
+            const executable =
+              options.previewBrowserExecutable ?? (await ensureHeadlessShell(options.paseoHome!));
+            if (!executable)
+              return {
+                isError: true,
+                content: [
+                  {
+                    type: "text",
+                    text: "Paseo is installing its preview browser; call html_preview again in a minute.",
+                  },
+                ],
+              };
+            const prepared = await prepareHtmlPreview(input.html, agent.cwd);
+            const width = input.width ?? 728;
+            const screenshot = await captureHtmlPreview({
+              executable,
+              html: prepared.html,
+              width,
+              theme: STOCK_RENDER_THEMES[input.appearance ?? "dark"],
+              signal: context.signal,
+            });
+            const metadata = {
+              width,
+              contentHeight: screenshot.contentHeight,
+              capturedHeight: screenshot.capturedHeight,
+              consoleMessages: screenshot.consoleMessages,
+              ...(prepared.missingImages.length ? { missingImages: prepared.missingImages } : {}),
+              screenshot: { mimeType: "image/png", width, height: screenshot.capturedHeight },
+            };
+            return {
+              structuredContent: metadata,
+              content: [
+                { type: "text", text: JSON.stringify(metadata) },
+                { type: "image", mimeType: "image/png", data: screenshot.png },
+              ],
+            };
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "Preview failed";
+            return {
+              isError: true,
+              content: [{ type: "text", text: `HTML preview failed: ${message.slice(0, 500)}` }],
+            };
+          }
+        },
+      );
+    registerTool(
+      "html_render",
+      {
+        title: "Render an HTML page",
+        description:
+          "Show a finished self-contained HTML page (chart, dashboard, table, diagram, collage, mockup) inline above your final reply, in the user's Paseo app. Use it without being asked whenever data or structure reads better as a visual than as a markdown table or prose. The page uploads and shares nothing. Call before the reply; add only what the page does not say. " +
+          (previewSupported && isPaseoToolEnabled(options.paseoToolPolicy, "html_preview")
+            ? "Check the page with html_preview first. "
+            : "") +
+          "Supply one document with inline style and script, a short title, and a height of 80–2000 CSS pixels. The frame grows to the page height at each reader width when measurements are available; a smaller requested height intentionally scrolls inside the frame. " +
+          "The frame is borderless and aligned with reply text. Use fluid width, no outer card or banner, and avoid viewport heights. " +
+          "The page sits on the thread's own background, so leave html, body, and the outermost element without a background color, even if your usual style uses a fixed page background. A box that needs its own background, such as a mock of a specific screen, gets at least 16px of padding on every side and var(--radius) corners. Absolute local image paths under this agent's cwd or the OS temp directory are inlined. " +
+          "HTTPS scripts, styles, images, fonts, and media can load from any host, including chart CDNs, and can send data present in the page to that host. connect-src blocks fetch, XHR, and WebSocket only; it is not network isolation. Forms and nested frames are blocked. The page contains only what you author, and you already have that data and network access. " +
+          "Use CSS variables --background, --foreground, --muted, --muted-foreground, --card, --card-foreground, --popover, --popover-foreground, --secondary, --secondary-foreground, --border, --input, --ring, --primary, --primary-foreground, --accent, --accent-foreground, --accent-surface, --accent-surface-foreground, " +
+          "--destructive, --destructive-foreground, --destructive-surface, --warning, --warning-foreground, --warning-surface, --success, --success-foreground, --info, --info-foreground, --code-background, --code-foreground, --chart-1 through --chart-6, --radius, --font-sans and --font-mono. They follow the reader's theme live.",
+        inputSchema: {
+          html: z
+            .string()
+            .min(1)
+            .max(MAX_HTML_CHARS)
+            .describe("Complete self-contained HTML document"),
+          title: z.string().trim().min(1).max(200).describe("Short name for the page"),
+          height: z
+            .number()
+            .int()
+            .describe(
+              "Requested cap in CSS pixels, 80–2000. Use preview contentHeight at the reply width to fit the page; a smaller value intentionally scrolls within the frame.",
+            ),
+        },
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: false,
+          openWorldHint: true,
+        },
+      },
+      async (input: { html: string; title: string; height: number }, context) => {
+        const agent = resolveCallerAgent();
+        if (!agent) throw new Error("html_render requires an agent caller");
+        const store = new HtmlRenderStore(options.paseoHome!);
+        const htmlRender = await store.publish({
+          agentId: agent.id,
+          cwd: agent.cwd,
+          ...input,
+        });
+        let heights: [number, number][] | undefined;
+        try {
+          const browser =
+            options.previewBrowserExecutable ??
+            (await headlessShellStatus(options.paseoHome!)).executable;
+          if (browser) {
+            const prepared = await store.get(agent.id, htmlRender.renderId);
+            heights = await measureHtmlRenderHeights({
+              executable: browser,
+              html: prepared.html,
+              widths: RENDER_WIDTHS,
+              theme: STOCK_RENDER_THEMES.dark,
+              signal: context.signal,
+            });
+          }
+        } catch (error) {
+          childLogger.warn(
+            { error: error instanceof Error ? error.message.slice(0, 500) : "unknown" },
+            "Could not measure HTML render widths",
+          );
+        }
+        const reference = { ...htmlRender, ...(heights ? { heights } : {}) };
+        const result = {
+          htmlRender: reference,
+          message:
+            "Shown to the reader above your reply. Reply with only what the page does not already say.",
+        };
+        return {
+          structuredContent: result,
+          content: [{ type: "text", text: JSON.stringify(result) }],
+        };
+      },
+    );
+  }
 
   const buildCronScheduleCadence = (input: {
     cron: string | undefined;
@@ -1348,9 +1576,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     notifyOnFinish: z
       .boolean()
       .optional()
-      .default(true)
       .describe(
-        "Get notified when the prompted agent finishes, errors, or needs permission. Set false only for truly fire-and-forget prompts.",
+        "Get notified when the prompted agent finishes, errors, or needs permission. Defaults to true for your subagents and false for other agents, where the prompt is a note between sessions.",
       ),
   };
   const topLevelSendAgentPromptInputSchema = {
@@ -1685,6 +1912,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       },
     },
     async (args: unknown) => {
+      if (callerAgentId) agentStop.assertRunNotStopped(callerAgentId, "create_agent");
       const clientRequestId = clientRequestIdSchema.parse(
         (args as { clientRequestId?: unknown }).clientRequestId,
       );
@@ -2191,12 +2419,14 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         lastMessage: z.string().nullable().optional(),
         permission: AgentPermissionRequestPayloadSchema.nullable().optional(),
         guidance: z.string().optional(),
+        deliveredAs: z.literal("peer_note").optional(),
       },
     },
     async (args: SendAgentPromptArgs) => {
-      const { agentId, prompt } = args;
+      const { agentId } = args;
+      const peer = await resolvePeerSender(agentId);
       const background = args.background ?? Boolean(callerAgentId);
-      const notifyOnFinish = args.notifyOnFinish ?? Boolean(callerAgentId);
+      const notifyOnFinish = args.notifyOnFinish ?? (Boolean(callerAgentId) && !peer);
 
       async function laterResultGuidance(
         disposition: SendDisposition,
@@ -2208,7 +2438,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           childAgentId: agentId,
           source: "send_agent_prompt",
           title: (await agentStorage.get(agentId))?.title ?? agentId,
-          prompt,
+          prompt: args.prompt,
           requireParentOwnership: false,
         });
         return PROMPTED_AGENT_NOTIFICATION_GUIDANCE;
@@ -2225,9 +2455,18 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         ? deriveClientMessageId(callerAgentId, args.clientRequestId)
         : `mcp:${randomUUID()}`;
       if (args.clientRequestId && isMessageAlreadyDispatched(agentManager, agentId, messageId)) {
-        return sendPromptResponse({ status: currentStatus(agentId), disposition: "duplicate" });
+        return sendPromptResponse({
+          status: currentStatus(agentId),
+          disposition: "duplicate",
+          peer: Boolean(peer),
+        });
       }
 
+      const { prompt } = prepareAgentMessage(
+        args.prompt,
+        peer ?? (await resolveCallerSource()),
+        messageId,
+      );
       const dispatch = await dispatchPrompt({
         agentId,
         prompt,
@@ -2242,7 +2481,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         // The wait ran out while the agent keeps working, so its result arrives later
         // instead of in this response.
         const guidance = result.stillWorking ? await laterResultGuidance(disposition) : undefined;
-        return sendPromptResponse({ ...result, disposition, guidance });
+        return sendPromptResponse({ ...result, disposition, guidance, peer: Boolean(peer) });
       }
 
       // Awaiting the delegation first would let a fast turn end before the start wait begins.
@@ -2258,9 +2497,45 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       } finally {
         guidance = await delegated;
       }
-      return sendPromptResponse({ status: currentStatus(agentId), disposition, guidance });
+      return sendPromptResponse({
+        status: currentStatus(agentId),
+        disposition,
+        guidance,
+        peer: Boolean(peer),
+      });
     },
   );
+
+  /** A prompt from an agent that is not the receiver's parent is a note between sessions. */
+  async function resolvePeerSender(targetAgentId: string): Promise<AgentPromptSource | null> {
+    if (!callerAgentId || callerAgentId === targetAgentId) return null;
+    const target = agentManager.getAgent(targetAgentId) ?? (await agentStorage.get(targetAgentId));
+    if (getParentAgentIdFromLabels(target?.labels) === callerAgentId) return null;
+    const caller = await agentStorage.get(callerAgentId);
+    const workspace = caller?.workspaceId
+      ? await options.workspaceRegistry?.get(caller.workspaceId)
+      : null;
+    const title = caller?.title?.trim();
+    const workspaceTitle = (workspace?.title ?? workspace?.displayName)?.trim();
+    const branch = workspace?.branch?.trim();
+    return {
+      kind: "agent-message",
+      agentId: callerAgentId,
+      relation: "peer",
+      ...(title ? { title } : {}),
+      ...(workspaceTitle ? { workspaceTitle } : {}),
+      ...(branch ? { branch } : {}),
+    };
+  }
+
+  async function resolveCallerSource(): Promise<AgentPromptSource | undefined> {
+    if (!callerAgentId) return undefined;
+    const title = (
+      agentManager.getAgent(callerAgentId)?.config.title ??
+      (await agentStorage.get(callerAgentId))?.title
+    )?.trim();
+    return { kind: "agent-message", agentId: callerAgentId, ...(title ? { title } : {}) };
+  }
 
   function currentStatus(agentId: string): z.infer<typeof AgentStatusEnum> {
     return agentManager.getAgent(agentId)?.lifecycle ?? "idle";
@@ -2272,6 +2547,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     lastMessage?: string | null;
     permission?: AgentPermissionRequest | null;
     guidance?: string;
+    peer?: boolean;
   }) {
     return {
       content: [],
@@ -2282,6 +2558,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         lastMessage: data.lastMessage ?? null,
         permission: sanitizePermissionRequest(data.permission),
         ...(data.guidance ? { guidance: data.guidance } : {}),
+        ...(data.peer ? { deliveredAs: "peer_note" as const } : {}),
       }),
     };
   }
@@ -2289,7 +2566,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   /** A queued prompt keeps dispatching after this returns; its failure can only be logged. */
   async function dispatchPrompt(input: {
     agentId: string;
-    prompt: string;
+    prompt: AgentPromptInput;
     messageId: string;
     delivery: DispatchIntent;
   }): Promise<BackgroundDispatch> {
@@ -2304,7 +2581,6 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           intent: input.delivery,
           prompt: input.prompt,
           steerUnavailable: "fail",
-          ...(callerAgentId ? { origin: { kind: "agent" as const, agentId: callerAgentId } } : {}),
         },
         logger: childLogger,
       });
@@ -2607,7 +2883,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       {
         title: "Watch pull request",
         description:
-          "Have Paseo watch an open pull request for you. Omit number and url to watch the pull request of your workspace's branch. Paseo checks it every minute and wakes you with a message when a check fails, the required checks pass, someone else comments or reviews, or the branch starts to conflict with its base. Use this to babysit a pull request instead of polling, sleeping, or running a watcher. The result reports the checks as they are now and only later changes wake you, so handle current failures and comments first, then end your turn. A wake is news, not a merge decision. Watching ends when the pull request merges or closes, when Paseo cannot read it for 15 minutes, when you are archived, or when you call unwatch_pull_request.",
+          "Have Paseo watch an open pull request for you. Omit number and url to watch the pull request of your workspace's branch. Paseo checks it every two minutes, or every minute while checks run, and wakes you with a message when a check fails, the required checks pass, someone else comments or reviews, or the branch starts to conflict with its base. Use this to babysit a pull request instead of polling, sleeping, or running a watcher. The result reports the checks as they are now and only later changes wake you, so handle current failures and comments first, then end your turn. A wake is news, not a merge decision. Watching ends when the pull request merges or closes, when Paseo fails to read it 8 times in a row (a forge rate limit only delays it), when you are archived, or when you call unwatch_pull_request. Unwatch it when you hand the work back (it merged or was abandoned, or the user takes over): until then the user sees you as working in the background.",
         inputSchema: pullRequestTargetSchema,
         outputSchema: {
           number: z.number(),
@@ -2623,12 +2899,15 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           conflicting: z.boolean(),
         },
       },
-      async (input: { number?: number; url?: string }) => ({
-        content: [],
-        structuredContent: ensureValidJson(
-          await pullRequestWatches.watch(await resolveCallerTarget(input)),
-        ),
-      }),
+      async (input: { number?: number; url?: string }) => {
+        if (callerAgentId) agentStop.assertRunNotStopped(callerAgentId, "watch_pull_request");
+        return {
+          content: [],
+          structuredContent: ensureValidJson(
+            await pullRequestWatches.watch(await resolveCallerTarget(input)),
+          ),
+        };
+      },
     );
 
     registerTool(
@@ -2660,7 +2939,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       annotations: READ_ONLY_TOOL_ANNOTATIONS,
       title: "List agents",
       description:
-        "List recent agents as compact metadata. By default, agents under your working directory; scope widens or narrows that.",
+        "List recent agents with their workspace, branch, status and, for running agents, what they are working on now. By default, every agent in your project, so you can see which other sessions are working beside you; scope widens or narrows that.",
       inputSchema: {
         includeArchived: z.boolean().optional().default(false),
         cwd: z.string().optional(),
@@ -2677,7 +2956,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           .enum(["cwd", "children", "workspace", "project", "all"])
           .optional()
           .describe(
-            "cwd (default): under your working directory. children: your subagents, in any workspace. workspace: in your workspace. project: in any workspace of your project. all: every agent.",
+            "project (default): in any workspace of your project, including other sessions working beside you. cwd: under your working directory. children: your subagents, in any workspace. workspace: in your workspace. all: every agent.",
           ),
         parentAgentId: z
           .string()
@@ -2692,7 +2971,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           .describe("Case-insensitive title filter."),
       },
       outputSchema: {
-        agents: z.array(AgentListItemPayloadSchema),
+        agents: z.array(AgentDirectoryItemSchema),
       },
     },
     async (args: ListAgentsArgs) => {
@@ -2718,14 +2997,15 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
             includeArchived || isStoredAgentProviderAvailable(record, registeredProviderIds),
         )
         .map((record) => buildStoredAgentPayload(record, registeredProviderIds));
-      const agents = [...liveAgents, ...storedAgents]
+      const listed = [...liveAgents, ...storedAgents]
         .filter(inScope)
-        .map(toAgentListItemPayload)
-        .filter((agent) => !titleNeedle || agent.title?.toLowerCase().includes(titleNeedle))
-        .filter((agent) => !statusFilter || statusFilter.has(agent.status))
-        .filter((agent) => !agent.archivedAt || resolveAgentListActivityTime(agent) >= sinceMs)
-        .sort(compareAgentListItems)
+        .map((agent) => ({ item: toAgentListItemPayload(agent), workspaceId: agent.workspaceId }))
+        .filter(({ item }) => !titleNeedle || item.title?.toLowerCase().includes(titleNeedle))
+        .filter(({ item }) => !statusFilter || statusFilter.has(item.status))
+        .filter(({ item }) => !item.archivedAt || resolveAgentListActivityTime(item) >= sinceMs)
+        .sort((a, b) => compareAgentListItems(a.item, b.item))
         .slice(0, limit);
+      const agents = await toAgentDirectoryItems(listed);
 
       return {
         content: [],
@@ -2734,11 +3014,45 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     },
   );
 
+  /** Adds what another agent needs to decide whether its work overlaps: where and what now. */
+  async function toAgentDirectoryItems(
+    listed: Array<{ item: AgentListItemPayload; workspaceId: string | undefined }>,
+  ): Promise<AgentDirectoryItem[]> {
+    const workspaces = new Map(
+      ((await options.workspaceRegistry?.list()) ?? []).map((workspace) => [
+        workspace.workspaceId,
+        workspace,
+      ]),
+    );
+    const callerParentId = callerAgentId
+      ? getParentAgentIdFromLabels(agentManager.getAgent(callerAgentId)?.labels)
+      : null;
+    return listed.map(({ item, workspaceId }) => {
+      const workspace = workspaceId ? workspaces.get(workspaceId) : undefined;
+      const live = item.status === "running" ? agentManager.getLiveWorkSummary(item.id) : null;
+      return {
+        ...item,
+        ...(workspaceId ? { workspaceId } : {}),
+        ...(workspace
+          ? {
+              workspaceTitle: workspace.title ?? workspace.displayName,
+              branch: workspace.branch ?? null,
+            }
+          : {}),
+        ...(live?.request ? { currentRequest: truncateText(live.request, 280) } : {}),
+        ...(live?.currentStep ? { currentStep: live.currentStep } : {}),
+        ...(callerAgentId
+          ? { relation: resolveAgentRelation(item, callerAgentId, callerParentId) }
+          : {}),
+      };
+    });
+  }
+
   async function resolveAgentListScope(
     args: ListAgentsArgs,
   ): Promise<(agent: AgentSnapshotPayload) => boolean> {
     const caller = callerAgentId ? resolveCallerAgent() : null;
-    const scope = args.scope ?? (args.parentAgentId ? "all" : "cwd");
+    const scope = args.scope ?? defaultAgentListScope(args, caller?.workspaceId);
     const explicitCwd = args.cwd?.trim() ? expandUserPath(args.cwd) : undefined;
     const cwdFilter = explicitCwd ?? (scope === "cwd" ? caller?.cwd : undefined);
     const parentFilter = args.parentAgentId ?? (scope === "children" ? callerAgentId : undefined);
@@ -2750,6 +3064,14 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       (!cwdFilter || isSameOrDescendantPath(cwdFilter, agent.cwd)) &&
       (!parentFilter || getParentAgentIdFromLabels(agent.labels) === parentFilter) &&
       (!workspaceIds || (agent.workspaceId !== undefined && workspaceIds.has(agent.workspaceId)));
+  }
+
+  function defaultAgentListScope(
+    args: ListAgentsArgs,
+    callerWorkspaceId: string | undefined,
+  ): NonNullable<ListAgentsArgs["scope"]> {
+    if (args.parentAgentId) return "all";
+    return callerWorkspaceId && options.workspaceRegistry ? "project" : "cwd";
   }
 
   async function resolveScopeWorkspaceIds(
@@ -2778,7 +3100,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     {
       title: "Cancel agent run",
       description:
-        "Abort the agent's current run but keep the agent alive for future tasks. Your pending notification for its result is dropped.",
+        "Abort the agent's current run, and the runs of every agent it created, but keep them alive for future tasks. Your pending notification for its result is dropped, and their queued messages and pull request watches stop.",
       inputSchema: {
         agentId: z.string(),
       },
@@ -2794,10 +3116,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           childAgentId: agentId,
         });
       }
-      const { cancelled } = await cancelAgentRunCommand(
-        { agentManager, logger: childLogger },
-        agentId,
-      );
+      const { cancelled } = await agentStop.stop(agentId);
       return {
         content: [],
         structuredContent: ensureValidJson({
@@ -3358,6 +3677,125 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     },
   );
 
+  const noteStore = options.noteStore;
+  if (noteStore) {
+    const resolveCallerNoteContext = async (): Promise<{
+      workspaceId: string | null;
+      projectId: string | null;
+    }> => {
+      const workspaceId = callerAgentId
+        ? (agentManager.getAgent(callerAgentId)?.workspaceId ?? null)
+        : null;
+      if (!workspaceId || !options.workspaceRegistry) return { workspaceId, projectId: null };
+      const workspace = await options.workspaceRegistry.get(workspaceId);
+      return { workspaceId, projectId: workspace?.projectId ?? null };
+    };
+    const noteResult = (note: Note): PaseoToolResult => ({
+      content: [],
+      structuredContent: ensureValidJson(note),
+    });
+
+    registerTool(
+      "list_notes",
+      {
+        annotations: READ_ONLY_TOOL_ANNOTATIONS,
+        title: "List notes",
+        description:
+          "List the user's scratchpad notes, newest first. Notes are things the user (or an agent) wrote down to remember or hand to an agent later; a note with todoState is a legacy todo.",
+        inputSchema: {
+          todosOnly: z.boolean().optional().describe("Only return todos (open or done)."),
+          includeDone: z
+            .boolean()
+            .optional()
+            .describe("Include completed todos. Defaults to true unless todosOnly is set."),
+          includeArchived: z.boolean().optional().describe("Include archived notes."),
+          projectId: z.string().optional().describe("Only notes attached to this project."),
+        },
+        outputSchema: { notes: z.array(NoteSchema) },
+      },
+      async ({ todosOnly, includeDone, includeArchived, projectId }) => {
+        const showDone = includeDone ?? !todosOnly;
+        const notes = (await noteStore.list({ includeArchived })).filter(
+          (note) =>
+            (!todosOnly || note.todoState !== null) &&
+            (showDone || note.todoState !== "done") &&
+            (projectId === undefined || note.projectId === projectId),
+        );
+        return { content: [], structuredContent: ensureValidJson({ notes }) };
+      },
+    );
+
+    registerTool(
+      "get_note",
+      {
+        annotations: READ_ONLY_TOOL_ANNOTATIONS,
+        title: "Get note",
+        description: "Read one note or todo, including its full Markdown body.",
+        inputSchema: { id: z.string() },
+        outputSchema: NoteSchema.shape,
+      },
+      async ({ id }) => noteResult(await noteStore.require(id)),
+    );
+
+    registerTool(
+      "create_note",
+      {
+        title: "Create note",
+        description:
+          "Write a note to the user's scratchpad. Use it for follow-ups you found but should not do now, so they are not lost in the chat. Put follow-ups as Markdown checklist lines (`- [ ] …`) in `body`; `todo` is kept for compatibility. It is attached to your workspace's project unless you pass projectId.",
+        inputSchema: {
+          title: z.string().describe("Short title, one line."),
+          body: z.string().optional().describe("Markdown body with the context needed later."),
+          todo: z.boolean().optional().describe("Create it as an open todo."),
+          projectId: z.string().nullable().optional(),
+        },
+        outputSchema: NoteSchema.shape,
+      },
+      async ({ title, body, todo, projectId }) => {
+        const context = await resolveCallerNoteContext();
+        const note = await noteStore.create({
+          title,
+          body,
+          todo,
+          projectId: projectId === undefined ? context.projectId : projectId,
+          workspaceId: context.workspaceId,
+          author: callerAgentId ? { type: "agent", agentId: callerAgentId } : { type: "user" },
+        });
+        return noteResult(note);
+      },
+    );
+
+    registerTool(
+      "update_note",
+      {
+        title: "Update note",
+        description:
+          "Edit a note or todo. Only the fields you pass change. Set todoState to done to complete a todo, open to reopen it, or null to turn it back into a plain note.",
+        inputSchema: {
+          id: z.string(),
+          title: z.string().optional(),
+          body: z.string().optional(),
+          todoState: NoteTodoStateSchema.nullable().optional(),
+        },
+        outputSchema: NoteSchema.shape,
+      },
+      async ({ id, title, body, todoState }) =>
+        noteResult(await noteStore.update(id, { title, body, todoState })),
+    );
+
+    registerTool(
+      "archive_note",
+      {
+        title: "Archive note",
+        description:
+          "Archive a note or todo so it leaves the user's list. Archived notes can be restored; there is no tool to delete a note permanently.",
+        inputSchema: { id: z.string() },
+        outputSchema: NoteSchema.shape,
+      },
+      async ({ id }) => noteResult(await noteStore.setArchived(id, true)),
+    );
+  }
+
   registerTool(
     "list_schedules",
     {
@@ -3659,6 +4097,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
             terminals: tools.has("create_terminal"),
             workspaceScripts: tools.has("start_workspace_script"),
             schedules: tools.has("create_schedule"),
+            notes: tools.has("create_note"),
             heartbeats: tools.has("create_heartbeat"),
             browser: tools.has("browser_navigate"),
             pullRequestWatch: tools.has("watch_pull_request"),

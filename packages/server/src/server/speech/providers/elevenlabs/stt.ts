@@ -9,6 +9,10 @@ import type {
   StreamingTranscriptionSession,
   TranscriptionResult,
 } from "../../speech-provider.js";
+import {
+  createElevenLabsRealtimeSession,
+  ELEVENLABS_REALTIME_STT_MODEL,
+} from "./realtime-stt-session.js";
 
 export const DEFAULT_ELEVENLABS_STT_MODEL = "scribe_v2";
 
@@ -42,11 +46,26 @@ export class ElevenLabsSTT implements SpeechToTextProvider {
     return this.config.model ?? DEFAULT_ELEVENLABS_STT_MODEL;
   }
 
+  private get batchModel(): string {
+    return this.model === ELEVENLABS_REALTIME_STT_MODEL ? DEFAULT_ELEVENLABS_STT_MODEL : this.model;
+  }
+
   public createSession(params: {
     logger: pino.Logger;
     language?: string;
     prompt?: string;
+    keyterms?: readonly string[];
   }): StreamingTranscriptionSession {
+    if (this.model === ELEVENLABS_REALTIME_STT_MODEL) {
+      return createElevenLabsRealtimeSession({
+        apiKey: this.config.apiKey,
+        baseUrl: this.config.baseUrl,
+        model: this.model,
+        language: params.language,
+        keyterms: params.keyterms,
+        logger: params.logger,
+      });
+    }
     const emitter = new EventEmitter();
     const logger = params.logger.child({ provider: "elevenlabs", component: "stt-session" });
     const transcribe = (pcm16: Buffer) => this.transcribe(pcm16, params.language);
@@ -117,7 +136,12 @@ export class ElevenLabsSTT implements SpeechToTextProvider {
     };
   }
 
-  public async transcribeClip(clip: SpeechClip, language?: string): Promise<TranscriptionResult> {
+  public async transcribeClip(
+    clip: SpeechClip,
+    language?: string,
+    options?: { keyterms?: readonly string[] },
+  ): Promise<TranscriptionResult> {
+    const keyterms = options?.keyterms ?? [];
     const pcmRate = /^audio\/pcm/i.test(clip.mimeType)
       ? Number(/rate=(\d+)/i.exec(clip.mimeType)?.[1] ?? SAMPLE_RATE)
       : null;
@@ -126,12 +150,14 @@ export class ElevenLabsSTT implements SpeechToTextProvider {
         new Blob([new Uint8Array(pcm16MonoToWav(clip.audio, pcmRate))], { type: "audio/wav" }),
         "clip.wav",
         language,
+        keyterms,
       );
     }
     return this.upload(
       new Blob([new Uint8Array(clip.audio)], { type: clip.mimeType }),
       `clip.${clipExtension(clip.mimeType)}`,
       language,
+      keyterms,
     );
   }
 
@@ -150,14 +176,17 @@ export class ElevenLabsSTT implements SpeechToTextProvider {
     file: Blob,
     filename: string,
     language: string | undefined,
+    keyterms: readonly string[] = [],
   ): Promise<TranscriptionResult> {
     const startedAt = Date.now();
     const form = new FormData();
-    form.set("model_id", this.model);
+    form.set("model_id", this.batchModel);
     form.set("tag_audio_events", "false");
     if (language) {
       form.set("language_code", language);
     }
+    // Each keyterm is its own form field; Scribe bills 20% more when any are sent.
+    for (const keyterm of keyterms) form.append("keyterms", keyterm);
     form.set("file", file, filename);
 
     const fetchImpl = this.config.fetchImpl ?? fetch;

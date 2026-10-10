@@ -17,6 +17,12 @@ appId: ${PASEO_MAESTRO_APP_ID}
 - tapOn:
     id: "combined-model-selector"
 
+- tapOn:
+    id: "agent-effort-advanced"
+
+- tapOn:
+    id: "agent-effort-model"
+
 - extendedWaitUntil:
     visible: "Select model"
     timeout: 30000

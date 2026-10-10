@@ -31,6 +31,14 @@ export function createIncomingShareSheetState(
   return { page, delivery: IDLE };
 }
 
+/** Content that lives on one host skips the host page, wherever it was opened from. */
+export function hostChoicesForShare(
+  serverIds: readonly string[],
+  fixedServerId: string | undefined,
+): readonly string[] {
+  return fixedServerId ? [fixedServerId] : serverIds;
+}
+
 export function canGoBack(input: { page: IncomingSharePage; hostCount: number }): boolean {
   if (input.page.kind === "agent") {
     return true;

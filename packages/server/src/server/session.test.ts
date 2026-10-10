@@ -3,7 +3,15 @@ import {
   createTestCreationService,
 } from "./test-utils/session-stubs.js";
 import { execSync } from "child_process";
-import { existsSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "fs";
 import { tmpdir } from "os";
 import { join, resolve as resolvePath } from "path";
 import pino from "pino";
@@ -23,6 +31,7 @@ import {
   type FileTransferFrame,
 } from "@getpaseo/protocol/binary-frames/index";
 import { Session } from "./session.js";
+import { HtmlRenderStore } from "./agent/html-render/store.js";
 import { OWNER_PERMISSIONS, type DaemonPermission } from "./authorization/index.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
 import { StructuredAgentFallbackError } from "./agent/agent-response-loop.js";
@@ -1410,6 +1419,149 @@ function createStoredAgentRecord(
     archivedAt: overrides.archivedAt ?? null,
   };
 }
+
+describe("HTML render RPC", () => {
+  test("reports the preview browser state for the daemon's own home", async () => {
+    const paseoHome = mkdtempSync(join(tmpdir(), "paseo-browser-status-rpc-"));
+    try {
+      const messages: SessionOutboundMessage[] = [];
+      const session = createSessionForTest({ paseoHome, messages });
+      await session.handleMessage({
+        type: "daemon.browser.get_status.request",
+        requestId: "browser",
+      });
+      expect(findByType(messages, "daemon.browser.get_status.response")).toMatchObject({
+        payload: { requestId: "browser", status: { state: "missing" } },
+      });
+    } finally {
+      rmSync(paseoHome, { recursive: true, force: true });
+    }
+  });
+
+  test("reads only a render owned by the requested agent", async () => {
+    const paseoHome = mkdtempSync(join(tmpdir(), "paseo-render-rpc-"));
+    try {
+      const store = new HtmlRenderStore(paseoHome);
+      const render = await store.publish({
+        agentId: "agent_a",
+        cwd: paseoHome,
+        html: "<p>Hi</p>",
+        title: "Hi",
+        height: 300,
+      });
+      const messages: SessionOutboundMessage[] = [];
+      const session = createSessionForTest({
+        paseoHome,
+        messages,
+        agentManager: { getAgent: vi.fn().mockReturnValue(null) },
+        agentStorage: { get: vi.fn(async (agentId: string) => ({ id: agentId, internal: false })) },
+      });
+      await session.handleMessage({
+        type: "agent.html_render.get.request",
+        requestId: "own",
+        agentId: "agent_a",
+        renderId: render.renderId,
+      });
+      await session.handleMessage({
+        type: "agent.html_render.get.request",
+        requestId: "other",
+        agentId: "agent_b",
+        renderId: render.renderId,
+      });
+      expect(findByType(messages, "agent.html_render.get.response")).toMatchObject({
+        payload: { requestId: "own", html: "<p>Hi</p>", title: "Hi", error: null },
+      });
+      expect(
+        messages.find(
+          (message) =>
+            message.type === "agent.html_render.get.response" &&
+            message.payload.requestId === "other",
+        ),
+      ).toMatchObject({ payload: { html: null, error: "Render not found" } });
+    } finally {
+      rmSync(paseoHome, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Codex visualization RPC", () => {
+  test("reads an agent-owned fragment and acknowledges isolated widget state", async () => {
+    const paseoHome = mkdtempSync(join(tmpdir(), "paseo-viz-rpc-"));
+    try {
+      const cwd = join(paseoHome, "work");
+      mkdirSync(cwd);
+      const file = join(cwd, "fruit-comparison.html");
+      writeFileSync(file, "<p>Fruit</p>");
+      const messages: SessionOutboundMessage[] = [];
+      const session = createSessionForTest({
+        paseoHome,
+        messages,
+        agentManager: { getAgent: vi.fn().mockReturnValue(null) },
+        agentStorage: {
+          get: vi.fn(async (agentId: string) => ({
+            id: agentId,
+            provider: agentId === "codex-agent" ? "codex" : "claude",
+            cwd,
+            createdAt: "2026-10-07T05:16:33.021Z",
+            internal: false,
+            persistence: { sessionId: "01a114ca-bb8b-7382-ad9d-e82af3dfbca3" },
+          })),
+        },
+      });
+      await session.handleMessage({
+        type: "agent.visualization.get.request",
+        requestId: "read",
+        agentId: "codex-agent",
+        path: file,
+      });
+      expect(findByType(messages, "agent.visualization.get.response")).toMatchObject({
+        payload: { requestId: "read", html: "<p>Fruit</p>", state: null, error: null },
+      });
+      await session.handleMessage({
+        type: "agent.visualization.set_state.request",
+        requestId: "write",
+        agentId: "codex-agent",
+        path: file,
+        state: { modelContent: { fruit: "apple" } },
+      });
+      expect(findByType(messages, "agent.visualization.set_state.response")).toMatchObject({
+        payload: {
+          requestId: "write",
+          state: { modelContent: { fruit: "apple" }, privateContent: null },
+          error: null,
+        },
+      });
+      await session.handleMessage({
+        type: "agent.visualization.get.request",
+        requestId: "read-again",
+        agentId: "codex-agent",
+        path: file,
+      });
+      expect(
+        messages.find(
+          (message) =>
+            message.type === "agent.visualization.get.response" &&
+            message.payload.requestId === "read-again",
+        ),
+      ).toMatchObject({ payload: { state: { modelContent: { fruit: "apple" } } } });
+      await session.handleMessage({
+        type: "agent.visualization.get.request",
+        requestId: "other",
+        agentId: "claude-agent",
+        path: file,
+      });
+      expect(
+        messages.find(
+          (message) =>
+            message.type === "agent.visualization.get.response" &&
+            message.payload.requestId === "other",
+        ),
+      ).toMatchObject({ payload: { html: null, error: "Visualization unavailable" } });
+    } finally {
+      rmSync(paseoHome, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("plugin timeline append RPC", () => {
   test("stamps the plugin identity and returns the timeline position", async () => {
@@ -4235,7 +4387,7 @@ describe("session branch validation", () => {
       writeFileSync(join(repoDir, "README.md"), "hello\n");
       execSync("git add README.md", { cwd: repoDir });
       execSync("git -c commit.gpgsign=false commit -m init", { cwd: repoDir });
-      execSync("git tag v1", { cwd: repoDir });
+      execSync("git -c tag.gpgSign=false tag v1", { cwd: repoDir });
 
       const messages: unknown[] = [];
       const workspaceGitService = {

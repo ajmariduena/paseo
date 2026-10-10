@@ -55,6 +55,8 @@ $PASEO_HOME/
 │       └── {agentId}.json               # One file per agent
 ├── schedules/
 │   └── {scheduleId}.json                # One file per schedule
+├── notes/
+│   └── {noteId}.json                    # One file per note or todo
 ├── delegations/
 │   ├── {parentAgentId}.json             # Delegated tasks and wake cohorts of one parent
 │   └── by-child.json                    # childAgentId → parentAgentIds
@@ -225,6 +227,8 @@ snapshot so a mixed edit can apply its live subset and still name the paths that
     appendSystemPrompt: string,    // appended to supported provider system/developer prompts
     terminalProfiles: TerminalProfile[],  // named shell commands; omitted means DEFAULT_TERMINAL_PROFILES
     agentProfiles: AgentProfile[],        // named agent launch bundles; omitted means none
+    quickPrompts?: QuickPrompt[],         // host-owned reusable text; omitted means none
+    quickPromptUndoMs?: number,           // 0 (send immediately) by default
     cors: { allowedOrigins: string[] },
     relay: { enabled: boolean, endpoint: string, publicEndpoint: string, useTls: boolean, publicUseTls: boolean }, // new homes materialize enabled: false
     auth: { password: string }    // bcrypt hash, optional
@@ -247,7 +251,8 @@ snapshot so a mixed edit can apply its live subset and still name the paths that
       tts?: { apiKey?: string, baseUrl?: string }
     },
     local: { modelsDir: string },
-    elevenlabs: { apiKey?: string, baseUrl?: string }
+    elevenlabs: { apiKey?: string, baseUrl?: string },
+    cerebras: { apiKey?: string, baseUrl?: string }  // or CEREBRAS_API_KEY; the voice call's router
   },
   agents: {
     skills?: {
@@ -266,7 +271,13 @@ snapshot so a mixed edit can apply its live subset and still name the paths that
   plugins: Record<pluginId, { source: "directory", path: string, enabled?: boolean }>,
   features: {
     dictation: { enabled, stt: { provider, model, language, confidenceThreshold } },
-    voiceMode: { enabled, llm, stt: { provider, model, language }, turnDetection, tts: { provider, model, voice, speakerId, speed } },
+    voiceMode: {
+      enabled, engine: "chained" | "gpt-live", live: { model, voice, language }, llm,
+      // The fast model that turns a call's requests into tool calls. Defaults to Cerebras
+      // qwen-3.8-27b with a Cerebras key, else OpenAI gpt-6-luna; "off" uses the llm agent.
+      router: { provider: "cerebras" | "openai" | "off", model, reasoningEffort },
+      stt: { provider, model, language }, turnDetection, tts: { provider, model, voice, speakerId, speed }
+    },
     readAloud: {
       enabled,
       tts: { provider: "elevenlabs", model, voiceId, speed, stability, similarityBoost, style },
@@ -293,18 +304,21 @@ there is no startup migration or persistent update policy.
 
 ### Profile lists
 
-`terminalProfiles` and `agentProfiles` are both whole-list fields: a config patch replaces the
+`terminalProfiles`, `agentProfiles`, and `quickPrompts` are whole-list fields: a config patch replaces the
 array, never merges entries, so a client sends the complete next list on every add, edit, reorder
 and remove. List order is the display order.
 
 Absent and empty mean different things for terminal profiles — omitting the key falls back to
-`DEFAULT_TERMINAL_PROFILES`, while `[]` means the user removed them all. Agent profiles have no
-defaults, so both mean none.
+`DEFAULT_TERMINAL_PROFILES`, while `[]` means the user removed them all. Agent profiles and quick prompts have no
+default catalog, so both mean none. Quick prompts belong to the host,
+including the chosen default. Devices do not keep a fallback catalog. The app ignores
+`quickPromptUndoMs`: a quick prompt sends on tap. The field stays in the schema so older apps still
+parse the config.
 
 `PersistedConfigSchema` parses strictly, so a daemon that predates a field drops it on write
-rather than storing something it cannot describe. That is why the client gates the agent profiles
-UI on `server_info.features.agentProfiles` instead of letting a save appear to succeed against an
-older daemon.
+rather than storing something it cannot describe. Gate agent profiles and quick prompts on
+their respective `server_info.features` capabilities so a save cannot appear to succeed against
+an older daemon.
 
 ### Agent provider Paseo tools
 
@@ -418,7 +432,7 @@ Paseo uses these paths under the configured OpenAI base URL:
 - voice mode STT: `/v1/audio/transcriptions`
 - voice mode TTS: `/v1/audio/speech`
 
-Set `features.dictation.stt.provider` (or `features.voiceMode.stt.provider`) to `"elevenlabs"` to transcribe with ElevenLabs Scribe. It reuses the ElevenLabs key from read aloud, which needs the Speech to Text permission. `stt.model` defaults to `scribe_v2` and `stt.language` is sent as `language_code`. Each committed segment, every 15 seconds and when you stop dictating, is one `/v1/speech-to-text` upload, so there are no partial results while you speak. The local default `parakeet-tdt-0.6b-v2-int8` only understands English; use `parakeet-tdt-0.6b-v3-int8` for Spanish and the other European languages.
+Set `features.dictation.stt.provider` (or `features.voiceMode.stt.provider`) to `"elevenlabs"` to transcribe with ElevenLabs Scribe. It reuses the ElevenLabs key from read aloud, which needs the Speech to Text permission. `stt.language` is sent as `language_code`. Dictation `stt.model` defaults to `scribe_v2_realtime`, which streams audio to Scribe's realtime WebSocket while you speak and shows partial text in the dictation bar; stopping only settles the last segment, about 250 ms. `scribe_v2` (the voice mode default) uploads each committed segment, every 15 seconds and when you stop, to `/v1/speech-to-text`, so it has no partials and takes over a second after you stop. Scribe realtime returns an empty transcript for audio that repeats what it already transcribed in the session, so test with varied speech, not a looped clip. The local default `parakeet-tdt-0.6b-v2-int8` only understands English; use `parakeet-tdt-0.6b-v3-int8` for Spanish and the other European languages.
 
 Older daemons reject `"elevenlabs"` as a speech provider, so a config that uses it does not load on a host running an older version.
 
@@ -600,6 +614,14 @@ These small files are not validated as full Zod schemas but are persisted under 
 
 ---
 
+## Note Store
+
+**Path:** `$PASEO_HOME/notes/{id}.json`
+
+One file per note, so concurrent edits from devices and agents never rewrite each other's notes. ID is 12 hex characters. `todoState` is `null` for a plain note and `open` or `done` for a todo; "Todos" in the app and `--todos` in the CLI are filters over the same files. `NoteStore` serializes mutations per note and bumps `revision` on every change; an update that carries `expectedRevision` fails with `note_revision_conflict` when the note moved on. `workspaceId` records where the note was captured and survives archiving that workspace. Archive sets `archivedAt`; only `note.delete` (the app and `paseo note rm`, never an agent tool) removes the file. Files that fail to parse are logged and skipped. Schema: `packages/protocol/src/notes/types.ts`.
+
+---
+
 ## Delegation Store
 
 **Path:** `$PASEO_HOME/delegations/{parentAgentId}.json`, plus `by-child.json`
@@ -644,7 +666,7 @@ The rendered items, omissions, coverage and budget of one context handoff, with 
 
 **Path:** `$PASEO_HOME/pull-request-watches.json`
 
-Every `watch_pull_request` watch in one file; each `PullRequestWatchStore` method is one atomic write. A watch names the agent, its `cwd`, the pull request (`number`, canonical `url`, `headRefName`), and `progress`: what the agent was last told (failed check names, whether the gate passed, the remark watermark, whether the branch conflicts, and comment-only wakes in a row). `progress` is written only after the wake was delivered, so a wake lost to a restart is found again on the next pass; the 15-minute unreadable timer is in memory. Schema: `packages/server/src/server/pull-request-watch/watch-store.ts`.
+Every `watch_pull_request` watch in one file; each `PullRequestWatchStore` method is one atomic write. A watch names the agent, its `cwd`, the pull request (`number`, canonical `url`, `headRefName`), and `progress`: what the agent was last told (the head commit, failed check names, whether the gate passed and which checks were in it, the remark watermark, whether the branch conflicts, and comment-only wakes in a row). `headSha` and `passedChecks` are absent from watches saved before they existed; such a watch adopts the current head and passed checks without a wake. `progress` is written only after the wake was delivered, so a wake lost to a restart is found again on the next pass; the failed-read count and the last read of each pull request are in memory. Schema: `packages/server/src/server/pull-request-watch/watch-store.ts`.
 
 ---
 
@@ -661,6 +683,16 @@ Written by a graceful shutdown before agents close, because closing persists eve
 **Path:** `$PASEO_HOME/prompt-annotations/{agentId}.json`
 
 The timeline is rebuilt from provider history on load, and provider history keeps only the prompt text. When the daemon sends a prompt the user didn't write, it records the prompt's `messageId`, a SHA-256 of its text, and how to show it: a wake or permission notification becomes a `notification` row with its `source`, and a prompt another agent sent through its Paseo tools keeps its `origin`. Replayed user messages match entries by text hash, each entry once, in send order. A replayed `<paseo-system>` envelope without an entry has no timeline row. The newest 500 entries per agent are kept, and the file is deleted with the agent's state. Schema: `packages/server/src/server/agent/prompt-annotations.ts`.
+
+---
+
+## Inline visual storage
+
+**Path:** `$PASEO_HOME/html-renders/{agentId}/{renderId}.html` with a small title sidecar.
+
+`html_render` writes each page atomically under its caller agent. The tool result carries the random render ID, title, initial height, and an optional nine-width height table when the preview browser was already installed. Provider history replays that completed call, so the inline card returns at the same timeline position after restart. The app fetches the HTML through the agent-scoped `agent.html_render.get` RPC and keeps it in memory only. The height table is result data, not a stored page field; older results keep the client width heuristic. On startup, the daemon removes temporary render files older than one hour. Complete pages remain even when no tool call references them; archiving keeps them, and hard deletion or agent ID replacement removes the agent's render directory. `html_preview` keeps its screenshot and prepared page in memory for one call and stores neither.
+
+Codex `visualize` references stay in provider history, so replay recreates their inline position without copying the fragment into Paseo's store. `agent.visualization.get` reads an existing file only from that agent's cwd, recorded workspace, or its own Codex thread visualization directory. Missing files remain unavailable after restart. Widget state is separate: `$PASEO_HOME/visualization-state/{agentId}/{sha256(canonicalPath)}.json` keeps at most 16 KiB per visual. Archive retains it; hard deletion removes the agent's state directory. State saves do not add `modelContent` to the next provider prompt.
 
 ---
 

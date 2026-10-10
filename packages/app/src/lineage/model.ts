@@ -20,6 +20,8 @@ export interface LineageRow {
   settledDurationMs: number | null;
   createdAt: Date;
   target: SubagentOpenTarget;
+  /** Only Paseo-owned children: a provider subagent cannot be stopped apart from its parent. */
+  canStop: boolean;
 }
 
 export interface LineageParent {
@@ -56,6 +58,7 @@ function toChildRow(row: SubagentRow): LineageRow {
           pendingPermissionCount: 0,
           requiresAttention: row.requiresAttention === true,
           attentionReason: null,
+          lastTurnOutcome: row.lastTurnOutcome ?? null,
           isArchived: false,
         })
       : resolveProviderSubagentStatus(row.status);
@@ -72,6 +75,7 @@ function toChildRow(row: SubagentRow): LineageRow {
     settledDurationMs: timing.settledDurationMs,
     createdAt: row.createdAt,
     target,
+    canStop: row.kind === "paseo" && status.isLive,
   };
 }
 
@@ -85,6 +89,7 @@ function toArchivedRow(agent: ArchivedLineageAgent): LineageRow {
     settledDurationMs: null,
     createdAt: new Date(agent.createdAt),
     target: { kind: "agent", agentId: agent.id },
+    canStop: false,
   };
 }
 

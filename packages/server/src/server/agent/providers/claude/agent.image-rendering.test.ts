@@ -26,7 +26,7 @@ async function createSession(): Promise<ClaudeImageTestSession> {
   return session as unknown as ClaudeImageTestSession;
 }
 
-function imageToolResultUserMessage(): SDKMessage {
+function imageToolResultUserMessage(toolName = "Read"): SDKMessage {
   return {
     type: "user",
     parent_tool_use_id: null,
@@ -36,7 +36,7 @@ function imageToolResultUserMessage(): SDKMessage {
         {
           type: "tool_result",
           tool_use_id: "toolu_read_png",
-          tool_name: "Read",
+          tool_name: toolName,
           content: [
             {
               type: "image",
@@ -55,7 +55,7 @@ function imageToolResultUserMessage(): SDKMessage {
   } as unknown as SDKMessage;
 }
 
-function imageToolResultHistoryEntry(): unknown {
+function imageToolResultHistoryEntry(toolName = "Read"): unknown {
   return {
     type: "user",
     uuid: "user-image-result-1",
@@ -65,7 +65,7 @@ function imageToolResultHistoryEntry(): unknown {
         {
           type: "tool_result",
           tool_use_id: "toolu_read_png",
-          tool_name: "Read",
+          tool_name: toolName,
           content: [
             {
               type: "image",
@@ -154,6 +154,21 @@ function markdownImageSource(markdown: string): string {
 }
 
 describe("Claude tool_result image rendering", () => {
+  test("keeps html_preview screenshots out of live and replayed timeline images", async () => {
+    const session = await createSession();
+    const liveItems = session
+      .translateMessageToEvents(imageToolResultUserMessage("mcp__paseo__html_preview"))
+      .filter((event) => event.type === "timeline")
+      .map((event) => (event as { item: AgentTimelineItem }).item);
+    const replayedItems = session.convertHistoryEntry(
+      imageToolResultHistoryEntry("paseo.html_preview"),
+    );
+    expect(imageMessages(liveItems)).toEqual([]);
+    expect(imageMessages(replayedItems)).toEqual([]);
+    expect(JSON.stringify(liveItems)).not.toContain(ONE_BY_ONE_PNG_BASE64);
+    expect(JSON.stringify(replayedItems)).not.toContain(ONE_BY_ONE_PNG_BASE64);
+  });
+
   test("emits the image as assistant markdown and keeps base64 out of the live tool output", async () => {
     const session = await createSession();
 

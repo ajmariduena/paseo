@@ -124,4 +124,54 @@ describe("useNewWorkspaceProjectPicker", () => {
     expect(result.current.selectedProject).toEqual(scratch);
     expect(result.current.projectTriggerLabel).toBe("Sin proyecto");
   });
+  it("keeps the remembered project's clone on another host instead of falling back to No project", () => {
+    const rememberedOnPrimary: HostProjectListItem = {
+      ...project({
+        viewKey: '["primary","paseo-primary"]',
+        projectKey: "remote:github.com/getpaseo/paseo",
+        projectId: "paseo-primary",
+        projectName: "Paseo",
+      }),
+    };
+    rememberedOnPrimary.hosts = [{ ...rememberedOnPrimary.hosts[0]!, serverId: "primary" }];
+    const cloneOnSecondary: HostProjectListItem = {
+      ...project({
+        viewKey: '["secondary","paseo-secondary"]',
+        projectKey: "remote:github.com/getpaseo/paseo",
+        projectId: "paseo-secondary",
+        projectName: "Paseo",
+      }),
+    };
+    cloneOnSecondary.hosts = [{ ...cloneOnSecondary.hosts[0]!, serverId: "secondary" }];
+    const secondaryScratch: HostProjectListItem = {
+      ...project({
+        viewKey: '["secondary","scratch"]',
+        projectKey: null,
+        projectId: "scratch",
+        projectName: "No project",
+      }),
+      projectKind: "non_git",
+    };
+    secondaryScratch.hosts = [
+      {
+        ...secondaryScratch.hosts[0]!,
+        serverId: "secondary",
+        worktreeSupport: "unsupported",
+        isScratch: true,
+      },
+    ];
+    const { result } = renderHook(() =>
+      useNewWorkspaceProjectPicker({
+        selectedServerId: "secondary",
+        projects: [rememberedOnPrimary, cloneOnSecondary, secondaryScratch],
+        routeProject: null,
+        routeProjectContextViewKey: null,
+        lastActiveProject: null,
+        rememberedProject: rememberedOnPrimary,
+        allowAllProjects: true,
+      }),
+    );
+
+    expect(result.current.selectedProject).toEqual(cloneOnSecondary);
+  });
 });

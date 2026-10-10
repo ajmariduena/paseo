@@ -1,4 +1,5 @@
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { PendingSidebarWorkspaceRow } from "@/components/sidebar/pending-workspace-row";
 import {
   View,
   Text,
@@ -907,6 +908,7 @@ function ProjectHeaderRow({
       interaction.didLongPressRef.current = false;
       return;
     }
+    setIsPressed(false);
     onPress();
   }, [interaction.didLongPressRef, onPress]);
 
@@ -1097,6 +1099,7 @@ function WorkspaceRowInner({
       interaction.didLongPressRef.current = false;
       return;
     }
+    setIsPressed(false);
     onPress();
   }, [interaction.didLongPressRef, onPress]);
   const handleWorkspacePressIn = useCallback(
@@ -1414,6 +1417,21 @@ function WorkspaceRowItem({
     onWorkspacePress?.();
     navigateToWorkspace({ serverId: workspace.serverId, workspaceId: workspace.workspaceId });
   }, [onWorkspacePress, workspace.serverId, workspace.workspaceId]);
+
+  if (workspaceEntry?.pendingCreation) {
+    return (
+      <PendingSidebarWorkspaceRow
+        workspace={workspaceEntry}
+        selected={isWorkspaceSelected({
+          selection: activeWorkspaceSelection,
+          serverId: workspace.serverId,
+          workspaceId: workspace.workspaceId,
+          enabled: selectionEnabled,
+        })}
+        onWorkspacePress={onWorkspacePress}
+      />
+    );
+  }
 
   return (
     <WorkspaceRow

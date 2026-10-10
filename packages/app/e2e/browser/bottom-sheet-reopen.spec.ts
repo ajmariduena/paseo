@@ -17,7 +17,7 @@ async function openMockAgentAtMobileBreakpoint(page: Page) {
     timeout: 30_000,
   });
   await expectComposerVisible(page);
-  await expect(page.getByRole("button", { name: /Select model/ })).toBeVisible({
+  await expect(page.getByTestId("combined-model-selector")).toBeVisible({
     timeout: 30_000,
   });
   return session;
@@ -78,22 +78,22 @@ async function openTabSwitcher(page: Page) {
   await expectBottomSheetOpen(page);
 }
 
+/** The gauge opens the keyboard-preserving overlay; its label opens the Advanced sheet. */
 async function openModelSelector(page: Page) {
-  await page.getByRole("button", { name: /Select model/ }).click();
+  await page.getByTestId("combined-model-selector").click();
+  await expect(page.getByTestId("agent-intelligence-overlay")).toBeVisible({ timeout: 10_000 });
+  await page.getByTestId("agent-effort-advanced").click();
   await expectBottomSheetOpen(page);
-  await expect(page.getByTestId("agent-controls-settings-list")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTestId("agent-advanced-page")).toBeVisible({ timeout: 10_000 });
 }
 
-async function dismissStackedModelPickerWithBackdrop(page: Page) {
-  await page
-    .getByTestId("agent-controls-settings-list")
-    .getByRole("button", { name: /Select model/ })
-    .click();
-  await expect(page.getByTestId("agent-controls-model-browser-sheet")).toBeVisible();
-  await page.mouse.click(MOBILE_VIEWPORT.width / 2, 24);
-  await expect(page.getByTestId("agent-controls-model-browser-sheet")).not.toBeVisible();
-  await expect(page.getByTestId("agent-controls-model-sheet")).toBeVisible();
-  await expect(page.getByTestId("agent-controls-settings-list")).toBeVisible();
+async function dismissModelBrowserAndReopenCard(page: Page) {
+  await page.getByTestId("agent-effort-model").click();
+  await expect(page.getByTestId("agent-model-browser")).toBeVisible();
+  await closeBottomSheetWithBackdrop(page);
+  await expect(page.getByTestId("agent-model-browser")).not.toBeVisible();
+  await expect(page.getByTestId("agent-advanced-page")).not.toBeVisible();
+  await openModelSelector(page);
 }
 
 async function openAndCloseTabSwitcherTwice(page: Page) {
@@ -111,7 +111,7 @@ async function openAndCloseModelSelectorTwice(page: Page) {
 }
 
 test.describe("mobile bottom sheet reopen", () => {
-  test("sheets reopen and model search returns to configuration", async ({ page }) => {
+  test("sheets reopen and a searched model returns to the quick card", async ({ page }) => {
     const session = await openMockAgentAtMobileBreakpoint(page);
     try {
       await test.step("tab switcher opens, closes, and reopens", async () => {
@@ -122,24 +122,27 @@ test.describe("mobile bottom sheet reopen", () => {
         await openAndCloseModelSelectorTwice(page);
       });
 
-      await test.step("model search returns to configuration", async () => {
+      await test.step("a searched model returns to the quick card", async () => {
         await openModelSelector(page);
-        const sheet = page.getByTestId("agent-controls-model-sheet");
 
-        await dismissStackedModelPickerWithBackdrop(page);
+        await dismissModelBrowserAndReopenCard(page);
+        await page.getByTestId("agent-effort-model").click();
 
-        await page.getByTestId("model-search-all-input").click();
-        const model = page.getByRole("button", { name: /^Ten second stream/ });
+        await page.getByRole("textbox", { name: /search.*models/i }).fill("one minute");
+        const model = page.getByTestId("model-row-mock-one-minute-stream");
         await expect(model).toBeVisible({
           timeout: 10_000,
         });
 
         await model.click();
 
-        await expect(sheet).toBeVisible();
-        await expect(page.getByTestId("agent-controls-settings-list")).toBeVisible();
-        await expect(page.getByTestId("agent-controls-model")).toContainText("Ten second stream");
-        await expect(page.getByTestId("agent-controls-model-browser-sheet")).not.toBeVisible();
+        await expect(page.getByTestId("agent-model-browser")).not.toBeVisible();
+        await expect(page.getByTestId("agent-advanced-page")).not.toBeVisible();
+        const overlay = page.getByTestId("agent-intelligence-overlay");
+        await expect(overlay).toBeVisible();
+        await expect(overlay.getByTestId("agent-quick-change-model")).toContainText(
+          "One minute stream",
+        );
       });
     } finally {
       await session.cleanup();

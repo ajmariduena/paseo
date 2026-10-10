@@ -7,8 +7,9 @@ interface RowGeometry {
 // A row must clear the reading line before the next row takes ownership.
 const READING_POSITION_OFFSET_PX = 8;
 
-// Content coordinates survive user scrolling. Layout commits replace the geometry;
-// scroll events reuse it, without another DOM measurement pass.
+// Content coordinates survive user scrolling. A user scroll reconciles with
+// userScrolled: the previous reader absorbs any layout change committed in the
+// same frame before ownership moves to the row at the new reading line.
 export function createReadingAnchor() {
   let anchor: { id: string; top: number } | null = null;
   let geometry: readonly RowGeometry[] = [];
@@ -23,10 +24,6 @@ export function createReadingAnchor() {
     project,
     reset() {
       anchor = null;
-    },
-    scroll(scrollTop: number) {
-      const next = readingRow(scrollTop);
-      anchor = next ? { id: next.id, top: next.top } : null;
     },
     reconcile(scrollTop: number, rows: readonly RowGeometry[], userScrolled = false): number {
       geometry = rows;

@@ -16,6 +16,23 @@ function expectMapped<T>(item: T | null): T {
 }
 
 describe("claude tool-call mapper", () => {
+  it("keeps an HTML render result in the completed tool detail", () => {
+    const render = {
+      htmlRender: { renderId: "550e8400-e29b-41d4-a716-446655440000", title: "Chart", height: 400 },
+    };
+    expect(
+      mapClaudeCompletedToolCall({
+        name: "mcp__paseo__html_render",
+        callId: "render",
+        input: {},
+        output: { output: render },
+      }),
+    ).toMatchObject({
+      name: "mcp__paseo__html_render",
+      status: "completed",
+      detail: { type: "unknown", output: { output: render } },
+    });
+  });
   it("preserves a plan's original tool identity and outcome for live and replayed results", () => {
     const proposal = { name: "ExitPlanMode", callId: "plan-tool-1", input: { plan: "Ship it" } };
     const pending = expectMapped(mapClaudeRunningToolCall(proposal));

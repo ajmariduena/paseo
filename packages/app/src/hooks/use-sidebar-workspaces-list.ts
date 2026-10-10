@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { useStoreWithEqualityFn } from "zustand/traditional";
 import { useCreateFlowStore } from "@/stores/create-flow-store";
+import { usePendingWorkspaceCreationStore } from "@/stores/pending-workspace-creation";
 import { useSessionStore } from "@/stores/session-store";
 import { useWorkspaceDirectoryServerIds } from "@/stores/session-store-hooks";
 import { workspaceEqualityFns } from "@/stores/session-store-hooks/selectors";
@@ -17,6 +18,8 @@ import {
   deriveProjectStatusBucket,
   deriveSidebarLoadingState,
   deriveSidebarToggleAttentionBucket,
+  omitSidebarWorkspaces,
+  selectDelegatedSidebarWorkspaceKeys,
   type ProjectStatusSession,
   type SidebarToggleAttentionBucket,
   type SidebarProjectEntry,
@@ -68,6 +71,7 @@ export function useSidebarProjectStatusBucket(input: {
     (state) => state.pendingByDraftId,
     workspaceEqualityFns.deep,
   );
+  const pendingWorkspaceCreations = usePendingWorkspaceCreationStore((state) => state.byKey);
 
   const selector = useCallback(
     (state: { sessions: Record<string, ProjectStatusSession | undefined> }) => {
@@ -76,9 +80,10 @@ export function useSidebarProjectStatusBucket(input: {
         workspaces,
         sessions: state.sessions,
         pendingCreateAttempts,
+        pendingWorkspaceCreations,
       });
     },
-    [enabled, pendingCreateAttempts, workspaces],
+    [enabled, pendingCreateAttempts, pendingWorkspaceCreations, workspaces],
   );
 
   return useStoreWithEqualityFn(useSessionStore, selector, Object.is);
@@ -183,15 +188,23 @@ export function useSidebarWorkspacesList(options?: {
   const directoryServerIds = useWorkspaceDirectoryServerIds(serverIds);
 
   const hostProjects = useHostProjects(directoryServerIds);
+  const delegatedWorkspaceKeys = useStoreWithEqualityFn(
+    useSessionStore,
+    (state) => selectDelegatedSidebarWorkspaceKeys(state.sessions, directoryServerIds),
+    workspaceEqualityFns.deep,
+  );
   const { t } = useTranslation();
   const scratchProjectLabel = t("newWorkspace.fields.noProject");
 
   const sidebarModel = useMemo(
     () =>
       buildSidebarWorkspacePlacementModel({
-        projects: presentScratchProjects(hostProjects, scratchProjectLabel),
+        projects: presentScratchProjects(
+          omitSidebarWorkspaces(hostProjects, delegatedWorkspaceKeys),
+          scratchProjectLabel,
+        ),
       }),
-    [hostProjects, scratchProjectLabel],
+    [delegatedWorkspaceKeys, hostProjects, scratchProjectLabel],
   );
 
   const projects = sidebarModel.projects.length > 0 ? sidebarModel.projects : EMPTY_PROJECTS;

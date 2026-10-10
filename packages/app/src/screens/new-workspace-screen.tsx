@@ -13,6 +13,7 @@ import { Pressable, Text, View } from "react-native";
 import type { PressableStateCallbackType } from "react-native";
 import { StyleSheet, useUnistyles, withUnistyles } from "react-native-unistyles";
 import { createNameId } from "mnemonic-id";
+import { randomUUID } from "expo-crypto";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, Folder, FolderPlus, GitBranch, GitPullRequest, X } from "lucide-react-native";
 import { ScratchProjectIcon } from "@/components/sidebar/project-leading-visual";
@@ -66,6 +67,14 @@ import { useWorkspace } from "@/stores/session-store-hooks";
 import { buildNewWorkspaceDraftKey, generateDraftId } from "@/stores/draft-keys";
 import { useOpenAddProject } from "@/hooks/use-open-add-project";
 import { isActiveCreateFlowForDraft, useCreateFlowStore } from "@/stores/create-flow-store";
+import {
+  pendingWorkspaceCreationKey,
+  setLocalPendingWorkspaceCreation,
+  usePendingWorkspaceCreationStore,
+} from "@/stores/pending-workspace-creation";
+import { navigateToHostWorkspaceRoute } from "@/navigation/workspace-route-navigation";
+import { buildHostWorkspaceRoute } from "@/utils/host-routes";
+import { prepareWorkspaceTab } from "@/utils/workspace-navigation";
 import {
   useWorkspaceDraftSubmissionStore,
   type PendingWorkspaceDraftSetup,
@@ -954,6 +963,7 @@ interface SubmitDraftInput {
   draftKey: string;
   clearDraft: (lifecycle: "sent" | "abandoned") => void;
   draftId?: string;
+  createdAt?: number;
   draftContextScopeKey: string | null;
   initialSetup?: WorkspaceDraftTabSetup;
   workspaceId: string;
@@ -965,6 +975,7 @@ interface SubmitDraftInput {
   supportsForgeSearch: boolean;
   resolveClient: () => DaemonClient;
   isStillOnCreateScreen: () => boolean;
+  navigate?: boolean;
 }
 
 type NewWorkspaceComposerState = NonNullable<
@@ -1013,6 +1024,8 @@ function resolveWorkspaceCreateSource(input: {
 
 async function createMultiplicityWorkspace(input: {
   idempotencyKey: string;
+  workspaceId?: string;
+  agentId?: string;
   worktreeSlug: string;
   client: NonNullable<ReturnType<typeof useHostRuntimeClient>>;
   isolation: "local" | "worktree";
@@ -1039,7 +1052,8 @@ async function createMultiplicityWorkspace(input: {
   });
   const payload = await input.client.createWorkspace({
     idempotencyKey: input.idempotencyKey,
-    agent: input.agent,
+    workspaceId: input.workspaceId,
+    agent: input.agent ? { ...input.agent, agentId: input.agentId } : undefined,
     onEvent: input.onEvent,
     source: resolveWorkspaceCreateSource({ ...input, projectId }),
     ...(firstAgentContext ? { firstAgentContext } : {}),
@@ -1066,6 +1080,8 @@ interface CreateChatAgentInput {
     withInitialAgent: boolean;
     agent?: CreateWorkspaceRequestOptions["agent"];
     onEvent?: (snapshot: CreationSnapshot) => void;
+    workspaceId?: string;
+    agentId?: string;
   }) => Promise<WorkspaceCreationResult>;
   serverId: string;
   draftKey: string;
@@ -1079,6 +1095,7 @@ interface CreateChatAgentInput {
     composerStateRequired: string;
     selectModel: string;
   };
+  optimistic?: { workspaceId: string; agentId: string; createdAt: number };
 }
 
 function buildWorkspaceDraftSetupFromComposer(input: {
@@ -1164,8 +1181,10 @@ async function createWorkspaceChatAgent(input: CreateChatAgentInput): Promise<Su
   });
   const images = await encodeImages(wirePayload.images);
   let navigated = false;
+  let failedSnapshot: CreationSnapshot | null = null;
   let outcome: SubmitOutcome = "background";
   const initialAgent: NonNullable<CreateWorkspaceRequestOptions["agent"]> = {
+    agentId: input.optimistic?.agentId,
     config: {
       provider,
       cwd,
@@ -1181,19 +1200,35 @@ async function createWorkspaceChatAgent(input: CreateChatAgentInput): Promise<Su
   };
   const execute = async (requestedAgent = initialAgent): Promise<AgentSnapshotPayload> => {
     const { agent } = await ensureWorkspace({
+      workspaceId: input.optimistic?.workspaceId,
+      agentId: input.optimistic?.agentId,
       cwd,
       prompt: text,
       attachments: workspaceNamingAttachments,
       withInitialAgent: true,
       agent: requestedAgent,
       onEvent: (snapshot) => {
+        if (input.optimistic) {
+          const key = pendingWorkspaceCreationKey(serverId, input.optimistic.workspaceId);
+          if (snapshot.phase === "failed") {
+            failedSnapshot = snapshot;
+            usePendingWorkspaceCreationStore.getState().update(key, {
+              phase: "failed",
+              revision: snapshot.revision,
+              error: snapshot.error ?? "Workspace creation failed",
+              outcomeUnknown: snapshot.outcomeUnknown === true,
+            });
+          } else if (snapshot.phase === "accepted") {
+            usePendingWorkspaceCreationStore.getState().update(key, {
+              phase: "accepted",
+              revision: snapshot.revision,
+            });
+          }
+        }
         if (!snapshot.workspace || navigated) return;
         navigated = true;
-        if (!input.isStillOnCreateScreen()) return;
+        if (!input.optimistic && !input.isStillOnCreateScreen()) return;
         const workspace = normalizeWorkspaceDescriptor(snapshot.workspace);
-        getHostRuntimeStore().acceptWorkspaceSnapshots(serverId, [
-          { ...workspace, status: "running" },
-        ]);
         const initialSetup = buildWorkspaceDraftSetupForCreatedWorkspace({
           forkDraftSetup: input.forkDraftSetup,
           workspaceDirectory: workspace.workspaceDirectory,
@@ -1209,6 +1244,7 @@ async function createWorkspaceChatAgent(input: CreateChatAgentInput): Promise<Su
           serverId,
           clearDraft,
           draftId: input.draftId,
+          createdAt: input.optimistic?.createdAt,
           initialSetup,
           workspaceId: workspace.id,
           workspaceDirectory: workspace.workspaceDirectory,
@@ -1218,7 +1254,17 @@ async function createWorkspaceChatAgent(input: CreateChatAgentInput): Promise<Su
           composerState,
           supportsForgeSearch: input.supportsForgeSearch,
           agentCreation,
+          navigate: !input.optimistic,
         });
+        getHostRuntimeStore().acceptWorkspaceSnapshots(serverId, [
+          { ...workspace, status: "running" },
+        ]);
+        if (input.optimistic) {
+          const store = usePendingWorkspaceCreationStore.getState();
+          const key = pendingWorkspaceCreationKey(serverId, input.optimistic.workspaceId);
+          store.update(key, { phase: "workspace_ready", revision: snapshot.revision });
+          store.markPresentationReady(key);
+        }
       },
     });
     if (!agent) throw new Error("Workspace creation returned no agent");
@@ -1226,17 +1272,37 @@ async function createWorkspaceChatAgent(input: CreateChatAgentInput): Promise<Su
   };
   const agentCreation = {
     result: Promise.resolve().then(() => execute()),
-    retry: (request: CreateAgentRequestOptions) =>
-      execute({
+    retry: (request: CreateAgentRequestOptions) => {
+      if (input.optimistic && failedSnapshot) {
+        if (failedSnapshot.failedStage !== "agent" || failedSnapshot.outcomeUnknown) {
+          return Promise.reject(new Error("Workspace creation outcome could not be confirmed"));
+        }
+        return input.resolveClient().createAgent({
+          ...request,
+          idempotencyKey: generateDraftId(),
+          workspaceId: input.optimistic.workspaceId,
+        });
+      }
+      return execute({
         ...initialAgent,
         config: { ...request.config!, cwd },
         initialPrompt: request.initialPrompt ?? "",
         clientMessageId: initialAgent.clientMessageId,
         images: request.images,
         attachments: request.attachments,
-      }),
+      });
+    },
   };
   await agentCreation.result;
+  if (input.optimistic) {
+    setLocalPendingWorkspaceCreation(
+      pendingWorkspaceCreationKey(serverId, input.optimistic.workspaceId),
+      false,
+    );
+    usePendingWorkspaceCreationStore
+      .getState()
+      .remove(pendingWorkspaceCreationKey(serverId, input.optimistic.workspaceId));
+  }
   if (outcome === "background") clearConsumedDraft();
   return outcome;
 }
@@ -1315,7 +1381,7 @@ function submitWorkspaceDraft(input: SubmitDraftInput): SubmitOutcome {
   } = input;
   const draftId = draftIdInput?.trim() || generateDraftId();
   const clientMessageId = `${draftId}:initial-message`;
-  const timestamp = Date.now();
+  const timestamp = input.createdAt ?? Date.now();
   const wirePayload = splitComposerAttachmentsForSubmit(attachments, {
     format: resolveComposerAttachmentSubmitFormat({
       supportsForgeAttachments: input.supportsForgeSearch,
@@ -1357,12 +1423,15 @@ function submitWorkspaceDraft(input: SubmitDraftInput): SubmitOutcome {
     allowEmptyText: true,
     agentCreation: input.agentCreation,
   });
-  clearDraft("sent");
-  navigateToWorkspace({
-    serverId,
-    workspaceId,
-    target: submission.target,
-  });
+  if (input.navigate === false) {
+    // An optimistic creation finishes after the user may have left and typed a newer draft under
+    // the same key, so it only clears the draft this submission consumed.
+    input.clearConsumedDraft();
+    prepareWorkspaceTab({ serverId, workspaceId, target: submission.target });
+  } else {
+    clearDraft("sent");
+    navigateToWorkspace({ serverId, workspaceId, target: submission.target });
+  }
   return "navigated";
 }
 
@@ -1877,6 +1946,7 @@ export function NewWorkspaceScreen({
   });
   // COMPAT(workspaceMultiplicity): added in v0.1.97, drop the gate when floor >= v0.1.97
   const supportsWorkspaceMultiplicity = useHostFeature(selectedServerId, "workspaceMultiplicity");
+  const supportsCreationLifecycle = useHostFeature(selectedServerId, "creationLifecycle");
   const supportsForgeSearch = useHostFeature(selectedServerId, "forgeSearch");
   const [creationIdentity] = useState(() => ({
     draftId: draftId ?? generateDraftId(),
@@ -1887,6 +1957,7 @@ export function NewWorkspaceScreen({
     WorkspaceCreationResult | { workspace: null }
   >({ workspace: null });
   const [pendingAction, setPendingAction] = useState<"chat" | "empty" | "terminal" | null>(null);
+  const submitInFlightRef = useRef(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const openAddProjectPicker = useOpenAddProject();
@@ -2280,6 +2351,8 @@ export function NewWorkspaceScreen({
       withInitialAgent: boolean;
       agent?: CreateWorkspaceRequestOptions["agent"];
       onEvent?: (snapshot: CreationSnapshot) => void;
+      workspaceId?: string;
+      agentId?: string;
     }) => {
       if (creationResult.workspace) {
         return creationResult;
@@ -2307,6 +2380,8 @@ export function NewWorkspaceScreen({
         : undefined;
       const normalizedWorkspace = await createMultiplicityWorkspace({
         idempotencyKey: creationIdentity.draftId,
+        workspaceId: input.workspaceId,
+        agentId: input.agentId,
         worktreeSlug: creationIdentity.worktreeSlug,
         client: connectedClient,
         isolation: createsWorktree ? "worktree" : "local",
@@ -2355,8 +2430,62 @@ export function NewWorkspaceScreen({
 
   const handleSubmitNewWorkspace = useCallback(
     async (payload: MessagePayload) => {
+      if (submitInFlightRef.current) return;
+      submitInFlightRef.current = true;
+      let optimistic: { workspaceId: string; agentId: string; createdAt: number } | undefined;
       try {
         setErrorMessage(null);
+        const selectedProjectId = selectedProject
+          ? getHostProjectId(selectedProject, selectedServerId)
+          : null;
+        if (
+          supportsCreationLifecycle &&
+          !creationResult.workspace &&
+          !isEmptyWorkspaceSubmission(payload) &&
+          selectedProject &&
+          selectedSourceDirectory &&
+          selectedProjectId &&
+          composerState?.selectedProvider
+        ) {
+          const uuid = randomUUID();
+          optimistic = {
+            workspaceId: `wks_${uuid.replace(/-/g, "").slice(0, 16)}`,
+            agentId: randomUUID(),
+            createdAt: Date.now(),
+          };
+          setLocalPendingWorkspaceCreation(
+            pendingWorkspaceCreationKey(selectedServerId, optimistic.workspaceId),
+            true,
+          );
+          const persisted = usePendingWorkspaceCreationStore.getState().add({
+            serverId: selectedServerId,
+            workspaceId: optimistic.workspaceId,
+            agentId: optimistic.agentId,
+            draftId: creationIdentity.draftId,
+            clientMessageId: `${creationIdentity.draftId}:initial-message`,
+            projectViewKey: selectedProject.viewKey,
+            projectId: selectedProjectId,
+            projectName: selectedProject.projectName,
+            projectKind: selectedProject.projectKind,
+            sourceDirectory: selectedSourceDirectory,
+            prompt: payload.text,
+            createdAt: optimistic.createdAt,
+            phase: "preparing",
+            revision: 0,
+            error: null,
+            outcomeUnknown: false,
+            agentSetup: buildWorkspaceDraftSetupFromComposer({
+              cwd: selectedSourceDirectory,
+              provider: composerState.selectedProvider,
+              composerState,
+            }),
+          });
+          setPendingAction("chat");
+          navigateToHostWorkspaceRoute(
+            buildHostWorkspaceRoute(selectedServerId, optimistic.workspaceId),
+          );
+          await persisted;
+        }
         await composerState?.persistFormPreferences();
         await updateFormPreferences({ launchTarget });
         if (isEmptyWorkspaceSubmission(payload)) {
@@ -2400,15 +2529,30 @@ export function NewWorkspaceScreen({
             composerStateRequired: t("newWorkspace.errors.composerStateRequired"),
             selectModel: t("newWorkspace.errors.selectModel"),
           },
+          optimistic,
         });
         if (outcome === "background") {
           setPendingAction(null);
         }
       } catch (error) {
         const message = toErrorMessage(error);
+        if (optimistic) {
+          setLocalPendingWorkspaceCreation(
+            pendingWorkspaceCreationKey(selectedServerId, optimistic.workspaceId),
+            false,
+          );
+          usePendingWorkspaceCreationStore
+            .getState()
+            .update(pendingWorkspaceCreationKey(selectedServerId, optimistic.workspaceId), {
+              phase: "failed",
+              error: message,
+            });
+        }
         setPendingAction(null);
         setErrorMessage(message);
         toast.error(message);
+      } finally {
+        submitInFlightRef.current = false;
       }
     },
     [
@@ -2422,6 +2566,10 @@ export function NewWorkspaceScreen({
       isStillOnCreateScreen,
       launchTarget,
       selectedServerId,
+      selectedProject,
+      selectedSourceDirectory,
+      supportsCreationLifecycle,
+      creationResult.workspace,
       supportsForgeSearch,
       t,
       toast,

@@ -433,6 +433,37 @@ test("createAgent fails when the initial turn cannot start", async () => {
   }
 });
 
+test("sendAgentMessage rejects a prompt whose turn cannot start", async () => {
+  const cwd = tmpCwd();
+  const daemon = await createTestPaseoDaemon({
+    agentClients: {
+      codex: new StubAgentClient({
+        sessionId: "send-start-failure-session",
+        supportsStreaming: false,
+        startError: "Prompt turn failed to start",
+      }),
+    },
+  });
+  const client = new DaemonClient({
+    url: `ws://127.0.0.1:${daemon.port}/ws`,
+    appVersion: "0.1.82",
+  });
+
+  try {
+    await client.connect();
+    await client.fetchAgents({ subscribe: {} });
+    const agent = await client.createAgent({ provider: "codex", cwd });
+
+    await expect(client.sendAgentMessage(agent.id, "Start this turn.")).rejects.toThrow(
+      "Prompt turn failed to start",
+    );
+  } finally {
+    await client.close();
+    await daemon.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 function createUninterruptibleClient(): AgentClient {
   return new StubAgentClient({
     sessionId: "uninterruptible-session",
@@ -830,6 +861,29 @@ test("send_agent_message auto-unarchives archived agents", async () => {
     rmSync(cwd, { recursive: true, force: true });
   }
 }, 180000);
+
+test("send_agent_message leaves an archived agent archived when its directory is gone", async () => {
+  const cwd = tmpCwd();
+  try {
+    const created = await ctx.client.createAgent({
+      config: {
+        ...getFullAccessConfig("codex"),
+        cwd,
+      },
+    });
+    const archived = await ctx.client.archiveAgent(created.id);
+    rmSync(cwd, { recursive: true, force: true });
+
+    await expect(ctx.client.sendMessage(created.id, "hello")).rejects.toThrow(
+      "Working directory does not exist",
+    );
+
+    const afterSend = await ctx.client.fetchAgent({ agentId: created.id });
+    expect(afterSend?.agent.archivedAt).toBe(archived.archivedAt);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}, 30000);
 
 test("refresh_agent auto-unarchives archived agents", async () => {
   const cwd = tmpCwd();

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   AgentStatusSchema,
+  AgentTurnOutcomeSchema,
   AgentTimelineItemPayloadSchema,
   MessageOriginSchema,
   NotificationSourceSchema,
@@ -248,6 +249,7 @@ const StoredAgentSnapshotSchema = z.strictObject({
   pendingPermissions: z.array(z.never()).max(0),
   persistence: z.null(),
   lastError: z.string().optional(),
+  lastTurnOutcome: AgentTurnOutcomeSchema.optional(),
   title: z.string().nullable(),
   labels: z.record(z.string(), z.string()),
   requiresAttention: z.boolean().optional(),
@@ -427,6 +429,7 @@ function serializeAgentToolCall(data: AgentToolCallData): StoredToolCall {
     name: data.name,
     detail: data.detail,
     ...(data.metadata ? { metadata: data.metadata } : {}),
+    ...(data.agentMessage ? { agentMessage: data.agentMessage } : {}),
   };
   switch (data.status) {
     case "running":
@@ -594,6 +597,7 @@ function deserializeBuiltinTimelineItem(
             error: tool.error,
             detail: tool.detail,
             ...(tool.metadata ? { metadata: tool.metadata } : {}),
+            ...(tool.agentMessage ? { agentMessage: tool.agentMessage } : {}),
           },
         },
       };
@@ -659,6 +663,7 @@ function serializeAgent(agent: Agent): StoredAgent {
     pendingPermissions: [],
     persistence: null,
     ...(agent.lastError ? { lastError: agent.lastError } : {}),
+    lastTurnOutcome: agent.lastTurnOutcome,
     title: agent.title,
     labels: agent.labels,
     requiresAttention: agent.requiresAttention ?? false,

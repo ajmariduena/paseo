@@ -8,7 +8,7 @@ export type SidebarSection = PluginSidebarSection;
  * (Add project and the Hosts, Help and support, Settings icons) is fixed.
  */
 export const BUILTIN_SIDEBAR_ITEM_IDS = {
-  header: ["new-workspace", "history", "search", "schedules"],
+  header: ["new-workspace", "history", "search", "schedules", "notes", "host-health"],
   footer: ["usage"],
 } as const satisfies Record<SidebarSection, readonly string[]>;
 
@@ -45,6 +45,8 @@ const BUILTIN_LABEL_KEYS: Record<BuiltinSidebarItemId, string> = {
   history: "sidebar.sections.sessions",
   search: "sidebar.sections.search",
   schedules: "sidebar.sections.schedules",
+  notes: "sidebar.sections.notes",
+  "host-health": "sidebar.sections.hostHealth",
   usage: "sidebar.footer.usage",
 };
 
@@ -62,6 +64,8 @@ const BUILTIN_SHORTCUT_ACTIONS: Record<BuiltinSidebarItemId, string | null> = {
   history: null,
   search: "toggle-command-center",
   schedules: null,
+  notes: null,
+  "host-health": null,
   usage: null,
 };
 
@@ -69,14 +73,11 @@ export function builtinSidebarNavShortcutAction(id: BuiltinSidebarItemId): strin
   return BUILTIN_SHORTCUT_ACTIONS[id];
 }
 
-/**
- * Builtins that start hidden on compact layouts, until the user turns them on. A phone's footer
- * has no room to spare for the Usage summary.
- */
-const HIDDEN_BY_DEFAULT_ON_COMPACT: ReadonlySet<BuiltinSidebarItemId> = new Set(["usage"]);
+/** Builtins that start hidden until the user turns them on: the Usage summary is opt-in. */
+const HIDDEN_BY_DEFAULT: ReadonlySet<BuiltinSidebarItemId> = new Set(["usage"]);
 
-function builtinVisibleByDefault(id: BuiltinSidebarItemId, compact: boolean): boolean {
-  return !(compact && HIDDEN_BY_DEFAULT_ON_COMPACT.has(id));
+function builtinVisibleByDefault(id: BuiltinSidebarItemId): boolean {
+  return !HIDDEN_BY_DEFAULT.has(id);
 }
 
 export function pluginSidebarNavKey(
@@ -95,8 +96,6 @@ function isBuiltinSidebarItemId<Section extends SidebarSection>(
 
 export function resolveSidebarNavItems<Section extends SidebarSection>(input: {
   section: Section;
-  /** Compact layouts start some builtins hidden; a stored preference always wins. */
-  compact: boolean;
   pluginGroups: readonly PluginSidebarGroup[];
   preferences: readonly SidebarNavPreference[];
 }): SidebarNavItem<Section>[] {
@@ -131,7 +130,7 @@ export function resolveSidebarNavItems<Section extends SidebarSection>(input: {
       kind: "builtin",
       key: id,
       id,
-      visible: builtinVisibleByDefault(id, input.compact),
+      visible: builtinVisibleByDefault(id),
     });
   }
   for (const [key, group] of groupsByKey) {

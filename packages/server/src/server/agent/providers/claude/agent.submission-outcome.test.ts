@@ -136,19 +136,26 @@ test("a cancelled lifecycle frame for the submitted uuid proves the prompt was n
   await session.close();
 });
 
-test("an interrupt before any evidence settles unknown and leaves the turn canceled", async () => {
-  const feed = createFrameFeed();
-  const { session, query } = await createScriptedClaudeSession(feed);
-  const events: AgentStreamEvent[] = [];
-  session.subscribe((event) => events.push(event));
+test("an interrupt before any evidence withdraws the prompt: confirmed means unsent, refused means unknown", async () => {
+  for (const [withdrawn, outcome] of [
+    [true, "unsent"],
+    [false, "unknown"],
+  ] as const) {
+    const feed = createFrameFeed();
+    const { session, query } = await createScriptedClaudeSession(feed, {
+      cancelAsyncMessage: async () => withdrawn,
+    });
+    const events: AgentStreamEvent[] = [];
+    session.subscribe((event) => events.push(event));
 
-  const started = await session.startTurn("hello");
-  await session.interrupt();
-  expect(await started.submission).toBe("unknown");
-  expect(events.some((event) => event.type === "turn_canceled")).toBe(true);
-  expect(query.withdrawals).toEqual([]);
+    const started = await session.startTurn("hello");
+    await session.interrupt();
+    expect(await started.submission).toBe(outcome);
+    expect(events.some((event) => event.type === "turn_canceled")).toBe(true);
+    expect(query.withdrawals).toEqual([query.submittedUuid()]);
 
-  await session.close();
+    await session.close();
+  }
 });
 
 test("closing the session with the prompt in flight settles unknown", async () => {

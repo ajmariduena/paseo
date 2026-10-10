@@ -9,6 +9,7 @@ export type SidebarStateBucket =
   | "needs_input"
   | "failed"
   | "running"
+  | "background"
   | "waiting"
   | "attention"
   | "done";
@@ -32,6 +33,7 @@ const STATUS_BUCKET_PRIORITY: readonly SidebarStateBucket[] = [
   "failed",
   "running",
   "attention",
+  "background",
   "waiting",
   "done",
 ];
@@ -46,6 +48,7 @@ export const STATUS_BUCKET_ORDER: readonly SidebarStateBucket[] = [
   "failed",
   "attention",
   "running",
+  "background",
   "waiting",
   "done",
 ] as const;

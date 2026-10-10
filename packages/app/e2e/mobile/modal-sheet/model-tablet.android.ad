@@ -6,18 +6,22 @@ env PROVIDER_ID=codex
 
 open "${APP_ID}" "${FORM_URL}"
 wait "label=\"Workspace project\"" 20000
+# The trigger opens the effort popover; its label opens Advanced, whose Model row opens the browser.
 press "id=\"combined-model-selector\""
 wait "id=\"combobox-desktop-container\"" 10000
+press "id=\"agent-effort-advanced\""
+wait "id=\"agent-effort-model\"" 10000
+press "id=\"agent-effort-model\""
 # A remembered model opens its provider's list. Return to the provider page first.
 press "label=\"Back\""
 wait "id=\"model-provider-${PROVIDER_ID}\"" 10000
 press "id=\"model-provider-${PROVIDER_ID}\""
 wait "id=\"compact-model-list\"" 3000
 press "id=\"model-row-${PROVIDER_ID}-${MODEL_ID}\""
-wait "id=\"combined-model-selector\" label=\"Select model (${MODEL_LABEL})\"" 3000
+wait "id=\"agent-effort-model\" label=\"Select model (${MODEL_LABEL})\"" 3000
 
 # A drag that leaves the short viewport must scroll without selecting or dismissing.
-press "id=\"combined-model-selector\""
+press "id=\"agent-effort-model\""
 wait "id=\"model-row-${PROVIDER_ID}-${MODEL_ID}\"" 3000
 gesture pan 1000 1850 0 -700 600
 wait "id=\"compact-model-list\"" 3000
@@ -26,5 +30,5 @@ gesture fling down 1000 1750 500
 wait "id=\"model-row-${PROVIDER_ID}-${MODEL_ID}\"" 3000
 # Android Back dismisses the whole popover without changing the remembered selection.
 back
-wait "id=\"combined-model-selector\" label=\"Select model (${MODEL_LABEL})\"" 3000
+wait "id=\"combined-model-selector\"" 3000
 close

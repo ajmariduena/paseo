@@ -3,6 +3,7 @@ import { Buffer } from "buffer";
 import { useState } from "react";
 
 import { createAudioEngine } from "@/audio";
+import { levelFromPcm16 } from "@/audio/audio-levels";
 
 import type {
   DictationAudioSource,
@@ -23,10 +24,12 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
 
     engineRef.current = createAudioEngine({
       onCaptureData: (pcm) => {
+        setVolume(levelFromPcm16(pcm));
         onPcmSegmentRef.current(Buffer.from(pcm).toString("base64"));
       },
+      // The native level is squared on a -80 dB floor, which flattens normal speech.
       onVolumeLevel: (level) => {
-        setVolume(level);
+        if (level === 0) setVolume(0);
       },
       onError: (error) => {
         onErrorRef.current?.(error);

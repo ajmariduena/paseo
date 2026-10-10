@@ -34,7 +34,6 @@ describe("resolveSidebarNavItems", () => {
   it("yields builtins then plugins, all visible, when nothing is stored", () => {
     const items = resolveSidebarNavItems({
       section: "header",
-      compact: false,
       pluginGroups: [kanban, notes],
       preferences: [],
     });
@@ -44,10 +43,12 @@ describe("resolveSidebarNavItems", () => {
       { key: "history", visible: true },
       { key: "search", visible: true },
       { key: "schedules", visible: true },
+      { key: "notes", visible: true },
+      { key: "host-health", visible: true },
       { key: kanbanKey, visible: true },
       { key: notesKey, visible: true },
     ]);
-    expect(items[4]).toEqual({ kind: "plugin", key: kanbanKey, group: kanban, visible: true });
+    expect(items[6]).toEqual({ kind: "plugin", key: kanbanKey, group: kanban, visible: true });
     expect(items[0]).toEqual({
       kind: "builtin",
       key: "new-workspace",
@@ -59,7 +60,6 @@ describe("resolveSidebarNavItems", () => {
   it("keeps the stored order and appends newly available items as visible", () => {
     const items = resolveSidebarNavItems({
       section: "header",
-      compact: false,
       pluginGroups: [notes, kanban],
       preferences: [
         { key: kanbanKey, visible: false },
@@ -74,6 +74,8 @@ describe("resolveSidebarNavItems", () => {
       { key: "new-workspace", visible: false },
       { key: "history", visible: true },
       { key: "search", visible: true },
+      { key: "notes", visible: true },
+      { key: "host-health", visible: true },
       { key: notesKey, visible: true },
     ]);
   });
@@ -81,7 +83,6 @@ describe("resolveSidebarNavItems", () => {
   it("skips keys that are unknown or not currently available", () => {
     const items = resolveSidebarNavItems({
       section: "header",
-      compact: false,
       pluginGroups: [],
       preferences: [
         { key: notesKey, visible: false },
@@ -95,13 +96,14 @@ describe("resolveSidebarNavItems", () => {
       "new-workspace",
       "search",
       "schedules",
+      "notes",
+      "host-health",
     ]);
   });
 
   it("lets the first of duplicate keys win", () => {
     const items = resolveSidebarNavItems({
       section: "header",
-      compact: false,
       pluginGroups: [],
       preferences: [
         { key: "history", visible: false },
@@ -114,22 +116,19 @@ describe("resolveSidebarNavItems", () => {
       { key: "new-workspace", visible: true },
       { key: "search", visible: true },
       { key: "schedules", visible: true },
+      { key: "notes", visible: true },
+      { key: "host-health", visible: true },
     ]);
   });
 });
 
-describe("resolveSidebarNavItems on compact layouts", () => {
+describe("resolveSidebarNavItems for the Usage item", () => {
   it("hides the Usage item until it is turned on", () => {
-    const resolve = (compact: boolean, preferences: SidebarNavPreference[]) =>
-      summarize(
-        resolveSidebarNavItems({ section: "footer", compact, pluginGroups: [], preferences }),
-      );
+    const resolve = (preferences: SidebarNavPreference[]) =>
+      summarize(resolveSidebarNavItems({ section: "footer", pluginGroups: [], preferences }));
 
-    expect(resolve(true, [])).toEqual([{ key: "usage", visible: false }]);
-    expect(resolve(false, [])).toEqual([{ key: "usage", visible: true }]);
-    expect(resolve(true, [{ key: "usage", visible: true }])).toEqual([
-      { key: "usage", visible: true },
-    ]);
+    expect(resolve([])).toEqual([{ key: "usage", visible: false }]);
+    expect(resolve([{ key: "usage", visible: true }])).toEqual([{ key: "usage", visible: true }]);
   });
 });
 
@@ -137,7 +136,6 @@ describe("setSidebarNavItemVisible", () => {
   it("toggles one item and writes the full resolved order", () => {
     const items = resolveSidebarNavItems({
       section: "header",
-      compact: false,
       pluginGroups: [kanban],
       preferences: [],
     });
@@ -149,6 +147,8 @@ describe("setSidebarNavItemVisible", () => {
       { key: "history", visible: true },
       { key: "search", visible: false },
       { key: "schedules", visible: true },
+      { key: "notes", visible: true },
+      { key: "host-health", visible: true },
       { key: kanbanKey, visible: true },
     ]);
   });
@@ -160,7 +160,6 @@ describe("setSidebarNavItemVisible", () => {
     ];
     const items = resolveSidebarNavItems({
       section: "header",
-      compact: false,
       pluginGroups: [],
       preferences: previous,
     });
@@ -173,6 +172,8 @@ describe("setSidebarNavItemVisible", () => {
       { key: "new-workspace", visible: true },
       { key: "search", visible: true },
       { key: "schedules", visible: true },
+      { key: "notes", visible: true },
+      { key: "host-health", visible: true },
     ]);
   });
 
@@ -186,7 +187,6 @@ describe("setSidebarNavItemVisible", () => {
     ];
     const items = resolveSidebarNavItems({
       section: "header",
-      compact: false,
       pluginGroups: [],
       preferences: previous,
     });
@@ -199,12 +199,13 @@ describe("setSidebarNavItemVisible", () => {
       { key: "history", visible: false },
       { key: "search", visible: true },
       { key: "schedules", visible: true },
+      { key: "notes", visible: true },
+      { key: "host-health", visible: true },
     ]);
     expect(
       summarize(
         resolveSidebarNavItems({
           section: "header",
-          compact: false,
           pluginGroups: [notes],
           preferences: next,
         }),
@@ -215,7 +216,6 @@ describe("setSidebarNavItemVisible", () => {
   it("returns the normalized list unchanged for an unknown key", () => {
     const items = resolveSidebarNavItems({
       section: "header",
-      compact: false,
       pluginGroups: [],
       preferences: [],
     });
@@ -229,7 +229,6 @@ describe("setSidebarNavItemVisible", () => {
 describe("moveSidebarNavItem", () => {
   const items = resolveSidebarNavItems({
     section: "header",
-    compact: false,
     pluginGroups: [kanban],
     preferences: [],
   });
@@ -242,6 +241,8 @@ describe("moveSidebarNavItem", () => {
       "search",
       "history",
       "schedules",
+      "notes",
+      "host-health",
       kanbanKey,
     ]);
   });
@@ -253,8 +254,10 @@ describe("moveSidebarNavItem", () => {
       "new-workspace",
       "history",
       "search",
-      kanbanKey,
+      "notes",
       "schedules",
+      "host-health",
+      kanbanKey,
     ]);
   });
 
@@ -307,13 +310,12 @@ describe("footer section", () => {
   it("resolves the Usage item first, then plugin rows", () => {
     const items = resolveSidebarNavItems({
       section: "footer",
-      compact: false,
       pluginGroups: [sync],
       preferences: [],
     });
 
     expect(summarize(items)).toEqual([
-      { key: "usage", visible: true },
+      { key: "usage", visible: false },
       { key: syncKey, visible: true },
     ]);
   });
@@ -321,18 +323,16 @@ describe("footer section", () => {
   it("ignores header built-ins stored in footer preferences", () => {
     const items = resolveSidebarNavItems({
       section: "footer",
-      compact: false,
       pluginGroups: [],
       preferences: [{ key: "history", visible: false }],
     });
 
-    expect(summarize(items)).toEqual([{ key: "usage", visible: true }]);
+    expect(summarize(items)).toEqual([{ key: "usage", visible: false }]);
   });
 
   it("ignores the footer icon buttons, which are fixed and not items", () => {
     const items = resolveSidebarNavItems({
       section: "footer",
-      compact: false,
       pluginGroups: [sync],
       preferences: [
         { key: "add-project", visible: false },
@@ -350,33 +350,31 @@ describe("footer section", () => {
     ]);
   });
 
-  it("moves and hides footer rows while keeping an unavailable plugin's entry", () => {
+  it("moves and shows footer rows while keeping an unavailable plugin's entry", () => {
     const notesPreference = { key: notesKey, visible: false };
     const previous: SidebarNavPreference[] = [notesPreference];
     const items = resolveSidebarNavItems({
       section: "footer",
-      compact: false,
       pluginGroups: [sync],
       preferences: previous,
     });
 
     const moved = moveSidebarNavItem({ items, key: syncKey, direction: "up", previous });
-    const hidden = setSidebarNavItemVisible({
+    const shown = setSidebarNavItemVisible({
       items: resolveSidebarNavItems({
         section: "footer",
-        compact: false,
         pluginGroups: [sync],
         preferences: moved,
       }),
       key: "usage",
-      visible: false,
+      visible: true,
       previous: moved,
     });
 
-    expect(hidden).toEqual([
+    expect(shown).toEqual([
       notesPreference,
       { key: syncKey, visible: true },
-      { key: "usage", visible: false },
+      { key: "usage", visible: true },
     ]);
   });
 });

@@ -1,3 +1,4 @@
+import type { Dictionary, QuickPrompt } from "@getpaseo/protocol/messages";
 import type { PluginRegistries } from "@getpaseo/protocol/plugin-registry";
 import { describeHookWorkspace } from "./plugins/lifecycle/index.js";
 import express from "express";
@@ -13,6 +14,7 @@ import { z } from "zod";
 import { createBranchChangeRouteHandler } from "./script-route-branch-handler.js";
 import { startWorktreeStorageSweeper } from "./worktree-storage-sweeper.js";
 import { resolvePaseoWorktreesBaseRoot } from "../utils/worktree.js";
+import { HtmlRenderStore } from "./agent/html-render/store.js";
 
 export type ListenTarget =
   | { type: "tcp"; host: string; port: number }
@@ -123,11 +125,14 @@ export async function fanOutReconciledWorkspaceUpdates(input: {
 import { VoiceAssistantWebSocketServer } from "./websocket-server.js";
 import { WorkspaceSetupRuntime } from "./workspace-setup-runtime.js";
 import { createWorkspaceLabelService } from "./workspace-labels/index.js";
+import { createNoteStore } from "./notes/store.js";
+import { HostMetricsSampler } from "./host-metrics/sampler.js";
 import { createGitHubService } from "../services/github-service.js";
 import { createPaseoWorktree as createRegisteredPaseoWorktree } from "./paseo-worktree-service.js";
 import { createWorkspaceProvisioningService } from "./session/workspace-provisioning/workspace-provisioning-service.js";
 import { createPaseoWorktreeWorkflow } from "./worktree-session.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
+import { formatAttachmentContentDisposition } from "./file-download/content-disposition.js";
 import type { OpenAiSpeechProviderConfig } from "./speech/providers/openai/config.js";
 import type { ElevenLabsSpeechProviderConfig } from "./speech/providers/elevenlabs/runtime.js";
 import type { LocalSpeechProviderConfig } from "./speech/providers/local/config.js";
@@ -141,6 +146,7 @@ import { describeDictationStt } from "./speech/dictation-selection.js";
 import type { ReadAloudConfig } from "./speech/read-aloud/config.js";
 import { ReadAloudService } from "./speech/read-aloud/service.js";
 import { VoiceOrchestrator, type GptLiveEngineConfig } from "./voice-orchestrator/orchestrator.js";
+import type { FastLlmConfig } from "./voice-orchestrator/fast-brain/llm-client.js";
 import { AgentManager } from "./agent/agent-manager.js";
 import { AgentStorage } from "./agent/agent-storage.js";
 import { attachAgentStoragePersistence } from "./persistence-hooks.js";
@@ -167,6 +173,7 @@ import { reconcileProviderSwitchesAtBoot } from "./agent/provider-switch/boot-re
 import { HandoffStore } from "./agent/provider-switch/handoff-store.js";
 import { SegmentSnapshotStore } from "./agent/provider-switch/snapshot-store.js";
 import { PullRequestWatcher } from "./pull-request-watch/watcher.js";
+import { AgentStop } from "./agent/stop.js";
 import { PromptAnnotationStore } from "./agent/prompt-annotations.js";
 import { AgentQueueStore } from "./agent-queue/store.js";
 import { createRestoredEntryDeliverer } from "./agent/message-dispatch.js";
@@ -435,6 +442,8 @@ export interface PaseoDaemonConfig {
   appendSystemPrompt?: string;
   terminalProfiles?: TerminalProfile[];
   agentProfiles?: AgentProfile[];
+  quickPrompts?: QuickPrompt[];
+  quickPromptUndoMs?: number;
   skillSelection?: AgentSkillSelection;
   pluginsEnabled?: boolean;
   plugins?: Record<string, PluginSource>;
@@ -470,6 +479,9 @@ export interface PaseoDaemonConfig {
   voiceLlmModel?: string | null;
   voiceLlmThinking?: string | null;
   voiceLive?: GptLiveEngineConfig | null;
+  voiceRouter?: FastLlmConfig | null;
+  voiceRouterBackup?: FastLlmConfig | null;
+  dictionary?: Dictionary;
   voiceLanguage?: string | null;
   dictationFinalTimeoutMs?: number;
   downloadTokenTtlMs?: number;
@@ -611,11 +623,18 @@ function createInitialMutableDaemonConfig(config: PaseoDaemonConfig): MutableDae
     initialConfig.terminalProfiles = config.terminalProfiles;
   }
 
+  initialConfig.quickPrompts = config.quickPrompts;
+  initialConfig.dictionary = config.dictionary;
+  initialConfig.quickPromptUndoMs = config.quickPromptUndoMs;
   if (config.agentProfiles !== undefined) {
     initialConfig.agentProfiles = config.agentProfiles;
   }
 
   return initialConfig;
+}
+
+function voiceCommandsOptions(config: PaseoDaemonConfig) {
+  return { paseoHome: config.paseoHome, env: config.configReload?.env ?? process.env };
 }
 
 function createInitialDictationConfig(
@@ -712,7 +731,11 @@ export async function createPaseoDaemon(
   });
   const browserToolsPolicy = new DaemonConfigBrowserToolsPolicy(daemonConfigStore);
   const browserToolsBroker = new BrowserToolsBroker({});
-  const pluginRuntime = new PluginService(logger, daemonConfigStore, daemonVersion, {
+  const pluginRuntime: PluginService = new PluginService(logger, daemonConfigStore, daemonVersion, {
+    usageAgents: {
+      hasAgent: (id) => agentManager.getAgent(id) !== null,
+      usageSession: (id) => agentManager.usageSession(id),
+    },
     managedSources: new ManagedPluginSources(config.paseoHome, {
       registries: config.pluginRegistries,
       defaultUrl: config.pluginRegistryUrl,
@@ -926,9 +949,8 @@ export async function createPaseoDaemon(
         return;
       }
 
-      const safeFileName = entry.fileName.replace(/["\r\n]/g, "_");
       res.setHeader("Content-Type", entry.mimeType);
-      res.setHeader("Content-Disposition", `attachment; filename="${safeFileName}"`);
+      res.setHeader("Content-Disposition", formatAttachmentContentDisposition(entry.fileName));
       res.setHeader("Content-Length", fileStats.size.toString());
 
       const stream = fileHandle.createReadStream();
@@ -1042,6 +1064,7 @@ export async function createPaseoDaemon(
   );
   const handoffs = new HandoffStore(path.join(config.paseoHome, "context", "handoffs"));
   const agentManager = new AgentManager({
+    paseoHome: config.paseoHome,
     pluginLifecycle: pluginRuntime,
     clients: initialAgentManagerState.clients,
     providerDefinitions: initialAgentManagerState.providerDefinitions,
@@ -1074,6 +1097,13 @@ export async function createPaseoDaemon(
       (await workspaceGitService.getSnapshot(cwd)).forge.pullRequest?.number ?? null,
     logger,
   });
+  const agentStop = new AgentStop({
+    agentManager,
+    agentStorage,
+    delegations,
+    pullRequestWatches,
+    logger,
+  });
   const restartRecovery = new RestartRecovery({
     intents: RestartIntentStore.at(config.paseoHome),
     receipts: new MessageReceipts(path.join(config.paseoHome, "agent-requests")),
@@ -1096,6 +1126,7 @@ export async function createPaseoDaemon(
     agentManager,
     agentStorage,
   );
+  await new HtmlRenderStore(config.paseoHome).initialize();
   await agentStorage.initialize();
   logger.info({ elapsed: elapsed() }, "Agent storage initialized");
   // Before any boot sender: a switch the restart cut must be settled on disk first. An agent
@@ -1354,7 +1385,6 @@ export async function createPaseoDaemon(
         emit: emitExternalSessionMessage,
         sessionLogger: logger,
         terminalManager,
-        archiveWorkspaceRecord: archiveWorkspaceRecordExternal,
         serviceProxy,
         scriptRuntimeStore,
         getDaemonTcpPort: () => (boundListenTarget?.type === "tcp" ? boundListenTarget.port : null),
@@ -1536,6 +1566,8 @@ export async function createPaseoDaemon(
       },
     );
   };
+  const noteStore = createNoteStore(config.paseoHome, logger);
+  const hostMetricsSampler = new HostMetricsSampler({ logger });
   const scheduleService = new ScheduleService({
     paseoHome: config.paseoHome,
     logger,
@@ -1584,6 +1616,7 @@ export async function createPaseoDaemon(
     terminalManager,
     getDaemonTcpPort: () => (boundListenTarget?.type === "tcp" ? boundListenTarget.port : null),
     scheduleService,
+    noteStore,
     providerSnapshotManager,
     daemonConfigStore,
     github,
@@ -1615,9 +1648,8 @@ export async function createPaseoDaemon(
       serviceProxyPublicBaseUrl,
       resolveScriptHealth: (hostname) => scriptHealthMonitor.getHealthForHostname(hostname),
       logger,
-      // MCP operations do not belong to one WebSocket session, so lifecycle
-      // status updates fan out to every connected client.
       emit: (message) => wsServer?.broadcast(wrapSessionMessage(message)),
+      publishStatusUpdate: (message) => wsServer?.publishScriptStatusUpdate(message),
       spawnWorkspaceScript,
       assertAutomationAllowed: (workspaceId) =>
         assertWorkspaceAutomationAllowedForWorkspace(workspaceRegistry, workspaceId),
@@ -1636,12 +1668,14 @@ export async function createPaseoDaemon(
     worktreesRoot: config.worktreesRoot,
     delegations,
     pullRequestWatches,
+    agentStop,
     callerAgentId: runtime.callerAgentId,
     transport: runtime.transport,
     enableVoiceTools: runtime.enableVoiceTools,
     voiceOnly: runtime.voiceOnly,
     resolveSpeakHandler: (agentId) => wsServer?.resolveVoiceSpeakHandler(agentId) ?? null,
     resolveCallerContext: (agentId) => wsServer?.resolveVoiceCallerContext(agentId) ?? null,
+    callerContext: runtime.callerContext,
     logger,
   });
   const createAgentToolCatalog = (runtime: PaseoToolRuntimeContext) =>
@@ -1803,6 +1837,14 @@ export async function createPaseoDaemon(
     language: config.voiceLanguage,
     live: config.voiceLive,
     speech: speechService,
+    projectRegistry,
+    router: config.voiceRouter,
+    routerBackup: config.voiceRouterBackup,
+    voiceCommands: voiceCommandsOptions(config),
+    dictionary: () => daemonConfigStore.get().dictionary,
+    createToolCatalog: async (callerContext) =>
+      createAgentToolCatalog({ callerContext, transport: "native" }),
+    hostMetrics: () => hostMetricsSampler.getSnapshot(),
     logger,
   });
 
@@ -1959,6 +2001,9 @@ export async function createPaseoDaemon(
               readAloudService,
               voiceOrchestrator,
               delegations,
+              agentStop,
+              noteStore,
+              hostMetricsSampler,
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();
@@ -2044,6 +2089,7 @@ export async function createPaseoDaemon(
     worktreeStorageSweeper.dispose();
     workspaceReconciliation.dispose();
     scriptHealthMonitor.stop();
+    hostMetricsSampler.dispose();
     // Freeze both ingress and registration before taking the agent closure snapshot.
     wsServer?.prepareForShutdown();
     agentManager.prepareForShutdown();

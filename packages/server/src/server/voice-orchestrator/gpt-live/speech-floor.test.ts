@@ -40,7 +40,7 @@ describe("FloorQueue", () => {
     queue.push("routine", () => sent.push("auth terminó"));
     expect(sent).toEqual([]);
 
-    time.advance(3_000 + 800 + 1_900);
+    time.advance(3_000 + 800 + 4_900);
     queue.push("routine", () => sent.push("noop"));
     expect(sent).toEqual([]);
     time.advance(200);
@@ -71,17 +71,43 @@ describe("FloorQueue", () => {
     queue.close();
   });
 
-  it("never holds an update past its deadline", () => {
+  it("never speaks over the user, even past its deadline, and goes right after they stop", () => {
     const { time, floor, sent, queue } = setup();
     floor.noteUserSpeech();
     queue.push("result", () => sent.push("result"));
-    for (let elapsed = 0; elapsed < 12_000; elapsed += 500) {
+    for (let elapsed = 0; elapsed < 15_000; elapsed += 500) {
       time.advance(500);
       floor.noteUserSpeech();
     }
     queue.push("routine", () => undefined);
+    expect(sent).toEqual([]);
 
+    time.advance(1_000);
+    queue.push("routine", () => undefined);
     expect(sent).toEqual(["result"]);
+    queue.close();
+  });
+
+  it("waits for a real pause from the user before an urgent update", () => {
+    const { time, floor, sent, queue } = setup();
+    floor.noteUserSpeech();
+    queue.push("urgent", () => sent.push("urgent"));
+    time.advance(900 + 1_400);
+    queue.push("routine", () => undefined);
+    expect(sent).toEqual([]);
+    time.advance(1_200);
+    queue.push("routine", () => undefined);
+    expect(sent).toEqual(["urgent"]);
+    queue.close();
+  });
+
+  it("lets an overdue update past a long assistant answer once the user is quiet", () => {
+    const { time, floor, sent, queue } = setup();
+    queue.push("urgent", () => sent.push("urgent"));
+    floor.noteAssistantAudio(40_000);
+    time.advance(30_000);
+    queue.push("routine", () => undefined);
+    expect(sent).toEqual(["urgent"]);
     queue.close();
   });
 });

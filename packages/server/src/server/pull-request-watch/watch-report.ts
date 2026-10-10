@@ -10,14 +10,15 @@ import type { SystemMessage } from "../agent/message-dispatch.js";
 import type { WatchProgress } from "./watch-store.js";
 
 /**
- * Comment-only wakes in a row before watching stops. Check or conflict news resets the count,
- * so this only stops a chatty bot looping an agent that keeps replying to it.
+ * Comment-only wakes in a row before watching stops. Check, conflict, or push news resets the
+ * count, so this only stops a chatty bot looping an agent that keeps replying to it.
  */
 export const PULL_REQUEST_WATCH_WAKE_LIMIT = 10;
 const LISTED_ITEMS = 10;
 const SNIPPET_LENGTH = 200;
 
 export interface PullRequestObservation {
+  headSha: string | null;
   checks: PullRequestCheck[];
   /** Empty when the forge marks no check required; every check then gates "passed". */
   requiredCheckNames: string[];
@@ -50,51 +51,84 @@ function isFailedCheck(check: PullRequestCheck): boolean {
   );
 }
 
+/** An edit counts as new activity, so a bot that rewrites one summary comment still wakes. */
+function activeAt(remark: PullRequestTimelineItem): number {
+  return remark.editedAt ?? remark.createdAt;
+}
+
+type CheckProgress = Pick<WatchProgress, "failedChecks" | "passed" | "passedChecks">;
+
+interface CheckEvaluation {
+  changes: PullRequestWatchChange[];
+  next: CheckProgress;
+}
+
+function evaluateChecks(told: CheckProgress, observation: PullRequestObservation): CheckEvaluation {
+  // An empty list keeps the last state: a forge can answer with one when its check read fails.
+  if (observation.checks.length === 0) return { changes: [], next: told };
+  const changes: PullRequestWatchChange[] = [];
+  const failed = observation.checks.filter(isFailedCheck);
+  const newlyFailed = failed.filter((check) => !told.failedChecks.includes(check.name));
+  if (newlyFailed.length > 0) changes.push({ kind: "checks-failed", failed: newlyFailed });
+
+  const required = observation.checks.filter((check) =>
+    observation.requiredCheckNames.includes(check.name),
+  );
+  const gate = required.length > 0 ? required : observation.checks;
+  const passed = gate.every((check) => check.status !== "pending" && !isFailedCheck(check));
+  const gateNames = gate.map((check) => check.name);
+  // A watch saved before passedChecks existed takes the current names, so it does not wake.
+  const toldPassed = told.passed && told.passedChecks.length === 0 ? gateNames : told.passedChecks;
+  // A required job created and finished between two passes is never seen pending. Without
+  // required checks every check is in the gate, and advisory bots keep adding passed ones.
+  const gateGrew = required.length > 0 && gateNames.some((name) => !toldPassed.includes(name));
+  if (passed && (!told.passed || gateGrew)) {
+    changes.push({ kind: "checks-passed", count: gate.length, required: required.length > 0 });
+  }
+  return {
+    changes,
+    next: {
+      // A rerun leaves the list while pending, so failing again is reported again.
+      failedChecks: failed.map((check) => check.name),
+      passed,
+      passedChecks: passed ? gateNames : [],
+    },
+  };
+}
+
 /**
  * Compares a watched pull request with what its agent was last told. A check is reported as
  * soon as it fails, so a check that never finishes cannot hold the news back. "Passed" is
- * reported once every required check passed, or every check when none is required.
+ * reported once every required check passed, or every check when none is required. A push
+ * starts the check news over for the new head commit.
  */
 export function evaluatePullRequestWatch(
   progress: WatchProgress,
   observation: PullRequestObservation,
 ): PullRequestWatchReport {
-  const changes: PullRequestWatchChange[] = [];
-
-  // An empty list keeps the last state: a forge can answer with one when its check read fails.
-  let { failedChecks, passed } = progress;
-  if (observation.checks.length > 0) {
-    const failed = observation.checks.filter(isFailedCheck);
-    const newlyFailed = failed.filter((check) => !failedChecks.includes(check.name));
-    if (newlyFailed.length > 0) changes.push({ kind: "checks-failed", failed: newlyFailed });
-    // A rerun leaves the list while pending, so failing again is reported again.
-    failedChecks = failed.map((check) => check.name);
-
-    const required = observation.checks.filter((check) =>
-      observation.requiredCheckNames.includes(check.name),
-    );
-    const gate = required.length > 0 ? required : observation.checks;
-    const passedNow = gate.every((check) => check.status !== "pending" && !isFailedCheck(check));
-    if (passedNow && !passed) {
-      changes.push({ kind: "checks-passed", count: gate.length, required: required.length > 0 });
-    }
-    passed = passedNow;
-  }
+  const { headSha } = observation;
+  const headMoved = progress.headSha !== undefined && progress.headSha !== headSha;
+  const checks = evaluateChecks(
+    headMoved ? { failedChecks: [], passed: false, passedChecks: [] } : progress,
+    observation,
+  );
+  const changes = [...checks.changes];
 
   const { remarksThrough, remarkIds } = progress;
   const own = observation.viewer?.toLowerCase();
   const fresh =
     own === undefined
       ? []
-      : (observation.remarks ?? []).filter(
-          (remark) =>
-            (remark.createdAt > remarksThrough ||
-              (remark.createdAt === remarksThrough && !remarkIds.includes(remark.id))) &&
-            remark.author.toLowerCase() !== own,
-        );
+      : (observation.remarks ?? []).filter((remark) => {
+          const at = activeAt(remark);
+          return (
+            (at > remarksThrough || (at === remarksThrough && !remarkIds.includes(remark.id))) &&
+            remark.author.toLowerCase() !== own
+          );
+        });
   if (fresh.length > 0) changes.push({ kind: "remarks", remarks: fresh });
-  const latest = Math.max(remarksThrough, ...fresh.map((remark) => remark.createdAt));
-  const atLatest = fresh.filter((remark) => remark.createdAt === latest).map((r) => r.id);
+  const latest = Math.max(remarksThrough, ...fresh.map(activeAt));
+  const atLatest = fresh.filter((remark) => activeAt(remark) === latest).map((r) => r.id);
   const nextRemarkIds = latest === remarksThrough ? [...remarkIds, ...atLatest] : atLatest;
 
   if (observation.mergeable === "CONFLICTING" && !progress.conflicting) {
@@ -107,12 +141,15 @@ export function evaluatePullRequestWatch(
       : observation.mergeable === "CONFLICTING";
 
   const commentsOnly = changes.length > 0 && changes.every((change) => change.kind === "remarks");
-  const wakes = countWakes(progress.wakes, changes.length > 0, commentsOnly);
+  const progressed = headMoved || (changes.length > 0 && !commentsOnly);
+  const wakes = (progressed ? 0 : progress.wakes) + (commentsOnly ? 1 : 0);
   return {
     changes,
     next: {
-      failedChecks,
-      passed,
+      headSha,
+      failedChecks: checks.next.failedChecks,
+      passed: checks.next.passed,
+      passedChecks: checks.next.passedChecks,
       remarksThrough: latest,
       remarkIds: nextRemarkIds,
       conflicting,
@@ -120,11 +157,6 @@ export function evaluatePullRequestWatch(
     },
     exhausted: commentsOnly && wakes >= PULL_REQUEST_WATCH_WAKE_LIMIT,
   };
-}
-
-function countWakes(wakes: number, changed: boolean, commentsOnly: boolean): number {
-  if (commentsOnly) return wakes + 1;
-  return changed ? 0 : wakes;
 }
 
 function snippet(body: string): string {
@@ -215,11 +247,11 @@ export function renderPullRequestWake(input: PullRequestWakeInput): SystemMessag
 export function renderUnreadableWake(input: {
   number: number;
   url: string;
-  minutes: number;
+  failures: number;
 }): SystemMessage {
   return {
     prompt: formatSystemNotificationPrompt(
-      `Paseo stopped watching pull request #${input.number} (${input.url}) because it could not read it from the forge for ${input.minutes} minutes. Check it yourself, and call watch_pull_request to watch it again.`,
+      `Paseo stopped watching pull request #${input.number} (${input.url}) because it failed to read it from the forge ${input.failures} times in a row. Check it yourself, and call watch_pull_request to watch it again.`,
     ),
     notification: {
       level: "warning",

@@ -23,6 +23,14 @@ describe("shouldEmitPendingBootstrapUpdate", () => {
       }),
     ).toBe(true);
   });
+  test("emits when only the delegating parent changes", () => {
+    expect(
+      shouldEmitPendingBootstrapUpdate({
+        snapshot: { ...SNAPSHOT_DONE_10_30, delegatedByAgentId: "parent-agent" },
+        update: SNAPSHOT_DONE_10_30,
+      }),
+    ).toBe(true);
+  });
   test("emits when there is no snapshot (first-time subscription)", () => {
     expect(
       shouldEmitPendingBootstrapUpdate({

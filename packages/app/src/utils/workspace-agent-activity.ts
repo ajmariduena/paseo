@@ -1,16 +1,20 @@
-import type { Agent, WorkspaceDescriptor } from "@/stores/session-store";
+import type { AgentBackgroundTask } from "@getpaseo/protocol/agent-types";
+import type { Agent } from "@/stores/session-store";
 import { isWorkspaceRootAgent } from "@/subagents/policies";
-import { deriveSidebarStateBucket } from "./sidebar-agent-state";
+import { deriveSidebarStateBucket, type SidebarStateBucket } from "./sidebar-agent-state";
 
 export interface WorkspaceAgentActivity {
   agentId: string;
-  status: WorkspaceDescriptor["status"];
+  status: SidebarStateBucket;
   enteredAt: Date | null;
+  /** Live background tasks across every root agent in the workspace, not just the latest one. */
+  backgroundTasks: readonly AgentBackgroundTask[];
 }
+
+const NO_BACKGROUND_TASKS: readonly AgentBackgroundTask[] = [];
 
 function workspaceAgentStatus(agent: Agent): Agent["status"] {
   if (agent.turn.phase === "open") return "running";
-  if (agent.status === "idle" && agent.backgroundTasks?.length) return "running";
   return agent.status === "running" ? "idle" : agent.status;
 }
 
@@ -19,48 +23,82 @@ export function buildWorkspaceAgentActivityIndex(
   previous?: ReadonlyMap<string, WorkspaceAgentActivity>,
 ): Map<string, WorkspaceAgentActivity> {
   const activityByWorkspaceId = new Map<string, WorkspaceAgentActivity>();
-  const latestActivityAtByWorkspaceId = new Map<string, Date>();
+  const backgroundTasksByWorkspaceId = new Map<string, AgentBackgroundTask[]>();
 
   for (const agent of agents.values()) {
     const parentAgent = agent.parentAgentId ? agents.get(agent.parentAgentId) : undefined;
     if (agent.archivedAt || !agent.workspaceId || !isWorkspaceRootAgent(agent, parentAgent)) {
       continue;
     }
+    collectBackgroundTasks(backgroundTasksByWorkspaceId, agent.workspaceId, agent);
 
     const enteredAt = agent.attentionTimestamp ?? agent.updatedAt;
-    const latestActivityAt = latestActivityAtByWorkspaceId.get(agent.workspaceId);
-    if (latestActivityAt && enteredAt <= latestActivityAt) {
+    const latestActivity = activityByWorkspaceId.get(agent.workspaceId);
+    if (latestActivity?.enteredAt && enteredAt <= latestActivity.enteredAt) {
       continue;
     }
-    latestActivityAtByWorkspaceId.set(agent.workspaceId, enteredAt);
-
-    const status = deriveSidebarStateBucket({
-      status: workspaceAgentStatus(agent),
-      pendingPermissionCount: agent.pendingPermissions.length,
-      requiresAttention: agent.requiresAttention,
-      attentionReason: agent.attentionReason,
-    });
     activityByWorkspaceId.set(agent.workspaceId, {
       agentId: agent.id,
-      status,
+      status: workspaceAgentBucket(agent),
       enteredAt,
+      backgroundTasks: NO_BACKGROUND_TASKS,
     });
   }
 
   for (const [workspaceId, activity] of activityByWorkspaceId) {
+    const backgroundTasks = backgroundTasksByWorkspaceId.get(workspaceId) ?? NO_BACKGROUND_TASKS;
+    const status =
+      activity.status === "done" && backgroundTasks.length > 0 ? "background" : activity.status;
+    const next = { ...activity, status, backgroundTasks };
     const previousActivity = previous?.get(workspaceId);
-    if (
-      previousActivity?.agentId === activity.agentId &&
-      previousActivity.status === activity.status
-    ) {
-      activityByWorkspaceId.set(workspaceId, previousActivity);
-    }
+    activityByWorkspaceId.set(
+      workspaceId,
+      previousActivity && isSameActivity(previousActivity, next) ? previousActivity : next,
+    );
   }
 
   if (previous && areWorkspaceAgentActivityIndexesIdentical(previous, activityByWorkspaceId)) {
     return previous instanceof Map ? previous : new Map(previous);
   }
   return activityByWorkspaceId;
+}
+
+function workspaceAgentBucket(agent: Agent): SidebarStateBucket {
+  return deriveSidebarStateBucket({
+    status: workspaceAgentStatus(agent),
+    pendingPermissionCount: agent.pendingPermissions.length,
+    requiresAttention: agent.requiresAttention,
+    attentionReason: agent.attentionReason,
+  });
+}
+
+function collectBackgroundTasks(
+  backgroundTasksByWorkspaceId: Map<string, AgentBackgroundTask[]>,
+  workspaceId: string,
+  agent: Agent,
+): void {
+  if (!agent.backgroundTasks?.length) return;
+  const tasks = backgroundTasksByWorkspaceId.get(workspaceId) ?? [];
+  tasks.push(...agent.backgroundTasks);
+  backgroundTasksByWorkspaceId.set(workspaceId, tasks);
+}
+
+function isSameActivity(previous: WorkspaceAgentActivity, next: WorkspaceAgentActivity): boolean {
+  return (
+    previous.agentId === next.agentId &&
+    previous.status === next.status &&
+    areBackgroundTasksIdentical(previous.backgroundTasks, next.backgroundTasks)
+  );
+}
+
+function areBackgroundTasksIdentical(
+  previous: readonly AgentBackgroundTask[],
+  next: readonly AgentBackgroundTask[],
+): boolean {
+  if (previous.length !== next.length) return false;
+  return previous.every(
+    (task, index) => task.id === next[index]?.id && task.description === next[index]?.description,
+  );
 }
 
 function areWorkspaceAgentActivityIndexesIdentical(

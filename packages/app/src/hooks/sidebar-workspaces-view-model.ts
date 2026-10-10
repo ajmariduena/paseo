@@ -1,8 +1,10 @@
+import type { AgentBackgroundTask } from "@getpaseo/protocol/agent-types";
 import type { PrHint } from "@/git/pr-hint";
 import { selectPrHintFromStatus } from "@/git/pr-hint";
 import { type HostProjectListItem } from "@/projects/host-project-model";
 import type { PendingCreateAttempt } from "@/stores/create-flow-store";
 import type { WorkspaceDescriptor } from "@/stores/session-store";
+import type { PendingWorkspaceCreation } from "@/stores/pending-workspace-creation";
 import type {
   WorkspaceStructureHostPlacement,
   WorkspaceStructureProject,
@@ -39,6 +41,8 @@ export interface SidebarStatusWorkspacePlacement extends SidebarWorkspacePlaceme
 }
 
 export interface SidebarWorkspaceEntry extends SidebarStatusWorkspacePlacement {
+  pendingCreation?: "creating" | "failed";
+  pendingOutcomeUnknown?: boolean;
   waitingOnSubagentsCount?: number;
   workspaceDirectory: string;
   workspaceDirectoryLabel: string;
@@ -56,6 +60,62 @@ export interface SidebarWorkspaceEntry extends SidebarStatusWorkspacePlacement {
   archiveUnpushedCommitCount: number | null;
   scripts: WorkspaceDescriptor["scripts"];
   hasRunningScripts: boolean;
+  backgroundTasks: readonly AgentBackgroundTask[];
+}
+
+export function createPendingSidebarWorkspaceEntry(
+  creation: PendingWorkspaceCreation,
+): SidebarWorkspaceEntry {
+  const failed = creation.phase === "failed";
+  return {
+    workspaceKey: `${creation.serverId}:${creation.workspaceId}`,
+    serverId: creation.serverId,
+    workspaceId: creation.workspaceId,
+    projectViewKey: creation.projectViewKey,
+    projectName: creation.projectName,
+    projectRootPath: creation.sourceDirectory,
+    workspaceDirectory: creation.sourceDirectory,
+    workspaceDirectoryLabel: "",
+    projectKind: creation.projectKind,
+    workspaceKind: "checkout",
+    name: creation.prompt.trim().split("\n")[0] || creation.projectName,
+    title: null,
+    currentBranch: null,
+    statusBucket: failed ? "failed" : "running",
+    statusEnteredAt: new Date(creation.createdAt),
+    archivingAt: null,
+    diffStat: null,
+    prHint: null,
+    archiveHasUncommittedChanges: null,
+    archiveUnpushedCommitCount: null,
+    scripts: [],
+    hasRunningScripts: false,
+    backgroundTasks: [],
+    pendingCreation: failed ? "failed" : "creating",
+    pendingOutcomeUnknown: creation.outcomeUnknown,
+  };
+}
+
+// The daemon can publish a new workspace (status done, no agent yet) before the creation that
+// reserved it reaches workspace_ready; until then the row keeps the pending creation's running.
+export function overlayPendingWorkspaceCreationStatus(
+  entries: ReadonlyMap<string, SidebarWorkspaceEntry>,
+  creations: Record<string, PendingWorkspaceCreation>,
+): ReadonlyMap<string, SidebarWorkspaceEntry> {
+  let overlaid: Map<string, SidebarWorkspaceEntry> | null = null;
+  for (const creation of Object.values(creations)) {
+    if (creation.phase === "failed") continue;
+    const key = `${creation.serverId}:${creation.workspaceId}`;
+    const entry = entries.get(key);
+    if (!entry || entry.statusBucket !== "done") continue;
+    overlaid ??= new Map(entries);
+    overlaid.set(key, {
+      ...entry,
+      statusBucket: "running",
+      statusEnteredAt: new Date(creation.createdAt),
+    });
+  }
+  return overlaid ?? entries;
 }
 
 export interface SidebarProjectEntry {
@@ -187,10 +247,13 @@ export function createSidebarWorkspaceEntry(input: {
     archiveUnpushedCommitCount: input.workspace.gitRuntime?.aheadOfOrigin ?? null,
     scripts: input.workspace.scripts,
     hasRunningScripts: input.workspace.scripts.some((script) => script.lifecycle === "running"),
+    backgroundTasks:
+      input.workspaceAgentActivity?.get(input.workspace.id)?.backgroundTasks ?? NO_BACKGROUND_TASKS,
   };
 }
 
 const EMPTY_WORKSPACE_LABELS: string[] = [];
+const NO_BACKGROUND_TASKS: readonly AgentBackgroundTask[] = [];
 
 function deriveEffectiveWorkspaceStatus(input: {
   serverId: string;
@@ -258,6 +321,7 @@ export function deriveProjectStatusBucket(input: {
   workspaces: readonly SidebarWorkspacePlacement[];
   sessions: Record<string, ProjectStatusSession | undefined>;
   pendingCreateAttempts?: Record<string, PendingCreateAttempt>;
+  pendingWorkspaceCreations?: Record<string, PendingWorkspaceCreation>;
 }): SidebarStateBucket {
   const workspaceIdsByServer = new Map<string, string[]>();
   for (const placement of input.workspaces) {
@@ -272,8 +336,13 @@ export function deriveProjectStatusBucket(input: {
   const buckets: SidebarStateBucket[] = [];
   for (const [serverId, workspaceIds] of workspaceIdsByServer) {
     const session = input.sessions[serverId];
-    if (!session) continue;
     for (const workspaceId of workspaceIds) {
+      const pending = input.pendingWorkspaceCreations?.[`${serverId}:${workspaceId}`];
+      if (pending && !session?.workspaces.has(workspaceId)) {
+        buckets.push(pending.phase === "failed" ? "failed" : "running");
+        continue;
+      }
+      if (!session) continue;
       const workspaceKey = resolveWorkspaceMapKeyByIdentity({
         workspaces: session.workspaces,
         workspaceId,
@@ -325,6 +394,37 @@ export function deriveSidebarToggleAttentionBucket(input: {
     }
   }
   return result;
+}
+
+/** Workspaces that belong to an active parent's subagents live in that parent's track. */
+export function selectDelegatedSidebarWorkspaceKeys(
+  sessions: Record<string, { workspaces: Map<string, WorkspaceDescriptor> } | undefined>,
+  serverIds: readonly string[],
+): string[] {
+  const keys: string[] = [];
+  for (const serverId of serverIds) {
+    for (const workspace of sessions[serverId]?.workspaces.values() ?? []) {
+      if (workspace.delegatedByAgentId && !workspace.pinnedAt) {
+        keys.push(`${serverId}:${workspace.id}`);
+      }
+    }
+  }
+  return keys;
+}
+
+export function omitSidebarWorkspaces(
+  projects: HostProjectListItem[],
+  hiddenKeys: readonly string[],
+): HostProjectListItem[] {
+  if (hiddenKeys.length === 0) return projects;
+  const hidden = new Set(hiddenKeys);
+  return projects.map((project) =>
+    project.workspaceKeys.some((key) => hidden.has(key))
+      ? Object.assign({}, project, {
+          workspaceKeys: project.workspaceKeys.filter((key) => !hidden.has(key)),
+        })
+      : project,
+  );
 }
 
 export function buildSidebarWorkspacePlacementModel(input: {

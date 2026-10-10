@@ -66,6 +66,8 @@ export class AgentQueueRunner {
   private readonly drains = new Map<string, Promise<void>>();
   private readonly redrain = new Set<string>();
   private readonly outcomes = new Map<string, TerminalOutcome>();
+  /** Stopped by the user and not revived since: system messages wait in a held queue. */
+  private readonly userStopped = new Set<string>();
   private terminalSeq = 0;
   private fallback: FallbackQueueDeliverer | null = null;
   private closed = false;
@@ -128,6 +130,7 @@ export class AgentQueueRunner {
     deliver: QueueDeliverer,
   ): Promise<QueuedMessage> {
     const entry = await this.store.enqueue(agentId, input, new Date().toISOString());
+    if (this.userStopped.has(agentId)) await this.store.hold(agentId, "user_stop");
     const settled = new Promise<MessageDisposition>((resolve, reject) => {
       this.waiters.set(waiterKey(agentId, entry.id), { deliver, resolve, reject });
     });
@@ -171,7 +174,9 @@ export class AgentQueueRunner {
     return reordered;
   }
 
+  /** A `user_stop` hold also covers an empty queue: what arrives later waits until resumed. */
   async hold(agentId: string, reason: AgentQueueHeldReason): Promise<void> {
+    if (reason === "user_stop") this.userStopped.add(agentId);
     if (await this.store.hold(agentId, reason)) {
       this.logger.info({ agentId, reason }, "agent.queue.held");
       this.host.publish(agentId);
@@ -179,11 +184,21 @@ export class AgentQueueRunner {
   }
 
   async resume(agentId: string): Promise<void> {
+    this.userStopped.delete(agentId);
     if (await this.store.resume(agentId)) {
       this.logger.info({ agentId }, "agent.queue.resumed");
       this.host.publish(agentId);
     }
     this.kick(agentId);
+  }
+
+  isHeldForUserStop(agentId: string): boolean {
+    return this.userStopped.has(agentId);
+  }
+
+  /** The user sent the stopped agent a message; entries already held stay held until resumed. */
+  releaseUserStop(agentId: string): void {
+    this.userStopped.delete(agentId);
   }
 
   /** Boot: every queue that survived a restart waits for an explicit resume. */
@@ -196,6 +211,7 @@ export class AgentQueueRunner {
 
   /** Archive: nothing queued for the agent is delivered. */
   async clear(agentId: string): Promise<void> {
+    this.userStopped.delete(agentId);
     const removed = await this.store.clear(agentId);
     for (const entry of removed) this.settleWaiter(agentId, entry.id, "skipped_archived");
     if (removed.length > 0) this.host.publish(agentId);

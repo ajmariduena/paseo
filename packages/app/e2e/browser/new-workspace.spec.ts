@@ -11,6 +11,8 @@ import {
   connectNewWorkspaceDaemonClient,
   createWorktreeViaDaemon,
   delayBrowserAgentCreatedStatus,
+  delayBrowserWorkspaceCreateRequest,
+  delayBrowserWorkspaceCreatedResponse,
   expectComposerGithubAttachmentPill,
   expectNewWorkspaceProjectSelected,
   expectPickerClosed,
@@ -30,10 +32,12 @@ import {
   submitNewWorkspaceEmpty,
   searchAndSelectBranchInPicker,
   selectBranchInPicker,
+  selectNewWorkspaceProject,
   selectGitHubPrInPicker,
   selectPickerOptionByKeyboard,
   selectWorkspaceIsolation,
   submitNewWorkspacePrompt,
+  waitForCreatedWorkspace,
 } from "../support/helpers/new-workspace";
 import {
   commitLocalOnly,
@@ -428,9 +432,7 @@ test.describe("New workspace flow", () => {
     }
   });
 
-  test("global new workspace uses the last active project and creates one agent tab", async ({
-    page,
-  }) => {
+  test("global new workspace can select a project and creates one agent tab", async ({ page }) => {
     const serverId = getServerId();
 
     const tempRepo = await createTempGitRepo("new-workspace-");
@@ -453,7 +455,10 @@ test.describe("New workspace flow", () => {
       });
 
       await openGlobalNewWorkspaceComposer(page);
-      await expectNewWorkspaceProjectSelected(page, openedProject.projectDisplayName);
+      await selectNewWorkspaceProject(page, {
+        projectKey: openedProject.projectKey,
+        projectDisplayName: openedProject.projectDisplayName,
+      });
       await submitNewWorkspacePrompt(page);
 
       const createdWorkspace = await assertNewWorkspaceSidebarAndHeader(page, {
@@ -583,6 +588,167 @@ test.describe("New workspace flow", () => {
     }
   });
 
+  test("shows the reserved workspace before the daemon receives creation and keeps background focus", async ({
+    page,
+  }) => {
+    const serverId = getServerId();
+    const tempRepo = await createTempGitRepo("new-workspace-pre-ready-");
+    const delayedRequest = await delayBrowserWorkspaceCreateRequest(page);
+
+    try {
+      const openedProject = await openProjectViaDaemon(client, tempRepo.path);
+      localWorkspaceIds.add(openedProject.workspaceId);
+      await gotoAppShell(page);
+      await waitForSidebarHydration(page);
+      await switchWorkspaceViaSidebar({ page, serverId, workspaceId: openedProject.workspaceId });
+      await openNewWorkspaceComposer(page, {
+        projectKey: openedProject.projectKey,
+        projectDisplayName: openedProject.projectDisplayName,
+      });
+      const composer = page.getByRole("textbox", { name: "Message agent..." });
+      await composer.fill("Prompt visible before creation");
+      await page.getByTestId("message-input-root").getByRole("button", { name: "Create" }).click();
+
+      const reservedId = await delayedRequest.waitForCreateRequest();
+      await expect(page).toHaveURL(buildHostWorkspaceRoute(serverId, reservedId));
+      await expect(page.getByTestId("pending-workspace-screen")).toBeVisible();
+      await expect(page.getByTestId("pending-workspace-screen")).toContainText(
+        "Prompt visible before creation",
+      );
+      await expect(
+        page.getByTestId(`sidebar-workspace-row-${serverId}:${reservedId}`),
+      ).toBeVisible();
+      expect(delayedRequest.getRequestCount()).toBe(1);
+
+      await switchWorkspaceViaSidebar({ page, serverId, workspaceId: openedProject.workspaceId });
+      delayedRequest.release();
+      const created = await waitForCreatedWorkspace(client, new Set([openedProject.workspaceId]));
+      createdWorktreeDirectories.add(created.workspaceDirectory);
+      expect(created.id).toBe(reservedId);
+      await expect(page).toHaveURL(buildHostWorkspaceRoute(serverId, openedProject.workspaceId));
+      expect(delayedRequest.getRequestCount()).toBe(1);
+    } finally {
+      delayedRequest.release();
+      await tempRepo.cleanup();
+    }
+  });
+
+  test("keeps the optimistic prompt visible when the workspace descriptor arrives early", async ({
+    page,
+  }) => {
+    const serverId = getServerId();
+    const prompt = "Keep this prompt visible through workspace creation";
+    const tempRepo = await createTempGitRepo("new-workspace-continuity-");
+    const delayedCreation = await delayBrowserWorkspaceCreatedResponse(page);
+
+    try {
+      const openedProject = await openProjectViaDaemon(client, tempRepo.path);
+      localWorkspaceIds.add(openedProject.workspaceId);
+      await gotoAppShell(page);
+      await waitForSidebarHydration(page);
+      await switchWorkspaceViaSidebar({ page, serverId, workspaceId: openedProject.workspaceId });
+      await openNewWorkspaceComposer(page, {
+        projectKey: openedProject.projectKey,
+        projectDisplayName: openedProject.projectDisplayName,
+      });
+      await page.getByRole("textbox", { name: "Message agent..." }).fill(prompt);
+      await page.getByTestId("message-input-root").getByRole("button", { name: "Create" }).click();
+
+      await delayedCreation.waitForCreateRequest();
+      await delayedCreation.waitForWorkspaceUpdate();
+      const pendingScreen = page.getByTestId("pending-workspace-screen");
+      await expect(pendingScreen).toBeVisible();
+      await expect(pendingScreen).toContainText(prompt);
+
+      delayedCreation.release();
+      const created = await waitForCreatedWorkspace(client, new Set([openedProject.workspaceId]));
+      createdWorktreeDirectories.add(created.workspaceDirectory);
+      const workspace = page.getByTestId(`workspace-deck-entry-${serverId}:${created.id}`);
+      await expect(workspace).toBeVisible();
+      await expect(pendingScreen).toHaveCount(0);
+      await expect(workspace.getByTestId("user-message").filter({ hasText: prompt })).toHaveCount(
+        1,
+      );
+    } finally {
+      delayedCreation.release();
+      await tempRepo.cleanup();
+    }
+  });
+
+  test("recovers an unsent optimistic workspace after reload without resubmitting", async ({
+    page,
+  }) => {
+    const serverId = getServerId();
+    const tempRepo = await createTempGitRepo("new-workspace-reload-pending-");
+    const delayedRequest = await delayBrowserWorkspaceCreateRequest(page);
+    try {
+      const openedProject = await openProjectViaDaemon(client, tempRepo.path);
+      localWorkspaceIds.add(openedProject.workspaceId);
+      await gotoAppShell(page);
+      await waitForSidebarHydration(page);
+      await switchWorkspaceViaSidebar({ page, serverId, workspaceId: openedProject.workspaceId });
+      await openNewWorkspaceComposer(page, {
+        projectKey: openedProject.projectKey,
+        projectDisplayName: openedProject.projectDisplayName,
+      });
+      const composer = page.getByRole("textbox", { name: "Message agent..." });
+      await composer.fill("Keep this prompt after reload");
+      await page.getByTestId("message-input-root").getByRole("button", { name: "Create" }).click();
+      const reservedId = await delayedRequest.waitForCreateRequest();
+      await expect(page.getByTestId("pending-workspace-screen")).toBeVisible();
+
+      await page.reload();
+      await expect(page).toHaveURL(buildHostWorkspaceRoute(serverId, reservedId));
+      await expect(page.getByTestId("pending-workspace-status")).toContainText(
+        "Could not confirm workspace creation",
+      );
+      expect(delayedRequest.getRequestCount()).toBe(1);
+      await page.getByTestId("pending-workspace-return-to-draft").click();
+      await expect(page.getByRole("textbox", { name: "Message agent..." })).toHaveValue(
+        "Keep this prompt after reload",
+      );
+      await expectNewWorkspaceProjectSelected(page, openedProject.projectDisplayName);
+    } finally {
+      await tempRepo.cleanup();
+    }
+  });
+
+  test("reopens a journaled optimistic workspace after reload with one agent", async ({ page }) => {
+    const serverId = getServerId();
+    const tempRepo = await createTempGitRepo("new-workspace-reload-journal-");
+    const delayedResponse = await delayBrowserWorkspaceCreatedResponse(page);
+    try {
+      const openedProject = await openProjectViaDaemon(client, tempRepo.path);
+      localWorkspaceIds.add(openedProject.workspaceId);
+      await gotoAppShell(page);
+      await waitForSidebarHydration(page);
+      await switchWorkspaceViaSidebar({ page, serverId, workspaceId: openedProject.workspaceId });
+      await openNewWorkspaceComposer(page, {
+        projectKey: openedProject.projectKey,
+        projectDisplayName: openedProject.projectDisplayName,
+      });
+      const composer = page.getByRole("textbox", { name: "Message agent..." });
+      await composer.fill("Journal survives reload");
+      await page.getByTestId("message-input-root").getByRole("button", { name: "Create" }).click();
+      await delayedResponse.waitForCreateRequest();
+      const created = await waitForCreatedWorkspace(client, new Set([openedProject.workspaceId]));
+      createdWorktreeDirectories.add(created.workspaceDirectory);
+      await expect(page).toHaveURL(buildHostWorkspaceRoute(serverId, created.id));
+
+      await page.reload();
+      await expect(page).toHaveURL(buildHostWorkspaceRoute(serverId, created.id));
+      const deck = page.getByTestId(`workspace-deck-entry-${serverId}:${created.id}`);
+      await expect(deck).toBeVisible({ timeout: 30_000 });
+      await expect(deck.locator('[data-testid^="workspace-tab-agent_"]')).toHaveCount(1, {
+        timeout: 30_000,
+      });
+      expect(delayedResponse.agentRequests).toHaveLength(1);
+    } finally {
+      delayedResponse.release();
+      await tempRepo.cleanup();
+    }
+  });
+
   test("new workspace with initial agent never appears in the Done status group", async ({
     page,
   }) => {
@@ -611,7 +777,10 @@ test.describe("New workspace flow", () => {
       await startTrackingSidebarStatusGroups(page);
 
       await openGlobalNewWorkspaceComposer(page);
-      await expectNewWorkspaceProjectSelected(page, openedProject.projectDisplayName);
+      await selectNewWorkspaceProject(page, {
+        projectKey: openedProject.projectKey,
+        projectDisplayName: openedProject.projectDisplayName,
+      });
       await submitNewWorkspacePrompt(page);
 
       const createdWorkspace = await assertNewWorkspaceSidebarAndHeader(page, {
@@ -664,7 +833,10 @@ test.describe("New workspace flow", () => {
       await startTrackingSidebarStatusGroups(page);
 
       await openGlobalNewWorkspaceComposer(page);
-      await expectNewWorkspaceProjectSelected(page, openedProject.projectDisplayName);
+      await selectNewWorkspaceProject(page, {
+        projectKey: openedProject.projectKey,
+        projectDisplayName: openedProject.projectDisplayName,
+      });
       await submitNewWorkspaceWithoutPrompt(page);
 
       const createdWorkspace = await assertNewWorkspaceSidebarAndHeader(page, {

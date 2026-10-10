@@ -68,7 +68,6 @@ import {
 import {
   checkProviderLaunchAvailable,
   createProviderEnv,
-  createProviderEnvSpec,
   resolveProviderLaunch,
   type ProviderRuntimeSettings,
   type ResolvedProviderLaunch,
@@ -104,6 +103,7 @@ import {
   renderProviderImageOutputAsAssistantMarkdown,
   type ProviderImageOutput,
 } from "./provider-image-output.js";
+import { isHtmlPreviewToolName } from "./preview-image-visibility.js";
 import { normalizeProviderReplayTimestamp } from "../provider-history-timestamps.js";
 import {
   formatProviderDiagnostic,
@@ -153,6 +153,7 @@ const TURN_START_TIMEOUT_MS = 90 * 1000;
 const INTERRUPT_TIMEOUT_MS = 2_000;
 // A lost response must fail the agent load, not leave it pending for the transport's 14-day default.
 const THREAD_LOAD_TIMEOUT_MS = 2 * 60 * 1000;
+const SUBAGENT_MODEL_READ_TIMEOUT_MS = 5_000;
 const CODEX_PROVIDER = "codex" as const;
 // Codex treats most app-server client names as the model-request originator.
 // This reserved Codex name is non-originating, so requests keep Codex's default
@@ -280,6 +281,7 @@ interface CodexAppServerClientLike {
 }
 
 interface CodexAppServerAgentDeps {
+  environment?: Record<string, string>;
   workspaceGitService?: Pick<WorkspaceGitService, "resolveRepoRoot">;
   customProvider?: {
     id: string;
@@ -1866,6 +1868,30 @@ function isTerminalSubAgentStatus(
   return status === "completed" || status === "failed" || status === "canceled";
 }
 
+interface CodexSubAgentModel {
+  model: string;
+  reasoningEffort: string | null;
+}
+
+/** Reads `model` and `reasoningEffort` off a collab spawn item or a Codex `Thread`. */
+function readCodexSubAgentModel(source: unknown): CodexSubAgentModel | null {
+  const record = toObjectRecord(source);
+  const model = nonEmptyString(record?.model);
+  if (!model) return null;
+  return { model, reasoningEffort: nonEmptyString(record?.reasoningEffort) ?? null };
+}
+
+function formatCodexReasoningEffort(effort: string): string {
+  if (effort === "xhigh") return "Extra high";
+  return effort.charAt(0).toUpperCase() + effort.slice(1);
+}
+
+function buildCodexSubAgentSubtitle(facts: CodexSubAgentModel): string {
+  const effort = normalizeCodexThinkingOptionId(facts.reasoningEffort);
+  const model = normalizeCodexModelLabel(facts.model);
+  return effort ? `${model} ${formatCodexReasoningEffort(effort)}` : model;
+}
+
 function readCodexSubAgentActivity(item: unknown): CodexSubAgentActivity | null {
   const record = toObjectRecord(item);
   if (!record) {
@@ -2057,7 +2083,7 @@ export function threadItemToTimeline(
   }
 }
 
-function mcpToolResultImagesToTimeline(item: unknown): AgentTimelineItem[] {
+export function mcpToolResultImagesToTimeline(item: unknown): AgentTimelineItem[] {
   const itemRecord = toObjectRecord(item);
   if (!itemRecord) {
     return [];
@@ -2068,6 +2094,8 @@ function mcpToolResultImagesToTimeline(item: unknown): AgentTimelineItem[] {
   if (normalizedType !== "mcpToolCall") {
     return [];
   }
+
+  if (isHtmlPreviewToolName(String(itemRecord.tool ?? ""))) return [];
 
   const { images } = splitCodexMcpToolResultImages(itemRecord.result);
   return images
@@ -3360,7 +3388,7 @@ function toCodexTextInput(text: string): Extract<CodexAppServerUserInput, { type
 export function buildCodexAppServerEnv(
   runtimeSettings?: ProviderRuntimeSettings,
   launchEnv?: Record<string, string>,
-): NodeJS.ProcessEnv {
+) {
   return createProviderEnv({
     runtimeSettings,
     overlays: [launchEnv],
@@ -3530,6 +3558,8 @@ export class CodexAppServerAgentSession implements AgentSession {
   private emittedProviderSubagentUserMessageKeys = new Set<string>();
   private subAgentCallsByCallId = new Map<string, CodexSubAgentCallState>();
   private subAgentCallIdByChildThreadId = new Map<string, string>();
+  private subAgentModelByChildThreadId = new Map<string, CodexSubAgentModel>();
+  private subAgentModelReads = new Set<string>();
   private pendingSubAgentNotificationsByThreadId = new Map<string, ParsedCodexNotification[]>();
   private warnedUnknownNotificationMethods = new Set<string>();
   private warnedInvalidNotificationPayloads = new Set<string>();
@@ -3564,6 +3594,19 @@ export class CodexAppServerAgentSession implements AgentSession {
   } | null = null;
   private cachedSkills: Array<{ name: string; description: string; path: string }> | null = null;
 
+  private readonly usageSessionKey = randomUUID();
+  private readonly harnessEnvironment: Record<string, string>;
+
+  usageSession() {
+    if (this.closed) return null;
+    return {
+      provider: "codex",
+      model: this.config.model,
+      env: this.harnessEnvironment,
+      sessionKey: this.usageSessionKey,
+    };
+  }
+
   constructor(
     config: AgentSessionConfig,
     private readonly resumeHandle: { sessionId: string; metadata?: Record<string, unknown> } | null,
@@ -3589,6 +3632,7 @@ export class CodexAppServerAgentSession implements AgentSession {
     this.providerOptions =
       validateProviderOptions("codex", CodexProviderOptionsSchema, config.providerOptions) ?? {};
     this.config = config;
+    this.harnessEnvironment = deps.environment ?? buildCodexAppServerEnv();
     this.asyncQuestions = new CodexAsyncQuestions(resumeHandle?.metadata?.asyncQuestions);
     this.codexHome = deps.codexHome ?? resolveCodexHomeDir(process.env);
     this.config.thinkingOptionId = normalizeCodexThinkingOptionId(this.config.thinkingOptionId);
@@ -4068,7 +4112,11 @@ export class CodexAppServerAgentSession implements AgentSession {
         const childHistory = await loadCodexThreadHistoryTimeline({
           threadId: next.route.childThreadId,
           cwd: this.config.cwd ?? null,
-          requestThread: (childThreadId) => readCodexThread(client, childThreadId),
+          requestThread: async (childThreadId) => {
+            const response = await readCodexThread(client, childThreadId);
+            this.recordSubAgentThreadModel(childThreadId, response);
+            return response;
+          },
         });
         for (const entry of childHistory.timeline) {
           this.emitProviderSubagentTimeline(next.route.childThreadId, entry.item, entry.timestamp);
@@ -4317,6 +4365,7 @@ export class CodexAppServerAgentSession implements AgentSession {
       {
         turnId,
         threadId: this.currentThreadId,
+        codexHome: this.codexHome,
         model: this.config.model ?? null,
         modeId: this.currentMode ?? null,
         effort: thinkingOptionId ?? null,
@@ -5765,9 +5814,53 @@ export class CodexAppServerAgentSession implements AgentSession {
       }
       this.subAgentCallIdByChildThreadId.set(receiverThreadId, timelineItem.callId);
       state.childThreadIds.add(receiverThreadId);
+      this.captureSubAgentModel(receiverThreadId, rawItem);
       this.emitProviderSubagentUpsert(receiverThreadId, state, timelineItem.status);
     }
     return childThreadIds;
+  }
+
+  // The spawn item names a model only when the parent requested one; otherwise only the child's
+  // thread reports it. History load already reads every child thread, so it skips the extra read.
+  private captureSubAgentModel(childThreadId: string, rawItem: { [key: string]: unknown }): void {
+    if (this.subAgentModelByChildThreadId.has(childThreadId)) return;
+    const requested = readCodexSubAgentModel(rawItem);
+    if (requested) {
+      this.subAgentModelByChildThreadId.set(childThreadId, requested);
+      return;
+    }
+    if (this.loadingPersistedHistory || this.subAgentModelReads.has(childThreadId)) return;
+    this.subAgentModelReads.add(childThreadId);
+    void this.readSubAgentModel(childThreadId);
+  }
+
+  private async readSubAgentModel(childThreadId: string): Promise<void> {
+    const client = this.client;
+    if (!client) return;
+    try {
+      const response = await client.request(
+        "thread/read",
+        { threadId: childThreadId, includeTurns: false },
+        SUBAGENT_MODEL_READ_TIMEOUT_MS,
+      );
+      this.recordSubAgentThreadModel(childThreadId, response);
+    } catch (error) {
+      this.logger.debug({ err: error, childThreadId }, "Failed to read Codex subagent model");
+    }
+  }
+
+  private recordSubAgentThreadModel(childThreadId: string, threadReadResponse: unknown): void {
+    if (this.subAgentModelByChildThreadId.has(childThreadId)) return;
+    const thread = toObjectRecord(toObjectRecord(threadReadResponse)?.thread);
+    if (thread?.id !== childThreadId) return;
+    const facts = readCodexSubAgentModel(thread);
+    if (!facts) return;
+    this.subAgentModelByChildThreadId.set(childThreadId, facts);
+    this.emitEvent({
+      type: "provider_subagent",
+      provider: CODEX_PROVIDER,
+      event: { type: "upsert", id: childThreadId, subtitle: buildCodexSubAgentSubtitle(facts) },
+    });
   }
 
   private handleRegisteredSubAgentActivity(rawItem: { [key: string]: unknown }): boolean {
@@ -5971,6 +6064,7 @@ export class CodexAppServerAgentSession implements AgentSession {
     } else if (status === "canceled") {
       providerStatus = "canceled";
     }
+    const model = this.subAgentModelByChildThreadId.get(childThreadId);
     this.emitEvent({
       type: "provider_subagent",
       provider: CODEX_PROVIDER,
@@ -5982,6 +6076,7 @@ export class CodexAppServerAgentSession implements AgentSession {
         status: providerStatus,
         toolCallId: state.callId,
         parentSubagentId: state.parentSubagentId,
+        ...(model ? { subtitle: buildCodexSubAgentSubtitle(model) } : {}),
       },
     });
   }
@@ -7315,7 +7410,7 @@ export class CodexAppServerAgentClient implements AgentClient {
 
   private async spawnAppServer(
     launchEnv?: Record<string, string>,
-    options?: { goalsEnabled?: boolean; agentId?: string },
+    options?: { goalsEnabled?: boolean; agentId?: string; environment?: Record<string, string> },
   ): Promise<ChildProcessWithoutNullStreams> {
     const launchPrefix = await resolveCodexLaunchPrefix(this.runtimeSettings);
     const args = [...launchPrefix.args, "app-server"];
@@ -7334,10 +7429,7 @@ export class CodexAppServerAgentClient implements AgentClient {
     const child = spawnProcess(launchPrefix.command, args, {
       detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "pipe"],
-      ...createProviderEnvSpec({
-        runtimeSettings: this.runtimeSettings,
-        overlays: [launchEnv],
-      }),
+      baseEnv: options?.environment ?? buildCodexAppServerEnv(this.runtimeSettings, launchEnv),
     });
     assertChildWithPipes(child);
     return child;
@@ -7362,13 +7454,18 @@ export class CodexAppServerAgentClient implements AgentClient {
     const reserved = options?.reservedSessionId
       ? { sessionId: options.reservedSessionId, metadata: { cwd: sessionConfig.cwd } }
       : null;
+    const environment = buildCodexAppServerEnv(this.runtimeSettings, launchContext?.env);
     const session = new CodexAppServerAgentSession(
       sessionConfig,
       reserved,
       this.logger,
       () =>
-        this.spawnAppServer(launchContext?.env, { goalsEnabled, agentId: launchContext?.agentId }),
-      this.sessionDeps(launchContext?.env),
+        this.spawnAppServer(launchContext?.env, {
+          goalsEnabled,
+          agentId: launchContext?.agentId,
+          environment,
+        }),
+      { ...this.sessionDeps(launchContext?.env), environment },
       options?.persistSession === false,
       goalsEnabled,
       autoReviewEnabled,
@@ -7394,13 +7491,18 @@ export class CodexAppServerAgentClient implements AgentClient {
     };
     const goalsEnabled = await this.resolveGoalsEnabled();
     const autoReviewEnabled = await this.resolveAutoReviewEnabled();
+    const environment = buildCodexAppServerEnv(this.runtimeSettings, launchContext?.env);
     const session = new CodexAppServerAgentSession(
       merged,
       handle,
       this.logger,
       () =>
-        this.spawnAppServer(launchContext?.env, { goalsEnabled, agentId: launchContext?.agentId }),
-      this.sessionDeps(launchContext?.env),
+        this.spawnAppServer(launchContext?.env, {
+          goalsEnabled,
+          agentId: launchContext?.agentId,
+          environment,
+        }),
+      { ...this.sessionDeps(launchContext?.env), environment },
       false,
       goalsEnabled,
       autoReviewEnabled,

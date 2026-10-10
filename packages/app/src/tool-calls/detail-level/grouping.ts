@@ -1,6 +1,8 @@
 import type { ToolCallDetail } from "@getpaseo/protocol/agent-types";
 import type { StreamItem, ToolCallItem } from "@/types/stream";
+import { isPeerNote } from "@/peer-notes/model";
 import { isFailedSubagentSpawnCall, isSubagentSpawnCall } from "@/subagents/timeline/spawn-call";
+import { isHtmlRenderToolName } from "@/html-render/reference";
 
 export interface ToolCallDescriptor {
   detail: ToolCallDetail;
@@ -73,8 +75,13 @@ export function resolveToolCallRunKind(item: StreamItem): ToolCallRunKind | null
   if (item.kind !== "tool_call") {
     return null;
   }
+  if (isPeerNote(item)) return null;
   const descriptor = describeToolCall(item);
-  if (descriptor.detail.type === "plan" || descriptor.name.trim().toLowerCase() === "speak") {
+  if (
+    descriptor.detail.type === "plan" ||
+    descriptor.name.trim().toLowerCase() === "speak" ||
+    isHtmlRenderToolName(descriptor.name)
+  ) {
     return null;
   }
   return isSubagentSpawnCall(item) ? "subagents" : "tools";

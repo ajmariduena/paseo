@@ -71,6 +71,11 @@ import { buildDesktopFrameStyle } from "./combobox-frame-style";
 export { buildDesktopFrameStyle } from "./combobox-frame-style";
 
 const IS_WEB = isWeb;
+const DEFAULT_MOBILE_SNAP_POINTS: readonly string[] = ["60%", "90%"];
+
+function resolveMobileSnapPoints(mobileSnapPoints: readonly string[] | undefined): string[] {
+  return [...(mobileSnapPoints ?? DEFAULT_MOBILE_SNAP_POINTS)];
+}
 
 export type ComboboxOption = ComboboxOptionModel;
 export type ComboboxDesktopPlacement = "top-start" | "bottom-start";
@@ -109,6 +114,8 @@ export interface ComboboxProps {
   desktopChildrenScrollEnabled?: boolean;
   /** Overrides the mobile scroll container spacing for custom child content. */
   mobileChildrenContentContainerStyle?: StyleProp<ViewStyle>;
+  /** Sheet heights on compact; the default suits a searchable list. */
+  mobileSnapPoints?: readonly string[];
   presentation?: "push" | "replace";
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -125,6 +132,8 @@ export interface ComboboxProps {
   desktopLockWidth?: boolean;
   /** Fixed height for the desktop popover (overrides default 400px max). */
   desktopFixedHeight?: number;
+  /** Sees desktop keys before the popover's own handling; return true to consume. */
+  desktopKeyInterceptor?: (event: KeyboardEvent) => boolean;
   /** Content rendered above the scroll area on desktop (sticky header). */
   stickyHeader?: ReactNode;
   /** Content rendered below the scroll area. */
@@ -1032,6 +1041,7 @@ interface DesktopBodyProps {
   isOpen: boolean;
   handleClose: () => void;
   handleDesktopKey: (key: DesktopKey, event?: KeyboardEvent) => boolean;
+  desktopKeyInterceptor: ((event: KeyboardEvent) => boolean) | undefined;
   refs: ReturnType<typeof useFloating>["refs"];
   shouldUseDesktopFade: boolean;
   desktopFrameStyle: StyleProp<ViewStyle>;
@@ -1158,12 +1168,17 @@ function DesktopComboboxOptionsBody(props: {
 
 function DesktopComboboxBody(props: DesktopBodyProps): ReactElement {
   const handleDesktopKey = props.handleDesktopKey;
+  const desktopKeyInterceptor = props.desktopKeyInterceptor;
   const handleWebOverlayKeyDown = useCallback(
     (event: KeyboardEvent) => {
+      if (desktopKeyInterceptor?.(event)) {
+        event.preventDefault();
+        return true;
+      }
       if (!isDesktopKey(event.key)) return false;
       return handleDesktopKey(event.key, event);
     },
-    [handleDesktopKey],
+    [desktopKeyInterceptor, handleDesktopKey],
   );
   const setWebOverlayScope = useWebOverlayRegistration({
     active: isWeb && props.isOpen,
@@ -1277,6 +1292,7 @@ export function Combobox({
   mobileChildrenScrollEnabled = true,
   desktopChildrenScrollEnabled = true,
   mobileChildrenContentContainerStyle,
+  mobileSnapPoints,
   presentation,
   open,
   onOpenChange,
@@ -1285,6 +1301,7 @@ export function Combobox({
   desktopMinWidth,
   desktopLockWidth,
   desktopFixedHeight,
+  desktopKeyInterceptor,
   stickyHeader,
   footer,
   keepOpenOnSelect = false,
@@ -1303,7 +1320,7 @@ export function Combobox({
   const effectiveOptionsPosition = resolveEffectiveOptionsPosition(isMobile, optionsPosition);
   const isDesktopAboveSearch = resolveIsDesktopAboveSearch(isMobile, effectiveOptionsPosition);
   const { height: windowHeight, width: windowWidth } = useWindowDimensions();
-  const snapPoints = useMemo(() => ["60%", "90%"], []);
+  const snapPoints = useMemo(() => resolveMobileSnapPoints(mobileSnapPoints), [mobileSnapPoints]);
   const [availableSize, setAvailableSize] = useState<{ width?: number; height?: number } | null>(
     null,
   );
@@ -1602,6 +1619,7 @@ export function Combobox({
       isOpen={isOpen}
       handleClose={handleClose}
       handleDesktopKey={handleDesktopKey}
+      desktopKeyInterceptor={desktopKeyInterceptor}
       refs={refs}
       shouldUseDesktopFade={shouldUseDesktopFade}
       desktopFrameStyle={desktopFrameStyle}

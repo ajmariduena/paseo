@@ -1,5 +1,7 @@
 import { configurationEnvironment } from "./config-environment.js";
 import type { GptLiveEngineConfig } from "./voice-orchestrator/orchestrator.js";
+import type { FastLlmConfig } from "./voice-orchestrator/fast-brain/llm-client.js";
+import { resolveVoiceBrain } from "./voice-orchestrator/fast-brain/brain-catalog.js";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -424,6 +426,10 @@ function resolveVoiceLlmConfig(
   };
 }
 
+function resolveDictionary(persisted: ReturnType<typeof loadPersistedConfig>) {
+  return persisted.features?.dictionary;
+}
+
 function resolveVoiceLanguage(persisted: ReturnType<typeof loadPersistedConfig>): string | null {
   const voiceMode = persisted.features?.voiceMode;
   return voiceMode?.live?.language ?? voiceMode?.stt?.language ?? null;
@@ -445,6 +451,15 @@ function resolveVoiceLiveConfig(
     model: voiceMode.live?.model ?? DEFAULT_GPT_LIVE_MODEL,
     voice: voiceMode.live?.voice ?? DEFAULT_GPT_LIVE_VOICE,
   };
+}
+
+/** The call's fast model and its backup, as Settings → Voice → Voice commands sets them. */
+function resolveVoiceRouterConfigs(
+  env: NodeJS.ProcessEnv,
+  persisted: ReturnType<typeof loadPersistedConfig>,
+): { voiceRouter: FastLlmConfig | null; voiceRouterBackup: FastLlmConfig | null } {
+  const brain = resolveVoiceBrain({ env, persisted });
+  return { voiceRouter: brain.primary, voiceRouterBackup: brain.fallback };
 }
 
 function resolveCorsAllowedOrigins(
@@ -554,6 +569,8 @@ function resolveProfileLists(persisted: ReturnType<typeof loadPersistedConfig>) 
   return {
     terminalProfiles: persisted.daemon?.terminalProfiles,
     agentProfiles: persisted.daemon?.agentProfiles,
+    quickPrompts: persisted.daemon?.quickPrompts,
+    quickPromptUndoMs: persisted.daemon?.quickPromptUndoMs,
   };
 }
 
@@ -612,6 +629,8 @@ export function resolveConfigFromPersisted(
     appendSystemPrompt,
     terminalProfiles,
     agentProfiles,
+    quickPrompts,
+    quickPromptUndoMs,
     hostnames,
     trustedProxies,
     appBaseUrl,
@@ -658,6 +677,8 @@ export function resolveConfigFromPersisted(
     appendSystemPrompt,
     terminalProfiles,
     agentProfiles,
+    quickPrompts,
+    quickPromptUndoMs,
     skillSelection: persisted.agents?.skills?.selection,
     pluginsEnabled: persisted.pluginsEnabled ?? false,
     plugins: persisted.plugins,
@@ -687,6 +708,8 @@ export function resolveConfigFromPersisted(
     voiceLlmModel: voiceLlm.model,
     voiceLlmThinking: voiceLlm.thinking,
     voiceLive: resolveVoiceLiveConfig(env, persisted),
+    ...resolveVoiceRouterConfigs(env, persisted),
+    dictionary: resolveDictionary(persisted),
     voiceLanguage: resolveVoiceLanguage(persisted),
     agentProviderSettings: extractAgentProviderSettings(providerOverrides),
     providerCatalogRefreshTimeoutMs: persisted.agents?.catalogRefreshTimeoutMs,

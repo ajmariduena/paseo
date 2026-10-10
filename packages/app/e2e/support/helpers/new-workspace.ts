@@ -230,11 +230,45 @@ export async function expectNewWorkspaceControlsEnabled(page: Page): Promise<voi
 }
 
 export async function openNewWorkspaceProjectPickerWithShortcut(page: Page): Promise<void> {
-  await page.keyboard.press("Control+P");
+  await page.keyboard.press(process.platform === "darwin" ? "Meta+P" : "Control+P");
 
   const searchInput = page.getByPlaceholder("Search projects");
   await expect(searchInput).toBeVisible({ timeout: 30_000 });
   await expect(searchInput).toBeFocused();
+}
+
+export const NO_PROJECT_LABEL = "No project";
+
+// The e2e fixture reseeds create-agent preferences on every navigation, so the
+// remembered project only survives navigations that skip that seed.
+export async function rememberNewWorkspaceProjectAndReload(
+  page: Page,
+  project: { serverId: string; projectId: string },
+): Promise<void> {
+  await page.evaluate(
+    ({ remembered, keys }) => {
+      const nonce = localStorage.getItem(keys.seedNonce);
+      if (!nonce) {
+        throw new Error("Expected the e2e seed nonce before remembering a project.");
+      }
+      const raw = localStorage.getItem(keys.preferences);
+      const preferences = raw ? JSON.parse(raw) : {};
+      localStorage.setItem(
+        keys.preferences,
+        JSON.stringify({ ...preferences, lastWorkspaceProject: remembered }),
+      );
+      localStorage.setItem(keys.disableSeedOnce, nonce);
+    },
+    {
+      remembered: { serverId: project.serverId, projectId: project.projectId },
+      keys: {
+        preferences: "@paseo:create-agent-preferences",
+        seedNonce: "@paseo:e2e-seed-nonce",
+        disableSeedOnce: "@paseo:e2e-disable-default-seed-once",
+      },
+    },
+  );
+  await page.reload();
 }
 
 export async function expectNewWorkspaceProjectSelected(
@@ -473,7 +507,7 @@ export async function pasteGithubPrUrl(
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.evaluate((value) => navigator.clipboard.writeText(value), url);
   await composer.focus();
-  await page.keyboard.press("Control+V");
+  await page.keyboard.press(process.platform === "darwin" ? "Meta+V" : "Control+V");
 }
 
 export async function assertNewWorkspaceSidebarAndHeader(
@@ -557,6 +591,50 @@ export interface AgentCreatedDelayControl {
   waitForCreateRequest(): Promise<void>;
   waitForDelayedCreatedStatus(): Promise<void>;
   expectSingleWorkspaceIntent(): void;
+}
+
+export async function delayBrowserWorkspaceCreateRequest(page: Page): Promise<{
+  release: () => void;
+  waitForCreateRequest: () => Promise<string>;
+  getRequestCount: () => number;
+}> {
+  const frames = await loadSessionMessageReaders();
+  let releaseRequested = false;
+  const delayedForwards: Array<() => void> = [];
+  let resolveRequest!: (workspaceId: string) => void;
+  const requestSeen = new Promise<string>((resolve) => {
+    resolveRequest = resolve;
+  });
+  let requestCount = 0;
+
+  await page.routeWebSocket(daemonWsRoutePattern(), (ws) => {
+    const server = ws.connectToServer();
+    ws.onMessage((message) => {
+      const sessionMessage = frames.client(message);
+      if (sessionMessage?.type === "workspace.create.request") {
+        requestCount += 1;
+        if (!sessionMessage.workspaceId) {
+          throw new Error("Optimistic creation must reserve a workspace ID");
+        }
+        resolveRequest(sessionMessage.workspaceId);
+        if (!releaseRequested) {
+          delayedForwards.push(() => server.send(message));
+          return;
+        }
+      }
+      server.send(message);
+    });
+    server.onMessage((message) => ws.send(message));
+  });
+
+  return {
+    release() {
+      releaseRequested = true;
+      for (const forward of delayedForwards.splice(0)) forward();
+    },
+    waitForCreateRequest: () => requestSeen,
+    getRequestCount: () => requestCount,
+  };
 }
 
 export async function delayBrowserAgentCreatedStatus(
@@ -649,6 +727,7 @@ export interface WorkspaceCreatedDelayControl {
   agentRequests: readonly AgentCreationIntent[];
   release(): void;
   waitForCreateRequest(): Promise<void>;
+  waitForWorkspaceUpdate(): Promise<void>;
 }
 
 /**
@@ -663,11 +742,16 @@ export async function delayBrowserWorkspaceCreatedResponse(
   const agentRequests: AgentCreationIntent[] = [];
   const creationKeys = new Set<string>();
   const createRequestIds = new Set<string>();
+  const reservedWorkspaceIds = new Set<string>();
   const delayedForwards: Array<() => void> = [];
   let releaseRequested = false;
   let resolveCreateRequest: (() => void) | null = null;
   const createRequestSeen = new Promise<void>((resolve) => {
     resolveCreateRequest = resolve;
+  });
+  let resolveWorkspaceUpdate!: () => void;
+  const workspaceUpdateSeen = new Promise<void>((resolve) => {
+    resolveWorkspaceUpdate = resolve;
   });
 
   await page.routeWebSocket(daemonPortPattern, (ws) => {
@@ -678,6 +762,7 @@ export async function delayBrowserWorkspaceCreatedResponse(
       if (sessionMessage?.type === "create_agent_request") agentRequests.push(sessionMessage);
       if (sessionMessage?.type === "workspace.create.request") {
         createRequestIds.add(sessionMessage.requestId);
+        if (sessionMessage.workspaceId) reservedWorkspaceIds.add(sessionMessage.workspaceId);
         if (sessionMessage.idempotencyKey) creationKeys.add(sessionMessage.idempotencyKey);
         if (sessionMessage.agent) agentRequests.push(sessionMessage.agent);
         resolveCreateRequest?.();
@@ -698,6 +783,13 @@ export async function delayBrowserWorkspaceCreatedResponse(
       }
 
       ws.send(message);
+      if (
+        sessionMessage?.type === "workspace_update" &&
+        sessionMessage.payload.kind === "upsert" &&
+        reservedWorkspaceIds.has(sessionMessage.payload.workspace.id)
+      ) {
+        resolveWorkspaceUpdate();
+      }
     });
   });
 
@@ -710,6 +802,7 @@ export async function delayBrowserWorkspaceCreatedResponse(
       }
     },
     waitForCreateRequest: () => createRequestSeen,
+    waitForWorkspaceUpdate: () => workspaceUpdateSeen,
   };
 }
 

@@ -4,7 +4,10 @@ import { useTranslation } from "react-i18next";
 import { Wrench } from "lucide-react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { ExpandableBadge } from "@/components/message";
+import { useShallow } from "zustand/react/shallow";
 import { useIsCompactFormFactor } from "@/constants/layout";
+import { findAgentTitle } from "@/peer-notes/model";
+import { useSessionStore } from "@/stores/session-store";
 import { type OverviewSummary, type OverviewToolCallGroup } from "./model";
 import { formatPaseoActivity } from "./paseo-activity";
 import { OverviewToolCallGroupSheet } from "./sheet";
@@ -33,8 +36,20 @@ function joinSummaryParts(parts: string[], conjunction: string): string {
   return firstCharacter ? `${firstCharacter.toLocaleUpperCase()}${joined.slice(1)}` : joined;
 }
 
+/** Per activity, the title of the one agent its notes went to, when there is one. */
+function useSoleRecipientTitles(summary: OverviewSummary): readonly (string | null)[] {
+  return useSessionStore(
+    useShallow((state) =>
+      summary.paseoActivities.map((entry) =>
+        entry.soleAgentId ? findAgentTitle(state.sessions, entry.soleAgentId) : null,
+      ),
+    ),
+  );
+}
+
 export function useOverviewSummary(summary: OverviewSummary): string {
   const { t } = useTranslation();
+  const soleRecipientTitles = useSoleRecipientTitles(summary);
   return useMemo(() => {
     const parts: string[] = [];
     const entries = [
@@ -49,15 +64,15 @@ export function useOverviewSummary(summary: OverviewSummary): string {
         parts.push(t(`${key}.${count === 1 ? "one" : "other"}`, { count }));
       }
     }
-    for (const activity of summary.paseoActivities) {
-      parts.push(formatPaseoActivity(t, activity));
+    for (const [index, activity] of summary.paseoActivities.entries()) {
+      parts.push(formatPaseoActivity(t, activity, soleRecipientTitles[index]));
     }
     if (summary.paseoCallCount > 0) {
       const plural = summary.paseoCallCount === 1 ? "one" : "other";
       parts.push(t(`toolCallGroup.paseoCalls.${plural}`, { count: summary.paseoCallCount }));
     }
     return joinSummaryParts(parts, t("toolCallGroup.and"));
-  }, [summary, t]);
+  }, [soleRecipientTitles, summary, t]);
 }
 
 export const OverviewToolCallGroupView = memo(function OverviewToolCallGroupView({

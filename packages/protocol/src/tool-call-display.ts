@@ -1,10 +1,11 @@
+import { buildAgentMessageDisplay } from "./agent-message-display.js";
 import type { ToolCallTimelineItem } from "./agent-types.js";
 import { getPaseoToolLeafName, isPaseoToolName } from "./tool-name-normalization.js";
 import { stripCwdPrefix } from "./path-utils.js";
 
 export type ToolCallDisplayInput = Pick<
   ToolCallTimelineItem,
-  "name" | "status" | "error" | "metadata" | "detail"
+  "name" | "status" | "error" | "metadata" | "detail" | "agentMessage"
 > & {
   cwd?: string;
 };
@@ -32,6 +33,20 @@ function humanizeToolName(name: string): string {
   const trimmed = name.trim();
   if (!trimmed) {
     return name;
+  }
+  if (
+    /^(?:html_preview|paseo_html_preview|mcp__paseo(?:_[a-z0-9_-]+)?__html_preview|paseo(?:_[a-z0-9_-]+)?\.html_preview)$/i.test(
+      trimmed,
+    )
+  ) {
+    return "Preview an HTML page";
+  }
+  if (
+    /^(?:html_render|paseo_html_render|mcp__paseo(?:_[a-z0-9_-]+)?__html_render|paseo(?:_[a-z0-9_-]+)?\.html_render)$/i.test(
+      trimmed,
+    )
+  ) {
+    return "Render an HTML page";
   }
   if (isPaseoToolName(trimmed)) {
     const leaf = getPaseoToolLeafName(trimmed);
@@ -151,6 +166,9 @@ function buildUnknownDetailOverride(input: ToolCallDisplayInput): DetailDisplay 
 }
 
 export function buildToolCallDisplayModel(input: ToolCallDisplayInput): ToolCallDisplayModel {
+  if (input.agentMessage) {
+    return { displayName: buildAgentMessageDisplay(input.agentMessage).displayName };
+  }
   const canonicalDisplay = buildCanonicalDetailDisplay(input);
   const unknownDetailOverride = buildUnknownDetailOverride(input);
   const displayName =

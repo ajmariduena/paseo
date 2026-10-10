@@ -10,23 +10,29 @@ const HOUR = 60 * 60 * 1000;
 describe("UnheardLedger", () => {
   let dir: string;
   let now: number;
+  let ledgers: UnheardLedger[];
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "unheard-"));
     now = 1_000_000;
+    ledgers = [];
   });
 
   afterEach(async () => {
+    // A write still in flight keeps a file in the directory, and Windows refuses to remove it.
+    await Promise.all(ledgers.map((ledger) => ledger.flushed()));
     await rm(dir, { recursive: true, force: true });
   });
 
   function createLedger(): UnheardLedger {
-    return new UnheardLedger({
+    const ledger = new UnheardLedger({
       path: join(dir, "voice", "unheard.json"),
       ttlMs: 12 * HOUR,
       logger: pino({ level: "silent" }),
       now: () => now,
     });
+    ledgers.push(ledger);
+    return ledger;
   }
 
   it("keeps the most urgent reason for an agent and lists urgent first", () => {

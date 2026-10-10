@@ -25,6 +25,12 @@ import {
   type WorktreeStorageContext,
 } from "./worktree-storage.js";
 import { homedir } from "node:os";
+import { HtmlRenderStore } from "./agent/html-render/store.js";
+import { ensureHeadlessShell, headlessShellStatus } from "./agent/html-render/browser-install.js";
+import { previewBrowserHostDiagnostic } from "./agent/html-render/browser-host.js";
+import { captureHtmlPreview } from "./agent/html-render/headless-preview.js";
+import { STOCK_RENDER_THEMES } from "./agent/html-render/stock-theme.js";
+import { CodexVisualizationStore } from "./agent/visualization/resolve.js";
 import { resolvePaseoWorktreesBaseRoot } from "../utils/worktree.js";
 import { CLIENT_CAPS, type ClientCapability } from "@getpaseo/protocol/client-capabilities";
 import { formatPluginSourceReference } from "@getpaseo/protocol/plugin-source-reference";
@@ -35,6 +41,7 @@ import {
   type FirstAgentContext,
   type SessionInboundMessage,
   type SessionOutboundMessage,
+  type ScriptStatusUpdateMessage,
   type GitSetupOptions,
   type StartWorkspaceScriptRequest,
   type WorkspaceScriptListRequest,
@@ -121,13 +128,16 @@ import { createAgentCommand } from "./agent/create-agent/create.js";
 import { resolveCreateAgentIntent, type CreateAgentIntent } from "./agent/create-agent/intent.js";
 import {
   archiveAgentCommand,
-  cancelAgentRunCommand,
   closeAgentCommand,
   detachAgentCommand,
   setAgentModeCommand,
   updateAgentCommand,
 } from "./agent/lifecycle-command.js";
-import { buildStoredAgentPayload, toAgentPayload } from "./agent/agent-projections.js";
+import {
+  buildStoredAgentPayload,
+  toAgentPayload,
+  withDaemonBackgroundTasks,
+} from "./agent/agent-projections.js";
 import {
   appendTimelineItemIfAgentKnown,
   emitLiveTimelineItemIfAgentKnown,
@@ -187,6 +197,14 @@ import {
   createGitMetadataGenerator,
 } from "./session/checkout/git-metadata-generator.js";
 import { ScheduleSession } from "./session/schedule/schedule-session.js";
+import { createNoteSession, type NoteSession } from "./session/notes/note-session.js";
+import type { NoteStore } from "./notes/store.js";
+import {
+  createHostMetricsSession,
+  type HostMetricsSession,
+} from "./session/host-metrics/host-metrics-session.js";
+import type { HostMetricsSampler } from "./host-metrics/sampler.js";
+import { noteIdFromAttachment } from "@getpaseo/protocol/notes/types";
 import { ProviderCatalogSession } from "./session/provider/provider-catalog-session.js";
 import { UsageSession } from "./session/usage/usage-session.js";
 import { WorkspaceFilesSession } from "./session/files/workspace-files-session.js";
@@ -233,10 +251,15 @@ import type { SpeechReadinessSnapshot } from "./speech/speech-runtime.js";
 import type { ReadAloudService } from "./speech/read-aloud/service.js";
 import type { VoiceOrchestrator } from "./voice-orchestrator/orchestrator.js";
 import type { DelegationService } from "./delegation/delegation-service.js";
+import { AgentStop } from "./agent/stop.js";
 import {
   VoiceMessagesSessionHandler,
   isVoiceMessagesRequest,
 } from "./session/voice/voice-messages-handler.js";
+import {
+  handleVoiceCommandsRequest,
+  isVoiceCommandsRequest,
+} from "./session/voice/voice-commands-handler.js";
 import type pino from "pino";
 import { ScheduleService } from "./schedule/service.js";
 import {
@@ -524,6 +547,7 @@ export interface SessionOptions {
   getTransportBufferedAmount?: (source?: object) => number | null;
   onLifecycleIntent?: (intent: SessionLifecycleIntent) => void;
   onWorkspaceRecovered?: (workspace: PersistedWorkspaceRecord) => Promise<void>;
+  publishScriptStatusUpdate?: (message: ScriptStatusUpdateMessage) => void;
   logger: pino.Logger;
   downloadTokenStore: DownloadTokenStore;
   pushNotifications: PushNotifications;
@@ -539,9 +563,13 @@ export interface SessionOptions {
   workspaceLabelService?: WorkspaceLabelService;
   readAloud?: ReadAloudService;
   voiceOrchestrator?: VoiceOrchestrator | null;
-  delegations?: Pick<DelegationService, "stopActiveTurn" | "disposeQueuedWake"> | null;
+  delegations?: Pick<DelegationService, "stopAll" | "disposeQueuedWake"> | null;
+  /** Shared with the agent tools, which refuse calls from a run the user stopped. */
+  agentStop?: Pick<AgentStop, "stop"> | null;
   filesystem?: SessionFileSystem;
   scheduleService: ScheduleService;
+  noteStore?: NoteStore;
+  hostMetricsSampler?: HostMetricsSampler;
   checkoutDiffManager: CheckoutDiffManager;
   github?: ForgeService;
   createAgentMcpTransport?: AgentMcpTransportFactory;
@@ -697,6 +725,20 @@ function resolveDirectorySync(service: DirectorySyncService | undefined): Direct
   return service ?? new DirectorySyncService();
 }
 
+/** Without a shared one, Stop still cascades but cannot end pull request watches. */
+function resolveAgentStop(options: SessionOptions, logger: pino.Logger): Pick<AgentStop, "stop"> {
+  return (
+    options.agentStop ??
+    new AgentStop({
+      agentManager: options.agentManager,
+      agentStorage: options.agentStorage,
+      delegations: options.delegations ?? null,
+      pullRequestWatches: null,
+      logger,
+    })
+  );
+}
+
 function describeRegistryTransition(record: ArchivedRecordSnapshot | null): RegistryTransition {
   if (!record) {
     return "created";
@@ -848,9 +890,10 @@ export class Session {
   private readonly readAloud: ReadAloudService | undefined;
   private readonly voiceOrchestrator: VoiceOrchestrator | null | undefined;
   private readonly delegations:
-    | Pick<DelegationService, "stopActiveTurn" | "disposeQueuedWake">
+    | Pick<DelegationService, "stopAll" | "disposeQueuedWake">
     | null
     | undefined;
+  private readonly agentStop: Pick<AgentStop, "stop">;
   private readonly voiceMessages: VoiceMessagesSessionHandler;
   private readonly eventSubscriptions = new Map<
     string,
@@ -875,6 +918,9 @@ export class Session {
   private readonly voiceSessions: VoiceSessions;
   private readonly checkoutSession: CheckoutSession;
   private readonly scheduleSession: ScheduleSession;
+  private readonly noteSession: NoteSession | null;
+  private readonly noteStore: NoteStore | undefined;
+  private readonly hostMetricsSession: HostMetricsSession | null;
   private readonly providerCatalogSession: ProviderCatalogSession;
   private readonly usageSession: UsageSession;
   private readonly workspaceFilesSession: WorkspaceFilesSession;
@@ -900,6 +946,7 @@ export class Session {
       getTransportBufferedAmount,
       onLifecycleIntent,
       onWorkspaceRecovered,
+      publishScriptStatusUpdate,
       logger,
       downloadTokenStore,
       pushNotifications,
@@ -916,6 +963,8 @@ export class Session {
       delegations,
       filesystem,
       scheduleService,
+      noteStore,
+      hostMetricsSampler,
       checkoutDiffManager,
       github,
       renameCurrentBranch,
@@ -993,6 +1042,7 @@ export class Session {
     this.readAloud = readAloud;
     this.voiceOrchestrator = voiceOrchestrator;
     this.delegations = delegations;
+    this.agentStop = resolveAgentStop(options, this.sessionLogger);
     this.voiceMessages = new VoiceMessagesSessionHandler({
       orchestrator: voiceOrchestrator,
       emit: (message) => this.emit(message),
@@ -1068,6 +1118,17 @@ export class Session {
     this.scheduleSession = new ScheduleSession({
       host: { emit: (msg) => this.emit(msg) },
       scheduleService,
+      logger: this.sessionLogger,
+    });
+    this.noteStore = noteStore;
+    this.noteSession = createNoteSession({
+      noteStore,
+      emit: (msg) => this.emit(msg),
+      logger: this.sessionLogger,
+    });
+    this.hostMetricsSession = createHostMetricsSession({
+      sampler: hostMetricsSampler,
+      emit: (msg) => this.emit(msg),
       logger: this.sessionLogger,
     });
     this.providerCatalogSession = new ProviderCatalogSession({
@@ -1259,8 +1320,11 @@ export class Session {
       resolveScriptHealth: this.resolveScriptHealth,
       logger: this.sessionLogger,
       emit: (message) => this.emit(message),
+      publishStatusUpdate: (message) => {
+        if (publishScriptStatusUpdate) publishScriptStatusUpdate(message);
+        else this.emit(message);
+      },
       spawnWorkspaceScript,
-      wantsStatusUpdates: () => this.wantsEvent("script_status_update"),
       assertAutomationAllowed: (workspaceId) =>
         assertWorkspaceAutomationAllowedForWorkspace(this.workspaceRegistry, workspaceId),
       globalServicePorts: loadPersistedConfig(this.paseoHome).worktrees?.servicePorts,
@@ -1307,7 +1371,7 @@ export class Session {
         stt,
         voice,
         voiceBridge,
-        dictation,
+        dictation: { ...dictation, dictionary: () => this.daemonConfigStore.get().dictionary },
         orchestrator: this.voiceOrchestrator,
       },
       this.delivery,
@@ -2139,15 +2203,19 @@ export class Session {
     const storedRecord = await this.agentStorage.get(payload.id);
     payload.title = storedRecord?.title ?? null;
     payload.archivedAt = storedRecord?.archivedAt ?? null;
-    return this.withQueue(payload);
+    return this.withDaemonState(payload);
   }
 
-  private withQueue(payload: AgentSnapshotPayload): AgentSnapshotPayload {
+  /** What the daemon holds for the agent outside its runtime, live or stored. */
+  private withDaemonState(payload: AgentSnapshotPayload): AgentSnapshotPayload {
     const queue = this.agentManager.messageQueue.snapshot(payload.id);
     if (queue) {
       payload.queue = queue;
     }
-    return payload;
+    return withDaemonBackgroundTasks(
+      payload,
+      this.agentManager.listDaemonBackgroundTasks(payload.id),
+    );
   }
 
   private buildAgentPayload(agent: ManagedAgent): Promise<AgentSnapshotPayload> {
@@ -2158,7 +2226,7 @@ export class Session {
     record: StoredAgentRecord,
     registeredProviderIds = new Set(this.providerSnapshotManager.listRegisteredProviderIds()),
   ): AgentSnapshotPayload {
-    return this.withQueue(buildStoredAgentPayload(record, registeredProviderIds));
+    return this.withDaemonState(buildStoredAgentPayload(record, registeredProviderIds));
   }
 
   private isProviderVisibleToClient(provider: string): boolean {
@@ -2578,7 +2646,7 @@ export class Session {
       this.dispatchVoiceAndControlMessage(msg) ??
       this.dispatchAgentRewindMessage(msg, source) ??
       this.dispatchAgentRelationshipMessage(msg) ??
-      this.dispatchAgentTimelineMessage(msg, source) ??
+      this.dispatchTimelineOrBrowserMessage(msg, source) ??
       this.dispatchHubExecutionMessage(msg) ??
       this.dispatchCreationMessage(msg, source) ??
       this.dispatchAgentLifecycleMessage(msg) ??
@@ -2924,7 +2992,9 @@ export class Session {
       }
       this.voiceOrchestrator.setPreferredLanguage(request.language ?? null);
       this.voiceOrchestrator.setPreferredAgentModes(request.agentModes);
-      const agentId = await this.voiceOrchestrator.ensureAgent();
+      this.voiceOrchestrator.setPreferredAgentDefaults(request.agentDefaults);
+      this.voiceOrchestrator.noteCallStarting();
+      const agentId = await this.voiceOrchestrator.agentIdForCall();
       this.emit({
         type: "voice.orchestrator.start.response",
         payload: { requestId, agentId, language: this.voiceOrchestrator.language, error: null },
@@ -2947,6 +3017,12 @@ export class Session {
 
   private dispatchVoiceAndControlMessage(msg: SessionInboundMessage): Promise<void> | undefined {
     if (isVoiceMessagesRequest(msg)) return this.voiceMessages.handle(msg);
+    if (isVoiceCommandsRequest(msg)) {
+      return handleVoiceCommandsRequest(msg, {
+        service: this.voiceOrchestrator?.commands ?? null,
+        emit: (message) => this.emit(message),
+      });
+    }
     switch (msg.type) {
       case "voice_audio_chunk":
       case "abort_request":
@@ -3011,6 +3087,16 @@ export class Session {
     }
   }
 
+  private dispatchTimelineOrBrowserMessage(
+    msg: SessionInboundMessage,
+    source?: object,
+  ): Promise<void> | undefined {
+    return (
+      this.dispatchDaemonBrowserMessage(msg, source) ??
+      this.dispatchAgentTimelineMessage(msg, source)
+    );
+  }
+
   private dispatchAgentTimelineMessage(
     msg: SessionInboundMessage,
     source?: object,
@@ -3028,6 +3114,12 @@ export class Session {
         return this.handleProviderSubagentListRequest(msg);
       case "agent.provider_subagents.timeline.get.request":
         return this.handleProviderSubagentTimelineRequest(msg, source);
+      case "agent.html_render.get.request":
+        return this.handleHtmlRenderGetRequest(msg, source);
+      case "agent.visualization.get.request":
+        return this.handleVisualizationGetRequest(msg, source);
+      case "agent.visualization.set_state.request":
+        return this.handleVisualizationSetStateRequest(msg, source);
       case "session.events.set_subscription.request": {
         const owner = this.delivery.begin("events", undefined, async (id) => {
           this.eventSubscriptions.delete(id);
@@ -3077,6 +3169,194 @@ export class Session {
         return this.handleAgentQueueRequest(msg);
       default:
         return undefined;
+    }
+  }
+
+  private dispatchDaemonBrowserMessage(
+    msg: SessionInboundMessage,
+    source?: object,
+  ): Promise<void> | undefined {
+    if (
+      msg.type !== "daemon.browser.get_status.request" &&
+      msg.type !== "daemon.browser.setup.request"
+    )
+      return undefined;
+    return (async () => {
+      try {
+        const executable =
+          msg.type === "daemon.browser.setup.request"
+            ? await ensureHeadlessShell(this.paseoHome, -1)
+            : null;
+        let status = await headlessShellStatus(this.paseoHome);
+        if (status.executable) {
+          const diagnostic = await previewBrowserHostDiagnostic(status.executable);
+          if (diagnostic) status = { ...status, state: "failed", message: diagnostic };
+          else if (executable) {
+            await captureHtmlPreview({
+              executable,
+              html: "<html><body>ready</body></html>",
+              width: 320,
+              theme: STOCK_RENDER_THEMES.dark,
+            });
+          }
+        }
+        this.emitForSource(
+          {
+            type:
+              msg.type === "daemon.browser.setup.request"
+                ? "daemon.browser.setup.response"
+                : "daemon.browser.get_status.response",
+            payload: { requestId: msg.requestId, status },
+          },
+          source,
+        );
+      } catch (error) {
+        this.emitForSource(
+          {
+            type:
+              msg.type === "daemon.browser.setup.request"
+                ? "daemon.browser.setup.response"
+                : "daemon.browser.get_status.response",
+            payload: {
+              requestId: msg.requestId,
+              error: error instanceof Error ? error.message.slice(0, 500) : "Browser setup failed",
+            },
+          },
+          source,
+        );
+      }
+    })();
+  }
+
+  private async handleHtmlRenderGetRequest(
+    msg: Extract<SessionInboundMessage, { type: "agent.html_render.get.request" }>,
+    source?: object,
+  ): Promise<void> {
+    try {
+      const agent =
+        this.agentManager.getAgent(msg.agentId) ?? (await this.agentStorage.get(msg.agentId));
+      if (!agent || agent.internal) throw new Error("Render not found");
+      const render = await new HtmlRenderStore(this.paseoHome).get(msg.agentId, msg.renderId);
+      this.emitForSource(
+        {
+          type: "agent.html_render.get.response",
+          payload: {
+            requestId: msg.requestId,
+            agentId: msg.agentId,
+            renderId: msg.renderId,
+            ...render,
+            error: null,
+          },
+        },
+        source,
+      );
+    } catch {
+      this.emitForSource(
+        {
+          type: "agent.html_render.get.response",
+          payload: {
+            requestId: msg.requestId,
+            agentId: msg.agentId,
+            renderId: msg.renderId,
+            html: null,
+            title: null,
+            error: "Render not found",
+          },
+        },
+        source,
+      );
+    }
+  }
+
+  private async visualizationAgent(agentId: string) {
+    const agent = this.agentManager.getAgent(agentId) ?? (await this.agentStorage.get(agentId));
+    if (!agent || agent.provider !== "codex" || agent.internal) {
+      throw new Error("Visualization unavailable");
+    }
+    const workspace = agent.workspaceId
+      ? await this.workspaceRegistry.get(agent.workspaceId)
+      : null;
+    return { ...agent, workspaceCwd: workspace?.cwd ?? null };
+  }
+
+  private async handleVisualizationGetRequest(
+    msg: Extract<SessionInboundMessage, { type: "agent.visualization.get.request" }>,
+    source?: object,
+  ): Promise<void> {
+    try {
+      const agent = await this.visualizationAgent(msg.agentId);
+      const visual = await new CodexVisualizationStore(this.paseoHome).get(agent, msg.path);
+      this.emitForSource(
+        {
+          type: "agent.visualization.get.response",
+          payload: {
+            requestId: msg.requestId,
+            agentId: msg.agentId,
+            path: msg.path,
+            ...visual,
+            error: null,
+          },
+        },
+        source,
+      );
+    } catch {
+      this.emitForSource(
+        {
+          type: "agent.visualization.get.response",
+          payload: {
+            requestId: msg.requestId,
+            agentId: msg.agentId,
+            path: msg.path,
+            canonicalPath: null,
+            revision: null,
+            html: null,
+            state: null,
+            error: "Visualization unavailable",
+          },
+        },
+        source,
+      );
+    }
+  }
+
+  private async handleVisualizationSetStateRequest(
+    msg: Extract<SessionInboundMessage, { type: "agent.visualization.set_state.request" }>,
+    source?: object,
+  ): Promise<void> {
+    try {
+      const agent = await this.visualizationAgent(msg.agentId);
+      const state = await new CodexVisualizationStore(this.paseoHome).setState(
+        agent,
+        msg.path,
+        msg.state,
+      );
+      this.emitForSource(
+        {
+          type: "agent.visualization.set_state.response",
+          payload: {
+            requestId: msg.requestId,
+            agentId: msg.agentId,
+            path: msg.path,
+            state,
+            error: null,
+          },
+        },
+        source,
+      );
+    } catch {
+      this.emitForSource(
+        {
+          type: "agent.visualization.set_state.response",
+          payload: {
+            requestId: msg.requestId,
+            agentId: msg.agentId,
+            path: msg.path,
+            state: null,
+            error: "Visualization state was not saved",
+          },
+        },
+        source,
+      );
     }
   }
 
@@ -3438,6 +3718,14 @@ export class Session {
     }
   }
 
+  private dispatchNoteMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+    return this.noteSession ? this.noteSession.dispatch(msg) : undefined;
+  }
+
+  private dispatchHostMetricsMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+    return this.hostMetricsSession ? this.hostMetricsSession.dispatch(msg) : undefined;
+  }
+
   private dispatchScheduleMessage(msg: SessionInboundMessage): Promise<void> | undefined {
     switch (msg.type) {
       case "schedule/create":
@@ -3459,7 +3747,7 @@ export class Session {
       case "schedule/update":
         return this.scheduleSession.handleScheduleUpdateRequest(msg);
       default:
-        return undefined;
+        return this.dispatchNoteMessage(msg) ?? this.dispatchHostMetricsMessage(msg);
     }
   }
 
@@ -4249,6 +4537,21 @@ export class Session {
     }
   }
 
+  private linkNotesFromAttachments(
+    agentId: string,
+    attachments: readonly AgentAttachment[] | undefined,
+  ): void {
+    const noteStore = this.noteStore;
+    if (!noteStore || !attachments) return;
+    for (const attachment of attachments) {
+      const noteId = noteIdFromAttachment(attachment);
+      if (!noteId) continue;
+      void noteStore.linkAgent(noteId, agentId).catch((error: unknown) => {
+        this.sessionLogger.warn({ err: error, noteId, agentId }, "Failed to link note to agent");
+      });
+    }
+  }
+
   /**
    * Handle text message to agent (with optional image attachments)
    */
@@ -4278,6 +4581,7 @@ export class Session {
 
     const promptText = options?.spokenInput ? wrapSpokenInput(text) : text;
     const prompt = buildAgentPrompt(promptText, images, attachments);
+    this.linkNotesFromAttachments(agentId, attachments);
 
     try {
       const dispatch = await sendPromptToAgent({
@@ -4711,6 +5015,9 @@ export class Session {
           workspaceId: resolvedIntent.intent.workspaceId,
           worktreeName,
           initialPrompt,
+          source: msg.callerAgentId
+            ? { kind: "agent-message", agentId: msg.callerAgentId }
+            : undefined,
           clientMessageId,
           outputSchema,
           images,
@@ -4725,6 +5032,7 @@ export class Session {
         },
       );
       createdAgentId = snapshot.id;
+      this.linkNotesFromAttachments(snapshot.id, attachments);
       await this.agentUpdates.forwardLiveAgent(snapshot);
       if (!explicitTitle && provisionalTitle) {
         this.workspaceAutoName.scheduleForAgent(
@@ -5055,12 +5363,7 @@ export class Session {
     this.sessionLogger.info({ agentId }, `Cancel request received for agent ${agentId}`);
 
     try {
-      await this.agentManager.messageQueue.hold(agentId, "user_stop");
-      await this.delegations?.stopActiveTurn(agentId);
-      await cancelAgentRunCommand(
-        { agentManager: this.agentManager, logger: this.sessionLogger },
-        agentId,
-      );
+      await this.agentStop.stop(agentId);
       if (requestId) {
         const agent = this.agentManager.getAgent(agentId);
         const payload = agent ? await this.buildAgentPayload(agent) : null;
@@ -5507,8 +5810,13 @@ export class Session {
     try {
       const workspaceCwd = cwd?.trim();
       const searchesWorkspace = Boolean(workspaceCwd);
+      const homeRoot = process.env.HOME ?? homedir();
+      // readdir on TCC-protected folders under ~/Library blocks forever for a process that cannot
+      // show a consent prompt, and each blocked call holds a libuv threadpool thread.
+      const excludedDiscoveryPaths =
+        !searchesWorkspace && process.platform === "darwin" ? [join(homeRoot, "Library")] : [];
       const entries = await searchDirectoryEntries({
-        root: workspaceCwd ? expandTilde(workspaceCwd) : (process.env.HOME ?? homedir()),
+        root: workspaceCwd ? expandTilde(workspaceCwd) : homeRoot,
         query,
         pathFormat: searchesWorkspace ? "relative" : "absolute",
         pathQueryPolicy: searchesWorkspace ? "slashes" : "rooted",
@@ -5519,6 +5827,7 @@ export class Session {
           : [],
         confidentResultScanThreshold: searchesWorkspace ? undefined : 5_000,
         respectGitIgnore: searchesWorkspace,
+        excludedDiscoveryPaths,
         includeFiles,
         includeDirectories,
         matchMode,
@@ -5744,10 +6053,10 @@ export class Session {
 
   private async resolveAgentIdentifier(
     identifier: string,
-  ): Promise<{ ok: true; agentId: string } | { ok: false; error: string }> {
+  ): Promise<{ ok: true; agentId: string } | { ok: false; notFound: boolean; error: string }> {
     const trimmed = identifier.trim();
     if (!trimmed) {
-      return { ok: false, error: "Agent identifier cannot be empty" };
+      return { ok: false, notFound: false, error: "Agent identifier cannot be empty" };
     }
 
     const stored = await this.agentStorage.list();
@@ -5771,6 +6080,7 @@ export class Session {
     if (prefixMatches.length > 1) {
       return {
         ok: false,
+        notFound: false,
         error: `Agent identifier "${trimmed}" is ambiguous (${prefixMatches
           .slice(0, 5)
           .map((id) => id.slice(0, 8))
@@ -5785,6 +6095,7 @@ export class Session {
     if (titleMatches.length > 1) {
       return {
         ok: false,
+        notFound: false,
         error: `Agent title "${trimmed}" is ambiguous (${titleMatches
           .slice(0, 5)
           .map((r) => r.id.slice(0, 8))
@@ -5792,7 +6103,7 @@ export class Session {
       };
     }
 
-    return { ok: false, error: `Agent not found: ${trimmed}` };
+    return { ok: false, notFound: true, error: `Agent not found: ${trimmed}` };
   }
 
   private async getAgentPayloadById(agentId: string): Promise<AgentSnapshotPayload | null> {
@@ -6302,6 +6613,7 @@ export class Session {
                 statusEnteredAt: snapshot.statusEnteredAt,
                 activityAtMs: snapshot.activityAtMs,
                 waitingOnSubagentsCount: snapshot.waitingOnSubagentsCount,
+                delegatedByAgentId: snapshot.delegatedByAgentId,
               }
             : null,
           update: {
@@ -6309,6 +6621,7 @@ export class Session {
             statusEnteredAt: payload.workspace.statusEnteredAt ?? null,
             activityAtMs: Number.isNaN(updateActivityAtMs) ? null : updateActivityAtMs,
             waitingOnSubagentsCount: payload.workspace.waitingOnSubagents?.count,
+            delegatedByAgentId: payload.workspace.delegatedByAgentId,
           },
         });
         if (!shouldEmit) {
@@ -7089,6 +7402,7 @@ export class Session {
         statusEnteredAt: entry.statusEnteredAt ?? null,
         activityAtMs: Number.isNaN(parsedActivity) ? null : parsedActivity,
         waitingOnSubagentsCount: entry.waitingOnSubagents?.count,
+        delegatedByAgentId: entry.delegatedByAgentId,
       });
     }
     return { snapshotByWorkspaceId };
@@ -7806,7 +8120,6 @@ export class Session {
         emit: (message) => this.emit(message),
         sessionLogger: this.sessionLogger,
         terminalManager: this.terminalManager,
-        archiveWorkspaceRecord: (workspaceId) => this.archiveWorkspaceRecord(workspaceId),
         serviceProxy: this.serviceProxy,
         scriptRuntimeStore: this.scriptRuntimeStore,
         getDaemonTcpPort: this.getDaemonTcpPort,
@@ -7853,7 +8166,6 @@ export class Session {
         emit: (message) => this.emit(message),
         sessionLogger: this.sessionLogger,
         terminalManager: this.terminalManager,
-        archiveWorkspaceRecord: (workspaceId) => this.archiveWorkspaceRecord(workspaceId),
         serviceProxy: this.serviceProxy,
         scriptRuntimeStore: this.scriptRuntimeStore,
         getDaemonTcpPort: this.getDaemonTcpPort,
@@ -8129,11 +8441,17 @@ export class Session {
   }
 
   private async handleFetchAgent(agentIdOrIdentifier: string, requestId: string): Promise<void> {
+    // An unknown agent is a null agent, not an error. Errors are for empty or ambiguous identifiers.
     const resolved = await this.resolveAgentIdentifier(agentIdOrIdentifier);
     if (!resolved.ok) {
       this.emit({
         type: "fetch_agent_response",
-        payload: { requestId, agent: null, project: null, error: resolved.error },
+        payload: {
+          requestId,
+          agent: null,
+          project: null,
+          error: resolved.notFound ? null : resolved.error,
+        },
       });
       return;
     }
@@ -8142,12 +8460,7 @@ export class Session {
     if (!agent) {
       this.emit({
         type: "fetch_agent_response",
-        payload: {
-          requestId,
-          agent: null,
-          project: null,
-          error: `Agent not found: ${resolved.agentId}`,
-        },
+        payload: { requestId, agent: null, project: null, error: null },
       });
       return;
     }
@@ -8702,6 +9015,7 @@ export class Session {
       const agentId = resolved.agentId;
 
       const prompt = buildAgentPrompt(msg.text, msg.images, msg.attachments);
+      this.linkNotesFromAttachments(agentId, msg.attachments);
       this.sessionLogger.trace(
         {
           agentId,
@@ -8718,6 +9032,9 @@ export class Session {
           agentStorage: this.agentStorage,
           agentId,
           prompt,
+          source: msg.sourceAgentId
+            ? { kind: "agent-message", agentId: msg.sourceAgentId }
+            : undefined,
           messageId: msg.messageId,
           activeTurnBehavior: msg.activeTurnBehavior ?? "interrupt",
           clearPendingPermissions: true,
@@ -8729,21 +9046,21 @@ export class Session {
         disposition = toSendAgentMessageDisposition(dispatch.disposition);
         const startedTurn =
           dispatch.disposition === "started" || dispatch.disposition === "restarted";
-        if (startedTurn && this.agentManager.hasInFlightRun(agentId)) {
-          await waitForAgentRunStartWithTimeout(
-            this.agentManager,
-            agentId,
-            this.delivery.requestSignal,
-          );
+        if (startedTurn) {
+          await this.waitForStartedAgentRun(agentId);
         }
       };
       if (msg.messageId) {
         await this.messageReceipts.send({
           agentId,
           messageId: msg.messageId,
-          request: { prompt, activeTurnBehavior: msg.activeTurnBehavior ?? "interrupt" },
+          request: {
+            prompt,
+            sourceAgentId: msg.sourceAgentId,
+            activeTurnBehavior: msg.activeTurnBehavior ?? "interrupt",
+          },
           prepare: async () => {
-            await this.prepareAgentMessage(agentId, msg.text);
+            if (!msg.sourceAgentId) await this.prepareAgentMessage(agentId, msg.text);
           },
           send,
         });
@@ -8773,6 +9090,23 @@ export class Session {
           error: errorToFriendlyMessage(error),
         },
       });
+    }
+  }
+
+  private async waitForStartedAgentRun(agentId: string): Promise<void> {
+    if (this.agentManager.hasInFlightRun(agentId)) {
+      await waitForAgentRunStartWithTimeout(
+        this.agentManager,
+        agentId,
+        this.delivery.requestSignal,
+      );
+      return;
+    }
+    // The queue reports "started" after the run was handed off, so a turn that failed to
+    // start may already be settled by the time we look.
+    const agent = this.agentManager.getAgent(agentId);
+    if (agent?.lifecycle === "error") {
+      throw new Error(agent.lastError ?? `Agent ${agentId} failed to start`);
     }
   }
 

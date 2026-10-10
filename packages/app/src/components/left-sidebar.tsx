@@ -34,10 +34,10 @@ import { SidebarSeparator } from "@/components/sidebar/sidebar-separator";
 import { SidebarNavRows } from "@/components/sidebar/sidebar-nav-rows";
 import { SidebarHelpMenu } from "@/components/sidebar/sidebar-help-menu";
 import { SidebarResizeHandle } from "@/components/sidebar-resize-handle";
+import { buttonControlHeight } from "@/components/ui/control-geometry";
 import { Shortcut } from "@/components/ui/shortcut";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { HEADER_INNER_HEIGHT, useControlDensity, useIsCompactFormFactor } from "@/constants/layout";
-import { TOUCH_ROW_HEIGHT } from "@/components/ui/control-geometry";
 import { useOpenAddProject } from "@/hooks/use-open-add-project";
 import { useImportSession } from "@/hooks/use-import-session";
 import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
@@ -61,7 +61,12 @@ import { useCloseAgentListGesture } from "@/mobile-panels/gestures";
 import { MobilePanelOverlay } from "@/mobile-panels/presentation";
 import { buildSettingsAddHostRoute, buildSettingsRoute } from "@/utils/host-routes";
 import { openHostOverview } from "@/navigation/settings-navigation";
-import { UsageSidebarItem, useHasUsageSummary, useOpenUsageScreen } from "@/usage";
+import {
+  UsageSidebarItem,
+  UsageSidebarRoot,
+  useHasUsageSummary,
+  useOpenSidebarUsage,
+} from "@/usage";
 import { SidebarAgentListSkeleton } from "./sidebar-agent-list-skeleton";
 import { SidebarCalloutSlot } from "./sidebar-callout-slot";
 import { SidebarWorkspaceList } from "./sidebar-workspace-list";
@@ -286,7 +291,7 @@ function FooterIconButton({
   testID,
   label,
   icon: Icon,
-  iconSize,
+  iconSizeAdjustment = 0,
   shortcutKeys,
   theme,
 }: {
@@ -295,18 +300,24 @@ function FooterIconButton({
   label: string;
   icon: typeof FolderPlus;
   /** Only for a glyph that reads larger than the others at the same size. */
-  iconSize?: number;
+  iconSizeAdjustment?: number;
   shortcutKeys?: ReturnType<typeof useShortcutKeys>;
   theme: SidebarTheme;
   buttonRef?: RefObject<View | null>;
 }) {
   const isTouchDensity = useControlDensity() === "touch";
+  const isCompact = useIsCompactFormFactor();
+  const iconSize = isCompact ? theme.iconSize.lg : theme.iconSize.md;
+
   return (
     <Tooltip delayDuration={300}>
       <TooltipTrigger asChild>
         <Pressable
           ref={buttonRef}
-          style={[styles.footerIconButton, isTouchDensity && styles.footerIconButtonTouch]}
+          style={[
+            styles.footerIconButton(isCompact),
+            isTouchDensity && styles.footerIconButtonTouch,
+          ]}
           testID={testID}
           nativeID={testID}
           collapsable={false}
@@ -317,7 +328,7 @@ function FooterIconButton({
         >
           {({ hovered }) => (
             <Icon
-              size={iconSize ?? theme.iconSize.md}
+              size={iconSize + iconSizeAdjustment}
               color={hovered ? theme.colors.foreground : theme.colors.foregroundMuted}
             />
           )}
@@ -379,7 +390,7 @@ function SidebarHostPicker({
         label={label}
         icon={Server}
         // Server's two boxes fill more of the square than the other glyphs.
-        iconSize={theme.iconSize.md - 1}
+        iconSizeAdjustment={-1}
         theme={theme}
       />
     </HostPicker>
@@ -447,47 +458,55 @@ function SidebarFooter({
 }) {
   const newAgentKeys = useShortcutKeys("new-agent");
   const settingsKeys = useShortcutKeys("toggle-settings");
-  const openUsageScreen = useOpenUsageScreen();
 
   // One line of icons: Add project, Usage, Hosts, then Help and Settings at the end.
   return (
-    <View style={styles.footerContainer} testID="sidebar-footer">
-      <SidebarFooterRows onBeforeNavigate={onBeforeNavigate} />
-      <View style={styles.sidebarFooter} testID="sidebar-footer-bottom-line">
-        <FooterIconButton
-          onPress={handleOpenProject}
-          testID="sidebar-add-project"
-          label={labels.addProject}
-          icon={FolderPlus}
-          shortcutKeys={newAgentKeys}
-          theme={theme}
-        />
-        <FooterIconButton
-          onPress={openUsageScreen}
-          testID="sidebar-usage-icon"
-          label={labels.usage}
-          icon={CircleGauge}
-          theme={theme}
-        />
-        <SidebarHostPicker
-          theme={theme}
-          label={labels.hosts}
-          onAddHost={handleAddHost}
-          onOpenHostSettings={handleOpenHostSettings}
-        />
-        <GlobalVoiceFooterButton theme={theme} />
-        <View style={styles.footerSpacer} />
-        <SidebarHelpMenu />
-        <FooterIconButton
-          onPress={handleSettings}
-          testID="sidebar-settings"
-          label={labels.settings}
-          icon={Settings}
-          shortcutKeys={settingsKeys}
-          theme={theme}
-        />
+    <UsageSidebarRoot>
+      <View style={styles.footerContainer} testID="sidebar-footer">
+        <SidebarFooterRows onBeforeNavigate={onBeforeNavigate} />
+        <View style={styles.sidebarFooter} testID="sidebar-footer-bottom-line">
+          <FooterIconButton
+            onPress={handleOpenProject}
+            testID="sidebar-add-project"
+            label={labels.addProject}
+            icon={FolderPlus}
+            shortcutKeys={newAgentKeys}
+            theme={theme}
+          />
+          <SidebarUsageIcon label={labels.usage} theme={theme} />
+          <SidebarHostPicker
+            theme={theme}
+            label={labels.hosts}
+            onAddHost={handleAddHost}
+            onOpenHostSettings={handleOpenHostSettings}
+          />
+          <GlobalVoiceFooterButton theme={theme} />
+          <View style={styles.footerSpacer} />
+          <SidebarHelpMenu />
+          <FooterIconButton
+            onPress={handleSettings}
+            testID="sidebar-settings"
+            label={labels.settings}
+            icon={Settings}
+            shortcutKeys={settingsKeys}
+            theme={theme}
+          />
+        </View>
       </View>
-    </View>
+    </UsageSidebarRoot>
+  );
+}
+
+function SidebarUsageIcon({ label, theme }: { label: string; theme: SidebarTheme }) {
+  const openUsage = useOpenSidebarUsage();
+  return (
+    <FooterIconButton
+      onPress={openUsage}
+      testID="sidebar-usage-icon"
+      label={label}
+      icon={CircleGauge}
+      theme={theme}
+    />
   );
 }
 
@@ -957,7 +976,7 @@ const styles = StyleSheet.create((theme) => ({
     borderTopWidth: 1,
     borderTopColor: theme.colors.border,
   },
-  // The icon buttons sit edge to edge; their own inset spaces the glyphs.
+  // Buttons sit edge to edge; their own inset spaces the glyphs.
   sidebarFooter: {
     flexDirection: "row",
     alignItems: "center",
@@ -974,17 +993,17 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing[1.5],
     gap: 2,
   },
-  footerIconButton: {
-    width: 28,
-    height: 28,
+  footerIconButton: (isCompact: boolean) => ({
+    width: isCompact ? buttonControlHeight.md : buttonControlHeight.xs,
+    height: isCompact ? buttonControlHeight.md : buttonControlHeight.xs,
     alignItems: "center",
     justifyContent: "center",
     paddingVertical: theme.spacing[1],
     paddingHorizontal: theme.spacing[1],
-  },
+  }),
   footerIconButtonTouch: {
-    width: TOUCH_ROW_HEIGHT,
-    height: TOUCH_ROW_HEIGHT,
+    width: buttonControlHeight.md,
+    height: buttonControlHeight.md,
   },
   tooltipRow: {
     flexDirection: "row",

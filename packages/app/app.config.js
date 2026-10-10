@@ -115,6 +115,8 @@ export default {
       supportsTablet: true,
       infoPlist: {
         NSMicrophoneUsageDescription: "This app needs access to the microphone for voice commands.",
+        NSMotionUsageDescription:
+          "Paseo uses motion to notice when you're driving and switch voice calls to On the go.",
         NSSpeechRecognitionUsageDescription:
           "Voice calls on a weak signal transcribe what you say on this device before sending it.",
         ITSAppUsesNonExemptEncryption: false,

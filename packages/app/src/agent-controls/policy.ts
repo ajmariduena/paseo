@@ -2,6 +2,12 @@ import type { AgentMode } from "@getpaseo/protocol/agent-types";
 
 export const PLAN_MODE_FEATURE_ID = "plan_mode";
 export const FAST_MODE_FEATURE_ID = "fast_mode";
+export const SPEED_FEATURE_ID = "service_tier";
+
+/** Unattended modes — Bypass, Full Access — run tools without asking; the toolbar tints them. */
+export function isUnattendedAgentMode(mode: Pick<AgentMode, "colorTier">): boolean {
+  return mode.colorTier === "dangerous";
+}
 
 export function isPlanningAgentMode(mode: Pick<AgentMode, "id" | "colorTier">): boolean {
   return mode.colorTier === "planning" || mode.id === "plan" || mode.id.endsWith("#plan");

@@ -1,14 +1,19 @@
 import type { AgentFeature, AgentModelDefinition } from "@getpaseo/protocol/agent-types";
 import { i18n } from "@/i18n/i18next";
 import { formatThinkingOptionLabel } from "@/agent-controls/labels";
-import { FAST_MODE_FEATURE_ID, PLAN_MODE_FEATURE_ID } from "@/agent-controls/policy";
+import {
+  FAST_MODE_FEATURE_ID,
+  PLAN_MODE_FEATURE_ID,
+  SPEED_FEATURE_ID,
+} from "@/agent-controls/policy";
 
-export type ExplainedAgentControl = "mode" | "model" | "thinking";
+export type ExplainedAgentControl = "mode" | "model" | "thinking" | "effort";
 export type FeatureHighlightColor = "blue" | "default" | "green" | "yellow";
 export type AgentControlHintKey =
   | "agentControls.hints.thinking"
   | "agentControls.hints.model"
-  | "agentControls.hints.mode";
+  | "agentControls.hints.mode"
+  | "agentControls.hints.effort";
 
 export function getAgentControlHintKey(selector: ExplainedAgentControl): AgentControlHintKey {
   switch (selector) {
@@ -18,6 +23,8 @@ export function getAgentControlHintKey(selector: ExplainedAgentControl): AgentCo
       return "agentControls.hints.model";
     case "mode":
       return "agentControls.hints.mode";
+    case "effort":
+      return "agentControls.hints.effort";
     default:
       throw new Error("unreachable");
   }
@@ -35,9 +42,16 @@ export function getFeatureTooltip(feature: Pick<AgentFeature, "label" | "tooltip
   return feature.tooltip ?? feature.label;
 }
 
+export function isFeatureActive(feature: AgentFeature): boolean {
+  if (feature.type === "toggle") return feature.value;
+  const selectedOption = feature.options.find((option) => option.id === feature.value);
+  return selectedOption !== undefined && !selectedOption.isDefault;
+}
+
 export function getFeatureHighlightColor(featureId: string): FeatureHighlightColor {
   switch (featureId) {
     case FAST_MODE_FEATURE_ID:
+    case SPEED_FEATURE_ID:
       return "yellow";
     case "auto_accept":
       return "green";
@@ -197,4 +211,13 @@ export function resolveAgentModelSelection(input: {
     selectedThinkingId,
     displayThinking,
   };
+}
+
+/** A feature's glyph only takes its highlight color while it is on. */
+export function resolveFeatureIconTint(
+  feature: AgentFeature,
+): "muted" | "blue" | "green" | "yellow" {
+  if (!isFeatureActive(feature)) return "muted";
+  const highlight = getFeatureHighlightColor(feature.id);
+  return highlight === "default" ? "muted" : highlight;
 }

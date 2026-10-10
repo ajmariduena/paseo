@@ -1,8 +1,8 @@
 import { useCallback, useState, type ReactElement } from "react";
-import { Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
-import { Archive, Check, ChevronRight } from "lucide-react-native";
+import { Archive, Check, ChevronRight, Square } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useProviderIcons, type ProviderIconComponent } from "@/components/provider-icons";
 import {
@@ -13,15 +13,22 @@ import {
   useMenuContext,
 } from "@/components/ui/menu";
 import { ComposerTrackRow } from "@/composer/tracks";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useIsCompactFormFactor } from "@/constants/layout";
+import { isNative } from "@/constants/platform";
+import { useToast } from "@/contexts/toast-context";
+import { i18n } from "@/i18n/i18next";
 import {
   WorkspaceTabIcon,
   type WorkspaceTabPresentation,
 } from "@/screens/workspace/workspace-tab-presentation";
+import { useSessionStore } from "@/stores/session-store";
 import type { Theme } from "@/styles/theme";
 import { formatSubagentStatusWord } from "@/subagents/presentation/status";
 import { useElapsedNow } from "@/subagents/presentation/use-elapsed-now";
 import type { SubagentOpenTarget } from "@/subagents/timeline/model";
 import type { OpenSubagentActions } from "@/subagents/use-open-subagent";
+import { toErrorMessage } from "@/utils/error-messages";
 import { formatDuration } from "@/utils/time";
 import {
   LINEAGE_PAGE_SIZE,
@@ -35,9 +42,11 @@ import { useLineage, type ArchivedLineageState } from "./use-lineage";
 const ThemedArchive = withUnistyles(Archive);
 const ThemedCheck = withUnistyles(Check);
 const ThemedChevronRight = withUnistyles(ChevronRight);
+const ThemedSquare = withUnistyles(Square);
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const ROW_ICON_SIZE = 14;
+const STOP_ICON_SIZE = 12;
 const LINEAGE_MIN_WIDTH = 280;
 const LINEAGE_MAX_WIDTH = 420;
 
@@ -80,18 +89,91 @@ function LineageRowTrailing({ row }: { row: LineageRow }): ReactElement {
   );
 }
 
+type StopSubagent = (agentId: string) => Promise<void>;
+
+/** Cancels the child's run; the daemon stops its descendants with it. */
+function useStopSubagent(serverId: string): StopSubagent {
+  const toast = useToast();
+  return useCallback(
+    async (agentId: string) => {
+      const client = useSessionStore.getState().sessions[serverId]?.client;
+      if (!client) {
+        toast.error(i18n.t("workspaceSetup.errors.hostDisconnected"));
+        return;
+      }
+      await client.cancelAgent(agentId).catch((error: unknown) => {
+        toast.error(toErrorMessage(error));
+      });
+    },
+    [serverId, toast],
+  );
+}
+
+function LineageStopButton({
+  agentId,
+  label,
+  visible,
+  onStop,
+}: {
+  agentId: string;
+  label: string;
+  visible: boolean;
+  onStop: StopSubagent;
+}): ReactElement {
+  const { t } = useTranslation();
+  const [stopping, setStopping] = useState(false);
+  const handlePress = useCallback(() => {
+    setStopping(true);
+    void onStop(agentId).finally(() => setStopping(false));
+  }, [agentId, onStop]);
+  return (
+    <View
+      style={visible ? styles.stopVisible : styles.stopHidden}
+      pointerEvents={visible ? "auto" : "none"}
+    >
+      <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
+        <TooltipTrigger asChild disabled={!visible}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t("lineage.stopAction", { label })}
+            testID={`lineage-stop-${agentId}`}
+            disabled={stopping}
+            onPress={handlePress}
+            style={styles.stopButton}
+            hitSlop={8}
+          >
+            {({ hovered, pressed }) => (
+              <ThemedSquare
+                size={STOP_ICON_SIZE}
+                uniProps={hovered || pressed ? foregroundColorMapping : mutedColorMapping}
+              />
+            )}
+          </Pressable>
+        </TooltipTrigger>
+        <TooltipContent side="top" align="center" offset={8}>
+          <Text style={styles.tooltipText}>{t("lineage.stopTooltip")}</Text>
+        </TooltipContent>
+      </Tooltip>
+    </View>
+  );
+}
+
 function LineageChildRow({
   row,
   icon,
   onOpen,
+  onStop,
 }: {
   row: LineageRow;
   icon: ProviderIconComponent;
   onOpen: (target: SubagentOpenTarget) => void;
+  onStop: StopSubagent;
 }): ReactElement {
   const { t } = useTranslation();
+  const isCompact = useIsCompactFormFactor();
   const label = row.title ?? t("subagents.untitled");
   const handlePress = useCallback(() => onOpen(row.target), [onOpen, row.target]);
+  const stopAlwaysVisible = isNative || isCompact;
   const renderRow = useCallback(
     ({ active }: { active: boolean }) => (
       <>
@@ -108,10 +190,18 @@ function LineageChildRow({
           {label}
         </Text>
         <LineageRowTrailing row={row} />
+        {row.canStop && row.target.kind === "agent" ? (
+          <LineageStopButton
+            agentId={row.target.agentId}
+            label={label}
+            visible={stopAlwaysVisible || active}
+            onStop={onStop}
+          />
+        ) : null}
         <ThemedChevronRight size={ROW_ICON_SIZE} uniProps={mutedColorMapping} />
       </>
     ),
-    [icon, label, row],
+    [icon, label, onStop, row, stopAlwaysVisible],
   );
   return (
     <ComposerTrackRow
@@ -189,10 +279,12 @@ function PagedRows({
   rows,
   resolveIcon,
   onOpen,
+  onStop,
 }: {
   rows: readonly LineageRow[];
   resolveIcon: (provider: string) => ProviderIconComponent;
   onOpen: (target: SubagentOpenTarget) => void;
+  onStop: StopSubagent;
 }): ReactElement {
   const [limit, setLimit] = useState(LINEAGE_PAGE_SIZE);
   const page = pageLineageRows(rows, limit);
@@ -200,7 +292,13 @@ function PagedRows({
   return (
     <>
       {page.visible.map((row) => (
-        <LineageChildRow key={row.key} row={row} icon={resolveIcon(row.provider)} onOpen={onOpen} />
+        <LineageChildRow
+          key={row.key}
+          row={row}
+          icon={resolveIcon(row.provider)}
+          onOpen={onOpen}
+          onStop={onStop}
+        />
       ))}
       {page.nextCount > 0 ? <ShowMoreRow count={page.nextCount} onPress={showMore} /> : null}
     </>
@@ -351,6 +449,7 @@ function LineageMenuRows({
   const { t } = useTranslation();
   const { presentation } = useMenuContext("LineageMenuRows");
   const resolveIcon = useProviderIcons(serverId);
+  const stopSubagent = useStopSubagent(serverId);
   const { sections, archived, previousOpen, togglePrevious, toggleArchived } = state;
   const { openSubagent, openProviderSubagent, openParent } = actions;
   const openChild = useCallback(
@@ -383,7 +482,12 @@ function LineageMenuRows({
       {sections.subagents.length > 0 ? (
         <>
           <MenuLabel>{t("subagents.title")}</MenuLabel>
-          <PagedRows rows={sections.subagents} resolveIcon={resolveIcon} onOpen={openChild} />
+          <PagedRows
+            rows={sections.subagents}
+            resolveIcon={resolveIcon}
+            onOpen={openChild}
+            onStop={stopSubagent}
+          />
         </>
       ) : null}
       {isEmpty ? <MenuHint>{t("lineage.empty")}</MenuHint> : null}
@@ -397,7 +501,12 @@ function LineageMenuRows({
         />
       ) : null}
       {previousOpen ? (
-        <PagedRows rows={sections.previous} resolveIcon={resolveIcon} onOpen={openChild} />
+        <PagedRows
+          rows={sections.previous}
+          resolveIcon={resolveIcon}
+          onOpen={openChild}
+          onStop={stopSubagent}
+        />
       ) : null}
       <IncludeArchivedRow state={archived} onToggle={toggleArchived} />
     </>
@@ -441,6 +550,21 @@ const styles = StyleSheet.create((theme) => ({
     minWidth: 0,
     fontSize: theme.fontSize.sm,
     color: theme.colors.palette.red[300],
+  },
+  stopVisible: {
+    opacity: 1,
+  },
+  stopHidden: {
+    opacity: 0,
+  },
+  stopButton: {
+    padding: theme.spacing[1],
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  tooltipText: {
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foreground,
   },
   iconSpacer: {
     width: ROW_ICON_SIZE,

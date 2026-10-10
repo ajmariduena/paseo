@@ -503,17 +503,13 @@ export class DelegationStore {
   }
 
   /**
-   * Stops every cohort the run spawned or is waking: later results from those children are
-   * disposed instead of waking the parent.
+   * User Stop: every cohort stops, whichever run spawned it, so no child result wakes the
+   * parent again.
    */
-  async stopCohortsOfRun(parentAgentId: string, runKey: string, now: string): Promise<void> {
+  async stopAll(parentAgentId: string, now: string): Promise<void> {
     await this.mutateExisting(parentAgentId, undefined, (file) => {
-      for (const [cohortKey, cohort] of Object.entries(file.cohorts)) {
-        const dispatch = cohort.delivery?.dispatch;
-        const isWakingRun = dispatch?.kind === "started" && dispatch.runKey === runKey;
-        if (cohortKey === runKey || isWakingRun) {
-          disposeCohort(file, cohortKey, "stopped", now);
-        }
+      for (const cohortKey of Object.keys(file.cohorts)) {
+        disposeCohort(file, cohortKey, "stopped", now);
       }
     });
   }

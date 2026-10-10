@@ -8,6 +8,7 @@ import {
   type Ref,
 } from "react";
 import { useTranslation } from "react-i18next";
+import { PendingSidebarWorkspaceRow } from "@/components/sidebar/pending-workspace-row";
 import {
   View,
   Text,
@@ -410,6 +411,7 @@ function StatusGroupHeader({
   group: SidebarWorkspaceGroup;
   collapsed: boolean;
 }) {
+  const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
   const toggleWorkspaceGroupCollapsed = useSidebarCollapsedSectionsStore(
     (state) => state.toggleWorkspaceGroupCollapsed,
@@ -433,7 +435,7 @@ function StatusGroupHeader({
     <View onPointerEnter={handleHoverIn} onPointerLeave={handleHoverOut}>
       <Pressable
         accessibilityRole={platformIsWeb ? undefined : "button"}
-        accessibilityLabel={`${group.label} group`}
+        accessibilityLabel={t("sidebar.statusGroupAccessibility", { label: group.label })}
         accessibilityState={accessibilityState}
         style={rowStyle}
         onPress={handlePress}
@@ -486,6 +488,8 @@ function StatusGroupIcon({ bucket }: { bucket: StatusBucket }) {
       return <ThemedCircleCheck size={14} uniProps={attentionColorMapping} />;
     case "running":
       return <ThemedCircleDot size={14} uniProps={runningColorMapping} />;
+    case "background":
+      return <ThemedCircleDot size={14} uniProps={foregroundMutedColorMapping} />;
     case "waiting":
       return <ThemedCircle size={14} uniProps={foregroundMutedColorMapping} />;
     case "done":
@@ -538,6 +542,16 @@ const StatusWorkspaceRow = memo(function StatusWorkspaceRow({
     onWorkspacePress?.();
     navigateToWorkspace({ serverId: workspace.serverId, workspaceId: workspace.workspaceId });
   }, [onWorkspacePress, workspace.serverId, workspace.workspaceId]);
+
+  if (workspace.pendingCreation) {
+    return (
+      <PendingSidebarWorkspaceRow
+        workspace={workspace}
+        selected={selected}
+        onWorkspacePress={onWorkspacePress}
+      />
+    );
+  }
 
   return (
     <StatusWorkspaceRowWithMenu
@@ -814,6 +828,7 @@ function StatusWorkspaceRowInnerContent({
       didLongPressRef.current = false;
       return;
     }
+    setIsPressed(false);
     onPress();
   }, [didLongPressRef, onPress]);
   const handlePressIn = useCallback(

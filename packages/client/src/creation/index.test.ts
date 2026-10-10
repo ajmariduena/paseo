@@ -86,6 +86,50 @@ function fixture(modern: boolean) {
   return { client, requests, legacy, resolve, input };
 }
 
+test("observes a journaled creation without issuing another create request", () => {
+  const updates: Array<CreationSnapshot | null> = [];
+  const observed: Array<{ kind: string; key: string }> = [];
+  let deliver!: (snapshot: CreationSnapshot | null) => void;
+  let releases = 0;
+  const client = new CreationClient({
+    supports: () => true,
+    requestId: () => "unused",
+    request: async () => {
+      throw new Error("Creation must not be resubmitted");
+    },
+    observe: (kind, key, next) => {
+      observed.push({ kind, key });
+      deliver = next;
+      return () => {
+        releases += 1;
+      };
+    },
+    legacyAgent: async () => agent,
+    legacyWorkspace: async () => ({ workspace, error: null }),
+  });
+  const stop = client.observeCreation(
+    "workspace",
+    "saved-draft",
+    (snapshot) => updates.push(snapshot),
+    () => {},
+  );
+  const snapshot: CreationSnapshot = {
+    kind: "workspace",
+    idempotencyKey: "saved-draft",
+    revision: 2,
+    phase: "workspace_ready",
+    workspaceId: workspace.id,
+    agentId: agent.id,
+    workspace,
+    error: null,
+  };
+  deliver(snapshot);
+  expect(observed).toEqual([{ kind: "workspace", key: "saved-draft" }]);
+  expect(updates).toEqual([snapshot]);
+  stop();
+  expect(releases).toBe(1);
+});
+
 test("duplicate client submissions join one complete intent and cumulative updates never regress", async () => {
   const f = fixture(true);
   const phases: string[] = [];

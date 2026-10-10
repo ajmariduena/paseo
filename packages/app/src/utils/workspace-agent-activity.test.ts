@@ -68,7 +68,7 @@ function agent(input: {
 }
 
 describe("workspace agent activity index", () => {
-  it("shows an idle agent with live background tasks as running", () => {
+  it("shows an idle agent with live background tasks as background", () => {
     const backgroundTasks = [
       {
         id: "task-1",
@@ -99,8 +99,127 @@ describe("workspace agent activity index", () => {
       ]),
     );
 
-    expect(result.get("workspace-watching")?.status).toBe("running");
+    expect(result.get("workspace-watching")?.status).toBe("background");
+    expect(result.get("workspace-watching")?.backgroundTasks).toEqual(backgroundTasks);
     expect(result.get("workspace-quiet")?.status).toBe("done");
+    expect(result.get("workspace-quiet")?.backgroundTasks).toEqual([]);
+  });
+
+  it("files an idle agent watching a pull request under background until it asks for attention", () => {
+    const backgroundTasks = [
+      {
+        id: "pull-request-watch:w1",
+        taskType: "pull_request_watch",
+        description: "Watching PR #9 · 2 checks running",
+        startedAt: "2026-01-01T00:00:00.000Z",
+      },
+    ];
+    const result = buildWorkspaceAgentActivityIndex(
+      new Map([
+        [
+          "watching",
+          agent({
+            id: "watching",
+            workspaceId: "workspace-watching",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            backgroundTasks,
+          }),
+        ],
+        [
+          "handed-back",
+          agent({
+            id: "handed-back",
+            workspaceId: "workspace-handed-back",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            requiresAttention: true,
+            attentionReason: "finished",
+            attentionTimestamp: "2026-01-01T00:01:00.000Z",
+            backgroundTasks,
+          }),
+        ],
+      ]),
+    );
+
+    expect(result.get("workspace-watching")?.status).toBe("background");
+    expect(result.get("workspace-handed-back")?.status).toBe("attention");
+  });
+
+  it("keeps working and unread agents in their own bucket while carrying their tasks", () => {
+    const backgroundTasks = [
+      {
+        id: "task-1",
+        taskType: "local_bash",
+        description: "npm run dev",
+        startedAt: "2026-01-01T00:00:00.000Z",
+      },
+    ];
+    const result = buildWorkspaceAgentActivityIndex(
+      new Map([
+        [
+          "thinking",
+          agent({
+            id: "thinking",
+            workspaceId: "workspace-thinking",
+            status: "running",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            backgroundTasks,
+          }),
+        ],
+        [
+          "unread",
+          agent({
+            id: "unread",
+            workspaceId: "workspace-unread",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            requiresAttention: true,
+            attentionReason: "finished",
+            backgroundTasks,
+          }),
+        ],
+      ]),
+    );
+
+    expect(result.get("workspace-thinking")?.status).toBe("running");
+    expect(result.get("workspace-thinking")?.backgroundTasks).toEqual(backgroundTasks);
+    expect(result.get("workspace-unread")?.status).toBe("attention");
+    expect(result.get("workspace-unread")?.backgroundTasks).toEqual(backgroundTasks);
+  });
+
+  it("collects background tasks from every root agent in the workspace", () => {
+    const result = buildWorkspaceAgentActivityIndex(
+      new Map([
+        [
+          "older",
+          agent({
+            id: "older",
+            workspaceId: "workspace-shared",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            backgroundTasks: [
+              {
+                id: "task-1",
+                taskType: "local_bash",
+                description: "npm run dev",
+                startedAt: "2026-01-01T00:00:00.000Z",
+              },
+            ],
+          }),
+        ],
+        [
+          "latest",
+          agent({
+            id: "latest",
+            workspaceId: "workspace-shared",
+            updatedAt: "2026-01-02T00:00:00.000Z",
+          }),
+        ],
+      ]),
+    );
+
+    expect(result.get("workspace-shared")?.agentId).toBe("latest");
+    expect(result.get("workspace-shared")?.status).toBe("background");
+    expect(result.get("workspace-shared")?.backgroundTasks.map((task) => task.id)).toEqual([
+      "task-1",
+    ]);
   });
 
   it("uses turn liveness for running while preserving protocol lifecycle states", () => {
@@ -181,6 +300,7 @@ describe("workspace agent activity index", () => {
             agentId: "permission",
             status: "needs_input",
             enteredAt: new Date("2026-06-01T10:01:00.000Z"),
+            backgroundTasks: [],
           },
         ],
         [
@@ -189,6 +309,7 @@ describe("workspace agent activity index", () => {
             agentId: "attention",
             status: "attention",
             enteredAt: new Date("2026-06-01T10:02:00.000Z"),
+            backgroundTasks: [],
           },
         ],
       ]),
@@ -235,6 +356,7 @@ describe("workspace agent activity index", () => {
       agentId: "root",
       status: "running",
       enteredAt: new Date("2026-06-01T10:00:00.000Z"),
+      backgroundTasks: [],
     });
   });
 
@@ -270,6 +392,7 @@ describe("workspace agent activity index", () => {
             agentId: "parent",
             status: "done",
             enteredAt: new Date("2026-06-01T10:00:00.000Z"),
+            backgroundTasks: [],
           },
         ],
         [
@@ -278,6 +401,7 @@ describe("workspace agent activity index", () => {
             agentId: "child",
             status: "running",
             enteredAt: new Date("2026-06-01T10:03:00.000Z"),
+            backgroundTasks: [],
           },
         ],
       ]),
@@ -354,6 +478,7 @@ describe("workspace agent activity index", () => {
       agentId: "root",
       status: "needs_input",
       enteredAt: new Date("2026-06-01T10:05:00.000Z"),
+      backgroundTasks: [],
     });
   });
 });

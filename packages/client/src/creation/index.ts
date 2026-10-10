@@ -96,6 +96,15 @@ export class CreationClient {
     });
   }
 
+  observeCreation(
+    kind: Kind,
+    idempotencyKey: string,
+    next: (snapshot: CreationSnapshot | null) => void,
+    error: (error: unknown) => void,
+  ): () => void {
+    return this.deps.observe(kind, idempotencyKey, next, error);
+  }
+
   private async legacyAgent(input: CreateAgentRequestOptions): Promise<CreationResult> {
     if (input.agentId) throw new Error("Update the host to use caller-selected creation IDs.");
     const { idempotencyKey: _key, ...unkeyed } = input;

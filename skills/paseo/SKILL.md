@@ -1,6 +1,6 @@
 ---
 name: paseo
-description: Paseo reference for managing projects, workspaces, workspace scripts, agents, schedules, and heartbeats.
+description: Paseo reference for managing projects, workspaces, workspace scripts, agents, schedules, heartbeats, and notes.
 ---
 
 Paseo is a remote daemon that manages coding agents, terminals. Control it through MCP tools or the CLI.
@@ -61,7 +61,7 @@ Agent-scoped creation always creates your subagent. Omit `workspaceId` to use yo
 
 Detach is an explicit user action in the subagents track, not an agent tool. A cross-workspace child remains your subagent even though it also appears as a normal tab in its workspace.
 
-**`send_agent_prompt`** — `{ agentId, prompt }`, optional `delivery`, `clientRequestId`. `delivery` decides what happens when the agent is busy: `auto` (default for agents) steers into the running turn when the provider can and otherwise runs after it; `queue` runs after it; `steer` fails when the provider can't steer; `restart` interrupts the turn and starts over. Top-level callers default to `restart` and block; agent callers return at once (`background: true`). The result's `disposition` says what happened: `started`, `steered`, `queued`, `restarted`, or `duplicate` for a retried `clientRequestId`.
+**`send_agent_prompt`** — `{ agentId, prompt }`, optional `delivery`, `clientRequestId`. `delivery` decides what happens when the agent is busy: `auto` (default for agents) steers into the running turn when the provider can and otherwise runs after it; `queue` runs after it; `steer` fails when the provider can't steer; `restart` interrupts the turn and starts over. Top-level callers default to `restart` and block; agent callers return at once (`background: true`). The result's `disposition` says what happened: `started`, `steered`, `queued`, `restarted`, or `duplicate` for a retried `clientRequestId`. To an agent that isn't your subagent, the prompt arrives as a peer note from you (`deliveredAs: "peer_note"`) and doesn't notify you when it finishes unless you pass `notifyOnFinish: true`.
 
 **`wait_for_agent`** — `{ agentId, timeoutMs? }`. Blocks until the agent is idle, errored, or needs permission. `timeoutMs` defaults to 10 minutes and is clamped to `limits.maxWaitMs`; `timedOut: true` does not stop the agent. Returns your delegated task's result when it has one.
 
@@ -69,7 +69,7 @@ Detach is an explicit user action in the subagents track, not an agent tool. A c
 
 **`update_agent`** — `{ agentId, name?, labels?, settings? }`. Use `settings` for runtime changes on an existing agent: `modeId`, `model`, `thinkingOptionId`, and provider-specific `features`. For Codex fast mode, pass `settings: { features: { "fast_mode": true } }`.
 
-**`list_agents`** — `scope`: `cwd` (default, under your working directory), `children` (your subagents in any workspace), `workspace`, `project`, or `all`. Also filters by `parentAgentId`, `titleContains`, `statuses`, `sinceHours`, `includeArchived`.
+**`list_agents`** — `scope`: `project` (default, every agent in your project), `cwd` (under your working directory), `children` (your subagents in any workspace), `workspace`, or `all`. Each item carries `workspaceTitle`, `branch`, `relation` (`you`, `parent`, `child`, `peer`) and, for running agents, `currentRequest` and `currentStep`. Also filters by `parentAgentId`, `titleContains`, `statuses`, `sinceHours`, `includeArchived`.
 
 **`cancel_agent`** — `{ agentId }`. Stops the current run and keeps the agent; your pending notification for it is dropped.
 
@@ -113,6 +113,30 @@ Only set feature IDs returned by `inspect_provider`. For Codex fast mode, look f
 **`delete_heartbeat`** stops it. MCP intentionally exposes no heartbeat update tool; delete and recreate when its task or cadence changes.
 
 Schedules have the full list/inspect/update/pause/resume/run-once/log/delete surface. Heartbeats deliberately do not.
+
+## Notes
+
+A note is Markdown the user keeps on the daemon and sees on every device. A note with `todoState` `open` or `done` is a todo; a todo is not a separate kind of object.
+
+**`list_notes`** — newest first. Optional: `todosOnly` (hides done todos unless `includeDone`), `includeDone`, `includeArchived`, `projectId`.
+
+**`get_note`** — `{ id }`. Returns the full body. A note the user hands you arrives in your prompt; read it with `get_note` when you need the current version.
+
+**`create_note`** — required: `title`. Optional: `body` (Markdown), `todo`, `projectId` (defaults to your workspace's project; pass `null` for none). Paseo records you as the author. Use it for follow-ups you found but should not do now — an unrelated bug, a cleanup, a question for the user — so they are not lost in the chat. Put enough context in `body` for someone to act on it later.
+
+**`update_note`** — `{ id, title?, body?, todoState? }`. Set `todoState: "done"` on a todo only after the work is verified. `null` turns a todo back into a plain note.
+
+**`archive_note`** — `{ id }`. Agents archive; there is no delete tool. The user can restore it, or delete it from the app or CLI.
+
+```bash
+paseo note ls [--todos] [--done] [--archived] [--project <id>]
+paseo note add "<title>" [--body <markdown> | --body-file <path|->] [--todo] [--project <id>]
+paseo note show <id>
+paseo note edit <id> [--title <title>] [--body <markdown> | --body-file <path|->]
+paseo note done <id>      # reopen <id> to undo
+paseo note archive <id>   # restore <id> to undo
+paseo note rm <id> --yes  # permanent; the user's call
+```
 
 ## Waiting
 

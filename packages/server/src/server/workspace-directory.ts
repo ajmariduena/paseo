@@ -282,6 +282,7 @@ export class WorkspaceDirectory {
       activityEntriesByWorkspaceId,
     });
     this.applyDelegatedWaitingContributions(activeAgents, descriptorsByWorkspaceId);
+    applyDelegatedOwnership(activeAgents, descriptorsByWorkspaceId);
 
     const contributingAgentsByWorkspaceId = groupAgentsByWorkspaceId(
       activeAgents,
@@ -785,6 +786,28 @@ function resolveDelegationRootAgent(
     if (!parent) return null;
     seen.add(parentId);
     current = parent;
+  }
+}
+
+function applyDelegatedOwnership(
+  activeAgents: AgentSnapshotPayload[],
+  descriptorsByWorkspaceId: Map<string, WorkspaceDescriptorPayload>,
+): void {
+  const agentsById = new Map(activeAgents.map((agent) => [agent.id, agent] as const));
+  const parentByWorkspaceId = new Map<string, string | null>();
+  for (const agent of activeAgents) {
+    if (!agent.workspaceId || parentByWorkspaceId.get(agent.workspaceId) === null) continue;
+    const root = resolveWorkspaceRootAgent(agent, agentsById);
+    const parentId = root ? getParentAgentIdFromLabels(root.labels) : null;
+    const existing = parentByWorkspaceId.get(agent.workspaceId);
+    parentByWorkspaceId.set(
+      agent.workspaceId,
+      parentId && (existing === undefined || existing === parentId) ? parentId : null,
+    );
+  }
+  for (const [workspaceId, parentId] of parentByWorkspaceId) {
+    const descriptor = descriptorsByWorkspaceId.get(workspaceId);
+    if (descriptor && parentId) descriptor.delegatedByAgentId = parentId;
   }
 }
 

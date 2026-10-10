@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef } from "react";
 import { Keyboard, ScrollView, StyleSheet as RNStyleSheet, Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
@@ -39,7 +39,7 @@ import {
   useWorkspaceAttachmentScopeKey,
   useWorkspaceAttachmentsStore,
 } from "@/attachments/workspace-attachments-store";
-import type { UserMessageImageAttachment } from "@/types/stream";
+import { createUserMessage, type UserMessageImageAttachment } from "@/types/stream";
 import { COMPACT_FORM_FACTOR_WIDTH, useIsCompactFormFactor } from "@/constants/layout";
 import { isWeb } from "@/constants/platform";
 import {
@@ -48,6 +48,12 @@ import {
 } from "@/workspace-tabs/model";
 import { openWorkspaceChanges } from "@/workspace-tabs/open-supporting-view";
 import { useSettings } from "@/hooks/use-settings";
+import {
+  createPaneFocusContextValue,
+  PaneFocusProvider,
+  PaneProvider,
+  type PaneContextValue,
+} from "@/panels/pane-context";
 
 const EMPTY_PENDING_PERMISSIONS = new Map();
 const DRAFT_CAPABILITIES: AgentCapabilityFlags = {
@@ -688,6 +694,168 @@ export function WorkspaceDraftAgentTab({
   );
 }
 
+const noopSubmit = async () => undefined;
+
+interface PendingWorkspaceAgentPaneProps {
+  serverId: string;
+  workspaceId: string;
+  draftId: string;
+  clientMessageId: string;
+  prompt: string;
+  createdAt: number;
+  sourceDirectory: string;
+  setup: WorkspaceDraftTabSetup | null;
+  failure: ReactNode;
+}
+
+const noop = () => undefined;
+const PENDING_PANE_FOCUS = createPaneFocusContextValue({
+  isWorkspaceFocused: true,
+  isPaneFocused: false,
+});
+
+// The stream and composer read pane context; the creation has no pane until the real tab mounts.
+export function PendingWorkspaceAgentPane(props: PendingWorkspaceAgentPaneProps) {
+  const { serverId, workspaceId, draftId } = props;
+  const pane = useMemo<PaneContextValue>(
+    () => ({
+      serverId,
+      workspaceId,
+      host: "main",
+      tabId: draftId,
+      target: { kind: "draft", draftId },
+      openTab: noop,
+      openPreferredTarget: noop,
+      closeCurrentTab: noop,
+      retargetCurrentTab: noop,
+      setCurrentTabState: noop,
+      openFileInWorkspace: noop,
+      openImportSheet: noop,
+    }),
+    [draftId, serverId, workspaceId],
+  );
+  return (
+    <PaneProvider value={pane}>
+      <PaneFocusProvider value={PENDING_PANE_FOCUS}>
+        <PendingWorkspaceAgentPaneContent {...props} />
+      </PaneFocusProvider>
+    </PaneProvider>
+  );
+}
+
+function PendingWorkspaceAgentPaneContent({
+  serverId,
+  workspaceId,
+  draftId,
+  clientMessageId,
+  prompt,
+  createdAt,
+  sourceDirectory,
+  setup,
+  failure,
+}: PendingWorkspaceAgentPaneProps) {
+  const { t } = useTranslation();
+  const workingDirectory = setup?.cwd ?? sourceDirectory;
+  const draftInput = useAgentInputDraft({
+    draftKey: buildDraftStoreKey({ serverId, agentId: draftId, draftId }),
+    composer: {
+      initialServerId: serverId,
+      initialValues: buildDraftInitialValues({ initialSetup: setup }),
+      initialFeatureValues: setup?.featureValues,
+      isVisible: true,
+      lockedWorkingDir: workingDirectory,
+    },
+  });
+  const composerState = draftInput.composerState;
+  invariant(composerState, "Pending workspace composer state is required");
+  const isCompactFormFactor = useIsCompactFormFactor();
+  const { onLayout: onInputAreaLayout, isBelow: isCompactComposerLayout } = useContainerWidthBelow(
+    COMPACT_FORM_FACTOR_WIDTH,
+    { initialIsBelow: isCompactFormFactor },
+  );
+  const isCreating = !failure;
+  const streamItems = useMemo(
+    () => [createUserMessage({ clientMessageId, text: prompt, timestamp: new Date(createdAt) })],
+    [clientMessageId, createdAt, prompt],
+  );
+  const pendingMessageSubmissions = useMemo(
+    () => (isCreating ? [{ clientMessageId }] : []),
+    [clientMessageId, isCreating],
+  );
+  const turnPresentation = useMemo(
+    () => resolveTurnPresentation(TURN_LIVENESS_IDLE, isCreating),
+    [isCreating],
+  );
+  const draftAgent = useMemo(() => {
+    try {
+      return buildDraftAgentSnapshot({
+        attempt: { timestamp: new Date(createdAt) },
+        serverId,
+        tabId: draftId,
+        workspaceDirectory: workingDirectory,
+        autoSubmitConfig: setup ? resolveAutoSubmitConfig(setup) : null,
+        composerState,
+        selectModelMessage: t("workspaceSetup.errors.selectModel"),
+      });
+    } catch {
+      return null;
+    }
+  }, [composerState, createdAt, draftId, serverId, setup, t, workingDirectory]);
+  const composerAgentControls = useMemo(
+    () => ({ ...composerState.agentControls, disabled: true }),
+    [composerState.agentControls],
+  );
+
+  return (
+    <View style={styles.container} testID="pending-workspace-agent-pane">
+      <ComposerDock>
+        <View style={styles.contentContainer}>
+          {draftAgent ? (
+            <View style={styles.streamContainer}>
+              <AgentStreamView
+                agentId={draftId}
+                serverId={serverId}
+                context={draftAgent}
+                streamItems={streamItems}
+                pendingMessageSubmissions={pendingMessageSubmissions}
+                turnPresentation={turnPresentation}
+                pendingPermissions={EMPTY_PENDING_PERMISSIONS}
+              />
+            </View>
+          ) : (
+            <View style={styles.streamContainer} />
+          )}
+          {failure ? (
+            <View style={styles.failureRow}>
+              <View style={styles.failureContent}>{failure}</View>
+            </View>
+          ) : null}
+        </View>
+        <View style={animatedStaticStyles.inputAreaWrapper} onLayout={onInputAreaLayout}>
+          <Composer
+            agentId={draftId}
+            serverId={serverId}
+            workspaceId={workspaceId}
+            isPaneFocused={false}
+            onSubmitMessage={noopSubmit}
+            isSubmitLoading
+            textSource={draftInput.textSource}
+            onChangeText={draftInput.editText}
+            textReplacement={draftInput.textReplacement}
+            attachments={draftInput.attachments}
+            onChangeAttachments={draftInput.setAttachments}
+            cwd={composerState.workingDir}
+            clearDraft={draftInput.clear}
+            commandDraft={composerState.commandDraft}
+            agentControls={composerAgentControls}
+            isCompactLayout={isCompactComposerLayout}
+          />
+        </View>
+      </ComposerDock>
+    </View>
+  );
+}
+
 const animatedStaticStyles = RNStyleSheet.create({
   inputAreaWrapper: {
     width: "100%",
@@ -747,5 +915,15 @@ const styles = StyleSheet.create((theme) => ({
   },
   errorText: {
     color: theme.colors.destructive,
+  },
+  failureRow: {
+    width: "100%",
+    paddingHorizontal: theme.spacing[4],
+    paddingBottom: theme.spacing[3],
+    alignItems: "center",
+  },
+  failureContent: {
+    width: "100%",
+    maxWidth: theme.contentMaxWidth,
   },
 }));

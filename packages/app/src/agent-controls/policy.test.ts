@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentMode } from "@getpaseo/protocol/agent-types";
-import { isPlanningAgentMode, resolveNonPlanningModeId } from "./policy";
+import { isPlanningAgentMode, isUnattendedAgentMode, resolveNonPlanningModeId } from "./policy";
 
 describe("isPlanningAgentMode", () => {
   it("prefers planning metadata and recognizes existing provider ids", () => {
@@ -12,6 +12,14 @@ describe("isPlanningAgentMode", () => {
       }),
     ).toBe(true);
     expect(isPlanningAgentMode({ id: "default", colorTier: "safe" })).toBe(false);
+  });
+});
+
+describe("isUnattendedAgentMode", () => {
+  it("recognizes the dangerous tier and nothing else", () => {
+    expect(isUnattendedAgentMode({ colorTier: "dangerous" })).toBe(true);
+    expect(isUnattendedAgentMode({ colorTier: "moderate" })).toBe(false);
+    expect(isUnattendedAgentMode({})).toBe(false);
   });
 });
 

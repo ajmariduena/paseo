@@ -109,6 +109,84 @@ test("a user Stop holds the queue so the stopped turn is not followed by the nex
   await expect(dispatches[0]?.settled).resolves.toBe("started");
 });
 
+function dispatchSystemMessage(host: ControlledHost, agentId: string, messageId: string) {
+  const trace = createTraceRecorder();
+  const settled = dispatchAgentMessage({
+    agentManager: host.agentManager,
+    agentStorage: host.agentStorage,
+    agentId,
+    messageId,
+    policy: {
+      kind: "system",
+      maySteer: true,
+      prepare: async () => ({
+        prompt: `<paseo-system>\n${messageId}\n</paseo-system>`,
+        notification: { level: "info", message: messageId },
+      }),
+      queueAs: { origin: "system" },
+    },
+    logger: trace.logger,
+  });
+  return { settled, queued: trace.waitFor("agent.dispatch.wait_for_turn") };
+}
+
+async function stoppedIdleAgent(): Promise<{ host: ControlledHost; agentId: string }> {
+  const host = createControlledHost();
+  activeHost = host;
+  const agentId = await host.createAgent({ steerable: true });
+  await host.startTurn(agentId, "first task");
+  await host.agentManager.messageQueue.hold(agentId, "user_stop");
+  await host.agentManager.cancelAgentRun(agentId);
+  await host.agentManager.waitForRunToSettle(agentId);
+  return { host, agentId };
+}
+
+test("after a user Stop a system message waits in the held queue instead of starting a turn", async () => {
+  const { host, agentId } = await stoppedIdleAgent();
+  const session = host.session(agentId);
+
+  const wake = dispatchSystemMessage(host, agentId, "pr-watch:1");
+  await wake.queued;
+
+  expect(session.startPrompts).toEqual(["first task"]);
+  expect(host.agentManager.messageQueue.snapshot(agentId)).toMatchObject({
+    held: true,
+    heldReason: "user_stop",
+    entries: [expect.objectContaining({ id: "pr-watch:1", origin: "system" })],
+  });
+
+  await host.agentManager.messageQueue.resume(agentId);
+  await expect(wake.settled).resolves.toBe("started");
+  expect(session.startPrompts).toEqual([
+    "first task",
+    "<paseo-system>\npr-watch:1\n</paseo-system>",
+  ]);
+});
+
+test("a message from the user revives a stopped agent for later system messages", async () => {
+  const { host, agentId } = await stoppedIdleAgent();
+  const session = host.session(agentId);
+
+  const userMessage = await dispatchAgentMessageInBackground({
+    agentManager: host.agentManager,
+    agentStorage: host.agentStorage,
+    agentId,
+    messageId: "user-1",
+    policy: { intent: "auto", prompt: "carry on", steerUnavailable: "replace" },
+    logger: host.logger,
+  });
+  expect(userMessage.disposition).toBe("started");
+  session.completeTurn("carried on");
+  await host.agentManager.waitForRunToSettle(agentId);
+
+  await expect(dispatchSystemMessage(host, agentId, "pr-watch:2").settled).resolves.toBe("started");
+  expect(session.startPrompts).toEqual([
+    "first task",
+    "carry on",
+    "<paseo-system>\npr-watch:2\n</paseo-system>",
+  ]);
+});
+
 test("a delegation wake queued after user messages starts first", async () => {
   const { host, agentId, dispatches } = await queueBehindTurn({ steerable: false }, [
     "second task",

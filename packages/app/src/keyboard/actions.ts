@@ -12,9 +12,8 @@ export type MessageInputKeyboardActionKind =
   | "dictation-toggle"
   | "dictation-cancel"
   | "dictation-confirm"
-  | "voice-toggle"
-  | "voice-mute-toggle"
   | "mode-cycle"
+  | "model-picker"
   | "steer-queued";
 
 export type KeyboardActionId =

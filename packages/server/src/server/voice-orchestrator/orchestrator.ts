@@ -1,9 +1,11 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { hostname } from "node:os";
 import { basename, join } from "node:path";
 import { v4 as uuidv4 } from "uuid";
 import { z } from "zod";
 import type pino from "pino";
 import { isDelegatedAgent } from "@getpaseo/protocol/agent-labels";
+import type { Dictionary } from "@getpaseo/protocol/messages";
 import { isPaseoToolName, isSpeakToolName } from "@getpaseo/protocol/tool-name-normalization";
 import type { AgentManager, ManagedAgent } from "../agent/agent-manager.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
@@ -11,7 +13,31 @@ import type { AgentPermissionRequest, AgentProvider } from "../agent/agent-sdk-t
 import { sendPromptToAgent } from "../agent/agent-prompt.js";
 import { buildVoiceModeSystemPrompt, wrapSpokenInput } from "../voice-config.js";
 import type { VoiceCallerContext } from "../voice-types.js";
-import type { WorkspaceRegistry } from "../workspace-registry.js";
+import type { ProjectRegistry, WorkspaceRegistry } from "../workspace-registry.js";
+import type { HostMetricsSnapshot } from "@getpaseo/protocol/host-metrics/types";
+import type {
+  VoiceFleetDigest,
+  VoiceFleetHostState,
+  VoiceToolResult,
+} from "@getpaseo/protocol/voice-fleet/types";
+import type { PaseoToolCatalog } from "../agent/tools/types.js";
+import type { FastLlmConfig } from "./fast-brain/llm-client.js";
+import { FastBrain } from "./fast-brain/fast-brain.js";
+import { VoiceCommandsService } from "./fast-brain/voice-commands-service.js";
+import { VoiceRouter, type RoutePlan, type RouteResult } from "./fast-brain/router.js";
+import { VoiceToolbox, type VoiceAgentDefaults } from "./fast-brain/voice-toolbox.js";
+import { DigestSummarizer } from "./digest/digest-summarizer.js";
+import { LocalFleet } from "./fleet/local-fleet.js";
+import { RemoteFleet, type CourierChannel } from "./fleet/remote-fleet.js";
+import { FleetView } from "./fleet/fleet-view.js";
+import { speakableClip } from "./speakable.js";
+import {
+  buildVocabulary,
+  correctTranscript,
+  describeVocabularyForVoice,
+  vocabularyKeyterms,
+  type Vocabulary,
+} from "./vocabulary.js";
 import type { VoiceMessagesSpeech } from "./messages/messages-call.js";
 import { VoiceMessagesHub } from "./messages/messages-hub.js";
 import { LiveWebrtcHub } from "./gpt-live/webrtc-hub.js";
@@ -31,6 +57,7 @@ import {
   type VoiceFleetEntry,
 } from "./prompt.js";
 import { isSpokenApproval } from "./spoken-approval.js";
+import { describePermission } from "./digest/agent-digest.js";
 
 export const VOICE_ORCHESTRATOR_LABEL = "paseo.voice";
 const STATE_FILENAME = "orchestrator.json";
@@ -43,12 +70,16 @@ const FLEET_RECENT_MS = 12 * 60 * 60 * 1000;
 const SESSION_INDEX_LIMIT = 30;
 const SESSION_INDEX_RECENT_MS = 14 * 24 * 60 * 60 * 1000;
 const APPROVAL_WINDOW_MS = 90_000;
-const PROGRESS_CHECK_MS = 45_000;
-const PROGRESS_MIN_INTERVAL_MS = 120_000;
 const DELEGATION_MAX_WAITS = 6;
 const FLEET_CHANGED_DEBOUNCE_MS = 500;
 // A mode switch hands the conversation over within seconds; older history belongs to a past call.
 const HANDOFF_HISTORY_MS = 90_000;
+// A notice waits this long for a model summary before it falls back to the agent's own words.
+const NOTICE_SUMMARY_WAIT_MS = 2_500;
+const PHONE_SYNC_GAP_MS = 12_000;
+// Scribe bills a 20 s minimum per request above 100 keyterms.
+const MESSAGES_KEYTERM_LIMIT = 90;
+const CALL_STARTING_MS = 30_000;
 
 const OrchestratorStateSchema = z.object({ agentId: z.guid() });
 
@@ -73,6 +104,8 @@ export interface VoiceOrchestratorCall {
   ): void;
   /** Called (debounced) whenever an agent's state changes during the call. */
   onFleetChanged?(): void;
+  /** Records a call event (phone liveness, app state) in the call's transcript. */
+  noteEvent?(text: string, detail: Record<string, unknown>): void;
 }
 
 export interface VoiceOrchestratorOptions {
@@ -87,6 +120,18 @@ export interface VoiceOrchestratorOptions {
   live?: GptLiveEngineConfig | null;
   /** Speech providers for messages mode; without them the phone transcribes and speaks itself. */
   speech?: VoiceMessagesSpeech | null;
+  projectRegistry?: ProjectRegistry | null;
+  /** The fast model that turns requests into tool calls; without it the llm agent does. */
+  router?: FastLlmConfig | null;
+  /** Answers when the router's model fails, stalls or has no key. */
+  routerBackup?: FastLlmConfig | null;
+  /** Where Settings → Voice → Voice commands reads and writes its choices. */
+  voiceCommands?: { paseoHome: string; env: NodeJS.ProcessEnv };
+  /** Paseo tools acting for the user with no calling agent. */
+  createToolCatalog?: (context: VoiceCallerContext) => Promise<PaseoToolCatalog>;
+  hostMetrics?: (() => Promise<HostMetricsSnapshot>) | null;
+  /** The user's dictionary: words to recognize and replacements for what is misheard. */
+  dictionary?: () => Dictionary | undefined;
   logger: pino.Logger;
 }
 
@@ -106,9 +151,7 @@ export class VoiceOrchestrator {
   private queue: VoiceNoticeQueue | null = null;
   private unsubscribeSelf: (() => void) | null = null;
   private unsubscribeAgents: (() => void) | null = null;
-  private progressTimer: ReturnType<typeof setInterval> | null = null;
   private readonly lifecycles = new Map<string, string>();
-  private readonly progressAnnounced = new Map<string, { step: string; at: number }>();
   private fleetChangedTimer: ReturnType<typeof setTimeout> | null = null;
   private lastUtterance: { text: string; at: number; approvalUsed: boolean } | null = null;
   private preferredLanguage: string | null = null;
@@ -117,11 +160,27 @@ export class VoiceOrchestrator {
   private liveCall: { close(): void; setInputMuted(muted: boolean): void } | null = null;
   private handoffHistory: { lines: string[]; at: number; mode: "live" | "messages" } | null = null;
   private readonly unheard: UnheardLedger;
-  private readonly unheardLoaded: Promise<void>;
   /** Agents the user asked about by voice; their results are kept for the next call. */
   private readonly followed = new Set<string>();
   private agentModes: Record<string, string> = {};
+  private agentDefaults: VoiceAgentDefaults = {};
   private spokenRequests = 0;
+  private readonly llm: FastBrain;
+  private readonly summarizer: DigestSummarizer;
+  readonly commands: VoiceCommandsService | null;
+  readonly localFleet: LocalFleet;
+  readonly remoteFleet: RemoteFleet;
+  private readonly toolbox: VoiceToolbox | null;
+  private toolCatalog: Promise<PaseoToolCatalog> | null = null;
+  /** One per call: it holds the call's pending confirmation. */
+  private router: VoiceRouter | null = null;
+  private selfLabel: string = describeHostname(hostname());
+  private lastPhoneSyncAt = 0;
+  private permissionsOffered = true;
+  private modelNames: string[] = [];
+  private vocabulary: Vocabulary = buildVocabulary({ names: [] });
+  private callStartingAt = 0;
+  private lastPhoneAppState: string | null = null;
 
   constructor(private readonly options: VoiceOrchestratorOptions) {
     this.logger = options.logger.child({ module: "voice-orchestrator" });
@@ -131,12 +190,53 @@ export class VoiceOrchestrator {
       logger: this.logger,
     });
     this.webrtc = new LiveWebrtcHub({ orchestrator: this, logger: this.logger });
+    this.llm = new FastBrain(this.logger);
+    this.llm.configure({ primary: options.router ?? null, backup: options.routerBackup ?? null });
+    this.commands = options.voiceCommands
+      ? new VoiceCommandsService({ ...options.voiceCommands, brain: this.llm, logger: this.logger })
+      : null;
+    this.vocabulary = buildVocabulary({ names: [], dictionary: options.dictionary?.() });
+    this.summarizer = new DigestSummarizer({
+      llm: this.llm,
+      language: () => this.language,
+      logger: this.logger,
+    });
+    this.localFleet = new LocalFleet({
+      agentManager: options.agentManager,
+      agentStorage: options.agentStorage,
+      workspaceRegistry: options.workspaceRegistry,
+      projectRegistry: options.projectRegistry ?? null,
+      isHidden: (agentId) => this.isOrchestrator(agentId),
+      isUnheard: (agentId) => this.unheard.has(agentId),
+      summarizer: this.summarizer,
+      hostMetrics: options.hostMetrics ?? null,
+      logger: this.logger,
+    });
+    this.remoteFleet = new RemoteFleet({
+      logger: this.logger,
+      onChange: () => this.scheduleFleetChanged(),
+    });
+    const createToolCatalog = options.createToolCatalog;
+    this.toolbox = createToolCatalog
+      ? new VoiceToolbox({
+          catalog: () => {
+            this.toolCatalog ??= createToolCatalog(this.voiceToolsContext());
+            return this.toolCatalog;
+          },
+          agentManager: options.agentManager,
+          agentStorage: options.agentStorage,
+          hostMetrics: options.hostMetrics ?? null,
+          hostLabel: () => this.selfLabel,
+          defaults: () => this.agentDefaults,
+          logger: this.logger,
+        })
+      : null;
     this.unheard = new UnheardLedger({
       path: join(this.orchestratorDir(), UNHEARD_FILENAME),
       ttlMs: UNHEARD_TTL_MS,
       logger: this.logger,
     });
-    this.unheardLoaded = this.unheard.load().catch((error: unknown) => {
+    void this.unheard.load().catch((error: unknown) => {
       this.logger.warn({ err: error }, "Failed to load unheard voice results");
     });
     this.watchAgents();
@@ -171,6 +271,15 @@ export class VoiceOrchestrator {
     if (modes) this.agentModes = { ...modes };
   }
 
+  setPreferredAgentDefaults(defaults: VoiceAgentDefaults | undefined): void {
+    if (defaults) this.agentDefaults = { ...defaults };
+  }
+
+  /** Whether requests skip the llm agent: a fast model picks tools and the host runs them. */
+  get hasFastBrain(): boolean {
+    return this.llm.available && this.toolbox !== null;
+  }
+
   async ensureAgent(): Promise<string> {
     if (!this.options.agentManager.hasPaseoTools()) {
       throw new Error(
@@ -189,6 +298,42 @@ export class VoiceOrchestrator {
     return this.ensurePromise;
   }
 
+  /** A call is connecting here; the phone's fleet reports are kept for it. */
+  noteCallStarting(): void {
+    this.callStartingAt = Date.now();
+  }
+
+  /**
+   * The voice agent's id for a starting call. With the fast brain the agent only serves
+   * escalated work, so the call doesn't wait for it to start.
+   */
+  async agentIdForCall(): Promise<string> {
+    if (!this.hasFastBrain) return this.ensureAgent();
+    void this.ensureAgent().catch((error: unknown) => {
+      this.logger.warn({ err: error }, "Voice agent unavailable; escalated requests will fail");
+    });
+    return this.resolveAgentId();
+  }
+
+  private offerPermission(permission: OfferedPermission): void {
+    this.router?.offerPermissionApproval({
+      host: {
+        serverId: null,
+        label: this.selfLabel,
+        online: true,
+        lastSeenAt: null,
+        supportsTools: true,
+        digest: null,
+      },
+      ...permission,
+    });
+  }
+
+  /** The phone's courier socket closed; actions wait for its next sync. */
+  dropCourier(channel: CourierChannel): void {
+    this.remoteFleet.dropChannel(channel);
+  }
+
   attachCall(call: VoiceOrchestratorCall): () => void {
     this.detachCurrentCall();
     this.call = call;
@@ -201,9 +346,23 @@ export class VoiceOrchestrator {
       isStale: (notice) => this.dropIfStale(notice),
       deliver: (notices) => this.deliverNotices(notices),
     });
-    this.progressTimer = setInterval(() => this.checkProgress(), PROGRESS_CHECK_MS);
-    this.progressTimer.unref?.();
-    void this.replayUnheard(this.queue);
+
+    if (this.llm.available && this.toolbox) {
+      this.router = new VoiceRouter({
+        llm: this.llm,
+        executor: {
+          execute: (params) => this.executeTool(params),
+          escalate: (request) => this.escalate(request),
+        },
+        logger: this.logger,
+      });
+      this.llm.keepWarm(true);
+    }
+    this.summarizer.setWatching(true);
+    this.localFleet.refreshHealth();
+    this.toolbox?.prewarm();
+    void this.refreshVocabulary();
+    this.permissionsOffered = false;
     if (!call.announce) void this.sendCallStart(call);
     return () => {
       if (this.call !== call) return;
@@ -218,6 +377,7 @@ export class VoiceOrchestrator {
 
   noteUserUtterance(text: string): void {
     this.lastUtterance = { text, at: Date.now(), approvalUsed: false };
+    this.announcePendingPermissions();
   }
 
   /** Returns a refusal message unless the user's latest words approve a single permission. */
@@ -309,16 +469,96 @@ export class VoiceOrchestrator {
     };
   }
 
-  /** Runs one delegated voice request on the orchestrator agent and returns its reply. */
-  async runDelegation(params: { request: string; history: string[] }): Promise<string> {
-    if (params.request.trim()) this.noteUserUtterance(params.request);
+  /**
+   * Runs one delegated voice request and returns what to say. With a fast brain a small model
+   * picks tools that run on the host; otherwise the orchestrator agent takes a turn.
+   */
+  async runDelegation(params: {
+    request: string;
+    history: string[];
+    plan?: RoutePlan | null;
+    audience?: "voice-model" | "speech";
+    onTimings?: (result: RouteResult) => void;
+  }): Promise<string> {
+    const corrected = {
+      ...params,
+      request: this.correctSpeech(params.request),
+      history: params.history.map((line) => this.correctSpeech(line)),
+    };
+    if (corrected.request.trim()) this.noteUserUtterance(corrected.request);
+    const router = this.router;
+    if (router) return this.routeWithRetry(router, corrected);
     return this.runTurn(async () => {
       const [fleet, others] = await Promise.all([
         this.describeFleetDetailed(),
         this.describeOtherSessions(),
       ]);
-      return buildDelegationPrompt({ ...params, fleet, others });
+      return buildDelegationPrompt({ ...corrected, fleet, others });
     }, true);
+  }
+
+  /**
+   * One retry, then a short spoken failure. Falling back to the voice agent here would add
+   * many seconds of silence on top of the failed attempt; the agent stays for escalations.
+   */
+  private async routeWithRetry(
+    router: VoiceRouter,
+    params: {
+      request: string;
+      history: string[];
+      plan?: RoutePlan | null;
+      audience?: "voice-model" | "speech";
+      onTimings?: (result: RouteResult) => void;
+    },
+  ): Promise<string> {
+    const audience = params.audience ?? "voice-model";
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const plan = attempt === 0 ? params.plan : null;
+        const result = await router.route(
+          {
+            latest: params.request,
+            conversation: params.history,
+            view: plan?.view ?? (await this.fleetView()),
+            language: this.language,
+            audience,
+          },
+          plan,
+        );
+        params.onTimings?.(result);
+        return result.text;
+      } catch (error) {
+        this.logger.warn({ err: error, attempt }, "Fast voice router failed");
+      }
+    }
+    return audience === "speech"
+      ? spokenFailure(this.language)
+      : "The backend did not answer in time and nothing was done. Tell the user briefly and ask them to say it again.";
+  }
+
+  /**
+   * Starts the router's model call while the user is still finishing: it only plans, so it is
+   * safe to throw away. `runDelegation` uses it when the request turns out the same.
+   */
+  async planDelegation(params: {
+    request: string;
+    history: string[];
+    signal?: AbortSignal;
+  }): Promise<RoutePlan | null> {
+    const router = this.router;
+    if (!router || !params.request.trim() || router.hasPendingConfirmation) return null;
+    const view = await this.fleetView();
+    if (params.signal?.aborted) return null;
+    return router.plan(
+      {
+        latest: this.correctSpeech(params.request),
+        conversation: params.history.map((line) => this.correctSpeech(line)),
+        view,
+        language: this.language,
+        audience: "voice-model",
+      },
+      params.signal,
+    );
   }
 
   /** Has the orchestrator turn daemon updates (or the call start) into a short spoken text. */
@@ -327,10 +567,206 @@ export class VoiceOrchestrator {
     lines: string[];
     history: string[];
   }): Promise<string> {
-    return this.runTurn(async () => {
-      const fleet = params.kind === "call_start" ? await this.describeFleet() : [];
-      return buildNarrationPrompt({ ...params, fleet, language: this.language });
-    }, false);
+    if (params.kind === "call_start") return callGreeting(this.language);
+    if (this.llm.available) {
+      try {
+        const completion = await this.llm.complete({
+          messages: [
+            {
+              role: "user",
+              content: buildNarrationPrompt({ ...params, fleet: [], language: this.language }),
+            },
+          ],
+          maxTokens: 220,
+          temperature: 0.4,
+        });
+        const text = completion.content?.trim();
+        if (text) return text;
+      } catch (error) {
+        this.logger.warn({ err: error }, "Fast narration failed; using the voice agent");
+      }
+    }
+    return this.runTurn(
+      async () => buildNarrationPrompt({ ...params, fleet: [], language: this.language }),
+      false,
+    );
+  }
+
+  /** Rewrites names speech recognition is known to mishear ("Faybold" → "Fable"). */
+  correctSpeech(text: string): string {
+    return correctTranscript(text, this.vocabulary);
+  }
+
+  /** Keyterms for the messages-mode speech-to-text, within its billing-friendly limit. */
+  speechKeyterms(): string[] {
+    return vocabularyKeyterms(this.vocabulary, MESSAGES_KEYTERM_LIMIT);
+  }
+
+  /** The vocabulary section of GPT-Live's instructions. */
+  voiceVocabulary(): string {
+    return describeVocabularyForVoice(this.vocabulary);
+  }
+
+  /**
+   * Adds this host's real names to the vocabulary: model and provider labels (loaded once)
+   * and the projects, workspaces, agents and hosts the call can see.
+   */
+  async refreshVocabulary(): Promise<void> {
+    if (this.toolbox && this.modelNames.length === 0) {
+      this.modelNames = await this.toolbox.modelNames().catch(() => []);
+    }
+    const view = await this.fleetView().catch(() => null);
+    this.vocabulary = buildVocabulary({
+      names: [...this.modelNames, ...(view?.names() ?? [])],
+      dictionary: this.options.dictionary?.(),
+    });
+  }
+
+  /** Every host the call can see: this one, plus the others as the phone last reported them. */
+  async fleetView(): Promise<FleetView> {
+    const local = await this.localFleet.digest();
+    return new FleetView([
+      {
+        serverId: null,
+        label: this.selfLabel,
+        online: true,
+        lastSeenAt: null,
+        supportsTools: true,
+        digest: local,
+      },
+      ...this.remoteFleet.fleetHosts(),
+    ]);
+  }
+
+  /** This host's fleet for a call running on another host; asking counts as watching. */
+  async fleetDigest(): Promise<VoiceFleetDigest> {
+    this.summarizer.observe(90_000);
+    this.localFleet.refreshHealth();
+    this.toolbox?.prewarm();
+    return this.localFleet.digest();
+  }
+
+  /** A voice tool that a call on another host sent here through the phone. */
+  async invokeTool(params: {
+    operationId: string;
+    tool: string;
+    args: Record<string, unknown>;
+  }): Promise<VoiceToolResult> {
+    if (!this.toolbox) throw new Error("Voice tools are not available on this host.");
+    return this.toolbox.execute(params);
+  }
+
+  /** The phone's report of the other hosts; the phone is also this call's courier. */
+  updateRemoteFleet(params: {
+    hosts: VoiceFleetHostState[];
+    appState: string | null;
+    selfLabel: string | null;
+    channel: CourierChannel | null;
+  }): boolean {
+    const call = this.call;
+    // The phone starts syncing while the call is still connecting; keep what it sends.
+    const starting = Date.now() - this.callStartingAt < CALL_STARTING_MS;
+    if (!call && !starting) return false;
+    if (params.selfLabel?.trim()) this.selfLabel = params.selfLabel.trim();
+    if (!call) {
+      this.remoteFleet.update(params);
+      return true;
+    }
+    const now = Date.now();
+    const gapMs = this.lastPhoneSyncAt > 0 ? now - this.lastPhoneSyncAt : 0;
+    // Syncs come every 5 s; a long gap means the phone's JS was suspended (screen locked).
+    if (gapMs > PHONE_SYNC_GAP_MS) {
+      this.logger.warn({ gapMs, appState: params.appState }, "Voice call phone went silent");
+      call.noteEvent?.("phone_silent", { gapMs, appState: params.appState });
+    }
+    if (params.appState !== this.lastPhoneAppState) {
+      call.noteEvent?.("phone_app_state", { appState: params.appState });
+      this.lastPhoneAppState = params.appState;
+    }
+    this.lastPhoneSyncAt = now;
+    this.remoteFleet.update(params);
+    return true;
+  }
+
+  settleCourier(params: {
+    operationId: string;
+    result: VoiceToolResult | null;
+    error: string | null;
+  }): void {
+    this.remoteFleet.settle(params);
+  }
+
+  private async executeTool(params: {
+    host: { serverId: string | null; label: string };
+    tool: string;
+    args: Record<string, unknown>;
+    operationId: string;
+  }): Promise<VoiceToolResult> {
+    if (params.host.serverId === null) {
+      if (!this.toolbox) throw new Error("Voice tools are not available on this host.");
+      return this.toolbox.execute(params);
+    }
+    return this.remoteFleet.run(
+      {
+        operationId: params.operationId,
+        serverId: params.host.serverId,
+        tool: params.tool,
+        args:
+          params.tool === "start_agent" || params.tool === "create_workspace"
+            ? this.withAgentDefaults(params.args)
+            : params.args,
+        language: this.language,
+      },
+      params.host.label,
+    );
+  }
+
+  /** Another host has no app preferences; the call brings the user's choices along. */
+  private withAgentDefaults(args: Record<string, unknown>): Record<string, unknown> {
+    return { ...args, defaults: this.agentDefaults };
+  }
+
+  /** Long work goes to the full voice agent in the background; its result is announced. */
+  private async escalate(request: string): Promise<string> {
+    const call = this.call;
+    void (async () => {
+      try {
+        const result = await this.runTurn(async () => {
+          const [fleet, others] = await Promise.all([
+            this.describeFleetDetailed(),
+            this.describeOtherSessions(),
+          ]);
+          return buildDelegationPrompt({ request, history: [], fleet, others });
+        }, true);
+        const text = speakableClip(result, 900);
+        if (this.call && this.call === call && call.announce) {
+          call.announce(
+            [`Result of the background request "${speakableClip(request, 120)}": ${text}`],
+            {
+              urgent: true,
+            },
+          );
+        } else {
+          this.deliverLateReply(text);
+        }
+      } catch (error) {
+        this.logger.warn({ err: error }, "Escalated voice request failed");
+        call?.announce?.([`The background request "${speakableClip(request, 120)}" failed.`], {
+          urgent: true,
+        });
+      }
+    })();
+    return "Handed to the full assistant, which works on it in the background; Paseo tells the user the result when it's done.";
+  }
+
+  private voiceToolsContext(): VoiceCallerContext {
+    return {
+      childAgentDefaultLabels: {},
+      allowCustomCwd: true,
+      actsForUser: true,
+      defaultModeFor: (provider) => this.agentModes[provider],
+      onAgentPrompted: (agentId) => this.followed.add(agentId),
+    };
   }
 
   /** One agent turn at a time: delegations and narrations would otherwise interrupt each other. */
@@ -374,9 +810,14 @@ export class VoiceOrchestrator {
         const work = agentManager.getLiveWorkSummary(agent.id);
         const last = await agentManager.getLastAssistantMessage(agent.id).catch(() => null);
         const permission = [...agent.pendingPermissions.values()].at(-1);
+        const digest = this.localFleet.digestAgent(agent);
         const parts = [
           `- ${await this.describeWorkspace(agent)} · "${agent.config.title?.trim() || "Untitled agent"}" (id ${agent.id}, ${agent.provider})`,
           `status: ${this.describeStatus(agent)}`,
+          digest.summary ? `summary: ${digest.summary}` : null,
+          digest.now ? `now: ${digest.now}` : null,
+          digest.progress ?? null,
+          digest.activity ? `so far: ${digest.activity}` : null,
           work.request ? `task: ${clipForSpeech(work.request, 240)}` : null,
           permission
             ? `pending permission: ${clipForSpeech([permission.title ?? permission.name, permission.description].filter(Boolean).join(": "), 200)}`
@@ -447,15 +888,20 @@ export class VoiceOrchestrator {
   }
 
   private detachCurrentCall(): void {
+    const hadCall = this.call !== null;
     this.queue?.close();
     this.queue = null;
     this.call = null;
+    this.router = null;
+    this.lastPhoneSyncAt = 0;
+    this.lastPhoneAppState = null;
+    this.llm.keepWarm(false);
+    this.summarizer.setWatching(false);
+    // Only a call that ends forgets the fleet; a new call may already have the phone's report.
+    if (hadCall) this.remoteFleet.reset();
     this.lastUtterance = null;
-    if (this.progressTimer) clearInterval(this.progressTimer);
-    this.progressTimer = null;
     if (this.fleetChangedTimer) clearTimeout(this.fleetChangedTimer);
     this.fleetChangedTimer = null;
-    this.progressAnnounced.clear();
   }
 
   /** Watches every agent for the whole daemon life, so results landing between calls are kept. */
@@ -480,14 +926,6 @@ export class VoiceOrchestrator {
           });
           return;
         }
-        if (
-          agent.lifecycle === "running" &&
-          previous !== "running" &&
-          previous !== "initializing" &&
-          !this.isOrchestratorRunning()
-        ) {
-          this.queue?.push({ agentId: agent.id, reason: "started" });
-        }
       },
       { replayState: false },
     );
@@ -498,14 +936,20 @@ export class VoiceOrchestrator {
     if (isUnheardReason(reason) && (this.queue || this.followed.has(agentId))) {
       this.unheard.add(agentId, reason);
     }
-    this.queue?.push(notice);
+    if (isWorthSaying(reason, this.followed.has(agentId))) this.queue?.push(notice);
   }
 
-  private async replayUnheard(queue: VoiceNoticeQueue): Promise<void> {
-    await this.unheardLoaded;
-    if (this.queue !== queue) return;
-    for (const entry of this.unheard.list()) {
-      queue.push({ agentId: entry.agentId, reason: entry.reason });
+  /**
+   * Requests already waiting when the call started are brought up after the user's first
+   * request, never as part of the greeting. Unheard results wait until the user asks.
+   */
+  private announcePendingPermissions(): void {
+    if (this.permissionsOffered || !this.queue) return;
+    this.permissionsOffered = true;
+    for (const agent of this.localFleet.listAgents()) {
+      if (agent.pendingPermissions.size > 0) {
+        this.queue.push({ agentId: agent.id, reason: "permission" });
+      }
     }
   }
 
@@ -529,25 +973,6 @@ export class VoiceOrchestrator {
       this.fleetChangedTimer = null;
       if (this.call === call) call.onFleetChanged?.();
     }, FLEET_CHANGED_DEBOUNCE_MS);
-  }
-
-  private checkProgress(): void {
-    const now = Date.now();
-    for (const agent of this.options.agentManager.listAgents()) {
-      if (
-        agent.lifecycle !== "running" ||
-        this.isOrchestrator(agent.id) ||
-        isDelegatedAgent(agent)
-      ) {
-        continue;
-      }
-      const step = this.options.agentManager.getLiveWorkSummary(agent.id).currentStep;
-      if (!step) continue;
-      const last = this.progressAnnounced.get(agent.id);
-      if (last && (last.step === step || now - last.at < PROGRESS_MIN_INTERVAL_MS)) continue;
-      this.progressAnnounced.set(agent.id, { step, at: now });
-      this.queue?.push({ agentId: agent.id, reason: "progress" });
-    }
   }
 
   private async resolveAgentId(): Promise<string> {
@@ -697,7 +1122,12 @@ export class VoiceOrchestrator {
   }
 
   private async deliverNotices(notices: VoiceNotice[]): Promise<void> {
-    const described: Array<{ notice: VoiceNotice; text: string; urgent: boolean }> = [];
+    const described: Array<{
+      notice: VoiceNotice;
+      text: string;
+      urgent: boolean;
+      permission?: OfferedPermission;
+    }> = [];
     for (const notice of notices) {
       const line = await this.describeNotice(notice);
       if (line) described.push({ notice, ...line });
@@ -710,6 +1140,11 @@ export class VoiceOrchestrator {
         urgent: described.some((entry) => entry.urgent),
         onOutcome: (heard) => this.settleNotices(delivered, heard),
       });
+      const permissions = described.flatMap((entry) =>
+        entry.permission ? [entry.permission] : [],
+      );
+      // With one request announced, the user's "sí" answers it; with several it must name one.
+      if (permissions.length === 1 && permissions[0]) this.offerPermission(permissions[0]);
       return;
     }
     if (!this.knownAgentId) return;
@@ -739,29 +1174,37 @@ export class VoiceOrchestrator {
 
   private async describeNotice(
     notice: VoiceNotice,
-  ): Promise<{ text: string; urgent: boolean } | null> {
+  ): Promise<{ text: string; urgent: boolean; permission?: OfferedPermission } | null> {
     const { agentManager } = this.options;
     const agent = agentManager.getAgent(notice.agentId);
     if (!agent) return null;
     const name = await this.describeAgentName(agent);
     const work = agentManager.getLiveWorkSummary(agent.id);
-    const task = work.request ? ` Its task: ${clipForSpeech(work.request, 200)}` : "";
+    const task = work.request ? ` Its task: ${speakableClip(work.request, 200)}` : "";
     const again = notice.attempts ? " (Repeating: the user was cut off before hearing this.)" : "";
     switch (notice.reason) {
       case "permission": {
         const request = [...agent.pendingPermissions.values()].at(-1);
         if (!request) return null;
-        const what = clipForSpeech(
-          [request.title ?? request.name, request.description].filter(Boolean).join(": "),
-          240,
-        );
-        return { text: `${name} is waiting for permission: ${what}.${task}${again}`, urgent: true };
-      }
-      case "error":
+        // A blocked agent is said right away; its summary can't add what the request says.
+        const what = describePermission(request);
         return {
-          text: `${name} failed: ${clipForSpeech(agent.lastError ?? "unknown error", 240)}.${task}${again}`,
+          text: `${name} is waiting for permission to ${what}.${task}${again}`,
+          urgent: true,
+          permission: {
+            agentId: agent.id,
+            requestId: request.id,
+            label: `${name}'s request to ${what}`,
+          },
+        };
+      }
+      case "error": {
+        const summary = await this.localFleet.settledSummary(agent, NOTICE_SUMMARY_WAIT_MS);
+        return {
+          text: `${name} failed: ${speakableClip(agent.lastError ?? "unknown error", 240)}.${summary ? ` ${summary}` : task}${again}`,
           urgent: true,
         };
+      }
       case "finished": {
         const message = await agentManager.getLastAssistantMessage(agent.id).catch(() => null);
         if (!message?.trim()) {
@@ -772,17 +1215,21 @@ export class VoiceOrchestrator {
             urgent: true,
           };
         }
+        const summary = await this.localFleet.settledSummary(agent, NOTICE_SUMMARY_WAIT_MS);
         return {
-          text: `${name} finished.${task} Its final message: ${clipAgentMessage(message, 700, agent.id)}${again}`,
+          text: summary
+            ? `${name} finished: ${summary}${again}`
+            : `${name} finished.${task} Its final message: ${speakableClip(message, 600)}${again}`,
           urgent: false,
         };
       }
       case "started":
         return { text: `${name} started working.${task}`, urgent: false };
-      case "progress":
-        return work.currentStep
-          ? { text: `${name} is now: ${clipForSpeech(work.currentStep, 160)}.`, urgent: false }
-          : null;
+      case "progress": {
+        const digest = this.localFleet.digestAgent(agent);
+        const now = digest.summary ?? digest.now;
+        return now ? { text: `${name} is now: ${speakableClip(now, 200)}.`, urgent: false } : null;
+      }
     }
   }
 
@@ -832,4 +1279,41 @@ function fleetRank(agent: ManagedAgent): number {
   if (agent.attention.requiresAttention) return 2;
   if (agent.lifecycle === "running") return 3;
   return 4;
+}
+
+/**
+ * What interrupts a call: a request that blocks an agent, and the outcome of work the user
+ * asked for by voice. Everything else stays in the snapshot until the user asks.
+ */
+function isWorthSaying(reason: VoiceNoticeReason, followed: boolean): boolean {
+  if (reason === "permission") return true;
+  if (reason === "finished" || reason === "error") return followed;
+  return false;
+}
+
+interface OfferedPermission {
+  agentId: string;
+  requestId: string;
+  label: string;
+}
+
+/** The whole greeting: the user speaks next, and updates wait until they ask. */
+export function callGreeting(language: string | null): string {
+  return language?.startsWith("es") ? "Hola, aquí estoy." : "Hi, I'm here.";
+}
+
+function spokenFailure(language: string | null): string {
+  return language?.startsWith("es")
+    ? "No pude procesarlo ahora. ¿Me lo repites?"
+    : "I couldn't process that just now. Could you say it again?";
+}
+
+/** "Alexanders-MacBook-Pro.local" → "Alexanders MacBook Pro": how a host is said aloud. */
+function describeHostname(name: string): string {
+  return (
+    name
+      .replace(/\.local$/i, "")
+      .replace(/[-_]+/g, " ")
+      .trim() || "this computer"
+  );
 }

@@ -27,8 +27,10 @@ function row(
         ? { phase: "open", turnId: null, startedAt: null, cancellationRequestId: null }
         : { phase: "idle", cancellationRequestId: null }),
     requiresAttention: overrides.requiresAttention ?? false,
+    lastTurnOutcome: overrides.lastTurnOutcome,
     createdAt: overrides.createdAt ?? new Date("2026-04-20T00:00:00.000Z"),
     model: overrides.model ?? null,
+    thinkingOptionId: overrides.thinkingOptionId ?? null,
   };
 }
 
@@ -201,6 +203,12 @@ describe("buildSubagentRowPresentationData", () => {
     expect(present(row({ id: "a", status: "idle" })).statusBucket).toBe("done");
   });
 
+  it("gives a stopped child the neutral done bucket, as a stopped provider subagent gets", () => {
+    expect(
+      present(row({ id: "a", status: "idle", lastTurnOutcome: "canceled" })).statusBucket,
+    ).toBe("done");
+  });
+
   it("ignores requiresAttention on the source row when computing the bucket", () => {
     expect(present(row({ id: "a", status: "idle", requiresAttention: true })).statusBucket).toBe(
       "done",
@@ -269,6 +277,40 @@ describe("buildSubagentRowPresentationData for provider rows", () => {
       present(row({ id: "a", provider: "claude-personal", model: "claude-opus-5-1" }), entries)
         .subtitle,
     ).toBe("Opus 5.1 · Claude personal");
+  });
+
+  it("puts a managed subagent's effort between its model and account", () => {
+    const entries: ProviderSnapshotEntry[] = [
+      {
+        provider: "claude-personal",
+        status: "ready",
+        enabled: true,
+        source: "custom",
+        label: "Claude personal",
+        models: [
+          {
+            provider: "claude-personal",
+            id: "claude-opus-5-1",
+            label: "Opus 5.1",
+            thinkingOptions: [
+              { id: "high", label: "High" },
+              { id: "max", label: "Max" },
+            ],
+          },
+        ],
+      },
+    ];
+    expect(
+      present(
+        row({
+          id: "a",
+          provider: "claude-personal",
+          model: "claude-opus-5-1",
+          thinkingOptionId: "max",
+        }),
+        entries,
+      ).subtitle,
+    ).toBe("Opus 5.1 Max · Claude personal");
   });
 });
 

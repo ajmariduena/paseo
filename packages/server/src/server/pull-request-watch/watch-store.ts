@@ -4,8 +4,15 @@ import { z } from "zod";
 import { writeJsonFileAtomic } from "../atomic-file.js";
 
 const WatchProgressSchema = z.object({
+  /**
+   * The head commit these fields describe; null on forges that report none. Absent on watches
+   * saved before it existed, which adopt the current head without treating it as a push.
+   */
+  headSha: z.string().nullable().optional(),
   failedChecks: z.array(z.string()),
   passed: z.boolean(),
+  /** Names in the passing gate, so a required check that first shows up already passed is news. */
+  passedChecks: z.array(z.string()).default([]),
   /** Epoch ms of the newest remark the agent was told about. */
   remarksThrough: z.number(),
   /** Remarks at exactly `remarksThrough`; forge times are per second. */

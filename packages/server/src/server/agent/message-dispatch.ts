@@ -1,4 +1,6 @@
 import type { Logger } from "pino";
+import { isPeerMessage } from "@getpaseo/protocol/peer-message";
+import { agentMessageCallId } from "./agent-messages/index.js";
 
 import {
   ActiveTurnChangedError,
@@ -70,7 +72,8 @@ export type SystemQueueEntry =
 /**
  * `system` messages (notifications, wakes) never interrupt or replace a turn: they steer into
  * a running turn when `maySteer` and the provider can steer, otherwise they wait in the queue
- * for the turn to settle. Their text is prepared right before each steer or start, so a
+ * for the turn to settle. An agent the user stopped takes none until it is resumed or the user
+ * writes to it. Their text is prepared right before each steer or start, so a
  * message that went stale while waiting is dropped instead of delivered.
  */
 export type DispatchPolicy =
@@ -162,6 +165,13 @@ export async function dispatchAgentMessage(
       return "skipped_archived";
     }
     await loadAgent(params);
+    const queue = params.agentManager.messageQueue;
+    if (params.policy.kind === "system" && queue.isHeldForUserStop(params.agentId)) {
+      return await enqueue(params);
+    }
+    if (params.policy.kind === "intent" && params.policy.origin?.kind !== "agent") {
+      queue.releaseUserStop(params.agentId);
+    }
     const mode = resolveMode(params);
     switch (mode.kind) {
       case "steer":
@@ -417,7 +427,17 @@ export function createRestoredEntryDeliverer(
         intent: "queue",
         prompt,
         steerUnavailable: sender ? "fail" : "replace",
-        ...(sender ? { origin: { kind: "agent", agentId: sender } } : {}),
+        ...(sender
+          ? {
+              origin: {
+                kind: "agent",
+                agentId: sender,
+                ...(typeof prompt === "string" && isPeerMessage(prompt)
+                  ? { relation: "peer" as const }
+                  : {}),
+              },
+            }
+          : {}),
         clearPendingPermissions: sender === null,
       },
     };
@@ -464,7 +484,8 @@ export function isMessageAlreadyDispatched(
     .getTimeline(agentId)
     .some(
       (item) =>
-        item.type === "user_message" &&
-        (item.clientMessageId === messageId || item.messageId === messageId),
+        (item.type === "user_message" &&
+          (item.clientMessageId === messageId || item.messageId === messageId)) ||
+        (item.type === "tool_call" && item.callId === agentMessageCallId(messageId)),
     );
 }

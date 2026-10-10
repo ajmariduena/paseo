@@ -10,9 +10,8 @@ export type KeyboardActionId =
   | "message-input.dictation-toggle"
   | "message-input.dictation-cancel"
   | "message-input.dictation-confirm"
-  | "message-input.voice-toggle"
-  | "message-input.voice-mute-toggle"
   | "message-input.mode-cycle"
+  | "message-input.model-picker"
   | "message-input.steer-queued"
   | "workspace.agent.new"
   | "workspace.tab.menu.open"
@@ -64,9 +63,8 @@ export type KeyboardActionDefinition =
   | { id: "message-input.dictation-toggle"; scope: KeyboardActionScope }
   | { id: "message-input.dictation-cancel"; scope: KeyboardActionScope }
   | { id: "message-input.dictation-confirm"; scope: KeyboardActionScope }
-  | { id: "message-input.voice-toggle"; scope: KeyboardActionScope }
-  | { id: "message-input.voice-mute-toggle"; scope: KeyboardActionScope }
   | { id: "message-input.mode-cycle"; scope: KeyboardActionScope }
+  | { id: "message-input.model-picker"; scope: KeyboardActionScope }
   | { id: "message-input.steer-queued"; scope: KeyboardActionScope }
   | { id: "workspace.agent.new"; scope: KeyboardActionScope }
   | { id: "workspace.tab.menu.open"; scope: KeyboardActionScope }

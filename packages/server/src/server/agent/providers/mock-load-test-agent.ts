@@ -732,11 +732,21 @@ function getConfiguredAssistantResponses(value: unknown): string[] {
     : [];
 }
 
+function getConfiguredCompletedToolCall(value: unknown): { name: string; output: string } | null {
+  if (typeof value !== "object" || value === null) return null;
+  const call = value as Record<string, unknown>;
+  return typeof call.name === "string" && typeof call.output === "string"
+    ? { name: call.name, output: call.output }
+    : null;
+}
+
 export class MockLoadTestAgentSession implements AgentSession {
   readonly provider: AgentProvider = MOCK_LOAD_TEST_PROVIDER_ID;
   readonly capabilities = CAPABILITIES;
   readonly features: AgentFeature[] = [];
   readonly id: string;
+  private readonly usageSessionKey = randomUUID();
+
   private readonly listeners = new Set<(event: AgentStreamEvent) => void>();
   private readonly history: AgentStreamEvent[] = [];
   private readonly logger?: Logger;
@@ -748,6 +758,7 @@ export class MockLoadTestAgentSession implements AgentSession {
   private readonly assistantResponses: string[];
   private readonly streamingAssistantResponse: string | null;
   private readonly streamingAssistantIntervalMs: number;
+  private readonly completedToolCall: { name: string; output: string } | null;
   private readonly rewindError: string | null;
   private remainingPromptRejections: number;
   private remainingSteerFailures: number;
@@ -776,6 +787,9 @@ export class MockLoadTestAgentSession implements AgentSession {
       requestedStreamingInterval >= 1
         ? Math.min(requestedStreamingInterval, 1_000)
         : MOCK_LOAD_TEST_INTERVAL_MS;
+    this.completedToolCall = getConfiguredCompletedToolCall(
+      options.config.featureValues?.mockCompletedToolCall,
+    );
     this.rewindError =
       typeof options.config.featureValues?.mockRewindError === "string"
         ? options.config.featureValues.mockRewindError
@@ -790,6 +804,15 @@ export class MockLoadTestAgentSession implements AgentSession {
     this.remainingSteerFailures = getPositiveFeatureInteger(
       options.config.featureValues?.mockSteerAmbiguousFailures,
     );
+  }
+
+  usageSession() {
+    return {
+      provider: this.provider,
+      model: this.modelId ?? undefined,
+      env: {},
+      sessionKey: this.usageSessionKey,
+    };
   }
 
   async run(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<AgentRunResult> {
@@ -847,6 +870,8 @@ export class MockLoadTestAgentSession implements AgentSession {
     const scheduleTurn = () => {
       if (shouldEmitTurnFailure(prompt)) {
         this.scheduleFailedTurn(turn);
+      } else if (this.completedToolCall) {
+        this.scheduleCompletedToolCallTurn(turn, this.completedToolCall);
       } else if (steeringReplayShape) {
         this.scheduleSteeringReplayTurn(turn, steeringReplayShape);
       } else if (this.streamingAssistantResponse !== null) {
@@ -1229,6 +1254,28 @@ export class MockLoadTestAgentSession implements AgentSession {
   private scheduleSettledAssistantTurn(turn: ActiveTurn, finalText: string): void {
     turn.timer = setTimeout(() => {
       this.emitSettledAssistantTurn(turn, finalText);
+    }, 0);
+    turn.timer.unref?.();
+  }
+
+  private scheduleCompletedToolCallTurn(
+    turn: ActiveTurn,
+    tool: { name: string; output: string },
+  ): void {
+    turn.timer = setTimeout(() => {
+      if (this.activeTurn !== turn) return;
+      this.clearTurnTimer(turn);
+      this.emitTurnStarted(turn);
+      this.emitTimeline(
+        turn.turnId,
+        createToolCall({
+          callId: `${turn.turnId}:fixture`,
+          name: tool.name,
+          status: "completed",
+          detail: { type: "unknown", input: {}, output: tool.output },
+        }),
+      );
+      this.finishTurnWithText(turn, "Synthetic tool call complete");
     }, 0);
     turn.timer.unref?.();
   }

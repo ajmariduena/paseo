@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Logger } from "pino";
 
 import { writeJsonFileAtomic } from "../atomic-file.js";
+import { AGENT_TURN_OUTCOMES } from "@getpaseo/protocol/agent-lifecycle";
 import { AgentFeatureSchema, AgentStatusSchema } from "../messages.js";
 import { toStoredAgentRecord } from "./agent-projections.js";
 import type { ManagedAgent } from "./agent-manager.js";
@@ -81,6 +82,7 @@ const STORED_AGENT_SCHEMA = z.object({
   features: z.array(AgentFeatureSchema).optional(),
   persistence: PERSISTENCE_HANDLE_SCHEMA,
   lastError: z.string().nullable().optional(),
+  lastTurnOutcome: z.enum(AGENT_TURN_OUTCOMES).optional(),
   requiresAttention: z.boolean().optional(),
   attentionReason: z.enum(["finished", "error", "permission"]).nullable().optional(),
   attentionTimestamp: z.string().nullable().optional(),

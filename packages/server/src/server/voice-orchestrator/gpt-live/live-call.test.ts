@@ -5,6 +5,7 @@ import type { SessionOutboundMessage } from "../../messages.js";
 import type { VoiceOrchestrator } from "../orchestrator.js";
 import { GptLiveCall } from "./live-call.js";
 import { GptLiveConnection, createGptLiveWebrtcSession } from "./live-connection.js";
+import { FleetView } from "../fleet/fleet-view.js";
 
 type LiveMessage = Record<string, unknown>;
 
@@ -89,6 +90,36 @@ function createOrchestratorStub(history: string[] = []) {
   const stub = {
     language: "es",
     describeFleet: async () => [{ workspace: "auth", title: "Login fix", status: "working" }],
+    fleetView: async () =>
+      new FleetView([
+        {
+          serverId: null,
+          label: "MacBook",
+          online: true,
+          lastSeenAt: null,
+          supportsTools: true,
+          digest: {
+            generatedAt: new Date().toISOString(),
+            agents: [
+              {
+                agentId: "agent-1",
+                title: "Login fix",
+                workspaceId: "ws-1",
+                workspace: "auth",
+                provider: "claude",
+                status: "working",
+                now: "running the login tests",
+                updatedAt: new Date().toISOString(),
+              },
+            ],
+            workspaces: [],
+            projects: [],
+            sessions: [],
+          },
+        },
+      ]),
+    planDelegation: async () => null,
+    voiceVocabulary: () => "Vocabulary: Fable",
     attachCall: (call: { announce?: (lines: string[], options?: AnnounceOptions) => void }) => {
       announce = call.announce;
       return () => {
@@ -147,7 +178,7 @@ describe("GptLiveCall", () => {
     return { live, stub, emitted };
   }
 
-  it("starts a client-delegation session at 16 kHz and greets with the fleet", async () => {
+  it("starts a client-delegation session at 16 kHz and only says hello", async () => {
     const { live } = await startCall();
     expect(findMessage(live, "session.start")?.session).toMatchObject({
       model: "gpt-live-1",
@@ -156,10 +187,13 @@ describe("GptLiveCall", () => {
     });
     await waitFor(() => findMessage(live, "session.instructions.append") !== undefined);
     expect(findMessage(live, "session.instructions.append")?.content).toContain(
-      "auth · Login fix: working",
+      'Say exactly "Hola, aquí estoy." and nothing else',
     );
+    expect(findMessage(live, "session.start")?.session).toMatchObject({
+      instructions: expect.stringContaining("Vocabulary: Fable"),
+    });
     expect(findMessage(live, "session.thinking.append")?.content).toContain(
-      "auth · Login fix: working",
+      'auth · "Login fix" (claude) — working | now: running the login tests',
     );
   });
 
@@ -221,6 +255,32 @@ describe("GptLiveCall", () => {
     );
   });
 
+  it("keeps the start of a request the user began while the assistant was still talking", async () => {
+    const { live, stub } = await startCall();
+    live.socket().send(
+      JSON.stringify({
+        type: "session.output_audio.delta",
+        delta: Buffer.alloc(16000 * 2 * 2).toString("base64"),
+      }),
+    );
+    const send = (delta: string) =>
+      live.socket().send(JSON.stringify({ type: "session.input_transcript.delta", delta }));
+    send("Oye, pero");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    send(" en orquestación, ¿cuáles son las recomendaciones?");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    live.socket().send(
+      JSON.stringify({
+        type: "session.delegation.created",
+        delegation: { id: "item_2", type: "delegation", target: "client" },
+      }),
+    );
+    await waitFor(() => stub.calls.length > 0);
+    expect(stub.calls[0]?.request).toBe(
+      "Oye, pero en orquestación, ¿cuáles son las recomendaciones?",
+    );
+  });
+
   it("speaks daemon notices as session commentary", async () => {
     const { live, stub } = await startCall();
     stub.announce(["auth · Login fix finished."]);
@@ -269,7 +329,46 @@ describe("GptLiveCall", () => {
     expect(outcomes).toEqual([false]);
   });
 
-  it("attaches to a WebRTC session as a sideband and greets once the phone's audio arrives", async () => {
+  it("does not hold a result behind silent reflected audio on a sideband", async () => {
+    const live = await startFakeLive();
+    activeLive = live;
+    const stub = createOrchestratorStub();
+    call = new GptLiveCall({
+      engine: { apiKey: "test-key", model: "gpt-live-1", voice: "marin" },
+      orchestrator: stub.orchestrator,
+      emit: () => undefined,
+      logger: pino({ level: "silent" }),
+      sidebandSessionId: "live_silent",
+      createConnection: () => new GptLiveConnection(live.url),
+    });
+    await call.start();
+    // WebRTC keeps reflecting output frames while GPT-Live is silent.
+    const silence = Buffer.alloc(4_800).toString("base64");
+    const frames = setInterval(() => {
+      live.socket().send(JSON.stringify({ type: "session.output_audio.delta", delta: silence }));
+    }, 50);
+    try {
+      live
+        .socket()
+        .send(JSON.stringify({ type: "session.input_transcript.delta", delta: "¿Cómo va auth?" }));
+      live.socket().send(
+        JSON.stringify({
+          type: "session.delegation.created",
+          delegation: { id: "item_quiet", type: "delegation", target: "client" },
+        }),
+      );
+      const startedAt = Date.now();
+      await waitFor(
+        () => findMessage(live, "session.commentary.append", "item_quiet") !== undefined,
+        3_000,
+      );
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
+    } finally {
+      clearInterval(frames);
+    }
+  });
+
+  it("attaches to a WebRTC session as a sideband and greets once the phone's microphone is live", async () => {
     const live = await startFakeLive();
     activeLive = live;
     const stub = createOrchestratorStub();
@@ -289,7 +388,25 @@ describe("GptLiveCall", () => {
     expect(findMessage(live, "session.start")).toBeUndefined();
     expect(findMessage(live, "session.instructions.append")).toBeUndefined();
 
-    live.socket().send(JSON.stringify({ type: "session.input_audio.append", audio: "AAAA" }));
+    // WebRTC sends digital silence until the phone's audio unit runs; speech then is lost.
+    live.socket().send(
+      JSON.stringify({
+        type: "session.input_audio.append",
+        audio: Buffer.alloc(960).toString("base64"),
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(findMessage(live, "session.instructions.append")).toBeUndefined();
+
+    const roomNoise = Buffer.alloc(960);
+    for (let offset = 0; offset < roomNoise.length; offset += 2) {
+      roomNoise.writeInt16LE(offset % 4 === 0 ? 6 : -5, offset);
+    }
+    live
+      .socket()
+      .send(
+        JSON.stringify({ type: "session.input_audio.append", audio: roomNoise.toString("base64") }),
+      );
     live.socket().send(
       JSON.stringify({
         type: "session.output_audio.delta",

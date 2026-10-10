@@ -202,11 +202,10 @@ export const SHORTCUT_HELP_ROW_ORDER: Record<ShortcutSectionId, readonly string[
   "agent-input": [
     "focus-message-input",
     "cycle-agent-mode",
-    "voice-toggle",
+    "open-model-picker",
     "dictation-toggle",
     "agent-interrupt",
     "steer-queued-message",
-    "voice-mute-toggle",
   ],
 };
 
@@ -255,11 +254,10 @@ const SHORTCUT_HELP_LABEL_KEYS: Record<string, string> = {
   "cycle-theme": "settings.shortcuts.help.cycleTheme",
   "focus-message-input": "settings.shortcuts.help.focusMessageInput",
   "cycle-agent-mode": "settings.shortcuts.help.cycleAgentMode",
-  "voice-toggle": "settings.shortcuts.help.toggleVoiceMode",
+  "open-model-picker": "settings.shortcuts.help.openModelPicker",
   "dictation-toggle": "settings.shortcuts.help.startStopDictation",
   "agent-interrupt": "settings.shortcuts.help.interruptAgent",
   "steer-queued-message": "settings.shortcuts.help.steerQueuedMessage",
-  "voice-mute-toggle": "settings.shortcuts.help.muteUnmuteVoiceMode",
 };
 
 const SHORTCUT_HELP_NOTE_KEYS: Record<string, string> = {
@@ -1198,29 +1196,27 @@ const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
     },
   },
   {
-    id: "message-input-voice-toggle-cmd-shift-d-mac",
+    id: "message-input-model-picker-cmd-shift-m-mac",
     action: "message-input.action",
-    combo: "Cmd+Shift+D",
-    repeat: false,
+    combo: "Cmd+Shift+M",
     when: { mac: true, commandCenter: false, terminal: false },
-    payload: { type: "message-input", kind: "voice-toggle" },
+    payload: { type: "message-input", kind: "model-picker" },
     help: {
-      id: "voice-toggle",
+      id: "open-model-picker",
       section: "agent-input",
-      label: "Toggle voice mode",
+      label: "Change model",
     },
   },
   {
-    id: "message-input-voice-toggle-ctrl-shift-d-non-mac",
+    id: "message-input-model-picker-ctrl-shift-m-non-mac",
     action: "message-input.action",
-    combo: "Ctrl+Shift+D",
-    repeat: false,
+    combo: "Ctrl+Shift+M",
     when: { mac: false, commandCenter: false, terminal: false },
-    payload: { type: "message-input", kind: "voice-toggle" },
+    payload: { type: "message-input", kind: "model-picker" },
     help: {
-      id: "voice-toggle",
+      id: "open-model-picker",
       section: "agent-input",
-      label: "Toggle voice mode",
+      label: "Change model",
     },
   },
   {
@@ -1292,20 +1288,6 @@ const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
     combo: "Enter",
     when: { commandCenter: false, terminal: false },
     payload: { type: "message-input", kind: "dictation-confirm" },
-  },
-
-  {
-    id: "message-input-voice-mute-toggle",
-    action: "message-input.action",
-    combo: "Space",
-    repeat: false,
-    when: { commandCenter: false, focusScope: "other" },
-    payload: { type: "message-input", kind: "voice-mute-toggle" },
-    help: {
-      id: "voice-mute-toggle",
-      section: "agent-input",
-      label: "Mute/unmute voice mode",
-    },
   },
 ];
 

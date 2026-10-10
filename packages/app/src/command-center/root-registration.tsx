@@ -2,8 +2,10 @@ import { useMemo } from "react";
 import { router, type Href } from "expo-router";
 import { useTranslation } from "react-i18next";
 import {
+  Activity,
   BellDot,
   CalendarClock,
+  NotebookPen,
   CircleDashed,
   Folder,
   FolderPlus,
@@ -29,6 +31,8 @@ import { useSidebarViewStore } from "@/stores/sidebar-view-store";
 import { clearCommandCenterFocusRestoreElement } from "@/utils/command-center-focus-restore";
 import {
   buildOpenProjectRoute,
+  buildHostHealthRoute,
+  buildNotesRoute,
   buildSchedulesRoute,
   buildSessionsRoute,
   buildSettingsRoute,
@@ -47,6 +51,12 @@ const ThemedHistory = withUnistyles(History, (theme) => ({
   color: theme.colors.foregroundMuted,
 }));
 const ThemedCalendarClock = withUnistyles(CalendarClock, (theme) => ({
+  color: theme.colors.foregroundMuted,
+}));
+const ThemedActivity = withUnistyles(Activity, (theme) => ({
+  color: theme.colors.foregroundMuted,
+}));
+const ThemedNotebookPen = withUnistyles(NotebookPen, (theme) => ({
   color: theme.colors.foregroundMuted,
 }));
 const ThemedKeyboard = withUnistyles(Keyboard, (theme) => ({
@@ -92,6 +102,14 @@ function SchedulesIcon({ size }: CommandCenterIconProps) {
   return <ThemedCalendarClock size={size} strokeWidth={2.2} />;
 }
 
+function HostHealthIcon({ size }: CommandCenterIconProps) {
+  return <ThemedActivity size={size} strokeWidth={2.2} />;
+}
+
+function NotesIcon({ size }: CommandCenterIconProps) {
+  return <ThemedNotebookPen size={size} strokeWidth={2.2} />;
+}
+
 function KeyboardIcon({ size }: CommandCenterIconProps) {
   return <ThemedKeyboard size={size} strokeWidth={2.2} />;
 }
@@ -128,6 +146,8 @@ export function CommandCenterRootActions() {
   const homeRoute = useMemo<Href>(() => buildOpenProjectRoute(), []);
   const sessionsRoute = useMemo<Href>(() => buildSessionsRoute(), []);
   const schedulesRoute = useMemo<Href>(() => buildSchedulesRoute(), []);
+  const notesRoute = useMemo<Href>(() => buildNotesRoute(), []);
+  const hostHealthRoute = useMemo<Href>(() => buildHostHealthRoute(), []);
   const setShortcutsDialogOpen = useKeyboardShortcutsStore((state) => state.setShortcutsDialogOpen);
   // Narrow selector on purpose: a whole-store subscription would re-register every root action
   // each time host filters are reconciled.
@@ -274,6 +294,42 @@ export function CommandCenterRootActions() {
         },
       },
       {
+        id: "notes",
+        group: "actions",
+        groupRank: 0,
+        rank: 5.5,
+        keywords: ["notes", "todos", "scratchpad", "tasks", "remember"],
+        visibility: "always",
+        run: () => {
+          clearCommandCenterFocusRestoreElement();
+          router.push(notesRoute);
+        },
+        presentation: {
+          kind: "action",
+          title: t("sidebar.sections.notes"),
+          sectionTitle: t("shell.commandCenter.actions"),
+          icon: NotesIcon,
+        },
+      },
+      {
+        id: "host-health",
+        group: "actions",
+        groupRank: 0,
+        rank: 5.7,
+        keywords: ["host", "health", "cpu", "memory", "ram", "disk", "processes", "monitor"],
+        visibility: "always",
+        run: () => {
+          clearCommandCenterFocusRestoreElement();
+          router.push(hostHealthRoute);
+        },
+        presentation: {
+          kind: "action",
+          title: t("sidebar.sections.hostHealth"),
+          sectionTitle: t("shell.commandCenter.actions"),
+          icon: HostHealthIcon,
+        },
+      },
+      {
         id: "settings",
         group: "actions",
         groupRank: 0,
@@ -366,6 +422,8 @@ export function CommandCenterRootActions() {
     openAddProject,
     openImportSession,
     overrides,
+    notesRoute,
+    hostHealthRoute,
     schedulesRoute,
     sessionsRoute,
     setGroupMode,

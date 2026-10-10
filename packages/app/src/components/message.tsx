@@ -1,3 +1,4 @@
+import type { AgentMessage } from "@getpaseo/protocol/agent-message";
 import { ASSISTANT_IMAGE_DEFAULT_ASPECT_RATIO } from "@/utils/assistant-image-metadata";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { TaskListRow } from "@/components/task-list-row";
@@ -75,11 +76,17 @@ import { HighlightedCodeBlock } from "@/components/highlighted-code-block";
 import { MarkdownFenceBlock } from "@/components/markdown/fence";
 import type { MarkdownPhase } from "@/components/markdown/fence/types";
 import { splitMarkdownBlocks } from "@/utils/split-markdown-blocks";
+import { CodexVisualizeCard } from "@/html-render/codex-visualize-card";
+import {
+  splitCodexVisualizeDirectives,
+  type CodexVisualizePart,
+} from "@/html-render/visualize-directive";
 import { useRevealedText } from "@/hooks/use-revealed-text";
 import { colorMarkdownLinkChildren } from "@/components/markdown/link-children";
 import { createAssistantMarkdownParser } from "@/utils/assistant-markdown-parser";
 import { formatDuration, formatMessageTimestamp } from "@/utils/time";
 import { useElapsedNow } from "@/subagents/presentation/use-elapsed-now";
+import { getTurnDurationLabel } from "./assistant-turn-footer-label";
 import { writeMarkdownToRichClipboard } from "@/utils/rich-clipboard";
 import { getDefaultMarkdownClipboardEnvironment } from "@/utils/rich-clipboard-default-environment";
 import { setAssistantMarkdownBlockHeight } from "@/utils/assistant-message-height-estimate";
@@ -116,6 +123,7 @@ import { AssistantForkMenu, type AssistantForkTarget } from "@/components/assist
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import {
   markdownCopyDataSet,
+  markdownCopyImageDataSet,
   markdownCopyOrderedListDataSet,
   markdownCopyTableCellDataSet,
   type MarkdownCopyInlineTag,
@@ -647,6 +655,7 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
   durationMs,
   onFork,
 }: AssistantTurnFooterProps) {
+  const { t } = useTranslation();
   const [hovered, setHovered] = useState(false);
   const [pressedReveal, setPressedReveal] = useState(false);
   const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -662,10 +671,8 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
 
   const durationLabel = useMemo(
     () =>
-      durationMs !== undefined && durationMs !== null
-        ? `Worked for ${formatDuration(durationMs)}`
-        : "",
-    [durationMs],
+      durationMs !== undefined && durationMs !== null ? getTurnDurationLabel(durationMs, t) : "",
+    [durationMs, t],
   );
   const timestampLabel = useMemo(
     () => (completedAt ? formatMessageTimestamp(completedAt) : ""),
@@ -764,6 +771,10 @@ interface AssistantMessageProps {
   client?: DaemonClient | null;
   spacing?: "default" | "compactTop" | "compactBottom" | "compactBoth";
   phase: MarkdownPhase;
+  codexVisualizationAgentId?: string;
+  codexVisualizationAvailable?: boolean;
+  clientGeneration?: number;
+  wideVisualization?: boolean;
 }
 
 export const assistantMessageStylesheet = StyleSheet.create((theme) => ({
@@ -776,6 +787,10 @@ export const assistantMessageStylesheet = StyleSheet.create((theme) => ({
   },
   containerCompactBottom: {
     paddingBottom: 0,
+  },
+  visualizationProseWidth: {
+    width: "100%",
+    maxWidth: theme.contentMaxWidth,
   },
   cappedNotice: {
     marginTop: theme.spacing[3],
@@ -890,10 +905,11 @@ function AssistantMarkdownImage({
     ],
     [containerStyle, imageSizeStyle],
   );
+  const copyDataSet = useMemo(() => markdownCopyImageDataSet(source, alt), [source, alt]);
 
   if (image.status === "failed") {
     return (
-      <View style={stateFrameStyle}>
+      <View style={stateFrameStyle} dataSet={copyDataSet}>
         <Text style={assistantMessageStylesheet.imageErrorText}>{image.message}</Text>
       </View>
     );
@@ -901,14 +917,14 @@ function AssistantMarkdownImage({
 
   if (!binding) {
     return (
-      <View style={stateFrameStyle}>
+      <View style={stateFrameStyle} dataSet={copyDataSet}>
         <ThemedLoadingSpinner size="small" uniProps={foregroundMutedColorMapping} />
       </View>
     );
   }
 
   return (
-    <View style={frameStyle}>
+    <View style={frameStyle} dataSet={copyDataSet}>
       <Pressable
         accessibilityLabel={t("composer.attachments.openImage")}
         accessibilityRole="button"
@@ -1186,6 +1202,13 @@ const expandableBadgeStylesheet = StyleSheet.create((theme) => ({
   secondaryLabelActive: {
     color: theme.colors.foreground,
   },
+  trailingLabel: {
+    flexShrink: 0,
+    marginLeft: "auto",
+    paddingLeft: theme.spacing[2],
+    color: theme.colors.foregroundMuted,
+    fontSize: STREAM_METADATA_FONT_SIZE,
+  },
   shimmerText: {
     color: "transparent",
     fontSize: theme.fontSize.base,
@@ -1391,6 +1414,29 @@ interface AssistantMessageBlockContainerProps {
   children: ReactNode;
 }
 
+const visualizationBlockSpacing = { marginBottom: 12 };
+
+function splitAssistantVisualBlocks(
+  text: string,
+  enabled: boolean,
+  complete: boolean,
+): CodexVisualizePart[] {
+  const parts: CodexVisualizePart[] = enabled
+    ? splitCodexVisualizeDirectives(text, { complete })
+    : [{ kind: "markdown", text }];
+  const blocks: CodexVisualizePart[] = [];
+  for (const part of parts) {
+    if (part.kind === "visual") {
+      blocks.push(part);
+      continue;
+    }
+    for (const markdown of splitMarkdownBlocks(part.text)) {
+      blocks.push({ kind: "markdown", text: markdown });
+    }
+  }
+  return blocks;
+}
+
 // A paragraph's UITextView that grew while streaming can keep the frame it was first measured at and
 // stay clipped to its opening characters, so the live block gets a fresh native view once it settles.
 function isRemountedWhenSettled(phase: MarkdownPhase, index: number, blockCount: number): boolean {
@@ -1530,6 +1576,10 @@ export const AssistantMessage = memo(function AssistantMessage({
   client,
   spacing = "default",
   phase,
+  codexVisualizationAgentId,
+  codexVisualizationAvailable = false,
+  clientGeneration = 0,
+  wideVisualization = false,
 }: AssistantMessageProps) {
   const { t } = useTranslation();
   const markdownParser = useMemo(createAssistantMarkdownParser, []);
@@ -2014,15 +2064,21 @@ export const AssistantMessage = memo(function AssistantMessage({
     };
   }, [client, fileLinkActions, markdownParser, occurrenceKey, phase, serverId, workspaceRoot]);
 
-  const blocks = useMemo(() => splitMarkdownBlocks(revealedMessage), [revealedMessage]);
+  const blocks = useMemo(() => {
+    return splitAssistantVisualBlocks(
+      revealedMessage,
+      Boolean(codexVisualizationAgentId),
+      phase === "complete" && revealedMessage === renderedMessage.text,
+    );
+  }, [codexVisualizationAgentId, phase, renderedMessage.text, revealedMessage]);
   const keyedBlocks = useMemo(
     () =>
-      blocks.map((block, index) => ({
-        key: isRemountedWhenSettled(phase, index, blocks.length)
-          ? `block:${index}:live`
-          : `block:${index}`,
-        block,
-      })),
+      blocks.map((block, index) => {
+        let key = `block:${index}`;
+        if (block.kind === "visual") key = `visual:${block.reference.occurrenceId}`;
+        else if (isRemountedWhenSettled(phase, index, blocks.length)) key += ":live";
+        return { key, block };
+      }),
     [blocks, phase],
   );
 
@@ -2050,14 +2106,29 @@ export const AssistantMessage = memo(function AssistantMessage({
 
   return (
     <View testID="assistant-message" dataSet={revealDataSet} style={assistantContainerStyle}>
-      {keyedBlocks.map(({ key, block }, index) => (
-        <AssistantMessageBlockContainer
-          key={key}
-          block={block}
-          marginBottom={index < keyedBlocks.length - 1 ? 12 : 0}
-        >
+      {keyedBlocks.map(({ key, block }, index) => {
+        if (block.kind === "visual") {
+          if (!codexVisualizationAgentId || !serverId) return null;
+          return (
+            <View
+              key={key}
+              style={index < keyedBlocks.length - 1 ? visualizationBlockSpacing : undefined}
+            >
+              <CodexVisualizeCard
+                client={client ?? null}
+                clientGeneration={clientGeneration}
+                serverId={serverId}
+                agentId={codexVisualizationAgentId}
+                reference={block.reference}
+                messageKey={occurrenceKey}
+                featureAvailable={codexVisualizationAvailable}
+              />
+            </View>
+          );
+        }
+        const markdownBlock = (
           <MemoizedMarkdownBlock
-            text={block}
+            text={block.text}
             rules={markdownRules}
             parser={
               phase === "streaming" && index === keyedBlocks.length - 1
@@ -2066,8 +2137,23 @@ export const AssistantMessage = memo(function AssistantMessage({
             }
             onLinkPress={handleMarkdownLinkPress}
           />
-        </AssistantMessageBlockContainer>
-      ))}
+        );
+        return (
+          <AssistantMessageBlockContainer
+            key={key}
+            block={block.text}
+            marginBottom={index < keyedBlocks.length - 1 ? 12 : 0}
+          >
+            {wideVisualization ? (
+              <View style={assistantMessageStylesheet.visualizationProseWidth}>
+                {markdownBlock}
+              </View>
+            ) : (
+              markdownBlock
+            )}
+          </AssistantMessageBlockContainer>
+        );
+      })}
       {fullMessageByteLength !== null ? (
         <Text
           testID="assistant-message-capped-notice"
@@ -2380,6 +2466,8 @@ export const TodoListCard = memo(function TodoListCard({
 interface ExpandableBadgeProps {
   label: string;
   secondaryLabel?: string;
+  /** Muted metadata pinned to the row's end, such as a time. */
+  trailingLabel?: string;
   icon?: ComponentType<{ size?: number; color?: string }>;
   isExpanded: boolean;
   style?: StyleProp<ViewStyle>;
@@ -2463,6 +2551,7 @@ interface ExpandableBadgeLabelRowProps {
   label: string;
   labelStyle: StyleProp<TextStyle>;
   secondaryLabel?: string;
+  trailingLabel?: string;
   secondaryLabelStyle: StyleProp<TextStyle>;
   shouldMeasureWebShimmer: boolean;
   shouldMeasureNativeShimmer: boolean;
@@ -2489,6 +2578,7 @@ function ExpandableBadgeLabelRow({
   label,
   labelStyle,
   secondaryLabel,
+  trailingLabel,
   secondaryLabelStyle,
   shouldMeasureWebShimmer,
   shouldMeasureNativeShimmer,
@@ -2545,6 +2635,11 @@ function ExpandableBadgeLabelRow({
             uniProps={isOpenFileHovered ? foregroundColorMapping : foregroundMutedColorMapping}
           />
         </Pressable>
+      ) : null}
+      {trailingLabel ? (
+        <Text style={expandableBadgeStylesheet.trailingLabel} numberOfLines={1}>
+          {trailingLabel}
+        </Text>
       ) : null}
       {isWebShimmer ? (
         <ExpandableBadgeWebShimmerOverlay
@@ -2744,6 +2839,7 @@ export const ExpandableBadge = memo(function ExpandableBadge({
   label,
   style,
   secondaryLabel,
+  trailingLabel,
   icon,
   isExpanded,
   onToggle,
@@ -3029,6 +3125,7 @@ export const ExpandableBadge = memo(function ExpandableBadge({
             labelStyle={labelStyle}
             secondaryLabel={secondaryLabel}
             secondaryLabelStyle={secondaryLabelStyle}
+            trailingLabel={trailingLabel}
             shouldMeasureWebShimmer={shouldMeasureWebShimmer}
             shouldMeasureNativeShimmer={shouldMeasureNativeShimmer}
             isWebShimmer={isWebShimmer}
@@ -3068,6 +3165,7 @@ export const ExpandableBadge = memo(function ExpandableBadge({
 function areExpandableBadgePropsEqual(previous: ExpandableBadgeProps, next: ExpandableBadgeProps) {
   if (previous.label !== next.label) return false;
   if (previous.secondaryLabel !== next.secondaryLabel) return false;
+  if (previous.trailingLabel !== next.trailingLabel) return false;
   if (previous.icon !== next.icon) return false;
   if (previous.isExpanded !== next.isExpanded) return false;
   if (previous.style !== next.style) return false;
@@ -3085,6 +3183,7 @@ function areExpandableBadgePropsEqual(previous: ExpandableBadgeProps, next: Expa
 }
 
 interface ToolCallProps {
+  agentMessage?: AgentMessage;
   toolName: string;
   args?: unknown;
   result?: unknown;
@@ -3104,6 +3203,7 @@ interface ToolCallProps {
 }
 
 export const ToolCall = memo(function ToolCall({
+  agentMessage,
   toolName,
   args,
   result,
@@ -3144,6 +3244,7 @@ export const ToolCall = memo(function ToolCall({
   const presentation = useMemo(
     () =>
       buildToolCallPresentation({
+        agentMessage,
         toolName,
         status,
         error: error ?? null,
@@ -3152,7 +3253,7 @@ export const ToolCall = memo(function ToolCall({
         cwd,
         resolveIcon: resolveToolCallIcon,
       }),
-    [toolName, status, error, effectiveDetail, metadata, cwd],
+    [toolName, status, error, effectiveDetail, metadata, cwd, agentMessage],
   );
   const handleOpenFile = useMemo(() => {
     const openFilePath = presentation.openFilePath;
@@ -3168,7 +3269,7 @@ export const ToolCall = memo(function ToolCall({
         toolName,
         displayName: presentation.displayName,
         summary: presentation.summary,
-        detail: effectiveDetail,
+        detail: presentation.detail,
         errorText: presentation.errorText,
         icon: presentation.icon,
         showLoadingSkeleton: presentation.isLoadingDetails,
@@ -3180,12 +3281,12 @@ export const ToolCall = memo(function ToolCall({
     shouldRenderInline,
     openToolCall,
     toolName,
+    presentation.detail,
     presentation.displayName,
     presentation.summary,
     presentation.errorText,
     presentation.icon,
     presentation.isLoadingDetails,
-    effectiveDetail,
   ]);
 
   useEffect(() => {
@@ -3221,7 +3322,7 @@ export const ToolCall = memo(function ToolCall({
     return (
       <ToolCallDetailsContent
         toolName={toolName}
-        detail={effectiveDetail}
+        detail={presentation.detail}
         errorText={presentation.errorText}
         maxHeight={maxDetailHeight}
         showLoadingSkeleton={presentation.isLoadingDetails}
@@ -3230,7 +3331,7 @@ export const ToolCall = memo(function ToolCall({
   }, [
     shouldRenderInline,
     toolName,
-    effectiveDetail,
+    presentation.detail,
     presentation.errorText,
     presentation.isLoadingDetails,
     maxDetailHeight,

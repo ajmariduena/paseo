@@ -7,14 +7,19 @@ import {
 } from "../support/helpers/isolated-host-daemon";
 import {
   expectNewWorkspaceProjectSelected,
+  NO_PROJECT_LABEL,
   openGlobalNewWorkspaceComposer,
+  rememberNewWorkspaceProjectAndReload,
   selectNewWorkspaceHost,
   selectNewWorkspaceProject,
 } from "../support/helpers/new-workspace";
 import { connectSeedClient, type SeedDaemonClient } from "../support/helpers/seed-client";
 import { getServerId } from "../support/helpers/server-id";
 import { addConnectedHostsAndReload } from "../support/helpers/hosts";
-import { switchWorkspaceViaSidebar } from "../support/helpers/workspace-ui";
+import {
+  switchWorkspaceViaSidebar,
+  waitForSidebarHydration,
+} from "../support/helpers/workspace-ui";
 import { createTempGitRepo } from "../support/helpers/workspace";
 
 const PRIMARY_HOST_LABEL = "Primary host";
@@ -30,6 +35,7 @@ interface CreatedProject {
 
 interface CrossHostProjectScenario {
   contextWorkspaceId: string;
+  primarySharedProjectId: string;
   primarySharedWorkspaceId: string;
   selectedProjectViewKey: string;
   sharedProjectKey: string;
@@ -68,7 +74,7 @@ async function createProject(
   };
 }
 
-async function openNewWorkspaceFromContextProject(
+async function openNewWorkspaceFromContextWorkspace(
   page: Parameters<typeof openProjectDirectoryWithHosts>[0],
   scenario: CrossHostProjectScenario,
 ): Promise<void> {
@@ -85,7 +91,7 @@ async function openNewWorkspaceFromContextProject(
     workspaceId: scenario.contextWorkspaceId,
   });
   await openGlobalNewWorkspaceComposer(page);
-  await expectNewWorkspaceProjectSelected(page, "Context project");
+  await expectNewWorkspaceProjectSelected(page, NO_PROJECT_LABEL);
 }
 
 const test = base.extend<{ crossHostProject: CrossHostProjectScenario }>({
@@ -151,6 +157,7 @@ const test = base.extend<{ crossHostProject: CrossHostProjectScenario }>({
 
       await provide({
         contextWorkspaceId: contextProject.workspaceId,
+        primarySharedProjectId: primarySharedProject.projectId,
         primarySharedWorkspaceId: primarySharedProject.workspaceId,
         selectedProjectViewKey: projectPlacementViewKey(
           getServerId(),
@@ -189,7 +196,7 @@ test.describe("New workspace host project preservation", () => {
     page,
     crossHostProject,
   }) => {
-    await openNewWorkspaceFromContextProject(page, crossHostProject);
+    await openNewWorkspaceFromContextWorkspace(page, crossHostProject);
     await selectNewWorkspaceProject(page, {
       projectKey: crossHostProject.sharedProjectKey,
       projectViewKey: crossHostProject.selectedProjectViewKey,
@@ -200,7 +207,7 @@ test.describe("New workspace host project preservation", () => {
     await expectNewWorkspaceProjectSelected(page, SHARED_PROJECT_NAME);
   });
 
-  test("keeps the active workspace project selected when switching hosts", async ({
+  test("keeps the remembered project selected when switching hosts", async ({
     page,
     crossHostProject,
   }) => {
@@ -208,6 +215,11 @@ test.describe("New workspace host project preservation", () => {
       hosts: [crossHostProject.secondaryHost],
       primaryLabel: PRIMARY_HOST_LABEL,
     });
+    await rememberNewWorkspaceProjectAndReload(page, {
+      serverId: getServerId(),
+      projectId: crossHostProject.primarySharedProjectId,
+    });
+    await waitForSidebarHydration(page);
     await switchWorkspaceViaSidebar({
       page,
       serverId: getServerId(),

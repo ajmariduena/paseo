@@ -35,7 +35,15 @@ export function asAgentManager(stub: {
 }): SessionOptions["agentManager"] {
   return createStub<SessionOptions["agentManager"]>({
     listProviderSubagentActivity: () => [],
-    messageQueue: { snapshot: () => null, hold: async () => undefined },
+    listDaemonBackgroundTasks: () => [],
+    noteAgentAccess: () => undefined,
+    getActiveRun: () => null,
+    messageQueue: {
+      snapshot: () => null,
+      hold: async () => undefined,
+      isHeldForUserStop: () => false,
+      releaseUserStop: () => undefined,
+    },
     ...stub,
   });
 }

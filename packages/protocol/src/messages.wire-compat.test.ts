@@ -1,3 +1,4 @@
+import { VoiceCommandsSettingsSchema } from "./voice-commands/rpc-schemas.js";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import {
@@ -5,12 +6,14 @@ import {
   AgentTimelineItemPayloadSchema,
   ServerInfoStatusPayloadSchema,
   SessionOutboundMessageSchema,
+  SessionInboundMessageSchema,
   WSHelloMessageSchema,
   WorkspaceSetupSnapshotSchema,
   WorkspaceSetupProgressMessageSchema,
   AgentTimelineEntryPayloadSchema,
   MutableDaemonConfigPatchSchema,
   MutableDaemonConfigSchema,
+  validateQuickPrompts,
 } from "./messages.js";
 
 test("terminal listings accept older rows and retain new per-terminal directories", () => {
@@ -69,6 +72,121 @@ const LegacyAgentSnapshotPayloadSchema = AgentSnapshotPayloadSchema.extend({
 });
 
 describe("wire schema compatibility", () => {
+  test("preview browser setup and status RPCs accept optional response fields", () => {
+    for (const operation of ["get_status", "setup"] as const) {
+      expect(
+        SessionInboundMessageSchema.parse({
+          type: `daemon.browser.${operation}.request`,
+          requestId: "browser",
+        }),
+      ).toMatchObject({ requestId: "browser" });
+      expect(
+        SessionOutboundMessageSchema.parse({
+          type: `daemon.browser.${operation}.response`,
+          payload: { requestId: "browser" },
+        }),
+      ).toMatchObject({ payload: { requestId: "browser" } });
+      expect(
+        SessionOutboundMessageSchema.parse({
+          type: `daemon.browser.${operation}.response`,
+          payload: {
+            requestId: "browser",
+            status: { state: "installed", version: "155", platform: "mac-arm64" },
+          },
+        }),
+      ).toMatchObject({ payload: { status: { state: "installed" } } });
+    }
+  });
+  test("HTML render RPC is correlated and the server feature stays optional", () => {
+    expect(
+      ServerInfoStatusPayloadSchema.parse({ status: "server_info", serverId: "old" }).features,
+    ).toBeUndefined();
+    expect(
+      ServerInfoStatusPayloadSchema.parse({
+        status: "server_info",
+        serverId: "new",
+        features: { htmlRender: true },
+      }).features?.htmlRender,
+    ).toBe(true);
+    expect(
+      SessionInboundMessageSchema.parse({
+        type: "agent.html_render.get.request",
+        requestId: "r",
+        agentId: "a",
+        renderId: "id",
+      }),
+    ).toMatchObject({ requestId: "r", agentId: "a", renderId: "id" });
+    expect(
+      SessionOutboundMessageSchema.parse({
+        type: "agent.html_render.get.response",
+        payload: {
+          requestId: "r",
+          agentId: "a",
+          renderId: "id",
+          html: "<p>Hi</p>",
+          title: "Hi",
+          error: null,
+        },
+      }),
+    ).toMatchObject({ payload: { requestId: "r", html: "<p>Hi</p>" } });
+  });
+
+  test("Codex visualization RPCs preserve optional feature flags and correlation", () => {
+    expect(
+      ServerInfoStatusPayloadSchema.parse({ status: "server_info", serverId: "old" }).features,
+    ).toBeUndefined();
+    expect(
+      ServerInfoStatusPayloadSchema.parse({
+        status: "server_info",
+        serverId: "new",
+        features: { codexVisualization: true },
+      }).features?.codexVisualization,
+    ).toBe(true);
+    expect(
+      SessionInboundMessageSchema.parse({
+        type: "agent.visualization.get.request",
+        requestId: "read",
+        agentId: "agent",
+        path: "/work/visual.html",
+      }),
+    ).toMatchObject({ requestId: "read", agentId: "agent" });
+    expect(
+      SessionInboundMessageSchema.parse({
+        type: "agent.visualization.set_state.request",
+        requestId: "write",
+        agentId: "agent",
+        path: "/work/visual.html",
+        state: { modelContent: { selected: "a" } },
+      }),
+    ).toMatchObject({ requestId: "write", state: { modelContent: { selected: "a" } } });
+    expect(
+      SessionOutboundMessageSchema.parse({
+        type: "agent.visualization.get.response",
+        payload: {
+          requestId: "read",
+          agentId: "agent",
+          path: "/work/visual.html",
+          canonicalPath: "/work/visual.html",
+          revision: "sha256",
+          html: "<p>Visual</p>",
+          state: null,
+          error: null,
+        },
+      }),
+    ).toMatchObject({ payload: { requestId: "read", html: "<p>Visual</p>" } });
+    expect(
+      SessionOutboundMessageSchema.parse({
+        type: "agent.visualization.set_state.response",
+        payload: {
+          requestId: "write",
+          agentId: "agent",
+          path: "/work/visual.html",
+          state: { modelContent: { selected: "a" }, privateContent: null },
+          error: null,
+        },
+      }),
+    ).toMatchObject({ payload: { requestId: "write" } });
+  });
   test("hello parses with and without the project update capability", () => {
     const legacy = WSHelloMessageSchema.parse({
       type: "hello",
@@ -476,6 +594,44 @@ describe("wire schema compatibility", () => {
     expect(LegacySnapshotSchema.parse({ ...snapshot, queue })).not.toHaveProperty("queue");
   });
 
+  test("agent snapshots carry how the last turn ended, and old clients still parse them", () => {
+    const snapshot = {
+      id: "agent-1",
+      provider: "claude",
+      cwd: "/tmp/project",
+      model: null,
+      createdAt: "2026-10-07T00:00:00.000Z",
+      updatedAt: "2026-10-07T00:00:00.000Z",
+      lastUserMessageAt: null,
+      status: "idle",
+      capabilities: {
+        supportsStreaming: true,
+        supportsSessionPersistence: true,
+        supportsDynamicModes: true,
+        supportsMcpServers: true,
+        supportsReasoningStream: true,
+        supportsToolInvocations: true,
+      },
+      currentModeId: null,
+      availableModes: [],
+      pendingPermissions: [],
+      persistence: null,
+      title: null,
+      labels: {},
+    };
+    expect(
+      AgentSnapshotPayloadSchema.parse({ ...snapshot, lastTurnOutcome: "canceled" })
+        .lastTurnOutcome,
+    ).toBe("canceled");
+    expect(AgentSnapshotPayloadSchema.parse(snapshot).lastTurnOutcome).toBeUndefined();
+
+    // Copied from v0.11.0-beta.3, before agent snapshots had a last turn outcome.
+    const LegacySnapshotSchema = AgentSnapshotPayloadSchema.omit({ lastTurnOutcome: true });
+    expect(
+      LegacySnapshotSchema.parse({ ...snapshot, lastTurnOutcome: "canceled" }),
+    ).not.toHaveProperty("lastTurnOutcome");
+  });
+
   test("send responses carry the disposition, and old clients still parse them", () => {
     const response = {
       type: "send_agent_message_response",
@@ -650,4 +806,152 @@ test("blocked setup preserves the legacy failed shape and optional provenance", 
   expect(WorkspaceSetupSnapshotSchema.parse(legacySnapshot.parse(failed))).toEqual(
     legacySnapshot.parse(failed),
   );
+});
+
+test("quick prompts remain optional and survive config responses and patches", () => {
+  const legacy = { mcp: { injectIntoAgents: false } };
+  expect(MutableDaemonConfigSchema.parse(legacy).quickPrompts).toBeUndefined();
+  expect(MutableDaemonConfigPatchSchema.parse({})).toEqual({});
+  const quickPrompts = [
+    {
+      id: "summary",
+      title: "Summary",
+      text: "Summarize.",
+      mode: "send",
+      pinned: true,
+      isDefault: true,
+    },
+  ];
+  const current = { ...legacy, quickPrompts, quickPromptUndoMs: 2500 };
+  expect(MutableDaemonConfigSchema.parse(current).quickPrompts).toEqual(quickPrompts);
+  expect(MutableDaemonConfigPatchSchema.parse({ quickPrompts, quickPromptUndoMs: 0 })).toEqual({
+    quickPrompts,
+    quickPromptUndoMs: 0,
+  });
+  const oldConfigSchema = MutableDaemonConfigSchema.omit({
+    quickPrompts: true,
+    quickPromptUndoMs: true,
+  });
+  expect(oldConfigSchema.safeParse(current).success).toBe(true);
+  expect(MutableDaemonConfigPatchSchema.safeParse({ quickPromptUndoMs: -1 }).success).toBe(false);
+});
+
+test("the dictionary is optional in config responses and patches", () => {
+  const legacy = { mcp: { injectIntoAgents: false } };
+  expect(MutableDaemonConfigSchema.parse(legacy).dictionary).toBeUndefined();
+  const dictionary = { words: ["Zentrix"], replacements: [{ from: "Hello", to: "Jelou" }] };
+  const current = { ...legacy, dictionary };
+  expect(MutableDaemonConfigSchema.parse(current).dictionary).toEqual(dictionary);
+  expect(MutableDaemonConfigPatchSchema.parse({ dictionary })).toEqual({ dictionary });
+  const oldConfigSchema = MutableDaemonConfigSchema.omit({ dictionary: true });
+  expect(oldConfigSchema.safeParse(current).success).toBe(true);
+  const legacyInfo = { status: "server_info", serverId: "host", features: { voiceFleet: true } };
+  expect(ServerInfoStatusPayloadSchema.parse(legacyInfo).features?.dictionary).toBeUndefined();
+});
+
+test("voice commands settings stay readable as they grow", () => {
+  const legacyInfo = { status: "server_info", serverId: "host", features: { dictionary: true } };
+  expect(ServerInfoStatusPayloadSchema.parse(legacyInfo).features?.voiceCommands).toBeUndefined();
+  const settings = {
+    selection: { provider: "cerebras", model: "qwen-3.8-27b" },
+    backup: null,
+    active: { provider: "cerebras", model: "qwen-3.8-27b" },
+    lastRoundTripMs: 312,
+    providers: [{ id: "cerebras", label: "Cerebras", hasKey: true, region: "us" }],
+    options: [{ provider: "cerebras", model: "qwen-3.8-27b", label: "Qwen 3.8 27B", tier: "fast" }],
+    futureField: true,
+  };
+  expect(VoiceCommandsSettingsSchema.parse(settings)).toEqual(settings);
+});
+
+test("quick prompt capability is optional and discarded by older feature schemas", () => {
+  const legacy = { status: "server_info", serverId: "host" };
+  expect(ServerInfoStatusPayloadSchema.safeParse(legacy).success).toBe(true);
+  const current = { ...legacy, features: { quickPrompts: true } };
+  expect(ServerInfoStatusPayloadSchema.parse(current).features?.quickPrompts).toBe(true);
+  const oldFeatures = z.object({ agentProfiles: z.boolean().optional() });
+  expect(oldFeatures.parse(current.features)).toEqual({});
+});
+
+test("quick prompt validation permits localized client messages without changing wire parsing", () => {
+  const prompt = {
+    id: "a",
+    title: "A",
+    text: "text",
+    mode: "send" as const,
+    pinned: false,
+    isDefault: false,
+  };
+  const messages = {
+    duplicateIds: "identificadores únicos",
+    multipleDefaults: "un predeterminado",
+    pinLimit: "tres fijados",
+    required: "título y texto",
+  };
+  expect(() => validateQuickPrompts([prompt, prompt], messages)).toThrow(messages.duplicateIds);
+  expect(() =>
+    validateQuickPrompts(
+      [
+        { ...prompt, isDefault: true },
+        { ...prompt, id: "b", isDefault: true },
+      ],
+      messages,
+    ),
+  ).toThrow(messages.multipleDefaults);
+  expect(() =>
+    validateQuickPrompts(
+      ["a", "b", "c", "d"].map((id) => Object.assign({}, prompt, { id, pinned: true })),
+      messages,
+    ),
+  ).toThrow(messages.pinLimit);
+  expect(() => validateQuickPrompts([{ ...prompt, text: " " }], messages)).toThrow(
+    messages.required,
+  );
+});
+
+test("usage login errors are additive and older reports still parse", () => {
+  const entry = {
+    id: "codex:account",
+    account: {},
+    fetchedAt: "2026-10-05T00:00:00.000Z",
+    sourceId: "codex",
+    sourceLabel: "Codex",
+    report: { status: "error", error: "Usage API returned 500" },
+  };
+  const legacy = z.object({
+    type: z.literal("usage.list_reports.update"),
+    payload: z.object({
+      requestId: z.string(),
+      report: z.object({
+        id: z.string(),
+        account: z.object({ label: z.string().optional() }),
+        fetchedAt: z.string(),
+        sourceId: z.string(),
+        sourceLabel: z.string(),
+        icon: z.string().optional(),
+        report: z.discriminatedUnion("status", [
+          z.object({ status: z.literal("available"), windows: z.array(z.unknown()) }),
+          z.object({ status: z.literal("unavailable"), problem: z.unknown() }),
+          z.object({ status: z.literal("error"), error: z.string() }),
+        ]),
+      }),
+    }),
+  });
+  const oldMessage = {
+    type: "usage.list_reports.update",
+    payload: { requestId: "usage", report: entry },
+  };
+  const newMessage = {
+    ...oldMessage,
+    payload: {
+      ...oldMessage.payload,
+      report: {
+        ...entry,
+        loginErrors: [{ harness: "Codex", report: entry.report }],
+      },
+    },
+  };
+  expect(SessionOutboundMessageSchema.parse(oldMessage)).toEqual(oldMessage);
+  expect(SessionOutboundMessageSchema.parse(newMessage)).toEqual(newMessage);
+  expect(legacy.parse(newMessage)).toEqual(oldMessage);
 });

@@ -17,8 +17,10 @@ function paseo(
     status: "idle",
     turn: { phase: "idle", cancellationRequestId: null },
     requiresAttention: false,
+    lastTurnOutcome: undefined,
     createdAt: new Date(createdAt),
     model: null,
+    thinkingOptionId: null,
     ...overrides,
   };
 }
@@ -72,6 +74,55 @@ describe("buildLineageSections", () => {
     expect(keys(sections.previous)).toEqual(["paseo:broken", "paseo:read"]);
     expect(sections.previousFailedCount).toBe(1);
     expect(sections.runningCount).toBe(2);
+  });
+
+  it("files a child the user stopped under previous subagents as stopped", () => {
+    const sections = buildLineageSections({
+      parent: null,
+      children: [
+        paseo("stopped", "2026-10-04T10:00:00.000Z", { lastTurnOutcome: "canceled" }),
+        paseo("done", "2026-10-04T10:01:00.000Z", { lastTurnOutcome: "completed" }),
+      ],
+      archived: null,
+    });
+
+    expect(sections.subagents).toEqual([]);
+    expect(sections.previous.map((row) => [row.key, row.status])).toEqual([
+      ["paseo:done", { word: "done", bucket: "done", isLive: false }],
+      ["paseo:stopped", { word: "stopped", bucket: "done", isLive: false }],
+    ]);
+    expect(sections.previousFailedCount).toBe(0);
+  });
+
+  it("lets only running Paseo-owned children be stopped", () => {
+    const sections = buildLineageSections({
+      parent: null,
+      children: [
+        paseo("working", "2026-10-04T10:00:00.000Z", { status: "running", turn: OPEN_TURN }),
+        paseo("unread", "2026-10-04T10:01:00.000Z", { requiresAttention: true }),
+        provider("native", "2026-10-04T10:02:00.000Z", "running"),
+      ],
+      archived: [
+        {
+          id: "gone",
+          provider: "codex",
+          title: "Gone",
+          createdAt: "2026-10-04T09:00:00.000Z",
+          archivedAt: "2026-10-04T09:30:00.000Z",
+        },
+      ],
+    });
+
+    const stoppable = [...sections.subagents, ...sections.previous].map((row) => [
+      row.key,
+      row.canStop,
+    ]);
+    expect(stoppable).toEqual([
+      ["provider:native", false],
+      ["paseo:unread", false],
+      ["paseo:working", true],
+      ["paseo:gone", false],
+    ]);
   });
 
   it("does not move a child when it starts working again, and restarts its timer", () => {

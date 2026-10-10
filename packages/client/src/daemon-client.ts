@@ -8,7 +8,20 @@ import {
   type TimelineSubscription,
 } from "./connection/index.js";
 import { CreationClient } from "./creation/index.js";
-import type { CreationSnapshot, VoiceMessagesItem } from "@getpaseo/protocol/messages";
+import type {
+  CreationSnapshot,
+  VoiceMessagesItem,
+  VoiceOrchestratorStartRequest,
+} from "@getpaseo/protocol/messages";
+import type {
+  VoiceFleetDigest,
+  VoiceFleetHostState,
+  VoiceToolResult,
+} from "@getpaseo/protocol/voice-fleet/types";
+import type {
+  VoiceCommandsModel,
+  VoiceCommandsSettings,
+} from "@getpaseo/protocol/voice-commands/rpc-schemas";
 import type { z } from "zod";
 import type { SessionEventSubscription } from "@getpaseo/protocol/messages";
 import type { ClientCapability } from "@getpaseo/protocol/client-capabilities";
@@ -102,7 +115,7 @@ import type {
   RefreshProvidersSnapshotResponseMessage,
   ProviderDiagnosticResponseMessage,
   ProviderUsageListResponseMessage,
-  UsageListReportsResponseMessage,
+  UsageReportEntry,
   DaemonGetStatusResponse,
   DaemonGetPairingOfferResponse,
   DaemonConfigReloadResponse,
@@ -455,6 +468,7 @@ type AgentQueueResponseType =
 export type AgentQueueResponsePayload = AgentQueueListResponseMessage["payload"];
 
 export interface SendMessageOptions {
+  sourceAgentId?: string;
   messageId?: string;
   /** What happens when the agent is mid-turn. The daemon interrupts the turn when omitted. */
   activeTurnBehavior?: ActiveTurnBehavior;
@@ -593,7 +607,10 @@ type GetProvidersSnapshotPayload = GetProvidersSnapshotResponseMessage["payload"
 type RefreshProvidersSnapshotPayload = RefreshProvidersSnapshotResponseMessage["payload"];
 type ProviderDiagnosticPayload = ProviderDiagnosticResponseMessage["payload"];
 type ProviderUsageListPayload = ProviderUsageListResponseMessage["payload"];
-type UsageListReportsPayload = UsageListReportsResponseMessage["payload"];
+interface UsageListReportsPayload {
+  requestId: string;
+  reports: UsageReportEntry[];
+}
 type DaemonStatusPayload = DaemonGetStatusResponse["payload"];
 type DaemonPairingOfferPayload = DaemonGetPairingOfferResponse["payload"];
 type DiagnosticsPayload = DiagnosticsResponse["payload"];
@@ -849,6 +866,30 @@ export type WorkspaceLabelDeleteInspectPayload = Extract<
   SessionOutboundMessage,
   { type: "workspace.label.delete.inspect.response" }
 >["payload"];
+export type HostMetricsPayload = Extract<
+  SessionOutboundMessage,
+  { type: "host.metrics.get.response" }
+>["payload"];
+export type NoteListPayload = Extract<
+  SessionOutboundMessage,
+  { type: "note.list.response" }
+>["payload"];
+export type NoteResultPayload = Extract<
+  SessionOutboundMessage,
+  { type: "note.create.response" }
+>["payload"];
+export type NoteDeletePayload = Extract<
+  SessionOutboundMessage,
+  { type: "note.delete.response" }
+>["payload"];
+type NoteCreateRequest = Extract<SessionInboundMessage, { type: "note.create.request" }>;
+type NoteUpdateRequest = Extract<SessionInboundMessage, { type: "note.update.request" }>;
+export type CreateNoteOptions = Omit<NoteCreateRequest, "type" | "requestId"> & {
+  requestId?: string;
+};
+export type UpdateNoteOptions = Omit<NoteUpdateRequest, "type" | "requestId"> & {
+  requestId?: string;
+};
 export type ProjectListPayload = Extract<
   SessionOutboundMessage,
   { type: "project.list.response" }
@@ -1079,6 +1120,12 @@ const READ_ALOUD_SYNTHESIZE_TIMEOUT_MS = 90_000;
 const VOICE_ORCHESTRATOR_START_TIMEOUT_MS = 60_000;
 // Messages mode retries on a weak link, so a lost request must fail fast instead of waiting a minute.
 const VOICE_MESSAGES_TIMEOUT_MS = 12_000;
+const VOICE_FLEET_DIGEST_TIMEOUT_MS = 5_000;
+const VOICE_COMMANDS_TIMEOUT_MS = 10_000;
+const VOICE_COMMANDS_TEST_TIMEOUT_MS = 20_000;
+// Creating a worktree and an agent on another host can take most of a minute.
+const VOICE_FLEET_TOOL_TIMEOUT_MS = 60_000;
+const VOICE_FLEET_SYNC_TIMEOUT_MS = 4_000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 const DEFAULT_LIVENESS_TIMEOUT_MS = 5000;
 const LIVENESS_HEARTBEAT_INTERVAL_MS = 10_000;
@@ -2147,6 +2194,7 @@ export class DaemonClient {
   async startVoiceOrchestrator(params: {
     language?: string;
     agentModes?: Record<string, string>;
+    agentDefaults?: VoiceOrchestratorStartRequest["agentDefaults"];
     requestId?: string;
   }): Promise<{ agentId: string; language: string | null }> {
     const response =
@@ -2156,6 +2204,7 @@ export class DaemonClient {
           type: "voice.orchestrator.start.request",
           ...(params.language ? { language: params.language } : {}),
           ...(params.agentModes ? { agentModes: params.agentModes } : {}),
+          ...(params.agentDefaults ? { agentDefaults: params.agentDefaults } : {}),
         },
         timeout: VOICE_ORCHESTRATOR_START_TIMEOUT_MS,
       });
@@ -2285,6 +2334,134 @@ export class DaemonClient {
     await this.sendNamespacedCorrelatedSessionRequest<"voice.call.log_events.response">({
       message: { type: "voice.call.log_events.request", events },
       timeout: VOICE_MESSAGES_TIMEOUT_MS,
+    });
+  }
+
+  async getVoiceCommandsSettings(): Promise<VoiceCommandsSettings> {
+    const response =
+      await this.sendNamespacedCorrelatedSessionRequest<"voice.commands.get_settings.response">({
+        message: { type: "voice.commands.get_settings.request" },
+        timeout: VOICE_COMMANDS_TIMEOUT_MS,
+      });
+    return requireVoiceCommandsSettings(response);
+  }
+
+  async setVoiceCommandsModel(params: {
+    selection?: VoiceCommandsModel | null;
+    backup?: VoiceCommandsModel | null;
+    customBaseUrl?: string;
+  }): Promise<VoiceCommandsSettings> {
+    const response =
+      await this.sendNamespacedCorrelatedSessionRequest<"voice.commands.set_model.response">({
+        message: { type: "voice.commands.set_model.request", ...params },
+        timeout: VOICE_COMMANDS_TIMEOUT_MS,
+      });
+    return requireVoiceCommandsSettings(response);
+  }
+
+  async setVoiceCommandsKey(params: {
+    provider: string;
+    apiKey: string | null;
+  }): Promise<VoiceCommandsSettings> {
+    const response =
+      await this.sendNamespacedCorrelatedSessionRequest<"voice.commands.set_key.response">({
+        message: { type: "voice.commands.set_key.request", ...params },
+        timeout: VOICE_COMMANDS_TIMEOUT_MS,
+      });
+    return requireVoiceCommandsSettings(response);
+  }
+
+  async testVoiceCommandsModel(target: "selection" | "backup"): Promise<{
+    ok: boolean;
+    roundTripMs: number | null;
+    model: VoiceCommandsModel | null;
+    error: string | null;
+    settings: VoiceCommandsSettings | null;
+  }> {
+    const response =
+      await this.sendNamespacedCorrelatedSessionRequest<"voice.commands.test_model.response">({
+        message: { type: "voice.commands.test_model.request", target },
+        timeout: VOICE_COMMANDS_TEST_TIMEOUT_MS,
+      });
+    return {
+      ok: response.ok,
+      roundTripMs: response.roundTripMs,
+      model: response.model,
+      error: response.error,
+      settings: response.settings,
+    };
+  }
+
+  async getVoiceFleetDigest(params: {
+    language?: string;
+    timeoutMs?: number;
+  }): Promise<VoiceFleetDigest | null> {
+    const response =
+      await this.sendNamespacedCorrelatedSessionRequest<"voice.fleet.digest.response">({
+        message: {
+          type: "voice.fleet.digest.request",
+          ...(params.language ? { language: params.language } : {}),
+        },
+        timeout: params.timeoutMs ?? VOICE_FLEET_DIGEST_TIMEOUT_MS,
+      });
+    if (response.error) {
+      throw new Error(response.error);
+    }
+    return response.digest;
+  }
+
+  async syncVoiceFleet(params: {
+    hosts: VoiceFleetHostState[];
+    selfLabel?: string;
+    appState?: string;
+  }): Promise<{ active: boolean }> {
+    const response = await this.sendNamespacedCorrelatedSessionRequest<"voice.fleet.sync.response">(
+      {
+        message: {
+          type: "voice.fleet.sync.request",
+          hosts: params.hosts,
+          ...(params.selfLabel ? { selfLabel: params.selfLabel } : {}),
+          ...(params.appState ? { appState: params.appState } : {}),
+        },
+        timeout: VOICE_FLEET_SYNC_TIMEOUT_MS,
+      },
+    );
+    return { active: response.active };
+  }
+
+  async invokeVoiceTool(params: {
+    operationId: string;
+    tool: string;
+    args: Record<string, unknown>;
+    language?: string;
+  }): Promise<{ result: VoiceToolResult | null; error: string | null }> {
+    const response =
+      await this.sendNamespacedCorrelatedSessionRequest<"voice.tools.invoke.response">({
+        message: {
+          type: "voice.tools.invoke.request",
+          operationId: params.operationId,
+          tool: params.tool,
+          args: params.args,
+          ...(params.language ? { language: params.language } : {}),
+        },
+        timeout: VOICE_FLEET_TOOL_TIMEOUT_MS,
+      });
+    return { result: response.result, error: response.error };
+  }
+
+  async sendVoiceCourierResult(params: {
+    operationId: string;
+    result: VoiceToolResult | null;
+    error: string | null;
+  }): Promise<void> {
+    await this.sendNamespacedCorrelatedSessionRequest<"voice.courier.result.response">({
+      message: {
+        type: "voice.courier.result.request",
+        operationId: params.operationId,
+        result: params.result,
+        error: params.error,
+      },
+      timeout: VOICE_FLEET_SYNC_TIMEOUT_MS,
     });
   }
 
@@ -2809,6 +2986,74 @@ export class DaemonClient {
       message: {
         type: "workspace.label.delete.inspect.request",
         name: options.name,
+      },
+    });
+  }
+
+  getHostMetrics(options?: { requestId?: string }): Promise<HostMetricsPayload> {
+    return this.sendNamespacedCorrelatedSessionRequest<"host.metrics.get.response">({
+      requestId: options?.requestId,
+      message: { type: "host.metrics.get.request" },
+    });
+  }
+
+  listNotes(options?: { includeArchived?: boolean; requestId?: string }): Promise<NoteListPayload> {
+    return this.sendNamespacedCorrelatedSessionRequest<"note.list.response">({
+      requestId: options?.requestId,
+      message: {
+        type: "note.list.request",
+        ...(options?.includeArchived === undefined
+          ? {}
+          : { includeArchived: options.includeArchived }),
+      },
+    });
+  }
+
+  createNote(options: CreateNoteOptions): Promise<NoteResultPayload> {
+    const { requestId, ...fields } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"note.create.response">({
+      requestId,
+      message: { type: "note.create.request", ...fields },
+    });
+  }
+
+  updateNote(options: UpdateNoteOptions): Promise<NoteResultPayload> {
+    const { requestId, ...fields } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"note.update.response">({
+      requestId,
+      message: { type: "note.update.request", ...fields },
+    });
+  }
+
+  archiveNote(options: {
+    noteId: string;
+    archived: boolean;
+    requestId?: string;
+  }): Promise<NoteResultPayload> {
+    return this.sendNamespacedCorrelatedSessionRequest<"note.archive.response">({
+      requestId: options.requestId,
+      message: { type: "note.archive.request", noteId: options.noteId, archived: options.archived },
+    });
+  }
+
+  deleteNote(options: { noteId: string; requestId?: string }): Promise<NoteDeletePayload> {
+    return this.sendNamespacedCorrelatedSessionRequest<"note.delete.response">({
+      requestId: options.requestId,
+      message: { type: "note.delete.request", noteId: options.noteId },
+    });
+  }
+
+  linkNoteAgent(options: {
+    noteId: string;
+    agentId: string;
+    requestId?: string;
+  }): Promise<NoteResultPayload> {
+    return this.sendNamespacedCorrelatedSessionRequest<"note.link_agent.response">({
+      requestId: options.requestId,
+      message: {
+        type: "note.link_agent.request",
+        noteId: options.noteId,
+        agentId: options.agentId,
       },
     });
   }
@@ -3585,6 +3830,129 @@ export class DaemonClient {
     return payload;
   }
 
+  async getHtmlRender(agentId: string, renderId: string): Promise<{ html: string; title: string }> {
+    const requestId = this.createRequestId();
+    const message = SessionInboundMessageSchema.parse({
+      type: "agent.html_render.get.request",
+      requestId,
+      agentId,
+      renderId,
+    });
+    const payload = await this.sendRequest({
+      requestId,
+      message,
+      options: { skipQueue: true },
+      select: (response) =>
+        response.type === "agent.html_render.get.response" &&
+        response.payload.requestId === requestId
+          ? response.payload
+          : null,
+    });
+    if (payload.error || payload.html === null || payload.title === null) {
+      throw new Error(payload.error ?? "Render not found");
+    }
+    return { html: payload.html, title: payload.title };
+  }
+
+  async getPreviewBrowserStatus() {
+    const requestId = this.createRequestId();
+    const payload = await this.sendRequest({
+      requestId,
+      message: SessionInboundMessageSchema.parse({
+        type: "daemon.browser.get_status.request",
+        requestId,
+      }),
+      select: (response) =>
+        response.type === "daemon.browser.get_status.response" &&
+        response.payload.requestId === requestId
+          ? response.payload
+          : null,
+    });
+    if (!payload.status || payload.error)
+      throw new Error(payload.error ?? "Preview browser status unavailable");
+    return payload.status;
+  }
+
+  async setupPreviewBrowser() {
+    const requestId = this.createRequestId();
+    const payload = await this.sendRequest({
+      requestId,
+      message: SessionInboundMessageSchema.parse({
+        type: "daemon.browser.setup.request",
+        requestId,
+      }),
+      timeout: 20 * 60_000,
+      select: (response) =>
+        response.type === "daemon.browser.setup.response" &&
+        response.payload.requestId === requestId
+          ? response.payload
+          : null,
+    });
+    if (!payload.status || payload.error)
+      throw new Error(payload.error ?? "Preview browser setup failed");
+    return payload.status;
+  }
+
+  async getVisualization(
+    agentId: string,
+    path: string,
+  ): Promise<{
+    canonicalPath: string;
+    revision: string;
+    html: string;
+    state: unknown;
+  }> {
+    const requestId = this.createRequestId();
+    const message = SessionInboundMessageSchema.parse({
+      type: "agent.visualization.get.request",
+      requestId,
+      agentId,
+      path,
+    });
+    const payload = await this.sendRequest({
+      requestId,
+      message,
+      options: { skipQueue: true },
+      select: (response) =>
+        response.type === "agent.visualization.get.response" &&
+        response.payload.requestId === requestId
+          ? response.payload
+          : null,
+    });
+    if (payload.error || !payload.canonicalPath || !payload.revision || payload.html === null) {
+      throw new Error(payload.error ?? "Visualization unavailable");
+    }
+    return {
+      canonicalPath: payload.canonicalPath,
+      revision: payload.revision,
+      html: payload.html,
+      state: payload.state,
+    };
+  }
+
+  async setVisualizationState(agentId: string, path: string, state: unknown): Promise<unknown> {
+    const requestId = this.createRequestId();
+    const message = SessionInboundMessageSchema.parse({
+      type: "agent.visualization.set_state.request",
+      requestId,
+      agentId,
+      path,
+      state,
+    });
+    const payload = await this.sendRequest({
+      requestId,
+      message,
+      options: { skipQueue: true },
+      select: (response) =>
+        response.type === "agent.visualization.set_state.response" &&
+        response.payload.requestId === requestId
+          ? response.payload
+          : null,
+    });
+    if (payload.error) throw new Error(payload.error);
+    return payload.state;
+  }
+
   async appendAgentTimelineItem(
     agentId: string,
     item: Omit<import("@getpaseo/protocol/agent-types").PluginTimelineItem, "pluginId">,
@@ -3768,6 +4136,12 @@ export class DaemonClient {
     text: string,
     options?: SendMessageOptions,
   ): Promise<SendAgentMessageResult> {
+    if (
+      options?.sourceAgentId &&
+      this.lastServerInfoMessage?.features?.agentMessageProvenance !== true
+    ) {
+      throw new Error("Update the Paseo host to send messages with agent provenance.");
+    }
     const requestId = this.createRequestId();
     const messageId = options?.messageId ?? crypto.randomUUID();
     const message = SessionInboundMessageSchema.parse({
@@ -3775,6 +4149,7 @@ export class DaemonClient {
       requestId,
       agentId,
       text,
+      sourceAgentId: options?.sourceAgentId,
       ...(messageId ? { messageId } : {}),
       ...(options?.activeTurnBehavior ? { activeTurnBehavior: options.activeTurnBehavior } : {}),
       ...(options?.images ? { images: options.images } : {}),
@@ -4906,6 +5281,15 @@ export class DaemonClient {
     };
   }
 
+  observeCreation(
+    kind: CreationSnapshot["kind"],
+    idempotencyKey: string,
+    next: (snapshot: CreationSnapshot | null) => void,
+    error: (error: unknown) => void,
+  ): () => void {
+    return this.creations.observeCreation(kind, idempotencyKey, next, error);
+  }
+
   private async createLegacyWorkspace(
     input: CreateWorkspaceRequestOptions,
     requestId?: string,
@@ -5712,17 +6096,25 @@ export class DaemonClient {
     });
   }
 
-  async listUsageReports(options?: {
-    requestId?: string;
-    forceRefresh?: boolean;
-    reportIds?: string[];
-  }): Promise<UsageListReportsPayload> {
+  async listUsageReports(
+    options?: {
+      agentId?: string;
+      requestId?: string;
+      forceRefresh?: boolean;
+      reportIds?: string[];
+    },
+    onReport?: (report: UsageReportEntry) => void,
+  ): Promise<UsageListReportsPayload> {
     const features = this.getLastServerInfoMessage()?.features;
     if (!supportsUsageReports(features)) {
       throw new Error("Update the host to see usage.");
     }
+    if (options?.agentId !== undefined && options.reportIds !== undefined)
+      throw new Error("agentId and reportIds cannot be combined");
     // COMPAT(providerUsageList): added in v0.1.98, remove after 2027-03-26.
     if (features?.usageSources !== true) {
+      if (options?.agentId !== undefined)
+        return { requestId: this.createRequestId(options.requestId), reports: [] };
       // Released hosts serve a five-minute cache and have no forceRefresh option.
       const payload = await this.listProviderUsage({ requestId: options?.requestId });
       return {
@@ -5763,14 +6155,46 @@ export class DaemonClient {
           }),
       };
     }
-    return this.sendNamespacedCorrelatedSessionRequest({
-      requestId: options?.requestId,
-      message: {
-        type: "usage.list_reports.request",
-        forceRefresh: options?.forceRefresh,
-        reportIds: options?.reportIds,
-      },
+    const requestId = this.createRequestId(options?.requestId);
+    const reports: UsageReportEntry[] = [];
+    let active = true;
+    const unsubscribe = this.subscribeRawMessages((message) => {
+      if (
+        !active ||
+        !("payload" in message) ||
+        !("requestId" in message.payload) ||
+        message.payload.requestId !== requestId
+      )
+        return;
+      if (message.type === "usage.list_reports.response" || message.type === "rpc_error") {
+        active = false;
+        return;
+      }
+      if (message.type !== "usage.list_reports.update") return;
+      reports.push(message.payload.report);
+      onReport?.(message.payload.report);
     });
+    try {
+      const response = await this.sendRequest({
+        requestId,
+        message: {
+          type: "usage.list_reports.request",
+          requestId,
+          forceRefresh: options?.forceRefresh,
+          reportIds: options?.reportIds,
+          agentId: options?.agentId,
+        },
+        select: (message) =>
+          message.type === "usage.list_reports.response" && message.payload.requestId === requestId
+            ? message.payload
+            : null,
+      });
+      if (response.error !== null) throw new Error(response.error);
+      return { requestId, reports };
+    } finally {
+      active = false;
+      unsubscribe();
+    }
   }
 
   async listCommands(options: ListCommandsOptions): Promise<ListCommandsPayload>;
@@ -7387,4 +7811,14 @@ function resolveAgentConfig(options: CreateAgentRequestOptions): AgentSessionCon
     provider: merged.provider,
     cwd: merged.cwd,
   };
+}
+
+function requireVoiceCommandsSettings(response: {
+  settings: VoiceCommandsSettings | null;
+  error: string | null;
+}): VoiceCommandsSettings {
+  if (response.error || !response.settings) {
+    throw new Error(response.error ?? "Voice commands are unavailable on this host");
+  }
+  return response.settings;
 }

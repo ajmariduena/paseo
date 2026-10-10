@@ -14,6 +14,19 @@ import {
   type UseDictationResult,
 } from "./use-dictation.shared";
 
+function waitForPendingPaint(): Promise<void> {
+  if (typeof requestAnimationFrame !== "function") {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  return Promise.race([
+    new Promise<void>((resolve) => {
+      requestAnimationFrame(() => setTimeout(resolve, 0));
+    }),
+    // A backgrounded browser may pause animation frames indefinitely.
+    new Promise<void>((resolve) => setTimeout(resolve, 100)),
+  ]);
+}
+
 export function useDictation(options: UseDictationOptions): UseDictationResult {
   const { t } = useTranslation();
   const {
@@ -264,22 +277,29 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     }
 
     actionGateRef.current.starting = true;
+    const attemptId = attemptGuardRef.current.next();
     setError(null);
     setPartialTranscript("");
     setDuration(0);
     setIsProcessing(false);
-    setStatus("recording");
+    setStatus("starting");
     clearStreamingState();
 
     try {
+      // Show that the microphone is opening before initialization can occupy the JS thread.
+      await waitForPendingPaint();
+      attemptGuardRef.current.assertCurrent(attemptId);
       await audio.start();
+      attemptGuardRef.current.assertCurrent(attemptId);
       isRecordingRef.current = true;
       setIsRecording(true);
+      setStatus("recording");
       if (enableDuration) {
         startDurationTracking();
       }
       if (client?.isConnected) {
         await startNewStream("start");
+        attemptGuardRef.current.assertCurrent(attemptId);
       }
     } catch (err) {
       await audio.stop().catch(() => undefined);
@@ -287,7 +307,9 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       isRecordingRef.current = false;
       setIsRecording(false);
       setStatus("idle");
-      reportError(err, "Failed to start dictation");
+      if (!(err instanceof Error && err.name === "AttemptCancelledError")) {
+        reportError(err, "Failed to start dictation");
+      }
     } finally {
       actionGateRef.current.starting = false;
     }
@@ -308,13 +330,19 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     if (actionGateRef.current.cancelling) {
       return;
     }
-    if (!isRecordingRef.current && !isProcessingRef.current) {
+    const isStarting = actionGateRef.current.starting && !isRecordingRef.current;
+    if (!isStarting && !isRecordingRef.current && !isProcessingRef.current) {
       return;
     }
-    actionGateRef.current.cancelling = true;
     stopDurationTracking();
     setDuration(0);
     setError(null);
+    if (isStarting) {
+      setStatus("idle");
+      clearStreamingState();
+      return;
+    }
+    actionGateRef.current.cancelling = true;
 
     try {
       try {
@@ -357,6 +385,9 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     const attemptId = attemptGuardRef.current.next();
 
     try {
+      // Let the pending UI paint before processing the final audio on the JS thread.
+      await waitForPendingPaint();
+      attemptGuardRef.current.assertCurrent(attemptId);
       await audio.stop();
       attemptGuardRef.current.assertCurrent(attemptId);
 
@@ -431,6 +462,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
   }, [clearStreamingState]);
 
   const reset = useCallback(() => {
+    attemptGuardRef.current.cancel();
     setIsRecording(false);
     isRecordingRef.current = false;
     setIsProcessing(false);

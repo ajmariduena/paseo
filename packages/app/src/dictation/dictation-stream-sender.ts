@@ -253,7 +253,7 @@ export class DictationStreamSender {
     }
 
     this.flush();
-    await this.waitForFlushDrain(finalSeq);
+    await this.waitForFlushDrain();
     return client.finishDictationStream(dictationId, finalSeq);
   }
 
@@ -268,10 +268,6 @@ export class DictationStreamSender {
 
   private hasPendingSegments(): boolean {
     return this.sendSeq < this.segments.length;
-  }
-
-  private hasPendingDelivery(finalSeq: number): boolean {
-    return this.hasPendingSegments() || this.acknowledgedSeq < finalSeq;
   }
 
   private handleAck(message: DictationStreamAckMessage): void {
@@ -307,8 +303,10 @@ export class DictationStreamSender {
     this.flushTimer = null;
   }
 
-  private async waitForFlushDrain(finalSeq: number): Promise<void> {
-    while (this.hasPendingDelivery(finalSeq)) {
+  // Finish rides the same socket as the chunks, so it can't overtake them; waiting for the last
+  // ack would only add a round trip. The daemon holds finalization until finalSeq arrives.
+  private async waitForFlushDrain(): Promise<void> {
+    while (this.hasPendingSegments()) {
       const client = this.client;
       if (!client?.isConnected || !this.dictationId || !this.streamReady) {
         throw new Error("Failed to flush dictation stream");

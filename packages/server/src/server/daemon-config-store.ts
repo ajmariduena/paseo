@@ -5,11 +5,16 @@ import {
 } from "./persisted-config.js";
 import { ProviderOverrideSchema } from "./agent/provider-launch-config.js";
 import {
+  validateDictionary,
+  validateQuickPrompts,
+  type Dictionary,
+  type QuickPrompt,
   MutableDaemonConfigSchema,
   MutableDaemonConfigPatchSchema,
 } from "@getpaseo/protocol/messages";
 import type { AgentSkillSelection } from "@getpaseo/protocol/messages";
 import { LOCAL_STT_MODEL_IDS } from "./speech/providers/local/sherpa/model-catalog.js";
+import { normalizeDictionary } from "./speech/dictionary.js";
 
 export type { MutableDaemonConfig, MutableDaemonConfigPatch } from "@getpaseo/protocol/messages";
 
@@ -31,23 +36,33 @@ interface SupportedMutableConfigPatch {
   appendSystemPrompt?: string;
   terminalProfiles?: MutableDaemonConfig["terminalProfiles"];
   agentProfiles?: MutableDaemonConfig["agentProfiles"];
+  quickPrompts?: MutableDaemonConfig["quickPrompts"];
+  quickPromptUndoMs?: number;
   skills?: MutableDaemonConfig["skills"];
   pluginsEnabled?: boolean;
   plugins?: MutableDaemonConfig["plugins"];
   dictation?: { stt: DictationSttPatch };
+  dictionary?: Dictionary;
 }
 
+type DictationSttProvider = "local" | "openai" | "elevenlabs";
+
 interface DictationSttPatch {
-  provider?: string;
+  provider?: DictationSttProvider;
   model?: string;
   language?: string;
 }
 
-const DICTATION_STT_PROVIDERS = new Set(["local", "openai", "elevenlabs"]);
+const DICTATION_STT_PROVIDERS: ReadonlySet<string> = new Set(["local", "openai", "elevenlabs"]);
+
+function isDictationSttProvider(value: string): value is DictationSttProvider {
+  return DICTATION_STT_PROVIDERS.has(value);
+}
 
 interface LoggerLike {
   child(bindings: Record<string, unknown>): LoggerLike;
   info(...args: unknown[]): void;
+  warn(...args: unknown[]): void;
 }
 
 export interface DaemonConfigChangeDetails {
@@ -196,6 +211,8 @@ const RELOADABLE_PATHS = [
   "daemon.appendSystemPrompt",
   "daemon.terminalProfiles",
   "daemon.agentProfiles",
+  "daemon.quickPrompts",
+  "daemon.quickPromptUndoMs",
   "app.baseUrl",
   "agents.providers",
   "agents.catalogRefreshTimeoutMs",
@@ -204,6 +221,7 @@ const RELOADABLE_PATHS = [
   "agents.continueAfterRestart",
   "pluginsEnabled",
   "features.dictation.stt",
+  "features.dictionary",
 ] as const;
 
 const PERSISTED_TO_MUTABLE_PATH = new Map<string, string>([
@@ -222,6 +240,8 @@ const PERSISTED_TO_MUTABLE_PATH = new Map<string, string>([
   ["daemon.appendSystemPrompt", "appendSystemPrompt"],
   ["daemon.terminalProfiles", "terminalProfiles"],
   ["daemon.agentProfiles", "agentProfiles"],
+  ["daemon.quickPrompts", "quickPrompts"],
+  ["daemon.quickPromptUndoMs", "quickPromptUndoMs"],
   ["app.baseUrl", "app.baseUrl"],
   ["agents.providers", "providers"],
   ["agents.catalogRefreshTimeoutMs", "catalogRefreshTimeoutMs"],
@@ -230,6 +250,7 @@ const PERSISTED_TO_MUTABLE_PATH = new Map<string, string>([
   ["agents.continueAfterRestart", "continueAfterRestart"],
   ["pluginsEnabled", "pluginsEnabled"],
   ["features.dictation.stt", "dictation.stt"],
+  ["features.dictionary", "dictionary"],
 ]);
 
 function pathBelongsTo(path: string, owner: string): boolean {
@@ -271,8 +292,9 @@ function pickDictationSttPatch(
   stt: NonNullable<MutableDaemonConfigPatch["dictation"]>["stt"],
 ): DictationSttPatch | undefined {
   if (!stt) return undefined;
-  if (stt.provider !== undefined && !DICTATION_STT_PROVIDERS.has(stt.provider)) {
-    throw new Error(`Unknown dictation speech-to-text provider: ${stt.provider}`);
+  const provider = stt.provider;
+  if (provider !== undefined && !isDictationSttProvider(provider)) {
+    throw new Error(`Unknown dictation speech-to-text provider: ${provider}`);
   }
   if (
     stt.provider === "local" &&
@@ -282,7 +304,7 @@ function pickDictationSttPatch(
     throw new Error(`Unknown local dictation model: ${stt.model}`);
   }
   const picked: DictationSttPatch = {
-    ...(stt.provider !== undefined ? { provider: stt.provider } : {}),
+    ...(provider !== undefined ? { provider } : {}),
     ...(stt.model !== undefined ? { model: stt.model } : {}),
     ...(stt.language !== undefined ? { language: stt.language } : {}),
   };
@@ -314,10 +336,29 @@ function pickAgentBehaviorFields(
   };
 }
 
-function pickSupportedPatchFields(patch: MutableDaemonConfigPatch): SupportedMutableConfigPatch {
+function pickSpeechFields(
+  patch: MutableDaemonConfigPatch,
+): Pick<SupportedMutableConfigPatch, "dictation" | "dictionary"> {
   const dictationStt = pickDictationSttPatch(patch.dictation?.stt);
   return {
     ...(dictationStt ? { dictation: { stt: dictationStt } } : {}),
+    ...(patch.dictionary !== undefined ? { dictionary: trimDictionary(patch.dictionary) } : {}),
+  };
+}
+
+function trimDictionary(dictionary: Dictionary): Dictionary {
+  return {
+    words: (dictionary.words ?? []).map((word) => word.trim()),
+    replacements: (dictionary.replacements ?? []).map((entry) => ({
+      from: entry.from.trim(),
+      to: entry.to.trim(),
+    })),
+  };
+}
+
+function pickSupportedPatchFields(patch: MutableDaemonConfigPatch): SupportedMutableConfigPatch {
+  return {
+    ...pickSpeechFields(patch),
     ...(patch.relay?.enabled !== undefined ? { relay: { enabled: patch.relay.enabled } } : {}),
     ...(patch.mcp?.injectIntoAgents !== undefined
       ? { mcp: { injectIntoAgents: patch.mcp.injectIntoAgents } }
@@ -336,6 +377,10 @@ function pickSupportedPatchFields(patch: MutableDaemonConfigPatch): SupportedMut
       : {}),
     ...(patch.terminalProfiles !== undefined ? { terminalProfiles: patch.terminalProfiles } : {}),
     ...(patch.agentProfiles !== undefined ? { agentProfiles: patch.agentProfiles } : {}),
+    ...(patch.quickPrompts !== undefined ? { quickPrompts: patch.quickPrompts } : {}),
+    ...(patch.quickPromptUndoMs !== undefined
+      ? { quickPromptUndoMs: patch.quickPromptUndoMs }
+      : {}),
     ...(patch.pluginsEnabled !== undefined ? { pluginsEnabled: patch.pluginsEnabled } : {}),
     ...(patch.plugins !== undefined ? { plugins: patch.plugins } : {}),
   };
@@ -370,6 +415,34 @@ export function applyMutableProviderConfigToOverrides(
   return nextOverrides;
 }
 
+/** Hand-edited catalogs must not stop the daemon; writes and live reload remain strict. */
+function normalizeLoadedQuickPrompts(
+  prompts: QuickPrompt[] | undefined,
+  logger: LoggerLike | undefined,
+): QuickPrompt[] | undefined {
+  if (!prompts) return prompts;
+  const ids = new Set<string>();
+  let hasDefault = false;
+  let pins = 0;
+  const normalized: QuickPrompt[] = [];
+  for (const prompt of prompts) {
+    if (ids.has(prompt.id) || !prompt.title.trim() || !prompt.text.trim()) continue;
+    ids.add(prompt.id);
+    const isDefault = prompt.isDefault && !hasDefault;
+    const pinned = prompt.pinned && pins < 3;
+    if (isDefault) hasDefault = true;
+    if (pinned) pins++;
+    normalized.push({ ...prompt, isDefault, pinned });
+  }
+  if (JSON.stringify(prompts) !== JSON.stringify(normalized)) {
+    logger?.warn(
+      { count: prompts.length, retained: normalized.length },
+      "Normalized invalid quick prompts while loading daemon config",
+    );
+  }
+  return normalized;
+}
+
 export class DaemonConfigStore {
   private current: MutableDaemonConfig;
   private readonly paseoHome: string;
@@ -397,6 +470,8 @@ export class DaemonConfigStore {
     this.current = MutableDaemonConfigSchema.parse({
       ...initial,
       relay: initial.relay ?? { enabled: true },
+      quickPrompts: normalizeLoadedQuickPrompts(initial.quickPrompts, this.logger),
+      dictionary: normalizeDictionary(initial.dictionary),
     });
     this.relayEnabledMutable = options.relayEnabledMutable ?? true;
     this.reloadSource = options.reloadSource;
@@ -430,6 +505,7 @@ export class DaemonConfigStore {
       merged.skills = { selection: parsedPatch.skills.selection };
     }
     if (parsedPatch.plugins !== undefined) merged.plugins = parsedPatch.plugins;
+    if (parsedPatch.dictionary !== undefined) merged.dictionary = parsedPatch.dictionary;
     const next = MutableDaemonConfigSchema.parse(
       omitMetadataGenerationProvidersFromConfig(
         omitProvidersFromConfig(merged, removedProviders),
@@ -437,6 +513,8 @@ export class DaemonConfigStore {
       ),
     );
 
+    validateQuickPrompts(next.quickPrompts ?? []);
+    validateDictionary(next.dictionary ?? {});
     const configChanged = !isEqualValue(this.current, next);
 
     if (!configChanged && removedProviders.length === 0) {
@@ -476,6 +554,8 @@ export class DaemonConfigStore {
       ...resolved.mutable,
       plugins: this.current.plugins,
     });
+    validateQuickPrompts(desired.quickPrompts ?? []);
+    validateDictionary(desired.dictionary ?? {});
     const changedSinceLastApply = diffPaths(this.lastKnownPersisted, persisted);
     const overrideControlledPaths = compactOwnedPaths(
       changedSinceLastApply.filter((path) =>
@@ -646,20 +726,10 @@ function mergeMutablePatchIntoPersistedConfig(params: {
   const { persisted, patch, removeProviders, persistRelayEnabled } = params;
   const daemon = mergeMutableDaemonPatch(persisted.daemon, patch, persistRelayEnabled);
   const agents = mergeMutableAgentPatch(persisted.agents, patch, removeProviders);
-  const features = patch.dictation
-    ? {
-        features: {
-          ...persisted.features,
-          dictation: {
-            ...persisted.features?.dictation,
-            stt: { ...persisted.features?.dictation?.stt, ...patch.dictation.stt },
-          },
-        },
-      }
-    : {};
+  const features = mergeMutableFeaturesPatch(persisted.features, patch);
   return {
     ...persisted,
-    ...features,
+    ...(features ? { features } : {}),
     ...(patch.pluginsEnabled !== undefined ? { pluginsEnabled: patch.pluginsEnabled } : {}),
     ...(patch.plugins !== undefined ? { plugins: patch.plugins } : {}),
     ...(daemon ? { daemon } : { daemon: undefined }),
@@ -743,5 +813,28 @@ function mergeMutableDaemonPatch(
   if (patch.appendSystemPrompt !== undefined) next.appendSystemPrompt = patch.appendSystemPrompt;
   if (patch.terminalProfiles !== undefined) next.terminalProfiles = patch.terminalProfiles;
   if (patch.agentProfiles !== undefined) next.agentProfiles = patch.agentProfiles;
+  if (patch.quickPrompts !== undefined) next.quickPrompts = patch.quickPrompts;
+  if (patch.quickPromptUndoMs !== undefined) next.quickPromptUndoMs = patch.quickPromptUndoMs;
   return Object.keys(next).length > 0 ? next : undefined;
+}
+
+function mergeMutableFeaturesPatch(
+  persistedFeatures: PersistedConfig["features"],
+  patch: Omit<SupportedMutableConfigPatch, "removeProviders">,
+): PersistedConfig["features"] {
+  if (!patch.dictation && !patch.dictionary) return undefined;
+  const next = { ...persistedFeatures };
+  if (patch.dictation) {
+    next.dictation = {
+      ...persistedFeatures?.dictation,
+      stt: { ...persistedFeatures?.dictation?.stt, ...patch.dictation.stt },
+    };
+  }
+  if (patch.dictionary) {
+    next.dictionary = {
+      words: patch.dictionary.words ?? [],
+      replacements: (patch.dictionary.replacements ?? []).map(({ from, to }) => ({ from, to })),
+    };
+  }
+  return next;
 }

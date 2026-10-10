@@ -44,6 +44,9 @@ import {
   type InlinePathTarget,
 } from "@/components/message";
 import { PlanCard } from "@/components/plan-card";
+import { HtmlRenderCard } from "@/html-render/card";
+import { htmlRenderFromToolCall } from "@/html-render/reference";
+import { hasWideCodexVisualization } from "@/html-render/visualize-directive";
 import type { StreamItem } from "@/types/stream";
 import type { PendingMessageSubmission } from "@/composer/submission/model";
 import type { TurnPresentation } from "@/timeline/turn-liveness";
@@ -116,6 +119,8 @@ import { PluginTimelineItemView, useInstalledTimelineTransform } from "@/plugins
 import { SubagentTimelineProvider } from "@/subagents/timeline/context";
 import { LineageMarker } from "@/subagents/timeline/lineage-marker";
 import { readAgentMessageSender } from "@/subagents/timeline/message-sender";
+import { isPeerNote, readPeerNote } from "@/peer-notes/model";
+import { PeerNoteRow } from "@/peer-notes/row";
 import { resolveSendMarker, useSendMarkerStore } from "@/composer/submission/send-markers";
 import { SubagentNotificationRows } from "@/subagents/timeline/notification-row";
 import { readSubagentNotificationEntries } from "@/subagents/timeline/notification-source";
@@ -173,6 +178,7 @@ function renderStreamItemWithTurnFooter(input: {
   strategy: TurnContentStrategy;
   supportsTimelineCursor: boolean;
   onForkAssistantTurn?: AssistantTurnForkHandler;
+  wideVisualization?: boolean;
 }): ReactNode {
   if (!input.content) {
     return null;
@@ -190,7 +196,11 @@ function renderStreamItemWithTurnFooter(input: {
     />
   ) : null;
   const content = (
-    <StreamItemWrapper itemId={input.layoutItem.item.id} gapBelow={input.layoutItem.gapBelow}>
+    <StreamItemWrapper
+      itemId={input.layoutItem.item.id}
+      gapBelow={input.layoutItem.gapBelow}
+      wide={input.wideVisualization}
+    >
       {input.content}
     </StreamItemWrapper>
   );
@@ -327,6 +337,10 @@ const AGENT_CAPABILITY_FLAG_KEYS: (keyof AgentCapabilityFlags)[] = [
 
 const EMPTY_STREAM_HEAD: StreamItem[] = [];
 
+function isPromptOrPeerNote(item: StreamItem): boolean {
+  return item.kind === "user_message" || isPeerNote(item);
+}
+
 function useRetainedValue<T>(value: T, active: boolean): T {
   const retainedRef = useRef(value);
   if (active) {
@@ -410,6 +424,18 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     );
 
     const client = useSessionStore((state) => state.sessions[resolvedServerId]?.client ?? null);
+    const clientGeneration = useSessionStore(
+      (state) => state.sessions[resolvedServerId]?.clientGeneration ?? 0,
+    );
+    // COMPAT(htmlRender): added in v0.11.x, remove after 2027-04-06 once daemon floor supports renders.
+    const supportsHtmlRender = useSessionStore(
+      (state) => state.sessions[resolvedServerId]?.serverInfo?.features?.htmlRender === true,
+    );
+    // COMPAT(codexVisualization): added in v0.11.x, remove after 2027-04-07 once daemon floor supports visualizations.
+    const supportsCodexVisualization = useSessionStore(
+      (state) =>
+        state.sessions[resolvedServerId]?.serverInfo?.features?.codexVisualization === true,
+    );
     const sessionStreamHead = useSessionStore((state) =>
       state.sessions[resolvedServerId]?.agentStreamHead?.get(agentId),
     );
@@ -741,8 +767,51 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     }, []);
 
     const sendMarkers = useSendMarkerStore((state) => state.markers);
+    // A peer note arrives open while nothing has been prompted after it.
+    const latestUserMessageId = useMemo(
+      () =>
+        (effectiveStreamHead ?? EMPTY_STREAM_HEAD).findLast(isPromptOrPeerNote)?.id ??
+        effectiveStreamItems.findLast(isPromptOrPeerNote)?.id,
+      [effectiveStreamHead, effectiveStreamItems],
+    );
+    const renderPeerNoteBody = useCallback(
+      ({ itemId, body }: { itemId: string; body: string }) => (
+        <AssistantFileLinkResolverProvider
+          client={client}
+          serverId={resolvedServerId}
+          workspaceRoot={workspaceRoot}
+          onOpenWorkspaceFile={handleInlinePathPress}
+          toast={toast}
+        >
+          <AssistantMessage
+            renderFullContent
+            occurrenceKey={createAssistantImageOccurrenceKey({ agentId, itemId })}
+            message={body}
+            timestamp={0}
+            workspaceRoot={workspaceRoot}
+            serverId={resolvedServerId}
+            client={client}
+            phase="complete"
+          />
+        </AssistantFileLinkResolverProvider>
+      ),
+      [agentId, client, handleInlinePathPress, resolvedServerId, toast, workspaceRoot],
+    );
     const renderUserMessageItem = useCallback(
       (layoutItem: StreamLayoutItem, item: Extract<StreamItem, { kind: "user_message" }>) => {
+        const peerNote = readPeerNote(item);
+        if (peerNote) {
+          return (
+            <PeerNoteRow
+              itemId={item.id}
+              note={peerNote}
+              timestamp={item.timestamp}
+              defaultExpanded={item.id === latestUserMessageId}
+              isLastInSequence={layoutItem.isLastInToolSequence}
+              renderBody={renderPeerNoteBody}
+            />
+          );
+        }
         return (
           <UserMessage
             serverId={resolvedServerId}
@@ -769,7 +838,9 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         context.capabilities,
         agentId,
         client,
+        latestUserMessageId,
         pendingClientMessageIds,
+        renderPeerNoteBody,
         resolvedServerId,
         sendMarkers,
       ],
@@ -797,13 +868,30 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
                   client={client}
                   spacing={layoutItem.assistantSpacing}
                   phase={layoutItem.phase}
+                  codexVisualizationAgentId={context.provider === "codex" ? agentId : undefined}
+                  codexVisualizationAvailable={supportsCodexVisualization}
+                  clientGeneration={clientGeneration}
+                  wideVisualization={
+                    context.provider === "codex" &&
+                    hasWideCodexVisualization(item.text, layoutItem.phase === "complete")
+                  }
                 />
               )}
             </ChatFindExpansion>
           </AssistantFileLinkResolverProvider>
         );
       },
-      [agentId, client, handleInlinePathPress, resolvedServerId, toast, workspaceRoot],
+      [
+        agentId,
+        client,
+        clientGeneration,
+        context.provider,
+        handleInlinePathPress,
+        resolvedServerId,
+        supportsCodexVisualization,
+        toast,
+        workspaceRoot,
+      ],
     );
 
     const renderThoughtItem = useCallback(
@@ -829,6 +917,18 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         maxDetailHeight?: number,
       ) => {
         const { payload } = item;
+        const render = supportsHtmlRender ? htmlRenderFromToolCall(item) : null;
+        if (render) {
+          return (
+            <HtmlRenderCard
+              key={render.renderId}
+              client={client}
+              serverId={resolvedServerId}
+              agentId={agentId}
+              render={render}
+            />
+          );
+        }
 
         if (isSubagentSpawnCall(item)) {
           return <SubagentSpawnRow call={item} />;
@@ -858,6 +958,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
               detail={data.detail}
               cwd={context.cwd}
               metadata={data.metadata}
+              agentMessage={data.agentMessage}
               isLastInSequence={isLastInSequence}
               onOpenFilePath={handleToolCallOpenFile}
               maxDetailHeight={maxDetailHeight}
@@ -880,7 +981,15 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           />
         );
       },
-      [context.cwd, setInlineDetailsExpanded, handleToolCallOpenFile],
+      [
+        agentId,
+        client,
+        context.cwd,
+        handleToolCallOpenFile,
+        resolvedServerId,
+        setInlineDetailsExpanded,
+        supportsHtmlRender,
+      ],
     );
 
     // Read through a stable event so live group updates do not change the renderer identity
@@ -916,6 +1025,19 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
               cwd={context.cwd}
               onOpenChanges={handleOpenTurnChanges}
               onOpenFile={handleToolCallOpenFile}
+            />
+          );
+        }
+        const peerNote = readPeerNote(item);
+        if (peerNote) {
+          return (
+            <PeerNoteRow
+              itemId={item.id}
+              note={peerNote}
+              timestamp={item.timestamp}
+              defaultExpanded={item.id === latestUserMessageId}
+              isLastInSequence={layoutItem.isLastInToolSequence}
+              renderBody={renderPeerNoteBody}
             />
           );
         }
@@ -980,6 +1102,8 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         getTurnFoldRow,
         handleOpenTurnChanges,
         handleToolCallOpenFile,
+        latestUserMessageId,
+        renderPeerNoteBody,
         renderSingleToolCallItem,
         setToolCallGroupExpanded,
         setTurnFoldExpanded,
@@ -1058,6 +1182,10 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           strategy: streamRenderStrategy,
           supportsTimelineCursor: supportsAgentForkContextCursor,
           onForkAssistantTurn: readOnly ? undefined : handleForkAssistantTurn,
+          wideVisualization:
+            context.provider === "codex" &&
+            layoutItem.item.kind === "assistant_message" &&
+            hasWideCodexVisualization(layoutItem.item.text, layoutItem.phase === "complete"),
         });
       },
       [
@@ -1065,6 +1193,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         readOnly,
         renderStreamItemContent,
         streamRenderStrategy,
+        context.provider,
         supportsAgentForkContextCursor,
       ],
     );
@@ -1816,6 +1945,9 @@ const stylesheet = StyleSheet.create((theme) => ({
     alignSelf: "center",
     paddingHorizontal: theme.spacing[2],
   },
+  streamItemWrapperWide: {
+    maxWidth: 1024,
+  },
   emptyState: {
     flex: 1,
     alignItems: "center",
@@ -1944,12 +2076,17 @@ interface StreamItemWrapperProps {
   itemId: string;
   gapBelow: number;
   children: ReactNode;
+  wide?: boolean;
 }
 
-function StreamItemWrapper({ gapBelow, children }: StreamItemWrapperProps) {
+function StreamItemWrapper({ gapBelow, children, wide }: StreamItemWrapperProps) {
   const wrapperStyle = useMemo(
-    () => [stylesheet.streamItemWrapper, { marginBottom: gapBelow }],
-    [gapBelow],
+    () => [
+      stylesheet.streamItemWrapper,
+      wide && stylesheet.streamItemWrapperWide,
+      { marginBottom: gapBelow },
+    ],
+    [gapBelow, wide],
   );
   return <View style={wrapperStyle}>{children}</View>;
 }

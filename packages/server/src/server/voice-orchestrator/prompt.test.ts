@@ -15,7 +15,7 @@ describe("voice language prompts", () => {
 
   it("tells GPT-Live to speak the configured language, greeting included", () => {
     expect(buildLiveInstructions("es")).toContain("Always speak Spanish (español)");
-    expect(buildLiveGreeting([], "es")).toContain("Greet the user in Spanish (español)");
+    expect(buildLiveGreeting("es")).toContain('Say exactly "Hola, aquí estoy." and nothing else');
   });
 
   it("lists older open sessions after the active ones", () => {

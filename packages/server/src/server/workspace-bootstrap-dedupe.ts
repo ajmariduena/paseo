@@ -11,6 +11,7 @@
  *   - the statusEnteredAt changed from the snapshot (including the
  *     null↔value transition that the unmask case produces)
  *   - the waiting subagent count changed while the compatible wire status stayed `running`
+ *   - the delegating parent changed
  *   - the update's activityAtMs is strictly newer than the snapshot's
  *   - the snapshot has no activityAtMs and the update has one (new activity
  *     where there was none)
@@ -24,6 +25,7 @@ export interface BootstrapUpdateSnapshot {
   statusEnteredAt: string | null;
   activityAtMs: number | null;
   waitingOnSubagentsCount?: number;
+  delegatedByAgentId?: string;
 }
 
 export interface BootstrapUpdateCheckInput {
@@ -44,6 +46,9 @@ export function shouldEmitPendingBootstrapUpdate(input: BootstrapUpdateCheckInpu
     return true;
   }
   if ((snapshot.waitingOnSubagentsCount ?? 0) !== (update.waitingOnSubagentsCount ?? 0)) {
+    return true;
+  }
+  if (snapshot.delegatedByAgentId !== update.delegatedByAgentId) {
     return true;
   }
 

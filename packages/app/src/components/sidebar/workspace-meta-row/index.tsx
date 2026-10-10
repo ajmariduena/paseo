@@ -2,7 +2,8 @@ import { Fragment, useCallback, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, Text, View, type GestureResponderEvent } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { ExternalLink, Folder, GitBranch, Globe } from "lucide-react-native";
+import { ExternalLink, Folder, GitBranch, Globe, SquareTerminal } from "lucide-react-native";
+import type { AgentBackgroundTask } from "@getpaseo/protocol/agent-types";
 import {
   workspaceLabelKey,
   type WorkspaceLabelDefinition,
@@ -38,9 +39,11 @@ const ThemedExternalLink = withUnistyles(ExternalLink);
 const ThemedFolder = withUnistyles(Folder);
 const ThemedGitBranch = withUnistyles(GitBranch);
 const ThemedGlobe = withUnistyles(Globe);
+const ThemedSquareTerminal = withUnistyles(SquareTerminal);
 
 /** Stable identity so a row without labels doesn't re-select its items on every render. */
 const EMPTY_LABELS: readonly WorkspaceLabelDefinition[] = [];
+const EMPTY_BACKGROUND_TASKS: readonly AgentBackgroundTask[] = [];
 
 const foregroundMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const mutedMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
@@ -66,6 +69,7 @@ export function WorkspaceMetaRow({
   hostBadge,
   prHint,
   serviceSummary,
+  backgroundTasks = EMPTY_BACKGROUND_TASKS,
   labels = EMPTY_LABELS,
 }: {
   currentBranch: string | null;
@@ -73,6 +77,7 @@ export function WorkspaceMetaRow({
   hostBadge: HostBadgeModel | null;
   prHint: PrHint | null;
   serviceSummary: WorkspaceServiceSummary | null;
+  backgroundTasks?: readonly AgentBackgroundTask[];
   labels?: readonly WorkspaceLabelDefinition[];
 }) {
   const { rowItems, checksDisplay } = useSidebarMetaPreferences();
@@ -82,6 +87,7 @@ export function WorkspaceMetaRow({
     hasHostBadge: hostBadge !== null,
     prHint,
     serviceSummary,
+    backgroundTasks,
     labels,
     visible: rowItems,
     checksDisplay,
@@ -128,6 +134,9 @@ function MetaItemNode({
   }
   if (item.kind === "labels") {
     return <LabelsItem labels={item.labels} leading={leading} />;
+  }
+  if (item.kind === "backgroundTasks") {
+    return <BackgroundTasksItem tasks={item.tasks} />;
   }
   return <ServiceItem summary={item.summary} />;
 }
@@ -299,6 +308,23 @@ function ServiceItem({ summary }: { summary: WorkspaceServiceSummary }) {
 }
 
 const successMapping = (theme: Theme) => ({ color: theme.colors.statusSuccess });
+const extraMutedMapping = (theme: Theme) => ({ color: theme.colors.foregroundExtraMuted });
+
+function BackgroundTasksItem({ tasks }: { tasks: readonly AgentBackgroundTask[] }) {
+  const { t } = useTranslation();
+  const label =
+    tasks.length === 1 && tasks[0]
+      ? tasks[0].description
+      : t("backgroundTasks.pillLabel", { count: tasks.length });
+  return (
+    <View style={styles.serviceItem} accessibilityLabel={label} testID="workspace-background-tasks">
+      <ThemedSquareTerminal size={META_ICON_SIZE} uniProps={extraMutedMapping} />
+      <Text style={styles.identityText} numberOfLines={1}>
+        {label}
+      </Text>
+    </View>
+  );
+}
 
 const PR_STATE_LABEL_KEYS = {
   merged: "workspace.git.pr.states.merged",

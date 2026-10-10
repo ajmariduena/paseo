@@ -1,3 +1,4 @@
+import type { AgentBackgroundTask } from "@getpaseo/protocol/agent-types";
 import type { WorkspaceLabelDefinition } from "@getpaseo/protocol/workspace-labels";
 import type { PrHint } from "@/git/pr-hint";
 import type { SidebarChecksDisplay } from "@/components/sidebar/display-preferences/checks-display";
@@ -22,6 +23,7 @@ export type MetaRowItem =
   | { kind: "changeRequest"; hint: PrHint }
   | { kind: "checks"; summary: CheckSummary; label: boolean }
   | { kind: "services"; summary: WorkspaceServiceSummary }
+  | { kind: "backgroundTasks"; tasks: readonly AgentBackgroundTask[] }
   | { kind: "labels"; labels: readonly WorkspaceLabelDefinition[] };
 
 /**
@@ -40,6 +42,7 @@ export function selectMetaRowItems(input: {
   hasHostBadge: boolean;
   prHint: PrHint | null;
   serviceSummary: WorkspaceServiceSummary | null;
+  backgroundTasks: readonly AgentBackgroundTask[];
   labels: readonly WorkspaceLabelDefinition[];
   visible: SidebarRowItems;
   checksDisplay: SidebarChecksDisplay;
@@ -50,6 +53,7 @@ export function selectMetaRowItems(input: {
     hasHostBadge,
     prHint,
     serviceSummary,
+    backgroundTasks,
     labels,
     visible,
     checksDisplay,
@@ -82,6 +86,10 @@ export function selectMetaRowItems(input: {
 
   if (serviceSummary && visible.services) {
     items.push({ kind: "services", summary: serviceSummary });
+  }
+
+  if (backgroundTasks.length > 0 && visible.backgroundTasks) {
+    items.push({ kind: "backgroundTasks", tasks: backgroundTasks });
   }
 
   if (labels.length > 0 && visible.labels) {

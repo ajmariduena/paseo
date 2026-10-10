@@ -7,7 +7,9 @@ import {
   GitPullRequest,
   MessageSquareCode,
   MousePointer2,
+  NotebookPen,
 } from "lucide-react-native";
+import { NOTE_RESOURCE_TYPE } from "@getpaseo/protocol/notes/types";
 import { withUnistyles } from "react-native-unistyles";
 import type { AgentAttachment } from "@getpaseo/protocol/messages";
 import type { WorkspaceComposerAttachment } from "@/attachments/types";
@@ -87,6 +89,13 @@ export function getAgentAttachmentPillContent(
         subtitle: `Issue #${attachment.number}`,
       };
     case "text":
+      if (attachment.externalResource?.resourceType === NOTE_RESOURCE_TYPE) {
+        return {
+          icon: attachmentNoteIcon,
+          title: attachment.externalResource.title,
+          subtitle: attachment.externalResource.providerLabel,
+        };
+      }
       if (attachment.externalResource) {
         return {
           icon: attachmentGithubIssueIcon,
@@ -145,6 +154,7 @@ const ThemedAttachmentGitPullRequest = withUnistyles(GitPullRequest);
 const ThemedAttachmentCircleDot = withUnistyles(CircleDot);
 const ThemedAttachmentMessageSquareCode = withUnistyles(MessageSquareCode);
 const ThemedAttachmentMousePointer = withUnistyles(MousePointer2);
+const ThemedAttachmentNotebookPen = withUnistyles(NotebookPen);
 
 const iconForegroundMutedMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
@@ -162,4 +172,7 @@ const attachmentFileIcon = (
 );
 const attachmentBrowserIcon = (
   <ThemedAttachmentMousePointer size={ICON_SIZE.sm} uniProps={iconForegroundMutedMapping} />
+);
+const attachmentNoteIcon = (
+  <ThemedAttachmentNotebookPen size={ICON_SIZE.sm} uniProps={iconForegroundMutedMapping} />
 );

@@ -82,7 +82,7 @@ test("loads archived records for history and active records with the interactive
   }
 });
 
-test("resuming a stored agent keeps its unread flag and its last-activity time", async () => {
+test("resuming a stored agent keeps its unread flag, last-activity time, and last turn outcome", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "agent-loading-resume-"));
   const logger = createTestLogger();
   const storage = new AgentStorage(path.join(root, "agents"), logger);
@@ -119,6 +119,7 @@ test("resuming a stored agent keeps its unread flag and its last-activity time",
       requiresAttention: true,
       attentionReason: "finished",
       attentionTimestamp: lastActive,
+      lastTurnOutcome: "canceled",
     });
 
     await ensureAgentLoaded(agentId, { agentManager: manager, agentStorage: storage, logger });
@@ -134,6 +135,8 @@ test("resuming a stored agent keeps its unread flag and its last-activity time",
     expect(resumed?.lastActivityAt).toBe(markedUnread);
     expect(manager.getAgent(agentId)?.attention.requiresAttention).toBe(true);
     expect(manager.getAgent(agentId)?.updatedAt.toISOString()).toBe(markedUnread);
+    expect(resumed?.lastTurnOutcome).toBe("canceled");
+    expect(manager.getAgent(agentId)?.lastTurnOutcome).toBe("canceled");
   } finally {
     await manager.closeAgent(agentId).catch(() => undefined);
     await manager.flush().catch(() => undefined);

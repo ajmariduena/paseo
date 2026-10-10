@@ -1,9 +1,36 @@
 import type { Locator } from "@playwright/test";
+import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { expect, test, type Page } from "../support/fixtures";
 import { expectComposerVisible } from "../support/helpers/composer";
+import { connectDaemonClient } from "../support/helpers/daemon-client-loader";
 import { openAgentRoute, seedMockAgentWorkspace } from "../support/helpers/mock-agent";
+import { openAdvancedModelSettings } from "../support/helpers/model-control";
 
 const MOBILE_VIEWPORT = { width: 390, height: 844 };
+
+/** The worker's daemon fetched the mock catalog at startup, which can be minutes before this test. */
+async function refreshMockCatalog(): Promise<void> {
+  const client = await connectDaemonClient<
+    Pick<DaemonClient, "refreshProvidersSnapshot" | "getProvidersSnapshot" | "close" | "connect">
+  >({ clientIdPrefix: "provider-relative-time" });
+  try {
+    const startedAt = Date.now();
+    await client.refreshProvidersSnapshot({ providers: ["mock"] });
+    await expect
+      .poll(
+        async () => {
+          const entry = (await client.getProvidersSnapshot()).entries.find(
+            (candidate) => candidate.provider === "mock",
+          );
+          return Date.parse(entry?.fetchedAt ?? "") >= startedAt;
+        },
+        { timeout: 30_000 },
+      )
+      .toBe(true);
+  } finally {
+    await client.close();
+  }
+}
 
 async function openMockAgentAtMobileBreakpoint(page: Page) {
   await page.setViewportSize(MOBILE_VIEWPORT);
@@ -13,19 +40,17 @@ async function openMockAgentAtMobileBreakpoint(page: Page) {
   });
   await openAgentRoute(page, session);
   await expectComposerVisible(page);
-  await expect(page.getByRole("button", { name: /Select model/ })).toBeVisible({
+  await expect(page.getByTestId("combined-model-selector")).toBeVisible({
     timeout: 30_000,
   });
   return session;
 }
 
 async function openProviderSettingsFromModelSelector(page: Page) {
-  await page.getByRole("button", { name: /Select model/ }).click();
-  const configuration = page.getByTestId("agent-controls-model-sheet");
-  await expect(configuration).toBeVisible({ timeout: 10_000 });
-  await page.getByTestId("agent-controls-model").click();
+  await openAdvancedModelSettings(page);
+  await page.getByTestId("agent-effort-model").click();
 
-  const modelBrowser = page.getByTestId("agent-controls-model-browser-sheet");
+  const modelBrowser = page.getByTestId("agent-model-browser");
   await expect(modelBrowser).toBeVisible({ timeout: 10_000 });
 
   await page.getByRole("button", { name: /Open .* settings/ }).click();
@@ -33,7 +58,7 @@ async function openProviderSettingsFromModelSelector(page: Page) {
 }
 
 async function expectModelBrowserVisible(page: Page) {
-  await expect(page.getByTestId("agent-controls-model-browser-sheet")).toBeVisible({
+  await expect(page.getByTestId("agent-model-browser")).toBeVisible({
     timeout: 10_000,
   });
   await expect(page.getByRole("button", { name: /Open .* settings/ })).toBeVisible();
@@ -125,6 +150,7 @@ test.describe("provider settings overlay stack", () => {
       title: "Provider relative time",
     });
     try {
+      await refreshMockCatalog();
       await page.clock.install({ time: Date.now() });
       await page.setViewportSize(MOBILE_VIEWPORT);
       await openAgentRoute(page, session);
@@ -150,7 +176,9 @@ test.describe("provider settings overlay stack", () => {
       await openAgentRoute(page, session);
       await expectComposerVisible(page);
 
-      await page.getByRole("button", { name: /Select model/ }).click();
+      await page.getByTestId("combined-model-selector").click();
+      await page.getByTestId("agent-effort-advanced").click();
+      await page.getByTestId("agent-effort-model").click();
       const selector = page.getByTestId("combobox-desktop-container");
       await expect(selector).toBeVisible({ timeout: 10_000 });
       const searchInput = page.getByRole("textbox", { name: /search models/i });
@@ -220,11 +248,11 @@ test.describe("provider settings overlay stack", () => {
 
       await expectModelBrowserVisible(page);
       await closeTopSheet(page);
-      await expect(page.getByTestId("agent-controls-model-browser-sheet")).not.toBeVisible({
+      await expect(page.getByTestId("agent-model-browser")).not.toBeVisible({
         timeout: 10_000,
       });
-      await expect(page.getByTestId("agent-controls-settings-list")).toBeVisible();
-      await closeTopSheet(page);
+      await expect(page.getByTestId("agent-effort-card")).not.toBeVisible();
+      await expect(page.getByTestId("agent-intelligence-overlay")).not.toBeVisible();
     } finally {
       await session.cleanup();
     }

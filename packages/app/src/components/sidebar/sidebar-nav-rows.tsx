@@ -1,5 +1,5 @@
 import { router, usePathname } from "expo-router";
-import { CalendarClock, History, Plus, Search } from "lucide-react-native";
+import { Activity, CalendarClock, History, NotebookPen, Plus, Search } from "lucide-react-native";
 import { memo, useCallback, useMemo, useRef, type ComponentType } from "react";
 import { useTranslation } from "react-i18next";
 import { View, type StyleProp, type ViewStyle } from "react-native";
@@ -19,6 +19,8 @@ import { useActiveWorkspaceSelection } from "@/stores/navigation-active-workspac
 import { useWorkspace } from "@/stores/session-store-hooks";
 import {
   buildNewWorkspaceRoute,
+  buildHostHealthRoute,
+  buildNotesRoute,
   buildSchedulesRoute,
   buildSessionsRoute,
 } from "@/utils/host-routes";
@@ -176,9 +178,51 @@ function SidebarSchedulesRow({ onBeforeNavigate }: SidebarNavRowProps) {
   );
 }
 
+function SidebarHostHealthRow({ onBeforeNavigate }: SidebarNavRowProps) {
+  const { t } = useTranslation();
+  const pathname = usePathname();
+  const handlePress = useCallback(() => {
+    onBeforeNavigate?.();
+    router.push(buildHostHealthRoute());
+  }, [onBeforeNavigate]);
+
+  return (
+    <SidebarHeaderRow
+      icon={Activity}
+      label={t(builtinSidebarNavLabelKey("host-health"))}
+      onPress={handlePress}
+      isActive={pathname.includes("/host-health")}
+      testID="sidebar-host-health"
+      variant="compact"
+    />
+  );
+}
+
+function SidebarNotesRow({ onBeforeNavigate }: SidebarNavRowProps) {
+  const { t } = useTranslation();
+  const pathname = usePathname();
+  const handlePress = useCallback(() => {
+    onBeforeNavigate?.();
+    router.push(buildNotesRoute());
+  }, [onBeforeNavigate]);
+
+  return (
+    <SidebarHeaderRow
+      icon={NotebookPen}
+      label={t(builtinSidebarNavLabelKey("notes"))}
+      onPress={handlePress}
+      isActive={pathname.includes("/notes")}
+      testID="sidebar-notes"
+      variant="compact"
+    />
+  );
+}
+
 const BUILTIN_ROWS: Record<BuiltinSidebarNavId, ComponentType<SidebarNavRowProps>> = {
   "new-workspace": SidebarNewWorkspaceRow,
   history: SidebarHistoryRow,
   search: SidebarSearchRow,
   schedules: SidebarSchedulesRow,
+  notes: SidebarNotesRow,
+  "host-health": SidebarHostHealthRow,
 };

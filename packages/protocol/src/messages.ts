@@ -1,3 +1,15 @@
+import { QuickPromptSchema } from "./quick-prompt.js";
+export { QuickPromptSchema, validateQuickPrompts, type QuickPrompt } from "./quick-prompt.js";
+import { DictionarySchema } from "./dictionary.js";
+export {
+  DICTIONARY_LIMITS,
+  DictionarySchema,
+  DictionaryReplacementSchema,
+  validateDictionary,
+  type Dictionary,
+  type DictionaryReplacement,
+} from "./dictionary.js";
+import { AgentMessageSchema } from "./agent-message.js";
 import { PluginRegistryIdentitySchema } from "./plugin-registry.js";
 import { AgentProfileSchema, AgentSkillSelectionSchema } from "./agent-profile.js";
 export {
@@ -20,7 +32,7 @@ export { TerminalProfileSchema, type TerminalProfile } from "./terminal-profile.
 import { z } from "zod";
 import { TerminalActivitySchema } from "./terminal-activity.js";
 import { CLIENT_CAPS } from "./client-capabilities.js";
-import { AGENT_LIFECYCLE_STATUSES } from "./agent-lifecycle.js";
+import { AGENT_LIFECYCLE_STATUSES, AGENT_TURN_OUTCOMES } from "./agent-lifecycle.js";
 import { MAX_EXPLICIT_AGENT_TITLE_CHARS } from "./agent-title-limits.js";
 import { AgentProviderSchema } from "./provider-manifest.js";
 import { ProviderPaseoToolsPolicySchema } from "./provider-config.js";
@@ -62,6 +74,45 @@ import {
   ScheduleRunOnceResponseSchema,
   ScheduleUpdateResponseSchema,
 } from "./schedule/rpc-schemas.js";
+import {
+  NoteListRequestSchema,
+  NoteCreateRequestSchema,
+  NoteUpdateRequestSchema,
+  NoteArchiveRequestSchema,
+  NoteDeleteRequestSchema,
+  NoteLinkAgentRequestSchema,
+  NoteListResponseSchema,
+  NoteCreateResponseSchema,
+  NoteUpdateResponseSchema,
+  NoteArchiveResponseSchema,
+  NoteDeleteResponseSchema,
+  NoteLinkAgentResponseSchema,
+} from "./notes/rpc-schemas.js";
+import {
+  HostMetricsGetRequestSchema,
+  HostMetricsGetResponseSchema,
+} from "./host-metrics/rpc-schemas.js";
+import {
+  VoiceCourierExecuteMessageSchema,
+  VoiceCourierResultRequestSchema,
+  VoiceCourierResultResponseSchema,
+  VoiceFleetDigestRequestSchema,
+  VoiceFleetDigestResponseSchema,
+  VoiceFleetSyncRequestSchema,
+  VoiceFleetSyncResponseSchema,
+  VoiceToolsInvokeRequestSchema,
+  VoiceToolsInvokeResponseSchema,
+} from "./voice-fleet/rpc-schemas.js";
+import {
+  VoiceCommandsGetSettingsRequestSchema,
+  VoiceCommandsGetSettingsResponseSchema,
+  VoiceCommandsSetKeyRequestSchema,
+  VoiceCommandsSetKeyResponseSchema,
+  VoiceCommandsSetModelRequestSchema,
+  VoiceCommandsSetModelResponseSchema,
+  VoiceCommandsTestModelRequestSchema,
+  VoiceCommandsTestModelResponseSchema,
+} from "./voice-commands/rpc-schemas.js";
 import {
   LoopRunRequestSchema,
   LoopListRequestSchema,
@@ -239,11 +290,15 @@ export const MutableDaemonConfigSchema = z
     appendSystemPrompt: z.string().default(""),
     terminalProfiles: z.array(TerminalProfileSchema).optional(),
     agentProfiles: z.array(AgentProfileSchema).optional(),
+    quickPrompts: z.array(QuickPromptSchema).optional(),
+    quickPromptUndoMs: z.number().int().min(0).max(10000).optional(),
     skills: z.object({ selection: AgentSkillSelectionSchema.optional() }).strict().optional(),
     pluginsEnabled: z.boolean().optional(),
     plugins: z.record(PluginIdSchema, PluginSourceSchema).optional(),
     // COMPAT(dictationSelection): added in v0.11.0; absent on older daemons, remove optional after 2027-10-04.
     dictation: MutableDictationConfigSchema.optional(),
+    // COMPAT(dictionary): added in v0.11.1; absent on older daemons, remove optional after 2027-10-09.
+    dictionary: DictionarySchema.optional(),
   })
   .passthrough();
 
@@ -264,9 +319,12 @@ export const MutableDaemonConfigPatchSchema = z
     appendSystemPrompt: z.string().optional(),
     terminalProfiles: z.array(TerminalProfileSchema).optional(),
     agentProfiles: z.array(AgentProfileSchema).optional(),
+    quickPrompts: z.array(QuickPromptSchema).optional(),
+    quickPromptUndoMs: z.number().int().min(0).max(10000).optional(),
     pluginsEnabled: z.boolean().optional(),
     plugins: z.record(PluginIdSchema, PluginSourceSchema).optional(),
     dictation: MutableDictationConfigSchema.optional(),
+    dictionary: DictionarySchema.optional(),
   })
   .partial()
   .passthrough();
@@ -296,6 +354,7 @@ import type {
 const JsonWireValueSchema = z.unknown() as z.ZodType<JsonValue>;
 
 export const AgentStatusSchema = z.enum(AGENT_LIFECYCLE_STATUSES);
+export const AgentTurnOutcomeSchema = z.enum(AGENT_TURN_OUTCOMES);
 
 const AgentModeSchema: z.ZodType<AgentMode> = z.object({
   id: z.string(),
@@ -673,6 +732,7 @@ const ToolCallDetailPayloadSchema: z.ZodType<ToolCallDetail, unknown> = z.discri
 );
 
 const ToolCallBasePayloadSchema = z.object({
+  agentMessage: AgentMessageSchema.optional(),
   type: z.literal("tool_call"),
   callId: z.string(),
   name: z.string(),
@@ -710,7 +770,12 @@ const ToolCallTimelineItemPayloadSchema: z.ZodType<ToolCallTimelineItem, unknown
 
 export const MessageOriginSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("user") }),
-  z.object({ kind: z.literal("agent"), agentId: z.string() }),
+  z.object({
+    kind: z.literal("agent"),
+    agentId: z.string(),
+    // COMPAT(peerMessages): added in v0.11.0, keep optional; older daemons never send it.
+    relation: z.literal("peer").optional(),
+  }),
 ]);
 
 export const NotificationSourceSchema = z.discriminatedUnion("kind", [
@@ -937,6 +1002,7 @@ export const AgentSnapshotPayloadSchema = z.object({
   lastUserMessageAt: z.string().nullable(),
   status: AgentStatusSchema,
   activeTurn: AgentActiveTurnPayloadSchema.nullable().optional(),
+  lastTurnOutcome: AgentTurnOutcomeSchema.optional(),
   capabilities: AgentCapabilityFlagsSchema,
   currentModeId: z.string().nullable(),
   availableModes: z.array(AgentModeSchema),
@@ -1474,6 +1540,8 @@ export const SendAgentMessageRequestSchema = z.object({
   /** Accepts full ID, unique prefix, or exact full title (server resolves). */
   agentId: z.string(),
   text: z.string(),
+  /** Opaque sender identity for agent-originated prompts. */
+  sourceAgentId: z.string().min(1).optional(),
   messageId: z.string().optional(), // Client-provided ID for deduplication
   activeTurnBehavior: ActiveTurnBehaviorSchema.optional(),
   images: z.array(ImageAttachmentSchema).optional(),
@@ -1908,6 +1976,7 @@ export const ProviderUsageListRequestMessageSchema = z.object({
 
 export const UsageListReportsRequestMessageSchema = z.object({
   type: z.literal("usage.list_reports.request"),
+  agentId: z.string().optional(),
   requestId: z.string(),
   reportIds: z.array(z.string()).optional(),
   forceRefresh: z.boolean().optional(),
@@ -2014,6 +2083,39 @@ export const ProviderSubagentTimelineRequestMessageSchema = z.object({
   direction: z.enum(["tail", "before", "after"]).optional(),
   cursor: AgentTimelineCursorSchema.optional(),
   limit: z.number().int().nonnegative().optional(),
+});
+
+export const AgentHtmlRenderGetRequestMessageSchema = z.object({
+  type: z.literal("agent.html_render.get.request"),
+  requestId: z.string(),
+  agentId: z.string(),
+  renderId: z.string(),
+});
+
+// COMPAT(preview-browser): added in v0.11.0-beta.3, remove after 2027-04-07 when daemon floor includes browser RPCs.
+export const DaemonBrowserStatusRequestMessageSchema = z.object({
+  type: z.literal("daemon.browser.get_status.request"),
+  requestId: z.string(),
+});
+
+export const DaemonBrowserSetupRequestMessageSchema = z.object({
+  type: z.literal("daemon.browser.setup.request"),
+  requestId: z.string(),
+});
+
+export const AgentVisualizationGetRequestMessageSchema = z.object({
+  type: z.literal("agent.visualization.get.request"),
+  requestId: z.string(),
+  agentId: z.string(),
+  path: z.string(),
+});
+
+export const AgentVisualizationSetStateRequestMessageSchema = z.object({
+  type: z.literal("agent.visualization.set_state.request"),
+  requestId: z.string(),
+  agentId: z.string(),
+  path: z.string(),
+  state: z.unknown(),
 });
 
 export const SetAgentTimelineSubscriptionRequestMessageSchema = z.object({
@@ -2890,6 +2992,14 @@ export const VoiceOrchestratorStartRequestSchema = z.object({
   language: z.string().optional(),
   /** The user's chosen mode per provider id, for agents the voice assistant creates. */
   agentModes: z.record(z.string(), z.string()).optional(),
+  /** The user's preferred provider, and model and thinking per provider, for new agents. */
+  agentDefaults: z
+    .object({
+      provider: z.string().optional(),
+      models: z.record(z.string(), z.string()).optional(),
+      thinking: z.record(z.string(), z.string()).optional(),
+    })
+    .optional(),
   requestId: z.string(),
 });
 
@@ -3587,6 +3697,11 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   AgentTimelineListPromptsRequestMessageSchema,
   ProviderSubagentListRequestMessageSchema,
   ProviderSubagentTimelineRequestMessageSchema,
+  AgentHtmlRenderGetRequestMessageSchema,
+  DaemonBrowserStatusRequestMessageSchema,
+  DaemonBrowserSetupRequestMessageSchema,
+  AgentVisualizationGetRequestMessageSchema,
+  AgentVisualizationSetStateRequestMessageSchema,
   SetAgentTimelineSubscriptionRequestMessageSchema,
   AgentForkContextRequestMessageSchema,
   AgentQueueListRequestMessageSchema,
@@ -3667,6 +3782,14 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   VoiceLiveConnectRequestSchema,
   VoiceLiveEndRequestSchema,
   VoiceCallSetMuteRequestSchema,
+  VoiceFleetDigestRequestSchema,
+  VoiceFleetSyncRequestSchema,
+  VoiceToolsInvokeRequestSchema,
+  VoiceCourierResultRequestSchema,
+  VoiceCommandsGetSettingsRequestSchema,
+  VoiceCommandsSetModelRequestSchema,
+  VoiceCommandsSetKeyRequestSchema,
+  VoiceCommandsTestModelRequestSchema,
   FileExplorerRequestSchema,
   FileSubscribeRequestSchema,
   FileUnsubscribeRequestSchema,
@@ -3706,6 +3829,13 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ChatPostRequestSchema,
   ChatReadRequestSchema,
   ChatWaitRequestSchema,
+  NoteListRequestSchema,
+  NoteCreateRequestSchema,
+  NoteUpdateRequestSchema,
+  NoteArchiveRequestSchema,
+  NoteDeleteRequestSchema,
+  NoteLinkAgentRequestSchema,
+  HostMetricsGetRequestSchema,
   ScheduleCreateRequestSchema,
   ScheduleListRequestSchema,
   ScheduleInspectRequestSchema,
@@ -3924,6 +4054,10 @@ export const ServerInfoStatusPayloadSchema = z
         creationLifecycle: z.boolean().optional(),
         // COMPAT(hubAgentRpc): added in v0.8.0; remove gate after 2027-03-05.
         hubAgentRpc: z.boolean().optional(),
+        // COMPAT(htmlRender): added in v0.11.x, remove after 2027-04-06 once daemon floor supports renders.
+        htmlRender: z.boolean().optional(),
+        // COMPAT(codexVisualization): added in v0.11.x, remove after 2027-04-07 once daemon floor supports visualizations.
+        codexVisualization: z.boolean().optional(),
         providersSnapshot: z.boolean().optional(),
         usageSources: z.boolean().optional(),
         // COMPAT(providersSnapshotCwd): added in v0.3.2, remove gate after 2027-02-10.
@@ -3934,6 +4068,10 @@ export const ServerInfoStatusPayloadSchema = z
         waitingOnSubagents: z.boolean().optional(),
         // COMPAT(workspaceLabels): added in v0.5.0, remove after 2027-08-14.
         workspaceLabels: z.boolean().optional(),
+        // COMPAT(notes): added in v0.11.0, remove gate after 2027-10-07.
+        notes: z.boolean().optional(),
+        // COMPAT(hostMetrics): added in v0.11.0, remove gate after 2027-10-08.
+        hostMetrics: z.boolean().optional(),
         // COMPAT(workspaceSetupRun): added in v0.8.0, remove gate after 2027-09-02.
         workspaceSetupRun: z.boolean().optional(),
         // COMPAT(workspaceTerminals): added in v0.8.0, remove gate after 2027-09-05.
@@ -4016,6 +4154,12 @@ export const ServerInfoStatusPayloadSchema = z
         voiceLiveWebrtc: z.boolean().optional(),
         // COMPAT(voiceCallMute): added in v0.11.0, remove gate after 2027-10-03.
         voiceCallMute: z.boolean().optional(),
+        // COMPAT(voiceFleet): added in v0.11.1, remove gate after 2027-10-09.
+        voiceFleet: z.boolean().optional(),
+        // COMPAT(dictionary): added in v0.11.1, remove gate after 2027-10-09.
+        dictionary: z.boolean().optional(),
+        // COMPAT(voiceCommands): added in v0.11.1, remove gate after 2027-10-09.
+        voiceCommands: z.boolean().optional(),
         // COMPAT(serverMessageQueue): added in v0.11.0, remove gate after 2027-10-04.
         serverMessageQueue: z.boolean().optional(),
         // COMPAT(restartContinuation): added in v0.11.0, remove gate after 2027-10-04.
@@ -4088,6 +4232,7 @@ export const ServerInfoStatusPayloadSchema = z
         ownedSubscriptions: z.boolean().optional(),
         // COMPAT(canonicalSubmittedPrompts): added in v0.2.6, remove gate after 2027-01-30.
         canonicalSubmittedPrompts: z.boolean().optional(),
+        agentMessageProvenance: z.boolean().optional(),
         // COMPAT(agentTurnIdentity): accept peers that observed pre-release v0.2.6 through 2027-01-31.
         agentTurnIdentity: z.boolean().optional(),
         // COMPAT(stableProjectIdentity): added in v0.1.109, remove gate after 2027-01-15.
@@ -4107,6 +4252,8 @@ export const ServerInfoStatusPayloadSchema = z
         // agentProfiles to one is silently dropped. The client hides the feature
         // rather than letting a save appear to succeed.
         agentProfiles: z.boolean().optional(),
+        // COMPAT(quickPrompts): added in v0.11.0, remove gate after 2027-04-05.
+        quickPrompts: z.boolean().optional(),
         // COMPAT(agentConfigApply): added in v0.3.2, remove gate after 2027-02-11.
         agentConfigApply: z.boolean().optional(),
       })
@@ -4419,6 +4566,9 @@ export const WorkspaceDescriptorPayloadSchema = z
     status: WorkspaceStateBucketSchema,
     // COMPAT(waitingOnSubagents): added in v0.11.0, remove optional parse after 2027-04-05.
     waitingOnSubagents: z.object({ count: z.number().int().positive() }).optional(),
+    // COMPAT(delegatedWorkspaces): added in v0.11.0, remove optional parse after 2027-04-05.
+    // Set while every active agent in the workspace belongs to this active parent's subagent tree.
+    delegatedByAgentId: z.string().optional(),
     // Best-effort workspace status entry timestamp. Old daemons omit the
     // field; old clients treat missing and null equivalently. The transform
     // coerces a missing field to `null` so downstream code never has to
@@ -6931,10 +7081,25 @@ export const UsageReportEntrySchema = z.object({
   sourceLabel: z.string(),
   icon: z.string().optional(),
   report: UsageReportSchema,
+  loginErrors: z
+    .array(
+      z.object({
+        harness: z.string(),
+        report: z.discriminatedUnion("status", [
+          z.object({ status: z.literal("unavailable"), problem: UsageProblemSchema }),
+          z.object({ status: z.literal("error"), error: z.string() }),
+        ]),
+      }),
+    )
+    .optional(),
+});
+export const UsageListReportsUpdateMessageSchema = z.object({
+  type: z.literal("usage.list_reports.update"),
+  payload: z.object({ requestId: z.string(), report: UsageReportEntrySchema }),
 });
 export const UsageListReportsResponseMessageSchema = z.object({
   type: z.literal("usage.list_reports.response"),
-  payload: z.object({ requestId: z.string(), reports: z.array(UsageReportEntrySchema) }),
+  payload: z.object({ requestId: z.string(), error: z.string().nullable() }),
 });
 
 const AgentSlashCommandSchema = z.object({
@@ -7259,6 +7424,9 @@ export const PluginNpmInstallationSchema = z.object({
 
 export const PluginListItemSchema = z.object({
   id: PluginIdSchema,
+  name: z.string().optional(),
+  icon: z.string().optional(),
+  media: z.array(z.string()).optional(),
   description: z.string().optional(),
   path: z.string(),
   enabled: z.boolean(),
@@ -7432,7 +7600,76 @@ export const AgentSkillsImportLegacySelectionResponseSchema = z.object({
   }),
 });
 
+export const AgentHtmlRenderGetResponseMessageSchema = z.object({
+  type: z.literal("agent.html_render.get.response"),
+  payload: z.object({
+    requestId: z.string(),
+    agentId: z.string(),
+    renderId: z.string(),
+    html: z.string().nullable(),
+    title: z.string().nullable(),
+    error: z.string().nullable(),
+  }),
+});
+
+const DaemonBrowserStatusSchema = z.object({
+  state: z.enum(["unsupported", "missing", "installing", "installed", "failed"]),
+  version: z.string(),
+  platform: z.string().nullable(),
+  executable: z.string().optional(),
+  message: z.string().optional(),
+});
+
+// COMPAT(preview-browser-response): added in v0.11.0-beta.3, remove after 2027-04-07 when daemon floor includes browser RPCs.
+export const DaemonBrowserStatusResponseMessageSchema = z.object({
+  type: z.literal("daemon.browser.get_status.response"),
+  payload: z.object({
+    requestId: z.string(),
+    status: DaemonBrowserStatusSchema.optional(),
+    error: z.string().optional(),
+  }),
+});
+
+export const DaemonBrowserSetupResponseMessageSchema = z.object({
+  type: z.literal("daemon.browser.setup.response"),
+  payload: z.object({
+    requestId: z.string(),
+    status: DaemonBrowserStatusSchema.optional(),
+    error: z.string().optional(),
+  }),
+});
+
+export const AgentVisualizationGetResponseMessageSchema = z.object({
+  type: z.literal("agent.visualization.get.response"),
+  payload: z.object({
+    requestId: z.string(),
+    agentId: z.string(),
+    path: z.string(),
+    canonicalPath: z.string().nullable(),
+    revision: z.string().nullable(),
+    html: z.string().nullable(),
+    state: z.unknown().nullable(),
+    error: z.string().nullable(),
+  }),
+});
+
+export const AgentVisualizationSetStateResponseMessageSchema = z.object({
+  type: z.literal("agent.visualization.set_state.response"),
+  payload: z.object({
+    requestId: z.string(),
+    agentId: z.string(),
+    path: z.string(),
+    state: z.unknown().nullable(),
+    error: z.string().nullable(),
+  }),
+});
+
 export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
+  AgentHtmlRenderGetResponseMessageSchema,
+  DaemonBrowserStatusResponseMessageSchema,
+  DaemonBrowserSetupResponseMessageSchema,
+  AgentVisualizationGetResponseMessageSchema,
+  AgentVisualizationSetStateResponseMessageSchema,
   BrowserHostRegisterResponseSchema,
   SubscriptionReleaseResponseSchema,
   SessionEventsSetSubscriptionResponseSchema,
@@ -7558,6 +7795,15 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   VoiceLiveConnectResponseSchema,
   VoiceLiveEndResponseSchema,
   VoiceCallSetMuteResponseSchema,
+  VoiceFleetDigestResponseSchema,
+  VoiceFleetSyncResponseSchema,
+  VoiceCourierExecuteMessageSchema,
+  VoiceToolsInvokeResponseSchema,
+  VoiceCourierResultResponseSchema,
+  VoiceCommandsGetSettingsResponseSchema,
+  VoiceCommandsSetModelResponseSchema,
+  VoiceCommandsSetKeyResponseSchema,
+  VoiceCommandsTestModelResponseSchema,
   SendAgentMessageResponseMessageSchema,
   SetVoiceModeResponseMessageSchema,
   DaemonGetStatusResponseSchema,
@@ -7654,6 +7900,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   RefreshProvidersSnapshotResponseMessageSchema,
   ProviderDiagnosticResponseMessageSchema,
   ProviderUsageListResponseMessageSchema,
+  UsageListReportsUpdateMessageSchema,
   UsageListReportsResponseMessageSchema,
   ListCommandsResponseSchema,
   ListTerminalsResponseSchema,
@@ -7672,6 +7919,13 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   ChatPostResponseSchema,
   ChatReadResponseSchema,
   ChatWaitResponseSchema,
+  NoteListResponseSchema,
+  NoteCreateResponseSchema,
+  NoteUpdateResponseSchema,
+  NoteArchiveResponseSchema,
+  NoteDeleteResponseSchema,
+  NoteLinkAgentResponseSchema,
+  HostMetricsGetResponseSchema,
   ScheduleCreateResponseSchema,
   ScheduleListResponseSchema,
   ScheduleInspectResponseSchema,

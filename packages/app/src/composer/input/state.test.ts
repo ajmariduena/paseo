@@ -1,4 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
+import type { QuickPrompt } from "@getpaseo/protocol/messages";
+import {
+  isQuickPromptActionDisabled,
+  selectQuickPrompt,
+  moveQuickPrompt,
+  resolveQuickPromptShortcut,
+  updateQuickPrompt,
+} from "@/quick-prompts/catalog";
+import { openQuickPromptForm } from "@/quick-prompts/form";
+import { describe, expect, it } from "vitest";
 import {
   applyDictationTranscript,
   computeCanStartDictation,
@@ -8,7 +17,6 @@ import {
   runAlternateSendAction,
   runDefaultSendAction,
   runMessageInputKeyboardAction,
-  stopRealtimeVoice,
 } from "./state";
 
 const connected = { isConnected: true } as never;
@@ -34,9 +42,6 @@ function createDictationKeyboard({ startsRecording }: { startsRecording: boolean
           isRecording = false;
         },
         cancelDictation: () => undefined,
-        toggleRealtimeVoice: () => undefined,
-        isRealtimeVoiceActive: false,
-        toggleRealtimeVoiceMute: () => undefined,
       }),
   };
 }
@@ -319,44 +324,116 @@ describe("resolveAlternateSendActions", () => {
   });
 });
 
-describe("stopRealtimeVoice", () => {
-  it("keeps voice mode active when the running agent refuses cancellation", async () => {
-    const cancellationError = new Error("active run cancellation was not acknowledged");
-    const cancelAgent = vi.fn().mockRejectedValue(cancellationError);
-    const stopVoice = vi.fn().mockResolvedValue(undefined);
+describe("quick prompt picker actions", () => {
+  it("uses the selected default, then the first pinned favorite, for the toolbar shortcut", () => {
+    const ordinary: QuickPrompt = {
+      id: "ordinary",
+      title: "Ordinary",
+      text: "Ordinary prompt",
+      mode: "send",
+      pinned: false,
+      isDefault: false,
+    };
+    const firstPinned = { ...ordinary, id: "first", pinned: true };
+    const secondPinned = { ...ordinary, id: "second", pinned: true };
+    const selected = { ...ordinary, id: "selected", isDefault: true };
 
-    await expect(
-      stopRealtimeVoice({
-        voice: { stopVoice },
-        isRealtimeVoiceForCurrentAgent: true,
-        isAgentRunning: true,
-        client: { cancelAgent },
-        voiceAgentId: "agent-1",
-      }),
-    ).rejects.toBe(cancellationError);
-
-    expect(stopVoice).not.toHaveBeenCalled();
+    expect(resolveQuickPromptShortcut([ordinary, firstPinned, secondPinned, selected])).toEqual(
+      selected,
+    );
+    expect(resolveQuickPromptShortcut([ordinary, firstPinned, secondPinned])).toEqual(firstPinned);
+    expect(resolveQuickPromptShortcut([ordinary])).toBeUndefined();
+    expect(resolveQuickPromptShortcut([])).toBeUndefined();
   });
 
-  it("stops voice mode after the running agent acknowledges cancellation", async () => {
-    const calls: string[] = [];
+  it("permits insert while sends are blocked, and only blocks inserts during a catalog write", () => {
+    expect(isQuickPromptActionDisabled("insert", false, true)).toBe(false);
+    expect(isQuickPromptActionDisabled("insert", true, false)).toBe(true);
+    expect(isQuickPromptActionDisabled("send", false, true)).toBe(true);
+  });
 
-    await stopRealtimeVoice({
-      voice: {
-        stopVoice: async () => {
-          calls.push("stop voice");
-        },
+  const prompt: QuickPrompt = {
+    id: "summary",
+    title: "Summary",
+    text: "Summarize.",
+    mode: "insert",
+    pinned: false,
+    isDefault: false,
+  };
+  it("row sends, insert edits the draft, pin and default only persist", async () => {
+    const sent: QuickPrompt[] = [];
+    const inserted: string[] = [];
+    const saved: QuickPrompt[][] = [];
+    const ports = {
+      send: (entry: QuickPrompt) => {
+        sent.push(entry);
       },
-      isRealtimeVoiceForCurrentAgent: true,
-      isAgentRunning: true,
-      client: {
-        cancelAgent: async () => {
-          calls.push("cancel agent");
-        },
+      insert: (text: string) => {
+        inserted.push(text);
       },
-      voiceAgentId: "agent-1",
+      save: async (next: QuickPrompt[]) => {
+        saved.push(next);
+      },
+    };
+    await selectQuickPrompt({ prompt, prompts: [prompt], action: "send", ports });
+    expect(sent).toEqual([prompt]);
+    expect(inserted).toEqual([]);
+    expect(saved).toEqual([]);
+    await selectQuickPrompt({ prompt, prompts: [prompt], action: "insert", ports });
+    expect(inserted).toEqual([prompt.text]);
+    expect(sent).toHaveLength(1);
+    await selectQuickPrompt({ prompt, prompts: [prompt], action: "pin", ports });
+    expect(saved[0]).toEqual([{ ...prompt, pinned: true }]);
+    await selectQuickPrompt({
+      prompt,
+      prompts: [prompt, { ...prompt, id: "old", isDefault: true }],
+      action: "default",
+      ports,
     });
-
-    expect(calls).toEqual(["cancel agent", "stop voice"]);
+    expect(saved[1]).toEqual([
+      { ...prompt, isDefault: true },
+      { ...prompt, id: "old", isDefault: false },
+    ]);
+  });
+  it("cannot pin a fourth prompt; moving preserves the list order", async () => {
+    const pins = [0, 1, 2].map((id) => Object.assign({}, prompt, { id: String(id), pinned: true }));
+    const saved: QuickPrompt[][] = [];
+    await selectQuickPrompt({
+      prompt,
+      prompts: [...pins, prompt],
+      action: "pin",
+      ports: {
+        send: () => {},
+        insert: () => {},
+        save: async (next) => {
+          saved.push(next);
+        },
+      },
+    });
+    expect(saved).toEqual([]);
+    expect(moveQuickPrompt([...pins, prompt], prompt.id, -1).map((entry) => entry.id)).toEqual([
+      "0",
+      "1",
+      "summary",
+      "2",
+    ]);
+  });
+  it("fresh forms isolate edits; failed saves keep the entered values", async () => {
+    const form = openQuickPromptForm(prompt, 0);
+    form.set({ title: "My summary", text: "My edited prompt" });
+    expect(
+      await form.submit(async () => {
+        throw new Error("Disconnected");
+      }),
+    ).toBe(false);
+    expect(form.getState()).toMatchObject({
+      error: "Disconnected",
+      canSubmit: true,
+      prompt: { title: "My summary", text: "My edited prompt" },
+    });
+    expect(openQuickPromptForm(prompt, 0).getState().prompt).toEqual(prompt);
+    expect(updateQuickPrompt([prompt], { ...prompt, text: "Replacement" })).toEqual([
+      { ...prompt, text: "Replacement" },
+    ]);
   });
 });

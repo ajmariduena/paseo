@@ -83,6 +83,7 @@ not retain non-Git directories.
 | `server/agent/agent-manager.ts` | Agent lifecycle state machine, timeline tracking, subscriber management        |
 | `server/agent/agent-storage.ts` | File-backed JSON persistence at `$PASEO_HOME/agents/`                          |
 | `server/agent/tools/`           | Transport-neutral catalog for workspaces, agents, permissions, and automation  |
+| `server/agent/html-render/`     | Per-agent pages and daemon-owned, sandboxed HTML preview browser               |
 | `server/agent/mcp-server.ts`    | Thin MCP adapter that registers the Paseo tool catalog with the MCP SDK        |
 | `server/agent/providers/`       | Provider adapters (see "Agent providers" below)                                |
 | `server/orchestration-skills/`  | Bundled catalog, host selection, convergence, and skill-directory transactions |

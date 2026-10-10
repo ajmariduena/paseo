@@ -17,6 +17,7 @@ function paseo(overrides: Partial<PaseoSubagentStatusInput> = {}): PaseoSubagent
     pendingPermissionCount: 0,
     requiresAttention: false,
     attentionReason: null,
+    lastTurnOutcome: null,
     isArchived: false,
     ...overrides,
   };
@@ -71,6 +72,25 @@ describe("resolvePaseoSubagentStatus", () => {
       bucket: "done",
       isLive: false,
     });
+  });
+
+  it("says stopped, with a neutral dot, for a child whose turn was canceled", () => {
+    expect(resolvePaseoSubagentStatus(paseo({ lastTurnOutcome: "canceled" }))).toEqual(
+      resolveProviderSubagentStatus("canceled"),
+    );
+    expect(
+      resolvePaseoSubagentStatus(
+        paseo({
+          lastTurnOutcome: "canceled",
+          requiresAttention: true,
+          attentionReason: "finished",
+        }),
+      ),
+    ).toEqual({ word: "stopped", bucket: "done", isLive: false });
+    expect(
+      resolvePaseoSubagentStatus(paseo({ lastTurnOutcome: "canceled", turn: OPEN_TURN })).word,
+    ).toBe("working");
+    expect(resolvePaseoSubagentStatus(paseo({ lastTurnOutcome: "completed" })).word).toBe("done");
   });
 
   it("reads an archived or missing child as archived", () => {

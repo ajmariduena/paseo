@@ -24,4 +24,6 @@ export const PASEO_READ_ONLY_TOOL_NAMES: readonly string[] = [
   "list_schedules",
   "inspect_schedule",
   "schedule_logs",
+  "list_notes",
+  "get_note",
 ];

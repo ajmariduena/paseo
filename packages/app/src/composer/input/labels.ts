@@ -49,31 +49,17 @@ export function resolveSubmitAccessibilityLabel(input: {
 }
 
 export function resolveVoiceAccessibilityLabel(input: {
-  isRealtimeVoiceForCurrentAgent: boolean;
-  isMuted: boolean;
   isDictating: boolean;
   t: TFunction;
 }): string {
-  if (input.isRealtimeVoiceForCurrentAgent) {
-    return input.isMuted
-      ? input.t("composer.voice.unmuteVoiceMode")
-      : input.t("composer.voice.muteVoiceMode");
-  }
   if (input.isDictating) return input.t("composer.voice.stopDictation");
   return input.t("composer.voice.startDictation");
 }
 
 export function resolveVoiceTooltipText(input: {
-  isRealtimeVoiceForCurrentAgent: boolean;
-  isMuted: boolean;
   dictationModelLabel?: string | null;
   t: TFunction;
 }): string {
-  if (input.isRealtimeVoiceForCurrentAgent) {
-    return input.isMuted
-      ? input.t("composer.voice.unmuteVoice")
-      : input.t("composer.voice.muteVoice");
-  }
   const dictation = input.t("composer.voice.dictation");
   return input.dictationModelLabel ? `${dictation} · ${input.dictationModelLabel}` : dictation;
 }

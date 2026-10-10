@@ -1,10 +1,14 @@
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
+import pino from "pino";
 import { afterEach, expect, test, vi } from "vitest";
 
 import type {
   CurrentPullRequestStatus,
   PullRequestCheck,
   PullRequestMergeable,
+  PullRequestReviewDecision,
   PullRequestSummary,
   PullRequestTimeline,
   PullRequestTimelineItem,
@@ -16,7 +20,9 @@ import {
 import { PULL_REQUEST_WATCH_WAKE_LIMIT } from "./watch-report.js";
 import { PullRequestWatchStore } from "./watch-store.js";
 import {
-  PULL_REQUEST_UNREADABLE_LIMIT_MS,
+  PULL_REQUEST_READ_FAILURE_LIMIT,
+  PULL_REQUEST_WATCH_INTERVAL_MS,
+  PULL_REQUEST_WATCH_QUIET_INTERVAL_MS,
   PullRequestWatcher,
   type PullRequestWatchForgeService,
 } from "./watcher.js";
@@ -27,22 +33,33 @@ const AGENT_LOGIN = "agent-bot";
 interface FakeForge {
   service: PullRequestWatchForgeService;
   state: string;
+  headSha: string;
   checks: PullRequestCheck[];
   requiredCheckNames: string[];
   mergeable: PullRequestMergeable;
+  reviewDecision: PullRequestReviewDecision;
   remarks: PullRequestTimelineItem[];
   unreadable: boolean;
+  rateLimited: boolean;
+  /** Pull request status reads, one per forge read of the pull request. */
+  reads: number;
 }
+
+class FakeRateLimitError extends Error {}
 
 /** An in-memory forge for one open pull request, #42 on branch `feature`. */
 function createFakeForge(): FakeForge {
   const forge: FakeForge = {
     state: "OPEN",
+    headSha: "aaa111",
     checks: [],
     requiredCheckNames: [],
     mergeable: "MERGEABLE",
+    reviewDecision: null,
     remarks: [],
     unreadable: false,
+    rateLimited: false,
+    reads: 0,
     service: {
       async getPullRequest({ number }): Promise<PullRequestSummary> {
         if (forge.unreadable) throw new Error("gh: HTTP 502");
@@ -59,6 +76,8 @@ function createFakeForge(): FakeForge {
         };
       },
       async getCurrentPullRequestStatus(): Promise<CurrentPullRequestStatus | null> {
+        forge.reads += 1;
+        if (forge.rateLimited) throw new FakeRateLimitError("API rate limit exceeded");
         if (forge.unreadable) throw new Error("gh: HTTP 502");
         const merged = forge.state === "MERGED";
         return {
@@ -70,11 +89,12 @@ function createFakeForge(): FakeForge {
           state: forge.state.toLowerCase(),
           baseRefName: "main",
           headRefName: "feature",
+          headSha: forge.headSha,
           isMerged: merged,
           mergeable: forge.mergeable,
           checks: forge.checks,
           checksStatus: "pending",
-          reviewDecision: null,
+          reviewDecision: forge.reviewDecision,
         };
       },
       async getPullRequestTimeline(): Promise<PullRequestTimeline> {
@@ -92,6 +112,9 @@ function createFakeForge(): FakeForge {
       },
       async getRequiredCheckNames() {
         return forge.requiredCheckNames;
+      },
+      isRateLimitError(error) {
+        return error instanceof FakeRateLimitError;
       },
     },
   };
@@ -122,6 +145,8 @@ interface Scenario {
   watcher: PullRequestWatcher;
   clock: { now: number };
   agentId: string;
+  /** The watcher's info log lines, parsed. */
+  logs: Record<string, unknown>[];
 }
 
 let scenario: Scenario | null = null;
@@ -137,6 +162,11 @@ async function startWatching(options: { busy?: boolean } = {}): Promise<Scenario
   const forge = createFakeForge();
   const store = new PullRequestWatchStore(join(host.root, "pull-request-watches.json"));
   const clock = { now: Date.parse("2026-10-04T12:00:00Z") };
+  const logs: Record<string, unknown>[] = [];
+  const logger = pino(
+    { level: "info" },
+    { write: (line: string) => logs.push(JSON.parse(line) as Record<string, unknown>) },
+  );
   const watcher = new PullRequestWatcher({
     store,
     agentManager: host.agentManager,
@@ -144,11 +174,11 @@ async function startWatching(options: { busy?: boolean } = {}): Promise<Scenario
     resolveForge: async () => ({ service: forge.service }),
     readWorkspacePullRequestNumber: async () => 42,
     now: () => clock.now,
-    logger: host.logger,
+    logger,
   });
   const agentId = await host.createAgent({ steerable: false });
   if (options.busy) await host.startTurn(agentId, "agent work");
-  scenario = { host, forge, store, watcher, clock, agentId };
+  scenario = { host, forge, store, watcher, clock, agentId, logs };
   return scenario;
 }
 
@@ -156,8 +186,12 @@ async function watch(current: Scenario) {
   return await current.watcher.watch({ agentId: current.agentId, cwd: current.host.root });
 }
 
-async function sweep(current: Scenario): Promise<void> {
-  current.clock.now += 60_000;
+/** Runs the pass a quiet pull request is next read on. */
+async function sweep(
+  current: Scenario,
+  afterMs: number = PULL_REQUEST_WATCH_QUIET_INTERVAL_MS,
+): Promise<void> {
+  current.clock.now += afterMs;
   await current.watcher.sweep();
   await current.watcher.idle();
 }
@@ -255,6 +289,118 @@ test("comments from someone else wake the agent, and its own comments do not", a
   ]);
 });
 
+test("a push resets the failed checks, so the same failure on the new head wakes again", async () => {
+  const current = await startWatching();
+  current.forge.checks = [check("test", "failure")];
+  await watch(current);
+
+  current.forge.headSha = "bbb222";
+  current.forge.checks = [check("test", "pending")];
+  await sweep(current);
+  current.forge.checks = [check("test", "failure")];
+  await sweep(current);
+
+  expect(prompts(current)).toEqual([expect.stringContaining("  - test https://ci.example/test")]);
+});
+
+test("a push whose checks all finish between two passes still wakes", async () => {
+  const current = await startWatching();
+  current.forge.checks = [check("test", "success")];
+  await watch(current);
+
+  current.forge.headSha = "bbb222";
+  await sweep(current);
+
+  expect(prompts(current)).toEqual([expect.stringContaining("- All 1 check passed.")]);
+});
+
+test("a required check that first appears already passed wakes again", async () => {
+  const current = await startWatching();
+  current.forge.requiredCheckNames = ["tests", "gate"];
+  current.forge.checks = [check("tests", "pending")];
+  await watch(current);
+
+  current.forge.checks = [check("tests", "success")];
+  await sweep(current);
+  current.host.session(current.agentId).completeTurn("noted");
+  current.forge.checks = [check("tests", "success"), check("gate", "success")];
+  await sweep(current);
+  current.host.session(current.agentId).completeTurn("noted");
+  current.forge.checks.push(check("advisory", "success"));
+  await sweep(current);
+
+  expect(prompts(current)).toEqual([
+    expect.stringContaining("- All 1 required check passed."),
+    expect.stringContaining("- All 2 required checks passed."),
+  ]);
+});
+
+test("a watch saved before head and passed-check tracking adopts them without a wake", async () => {
+  const current = await startWatching();
+  current.forge.checks = [check("lint", "failure"), check("test", "success")];
+  await writeFile(
+    join(current.host.root, "pull-request-watches.json"),
+    JSON.stringify({
+      version: 1,
+      watches: [
+        {
+          id: "legacy",
+          agentId: current.agentId,
+          cwd: current.host.root,
+          number: 42,
+          url: PR_URL,
+          title: "Add the widget",
+          headRefName: "feature",
+          startedAt: "2026-10-01T12:00:00.000Z",
+          progress: {
+            failedChecks: ["lint"],
+            passed: false,
+            remarksThrough: 0,
+            remarkIds: [],
+            conflicting: false,
+            wakes: 0,
+          },
+        },
+      ],
+    }),
+  );
+
+  await sweep(current);
+
+  expect(prompts(current)).toEqual([]);
+  expect((await current.store.get("legacy"))?.progress).toEqual({
+    headSha: "aaa111",
+    failedChecks: ["lint"],
+    passed: false,
+    passedChecks: [],
+    remarksThrough: 0,
+    remarkIds: [],
+    conflicting: false,
+    wakes: 0,
+  });
+});
+
+test("someone else editing a comment wakes the agent, and the edit is reported once", async () => {
+  const current = await startWatching();
+  const before = current.clock.now - 5_000;
+  current.forge.remarks = [comment("c0", "review-bot", before, "1 issue found")];
+  await watch(current);
+
+  current.forge.remarks = [
+    {
+      ...comment("c0", "review-bot", before, "2 issues found"),
+      editedAt: current.clock.now + 10_000,
+    },
+  ];
+  await sweep(current);
+  current.host.session(current.agentId).completeTurn("fixed");
+  await sweep(current);
+
+  expect(prompts(current)).toEqual([
+    expect.stringContaining(`- 1 new comment:\n  - review-bot: "2 issues found" ${PR_URL}#c0\n`),
+  ]);
+});
+
 test("a new merge conflict wakes the agent once", async () => {
   const current = await startWatching();
   await watch(current);
@@ -300,22 +446,91 @@ test("merging ends the watch without a wake", async () => {
   expect(prompts(current)).toEqual([]);
 });
 
-test("a pull request unreadable for 15 minutes ends the watch with a wake saying so", async () => {
+test("failing to read a pull request 8 times in a row ends the watch with a wake saying so", async () => {
   const current = await startWatching();
   await watch(current);
 
   current.forge.unreadable = true;
-  await sweep(current);
-  current.clock.now += PULL_REQUEST_UNREADABLE_LIMIT_MS - 120_000;
-  await sweep(current);
+  for (let pass = 1; pass < PULL_REQUEST_READ_FAILURE_LIMIT; pass += 1) {
+    await sweep(current, PULL_REQUEST_WATCH_INTERVAL_MS);
+  }
   expect(await current.store.list()).toHaveLength(1);
-  await sweep(current);
+  await sweep(current, PULL_REQUEST_WATCH_INTERVAL_MS);
 
   expect(await current.store.list()).toEqual([]);
   expect(prompts(current)).toEqual([
     expect.stringContaining(
-      "Paseo stopped watching pull request #42 (https://github.com/acme/app/pull/42) because it could not read it from the forge for 15 minutes.",
+      "Paseo stopped watching pull request #42 (https://github.com/acme/app/pull/42) because it failed to read it from the forge 8 times in a row.",
     ),
+  ]);
+});
+
+test("a rate limit skips the pass without ending the watch or counting as a failure", async () => {
+  const current = await startWatching();
+  await watch(current);
+
+  current.forge.unreadable = true;
+  for (let pass = 1; pass < PULL_REQUEST_READ_FAILURE_LIMIT; pass += 1) await sweep(current);
+  current.forge.rateLimited = true;
+  for (let pass = 0; pass < 20; pass += 1) await sweep(current);
+  current.forge.rateLimited = false;
+  current.forge.unreadable = false;
+  current.forge.checks = [check("test", "failure")];
+  await sweep(current);
+
+  expect(await current.store.list()).toHaveLength(1);
+  expect(prompts(current)).toEqual([expect.stringContaining("  - test https://ci.example/test")]);
+});
+
+test("agents watching the same pull request share one read per pass", async () => {
+  const current = await startWatching();
+  const sibling = await current.host.createAgent({ steerable: false });
+  await watch(current);
+  await current.watcher.watch({ agentId: sibling, cwd: current.host.root });
+  current.forge.reads = 0;
+
+  current.forge.checks = [check("test", "failure")];
+  await sweep(current);
+
+  expect(current.forge.reads).toBe(1);
+  expect(prompts(current)).toEqual([expect.stringContaining("- Checks failed:")]);
+  expect(current.host.session(sibling).startPrompts.map(String)).toEqual([
+    expect.stringContaining("- Checks failed:"),
+  ]);
+});
+
+test("a quiet pull request is read every two minutes, and every minute while checks run", async () => {
+  const current = await startWatching();
+  await watch(current);
+  await sweep(current);
+  current.forge.reads = 0;
+
+  await sweep(current, PULL_REQUEST_WATCH_INTERVAL_MS);
+  expect(current.forge.reads).toBe(0);
+  current.forge.checks = [check("test", "pending")];
+  await sweep(current, PULL_REQUEST_WATCH_INTERVAL_MS);
+  expect(current.forge.reads).toBe(1);
+  current.forge.checks = [check("test", "failure")];
+  await sweep(current, PULL_REQUEST_WATCH_INTERVAL_MS);
+
+  expect(current.forge.reads).toBe(2);
+  expect(prompts(current)).toEqual([expect.stringContaining("- Checks failed:")]);
+});
+
+test("a subagent can watch the pull request it opened", async () => {
+  const current = await startWatching();
+  const child = await current.host.createAgent({
+    steerable: false,
+    labels: { [PARENT_AGENT_ID_LABEL]: current.agentId },
+  });
+
+  const result = await current.watcher.watch({ agentId: child, cwd: current.host.root });
+  current.forge.checks = [check("test", "failure")];
+  await sweep(current);
+
+  expect(result.watching).toBe(true);
+  expect(current.host.session(child).startPrompts).toEqual([
+    expect.stringContaining("- Checks failed:"),
   ]);
 });
 
@@ -372,6 +587,119 @@ test("a watch survives a new watcher on the same store", async () => {
   await restarted.idle();
 
   expect(prompts(current)).toEqual([expect.stringContaining("  - test https://ci.example/test")]);
+});
+
+test("an ended watch logs one line with how long it lived and stayed quiet", async () => {
+  const current = await startWatching();
+  await watch(current);
+  await sweep(current);
+  current.clock.now += 6 * 60 * 60_000 - PULL_REQUEST_WATCH_QUIET_INTERVAL_MS * 2;
+  current.forge.headSha = "bbb222";
+  await sweep(current);
+  current.clock.now += 2 * 60 * 60_000 - PULL_REQUEST_WATCH_QUIET_INTERVAL_MS;
+  await sweep(current);
+  await current.watcher.unwatch({ agentId: current.agentId, cwd: current.host.root });
+  await sweep(current);
+
+  expect(current.logs.filter((line) => line.msg === "pull_request_watch.ended")).toEqual([
+    expect.objectContaining({
+      agentId: current.agentId,
+      pullRequest: PR_URL,
+      reason: "unwatched",
+      minutes: 480,
+      quietMinutes: 120,
+      longestQuietMinutes: 360,
+      wakes: 0,
+      reads: 3,
+      partial: false,
+    }),
+  ]);
+});
+
+test("a watch ended by a merge logs why", async () => {
+  const current = await startWatching();
+  await watch(current);
+
+  current.forge.state = "MERGED";
+  await sweep(current);
+
+  expect(current.logs.filter((line) => line.msg === "pull_request_watch.ended")).toEqual([
+    expect.objectContaining({ reason: "merged", reads: 0, wakes: 0 }),
+  ]);
+});
+
+function tasks(current: Scenario) {
+  return current.host.agentManager.listDaemonBackgroundTasks(current.agentId);
+}
+
+async function settleTurn(current: Scenario, text: string): Promise<void> {
+  current.host.session(current.agentId).completeTurn(text);
+  await vi.waitFor(() =>
+    expect(current.host.agentManager.getAgent(current.agentId)?.lifecycle).toBe("idle"),
+  );
+}
+
+test("an active watch is a background task of its agent that says what it waits for", async () => {
+  const current = await startWatching();
+  current.forge.checks = [check("lint", "pending"), check("test", "pending")];
+  await watch(current);
+  const [watched] = await current.store.list();
+
+  expect(tasks(current)).toEqual([
+    {
+      id: `pull-request-watch:${watched?.id}`,
+      taskType: "pull_request_watch",
+      description: "Watching PR #42 · 2 checks running",
+      startedAt: watched?.startedAt,
+    },
+  ]);
+
+  current.forge.checks = [check("lint", "success"), check("test", "success")];
+  current.forge.reviewDecision = "pending";
+  await sweep(current);
+  expect(tasks(current)).toEqual([
+    expect.objectContaining({ description: "Watching PR #42 · checks passed, waiting for review" }),
+  ]);
+
+  await settleTurn(current, "noted");
+  current.forge.state = "MERGED";
+  await sweep(current);
+  expect(tasks(current)).toEqual([]);
+});
+
+test("stopping the watch's background task unwatches the pull request", async () => {
+  const current = await startWatching();
+  current.watcher.start();
+  await watch(current);
+  const [task] = tasks(current);
+
+  await current.host.agentManager.stopBackgroundTask(current.agentId, task?.id ?? "");
+  current.forge.checks = [check("test", "failure")];
+  await sweep(current);
+
+  expect(await current.store.list()).toEqual([]);
+  expect(tasks(current)).toEqual([]);
+  expect(prompts(current)).toEqual([]);
+});
+
+test("a wake turn that ends while still watching does not ask for attention", async () => {
+  const current = await startWatching();
+  const { agentManager } = current.host;
+  await watch(current);
+
+  current.forge.checks = [check("test", "failure")];
+  await sweep(current);
+  await settleTurn(current, "fixed the test");
+  expect(agentManager.getAgent(current.agentId)?.attention.requiresAttention).toBe(false);
+
+  current.forge.state = "MERGED";
+  await sweep(current);
+  await vi.waitFor(() =>
+    expect(agentManager.getAgent(current.agentId)?.attention).toMatchObject({
+      requiresAttention: true,
+      attentionReason: "finished",
+    }),
+  );
 });
 
 test("watching a closed pull request fails", async () => {

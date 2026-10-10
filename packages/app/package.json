@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/app",
-  "version": "0.11.0-beta.19",
+  "version": "0.11.0-beta.40",
   "private": true,
   "main": "index.ts",
   "scripts": {
@@ -81,6 +81,7 @@
     "expo": "^54.0.18",
     "expo-asset": "~12.0.12",
     "expo-audio": "~1.0.13",
+    "expo-blur": "~15.0.8",
     "expo-build-properties": "^1.0.9",
     "expo-camera": "~17.0.10",
     "expo-clipboard": "~8.0.7",
@@ -161,6 +162,7 @@
     "fake-indexeddb": "^6.2.5",
     "jsdom": "^20.0.3",
     "material-icon-theme": "^5.32.0",
+    "parse5": "7.3.0",
     "playwright": "^1.56.1",
     "serve-sim": "^0.1.40",
     "typescript": "~5.9.2",

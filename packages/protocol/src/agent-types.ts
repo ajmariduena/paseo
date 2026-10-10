@@ -1,3 +1,4 @@
+import type { AgentMessage } from "./agent-message.js";
 import type { AgentAttachment } from "./messages.js";
 
 export type AgentProvider = string;
@@ -318,6 +319,7 @@ export type ToolCallDetail =
     };
 
 interface ToolCallBase {
+  agentMessage?: AgentMessage;
   [key: string]: unknown;
   type: "tool_call";
   callId: string;
@@ -449,6 +451,8 @@ export interface AgentMessageOrigin {
   kind: "agent";
   /** The agent that sent the prompt, through its Paseo tools. */
   agentId: string;
+  /** `peer`: the sender is not the receiver's parent, so the prompt is a note between sessions. */
+  relation?: "peer";
 }
 
 /** Who wrote a user message. Absent means the user. */

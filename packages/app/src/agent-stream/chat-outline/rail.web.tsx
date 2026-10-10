@@ -2,6 +2,8 @@ import { memo, useCallback, useEffect, useMemo, useState, useSyncExternalStore }
 import { Pressable, Text, View, type PointerEvent as RNPointerEvent } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { useReducedMotion } from "react-native-reanimated";
+import { useTranslation } from "react-i18next";
+import { formatPromptPreview } from "@/peer-notes/model";
 import { useContainerWidthBelow } from "@/hooks/use-container-width";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
 import { createChatOutlineHoverIntent } from "./hover-intent";
@@ -27,6 +29,11 @@ export const ChatOutlineRail = memo(function ChatOutlineRail({
   activePrompt,
   onJumpToPrompt,
 }: ChatOutlineRailProps) {
+  const { t } = useTranslation();
+  const previews = useMemo(
+    () => prompts.map((prompt) => formatPromptPreview(t, prompt.preview)),
+    [prompts, t],
+  );
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
   const activeSeq = useSyncExternalStore(activePrompt.subscribe, activePrompt.getActiveSeq);
@@ -92,8 +99,8 @@ export const ChatOutlineRail = memo(function ChatOutlineRail({
               key={prompt.seq}
               index={index}
               seq={prompt.seq}
-              preview={prompt.preview}
-              label={`${index + 1} of ${prompts.length}: ${prompt.preview}`}
+              preview={previews[index] ?? prompt.preview}
+              label={`${index + 1} of ${prompts.length}: ${previews[index] ?? prompt.preview}`}
               isActive={prompt.seq === activeSeq}
               hasAttention={index === attentionIndex}
               magnification={

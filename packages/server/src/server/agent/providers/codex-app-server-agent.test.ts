@@ -24,11 +24,26 @@ import {
   codexAppServerTurnInputFromPrompt,
   listCodexSkills,
   mapCodexPatchNotificationToToolCall,
+  mcpToolResultImagesToTimeline,
   mapCodexPlanUpdateToTodo,
   mapCodexPlanToToolCall,
   normalizeCodexOutputSchema,
   toAgentUsage,
 } from "./codex-app-server-agent.js";
+
+test("Codex keeps preview screenshots out of timeline while retaining other tool images", () => {
+  const item = {
+    type: "mcpToolCall",
+    tool: "html_preview",
+    server: "paseo",
+    result: { content: [{ type: "image", data: ONE_BY_ONE_PNG_BASE64, mimeType: "image/png" }] },
+  };
+  expect(mcpToolResultImagesToTimeline(item)).toEqual([]);
+  const otherImages = mcpToolResultImagesToTimeline({ ...item, tool: "browser_screenshot" });
+  expect(otherImages).toHaveLength(1);
+  if (otherImages[0]?.type === "assistant_message")
+    rmSync(markdownImageSource(otherImages[0].text), { force: true });
+});
 
 describe("mapCodexPlanUpdateToTodo", () => {
   test("preserves checklist progress without creating a plan card", () => {
@@ -698,6 +713,11 @@ process.stdin.on("data", (chunk) => {
   });
 
   try {
+    expect(session.usageSession?.()).toMatchObject({
+      provider: "codex",
+      env: { CODEX_HOME: providerCodexHome },
+    });
+    expect(session.usageSession?.()?.sessionKey).toBe(session.usageSession?.()?.sessionKey);
     return await run({
       session,
       readCaptured: () =>
@@ -708,6 +728,7 @@ process.stdin.on("data", (chunk) => {
     });
   } finally {
     await session.close();
+    expect(session.usageSession?.()).toBeNull();
     vi.unstubAllEnvs();
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -1885,6 +1906,28 @@ describe("Codex app-server provider", () => {
     });
     appServer.assertNoErrors();
     await session.close();
+  });
+
+  test("resumed session exposes usage before connecting and not after close", async () => {
+    let spawns = 0;
+    const session = new CodexAppServerAgentSession(
+      createConfig({ cwd: "/workspace/project" }),
+      { sessionId: "saved-thread" },
+      createTestLogger(),
+      async () => {
+        spawns++;
+        throw new Error("unexpected spawn");
+      },
+      { environment: { HOME: "/fixture/codex", CODEX_HOME: "/fixture/profile" } },
+    );
+    expect(session.usageSession()).toMatchObject({
+      provider: "codex",
+      env: { CODEX_HOME: "/fixture/profile" },
+      sessionKey: expect.any(String),
+    });
+    expect(spawns).toBe(0);
+    await session.close();
+    expect(session.usageSession()).toBeNull();
   });
 
   test("loads archived Codex history without resuming the native thread", async () => {
@@ -3398,6 +3441,80 @@ describe("Codex app-server provider", () => {
       id: "child-thread-1",
       status: "completed",
     });
+  });
+
+  test("subtitles a native subagent with the model and effort its spawn requested", () => {
+    const session = createSession();
+    const request = vi.fn(async () => {
+      throw new Error("Unexpected request");
+    });
+    session.client = createStub<CodexClientLike>({ request });
+    const events: AgentStreamEvent[] = [];
+    session.subscribe((event) => events.push(event));
+
+    asInternals(session).handleNotification("item/completed", {
+      threadId: "test-thread",
+      item: {
+        type: "collabAgentToolCall",
+        id: "call-sub-agent-model",
+        tool: "spawnAgent",
+        status: "completed",
+        prompt: "Explore the repo.",
+        receiverThreadIds: ["child-thread-model"],
+        model: "gpt-5.4-mini",
+        reasoningEffort: "medium",
+        agentsStates: {},
+      },
+    });
+
+    const upserts = events.flatMap((event) =>
+      event.type === "provider_subagent" && event.event.type === "upsert" ? [event.event] : [],
+    );
+    expect(upserts).toContainEqual(
+      expect.objectContaining({ id: "child-thread-model", subtitle: "GPT-5.4-mini Medium" }),
+    );
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  test("reads the model Codex reports for a native subagent its spawn did not name", async () => {
+    const session = createSession();
+    const request = vi.fn(async (method: string, params: unknown) => {
+      if (method === "thread/read") {
+        return {
+          thread: { id: "child-thread-read", model: "gpt-5.4", reasoningEffort: "xhigh" },
+        };
+      }
+      throw new Error(`Unexpected request: ${method} ${JSON.stringify(params)}`);
+    });
+    session.client = createStub<CodexClientLike>({ request });
+    const events: AgentStreamEvent[] = [];
+    session.subscribe((event) => events.push(event));
+
+    asInternals(session).handleNotification("item/completed", {
+      threadId: "test-thread",
+      item: {
+        type: "collabAgentToolCall",
+        id: "call-sub-agent-read",
+        tool: "spawnAgent",
+        status: "completed",
+        prompt: "Explore the repo.",
+        receiverThreadIds: ["child-thread-read"],
+        model: null,
+        agentsStates: {},
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.at(-1)).toEqual({
+        type: "provider_subagent",
+        provider: "codex",
+        turnId: "test-turn",
+        event: { type: "upsert", id: "child-thread-read", subtitle: "GPT-5.4 Extra high" },
+      });
+    });
+    expect(request.mock.calls).toEqual([
+      ["thread/read", { threadId: "child-thread-read", includeTurns: false }, 5_000],
+    ]);
   });
 
   test("keeps a settled child completed until Codex starts another child turn", async () => {

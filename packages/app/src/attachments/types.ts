@@ -4,6 +4,7 @@ import type {
   UploadedFileAttachment,
 } from "@getpaseo/protocol/messages";
 import type { PluginResourceComposerAttachment } from "@/plugins/attachments";
+import type { NoteComposerAttachment } from "@/notes/attachment";
 
 export type AttachmentStorageType = "web-indexeddb" | "desktop-file" | "native-file";
 
@@ -108,6 +109,7 @@ export type UserComposerAttachment =
   | { kind: "file"; attachment: UploadedFileAttachment }
   | WorkspaceFileComposerAttachment
   | PluginResourceComposerAttachment
+  | NoteComposerAttachment
   | { kind: "forge_issue"; item: ForgeSearchItem }
   | { kind: "forge_change_request"; item: ForgeSearchItem }
   // COMPAT(githubAttachmentKinds): legacy persisted attachment kinds retained

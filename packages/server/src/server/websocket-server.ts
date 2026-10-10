@@ -1,3 +1,5 @@
+import type { NoteStore } from "./notes/store.js";
+import type { HostMetricsSampler } from "./host-metrics/sampler.js";
 import { stat } from "node:fs/promises";
 import type { CreationSnapshot } from "@getpaseo/protocol/messages";
 import { CreationService } from "./creation/index.js";
@@ -20,6 +22,7 @@ import type { CheckoutDiffManager, CheckoutDiffMetrics } from "./checkout-diff-m
 import type { DaemonConfigStore, MutableDaemonConfig } from "./daemon-config-store.js";
 import {
   type ServerInfoStatusPayload,
+  type ScriptStatusUpdateMessage,
   type SessionOutboundMessage,
   type WorkspaceSetupSnapshot,
   type WSHelloMessage,
@@ -68,6 +71,7 @@ import type { SpeechReadinessSnapshot, SpeechService } from "./speech/speech-run
 import type { ReadAloudService } from "./speech/read-aloud/service.js";
 import type { VoiceOrchestrator } from "./voice-orchestrator/orchestrator.js";
 import type { DelegationService } from "./delegation/delegation-service.js";
+import type { AgentStop } from "./agent/stop.js";
 import type { VoiceCallerContext, VoiceSpeakHandler } from "./voice-types.js";
 import {
   computeNotificationPlan,
@@ -555,9 +559,12 @@ export class VoiceAssistantWebSocketServer {
   private readonly projectRegistry: ProjectRegistry;
   private readonly workspaceRegistry: WorkspaceRegistry;
   private readonly workspaceLabelService: WorkspaceLabelService | null;
+  private readonly noteStore: NoteStore | undefined;
+  private readonly hostMetricsSampler: HostMetricsSampler | undefined;
   private readAloudService!: ReadAloudService | null;
   private readonly voiceOrchestrator: VoiceOrchestrator | null | undefined;
   private readonly delegations: DelegationService | null | undefined;
+  private readonly agentStop: AgentStop | null | undefined;
   private readonly scheduleService: ScheduleService;
   private readonly checkoutDiffManager: CheckoutDiffManager;
   private readonly github: ForgeService;
@@ -680,10 +687,14 @@ export class VoiceAssistantWebSocketServer {
     readAloudService?: ReadAloudService | null,
     voiceOrchestrator?: VoiceOrchestrator | null,
     delegations?: DelegationService | null,
+    agentStop?: AgentStop | null,
+    noteStore?: NoteStore,
+    hostMetricsSampler?: HostMetricsSampler,
   ) {
     this.logger = logger.child({ module: "websocket-server" });
     this.voiceOrchestrator = voiceOrchestrator;
     this.delegations = delegations;
+    this.agentStop = agentStop;
     this.workspaceSetupRuntime = workspaceSetupRuntime;
     this.advertiseDaemonStatusRpc = wsConfig.daemonStatusRpc !== false;
     this.advertiseRelayConfig = wsConfig.relayConfig !== false;
@@ -712,6 +723,8 @@ export class VoiceAssistantWebSocketServer {
     this.projectRegistry = projectRegistry ?? createNoopProjectRegistry();
     this.workspaceRegistry = workspaceRegistry ?? createNoopWorkspaceRegistry();
     this.workspaceLabelService = workspaceLabelService ?? null;
+    this.noteStore = noteStore;
+    this.hostMetricsSampler = hostMetricsSampler;
     const requiredServices = requireWebSocketServices({
       scheduleService,
       checkoutDiffManager,
@@ -1005,6 +1018,12 @@ export class VoiceAssistantWebSocketServer {
       void session
         .emitProjectUpdate(update)
         .catch((error) => this.logger.warn({ err: error }, "Failed to publish project update"));
+    }
+  }
+
+  public publishScriptStatusUpdate(message: ScriptStatusUpdateMessage): void {
+    for (const session of this.listSessions()) {
+      session.emitServerMessage(message);
     }
   }
 
@@ -1505,6 +1524,7 @@ export class VoiceAssistantWebSocketServer {
           ),
         );
       },
+      publishScriptStatusUpdate: (message) => this.publishScriptStatusUpdate(message),
       downloadTokenStore: this.downloadTokenStore,
       pushNotifications: this.pushNotifications,
       paseoHome: this.paseoHome,
@@ -1516,9 +1536,12 @@ export class VoiceAssistantWebSocketServer {
       projectRegistry: this.projectRegistry,
       workspaceRegistry: this.workspaceRegistry,
       workspaceLabelService: this.workspaceLabelService ?? undefined,
+      noteStore: this.noteStore,
+      hostMetricsSampler: this.hostMetricsSampler,
       readAloud: this.readAloudService ?? undefined,
       voiceOrchestrator: this.voiceOrchestrator,
       delegations: this.delegations,
+      agentStop: this.agentStop,
       directorySync: this.directorySync,
       scheduleService: this.scheduleService,
       checkoutDiffManager: this.checkoutDiffManager,
@@ -1828,11 +1851,18 @@ export class VoiceAssistantWebSocketServer {
         workspaceRequestReceipts: true,
         creationLifecycle: true,
         hubAgentRpc: true,
+        // COMPAT(htmlRender): added in v0.11.x, remove after 2027-04-06 once daemon floor supports renders.
+        htmlRender: true,
+        // COMPAT(codexVisualization): added in v0.11.x, remove after 2027-04-07 once daemon floor supports visualizations.
+        codexVisualization: true,
         // COMPAT(directorySync): added in v0.3.x, remove gate after 2027-02-12.
         directorySync: true,
         waitingOnSubagents: true,
         // COMPAT(workspaceLabels): added in v0.5.0, remove after 2027-08-14.
         ...(this.workspaceLabelService ? { workspaceLabels: true } : {}),
+        ...(this.noteStore ? { notes: true } : {}),
+        // COMPAT(hostMetrics): added in v0.11.0, remove gate after 2027-10-08.
+        ...(this.hostMetricsSampler ? { hostMetrics: true } : {}),
         // COMPAT(workspaceSetupRun): added in v0.7.3, remove gate after 2027-09-02.
         workspaceSetupRun: true,
         // COMPAT(providersSnapshot): keep optional until all clients rely on snapshot flow.
@@ -1911,6 +1941,12 @@ export class VoiceAssistantWebSocketServer {
         voiceLiveWebrtc: this.voiceOrchestrator?.webrtc.available ?? false,
         // COMPAT(voiceCallMute): added in v0.11.0, remove gate after 2027-10-03.
         voiceCallMute: Boolean(this.voiceOrchestrator),
+        // COMPAT(voiceFleet): added in v0.11.1, remove gate after 2027-10-09.
+        voiceFleet: Boolean(this.voiceOrchestrator),
+        // COMPAT(dictionary): added in v0.11.1, remove gate after 2027-10-09.
+        dictionary: true,
+        // COMPAT(voiceCommands): added in v0.11.1, remove gate after 2027-10-09.
+        voiceCommands: Boolean(this.voiceOrchestrator?.commands),
         // COMPAT(serverMessageQueue): added in v0.11.0, remove gate after 2027-10-04.
         serverMessageQueue: true,
         // COMPAT(restartContinuation): added in v0.11.0, remove gate after 2027-10-04.
@@ -1980,6 +2016,7 @@ export class VoiceAssistantWebSocketServer {
         explicitEventSubscriptions: true,
         // COMPAT(canonicalSubmittedPrompts): added in v0.2.6, remove gate after 2027-01-30.
         canonicalSubmittedPrompts: true,
+        agentMessageProvenance: true,
         // COMPAT(stableProjectIdentity): added in v0.1.109, remove gate after 2027-01-15.
         stableProjectIdentity: true,
         // COMPAT(workspaceScriptManagement): added in v0.1.105, remove gate after 2027-01-10.
@@ -1994,6 +2031,8 @@ export class VoiceAssistantWebSocketServer {
         checkoutDiscardChanges: true,
         // COMPAT(agentProfiles): added in v0.3.2, remove gate after 2027-02-11.
         agentProfiles: true,
+        // COMPAT(quickPrompts): added in v0.11.0; remove gate after 2027-04-05 once the daemon floor supports it.
+        quickPrompts: true,
         // COMPAT(agentConfigApply): added in v0.3.2, remove gate after 2027-02-11.
         agentConfigApply: true,
       },

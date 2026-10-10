@@ -1821,8 +1821,14 @@ async function changeCodeTypographyFromSettings(
   await page.getByTestId("sidebar-settings").click();
   await expect(page).toHaveURL(new RegExp(`${buildSettingsSectionRoute("general")}|/settings$`));
   await page.getByRole("button", { name: "Appearance" }).click();
+  // A committed font remounts the screen (AppearanceStyleBoundary), discarding text typed into the
+  // old inputs, so the size is edited only after the family commit has replaced them.
+  await page.getByLabel("Code font size").evaluate((input) => {
+    input.setAttribute("data-e2e-before-font-commit", "");
+  });
   await page.getByLabel("Code font family").fill(typography.fontFamily);
   await page.getByLabel("Code font family").press("Enter");
+  await expect(page.locator("[data-e2e-before-font-commit]")).toHaveCount(0);
   await page.getByLabel("Code font size").fill(String(typography.fontSize));
   await page.getByLabel("Code font size").press("Enter");
   await expect(page.getByLabel("Code font family")).toHaveValue(typography.fontFamily);

@@ -126,6 +126,8 @@ export interface CurrentPullRequestStatus {
   state: string;
   baseRefName: string;
   headRefName: string;
+  /** The head commit, on forges that report it. */
+  headSha?: string;
   isMerged: boolean;
   isDraft?: boolean;
   mergeable: PullRequestMergeable;
@@ -144,6 +146,8 @@ interface PullRequestTimelineItemBase {
   avatarUrl: string | null;
   body: string;
   createdAt: number;
+  /** When the body was last edited, on forges that report it. */
+  editedAt?: number;
   url: string;
 }
 
@@ -495,6 +499,8 @@ export interface ForgeService {
   getViewerLogin?(options: { cwd: string } & ForgeReadOptions): Promise<string | null>;
   /** Names of the checks the base branch requires before merging; empty when none are required. */
   getRequiredCheckNames?(options: GetPullRequestOptions): Promise<string[]>;
+  /** True when a read failed because the forge asked us to wait, not because it cannot be read. */
+  isRateLimitError?(error: unknown): boolean;
   getCheckDetails(options: GetCheckDetailsOptions): Promise<CheckDetails>;
   searchIssuesAndPrs(options: SearchIssuesAndPrsOptions): Promise<SearchResult>;
   createPullRequest(options: CreatePullRequestOptions): Promise<PullRequestCreateResult>;
