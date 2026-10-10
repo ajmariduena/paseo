@@ -1,3 +1,4 @@
+import { HandoffArchiveStore } from "./handoff/archive.js";
 import { createServer, type Server as HTTPServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -545,6 +546,7 @@ function createVoiceAssistantWebSocketServer(params: {
     null,
     { allowedOrigins: new Set(["*"]) },
     createWorkspaceAutoNameStub(),
+    new HandoffArchiveStore("/tmp/paseo-browser-tools-websocket-test/handoff/archives"),
     undefined,
     undefined,
     undefined,

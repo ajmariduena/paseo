@@ -1,10 +1,12 @@
 import { afterEach, expect, it } from "vitest";
 import { isPlatform } from "../test-utils/platform.js";
 import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { tmpdir } from "node:os";
 import { createWorkerTerminalManager } from "./worker-terminal-manager.js";
+import { HandoffOwnership } from "../server/handoff/ownership.js";
 import type {
   TerminalActivityTransitionEvent,
   TerminalManager,
@@ -91,10 +93,12 @@ class FakeTerminalWorker extends EventEmitter {
   connected = true;
   killed = false;
   readonly sentMessages: TerminalWorkerRequest[] = [];
+  onRequest: ((request: TerminalWorkerRequest) => void) | null = null;
 
   send(message: TerminalWorkerRequest, callback: (error: Error | null) => void): boolean {
     this.sentMessages.push(message);
     callback(null);
+    this.onRequest?.(message);
     return true;
   }
 
@@ -158,6 +162,240 @@ afterEach(async () => {
       await removeTemporaryDir(dir);
     }
   }
+});
+
+async function handoffFixture() {
+  const root = mkdtempSync(join(tmpdir(), "terminal-handoff-"));
+  temporaryDirs.push(root);
+  const cwd = join(root, "workspace");
+  mkdirSync(cwd);
+  const ownership = new HandoffOwnership({
+    directory: join(root, "ownership"),
+    sourceServerId: "source-host",
+  });
+  await ownership.initialize();
+  const transfer = {
+    id: randomUUID(),
+    cwd,
+    workspaceId: "ws-test",
+    agentIds: [],
+    destinationServerId: "target-host",
+    reservationId: randomUUID(),
+  };
+  return { cwd, ownership, transfer };
+}
+
+function completeWorkerCreation(worker: FakeTerminalWorker, request: TerminalWorkerRequest) {
+  if (request.type !== "createTerminal" || !request.options.id)
+    throw new Error("Expected creation request");
+  const terminal = {
+    id: request.options.id,
+    cwd: request.options.cwd,
+    workspaceId: request.options.workspaceId,
+    name: "Shell",
+    activity: null,
+  };
+  worker.emitWorkerMessage({ type: "terminalCreated", terminal, state: createTerminalState() });
+  worker.emitWorkerMessage({
+    type: "response",
+    requestId: request.requestId,
+    ok: true,
+    result: { terminal, state: createTerminalState() },
+  });
+  return terminal.id;
+}
+
+it("handoff: refuses terminal creation before sending a request to the worker", async () => {
+  const { cwd, ownership, transfer } = await handoffFixture();
+  const worker = new FakeTerminalWorker();
+  manager = createWorkerTerminalManager({
+    forkWorker: () => worker,
+    requestTimeoutMs: 10,
+    handoffOwnership: ownership,
+  });
+  await ownership.prepare(transfer);
+  await expect(
+    manager.createTerminal({ cwd, workspaceId: "another-workspace" }),
+  ).rejects.toMatchObject({ code: "fenced" });
+  expect(worker.sentMessages).toEqual([]);
+});
+
+it("handoff: holds terminal creation through registration and worker settlement, then fences input and resize", async () => {
+  const { cwd, ownership, transfer } = await handoffFixture();
+  const worker = new FakeTerminalWorker();
+  manager = createWorkerTerminalManager({ forkWorker: () => worker, handoffOwnership: ownership });
+  const creating = manager.createTerminal({ cwd, workspaceId: "ws-test" });
+  await waitForCondition(() => worker.sentMessages.length === 1, 1000);
+  const request = worker.sentMessages[0];
+  await ownership.prepare(transfer);
+  await expect(ownership.markReady(transfer.id, "a".repeat(64))).rejects.toMatchObject({
+    code: "invalid_state",
+  });
+  const id = completeWorkerCreation(worker, request);
+  const session = await creating;
+  expect(manager.getTerminal(id)).toBe(session);
+  await expect(ownership.markReady(transfer.id, "a".repeat(64))).rejects.toMatchObject({
+    code: "invalid_state",
+  });
+  worker.emitWorkerMessage({ type: "terminalCreateSettled", terminalId: id });
+  await ownership.drain(transfer.id);
+  expect((await ownership.markReady(transfer.id, "a".repeat(64))).state).toBe("ready");
+  expect(() => session.send({ type: "input", data: "touch unsafe\r" })).toThrow(
+    "Workspace is held by handoff",
+  );
+  expect(() => session.send({ type: "resize", rows: 50, cols: 100 })).toThrow(
+    "Workspace is held by handoff",
+  );
+  expect(session.getSize()).toEqual({ rows: 1, cols: 1 });
+  expect(worker.sentMessages.map((message) => message.type)).toEqual(["createTerminal"]);
+  expect((await manager.getTerminals(cwd)).map((terminal) => terminal.id)).toEqual([id]);
+  await ownership.cancel(transfer.id);
+  session.send({ type: "input", data: "echo resumed\r" });
+  expect(worker.sentMessages.at(-1)).toMatchObject({
+    type: "send",
+    message: { type: "input", data: "echo resumed\r" },
+  });
+});
+
+it.each(["timeout", "early worker error"])(
+  "handoff: keeps a %s creation leased until the worker settles it",
+  async (failure) => {
+    const { cwd, ownership, transfer } = await handoffFixture();
+    const worker = new FakeTerminalWorker();
+    manager = createWorkerTerminalManager({
+      forkWorker: () => worker,
+      handoffOwnership: ownership,
+      requestTimeoutMs: 50,
+    });
+    const creating = manager.createTerminal({ cwd, workspaceId: "ws-test" });
+    const rejected = expect(creating).rejects.toThrow(
+      failure === "timeout" ? "timed out" : "conpty failure",
+    );
+    await waitForCondition(() => worker.sentMessages.length === 1, 1000, 1);
+    const request = worker.sentMessages[0];
+    if (failure === "early worker error")
+      worker.emitWorkerMessage({
+        type: "response",
+        requestId: request.requestId,
+        ok: false,
+        error: "conpty failure",
+      });
+    await rejected;
+    await ownership.prepare(transfer);
+    await expect(ownership.markReady(transfer.id, "a".repeat(64))).rejects.toMatchObject({
+      code: "invalid_state",
+    });
+    const id = completeWorkerCreation(worker, request);
+    const session = manager.getTerminal(id);
+    if (!session) throw new Error("Late terminal was not registered");
+    expect(session.id).toBe(id);
+    expect(() => session.send({ type: "input", data: "unsafe\r" })).toThrow(
+      "Workspace is held by handoff",
+    );
+    worker.emitWorkerMessage({ type: "terminalCreateSettled", terminalId: id });
+    await ownership.drain(transfer.id);
+    expect((await ownership.markReady(transfer.id, "a".repeat(64))).state).toBe("ready");
+  },
+);
+
+it("handoff: keeps timed-out input leased until a late worker acknowledgement", async () => {
+  const { cwd, ownership, transfer } = await handoffFixture();
+  const worker = new FakeTerminalWorker();
+  manager = createWorkerTerminalManager({
+    forkWorker: () => worker,
+    handoffOwnership: ownership,
+    requestTimeoutMs: 20,
+  });
+  worker.onRequest = (request) => {
+    if (request.type !== "createTerminal") return;
+    const terminalId = completeWorkerCreation(worker, request);
+    worker.emitWorkerMessage({ type: "terminalCreateSettled", terminalId });
+  };
+  const session = await manager.createTerminal({ cwd, workspaceId: "ws-test" });
+  const id = session.id;
+  session.send({ type: "input", data: "admitted\r" });
+  const input = worker.sentMessages.at(-1);
+  if (!input || input.type !== "send") throw new Error("Expected input request");
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  await ownership.prepare(transfer);
+  await expect(ownership.markReady(transfer.id, "a".repeat(64))).rejects.toMatchObject({
+    code: "invalid_state",
+  });
+  worker.emitWorkerMessage({ type: "response", requestId: input.requestId, ok: true });
+  await ownership.drain(transfer.id);
+  expect((await ownership.markReady(transfer.id, "a".repeat(64))).state).toBe("ready");
+  const stopping = manager.killTerminalAndWait(id);
+  const stop = worker.sentMessages.at(-1);
+  if (!stop || stop.type !== "killTerminalAndWait") throw new Error("Expected stop request");
+  worker.emitWorkerMessage({ type: "response", requestId: stop.requestId, ok: true });
+  await stopping;
+});
+
+it("handoff: a worker exit cannot certify that an admitted creation never started", async () => {
+  const { cwd, ownership, transfer } = await handoffFixture();
+  const worker = new FakeTerminalWorker();
+  manager = createWorkerTerminalManager({ forkWorker: () => worker, handoffOwnership: ownership });
+  const creating = manager.createTerminal({ cwd, workspaceId: "ws-test" });
+  const rejected = expect(creating).rejects.toThrow("Terminal worker exited");
+  await waitForCondition(() => worker.sentMessages.length === 1, 1000, 1);
+  worker.kill();
+  await rejected;
+  await ownership.prepare(transfer);
+  await expect(ownership.markReady(transfer.id, "a".repeat(64))).rejects.toMatchObject({
+    code: "invalid_state",
+  });
+});
+
+it("handoff: fences a real worker terminal and permits input again after cancellation", async () => {
+  const { cwd, ownership, transfer } = await handoffFixture();
+  const marker = join(cwd, "input.txt");
+  manager = createWorkerTerminalManager({ handoffOwnership: ownership });
+  const session = trackTerminal(
+    await manager.createTerminal({
+      cwd,
+      workspaceId: "ws-test",
+      ...nodeTerminalCommand(`
+      const fs = require("node:fs");
+      const startup = setInterval(() => {
+        if (!fs.existsSync("start.txt")) return;
+        clearInterval(startup);
+        process.stdin.on("data", () => fs.writeFileSync("input.txt", "resumed"));
+        process.stdout.write("handoff-ready");
+        setInterval(() => {}, 1000);
+      }, 10);
+    `),
+    }),
+  );
+  // Start output after registration so readiness cannot come from the creation snapshot.
+  writeFileSync(join(cwd, "start.txt"), "start");
+  await waitForCondition(async () => {
+    const snapshot = await manager!.getTerminalState(session.id);
+    return snapshot !== null && getVisibleTextFromState(snapshot.state).includes("handoff-ready");
+  }, 10000);
+  await ownership.prepare(transfer);
+  expect(() => session.send({ type: "input", data: "blocked\r" })).toThrow(
+    "Workspace is held by handoff",
+  );
+  expect(existsSync(marker)).toBe(false);
+  await ownership.cancel(transfer.id);
+  session.send({ type: "input", data: "continue\r" });
+  await waitForCondition(() => existsSync(marker), 10000);
+  expect(readFileSync(marker, "utf8")).toBe("resumed");
+});
+
+it("handoff: real worker validation failure settles admission without starting a terminal", async () => {
+  const { cwd, ownership, transfer } = await handoffFixture();
+  manager = createWorkerTerminalManager({ handoffOwnership: ownership });
+  await expect(
+    manager.createTerminal({
+      cwd,
+      workspaceId: "",
+    }),
+  ).rejects.toThrow("workspaceId is required");
+  await ownership.prepare(transfer);
+  await ownership.drain(transfer.id);
+  expect((await ownership.markReady(transfer.id, "a".repeat(64))).state).toBe("ready");
+  expect(await manager.getTerminals(cwd)).toEqual([]);
 });
 
 it("creates a terminal through the worker and streams output", async () => {
@@ -821,6 +1059,78 @@ it("removes worker terminals after killAndWait", async () => {
 
   expect(manager.getTerminal(session.id)).toBeUndefined();
   expect(manager.listDirectories()).not.toContain(cwd);
+});
+
+it.skipIf(isPlatform("win32"))(
+  "handoff: confirms forced exit of a real terminal process that ignores hangup",
+  async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "worker-terminal-force-stop-"));
+    temporaryDirs.push(cwd);
+    const readyPath = join(cwd, "ready");
+    manager = createWorkerTerminalManager();
+    const session = trackTerminal(
+      await manager.createTerminal({
+        workspaceId: "ws-test",
+        cwd,
+        ...nodeTerminalCommand(`
+      process.on("SIGHUP", () => {});
+      require("node:fs").writeFileSync(${JSON.stringify(readyPath)}, String(process.pid) + "\\n");
+      setInterval(() => {}, 1000);
+    `),
+      }),
+    );
+    await waitForCondition(
+      () => existsSync(readyPath) && readFileSync(readyPath, "utf8").endsWith("\n"),
+      10000,
+    );
+    const pid = Number(readFileSync(readyPath, "utf8").trim());
+    await manager.killTerminalAndWait(session.id, { gracefulTimeoutMs: 25, forceTimeoutMs: 2000 });
+    expect(session.getExitInfo()?.signal).toBe(9);
+    expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
+    expect(manager.getTerminal(session.id)).toBeUndefined();
+  },
+);
+
+it("handoff: keeps worker terminals observable after a failed stop and allows a confirmed retry", async () => {
+  const worker = new FakeTerminalWorker();
+  manager = createWorkerTerminalManager({ forkWorker: () => worker, requestTimeoutMs: 50 });
+  worker.emitWorkerMessage({
+    type: "terminalCreated",
+    terminal: {
+      id: "still-running",
+      name: "Shell",
+      cwd: tmpdir(),
+      workspaceId: "ws-test",
+      activity: null,
+    },
+    state: createTerminalState(),
+  });
+  const stopping = manager.killTerminalAndWait("still-running");
+  const failedRequest = worker.sentMessages.at(-1);
+  if (!failedRequest) throw new Error("Missing stop request");
+  worker.emitWorkerMessage({
+    type: "response",
+    requestId: failedRequest.requestId,
+    ok: false,
+    error: "Terminal process did not exit: still-running",
+  });
+  await expect(stopping).rejects.toThrow("Terminal process did not exit");
+  expect(manager.getTerminal("still-running")?.id).toBe("still-running");
+  expect((await manager.getTerminals(tmpdir())).map((terminal) => terminal.id)).toEqual([
+    "still-running",
+  ]);
+
+  const retry = manager.killTerminalAndWait("still-running");
+  const retryRequest = worker.sentMessages.at(-1);
+  if (!retryRequest) throw new Error("Missing retry request");
+  worker.emitWorkerMessage({
+    type: "terminalExit",
+    terminalId: "still-running",
+    info: { exitCode: 0, signal: null, lastOutputLines: [] },
+  });
+  worker.emitWorkerMessage({ type: "response", requestId: retryRequest.requestId, ok: true });
+  await retry;
+  expect(manager.getTerminal("still-running")).toBeUndefined();
 });
 
 it("produces one terminals-changed snapshot per title change", async () => {

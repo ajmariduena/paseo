@@ -1,3 +1,16 @@
+export {
+  prepareWorkspaceHandoff,
+  activateWorkspaceHandoff,
+  cancelWorkspaceHandoff,
+  type PrepareWorkspaceHandoffInput,
+  type WorkspaceHandoffProgress,
+  type WorkspaceHandoffCheckpoint,
+} from "./workspace-handoff.js";
+export {
+  transferHandoffArchive,
+  HandoffTransferError,
+  type HandoffTransferProgress,
+} from "./handoff-transfer.js";
 import type { GlanceSummaryLine, GlanceSummarizeRequest } from "@getpaseo/protocol/messages";
 import { legacyUsageIcon } from "./legacy-usage-icons.js";
 import { subscribeTimeline, type TimelineMessage } from "./timeline-subscription/index.js";
@@ -2924,6 +2937,369 @@ export class DaemonClient {
         return msg.payload;
       },
     });
+  }
+
+  handoffCancelSource(
+    options: Omit<
+      Extract<SessionInboundMessage, { type: "workspace.handoff.cancel_source.request" }>,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.cancel_source.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.cancel_source.response">({
+      requestId,
+      message: { type: "workspace.handoff.cancel_source.request", ...input },
+      timeout: 120000,
+    });
+  }
+
+  handoffCancelDestination(
+    options: Omit<
+      Extract<SessionInboundMessage, { type: "workspace.handoff.cancel_destination.request" }>,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.cancel_destination.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.cancel_destination.response">(
+      {
+        requestId,
+        message: { type: "workspace.handoff.cancel_destination.request", ...input },
+        timeout: 120000,
+      },
+    );
+  }
+
+  handoffGetConversationHistory(
+    options: Omit<
+      Extract<
+        SessionInboundMessage,
+        { type: "workspace.handoff.get_conversation_history.request" }
+      >,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.get_conversation_history.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.get_conversation_history.response">(
+      {
+        requestId,
+        message: { type: "workspace.handoff.get_conversation_history.request", ...input },
+        timeout: 30000,
+      },
+    );
+  }
+
+  handoffListDestination(
+    options: Omit<
+      Extract<SessionInboundMessage, { type: "workspace.handoff.list_destination.request" }>,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.list_destination.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.list_destination.response">(
+      {
+        requestId,
+        message: { type: "workspace.handoff.list_destination.request", ...input },
+        timeout: 30000,
+      },
+    );
+  }
+
+  handoffFindSource(
+    options: Omit<
+      Extract<SessionInboundMessage, { type: "workspace.handoff.find_source.request" }>,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.find_source.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.find_source.response">({
+      requestId,
+      message: { type: "workspace.handoff.find_source.request", ...input },
+      timeout: 30000,
+    });
+  }
+
+  handoffListOmissions(
+    options: Omit<
+      Extract<SessionInboundMessage, { type: "workspace.handoff.list_omissions.request" }>,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.list_omissions.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.list_omissions.response">(
+      {
+        requestId,
+        message: { type: "workspace.handoff.list_omissions.request", ...input },
+        timeout: 30000,
+      },
+    );
+  }
+
+  handoffPreviewSource(
+    options: Omit<
+      Extract<SessionInboundMessage, { type: "workspace.handoff.preview_source.request" }>,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.preview_source.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.preview_source.response">(
+      {
+        requestId,
+        message: { type: "workspace.handoff.preview_source.request", ...input },
+        timeout: 30000,
+      },
+    );
+  }
+
+  handoffPreviewDestination(
+    options: Omit<
+      Extract<SessionInboundMessage, { type: "workspace.handoff.preview_destination.request" }>,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.preview_destination.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.preview_destination.response">(
+      {
+        requestId,
+        message: { type: "workspace.handoff.preview_destination.request", ...input },
+        timeout: 30000,
+      },
+    );
+  }
+
+  handoffInspectSource(
+    options: Omit<
+      Extract<SessionInboundMessage, { type: "workspace.handoff.inspect_source.request" }>,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.inspect_source.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.inspect_source.response">(
+      {
+        requestId,
+        message: { type: "workspace.handoff.inspect_source.request", ...input },
+        timeout: 120000,
+      },
+    );
+  }
+
+  handoffPrepareSource(
+    options: Omit<
+      Extract<SessionInboundMessage, { type: "workspace.handoff.prepare_source.request" }>,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.prepare_source.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.prepare_source.response">(
+      {
+        requestId,
+        message: { type: "workspace.handoff.prepare_source.request", ...input },
+        timeout: 120000,
+      },
+    );
+  }
+
+  handoffGetSourceStatus(
+    options: Omit<
+      Extract<SessionInboundMessage, { type: "workspace.handoff.get_source_status.request" }>,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.get_source_status.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.get_source_status.response">(
+      {
+        requestId,
+        message: { type: "workspace.handoff.get_source_status.request", ...input },
+        timeout: 30000,
+      },
+    );
+  }
+
+  handoffReleaseSource(
+    options: Omit<
+      Extract<SessionInboundMessage, { type: "workspace.handoff.release_source.request" }>,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.release_source.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.release_source.response">(
+      {
+        requestId,
+        message: { type: "workspace.handoff.release_source.request", ...input },
+        timeout: 120000,
+      },
+    );
+  }
+
+  handoffReserveDestination(
+    options: Omit<
+      Extract<SessionInboundMessage, { type: "workspace.handoff.reserve_destination.request" }>,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.reserve_destination.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.reserve_destination.response">(
+      {
+        requestId,
+        message: { type: "workspace.handoff.reserve_destination.request", ...input },
+        timeout: 30000,
+      },
+    );
+  }
+
+  handoffBindDestination(
+    options: Omit<
+      Extract<SessionInboundMessage, { type: "workspace.handoff.bind_destination.request" }>,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.bind_destination.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.bind_destination.response">(
+      {
+        requestId,
+        message: { type: "workspace.handoff.bind_destination.request", ...input },
+        timeout: 30000,
+      },
+    );
+  }
+
+  handoffStageDestination(
+    options: Omit<
+      Extract<SessionInboundMessage, { type: "workspace.handoff.stage_destination.request" }>,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.stage_destination.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.stage_destination.response">(
+      {
+        requestId,
+        message: { type: "workspace.handoff.stage_destination.request", ...input },
+        timeout: 120000,
+      },
+    );
+  }
+
+  handoffGetDestinationStatus(
+    options: Omit<
+      Extract<SessionInboundMessage, { type: "workspace.handoff.get_destination_status.request" }>,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.get_destination_status.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.get_destination_status.response">(
+      {
+        requestId,
+        message: { type: "workspace.handoff.get_destination_status.request", ...input },
+        timeout: 30000,
+      },
+    );
+  }
+
+  handoffActivateDestination(
+    options: Omit<
+      Extract<SessionInboundMessage, { type: "workspace.handoff.activate_destination.request" }>,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.activate_destination.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.activate_destination.response">(
+      {
+        requestId,
+        message: { type: "workspace.handoff.activate_destination.request", ...input },
+        timeout: 120000,
+      },
+    );
+  }
+
+  handoffArchiveBegin(
+    options: Omit<
+      Extract<SessionInboundMessage, { type: "workspace.handoff.begin_archive.request" }>,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.begin_archive.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.begin_archive.response">({
+      requestId,
+      message: { type: "workspace.handoff.begin_archive.request", ...input },
+      timeout: 30000,
+    });
+  }
+
+  handoffArchiveStatus(
+    options: Omit<
+      Extract<SessionInboundMessage, { type: "workspace.handoff.get_archive_status.request" }>,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.get_archive_status.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.get_archive_status.response">(
+      {
+        requestId,
+        message: { type: "workspace.handoff.get_archive_status.request", ...input },
+        timeout: 30000,
+      },
+    );
+  }
+
+  handoffArchiveWriteChunk(
+    options: Omit<
+      Extract<SessionInboundMessage, { type: "workspace.handoff.write_archive_chunk.request" }>,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.write_archive_chunk.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.write_archive_chunk.response">(
+      {
+        requestId,
+        message: { type: "workspace.handoff.write_archive_chunk.request", ...input },
+        timeout: 30000,
+      },
+    );
+  }
+
+  handoffArchiveReadChunk(
+    options: Omit<
+      Extract<SessionInboundMessage, { type: "workspace.handoff.read_archive_chunk.request" }>,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.read_archive_chunk.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.read_archive_chunk.response">(
+      {
+        requestId,
+        message: { type: "workspace.handoff.read_archive_chunk.request", ...input },
+        timeout: 30000,
+      },
+    );
+  }
+
+  handoffArchiveSeal(
+    options: Omit<
+      Extract<SessionInboundMessage, { type: "workspace.handoff.seal_archive.request" }>,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.seal_archive.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.seal_archive.response">({
+      requestId,
+      message: { type: "workspace.handoff.seal_archive.request", ...input },
+      timeout: 120000,
+    });
+  }
+
+  handoffArchiveResetBlob(
+    options: Omit<
+      Extract<SessionInboundMessage, { type: "workspace.handoff.reset_archive_blob.request" }>,
+      "type" | "requestId"
+    > & { requestId?: string },
+  ): Promise<CorrelatedResponsePayload<"workspace.handoff.reset_archive_blob.response">> {
+    const { requestId, ...input } = options;
+    return this.sendNamespacedCorrelatedSessionRequest<"workspace.handoff.reset_archive_blob.response">(
+      {
+        requestId,
+        message: { type: "workspace.handoff.reset_archive_blob.request", ...input },
+        timeout: 30000,
+      },
+    );
   }
 
   listWorkspaceLabels(

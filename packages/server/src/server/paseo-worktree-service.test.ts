@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -24,6 +25,8 @@ import { createWorktree, getPaseoWorktreesRoot } from "../utils/worktree.js";
 import { isPlatform } from "../test-utils/platform.js";
 import { areEquivalentPaths, createRealpathAwarePathMatcher } from "../utils/path.js";
 import { deriveProjectKey } from "./project-key.js";
+import { HandoffOwnership } from "./handoff/ownership.js";
+import { FileBackedProjectRegistry, FileBackedWorkspaceRegistry } from "./workspace-registry.js";
 
 const cleanupPaths: string[] = [];
 
@@ -31,6 +34,193 @@ afterEach(() => {
   for (const target of cleanupPaths.splice(0)) {
     rmSync(target, { recursive: true, force: true });
   }
+});
+
+test("handoff rejects worktree creation before changing Git refs or files and permits cancel/retry", async () => {
+  const fixture = await createHandoffFixture();
+  const { repoDir, paseoHome, ownership, deps, projects, workspaces } = fixture;
+  const refs = readGit(repoDir, "show-ref");
+  const trees = readGit(repoDir, "worktree", "list", "--porcelain");
+  const projectRoot = await getPaseoWorktreesRoot(repoDir, paseoHome);
+  const transferId = await prepareHandoff(ownership, repoDir);
+  const input = { cwd: repoDir, paseoHome, worktreeSlug: "blocked", runSetup: false };
+
+  await expect(createPaseoWorktree(input, deps)).rejects.toMatchObject({ code: "fenced" });
+  expect(readGit(repoDir, "show-ref")).toBe(refs);
+  expect(readGit(repoDir, "worktree", "list", "--porcelain")).toBe(trees);
+  expect(existsSync(projectRoot)).toBe(false);
+  expect(await workspaces.list()).toEqual([]);
+  expect(await projects.list()).toEqual([]);
+
+  await ownership.cancel(transferId);
+  const result = await createPaseoWorktree(input, deps);
+  expect(readFileSync(path.join(result.worktree.worktreePath, "README.md"), "utf8")).toBe(
+    "hello\n",
+  );
+  expect(await workspaces.get(result.workspace.workspaceId)).toEqual(result.workspace);
+});
+
+test.each(["backing checkout", "main repository", "destination", "workspace identity"] as const)(
+  "handoff fences worktree creation by %s and releases partial admissions",
+  async (scope) => {
+    const { repoDir, tempDir, paseoHome, ownership, deps, workspaces } =
+      await createHandoffFixture();
+    mkdirSync(path.join(repoDir, "selected"));
+    writeFileSync(path.join(repoDir, "selected", "file.txt"), "selected\n");
+    mkdirSync(path.join(repoDir, "sibling"));
+    writeFileSync(path.join(repoDir, "sibling", "file.txt"), "sibling\n");
+    commitAll(repoDir, "subdirectories");
+    const backing = path.join(tempDir, "linked");
+    readGit(repoDir, "worktree", "add", "-b", "linked", backing);
+    const cwd = path.join(backing, "selected");
+    const projectRoot = await getPaseoWorktreesRoot(cwd, paseoHome);
+    const fencePaths = {
+      "backing checkout": path.join(backing, "sibling"),
+      "main repository": path.join(repoDir, "sibling"),
+      destination: path.join(projectRoot, "blocked-1"),
+      "workspace identity": path.join(tempDir, "elsewhere"),
+    };
+    // A collision would make the real creation choose blocked-1.
+    mkdirSync(path.join(projectRoot, "blocked"), { recursive: true });
+    const fencePath = fencePaths[scope];
+    mkdirSync(fencePath, { recursive: true });
+    const id = await prepareHandoff(ownership, fencePath, "reserved-workspace");
+    if (scope === "destination") rmSync(fencePath, { recursive: true });
+    const refs = readGit(repoDir, "show-ref");
+    const trees = readGit(repoDir, "worktree", "list", "--porcelain");
+
+    await expect(
+      createPaseoWorktree(
+        {
+          cwd,
+          paseoHome,
+          worktreeSlug: "blocked",
+          runSetup: false,
+          ...(scope === "workspace identity" ? { workspaceId: "reserved-workspace" } : {}),
+        },
+        deps,
+      ),
+    ).rejects.toMatchObject({ code: "fenced" });
+    expect(readGit(repoDir, "show-ref")).toBe(refs);
+    expect(readGit(repoDir, "worktree", "list", "--porcelain")).toBe(trees);
+    expect(existsSync(path.join(projectRoot, "blocked-1"))).toBe(false);
+    expect(await workspaces.list()).toEqual([]);
+
+    const drainId = await prepareHandoff(ownership, cwd, "drain-workspace");
+    expect((await ownership.markReady(drainId, "a".repeat(64))).state).toBe("ready");
+    await ownership.cancel(drainId);
+    await ownership.cancel(id);
+  },
+);
+
+test("handoff drains admitted worktree creation through the final durable workspace write", async () => {
+  const { repoDir, tempDir, paseoHome, ownership, deps, workspaces, logger } =
+    await createHandoffFixture();
+  const entered = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
+  const upsert = workspaces.upsert.bind(workspaces);
+  workspaces.upsert = async (...args) => {
+    entered.resolve();
+    await finish.promise;
+    return upsert(...args);
+  };
+  const creating = createPaseoWorktree(
+    { cwd: repoDir, paseoHome, worktreeSlug: "admitted", runSetup: false },
+    deps,
+  );
+  const result = expect(creating).resolves.toMatchObject({ created: true });
+  let id: string;
+  try {
+    await Promise.race([
+      entered.promise,
+      result.then(() => {
+        throw new Error("Creation finished before the registry write");
+      }),
+    ]);
+    id = await prepareHandoff(ownership, repoDir);
+    await expect(ownership.markReady(id, "a".repeat(64))).rejects.toMatchObject({
+      code: "invalid_state",
+    });
+    expect(await workspaces.list()).toEqual([]);
+  } finally {
+    finish.resolve();
+    await result;
+  }
+  const created = await creating;
+  await ownership.drain(id);
+  expect((await ownership.markReady(id, "a".repeat(64))).state).toBe("ready");
+  const diskWorkspaces = new FileBackedWorkspaceRegistry(
+    path.join(tempDir, "workspaces.json"),
+    logger,
+  );
+  await diskWorkspaces.initialize();
+  expect(await diskWorkspaces.get(created.workspace.workspaceId)).toEqual(created.workspace);
+  expect(readFileSync(path.join(created.worktree.worktreePath, "README.md"), "utf8")).toBe(
+    "hello\n",
+  );
+});
+
+test("handoff drains creation through real teardown and rollback when preparation precedes registration", async () => {
+  const { repoDir, tempDir, paseoHome, ownership, deps, workspaces } = await createHandoffFixture();
+  const entered = Promise.withResolvers<string>();
+  const finishRegistration = Promise.withResolvers<void>();
+  const teardownEntered = path.join(tempDir, "teardown-entered");
+  const finishTeardown = path.join(tempDir, "finish-teardown");
+  const script = path.join(tempDir, "teardown.cjs");
+  writeFileSync(
+    script,
+    `
+    const fs = require('node:fs');
+    fs.writeFileSync(${JSON.stringify(teardownEntered)}, 'entered');
+    const interval = setInterval(() => {
+      if (fs.existsSync(${JSON.stringify(finishTeardown)})) clearInterval(interval);
+    }, 10);
+    setTimeout(() => { throw new Error('Teardown test gate timed out'); }, 15000).unref();
+  `,
+  );
+  writeFileSync(
+    path.join(repoDir, "paseo.json"),
+    JSON.stringify({
+      worktree: {
+        teardown: [`${process.platform === "win32" ? "& " : ""}"${process.execPath}" "${script}"`],
+      },
+    }),
+  );
+  const register = deps.workspaceProvisioning.createWorkspaceForWorktree;
+  deps.workspaceProvisioning.createWorkspaceForWorktree = async (input) => {
+    entered.resolve(input.worktreeRoot);
+    await finishRegistration.promise;
+    return register(input);
+  };
+  const creating = createPaseoWorktree({ cwd: repoDir, paseoHome, worktreeSlug: "rollback" }, deps);
+  const failed = expect(creating).rejects.toMatchObject({ code: "fenced" });
+  let id: string;
+  let worktreePath: string;
+  try {
+    // Observe the checkout selected by creation, including canonical paths and suffixes.
+    worktreePath = await Promise.race([
+      entered.promise,
+      failed.then(() => {
+        throw new Error("Creation failed before registration");
+      }),
+    ]);
+    id = await prepareHandoff(ownership, repoDir);
+    finishRegistration.resolve();
+    await expect.poll(() => existsSync(teardownEntered), { timeout: 10000 }).toBe(true);
+    await expect(ownership.markReady(id, "a".repeat(64))).rejects.toMatchObject({
+      code: "invalid_state",
+    });
+    expect(existsSync(worktreePath)).toBe(true);
+  } finally {
+    finishRegistration.resolve();
+    writeFileSync(finishTeardown, "finish");
+    await failed;
+  }
+  await ownership.drain(id);
+  expect((await ownership.markReady(id, "a".repeat(64))).state).toBe("ready");
+  expect(existsSync(worktreePath)).toBe(false);
+  expect(readGit(repoDir, "worktree", "list", "--porcelain")).not.toContain("refs/heads/rollback");
+  expect(await workspaces.list()).toEqual([]);
 });
 
 test("creates a worktree and registers it in the source workspace project without git snapshot lookup", async () => {
@@ -1051,6 +1241,54 @@ interface TestDeps extends CreatePaseoWorktreeDeps {
   workspaces: Map<string, PersistedWorkspaceRecord>;
 }
 
+async function createHandoffFixture() {
+  const { repoDir, tempDir } = createGitRepo();
+  cleanupPaths.push(tempDir);
+  const paseoHome = path.join(tempDir, ".paseo");
+  const logger = createTestLogger();
+  const projects = new FileBackedProjectRegistry(path.join(tempDir, "projects.json"), logger);
+  const workspaces = new FileBackedWorkspaceRegistry(path.join(tempDir, "workspaces.json"), logger);
+  await projects.initialize();
+  await workspaces.initialize();
+  const ownership = new HandoffOwnership({
+    directory: path.join(tempDir, "ownership"),
+    sourceServerId: "source-host",
+  });
+  await ownership.initialize();
+  const workspaceGitService = createWorkspaceGitServiceStub();
+  const deps = {
+    handoffOwnership: ownership,
+    github: createGitHubServiceStub(),
+    workspaceGitService,
+    workspaceProvisioning: createWorkspaceProvisioningService({
+      handoffOwnership: ownership,
+      workspaceGitService,
+      workspaceRegistry: workspaces,
+      projectRegistry: projects,
+      isDirectory: async (cwd) => existsSync(cwd),
+      logger,
+    }),
+  };
+  return { repoDir, tempDir, paseoHome, logger, ownership, deps, projects, workspaces };
+}
+
+async function prepareHandoff(ownership: HandoffOwnership, cwd: string, workspaceId = "source") {
+  const id = randomUUID();
+  await ownership.prepare({
+    id,
+    cwd,
+    workspaceId,
+    agentIds: [],
+    destinationServerId: "target-host",
+    reservationId: randomUUID(),
+  });
+  return id;
+}
+
+function readGit(cwd: string, ...args: string[]): string {
+  return execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" });
+}
+
 function createDeps(options?: {
   events?: string[];
   projects?: Map<string, PersistedProjectRecord>;
@@ -1323,6 +1561,7 @@ function createGitRepo(): { tempDir: string; repoDir: string } {
     stdio: "pipe",
   });
   execFileSync("git", ["config", "user.name", "Test"], { cwd: repoDir, stdio: "pipe" });
+  execFileSync("git", ["config", "core.autocrlf", "false"], { cwd: repoDir, stdio: "pipe" });
   writeFileSync(path.join(repoDir, "README.md"), "hello\n");
   execFileSync("git", ["add", "README.md"], { cwd: repoDir, stdio: "pipe" });
   execFileSync("git", ["commit", "-m", "init"], { cwd: repoDir, stdio: "pipe" });

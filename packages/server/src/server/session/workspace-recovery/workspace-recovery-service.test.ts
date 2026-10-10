@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -23,6 +24,7 @@ import {
 import { createWorktree, deletePaseoWorktree } from "../../../utils/worktree.js";
 import {
   FileBackedWorkspaceRegistry,
+  FileBackedProjectRegistry,
   createPersistedProjectRecord,
   createPersistedWorkspaceRecord,
   type PersistedProjectRecord,
@@ -30,6 +32,10 @@ import {
 } from "../../workspace-registry.js";
 import { createWorkspaceRecoveryService } from "./workspace-recovery-service.js";
 import { withWorktreeCleanupReservation } from "../../worktree-use-lock.js";
+import { HandoffOwnership } from "../../handoff/ownership.js";
+import { createWorkspaceProvisioningService } from "../workspace-provisioning/workspace-provisioning-service.js";
+import { createNoopWorkspaceGitService } from "../../test-utils/workspace-git-service-stub.js";
+import { checkoutLiteFromGitSnapshot } from "../../workspace-registry-model.js";
 
 const NOW = "2026-07-11T10:12:30.752Z";
 const tempDirectories: string[] = [];
@@ -92,7 +98,8 @@ function createHarness(input?: {
       workspace?.workspaceId === workspaceId ? workspace : null,
     getProject: async (projectId) => (project?.projectId === projectId ? project : null),
     isDirectory: input?.isDirectory ?? (async (path) => directories.has(path)),
-    unarchiveWorkspace: async (record) => {
+    unarchiveWorkspace: async (record, restoreDirectory) => {
+      await restoreDirectory();
       unarchived.push(record.workspaceId);
     },
   });
@@ -241,7 +248,8 @@ describe("workspace recovery", () => {
         workspaceId === workspace.workspaceId ? workspace : null,
       getProject: async (projectId) => (projectId === project.projectId ? project : null),
       isDirectory: async (path) => existsSync(path) && statSync(path).isDirectory(),
-      unarchiveWorkspace: async (record) => {
+      unarchiveWorkspace: async (record, restoreDirectory) => {
+        await restoreDirectory();
         unarchived.push(record.workspaceId);
       },
     });
@@ -291,7 +299,8 @@ describe("workspace recovery", () => {
       getProject: async (projectId) => (projectId === project.projectId ? project : null),
       isDirectory: async (targetPath) =>
         existsSync(targetPath) && statSync(targetPath).isDirectory(),
-      unarchiveWorkspace: async (record) => {
+      unarchiveWorkspace: async (record, restoreDirectory) => {
+        await restoreDirectory();
         unarchived.push(record.workspaceId);
       },
     });
@@ -387,7 +396,8 @@ async function createBaseRecoveryFixture(baseBranch: string | null) {
     getWorkspace: (id) => registry.get(id),
     getProject: async () => project,
     isDirectory: async (target) => existsSync(target) && statSync(target).isDirectory(),
-    unarchiveWorkspace: async (record) => {
+    unarchiveWorkspace: async (record, restoreDirectory) => {
+      await restoreDirectory();
       await registry.update(record.workspaceId, (value) => ({ ...value, archivedAt: null }));
     },
   });
@@ -401,6 +411,294 @@ async function createBaseRecoveryFixture(baseBranch: string | null) {
   }
   return { workspace, registry, service, paseoHome, repoDir, tempDir, archiveAndRemove };
 }
+
+test("handoff refuses worktree reconstruction before touching a fenced source repository", async () => {
+  const fixture = await createBaseRecoveryFixture("main");
+  await fixture.archiveAndRemove();
+  const archived = await fixture.registry.get(fixture.workspace.workspaceId);
+  const { service, ownership } = await createRecoveryWithHandoff(fixture);
+  const transferId = randomUUID();
+  await ownership.prepare({
+    id: transferId,
+    cwd: fixture.repoDir,
+    workspaceId: "source-workspace",
+    agentIds: [],
+    destinationServerId: "destination-host",
+    reservationId: randomUUID(),
+  });
+  const gitWorktrees = () =>
+    execFileSync("git", ["worktree", "list", "--porcelain"], {
+      cwd: fixture.repoDir,
+      encoding: "utf8",
+    });
+  const before = gitWorktrees();
+
+  expect(await service.inspect(fixture.workspace.workspaceId)).toMatchObject({
+    kind: "recoverable",
+    action: "restore",
+  });
+  await expect(service.restore(fixture.workspace.workspaceId)).rejects.toMatchObject({
+    code: "fenced",
+  });
+  expect(existsSync(fixture.workspace.cwd)).toBe(false);
+  expect(await fixture.registry.get(fixture.workspace.workspaceId)).toEqual(archived);
+  expect(gitWorktrees()).toBe(before);
+  await ownership.cancel(transferId);
+  expect(await service.restore(fixture.workspace.workspaceId)).toEqual({
+    workspaceId: fixture.workspace.workspaceId,
+    action: "restore",
+  });
+  expect(existsSync(fixture.workspace.cwd)).toBe(true);
+  expect((await fixture.registry.get(fixture.workspace.workspaceId))?.archivedAt).toBe(null);
+});
+
+function deferred() {
+  let resolve: () => void = () => {};
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+async function createRecoveryWithHandoff(
+  fixture: Awaited<ReturnType<typeof createBaseRecoveryFixture>>,
+  beforeDirectoryCheck?: (target: string, exists: boolean) => Promise<void>,
+) {
+  const ownership = new HandoffOwnership({
+    directory: join(fixture.tempDir, "ownership"),
+    sourceServerId: "source-host",
+  });
+  await ownership.initialize();
+  const logger = pino({ level: "silent" });
+  const projects = new FileBackedProjectRegistry(join(fixture.tempDir, "projects.json"), logger);
+  await projects.initialize();
+  await projects.upsert(createProject({ rootPath: fixture.repoDir, archivedAt: NOW }));
+  const isDirectory = async (target: string) => {
+    const exists = existsSync(target) && statSync(target).isDirectory();
+    await beforeDirectoryCheck?.(target, exists);
+    return exists;
+  };
+  const provisioning = createWorkspaceProvisioningService({
+    handoffOwnership: ownership,
+    workspaceRegistry: fixture.registry,
+    projectRegistry: projects,
+    workspaceGitService: createNoopWorkspaceGitService({
+      getCheckout: async (cwd) => {
+        const checkout = await getCheckoutStatus(cwd, { paseoHome: fixture.paseoHome });
+        return checkoutLiteFromGitSnapshot(
+          cwd,
+          checkout.isGit
+            ? checkout
+            : {
+                isGit: false,
+                currentBranch: null,
+                remoteUrl: null,
+                repoRoot: null,
+                isPaseoOwnedWorktree: false,
+                mainRepoRoot: null,
+              },
+        );
+      },
+    }),
+    isDirectory,
+    logger,
+  });
+  const service = createWorkspaceRecoveryService({
+    handoffOwnership: ownership,
+    paseoHome: fixture.paseoHome,
+    getWorkspace: (id) => fixture.registry.get(id),
+    getProject: (id) => projects.get(id),
+    isDirectory,
+    unarchiveWorkspace: async (record, restoreDirectory) => {
+      await provisioning.ensureWorkspaceRecordUnarchived(record, restoreDirectory);
+    },
+  });
+  return { service, ownership, projects, logger };
+}
+
+test("handoff drains admitted reconstruction through unarchiving in the real provisioning service", async () => {
+  const fixture = await createBaseRecoveryFixture("main");
+  await fixture.archiveAndRemove();
+  const archived = await fixture.registry.get(fixture.workspace.workspaceId);
+  const reconstructed = deferred();
+  const finishCheck = deferred();
+  const writeEntered = deferred();
+  const finishWrite = deferred();
+  const { service, ownership, logger } = await createRecoveryWithHandoff(
+    fixture,
+    async (target, exists) => {
+      if (exists && target === fixture.workspace.cwd) {
+        reconstructed.resolve();
+        await finishCheck.promise;
+      }
+    },
+  );
+  const upsert = fixture.registry.upsert.bind(fixture.registry);
+  fixture.registry.upsert = async (...args) => {
+    writeEntered.resolve();
+    await finishWrite.promise;
+    return upsert(...args);
+  };
+  const restoring = service.restore(fixture.workspace.workspaceId);
+  const result = expect(restoring).resolves.toEqual({
+    workspaceId: fixture.workspace.workspaceId,
+    action: "restore",
+  });
+  await reconstructed.promise;
+  const transferId = randomUUID();
+  await ownership.prepare({
+    id: transferId,
+    cwd: fixture.workspace.cwd,
+    workspaceId: fixture.workspace.workspaceId,
+    agentIds: [],
+    destinationServerId: "destination-host",
+    reservationId: randomUUID(),
+  });
+  try {
+    await expect(ownership.markReady(transferId, "a".repeat(64))).rejects.toMatchObject({
+      code: "invalid_state",
+    });
+    expect(await fixture.registry.get(fixture.workspace.workspaceId)).toEqual(archived);
+    finishCheck.resolve();
+    await Promise.race([
+      writeEntered.promise,
+      result.then(() => {
+        throw new Error("Recovery completed before the final registry write");
+      }),
+    ]);
+    await expect(ownership.markReady(transferId, "a".repeat(64))).rejects.toMatchObject({
+      code: "invalid_state",
+    });
+  } finally {
+    finishCheck.resolve();
+    finishWrite.resolve();
+    await result;
+  }
+  await ownership.drain(transferId);
+  expect((await ownership.markReady(transferId, "a".repeat(64))).state).toBe("ready");
+  const diskWorkspaces = new FileBackedWorkspaceRegistry(
+    join(fixture.tempDir, "workspaces.json"),
+    logger,
+  );
+  const diskProjects = new FileBackedProjectRegistry(
+    join(fixture.tempDir, "projects.json"),
+    logger,
+  );
+  await diskWorkspaces.initialize();
+  await diskProjects.initialize();
+  expect((await diskWorkspaces.get(fixture.workspace.workspaceId))?.archivedAt).toBe(null);
+  expect((await diskProjects.get(fixture.workspace.projectId))?.archivedAt).toBe(null);
+  expect(
+    await getCheckoutStatus(fixture.workspace.cwd, { paseoHome: fixture.paseoHome }),
+  ).toMatchObject({ isGit: true, currentBranch: "feature", isPaseoOwnedWorktree: true });
+});
+
+test("handoff rejects restoration by identity while its directory is absent", async () => {
+  const fixture = await createBaseRecoveryFixture("main");
+  await fixture.archiveAndRemove();
+  const { service, ownership } = await createRecoveryWithHandoff(fixture);
+  const elsewhere = join(fixture.tempDir, "elsewhere");
+  mkdirSync(elsewhere);
+  await ownership.prepare({
+    id: randomUUID(),
+    cwd: elsewhere,
+    workspaceId: fixture.workspace.workspaceId,
+    agentIds: [],
+    destinationServerId: "destination-host",
+    reservationId: randomUUID(),
+  });
+
+  await expect(service.restore(fixture.workspace.workspaceId)).rejects.toMatchObject({
+    code: "fenced",
+  });
+  expect(existsSync(fixture.workspace.cwd)).toBe(false);
+  expect((await fixture.registry.get(fixture.workspace.workspaceId))?.archivedAt).toEqual(
+    expect.any(String),
+  );
+});
+
+test("handoff keeps a retained worktree archived when a sibling directory is fenced", async () => {
+  const fixture = await createBaseRecoveryFixture("main");
+  const cwd = join(fixture.workspace.cwd, "selected");
+  const sibling = join(fixture.workspace.cwd, "sibling");
+  mkdirSync(cwd);
+  mkdirSync(sibling);
+  await fixture.registry.upsert({ ...fixture.workspace, cwd, archivedAt: NOW });
+  const { service, ownership } = await createRecoveryWithHandoff(fixture);
+  const transferId = randomUUID();
+  await ownership.prepare({
+    id: transferId,
+    cwd: sibling,
+    workspaceId: "sibling-workspace",
+    agentIds: [],
+    destinationServerId: "destination-host",
+    reservationId: randomUUID(),
+  });
+
+  expect(await service.inspect(fixture.workspace.workspaceId)).toMatchObject({
+    kind: "recoverable",
+    action: "unarchive",
+  });
+  await expect(service.restore(fixture.workspace.workspaceId)).rejects.toMatchObject({
+    code: "fenced",
+  });
+  expect((await fixture.registry.get(fixture.workspace.workspaceId))?.archivedAt).toBe(NOW);
+  await ownership.cancel(transferId);
+  expect(await service.restore(fixture.workspace.workspaceId)).toEqual({
+    workspaceId: fixture.workspace.workspaceId,
+    action: "unarchive",
+  });
+  expect((await fixture.registry.get(fixture.workspace.workspaceId))?.archivedAt).toBe(null);
+});
+
+test("handoff waits for failed reconstruction to remove its worktree before releasing admission", async () => {
+  const fixture = await createBaseRecoveryFixture("main");
+  const selectedCwd = join(fixture.workspace.cwd, "missing-subdirectory");
+  await fixture.registry.upsert({ ...fixture.workspace, cwd: selectedCwd });
+  await fixture.archiveAndRemove();
+  const archived = await fixture.registry.get(fixture.workspace.workspaceId);
+  const reconstructed = deferred();
+  const finishCheck = deferred();
+  const { service, ownership } = await createRecoveryWithHandoff(fixture, async (target) => {
+    if (target === selectedCwd && existsSync(fixture.workspace.cwd)) {
+      reconstructed.resolve();
+      await finishCheck.promise;
+    }
+  });
+  const restoring = service.restore(fixture.workspace.workspaceId);
+  const failed = expect(restoring).rejects.toThrow(
+    "Selected project directory is missing from the restored worktree",
+  );
+  await reconstructed.promise;
+  const transferId = randomUUID();
+  await ownership.prepare({
+    id: transferId,
+    cwd: fixture.repoDir,
+    workspaceId: "source-workspace",
+    agentIds: [],
+    destinationServerId: "destination-host",
+    reservationId: randomUUID(),
+  });
+  try {
+    await expect(ownership.markReady(transferId, "a".repeat(64))).rejects.toMatchObject({
+      code: "invalid_state",
+    });
+    expect(existsSync(fixture.workspace.cwd)).toBe(true);
+  } finally {
+    finishCheck.resolve();
+    await failed;
+  }
+  await ownership.drain(transferId);
+  expect((await ownership.markReady(transferId, "a".repeat(64))).state).toBe("ready");
+  expect(existsSync(fixture.workspace.cwd)).toBe(false);
+  expect(
+    execFileSync("git", ["worktree", "list", "--porcelain"], {
+      cwd: fixture.repoDir,
+      encoding: "utf8",
+    }),
+  ).not.toContain("base-recovery");
+  expect(await fixture.registry.get(fixture.workspace.workspaceId)).toEqual(archived);
+});
 
 test("preserves ordinary checkout behavior when no separate base was recorded", async () => {
   const fixture = await createBaseRecoveryFixture(null);

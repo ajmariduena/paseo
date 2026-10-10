@@ -7,7 +7,20 @@ import { join } from "node:path";
 import { getSessionInfo } from "@anthropic-ai/claude-agent-sdk";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
-import { claudeProjectDir, claudeProjectDirSync } from "./project-dir.js";
+import { claudeConfigDir, claudeProjectDir, claudeProjectDirSync } from "./project-dir.js";
+
+describe("claudeConfigDir", () => {
+  test("resolves a relative home against the child cwd with SDK Unicode normalization", () => {
+    const cwd = join(tmpdir(), "claude-config-test");
+    expect(claudeConfigDir({ CLAUDE_CONFIG_DIR: "cafe\u0301" }, cwd)).toBe(join(cwd, "café"));
+  });
+
+  test("uses the home directory from the child's environment", () => {
+    const home = join(tmpdir(), "claude-child-home");
+    const env = process.platform === "win32" ? { USERPROFILE: home } : { HOME: home };
+    expect(claudeConfigDir(env)).toBe(join(home, ".claude"));
+  });
+});
 
 // Parity oracle: the Claude SDK's getSessionInfo({ dir }) canonicalizes the
 // given dir with the SDK's own encoder and looks for `<sessionId>.jsonl` under

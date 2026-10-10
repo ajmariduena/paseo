@@ -195,6 +195,45 @@ async function runTurns(session: AgentSession, count: number): Promise<void> {
 }
 
 describe("Claude rewind across a turn that produced no response", () => {
+  test("close waits for a conversation fork and preserves its final session", async () => {
+    const conversation = createConversation([
+      { assistantMessageId: "assistant-1" },
+      { assistantMessageId: "assistant-2" },
+    ]);
+    const rewindSdk = new FakeClaudeSdk();
+    const session = await createSession(conversation, rewindSdk);
+    const entered = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<{ sessionId: string }>();
+    const fork = vi.spyOn(rewindSdk, "forkSession").mockImplementation(async () => {
+      entered.resolve();
+      return finish.promise;
+    });
+    try {
+      await runTurns(session, 2);
+      vi.useFakeTimers();
+      const reverted = session.revertConversation?.({ messageId: conversation.userMessageIds[1] });
+      await entered.promise;
+      const outcome = session.close().then(
+        () => null,
+        (error: unknown) => error,
+      );
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(await outcome).toMatchObject({
+        message: "Claude session operations did not settle during close",
+      });
+      finish.resolve({ sessionId: "forked-during-close" });
+      await reverted;
+      await session.close();
+      expect(session.describePersistence()?.sessionId).toBe("forked-during-close");
+      expect(fork).toHaveBeenCalledTimes(1);
+    } finally {
+      finish.resolve({ sessionId: "forked-during-close" });
+      vi.useRealTimers();
+      await session.close();
+      fork.mockRestore();
+    }
+  });
+
   test("forks at the most recent turn that did produce a response", async () => {
     const conversation = createConversation([
       { assistantMessageId: "assistant-1" },

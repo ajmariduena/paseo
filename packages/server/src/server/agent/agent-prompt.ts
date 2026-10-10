@@ -125,7 +125,7 @@ export async function startAgentRun(
   // Out-of-band commands (e.g. /goal pause) must run WITHOUT canceling an
   // in-flight turn — replaceAgentRun would interrupt the running turn. The
   // intercept lives at this layer so it covers every prompt entrypoint.
-  if (agentManager.tryRunOutOfBand(agentId, prompt, options?.runOptions)) {
+  if (await agentManager.tryRunOutOfBand(agentId, prompt, options?.runOptions)) {
     return { disposition: "out_of_band" };
   }
   try {
@@ -164,6 +164,9 @@ async function startAgentRunInner(
     },
     "agent.session.start_stream.iterator_returned",
   );
+  // AgentManager yields its first event only after admission and the canonical prompt commit.
+  // Returning earlier can acknowledge a message whose preparation or provider start still fails.
+  await iterator.next();
   void (async () => {
     try {
       try {
@@ -320,6 +323,8 @@ async function resolvePromptSource(
 export async function sendPromptToAgent(
   params: SendPromptToAgentParams,
 ): Promise<BackgroundDispatch> {
+  if (!params.source && (await params.agentStorage.get(params.agentId))?.handoffRetention)
+    await params.agentManager.messageQueue.releaseUserStop(params.agentId);
   if (!(await prepareAgentForPrompt(params))) {
     return { disposition: "skipped_archived", settled: Promise.resolve("skipped_archived") };
   }

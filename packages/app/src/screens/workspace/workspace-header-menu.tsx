@@ -76,6 +76,7 @@ export interface WorkspaceHeaderWorkspaceActions {
   importAgentDisabled: boolean;
   copyPathDisabled: boolean;
   onOpenImportSheet: () => void;
+  onOpenHandoffSheet: (() => void) | null;
   onCopyWorkspacePath: () => void;
   onCopyBranchName: () => void;
   onOpenSetupTab: () => void;
@@ -87,6 +88,7 @@ function WorkspaceHeaderWorkspaceActionItems({
   importAgentDisabled,
   copyPathDisabled,
   onOpenImportSheet,
+  onOpenHandoffSheet,
   onCopyWorkspacePath,
   onCopyBranchName,
   onOpenSetupTab,
@@ -119,6 +121,11 @@ function WorkspaceHeaderWorkspaceActionItems({
       >
         {t("workspace.header.actions.importSession")}
       </DropdownMenuItem>
+      {onOpenHandoffSheet ? (
+        <DropdownMenuItem testID="workspace-header-handoff" onSelect={onOpenHandoffSheet}>
+          {t("handoff.title")}
+        </DropdownMenuItem>
+      ) : null}
       {showWorkspaceSetup ? (
         <>
           <DropdownMenuSeparator />
@@ -222,6 +229,7 @@ function HeaderMenuProfileItem({
 export interface WorkspaceHeaderMenuMobileProps extends WorkspaceHeaderWorkspaceActions {
   normalizedServerId: string;
   showCreateBrowserTab: boolean;
+  createAgentDisabled: boolean;
   createTerminalDisabled: boolean;
   onCreateDraftTab: () => void;
   onCreateTerminal: () => void;
@@ -236,6 +244,7 @@ export interface WorkspaceHeaderMenuMobileProps extends WorkspaceHeaderWorkspace
 export function WorkspaceHeaderMenuMobile({
   normalizedServerId,
   showCreateBrowserTab,
+  createAgentDisabled,
   createTerminalDisabled,
   onCreateDraftTab,
   onCreateTerminal,
@@ -274,6 +283,7 @@ export function WorkspaceHeaderMenuMobile({
       >
         <DropdownMenuItem
           testID="workspace-header-new-agent"
+          disabled={createAgentDisabled}
           leading={MENU_NEW_AGENT_ICON}
           onSelect={onCreateDraftTab}
         >

@@ -124,6 +124,7 @@ for (const scenario of [
     await creation.expectStartupFailure();
     await creation.expectOneCreatedWorkspace();
     await scenario.prepare(creation);
+    await startup.release();
     await creation.submitPrompt("Retry this workspace and agent together.");
     await creation.expectAgentCount(1);
   });

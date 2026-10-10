@@ -43,7 +43,9 @@ function CompactExplorerOpenGestureSurface({
 
   return (
     <GestureDetector gesture={explorerOpenGesture} touchAction={COMPACT_WEB_GESTURE_TOUCH_ACTION}>
-      <View style={styles.fill}>{children}</View>
+      <View collapsable={false} style={styles.fill}>
+        {children}
+      </View>
     </GestureDetector>
   );
 }
@@ -183,25 +185,17 @@ export function CompactExplorerSidebarHost({
     themedExplorer = <AppearanceStyleBoundary>{explorer}</AppearanceStyleBoundary>;
   }
 
-  if (presentation === "dock") {
-    return (
-      <View style={styles.row} onLayout={handleContainerLayout}>
-        <View style={styles.fill}>{children}</View>
-        {themedExplorer}
-      </View>
-    );
-  }
-
+  // Overlay, dock and disabled desktop hosts share the same route-content ancestry.
   return (
-    <>
+    <View style={styles.row} onLayout={presentation === "dock" ? handleContainerLayout : undefined}>
       <CompactExplorerOpenGestureSurface
-        enabled={enabled && Boolean(model?.workspaceRoot)}
+        enabled={enabled && presentation === "overlay" && Boolean(model?.workspaceRoot)}
         onOpenExplorer={handleOpenExplorer}
       >
         {children}
       </CompactExplorerOpenGestureSurface>
       {themedExplorer}
-    </>
+    </View>
   );
 }
 

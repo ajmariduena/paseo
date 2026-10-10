@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import {
   existsSync,
@@ -7,6 +8,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -28,6 +30,17 @@ import {
 } from "../utils/worktree-metadata.js";
 import { createWorktree } from "../utils/worktree.js";
 import { assertWorktreeNotCleaningUp, withWorktreeProjectLock } from "./worktree-use-lock.js";
+import { HandoffOwnership } from "./handoff/ownership.js";
+import { startWorktreeStorageSweeper } from "./worktree-storage-sweeper.js";
+import { createTestLogger } from "../test-utils/test-logger.js";
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -51,6 +64,22 @@ function expectCleanupReserved(path: string): void {
   expect(() => assertWorktreeNotCleaningUp(path)).toThrow("Worktree is cleaning up");
 }
 
+async function cleanupForMode(
+  mode: "manual" | "automatic",
+  context: WorktreeStorageContext,
+  entryId: string,
+): Promise<{ removed: number; errors: string[] }> {
+  if (mode === "automatic") {
+    const result = await sweepOwnedArchivedWorktrees(context, () => true);
+    return { removed: result.removed, errors: result.failures.map((failure) => failure.error) };
+  }
+  const results = await cleanupWorktreeStorage(context, [entryId]);
+  return {
+    removed: results.filter((result) => result.removed).length,
+    errors: results.flatMap((result) => (result.error === null ? [] : [result.error])),
+  };
+}
+
 // Process checks read lsof, which Windows lacks; there every entry stays kept as unverifiable.
 describe.skipIf(process.platform === "win32")("worktree storage cleanup", () => {
   let root: string;
@@ -62,7 +91,7 @@ describe.skipIf(process.platform === "win32")("worktree storage cleanup", () => 
   let context: WorktreeStorageContext;
 
   beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), "paseo-storage-"));
+    root = realpathSync(mkdtempSync(join(tmpdir(), "paseo-storage-")));
     repo = join(root, "repo");
     worktreesRoot = join(root, "worktrees");
     mkdirSync(repo);
@@ -95,6 +124,273 @@ describe.skipIf(process.platform === "win32")("worktree storage cleanup", () => 
     git(repo, "worktree", "add", "-b", name, path);
     return path;
   }
+
+  function installTeardown(command: string): void {
+    writeFileSync(join(repo, "paseo.json"), JSON.stringify({ worktree: { teardown: command } }));
+    git(repo, "add", "paseo.json");
+    git(repo, "commit", "-m", "configure teardown");
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD");
+  }
+
+  function addArchived(name: string): string {
+    const path = add(name);
+    writePaseoWorktreeMetadata(path, {
+      baseRefName: "main",
+      serverId: context.serverId,
+      paseoHome: root,
+    });
+    records.push(workspace(path, "2026-01-02T00:00:00.000Z"));
+    context.readProcessCwds = async () => ({ cwds: [], unavailableReason: null });
+    return path;
+  }
+
+  async function prepareHandoff(cwd: string, workspaceId: string) {
+    const ownership = new HandoffOwnership({
+      directory: join(root, "handoff"),
+      sourceServerId: context.serverId,
+    });
+    await ownership.initialize();
+    const id = randomUUID();
+    await ownership.prepare({
+      id,
+      cwd,
+      workspaceId,
+      agentIds: [],
+      destinationServerId: "target",
+      reservationId: randomUUID(),
+    });
+    context.handoffOwnership = ownership;
+    return { ownership, id };
+  }
+
+  function installWaitingTeardown(): void {
+    installTeardown(
+      "node -e \"const fs=require('fs'); const root=process.env.PASEO_SOURCE_CHECKOUT_PATH; fs.writeFileSync(root+'/teardown-started', 'yes'); const until=Date.now()+10000; while(!fs.existsSync(root+'/finish-teardown') && Date.now()<until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10); if(!fs.existsSync(root+'/finish-teardown')) process.exit(1); fs.writeFileSync(root+'/teardown-finished', 'yes')\"",
+    );
+  }
+
+  it.each(["manual", "automatic"] as const)(
+    "handoff keeps %s cleanup admitted through teardown and its final removal check",
+    async (mode) => {
+      installWaitingTeardown();
+      const path = addArchived("draining-cleanup");
+      const entry = (await listWorktreeStorage(context)).entries[0]!;
+      const ownership = new HandoffOwnership({
+        directory: join(root, "handoff"),
+        sourceServerId: context.serverId,
+      });
+      await ownership.initialize();
+      context.handoffOwnership = ownership;
+      const checking = deferred();
+      const finishCheck = deferred();
+      context.readProcessCwds = async () => {
+        if (existsSync(join(repo, "teardown-finished"))) {
+          checking.resolve();
+          await finishCheck.promise;
+        }
+        return { cwds: [], unavailableReason: null };
+      };
+      const cleaning = cleanupForMode(mode, context, entry.entryId);
+      try {
+        await vi.waitFor(() => expect(existsSync(join(repo, "teardown-started"))).toBe(true), {
+          timeout: 5000,
+        });
+        const id = randomUUID();
+        await ownership.prepare({
+          id,
+          cwd: path,
+          workspaceId: records[0]!.workspaceId,
+          agentIds: [],
+          destinationServerId: "target",
+          reservationId: randomUUID(),
+        });
+        await expect(ownership.markReady(id, "a".repeat(64))).rejects.toMatchObject({
+          code: "invalid_state",
+        });
+        writeFileSync(join(repo, "finish-teardown"), "yes");
+        await checking.promise;
+        await expect(ownership.markReady(id, "a".repeat(64))).rejects.toMatchObject({
+          code: "invalid_state",
+        });
+        expect(existsSync(path)).toBe(true);
+        finishCheck.resolve();
+        expect(await cleaning).toEqual({ removed: 1, errors: [] });
+        await ownership.drain(id);
+        expect((await ownership.markReady(id, "a".repeat(64))).state).toBe("ready");
+        expect(existsSync(path)).toBe(false);
+      } finally {
+        writeFileSync(join(repo, "finish-teardown"), "yes");
+        finishCheck.resolve();
+        await cleaning;
+      }
+    },
+  );
+
+  it("handoff shutdown waits for an admitted automatic teardown", async () => {
+    installWaitingTeardown();
+    const path = addArchived("stopping-cleanup");
+    const completed = deferred();
+    const logger = createTestLogger();
+    const log = vi.spyOn(logger, "info").mockImplementation((_fields, message) => {
+      if (message === "Automatic worktree cleanup sweep completed") completed.resolve();
+    });
+    vi.useFakeTimers();
+    const sweeper = startWorktreeStorageSweeper({ context, isEnabled: () => true, logger });
+    vi.advanceTimersByTime(2 * 60_000);
+    vi.useRealTimers();
+    try {
+      await vi.waitFor(() => expect(existsSync(join(repo, "teardown-started"))).toBe(true), {
+        timeout: 5000,
+      });
+      let stopped = false;
+      const stopping = Promise.resolve(sweeper.dispose()).then(() => {
+        stopped = true;
+        return undefined;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(stopped).toBe(false);
+      writeFileSync(join(repo, "finish-teardown"), "yes");
+      await stopping;
+      expect(readFileSync(join(repo, "teardown-finished"), "utf8")).toBe("yes");
+      expect(existsSync(path)).toBe(true);
+    } finally {
+      writeFileSync(join(repo, "finish-teardown"), "yes");
+      await sweeper.dispose();
+      await completed.promise;
+      log.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["manual", "automatic"] as const)(
+    "handoff prevents %s cleanup before teardown and allows cancel/retry",
+    async (mode) => {
+      installTeardown(
+        "node -e \"require('fs').writeFileSync(process.env.PASEO_SOURCE_CHECKOUT_PATH + '/teardown-ran', 'yes')\"",
+      );
+      const path = addArchived("frozen-cleanup");
+      const entry = (await listWorktreeStorage(context)).entries[0]!;
+      const before = git(repo, "worktree", "list", "--porcelain");
+      const { ownership, id } = await prepareHandoff(path, records[0]!.workspaceId);
+      expect(await cleanupForMode(mode, context, entry.entryId)).toEqual({
+        removed: 0,
+        errors: [`Workspace is held by handoff ${id} (preparing)`],
+      });
+      expect(existsSync(join(repo, "teardown-ran"))).toBe(false);
+      expect(existsSync(path)).toBe(true);
+      expect(git(repo, "worktree", "list", "--porcelain")).toBe(before);
+      await ownership.cancel(id);
+      expect(await cleanupForMode(mode, context, entry.entryId)).toEqual({
+        removed: 1,
+        errors: [],
+      });
+      expect(readFileSync(join(repo, "teardown-ran"), "utf8")).toBe("yes");
+      expect(existsSync(path)).toBe(false);
+    },
+  );
+
+  describe.each(["manual", "automatic"] as const)("%s cleanup during handoff", (mode) => {
+    it.each(["identity", "main repository", "backing sibling"] as const)(
+      "protects the %s and releases partial admission",
+      async (scope) => {
+        const path = addArchived("scope-cleanup");
+        const elsewhere = join(root, "elsewhere");
+        const sibling = join(path, "sibling");
+        const selected = join(path, "selected");
+        mkdirSync(elsewhere);
+        mkdirSync(sibling);
+        mkdirSync(selected);
+        records[0] = { ...records[0]!, cwd: selected };
+        const entry = (await listWorktreeStorage(context)).entries[0]!;
+        const scopes = {
+          identity: { cwd: elsewhere, workspaceId: records[0]!.workspaceId },
+          "main repository": { cwd: repo, workspaceId: "other-workspace" },
+          "backing sibling": { cwd: sibling, workspaceId: "other-workspace" },
+        };
+        const fence = scopes[scope];
+        const { ownership, id } = await prepareHandoff(fence.cwd, fence.workspaceId);
+        const before = git(repo, "worktree", "list", "--porcelain");
+        expect(await cleanupForMode(mode, context, entry.entryId)).toEqual({
+          removed: 0,
+          errors: [`Workspace is held by handoff ${id} (preparing)`],
+        });
+        expect(git(repo, "worktree", "list", "--porcelain")).toBe(before);
+        await ownership.cancel(id);
+        expect(await cleanupForMode(mode, context, entry.entryId)).toEqual({
+          removed: 1,
+          errors: [],
+        });
+        const next = randomUUID();
+        await ownership.prepare({
+          id: next,
+          cwd: repo,
+          workspaceId: "main-workspace",
+          agentIds: [],
+          destinationServerId: "target",
+          reservationId: randomUUID(),
+        });
+        expect((await ownership.markReady(next, "a".repeat(64))).state).toBe("ready");
+      },
+    );
+
+    it("retains another handoff's stale Git registration when pruning", async () => {
+      const path = addArchived("safe-cleanup");
+      const stale = join(root, "external\nworktree");
+      git(repo, "worktree", "add", "-b", "stale", stale);
+      const staleRecord = workspace(stale, "2026-01-02T00:00:00.000Z");
+      records.push(staleRecord);
+      const { ownership, id } = await prepareHandoff(stale, staleRecord.workspaceId);
+      rmSync(stale, { recursive: true, force: true });
+      const entry = (await listWorktreeStorage(context)).entries[0]!;
+      expect(await cleanupForMode(mode, context, entry.entryId)).toEqual({
+        removed: 1,
+        errors: [],
+      });
+      expect(existsSync(path)).toBe(false);
+      expect(git(repo, "worktree", "list", "--porcelain", "-z")).toContain(`worktree ${stale}\0`);
+      await ownership.cancel(id);
+      addArchived("retry-prune");
+      const retry = (await listWorktreeStorage(context)).entries[0]!;
+      expect(await cleanupForMode(mode, context, retry.entryId)).toEqual({
+        removed: 1,
+        errors: [],
+      });
+      expect(git(repo, "worktree", "list", "--porcelain", "-z")).not.toContain(
+        `worktree ${stale}\0`,
+      );
+    });
+  });
+
+  it("handoff storage inspection leaves the frozen Git index unchanged", async () => {
+    const path = add("frozen-inspection");
+    writePaseoWorktreeMetadata(path, {
+      baseRefName: "main",
+      serverId: "srv-this",
+      paseoHome: root,
+    });
+    const record = workspace(path, "2026-01-02T00:00:00.000Z");
+    records.push(record);
+    const ownership = new HandoffOwnership({
+      directory: join(root, "handoff"),
+      sourceServerId: context.serverId,
+    });
+    await ownership.initialize();
+    await ownership.prepare({
+      id: randomUUID(),
+      cwd: path,
+      workspaceId: record.workspaceId,
+      agentIds: [],
+      destinationServerId: "target",
+      reservationId: randomUUID(),
+    });
+    context.handoffOwnership = ownership;
+    context.readProcessCwds = async () => ({ cwds: [], unavailableReason: null });
+    const index = git(path, "rev-parse", "--git-path", "index");
+    const before = readFileSync(index);
+    utimesSync(join(path, "README.md"), new Date(0), new Date(0));
+    expect((await listWorktreeStorage(context)).entries).toHaveLength(1);
+    expect(readFileSync(index)).toEqual(before);
+  });
 
   it("lists plain git worktrees, archived leftovers, and each kept reason", async () => {
     const plain = add("plain");

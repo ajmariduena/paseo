@@ -8,6 +8,8 @@ import {
 import { runGitCommand } from "../../../utils/run-git-command.js";
 import type { WorkspaceGitService } from "../../workspace-git-service.js";
 import { assertSafeGitRef as assertWorktreeSafeGitRef } from "../../worktree-session.js";
+import type { HandoffOwnership } from "../../handoff/ownership.js";
+import { expandTilde } from "../../../utils/path.js";
 
 /**
  * The git branch / working-tree mutation primitives a client session performs on a
@@ -42,8 +44,15 @@ type GitMutationGitSource = Pick<
 export function createGitMutationService(deps: {
   workspaceGitService: GitMutationGitSource;
   logger: pino.Logger;
+  handoffOwnership?: HandoffOwnership;
 }): GitMutationService {
   const { workspaceGitService, logger } = deps;
+
+  function withMutation<T>(cwd: string, operation: () => Promise<T>): Promise<T> {
+    return deps.handoffOwnership
+      ? deps.handoffOwnership.withMutation({ cwd: expandTilde(cwd) }, operation)
+      : operation();
+  }
 
   function assertSafeGitRef(ref: string, label: string): void {
     if (!/^[A-Za-z0-9._/-]+$/.test(ref)) {
@@ -92,42 +101,46 @@ export function createGitMutationService(deps: {
 
   return {
     async checkoutExistingBranch(cwd, branch) {
-      assertSafeGitRef(branch, "branch");
-      const resolution = await workspaceGitService.validateBranchRef(cwd, branch);
-      if (resolution.kind === "not-found") {
-        throw new Error(`Branch not found: ${branch}`);
-      }
-      await ensureCleanWorkingTree(cwd);
-      const result = await checkoutResolvedBranch({ cwd, resolution });
-      await notifyGitMutation(cwd, "switch-branch", { invalidateForge: true });
-      return result;
+      return withMutation(cwd, async () => {
+        assertSafeGitRef(branch, "branch");
+        const resolution = await workspaceGitService.validateBranchRef(cwd, branch);
+        if (resolution.kind === "not-found") {
+          throw new Error(`Branch not found: ${branch}`);
+        }
+        await ensureCleanWorkingTree(cwd);
+        const result = await checkoutResolvedBranch({ cwd, resolution });
+        await notifyGitMutation(cwd, "switch-branch", { invalidateForge: true });
+        return result;
+      });
     },
 
     async createBranchFromBase({ cwd, baseBranch, newBranchName }) {
-      assertSafeGitRef(baseBranch, "base branch");
-      assertSafeGitRef(newBranchName, "new branch");
+      return withMutation(cwd, async () => {
+        assertSafeGitRef(baseBranch, "base branch");
+        assertSafeGitRef(newBranchName, "new branch");
 
-      const baseResolution = await workspaceGitService.validateBranchRef(cwd, baseBranch);
-      if (baseResolution.kind === "not-found") {
-        throw new Error(`Base branch not found: ${baseBranch}`);
-      }
+        const baseResolution = await workspaceGitService.validateBranchRef(cwd, baseBranch);
+        if (baseResolution.kind === "not-found") {
+          throw new Error(`Base branch not found: ${baseBranch}`);
+        }
 
-      const exists = await workspaceGitService.hasLocalBranch(cwd, newBranchName);
-      if (exists) {
-        throw new Error(`Branch already exists: ${newBranchName}`);
-      }
+        const exists = await workspaceGitService.hasLocalBranch(cwd, newBranchName);
+        if (exists) {
+          throw new Error(`Branch already exists: ${newBranchName}`);
+        }
 
-      await ensureCleanWorkingTree(cwd);
-      // --no-track: a branch we create is not a continuation of its base, so it gets no
-      // upstream. Without it git hands the new branch `origin/<base>` whenever the base is a
-      // remote-tracking ref or branch.autoSetupMerge asks for inheritance, and every later
-      // push then reads that upstream and lands the work on the default branch. The worktree
-      // path makes the same promise with `git worktree add -b <branch> --no-track <base>`.
-      await runGitCommand(["checkout", "-b", newBranchName, "--no-track", baseBranch], {
-        cwd,
-        timeout: 120_000,
+        await ensureCleanWorkingTree(cwd);
+        // --no-track: a branch we create is not a continuation of its base, so it gets no
+        // upstream. Without it git hands the new branch `origin/<base>` whenever the base is a
+        // remote-tracking ref or branch.autoSetupMerge asks for inheritance, and every later
+        // push then reads that upstream and lands the work on the default branch. The worktree
+        // path makes the same promise with `git worktree add -b <branch> --no-track <base>`.
+        await runGitCommand(["checkout", "-b", newBranchName, "--no-track", baseBranch], {
+          cwd,
+          timeout: 120_000,
+        });
+        await notifyGitMutation(cwd, "create-branch");
       });
-      await notifyGitMutation(cwd, "create-branch");
     },
 
     notifyGitMutation,

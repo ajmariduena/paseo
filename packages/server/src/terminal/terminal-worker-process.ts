@@ -212,10 +212,6 @@ async function handleCreateTerminalRequest(message: TerminalCreateRequest): Prom
       throw new Error("workspaceId is required");
     }
     const session = await manager.createTerminal({ ...message.options, workspaceId });
-    if (request.errorReported) {
-      session.kill();
-      return;
-    }
     watchTerminal(session);
     const initialSnapshot = session.getStateSnapshot();
     sendToParent({
@@ -223,6 +219,12 @@ async function handleCreateTerminalRequest(message: TerminalCreateRequest): Prom
       terminal: toTerminalInfo(session),
       state: initialSnapshot.state,
     });
+    if (request.errorReported) {
+      // An asynchronous conpty failure may precede createTerminal returning. Keep a
+      // failed stop observable and do not settle admission until creation has finished.
+      await manager.killTerminalAndWait(session.id);
+      return;
+    }
     sendToParent({
       type: "response",
       requestId: message.requestId,
@@ -235,6 +237,9 @@ async function handleCreateTerminalRequest(message: TerminalCreateRequest): Prom
   } catch (error) {
     reportInFlightTerminalCreateFailure(error);
   } finally {
+    if (message.options.id) {
+      sendToParent({ type: "terminalCreateSettled", terminalId: message.options.id });
+    }
     if (inFlightTerminalCreateRequest === request) {
       inFlightTerminalCreateRequest = null;
     }

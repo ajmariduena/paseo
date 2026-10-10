@@ -1,6 +1,16 @@
 import { VoiceCommandsSettingsSchema } from "./voice-commands/rpc-schemas.js";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
+import { HANDOFF_CHUNK_BASE64_CHARS } from "./handoff.js";
+import { ScheduleRunSchema } from "./schedule/types.js";
+import {
+  HandoffConversationPreviewSchema,
+  HandoffDestinationPageSchema,
+  HandoffDestinationSnapshotSchema,
+  HandoffStoppedWorkReviewSchema,
+  HandoffScheduleReviewSchema,
+  HandoffStoppedWorkPreviewSchema,
+} from "./handoff-control.js";
 import {
   AgentSnapshotPayloadSchema,
   AgentTimelineItemPayloadSchema,
@@ -14,7 +24,484 @@ import {
   MutableDaemonConfigPatchSchema,
   MutableDaemonConfigSchema,
   validateQuickPrompts,
+  HandoffGetConversationHistoryResponseSchema,
 } from "./messages.js";
+
+test("handoff queue counts preserve old stopped-work preview parsing", () => {
+  const legacy = { agentIds: [], terminals: [], setupOperations: 0 };
+  const current = { ...legacy, queuedMessages: 2, queuedBytes: 1024 };
+  expect(HandoffStoppedWorkPreviewSchema.parse(legacy)).toEqual(legacy);
+  expect(HandoffStoppedWorkPreviewSchema.parse(current)).toEqual(current);
+  expect(
+    HandoffStoppedWorkPreviewSchema.omit({ queuedMessages: true, queuedBytes: true }).parse(
+      current,
+    ),
+  ).toEqual(legacy);
+});
+
+test("handoff schedule review and size remain optional for older clients and daemons", () => {
+  const review = { agents: [], terminals: [], setupIds: [] };
+  const currentReview = {
+    ...review,
+    schedules: [
+      {
+        id: "1234abcd",
+        name: "Build",
+        kind: "schedule",
+        status: "active",
+        cadence: "0 0 * * * (UTC)",
+        digest: "a".repeat(64),
+        runCount: 1,
+        omittedSettings: [],
+        omittedMcpServers: [],
+      },
+    ],
+  };
+  expect(HandoffStoppedWorkReviewSchema.parse(review)).toEqual(review);
+  expect(HandoffStoppedWorkReviewSchema.parse(currentReview)).toEqual(currentReview);
+  const activeReview = {
+    ...currentReview.schedules[0],
+    kind: "heartbeat",
+    activeRun: {
+      id: "12345678-1234-4234-8234-123456789abc",
+      previousLastRunAt: null,
+    },
+  };
+  expect(HandoffScheduleReviewSchema.parse(activeReview)).toEqual(activeReview);
+  const retainedReview = {
+    ...currentReview.schedules[0],
+    activeRun: activeReview.activeRun,
+    retainedOnSource: { cwd: "/source/project" },
+  };
+  expect(HandoffScheduleReviewSchema.parse(retainedReview)).toEqual(retainedReview);
+  expect(
+    HandoffScheduleReviewSchema.omit({ retainedOnSource: true }).parse(retainedReview),
+  ).toEqual({
+    ...currentReview.schedules[0],
+    activeRun: activeReview.activeRun,
+  });
+  expect(HandoffScheduleReviewSchema.omit({ activeRun: true }).parse(activeReview)).toEqual({
+    ...currentReview.schedules[0],
+    kind: "heartbeat",
+  });
+  expect(() =>
+    HandoffScheduleReviewSchema.parse({
+      ...activeReview,
+      activeRun: { ...activeReview.activeRun, id: "unknown" },
+    }),
+  ).toThrow();
+  expect(HandoffStoppedWorkReviewSchema.omit({ schedules: true }).parse(currentReview)).toEqual(
+    review,
+  );
+  const preview = { agentIds: [], terminals: [], setupOperations: 0 };
+  expect(HandoffStoppedWorkPreviewSchema.parse(preview)).toEqual(preview);
+  expect(
+    HandoffStoppedWorkPreviewSchema.omit({ scheduledBytes: true }).parse({
+      ...preview,
+      scheduledBytes: 128,
+    }),
+  ).toEqual(preview);
+});
+
+test("retained handoff stop membership stays optional on the wire", () => {
+  const legacy = { agents: [], terminals: [], setupIds: [] };
+  const current = {
+    ...legacy,
+    retainedWorkspaces: [
+      {
+        workspaceId: "job-workspace",
+        incarnation: "12345678-1234-4234-8234-123456789abc",
+        cwd: "/source/job",
+        agentIds: ["job-agent"],
+      },
+    ],
+  };
+  expect(HandoffStoppedWorkReviewSchema.parse(legacy)).toEqual(legacy);
+  expect(HandoffStoppedWorkReviewSchema.parse(current)).toEqual(current);
+  expect(HandoffStoppedWorkReviewSchema.omit({ retainedWorkspaces: true }).parse(current)).toEqual(
+    legacy,
+  );
+  const active = { id: "12345678-1234-4234-8234-123456789abc", previousLastRunAt: null };
+  const schema = HandoffScheduleReviewSchema.shape.activeRun.unwrap();
+  expect(schema.parse(active)).toEqual(active);
+  expect(
+    schema.omit({ retainedAgentId: true }).parse({ ...active, retainedAgentId: "job-agent" }),
+  ).toEqual(active);
+});
+
+test("handoff schedule run provenance does not turn source identities into destination links", () => {
+  const timestamp = "2026-01-01T00:00:00Z";
+  const run = {
+    id: "run",
+    scheduledFor: timestamp,
+    startedAt: timestamp,
+    endedAt: timestamp,
+    status: "succeeded",
+    agentId: null,
+    workspaceId: null,
+    output: "Previous output",
+    error: null,
+  };
+  const current = {
+    ...run,
+    origin: {
+      serverId: "source",
+      scheduleId: "1234abcd",
+      agentId: "old-agent",
+      workspaceId: "old-workspace",
+    },
+  };
+  expect(ScheduleRunSchema.parse(run)).toEqual(run);
+  expect(ScheduleRunSchema.parse(current)).toEqual(current);
+  expect(ScheduleRunSchema.omit({ origin: true }).parse(current)).toEqual(run);
+});
+
+test("schedule cleanup identities are optional and ignored by older readers", () => {
+  const run = {
+    id: "run",
+    scheduledFor: "2026-10-10T00:00:00Z",
+    startedAt: "2026-10-10T00:00:00Z",
+    endedAt: null,
+    status: "running",
+    agentId: null,
+    workspaceId: "workspace",
+    output: null,
+    error: null,
+  };
+  const current = { ...run, workspaceIncarnation: "original-opening" };
+  expect(ScheduleRunSchema.parse(run)).toEqual(run);
+  expect(ScheduleRunSchema.parse(current)).toEqual(current);
+  expect(ScheduleRunSchema.omit({ workspaceIncarnation: true }).parse(current)).toEqual(run);
+});
+
+test("handoff PR watch dispositions remain optional for older stopped-work reviews", () => {
+  const legacy = { agents: [], terminals: [], setupIds: [] };
+  expect(HandoffStoppedWorkReviewSchema.parse(legacy)).toEqual(legacy);
+  const current = {
+    ...legacy,
+    pullRequestWatches: [
+      {
+        id: "watch",
+        agentId: "agent",
+        number: 42,
+        url: "https://github.com/example/work/pull/42",
+        title: "Work",
+        startedAt: "2026-10-10T00:00:00Z",
+      },
+    ],
+  };
+  expect(HandoffStoppedWorkReviewSchema.parse(current)).toEqual(current);
+  expect(HandoffStoppedWorkReviewSchema.omit({ pullRequestWatches: true }).parse(current)).toEqual(
+    legacy,
+  );
+});
+
+test("handoff destination signing keys remain optional for older wire snapshots", () => {
+  const legacy = {
+    transferId: "00000000-0000-4000-8000-000000000001",
+    reservationId: "00000000-0000-4000-8000-000000000002",
+    sourceServerId: "source",
+    sourceWorkspaceId: "workspace",
+    sourceAgentIds: [],
+    destinationParent: "/work",
+    destinationCwd: "/work/moved",
+    workspaceId: "destination-workspace",
+    projectId: "destination-project",
+    agentMappings: [],
+    continuationMode: "context",
+    state: "staged",
+    manifestDigest: "a".repeat(64),
+  };
+  expect(HandoffDestinationSnapshotSchema.parse(legacy)).toEqual(legacy);
+  const current = { ...legacy, sourcePublicKey: "source-key" };
+  expect(HandoffDestinationSnapshotSchema.parse(current)).toEqual(current);
+  const oldReader = HandoffDestinationSnapshotSchema.omit({ sourcePublicKey: true });
+  expect(oldReader.parse(current)).toEqual(legacy);
+});
+
+test("handoff discovery accepts global and scoped requests while origin metadata stays optional", () => {
+  const request = { type: "workspace.handoff.list_destination.request", requestId: "discover" };
+  expect(SessionInboundMessageSchema.parse(request)).toEqual(request);
+  const scoped = { ...request, sourceServerId: "source", sourceWorkspaceId: "workspace" };
+  expect(SessionInboundMessageSchema.parse(scoped)).toEqual(scoped);
+  const transfer = {
+    transferId: "00000000-0000-4000-8000-000000000001",
+    destinationCwd: "/work/moved",
+    continuationMode: "context",
+    state: "released",
+  };
+  const legacy = { transfers: [transfer], nextCursor: null };
+  expect(HandoffDestinationPageSchema.parse(legacy)).toEqual(legacy);
+  const current = { ...transfer, sourceServerId: "source", sourceWorkspaceId: "workspace" };
+  expect(HandoffDestinationPageSchema.parse({ transfers: [current], nextCursor: null })).toEqual({
+    transfers: [current],
+    nextCursor: null,
+  });
+  const oldReader = HandoffDestinationPageSchema.shape.transfers.element.omit({
+    sourceServerId: true,
+    sourceWorkspaceId: true,
+  });
+  expect(oldReader.parse(current)).toEqual(transfer);
+});
+
+test.each([undefined, "a".repeat(64)])(
+  "handoff history accepts optional segment selection: %s",
+  (segmentId) => {
+    const request = {
+      type: "workspace.handoff.get_conversation_history.request",
+      requestId: "history",
+      agentId: "agent",
+      ...(segmentId ? { segmentId } : {}),
+    };
+    expect(SessionInboundMessageSchema.parse(request)).toEqual(request);
+    const result = {
+      mode: "native",
+      provider: "claude",
+      sourceServerId: "source",
+      sourceWorkspaceId: "workspace",
+      sourceAgentId: "agent",
+      sourceCwd: "/workspace",
+      title: null,
+      timeline: {
+        direction: "tail",
+        projection: "projected",
+        epoch: "epoch",
+        reset: false,
+        staleCursor: false,
+        gap: false,
+        window: { minSeq: 0, maxSeq: 0, nextSeq: 1 },
+        entries: [],
+        startCursor: null,
+        endCursor: null,
+        hasOlder: false,
+        hasNewer: false,
+      },
+      ...(segmentId
+        ? {
+            segmentId,
+            segments: [
+              {
+                id: segmentId,
+                sourceServerId: "source",
+                sourceWorkspaceId: "workspace",
+                sourceAgentId: "agent",
+                sourceCwd: "/workspace",
+              },
+            ],
+          }
+        : {}),
+    };
+    const response = {
+      type: "workspace.handoff.get_conversation_history.response",
+      payload: { requestId: "history", result, error: null },
+    };
+    expect(HandoffGetConversationHistoryResponseSchema.parse(response)).toEqual(response);
+    const legacy = HandoffGetConversationHistoryResponseSchema.shape.payload.shape.result
+      .unwrap()
+      .omit({ segmentId: true, segments: true });
+    const { segmentId: _id, segments: _segments, ...legacyResult } = result;
+    expect(legacy.parse(result)).toEqual(legacyResult);
+  },
+);
+
+test.each(["../history", "f".repeat(65), "g".repeat(64)])(
+  "refuses invalid history segment selectors: %s",
+  (segmentId) => {
+    expect(
+      SessionInboundMessageSchema.safeParse({
+        type: "workspace.handoff.get_conversation_history.request",
+        requestId: "history",
+        agentId: "agent",
+        segmentId,
+      }).success,
+    ).toBe(false);
+  },
+);
+
+test.each([undefined, "This conversation contains exported context"])(
+  "handoff review accepts native availability metadata without requiring it: %s",
+  (reason) => {
+    const conversation = {
+      agentId: "source-agent",
+      title: null,
+      provider: "claude",
+      state: "available",
+      cliVersion: "2.1.295",
+      hasWorkflows: false,
+      ...(reason ? { nativeUnavailableReason: reason } : {}),
+    };
+    const request = {
+      type: "workspace.handoff.preview_destination.request",
+      requestId: "review",
+      conversations: [conversation],
+    };
+    expect(SessionInboundMessageSchema.parse(request)).toEqual(request);
+    expect(HandoffConversationPreviewSchema.parse(conversation)).toEqual(conversation);
+    const legacy = z.object({
+      agentId: z.string(),
+      title: z.string().nullable(),
+      provider: z.literal("claude"),
+      state: z.literal("available"),
+      cliVersion: z.string(),
+      hasWorkflows: z.boolean(),
+    });
+    expect(legacy.parse(conversation)).toEqual({
+      agentId: "source-agent",
+      title: null,
+      provider: "claude",
+      state: "available",
+      cliVersion: "2.1.295",
+      hasWorkflows: false,
+    });
+  },
+);
+
+test("handoff chunks reject oversized data, unsafe offsets and path-shaped transfer IDs", () => {
+  const message = {
+    type: "workspace.handoff.write_archive_chunk.request",
+    requestId: "handoff-chunk",
+    transferId: "00000000-0000-4000-8000-000000000001",
+    sha256: "a".repeat(64),
+    offset: 0,
+    data: "YQ==",
+  };
+  expect(SessionInboundMessageSchema.parse(message)).toEqual(message);
+  expect(
+    SessionInboundMessageSchema.safeParse({
+      ...message,
+      data: "a".repeat(HANDOFF_CHUNK_BASE64_CHARS + 1),
+    }).success,
+  ).toBe(false);
+  expect(
+    SessionInboundMessageSchema.safeParse({ ...message, offset: Number.MAX_SAFE_INTEGER + 1 })
+      .success,
+  ).toBe(false);
+  expect(
+    SessionInboundMessageSchema.safeParse({ ...message, transferId: "../../outside" }).success,
+  ).toBe(false);
+});
+
+test("handoff activation accepts a receipt or a retry using the destination's saved release", () => {
+  const transferId = "00000000-0000-4000-8000-000000000001";
+  const message = {
+    type: "workspace.handoff.activate_destination.request",
+    requestId: "activate",
+    transferId,
+    receipt: {
+      version: 1,
+      transferId,
+      sourceServerId: "source",
+      destinationServerId: "destination",
+      reservationId: "00000000-0000-4000-8000-000000000002",
+      manifestDigest: "a".repeat(64),
+      signature: "signed-release",
+    },
+  };
+  expect(SessionInboundMessageSchema.parse(message)).toEqual(message);
+  const retry = {
+    type: message.type,
+    requestId: message.requestId,
+    transferId,
+  };
+  expect(SessionInboundMessageSchema.parse(retry)).toEqual(retry);
+  for (const receipt of [
+    null,
+    {},
+    { ...message.receipt, reservationId: "../../outside" },
+    { ...message.receipt, manifestDigest: "not-a-digest" },
+    { ...message.receipt, signature: "" },
+  ]) {
+    expect(SessionInboundMessageSchema.safeParse({ ...message, receipt }).success).toBe(false);
+  }
+});
+
+test("handoff reservation requires an explicit continuation mode", () => {
+  const reserve = {
+    type: "workspace.handoff.reserve_destination.request",
+    requestId: "reserve",
+    transferId: "00000000-0000-4000-8000-000000000001",
+    sourceServerId: "source",
+    sourceWorkspaceId: "workspace",
+    sourceAgentIds: [],
+    destinationParent: "/workspaces",
+  };
+  expect(SessionInboundMessageSchema.safeParse(reserve).success).toBe(false);
+  for (const continuationMode of ["native", "context"]) {
+    expect(SessionInboundMessageSchema.parse({ ...reserve, continuationMode })).toEqual({
+      ...reserve,
+      continuationMode,
+    });
+    const reviewed = {
+      ...reserve,
+      continuationMode,
+      workspaceReviewDigest: "a".repeat(64),
+      integrationReview: [{ agentId: "agent", omittedMcpServers: ["browser"] }],
+      sourceAgentIds: ["agent"],
+      conversationModes: [{ sourceAgentId: "agent", mode: "context" }],
+      stoppedWorkReview: {
+        agents: [],
+        terminals: [],
+        setupIds: ["00000000-0000-4000-8000-000000000002"],
+      },
+    };
+    expect(SessionInboundMessageSchema.parse(reviewed)).toEqual(reviewed);
+    expect(
+      SessionInboundMessageSchema.safeParse({
+        ...reviewed,
+        conversationModes: [{ sourceAgentId: "agent", mode: "automatic" }],
+      }).success,
+    ).toBe(false);
+    expect(
+      SessionInboundMessageSchema.safeParse({
+        ...reviewed,
+        integrationReview: [{ agentId: "agent", omittedMcpServers: ["x".repeat(4097)] }],
+      }).success,
+    ).toBe(false);
+    expect(
+      SessionInboundMessageSchema.safeParse({
+        ...reviewed,
+        stoppedWorkReview: { ...reviewed.stoppedWorkReview, setupIds: ["invalid"] },
+      }).success,
+    ).toBe(false);
+    expect(
+      SessionInboundMessageSchema.safeParse({ ...reviewed, workspaceReviewDigest: "invalid" })
+        .success,
+    ).toBe(false);
+  }
+});
+
+test("handoff destination cancellation accepts a saved-proof retry and refuses release receipts", () => {
+  const message = {
+    type: "workspace.handoff.cancel_destination.request",
+    requestId: "cancel",
+    transferId: "00000000-0000-4000-8000-000000000001",
+    proof: {
+      publicKey: "source-key",
+      receipt: {
+        version: 1,
+        outcome: "cancelled",
+        transferId: "00000000-0000-4000-8000-000000000001",
+        sourceServerId: "source",
+        destinationServerId: "destination",
+        reservationId: "00000000-0000-4000-8000-000000000002",
+        signature: "signature",
+      },
+    },
+  };
+  expect(SessionInboundMessageSchema.parse(message)).toEqual(message);
+  expect(SessionInboundMessageSchema.safeParse({ ...message, proof: undefined }).success).toBe(
+    true,
+  );
+  expect(
+    SessionInboundMessageSchema.safeParse({
+      ...message,
+      proof: {
+        ...message.proof,
+        receipt: { ...message.proof.receipt, outcome: undefined, manifestDigest: "a".repeat(64) },
+      },
+    }).success,
+  ).toBe(false);
+});
 
 test("terminal listings accept older rows and retain new per-terminal directories", () => {
   const response = {

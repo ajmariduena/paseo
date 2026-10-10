@@ -47,11 +47,12 @@ function createPromptUuidReader(prompt: AsyncIterable<unknown>) {
 }
 
 function createBaseQueryMock(nextImpl: QueryMock["next"]): QueryMock {
+  const closed = Promise.withResolvers<IteratorResult<Record<string, unknown>, void>>();
   return {
-    next: nextImpl,
+    next: vi.fn(() => Promise.race([nextImpl(), closed.promise])),
     interrupt: vi.fn(async () => undefined),
     return: vi.fn(async () => undefined),
-    close: vi.fn(() => undefined),
+    close: vi.fn(() => closed.resolve({ done: true, value: undefined })),
     setPermissionMode: vi.fn(async () => undefined),
     setModel: vi.fn(async () => undefined),
     getContextUsage: vi.fn(async () => undefined),

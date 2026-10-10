@@ -1,9 +1,20 @@
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { AgentManager } from "../agent/agent-manager.js";
 import { AgentStorage } from "../agent/agent-storage.js";
+import { ensureAgentLoaded } from "../agent/agent-loading.js";
 import { createAgentCommand } from "../agent/create-agent/create.js";
 import type {
   AgentCapabilityFlags,
@@ -32,13 +43,21 @@ import {
   FileBackedWorkspaceRegistry,
 } from "../workspace-registry.js";
 import { archiveByScope, type ActiveWorkspaceRef } from "../workspace-archive-service.js";
+import { createWorktree } from "../../utils/worktree.js";
 import {
   ScheduleService,
   ScheduleTargetGoneError,
   type ScheduleServiceOptions,
 } from "./service.js";
 import { ScheduleStore } from "./store.js";
-import type { ScheduleExecutionResult, StoredSchedule } from "@getpaseo/protocol/schedule/types";
+import * as atomicFile from "../atomic-file.js";
+import { randomUUID } from "node:crypto";
+import { HandoffOwnership, HandoffOwnershipError } from "../handoff/ownership.js";
+import {
+  StoredScheduleSchema,
+  type ScheduleExecutionResult,
+  type StoredSchedule,
+} from "@getpaseo/protocol/schedule/types";
 
 interface ScheduleServiceInternals {
   executeSchedule(schedule: StoredSchedule, runId: string): Promise<ScheduleExecutionResult>;
@@ -70,8 +89,15 @@ let workspaceArchiveInProgress = false;
 
 type TestScheduleServiceOptions = Omit<
   ScheduleServiceOptions,
-  "createAgent" | "createDirectoryWorkspace" | "createPaseoWorktreeWorkspace" | "archiveWorkspace"
+  | "createAgent"
+  | "createDirectoryWorkspace"
+  | "createPaseoWorktreeWorkspace"
+  | "archiveWorkspace"
+  | "handoffOwnership"
+  | "isHandoffIdentityVisible"
 > & {
+  handoffOwnership?: HandoffOwnership;
+  isHandoffIdentityVisible?: (id: string) => boolean;
   agentManager: AgentManager;
   providerSnapshotManager: Pick<ProviderSnapshotManager, "resolveCreateConfig">;
   createAgent?: ScheduleServiceOptions["createAgent"];
@@ -91,6 +117,7 @@ function createScheduleService(options: TestScheduleServiceOptions): ScheduleSer
     const workspaceId = `wks_schedule_test_${++workspaceCounter}`;
     const workspace: PersistedWorkspaceRecord = {
       workspaceId,
+      incarnation: randomUUID(),
       projectId: "test-project",
       cwd: input.cwd,
       kind: "directory",
@@ -110,11 +137,14 @@ function createScheduleService(options: TestScheduleServiceOptions): ScheduleSer
       .filter((workspace) => !workspace.archivedAt)
       .map((workspace) => ({
         workspaceId: workspace.workspaceId,
+        incarnation: workspace.incarnation,
+        retention: workspace.retention,
         cwd: workspace.cwd,
         kind: workspace.kind,
       }));
   const archiveDefaultWorkspace: ScheduleServiceOptions["archiveWorkspace"] = async (
     workspaceId,
+    expectedIncarnation,
   ) => {
     workspaceArchiveInProgress = true;
     try {
@@ -143,6 +173,7 @@ function createScheduleService(options: TestScheduleServiceOptions): ScheduleSer
         {
           scope: { kind: "workspace", workspaceId },
           requestId: "schedule-service-test",
+          automatic: { expectedIncarnation },
         },
       );
     } finally {
@@ -151,6 +182,8 @@ function createScheduleService(options: TestScheduleServiceOptions): ScheduleSer
   };
   return new ScheduleService({
     ...options,
+    handoffOwnership: options.handoffOwnership ?? null,
+    isHandoffIdentityVisible: options.isHandoffIdentityVisible ?? (() => true),
     createAgent:
       options.createAgent ??
       ((input) =>
@@ -183,6 +216,7 @@ function createScheduleService(options: TestScheduleServiceOptions): ScheduleSer
 async function createRegistryBackedScheduleWorkspaceDeps(rootDir: string): Promise<{
   workspaceRegistry: FileBackedWorkspaceRegistry;
   createDirectoryWorkspace: ScheduleServiceOptions["createDirectoryWorkspace"];
+  createPaseoWorktreeWorkspace: ScheduleServiceOptions["createPaseoWorktreeWorkspace"];
   createArchiveWorkspace: (input: {
     agentManager: AgentManager;
     agentStorage: AgentStorage;
@@ -214,13 +248,39 @@ async function createRegistryBackedScheduleWorkspaceDeps(rootDir: string): Promi
         input.firstAgentContext.prompt,
       );
     },
+    createPaseoWorktreeWorkspace: async (input) => {
+      const worktree = await createWorktree({
+        cwd: input.cwd,
+        worktreeSlug: "retained-job",
+        paseoHome: rootDir,
+        runSetup: false,
+        source: { kind: "branch-off", baseBranch: "main", branchName: "retained-job" },
+      });
+      const workspace = await workspaceProvisioning.createWorkspaceForWorktree({
+        sourceCwd: input.cwd,
+        repoRoot: input.cwd,
+        cwd: worktree.worktreePath,
+        worktreeRoot: worktree.worktreePath,
+        branch: worktree.branchName,
+        baseBranch: "main",
+        title: input.firstAgentContext.prompt,
+      });
+      return {
+        workspace,
+        worktree,
+        intent: { kind: "branch-off", baseBranch: "main", branchName: worktree.branchName },
+        repoRoot: input.cwd,
+        created: true,
+      };
+    },
     createArchiveWorkspace:
       ({ agentManager, agentStorage, logger = createTestLogger() }) =>
-      async (workspaceId) => {
+      async (workspaceId, expectedIncarnation) => {
         workspaceArchiveInProgress = true;
         try {
           await archiveByScope(
             {
+              paseoHome: rootDir,
               github: { invalidate: () => {} } as never,
               workspaceGitService,
               agentManager,
@@ -228,13 +288,8 @@ async function createRegistryBackedScheduleWorkspaceDeps(rootDir: string): Promi
               findWorkspaceIdForCwd: async (cwd) =>
                 resolveWorkspaceIdForPath(cwd, await workspaceRegistry.list()),
               listActiveWorkspaces: async () =>
-                (await workspaceRegistry.list())
-                  .filter((workspace) => !workspace.archivedAt)
-                  .map((workspace) => ({
-                    workspaceId: workspace.workspaceId,
-                    cwd: workspace.cwd,
-                    kind: workspace.kind,
-                  })),
+                (await workspaceRegistry.list()).filter((workspace) => !workspace.archivedAt),
+              getWorkspace: (id) => workspaceRegistry.get(id),
               archiveWorkspaceRecord: async (id) => {
                 await workspaceRegistry.archive(id, new Date().toISOString());
               },
@@ -247,6 +302,7 @@ async function createRegistryBackedScheduleWorkspaceDeps(rootDir: string): Promi
             {
               scope: { kind: "workspace", workspaceId },
               requestId: "schedule-service-test",
+              automatic: { expectedIncarnation },
             },
           );
         } finally {
@@ -286,6 +342,22 @@ function buildAgentRecord(params: {
   };
 }
 
+function holdScheduledTestRun(manager: AgentManager): Promise<string> {
+  const started = Promise.withResolvers<string>();
+  const create = manager.createAgent.bind(manager);
+  vi.spyOn(manager, "createAgent").mockImplementation(async (...args) => {
+    const snapshot = await create(...args);
+    const session = manager.getAgent(snapshot.id)?.session;
+    if (!session) throw new Error("Missing scheduled test runtime");
+    vi.spyOn(session, "startTurn").mockImplementation(async () => {
+      started.resolve(snapshot.id);
+      return { turnId: "held-scheduled-run" };
+    });
+    return snapshot;
+  });
+  return started.promise;
+}
+
 describe("ScheduleService", () => {
   let tempDir: string;
   let agentStorage: AgentStorage;
@@ -305,6 +377,1072 @@ describe("ScheduleService", () => {
     await agentStorage.flush();
     await rm(tempDir, { recursive: true, force: true });
   });
+
+  async function handoffFixture(runner?: ScheduleServiceOptions["runner"]) {
+    const ownership = new HandoffOwnership({
+      directory: join(tempDir, "handoff"),
+      sourceServerId: "source",
+    });
+    await ownership.initialize();
+    const cwd = join(tempDir, "moving");
+    const otherCwd = join(tempDir, "other");
+    await mkdir(cwd);
+    await mkdir(otherCwd);
+    const options: TestScheduleServiceOptions = {
+      paseoHome: tempDir,
+      handoffOwnership: ownership,
+      logger: createTestLogger(),
+      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      now: () => now,
+      runner,
+    };
+    const service = createScheduleService(options);
+    const schedule = await service.create({
+      prompt: "Check progress",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: { type: "new-agent", config: { provider: "claude", cwd } },
+    });
+    const transfer = {
+      id: randomUUID(),
+      cwd,
+      workspaceId: "moving",
+      agentIds: [],
+      destinationServerId: "destination",
+      reservationId: randomUUID(),
+    };
+    return { ownership, service, schedule, transfer, otherCwd, options };
+  }
+
+  test.skipIf(process.platform === "win32")(
+    "handoff binds an active heartbeat and drains its durable outcome before paused capture",
+    async () => {
+      const { ownership, transfer } = await handoffFixture();
+      const manager = new AgentManager({
+        logger: createTestLogger(),
+        clients: createTestAgentClients(),
+        registry: agentStorage,
+      });
+      const agent = await manager.createAgent(
+        { provider: "claude", cwd: transfer.cwd },
+        undefined,
+        { workspaceId: transfer.workspaceId },
+      );
+      transfer.agentIds.push(agent.id);
+      const session = manager.getAgent(agent.id)?.session;
+      if (!session) throw new Error("Missing test session");
+      vi.spyOn(session, "startTurn").mockResolvedValue({ turnId: "held-heartbeat" });
+      const waiting = Promise.withResolvers<void>();
+      const wait = manager.waitForAgentEvent.bind(manager);
+      vi.spyOn(manager, "waitForAgentEvent").mockImplementation((id, options) => {
+        const result = wait(id, options);
+        waiting.resolve();
+        return result;
+      });
+      const options = {
+        paseoHome: tempDir,
+        handoffOwnership: ownership,
+        logger: createTestLogger(),
+        agentManager: manager,
+        agentStorage,
+        providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+        now: () => now,
+      };
+      const service = createScheduleService(options);
+      const heartbeat = await service.create({
+        prompt: "Continue",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: { type: "agent", agentId: agent.id },
+      });
+      const running = service.runOnce(heartbeat.id);
+      const outcomeStarted = Promise.withResolvers<void>();
+      const finishOutcome = Promise.withResolvers<void>();
+      const sync = atomicFile.syncFilePublication;
+      const publication = vi
+        .spyOn(atomicFile, "syncFilePublication")
+        .mockImplementation(async (...args) => {
+          if (args[0].endsWith(`${heartbeat.id}.json`)) {
+            outcomeStarted.resolve();
+            await finishOutcome.promise;
+          }
+          return sync(...args);
+        });
+      try {
+        await waiting.promise;
+        const schedules = await service.reviewForHandoff(transfer);
+        const review = schedules.find((entry) => entry.id === heartbeat.id);
+        expect(review?.activeRun).toEqual({
+          id: (await service.logs(heartbeat.id))[0].id,
+          previousLastRunAt: null,
+        });
+        expect(await service.estimateForHandoff(transfer)).toBeGreaterThan(0);
+        await expect(createScheduleService(options).reviewForHandoff(transfer)).rejects.toThrow(
+          "cannot be stopped by this handoff",
+        );
+        await expect(
+          service.reviewForHandoff({
+            ...transfer,
+            stoppedWorkReview: {
+              agents: [],
+              terminals: [],
+              setupIds: [],
+              schedules: schedules.map((entry) => ({
+                ...entry,
+                ...(entry.activeRun ? { activeRun: { ...entry.activeRun, id: randomUUID() } } : {}),
+              })),
+            },
+          }),
+        ).rejects.toThrow("execution changed after review");
+        const source = await ownership.prepare({
+          ...transfer,
+          stoppedWorkReview: { agents: [], terminals: [], setupIds: [], schedules },
+        });
+        await expect(service.exportForHandoff(source)).rejects.toThrow("still active");
+        await manager.closeAgent(agent.id);
+        await outcomeStarted.promise;
+        await expect(ownership.markReady(source.id, "a".repeat(64))).rejects.toThrow(
+          "still running",
+        );
+        finishOutcome.resolve();
+        await running;
+        await ownership.drain(source.id);
+        await service.pauseForHandoff(source);
+        const captured = await service.exportForHandoff(source);
+        const imported = captured.schedules.find((entry) => entry.id === heartbeat.id);
+        expect(imported).toMatchObject({
+          reviewDigest: review?.digest,
+          status: "paused",
+          runs: [
+            {
+              agentId: agent.id,
+              status: "failed",
+              error: `Scheduled agent ${agent.id} was canceled`,
+            },
+          ],
+        });
+        const restarted = createScheduleService(options);
+        expect(await restarted.exportForHandoff(source)).toEqual(captured);
+        await restarted.pauseForHandoff(source);
+        await ownership.cancel(source.id);
+        expect((await restarted.inspect(heartbeat.id)).status).toBe("paused");
+      } finally {
+        finishOutcome.resolve();
+        publication.mockRestore();
+        await manager.closeAgent(agent.id);
+        await running;
+        await manager.flush();
+      }
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff reviews a created agent in the selected workspace and retains its stopped run",
+    async () => {
+      const { ownership, transfer, schedule, options } = await handoffFixture();
+      const manager = new AgentManager({
+        logger: createTestLogger(),
+        clients: createTestAgentClients(),
+        registry: agentStorage,
+      });
+      const started = holdScheduledTestRun(manager);
+      const archiveWorkspace = vi.fn(async () => {});
+      const service = createScheduleService({
+        ...options,
+        agentManager: manager,
+        archiveWorkspace,
+      });
+      const running = service.runOnce(schedule.id);
+      const agentId = await started;
+      transfer.agentIds.push(agentId);
+      try {
+        const schedules = await service.reviewForHandoff(transfer);
+        const review = schedules.find((entry) => entry.id === schedule.id);
+        expect(review).toMatchObject({
+          kind: "schedule",
+          activeRun: {
+            id: (await service.logs(schedule.id))[0].id,
+            previousLastRunAt: null,
+          },
+        });
+        await expect(
+          service.reviewForHandoff({ ...transfer, agentIds: [] }),
+        ).resolves.toMatchObject([{ activeRun: { retainedAgentId: agentId } }]);
+        await expect(createScheduleService(options).reviewForHandoff(transfer)).rejects.toThrow(
+          "cannot be stopped by this handoff",
+        );
+        const source = await ownership.prepare({
+          ...transfer,
+          stoppedWorkReview: { agents: [], terminals: [], setupIds: [], schedules },
+        });
+        await expect(service.exportForHandoff(source)).rejects.toThrow("still active");
+        await manager.closeAgent(agentId);
+        expect((await running).runs).toMatchObject([
+          { agentId, status: "failed", error: `Scheduled agent ${agentId} was canceled` },
+        ]);
+        await ownership.drain(source.id);
+        await service.pauseForHandoff(source);
+        const captured = await service.exportForHandoff(source);
+        expect(captured.schedules).toMatchObject([
+          {
+            id: schedule.id,
+            status: "paused",
+            reviewDigest: review?.digest,
+            runs: [{ agentId, workspaceId: "wks_schedule_test_1", status: "failed" }],
+          },
+        ]);
+        expect(archiveWorkspace).not.toHaveBeenCalled();
+        const restarted = createScheduleService(options);
+        expect(await restarted.exportForHandoff(source)).toEqual(captured);
+        await ownership.cancel(source.id);
+        expect((await restarted.inspect(schedule.id)).status).toBe("paused");
+      } finally {
+        await manager.closeAgent(agentId);
+        await running;
+        await manager.flush();
+      }
+    },
+  );
+
+  test.skipIf(process.platform === "win32").each([false, true])(
+    "handoff retains and fences an outside schedule while moving its active job workspace (symlink: %s)",
+    async (useAlias) => {
+      const { ownership, transfer, schedule, options, otherCwd } = await handoffFixture();
+      if (useAlias) {
+        const alias = join(tempDir, "scheduled-directory-alias");
+        await symlink(transfer.cwd, alias, "dir");
+        transfer.cwd = alias;
+        const store = new ScheduleStore(join(tempDir, "schedules"), createTestLogger());
+        await store.update(schedule.id, (record) => ({
+          ...record,
+          target: { type: "new-agent", config: { provider: "claude", cwd: alias } },
+        }));
+      }
+      const retainedCwd = await realpath(transfer.cwd);
+      const manager = new AgentManager({
+        logger: createTestLogger(),
+        clients: createTestAgentClients(),
+        registry: agentStorage,
+      });
+      const started = holdScheduledTestRun(manager);
+      const workspaceDeps = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+      const archiveWorkspace = vi.fn(async () => {
+        await rm(otherCwd, { recursive: true });
+      });
+      const service = createScheduleService({
+        ...options,
+        agentManager: manager,
+        archiveWorkspace,
+        createDirectoryWorkspace: (input) =>
+          workspaceDeps.createDirectoryWorkspace({ ...input, cwd: otherCwd }),
+      });
+      await writeFile(join(otherCwd, "unfinished.txt"), "work to move");
+      const running = service.runOnce(schedule.id);
+      const agentId = await started;
+      const workspaceId = manager.getAgent(agentId)?.workspaceId;
+      if (!workspaceId) throw new Error("Missing job workspace");
+      const moving = { ...transfer, cwd: otherCwd, workspaceId, agentIds: [agentId] };
+      try {
+        const schedules = await service.reviewForHandoff(moving);
+        expect(schedules).toMatchObject([
+          {
+            id: schedule.id,
+            kind: "schedule",
+            activeRun: { id: (await service.logs(schedule.id))[0].id },
+            retainedOnSource: { cwd: retainedCwd },
+          },
+        ]);
+        const source = await ownership.prepare({
+          ...moving,
+          stoppedWorkReview: { agents: [], terminals: [], setupIds: [], schedules },
+        });
+        await expect(
+          service.update({ id: schedule.id, prompt: "changed during transfer" }),
+        ).rejects.toMatchObject({ code: "fenced" });
+        await expect(ownership.markReady(source.id, "a".repeat(64))).rejects.toThrow(
+          "still running",
+        );
+        await manager.closeAgent(agentId);
+        expect((await running).runs).toMatchObject([{ agentId, status: "failed" }]);
+        await ownership.drain(source.id);
+        await service.pauseForHandoff(source);
+        await service.pauseForHandoff(source);
+        expect((await agentStorage.get(agentId))?.pendingRestartNote).toEqual([
+          {
+            id: `handoff:${source.id}:schedule:${schedule.id}`,
+            kind: "handoff_retained_schedule",
+            label: expect.stringContaining(`remains paused on the source host in ${retainedCwd}`),
+          },
+        ]);
+        const captured = await service.exportForHandoff(source);
+        expect(captured).toMatchObject({
+          version: 2,
+          schedules: [
+            {
+              id: schedule.id,
+              status: "paused",
+              target: { type: "source", cwd: retainedCwd },
+              runs: [{ agentId, workspaceId, status: "failed" }],
+            },
+          ],
+        });
+        expect(archiveWorkspace).not.toHaveBeenCalled();
+        expect(await readFile(join(otherCwd, "unfinished.txt"), "utf8")).toBe("work to move");
+        await expect(service.resume(schedule.id)).rejects.toMatchObject({ code: "fenced" });
+        const restarted = createScheduleService(options);
+        expect(await restarted.exportForHandoff(source)).toEqual(captured);
+        await ownership.cancel(source.id);
+        expect((await restarted.inspect(schedule.id)).status).toBe("paused");
+        await restarted.resume(schedule.id);
+        expect((await restarted.inspect(schedule.id)).status).toBe("active");
+      } finally {
+        await manager.closeAgent(agentId);
+        await running;
+        await manager.flush();
+      }
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff refuses an outside scheduled workspace before its created agent link is published",
+    async () => {
+      const { transfer, schedule, options, otherCwd } = await handoffFixture();
+      const manager = new AgentManager({
+        logger: createTestLogger(),
+        clients: createTestAgentClients(),
+        registry: agentStorage,
+      });
+      const entered = Promise.withResolvers<Awaited<ReturnType<AgentManager["createAgent"]>>>();
+      const finish = Promise.withResolvers<void>();
+      const create = manager.createAgent.bind(manager);
+      vi.spyOn(manager, "createAgent").mockImplementation(async (...args) => {
+        const agent = await create(...args);
+        entered.resolve(agent);
+        await finish.promise;
+        return agent;
+      });
+      const workspaceDeps = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+      const service = createScheduleService({
+        ...options,
+        agentManager: manager,
+        createDirectoryWorkspace: (input) =>
+          workspaceDeps.createDirectoryWorkspace({ ...input, cwd: otherCwd }),
+      });
+      const running = service.runOnce(schedule.id);
+      const agent = await entered.promise;
+      const workspaceId = agent.workspaceId;
+      if (!workspaceId) throw new Error("Missing created workspace");
+      const moving = { ...transfer, cwd: otherCwd, workspaceId, agentIds: [agent.id] };
+      try {
+        expect((await service.inspect(schedule.id)).runs).toMatchObject([
+          { status: "running", workspaceId: agent.workspaceId, agentId: null },
+        ]);
+        await expect(service.reviewForHandoff(moving)).rejects.toThrow(
+          "cannot be stopped by this handoff",
+        );
+      } finally {
+        await manager.closeAgent(agent.id);
+        finish.resolve();
+        await running;
+        await manager.flush();
+      }
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff automation pause survives retries, cancellation and restart until explicit resume",
+    async () => {
+      const runner = vi.fn(async () => ({ agentId: null, output: "resumed" }));
+      const { ownership, service, schedule, transfer, options } = await handoffFixture(runner);
+      const schedules = await service.reviewForHandoff(transfer);
+      const source = await ownership.prepare({
+        ...transfer,
+        stoppedWorkReview: { agents: [], terminals: [], setupIds: [], schedules },
+      });
+      await service.pauseForHandoff(source);
+      const captured = await service.exportForHandoff(source);
+      expect(captured.schedules).toMatchObject([
+        { id: schedule.id, status: "paused", nextRunAt: null, reviewDigest: schedules[0].digest },
+      ]);
+      now = new Date(now.getTime() + 60_000);
+      await service.pauseForHandoff(source);
+      expect(await service.exportForHandoff(source)).toEqual(captured);
+      await ownership.cancel(transfer.id);
+      const restartedOwnership = new HandoffOwnership({
+        directory: join(tempDir, "handoff"),
+        sourceServerId: "source",
+      });
+      await restartedOwnership.initialize();
+      const restarted = createScheduleService({ ...options, handoffOwnership: restartedOwnership });
+      try {
+        await restarted.start();
+        await restarted.tick();
+        expect(runner).not.toHaveBeenCalled();
+        expect(await restarted.exportForHandoff(transfer)).toEqual(captured);
+        await restarted.resume(schedule.id);
+        now = new Date(now.getTime() + 60_000);
+        await restarted.tick();
+        expect(runner).toHaveBeenCalledTimes(1);
+      } finally {
+        await restarted.stop();
+      }
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff refuses changed automation review without pausing unreviewed work",
+    async () => {
+      const { ownership, service, schedule, transfer } = await handoffFixture();
+      const schedules = await service.reviewForHandoff(transfer);
+      await service.update({ id: schedule.id, prompt: "Changed instructions" });
+      const source = await ownership.prepare({
+        ...transfer,
+        stoppedWorkReview: { agents: [], terminals: [], setupIds: [], schedules },
+      });
+      await expect(service.pauseForHandoff(source)).rejects.toThrow("changed after handoff review");
+      expect((await service.inspect(schedule.id)).status).toBe("active");
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff requires a complete automation inventory and refuses running jobs",
+    async () => {
+      const entered = Promise.withResolvers<void>();
+      const finish = Promise.withResolvers<void>();
+      const { service, schedule, transfer } = await handoffFixture(async () => {
+        entered.resolve();
+        await finish.promise;
+        return { agentId: null, output: "done" };
+      });
+      const run = service.runOnce(schedule.id);
+      await entered.promise;
+      try {
+        await expect(service.reviewForHandoff(transfer)).rejects.toThrow("still active");
+      } finally {
+        finish.resolve();
+        await run;
+      }
+      await writeFile(join(tempDir, "schedules", "broken.json"), "not json");
+      await expect(service.reviewForHandoff(transfer)).rejects.toThrow();
+      expect((await service.inspect(schedule.id)).status).toBe("active");
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff refuses ancestor schedules and external heartbeat targets sharing the checkout",
+    async () => {
+      const { service, transfer } = await handoffFixture();
+      const ancestor = await service.create({
+        prompt: "Parent work",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: { type: "new-agent", config: { provider: "claude", cwd: tempDir } },
+      });
+      await expect(service.reviewForHandoff(transfer)).rejects.toThrow("ancestor");
+      await service.delete(ancestor.id);
+      const agentId = randomUUID();
+      await agentStorage.upsert({
+        id: agentId,
+        provider: "claude",
+        cwd: transfer.cwd,
+        workspaceId: "other-workspace",
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+        lastStatus: "closed",
+        labels: {},
+      });
+      await service.create({
+        prompt: "External work",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: { type: "agent", agentId },
+      });
+      await expect(service.reviewForHandoff(transfer)).rejects.toThrow("another conversation");
+    },
+  );
+
+  test.skipIf(process.platform === "win32").each(["succeeded", "failed"] as const)(
+    "handoff repairs a %s schedule outcome without replacing it with a storage failure or rerunning work",
+    async (status) => {
+      const runner = vi.fn(async () => {
+        if (status === "failed") throw new Error("Actual execution failure");
+        return { agentId: null, output: "Only copy of the completed result" };
+      });
+      const { service, schedule, transfer } = await handoffFixture(runner);
+      const write = atomicFile.writeJsonFileAtomic;
+      const failedWrite = vi
+        .spyOn(atomicFile, "writeJsonFileAtomic")
+        .mockImplementation(async (file, value) => {
+          const parsed = value as StoredSchedule;
+          if (
+            file === join(tempDir, "schedules", `${schedule.id}.json`) &&
+            parsed.runs[0]?.status === status
+          )
+            throw new Error("outcome publication unavailable");
+          return write(file, value);
+        });
+      try {
+        await expect(service.runOnce(schedule.id)).rejects.toThrow(
+          "outcome publication unavailable",
+        );
+        await expect(service.reviewForHandoff(transfer)).rejects.toThrow(
+          "outcome publication unavailable",
+        );
+      } finally {
+        failedWrite.mockRestore();
+      }
+      const review = await service.reviewForHandoff(transfer);
+      expect(review).toHaveLength(1);
+      const saved = await service.inspect(schedule.id);
+      expect(saved.runs).toMatchObject([
+        {
+          status,
+          output: status === "succeeded" ? "Only copy of the completed result" : null,
+          error: status === "failed" ? "Actual execution failure" : null,
+        },
+      ]);
+      expect(runner).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  test.skipIf(process.platform === "win32").each(["succeeded", "failed"] as const)(
+    "startup repairs a known %s outcome behind the recovered source fence without executing it again",
+    async (status) => {
+      const runner = vi.fn(async () => {
+        if (status === "failed") throw new Error("Actual execution failure");
+        return { agentId: null, output: "Only copy of the completed result" };
+      });
+      const { service, schedule, transfer, options, ownership } = await handoffFixture(runner);
+      const recordPath = join(tempDir, "schedules", `${schedule.id}.json`);
+      const write = atomicFile.writeJsonFileAtomic;
+      const failedWrite = vi
+        .spyOn(atomicFile, "writeJsonFileAtomic")
+        .mockImplementation(async (file, value) => {
+          if (file === recordPath && StoredScheduleSchema.parse(value).runs[0]?.status === status)
+            throw new Error("outcome publication unavailable");
+          return write(file, value);
+        });
+      let restarted: ScheduleService | undefined;
+      try {
+        await expect(service.runOnce(schedule.id)).rejects.toThrow(
+          "outcome publication unavailable",
+        );
+        await service.stop();
+        await ownership.prepare(transfer);
+        const restartedOwnership = new HandoffOwnership({
+          directory: join(tempDir, "handoff"),
+          sourceServerId: "source",
+        });
+        await restartedOwnership.initialize();
+        const archiveWorkspace = vi.fn(async () => {});
+        restarted = createScheduleService({
+          ...options,
+          handoffOwnership: restartedOwnership,
+          archiveWorkspace,
+        });
+        await expect(restarted.start()).rejects.toThrow("outcome publication unavailable");
+        expect(archiveWorkspace).not.toHaveBeenCalled();
+        expect(runner).toHaveBeenCalledTimes(1);
+        failedWrite.mockRestore();
+        await restarted.start();
+        const saved = await restarted.inspect(schedule.id);
+        expect(saved.status).toBe("active");
+        expect(saved.runs).toMatchObject([
+          {
+            status,
+            output: status === "succeeded" ? "Only copy of the completed result" : null,
+            error: status === "failed" ? "Actual execution failure" : null,
+          },
+        ]);
+        expect(await restarted.reviewForHandoff(transfer)).toHaveLength(1);
+        expect(restartedOwnership.status(transfer.id).state).toBe("preparing");
+        await restarted.tick();
+        expect(runner).toHaveBeenCalledTimes(1);
+        expect(archiveWorkspace).not.toHaveBeenCalled();
+      } finally {
+        failedWrite.mockRestore();
+        await restarted?.stop();
+      }
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff waits for an admitted schedule outcome and preserves it after fencing",
+    async () => {
+      const entered = Promise.withResolvers<void>();
+      const finish = Promise.withResolvers<void>();
+      const { ownership, service, schedule, transfer, otherCwd } = await handoffFixture(
+        async () => {
+          entered.resolve();
+          await finish.promise;
+          return { agentId: null, output: "Saved result" };
+        },
+      );
+      const run = service.runOnce(schedule.id);
+      await entered.promise;
+      await expect(
+        service.update({ id: schedule.id, newAgentConfig: { cwd: otherCwd } }),
+      ).rejects.toThrow("while a run is active");
+      await expect(service.runOnce(schedule.id)).rejects.toThrow("already running");
+      await ownership.prepare(transfer);
+      try {
+        await expect(ownership.markReady(transfer.id, "a".repeat(64))).rejects.toThrow(
+          "still running",
+        );
+      } finally {
+        finish.resolve();
+      }
+      const result = await run;
+      await ownership.drain(transfer.id);
+      expect(result.runs).toMatchObject([{ status: "succeeded", output: "Saved result" }]);
+      await expect(ownership.markReady(transfer.id, "a".repeat(64))).resolves.toMatchObject({
+        state: "ready",
+      });
+    },
+  );
+
+  test.skipIf(process.platform === "win32").each(["pause", "retarget"] as const)(
+    "handoff rechecks a stale scheduler snapshot after %s",
+    async (action) => {
+      const entered = Promise.withResolvers<void>();
+      const finish = Promise.withResolvers<void>();
+      const runner = vi.fn(async () => {
+        entered.resolve();
+        await finish.promise;
+        return { agentId: null, output: "done" };
+      });
+      const { ownership, service, transfer, otherCwd } = await handoffFixture(runner);
+      now = new Date(now.getTime() + 1);
+      const later = await service.create({
+        prompt: "Later schedule",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: { type: "new-agent", config: { provider: "claude", cwd: otherCwd } },
+      });
+      const tick = service.tick();
+      await entered.promise;
+      try {
+        if (action === "pause") await service.pause(later.id);
+        else await service.update({ id: later.id, newAgentConfig: { cwd: transfer.cwd } });
+        await ownership.prepare(transfer);
+      } finally {
+        finish.resolve();
+      }
+      await tick;
+      expect(runner).toHaveBeenCalledTimes(1);
+      expect((await service.inspect(later.id)).runs).toEqual([]);
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff guards both old and new schedule targets, including symlinks",
+    async () => {
+      const { ownership, service, schedule, transfer, otherCwd } = await handoffFixture();
+      const outside = await service.create({
+        prompt: "Outside",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: { type: "new-agent", config: { provider: "claude", cwd: otherCwd } },
+      });
+      const alias = join(tempDir, "alias");
+      await symlink(transfer.cwd, alias, "dir");
+      await ownership.prepare(transfer);
+      await expect(
+        service.update({ id: schedule.id, newAgentConfig: { cwd: otherCwd } }),
+      ).rejects.toMatchObject({ code: "fenced" });
+      await expect(
+        service.update({ id: outside.id, newAgentConfig: { cwd: alias } }),
+      ).rejects.toMatchObject({ code: "fenced" });
+      await expect(
+        service.create({
+          prompt: "Alias",
+          cadence: outside.cadence,
+          target: { type: "new-agent", config: { provider: "claude", cwd: alias } },
+        }),
+      ).rejects.toMatchObject({ code: "fenced" });
+      expect(await service.inspect(schedule.id)).toEqual(schedule);
+      expect(await service.inspect(outside.id)).toEqual(outside);
+      await ownership.markReady(transfer.id, "a".repeat(64));
+      await expect(service.pause(outside.id)).resolves.toMatchObject({ status: "paused" });
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff schedule admission propagates uncertain storage instead of skipping it",
+    async () => {
+      const runner = vi.fn(async () => ({ agentId: null, output: "unexpected" }));
+      const { ownership, service, schedule } = await handoffFixture(runner);
+      const admission = vi
+        .spyOn(ownership, "acquireMutation")
+        .mockRejectedValue(new HandoffOwnershipError("storage_uncertain", "journal unavailable"));
+      try {
+        await expect(service.tick()).rejects.toThrow("journal unavailable");
+        expect(await service.inspect(schedule.id)).toEqual(schedule);
+        expect(runner).not.toHaveBeenCalled();
+      } finally {
+        admission.mockRestore();
+      }
+      await service.tick();
+      expect(runner).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff retains a canceled scheduled worktree instead of archiving it behind the source fence",
+    async () => {
+      const { ownership, schedule, transfer, options, otherCwd } = await handoffFixture();
+      const manager = new AgentManager({
+        logger: createTestLogger(),
+        clients: createTestAgentClients(),
+        registry: agentStorage,
+      });
+      const started = holdScheduledTestRun(manager);
+      const workspaceDeps = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+      const unfinished = join(otherCwd, "unfinished.txt");
+      await writeFile(unfinished, "work that must remain available");
+      const archiveWorkspace = vi.fn(async () => {
+        await rm(otherCwd, { recursive: true });
+      });
+      const service = createScheduleService({
+        ...options,
+        agentManager: manager,
+        archiveWorkspace,
+        createPaseoWorktreeWorkspace: async (input) => {
+          const workspace = await workspaceDeps.createDirectoryWorkspace({
+            ...input,
+            cwd: otherCwd,
+          });
+          return {
+            workspace: {
+              ...workspace,
+              kind: "worktree",
+              branch: "scheduled-work",
+              baseBranch: "main",
+            },
+            worktree: { branchName: "scheduled-work", worktreePath: otherCwd },
+            intent: { kind: "branch-off", baseBranch: "main", branchName: "scheduled-work" },
+            repoRoot: transfer.cwd,
+            created: true,
+          };
+        },
+      });
+      await service.update({ id: schedule.id, newAgentConfig: { isolation: "worktree" } });
+      const running = service.runOnce(schedule.id);
+      const agentId = await started;
+      try {
+        expect(manager.getAgent(agentId)?.config.cwd).toBe(otherCwd);
+        await ownership.prepare(transfer);
+        await manager.closeAgent(agentId);
+        const result = await running;
+        expect(result.runs).toMatchObject([
+          { agentId, status: "failed", error: `Scheduled agent ${agentId} was canceled` },
+        ]);
+        expect(archiveWorkspace).not.toHaveBeenCalled();
+        expect(await readFile(unfinished, "utf8")).toBe("work that must remain available");
+        await ownership.drain(transfer.id);
+        await ownership.cancel(transfer.id);
+        expect(await readFile(unfinished, "utf8")).toBe("work that must remain available");
+      } finally {
+        await manager.closeAgent(agentId);
+        await running;
+        await manager.flush();
+      }
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "startup cleanup rechecks source ownership after publishing an interrupted schedule outcome",
+    async () => {
+      const { ownership, schedule, transfer, options, otherCwd } = await handoffFixture();
+      const unfinished = join(otherCwd, "unfinished.txt");
+      await writeFile(unfinished, "recover this worktree");
+      const archiveWorkspace = vi.fn(async () => {
+        await rm(otherCwd, { recursive: true });
+      });
+      const store = new ScheduleStore(join(tempDir, "schedules"), createTestLogger());
+      await store.update(schedule.id, (record) => ({
+        ...record,
+        runs: [
+          {
+            id: randomUUID(),
+            scheduledFor: now.toISOString(),
+            startedAt: now.toISOString(),
+            endedAt: null,
+            status: "running",
+            agentId: null,
+            workspaceId: "separate-worktree",
+            output: null,
+            error: null,
+          },
+        ],
+      }));
+      const write = atomicFile.writeJsonFileAtomic;
+      const publication = vi
+        .spyOn(atomicFile, "writeJsonFileAtomic")
+        .mockImplementation(async (file, value) => {
+          await write(file, value);
+          if (
+            file === join(tempDir, "schedules", `${schedule.id}.json`) &&
+            StoredScheduleSchema.parse(value).runs[0].status === "failed"
+          )
+            await ownership.prepare(transfer);
+        });
+      const restarted = createScheduleService({ ...options, archiveWorkspace });
+      try {
+        await restarted.start();
+        expect(ownership.status(transfer.id).state).toBe("preparing");
+        expect(archiveWorkspace).not.toHaveBeenCalled();
+        expect(await readFile(unfinished, "utf8")).toBe("recover this worktree");
+        await ownership.drain(transfer.id);
+      } finally {
+        publication.mockRestore();
+        await restarted.stop();
+      }
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff retains schedule admission through workspace cleanup with the real runner",
+    async () => {
+      const { ownership, schedule, transfer, options } = await handoffFixture();
+      const cleanupEntered = Promise.withResolvers<void>();
+      const finishCleanup = Promise.withResolvers<void>();
+      const manager = new AgentManager({
+        logger: createTestLogger(),
+        clients: createTestAgentClients(),
+        registry: agentStorage,
+      });
+      const service = createScheduleService({
+        ...options,
+        agentManager: manager,
+        archiveWorkspace: async () => {
+          cleanupEntered.resolve();
+          await finishCleanup.promise;
+        },
+      });
+      const run = service.runOnce(schedule.id);
+      await cleanupEntered.promise;
+      await ownership.prepare(transfer);
+      try {
+        await expect(ownership.markReady(transfer.id, "a".repeat(64))).rejects.toThrow(
+          "still running",
+        );
+      } finally {
+        finishCleanup.resolve();
+      }
+      const result = await run;
+      expect(result.runs).toMatchObject([
+        { status: "succeeded", workspaceId: "wks_schedule_test_1", agentId: expect.any(String) },
+      ]);
+      await ownership.drain(transfer.id);
+      await ownership.markReady(transfer.id, "a".repeat(64));
+      await manager.closeAgent(result.runs[0].agentId!);
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff keeps a released heartbeat fenced after its agent record is removed",
+    async () => {
+      const { ownership, service, transfer, options } = await handoffFixture();
+      const agentId = randomUUID();
+      await agentStorage.upsert({
+        id: agentId,
+        cwd: transfer.cwd,
+        workspaceId: transfer.workspaceId,
+        provider: "claude",
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+        lastStatus: "closed",
+        labels: {},
+      });
+      const heartbeat = await service.create({
+        prompt: "Continue",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: { type: "agent", agentId },
+      });
+      await ownership.prepare({ ...transfer, agentIds: [agentId] });
+      const manifestDigest = "a".repeat(64);
+      await ownership.markReady(transfer.id, manifestDigest);
+      await ownership.release(
+        transfer.id,
+        {
+          version: 1,
+          transferId: transfer.id,
+          sourceServerId: "source",
+          destinationServerId: transfer.destinationServerId,
+          reservationId: transfer.reservationId,
+          manifestDigest,
+        },
+        async () => {},
+      );
+      await agentStorage.remove(agentId);
+      const restartedOwnership = new HandoffOwnership({
+        directory: join(tempDir, "handoff"),
+        sourceServerId: "source",
+      });
+      await restartedOwnership.initialize();
+      const restarted = createScheduleService({ ...options, handoffOwnership: restartedOwnership });
+      try {
+        await restarted.start();
+        await restarted.tick();
+        await expect(restarted.resume(heartbeat.id)).rejects.toMatchObject({ code: "fenced" });
+        await expect(restarted.runOnce(heartbeat.id)).rejects.toMatchObject({ code: "fenced" });
+        expect(await restarted.inspect(heartbeat.id)).toEqual(heartbeat);
+      } finally {
+        await restarted.stop();
+      }
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff restart leaves fenced schedule recovery and expiration untouched",
+    async () => {
+      const { ownership, service, schedule, transfer, options } = await handoffFixture();
+      const interrupted = await new ScheduleStore(
+        join(tempDir, "schedules"),
+        createTestLogger(),
+      ).update(schedule.id, (current) => ({
+        ...current,
+        expiresAt: now.toISOString(),
+        runs: [
+          {
+            id: randomUUID(),
+            scheduledFor: now.toISOString(),
+            startedAt: now.toISOString(),
+            endedAt: null,
+            status: "running",
+            agentId: null,
+            workspaceId: "interrupted-workspace",
+            output: null,
+            error: null,
+          },
+        ],
+      }));
+      await ownership.prepare(transfer);
+      const restartedOwnership = new HandoffOwnership({
+        directory: join(tempDir, "handoff"),
+        sourceServerId: "source",
+      });
+      await restartedOwnership.initialize();
+      const archiveWorkspace = vi.fn(async () => {});
+      const restarted = createScheduleService({
+        ...options,
+        handoffOwnership: restartedOwnership,
+        archiveWorkspace,
+      });
+      try {
+        await restarted.start();
+        await restarted.tick();
+        expect(await service.inspect(schedule.id)).toEqual(interrupted);
+        expect(archiveWorkspace).not.toHaveBeenCalled();
+      } finally {
+        await restarted.stop();
+      }
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff skips fenced schedules without consuming a run and continues unrelated work",
+    async () => {
+      const ownership = new HandoffOwnership({
+        directory: join(tempDir, "handoff"),
+        sourceServerId: "source",
+      });
+      await ownership.initialize();
+      const cwd = join(tempDir, "moving");
+      const otherCwd = join(tempDir, "other");
+      await mkdir(cwd);
+      await mkdir(otherCwd);
+      const runner = vi.fn(async () => ({ agentId: null, output: "finished" }));
+      const service = createScheduleService({
+        paseoHome: tempDir,
+        handoffOwnership: ownership,
+        logger: createTestLogger(),
+        agentManager: new AgentManager({ logger: createTestLogger() }),
+        agentStorage,
+        providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+        now: () => now,
+        runner,
+      });
+      const moving = await service.create({
+        prompt: "Review moving workspace",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: { type: "new-agent", config: { provider: "claude", cwd } },
+        maxRuns: 1,
+      });
+      const other = await service.create({
+        prompt: "Review unrelated workspace",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: { type: "new-agent", config: { provider: "claude", cwd: otherCwd } },
+      });
+      await ownership.prepare({
+        id: randomUUID(),
+        cwd,
+        workspaceId: "moving",
+        agentIds: [],
+        destinationServerId: "destination",
+        reservationId: randomUUID(),
+      });
+      await service.tick();
+      expect(await service.inspect(moving.id)).toEqual(moving);
+      expect(runner).toHaveBeenCalledTimes(1);
+      expect((await service.inspect(other.id)).runs).toMatchObject([{ status: "succeeded" }]);
+      await expect(service.runOnce(moving.id)).rejects.toMatchObject({ code: "fenced" });
+      expect(await service.inspect(moving.id)).toEqual(moving);
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff fences schedule controls and heartbeat replacement through the store",
+    async () => {
+      const ownership = new HandoffOwnership({
+        directory: join(tempDir, "handoff"),
+        sourceServerId: "source",
+      });
+      await ownership.initialize();
+      const agentId = randomUUID();
+      await agentStorage.upsert({
+        id: agentId,
+        cwd: tempDir,
+        workspaceId: "moving",
+        provider: "claude",
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+        lastStatus: "closed",
+        labels: {},
+      });
+      const service = createScheduleService({
+        paseoHome: tempDir,
+        handoffOwnership: ownership,
+        logger: createTestLogger(),
+        agentManager: new AgentManager({ logger: createTestLogger() }),
+        agentStorage,
+        providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+        now: () => now,
+      });
+      const input = {
+        name: "Keep checking",
+        prompt: "Check progress",
+        cadence: { type: "every" as const, everyMs: 60_000 },
+        target: { type: "agent" as const, agentId },
+      };
+      const heartbeat = await service.createOrReplace(input);
+      await ownership.prepare({
+        id: randomUUID(),
+        cwd: tempDir,
+        workspaceId: "moving",
+        agentIds: [agentId],
+        destinationServerId: "destination",
+        reservationId: randomUUID(),
+      });
+      await expect(service.create(input)).rejects.toMatchObject({ code: "fenced" });
+      await expect(service.createOrReplace(input)).rejects.toMatchObject({ code: "fenced" });
+      await expect(service.pause(heartbeat.id)).rejects.toMatchObject({ code: "fenced" });
+      await expect(service.resume(heartbeat.id)).rejects.toMatchObject({ code: "fenced" });
+      await expect(service.update({ id: heartbeat.id, prompt: "Changed" })).rejects.toMatchObject({
+        code: "fenced",
+      });
+      await expect(service.delete(heartbeat.id)).rejects.toMatchObject({ code: "fenced" });
+      await expect(service.runOnce(heartbeat.id)).rejects.toMatchObject({ code: "fenced" });
+      expect(await service.list()).toEqual([heartbeat]);
+    },
+  );
 
   test("ticks due schedules and records run history on disk", async () => {
     const service = createScheduleService({
@@ -486,9 +1624,66 @@ describe("ScheduleService", () => {
     expect(steerOrReplace.mock.calls[0]).toEqual([
       agent.id,
       expect.stringContaining(`Schedule fired (id=${schedule.id}, run=`),
-      undefined,
+      { clientMessageId: expect.stringContaining(`schedule:${schedule.id}:`) },
     ]);
   });
+
+  test.each(["stop", "close"])(
+    "records a heartbeat canceled by %s as failed instead of successful idle",
+    async (action) => {
+      const manager = new AgentManager({
+        logger: createTestLogger(),
+        clients: createTestAgentClients(),
+        registry: agentStorage,
+      });
+      const agent = await manager.createAgent({ provider: "claude", cwd: tempDir }, undefined, {
+        workspaceId: undefined,
+      });
+      const live = manager.getAgent(agent.id);
+      if (!live?.session) throw new Error("Missing test provider session");
+      // A held test-provider turn leaves cancellation to the real manager lifecycle.
+      vi.spyOn(live.session, "startTurn").mockResolvedValue({ turnId: "heartbeat-turn" });
+      const waiting = Promise.withResolvers<void>();
+      const waitForAgentEvent = manager.waitForAgentEvent.bind(manager);
+      vi.spyOn(manager, "waitForAgentEvent").mockImplementation((id, options) => {
+        const result = waitForAgentEvent(id, options);
+        waiting.resolve();
+        return result;
+      });
+      const service = createScheduleService({
+        paseoHome: tempDir,
+        logger: createTestLogger(),
+        agentManager: manager,
+        agentStorage,
+        providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+        now: () => now,
+      });
+      const schedule = await service.create({
+        prompt: "Check scheduled work",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: { type: "agent", agentId: agent.id },
+      });
+      const running = service.runOnce(schedule.id);
+      try {
+        await waiting.promise;
+        if (action === "close") await manager.closeAgent(agent.id);
+        else await manager.cancelAgentRun(agent.id);
+        await running;
+        expect((await service.inspect(schedule.id)).runs).toEqual([
+          expect.objectContaining({
+            status: "failed",
+            agentId: agent.id,
+            output: null,
+            error: `Scheduled agent ${agent.id} was canceled`,
+          }),
+        ]);
+      } finally {
+        await manager.closeAgent(agent.id);
+        await running;
+        await manager.flush();
+      }
+    },
+  );
 
   test("titles scheduled new agents from the schedule prompt", async () => {
     const manager = new AgentManager({
@@ -631,6 +1826,216 @@ describe("ScheduleService", () => {
         archivedAt: null,
       }),
     ]);
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "a retained scheduled worktree survives stop, restart cleanup, continuation and schedule deletion",
+    async () => {
+      const repo = join(await realpath(tempDir), "source-project");
+      await mkdir(repo);
+      await writeFile(join(repo, "work.txt"), "Committed work");
+      const git = (args: string[]) =>
+        execFileSync("git", args, {
+          cwd: repo,
+          env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
+          stdio: "pipe",
+        });
+      git(["init", "--initial-branch=main"]);
+      git(["add", "."]);
+      git([
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.test",
+        "-c",
+        "commit.gpgSign=false",
+        "commit",
+        "-m",
+        "Initial work",
+      ]);
+      const workspaceDeps = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+      const manager = new AgentManager({
+        logger: createTestLogger(),
+        clients: createTestAgentClients(),
+        registry: agentStorage,
+      });
+      const options = {
+        paseoHome: tempDir,
+        logger: createTestLogger(),
+        agentManager: manager,
+        agentStorage,
+        providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+        now: () => now,
+        createDirectoryWorkspace: workspaceDeps.createDirectoryWorkspace,
+        createPaseoWorktreeWorkspace: workspaceDeps.createPaseoWorktreeWorkspace,
+      };
+      const service = createScheduleService({
+        ...options,
+        archiveWorkspace: workspaceDeps.createArchiveWorkspace({
+          agentManager: manager,
+          agentStorage,
+        }),
+      });
+      const schedule = await service.create({
+        prompt: "Keep the unfinished implementation",
+        cadence: { type: "every", everyMs: 60_000 },
+        runOnCreate: false,
+        target: {
+          type: "new-agent",
+          config: { provider: "claude", cwd: repo, isolation: "worktree", archiveOnFinish: true },
+        },
+      });
+      const started = holdScheduledTestRun(manager);
+      const execution = service.runOnce(schedule.id);
+      const agentId = await started;
+      try {
+        const run = (await service.inspect(schedule.id)).runs[0]!;
+        const workspace = (await workspaceDeps.workspaceRegistry.get(run.workspaceId!))!;
+        expect(workspace.cwd).not.toBe(repo);
+        await writeFile(join(workspace.cwd, "work.txt"), "Uncommitted retained work");
+        const retained = await workspaceDeps.workspaceRegistry.retainForHandoff({
+          workspaceId: workspace.workspaceId,
+          expectedIncarnation: run.workspaceIncarnation!,
+          transferId: randomUUID(),
+          retainedAt: now.toISOString(),
+        });
+        await manager.closeAgent(agentId);
+        expect((await execution).runs).toMatchObject([
+          { id: run.id, status: "failed", error: `Scheduled agent ${agentId} was canceled` },
+        ]);
+        expect(await readFile(join(workspace.cwd, "work.txt"), "utf8")).toBe(
+          "Uncommitted retained work",
+        );
+        expect((await agentStorage.get(agentId))?.archivedAt).toBeUndefined();
+        expect(await workspaceDeps.workspaceRegistry.get(workspace.workspaceId)).toEqual(retained);
+        await service.stop();
+
+        // Exercise the boot cleanup path with an interrupted run and a cold registry.
+        const store = new ScheduleStore(join(tempDir, "schedules"), createTestLogger());
+        await store.update(schedule.id, (record) => ({
+          ...record,
+          status: "paused",
+          nextRunAt: null,
+          runs: [run],
+        }));
+        const coldDeps = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+        const coldManager = new AgentManager({
+          logger: createTestLogger(),
+          clients: createTestAgentClients(),
+          registry: agentStorage,
+        });
+        const cleanup = coldDeps.createArchiveWorkspace({
+          agentManager: coldManager,
+          agentStorage,
+        });
+        const restarted = createScheduleService({
+          ...options,
+          agentManager: coldManager,
+          archiveWorkspace: cleanup,
+        });
+        try {
+          await restarted.start();
+          expect((await restarted.inspect(schedule.id)).runs[0].status).toBe("failed");
+          expect(await coldDeps.workspaceRegistry.get(workspace.workspaceId)).toEqual(retained);
+          expect((await agentStorage.get(agentId))?.archivedAt).toBeUndefined();
+          await restarted.delete(schedule.id);
+          await ensureAgentLoaded(agentId, {
+            agentManager: coldManager,
+            agentStorage,
+            logger: createTestLogger(),
+          });
+          const continued = await coldManager.runAgent(agentId, "Continue explicitly");
+          expect(continued.canceled).toBe(false);
+          await cleanup(workspace.workspaceId, run.workspaceIncarnation);
+          expect(await coldDeps.workspaceRegistry.get(workspace.workspaceId)).toEqual(retained);
+          expect((await agentStorage.get(agentId))?.archivedAt).toBeUndefined();
+          expect(await readFile(join(workspace.cwd, "work.txt"), "utf8")).toBe(
+            "Uncommitted retained work",
+          );
+        } finally {
+          await coldManager.closeAgent(agentId);
+          await coldManager.flush();
+          await restarted.stop();
+        }
+      } finally {
+        await manager.closeAgent(agentId);
+        await execution;
+        await manager.flush();
+        await service.stop();
+      }
+    },
+  );
+
+  test("a scheduled run records its opening and cannot archive a reopened workspace", async () => {
+    const { workspaceRegistry, createDirectoryWorkspace, createArchiveWorkspace } =
+      await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+    const manager = new AgentManager({
+      logger: createTestLogger(),
+      clients: createTestAgentClients(),
+      registry: agentStorage,
+    });
+    const archive = createArchiveWorkspace({ agentManager: manager, agentStorage });
+    let originalIncarnation: string | undefined;
+    const options = {
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      createDirectoryWorkspace,
+      now: () => now,
+    };
+    const service = createScheduleService({
+      ...options,
+      archiveWorkspace: async (id, expectedIncarnation) => {
+        originalIncarnation = expectedIncarnation;
+        const original = (await workspaceRegistry.get(id))!;
+        await workspaceRegistry.archive(id, now.toISOString());
+        await workspaceRegistry.upsert({ ...original, archivedAt: null });
+        await archive(id, expectedIncarnation);
+      },
+    });
+    const created = await service.create({
+      prompt: "preserve the reopened workspace",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: {
+        type: "new-agent",
+        config: { provider: "claude", model: "test-model", cwd: tempDir },
+      },
+      maxRuns: 1,
+    });
+    await service.tick();
+    const run = (await service.inspect(created.id)).runs[0]!;
+    expect(run.status).toBe("succeeded");
+    expect(run.workspaceIncarnation).toEqual(expect.any(String));
+    expect(run.workspaceIncarnation).toBe(originalIncarnation);
+    const reopened = (await workspaceRegistry.get(run.workspaceId!))!;
+    expect(reopened.archivedAt).toBe(null);
+    expect(reopened.incarnation).not.toBe(run.workspaceIncarnation);
+    expect(await agentStorage.get(run.agentId!)).toMatchObject({ id: run.agentId });
+    expect((await agentStorage.get(run.agentId!))?.archivedAt).toBeUndefined();
+    await service.stop();
+
+    // A crash before the run outcome was recorded must keep the same cleanup binding.
+    const store = new ScheduleStore(join(tempDir, "schedules"), createTestLogger());
+    await store.update(created.id, (schedule) => ({
+      ...schedule,
+      runs: [{ ...run, status: "running", endedAt: null }],
+    }));
+    const restarted = createScheduleService({ ...options, archiveWorkspace: archive });
+    try {
+      await restarted.start();
+      expect((await restarted.inspect(created.id)).runs[0]).toMatchObject({
+        status: "failed",
+        workspaceIncarnation: originalIncarnation,
+      });
+      expect(await workspaceRegistry.get(reopened.workspaceId)).toEqual(reopened);
+      expect(await agentStorage.get(run.agentId!)).toMatchObject({ id: run.agentId });
+      expect((await agentStorage.get(run.agentId!))?.archivedAt).toBeUndefined();
+    } finally {
+      await restarted.stop();
+      await manager.closeAgent(run.agentId!);
+    }
   });
 
   test("archiveOnFinish=true archives the run workspace through workspace archive", async () => {
@@ -889,21 +2294,14 @@ describe("ScheduleService", () => {
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       createAgent: async (input) => {
         createdInputs.push(input);
-        const snapshot = {
-          id: "00000000-0000-0000-0000-000000000322",
-          provider: "claude",
-          cwd: input.cwd ?? tempDir,
-          workspaceId: input.workspaceId,
-          status: "idle",
-          lifecycle: "idle",
-        };
+        const snapshot = await manager.createAgent(
+          { provider: "claude", cwd: input.cwd ?? tempDir },
+          undefined,
+          { workspaceId: input.workspaceId },
+        );
         return {
-          snapshot: snapshot as Awaited<
-            ReturnType<ScheduleServiceOptions["createAgent"]>
-          >["snapshot"],
-          liveSnapshot: snapshot as Awaited<
-            ReturnType<ScheduleServiceOptions["createAgent"]>
-          >["liveSnapshot"],
+          snapshot,
+          liveSnapshot: snapshot,
           background: true,
           initialPromptStarted: false,
           initialPromptError: null,
@@ -964,24 +2362,14 @@ describe("ScheduleService", () => {
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       createAgent: async (input) => {
-        const snapshot = {
-          id:
-            runCount === 0
-              ? "00000000-0000-0000-0000-000000000323"
-              : "00000000-0000-0000-0000-000000000324",
-          provider: "claude",
-          cwd: input.cwd ?? tempDir,
-          workspaceId: input.workspaceId,
-          status: "idle",
-          lifecycle: "idle",
-        };
+        const snapshot = await manager.createAgent(
+          { provider: "claude", cwd: input.cwd ?? tempDir },
+          undefined,
+          { workspaceId: input.workspaceId },
+        );
         return {
-          snapshot: snapshot as Awaited<
-            ReturnType<ScheduleServiceOptions["createAgent"]>
-          >["snapshot"],
-          liveSnapshot: snapshot as Awaited<
-            ReturnType<ScheduleServiceOptions["createAgent"]>
-          >["liveSnapshot"],
+          snapshot,
+          liveSnapshot: snapshot,
           background: true,
           initialPromptStarted: false,
           initialPromptError: null,
@@ -1012,67 +2400,99 @@ describe("ScheduleService", () => {
     );
   });
 
-  test("scheduled new-agent cancellations fail the run", async () => {
+  test.each(["stop", "close"] as const)(
+    "scheduled new-agent cancellation by %s retains its result after the runtime disappears",
+    async (action) => {
+      const manager = new AgentManager({
+        logger: createTestLogger(),
+        clients: createTestAgentClients(),
+        registry: agentStorage,
+      });
+      const started = holdScheduledTestRun(manager);
+      const service = createScheduleService({
+        paseoHome: tempDir,
+        logger: createTestLogger(),
+        agentManager: manager,
+        agentStorage,
+        providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+        now: () => now,
+      });
+      const schedule = await service.create({
+        prompt: "Continue until stopped",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: {
+          type: "new-agent",
+          config: { provider: "claude", cwd: tempDir, archiveOnFinish: false },
+        },
+        runOnCreate: false,
+      });
+      const running = service.runOnce(schedule.id);
+      const agentId = await started;
+      try {
+        if (action === "stop") await manager.cancelAgentRun(agentId);
+        else await manager.closeAgent(agentId);
+        const finished = await running;
+        expect(finished.runs).toEqual([
+          expect.objectContaining({
+            status: "failed",
+            agentId,
+            workspaceId: "wks_schedule_test_1",
+            error: `Scheduled agent ${agentId} was canceled`,
+          }),
+        ]);
+      } finally {
+        await manager.closeAgent(agentId);
+        await running;
+        await manager.flush();
+      }
+    },
+  );
+
+  test("scheduled completion survives runtime eviction before the outcome is recorded", async () => {
     const manager = new AgentManager({
       logger: createTestLogger(),
       clients: createTestAgentClients(),
       registry: agentStorage,
     });
-    manager.runAgent = async () => ({
-      sessionId: "scheduled-canceled-run",
-      finalText: "",
-      timeline: [],
-      canceled: true,
+    const run = manager.runAgent.bind(manager);
+    vi.spyOn(manager, "runAgent").mockImplementation(async (...args) => {
+      const result = await run(...args);
+      await manager.closeAgent(args[0]);
+      return result;
     });
-    manager.waitForAgentEvent = async () => ({
-      status: "idle",
-      permission: null,
-      lastMessage: null,
-    });
-    manager.archiveAgent = async () => {};
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
       agentManager: manager,
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
-      createAgent: async (input) => {
-        const snapshot = {
-          id: "00000000-0000-0000-0000-000000000325",
-          provider: "claude",
-          cwd: input.cwd ?? tempDir,
-          workspaceId: input.workspaceId,
-          status: "idle",
-          lifecycle: "idle",
-        };
-        return {
-          snapshot: snapshot as Awaited<
-            ReturnType<ScheduleServiceOptions["createAgent"]>
-          >["snapshot"],
-          liveSnapshot: snapshot as Awaited<
-            ReturnType<ScheduleServiceOptions["createAgent"]>
-          >["liveSnapshot"],
-          background: true,
-          initialPromptStarted: false,
-          initialPromptError: null,
-        };
-      },
       now: () => now,
     });
-
-    const created = await service.create({
-      prompt: "cancel me",
+    const schedule = await service.create({
+      prompt: "Respond with exactly: finished before closing",
       cadence: { type: "every", everyMs: 60_000 },
-      target: { type: "new-agent", config: { provider: "claude", cwd: tempDir } },
-      maxRuns: 1,
+      target: {
+        type: "new-agent",
+        config: { provider: "claude", cwd: tempDir, archiveOnFinish: false },
+      },
+      runOnCreate: false,
     });
-    await service.tick();
-
-    const inspected = await service.inspect(created.id);
-    expect(inspected.runs[0]).toMatchObject({
-      status: "failed",
-      error: expect.stringContaining("was canceled"),
+    const finished = await service.runOnce(schedule.id);
+    expect(finished.runs).toMatchObject([
+      {
+        status: "succeeded",
+        output: "finished before closing",
+        error: null,
+      },
+    ]);
+    const agentId = finished.runs[0].agentId;
+    if (!agentId) throw new Error("Missing scheduled agent identity");
+    expect(manager.getAgent(agentId)).toBeNull();
+    expect(await agentStorage.get(agentId)).toMatchObject({
+      lastStatus: "closed",
+      lastTurnOutcome: "completed",
     });
+    await manager.flush();
   });
 
   test("failed new-agent run keeps run error when workspace archive also fails", async () => {
@@ -1097,21 +2517,14 @@ describe("ScheduleService", () => {
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       createAgent: async (input) => {
-        const snapshot = {
-          id: agentId,
-          provider: "claude",
-          cwd: input.cwd ?? tempDir,
-          workspaceId: input.workspaceId,
-          status: "idle",
-          lifecycle: "idle",
-        };
+        const snapshot = await manager.createAgent(
+          { provider: "claude", cwd: input.cwd ?? tempDir },
+          agentId,
+          { workspaceId: input.workspaceId },
+        );
         return {
-          snapshot: snapshot as Awaited<
-            ReturnType<ScheduleServiceOptions["createAgent"]>
-          >["snapshot"],
-          liveSnapshot: snapshot as Awaited<
-            ReturnType<ScheduleServiceOptions["createAgent"]>
-          >["liveSnapshot"],
+          snapshot,
+          liveSnapshot: snapshot,
           background: true,
           initialPromptStarted: false,
           initialPromptError: null,
@@ -1939,74 +3352,84 @@ describe("ScheduleService", () => {
     await service2.stop();
   });
 
-  test("startup recovery archives an interrupted run workspace with an associated agent", async () => {
-    const service1 = createScheduleService({
-      paseoHome: tempDir,
-      logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
-      agentStorage,
-      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
-      now: () => now,
-      runner: async () => ({ agentId: null, output: "ok" }),
-    });
-    const created = await service1.create({
-      prompt: "Interrupted after creating an agent",
-      cadence: { type: "every", everyMs: 60_000 },
-      target: {
-        type: "new-agent",
-        config: { provider: "claude", cwd: tempDir },
-      },
-      runOnCreate: false,
-    });
-    await service1.stop();
-
-    const interruptedAt = now.toISOString();
-    const associatedAgentId = "11111111-1111-4111-8111-111111111111";
-    const workspaceId = "wks_interrupted_with_agent";
-    const store = new ScheduleStore(join(tempDir, "schedules"), createTestLogger());
-    await store.update(created.id, (schedule) => ({
-      ...schedule,
-      runs: [
-        ...schedule.runs,
-        {
-          id: "run-interrupted-with-agent",
-          scheduledFor: interruptedAt,
-          startedAt: interruptedAt,
-          endedAt: null,
-          status: "running",
-          agentId: associatedAgentId,
-          workspaceId,
-          output: null,
-          error: null,
+  test.each([
+    {
+      incarnation: "original-opening",
+      expectedCalls: [["wks_interrupted_with_agent", "original-opening"]],
+    },
+    { incarnation: undefined, expectedCalls: [] },
+  ])(
+    "startup recovery binds cleanup to the recorded opening: $incarnation",
+    async ({ incarnation, expectedCalls }) => {
+      const service1 = createScheduleService({
+        paseoHome: tempDir,
+        logger: createTestLogger(),
+        agentManager: new AgentManager({ logger: createTestLogger() }),
+        agentStorage,
+        providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+        now: () => now,
+        runner: async () => ({ agentId: null, output: "ok" }),
+      });
+      const created = await service1.create({
+        prompt: "Interrupted after creating an agent",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: {
+          type: "new-agent",
+          config: { provider: "claude", cwd: tempDir },
         },
-      ],
-    }));
+        runOnCreate: false,
+      });
+      await service1.stop();
 
-    const archiveCalls: string[] = [];
-    now = new Date("2026-01-01T00:10:00.000Z");
-    const service2 = createScheduleService({
-      paseoHome: tempDir,
-      logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
-      agentStorage,
-      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
-      now: () => now,
-      runner: async () => ({ agentId: null, output: "ok" }),
-      archiveWorkspace: async (archivedWorkspaceId) => {
-        archiveCalls.push(archivedWorkspaceId);
-      },
-    });
-    await service2.start();
+      const interruptedAt = now.toISOString();
+      const associatedAgentId = "11111111-1111-4111-8111-111111111111";
+      const workspaceId = "wks_interrupted_with_agent";
+      const store = new ScheduleStore(join(tempDir, "schedules"), createTestLogger());
+      await store.update(created.id, (schedule) => ({
+        ...schedule,
+        runs: [
+          ...schedule.runs,
+          {
+            id: "run-interrupted-with-agent",
+            scheduledFor: interruptedAt,
+            startedAt: interruptedAt,
+            endedAt: null,
+            status: "running",
+            agentId: associatedAgentId,
+            workspaceId,
+            workspaceIncarnation: incarnation,
+            output: null,
+            error: null,
+          },
+        ],
+      }));
 
-    expect(archiveCalls).toEqual([workspaceId]);
-    const inspected = await service2.inspect(created.id);
-    expect(inspected.runs[0]).toMatchObject({
-      status: "failed",
-      agentId: associatedAgentId,
-      error: "Daemon restarted before the scheduled run completed",
-    });
-    await service2.stop();
-  });
+      const archiveCalls: Array<[string, string | undefined]> = [];
+      now = new Date("2026-01-01T00:10:00.000Z");
+      const service2 = createScheduleService({
+        paseoHome: tempDir,
+        logger: createTestLogger(),
+        agentManager: new AgentManager({ logger: createTestLogger() }),
+        agentStorage,
+        providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+        now: () => now,
+        runner: async () => ({ agentId: null, output: "ok" }),
+        archiveWorkspace: async (archivedWorkspaceId, expectedIncarnation) => {
+          archiveCalls.push([archivedWorkspaceId, expectedIncarnation]);
+        },
+      });
+      await service2.start();
+
+      expect(archiveCalls).toEqual(expectedCalls);
+      const inspected = await service2.inspect(created.id);
+      expect(inspected.runs[0]).toMatchObject({
+        status: "failed",
+        agentId: associatedAgentId,
+        error: "Daemon restarted before the scheduled run completed",
+      });
+      await service2.stop();
+    },
+  );
 
   test("startup recovery archives an interrupted run workspace even before agent association", async () => {
     const service1 = createScheduleService({
@@ -2044,6 +3467,7 @@ describe("ScheduleService", () => {
           status: "running",
           agentId: null,
           workspaceId,
+          workspaceIncarnation: "original-opening",
           output: null,
           error: null,
         },

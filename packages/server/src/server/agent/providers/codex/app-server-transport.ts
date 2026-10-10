@@ -293,14 +293,15 @@ export class CodexAppServerClient {
     this.unexpectedTerminationHandler = null;
     this.stdoutLineReader.close();
     this.rejectPending(new Error("Codex app-server client is closed"));
-    try {
-      this.child.stdin.end();
-    } catch {
-      // ignore
-    }
+    // Inventory descendants before EOF can let the owner exit and reparent them.
+    // A failed inspection must keep this input open so cleanup can be retried.
+    let stopError: unknown;
     const result = await terminateWithTreeKill(this.child, {
       gracefulTimeoutMs: APP_SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_MS,
       forceTimeoutMs: APP_SERVER_FORCE_SHUTDOWN_TIMEOUT_MS,
+      onError: (error) => {
+        stopError = error;
+      },
       onForceSignal: () => {
         this.logger.warn(
           { timeoutMs: APP_SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_MS },
@@ -309,7 +310,12 @@ export class CodexAppServerClient {
       },
     });
     if (result === "kill-timeout") {
-      throw new Error("Codex app-server did not report exit after SIGKILL");
+      throw new Error("Codex app-server process tree exit is unconfirmed", { cause: stopError });
+    }
+    try {
+      this.child.stdin.end();
+    } catch {
+      // The confirmed-exited process may already have closed its input.
     }
   }
 

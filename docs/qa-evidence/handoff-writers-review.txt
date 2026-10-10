@@ -1,0 +1,2187 @@
+Stopped-work review binding — 2026-10-10
+
+Coverage: Linux, real filesystem, isolated two-daemon RPCs and focused manager
+lifecycle tests with a test provider. No real provider turn, physical MacBook/VPS
+round trip, Electron, iOS, Android, macOS, Windows or released-version drift.
+The main daemon was not restarted.
+
+Registry-backed cleanup — a real worktree regression corrupted workspaces.json, reopened its
+registry, then requested archive by path. Before the fix, archive resolved with
+{archivedAgentIds: [], archivedWorkspaceIds: [], removedDirectory: true}: it deleted the checkout
+while treating the damaged ownership inventory as empty. Registry loading now refuses malformed
+JSON, invalid records, duplicate identities and read errors without publishing a partial cache or
+replacing the file. Repairing the file lets the same registry instance retry. Initial concurrent
+reads and mutations share one load, so a delayed read cannot overwrite a newer committed cache.
+Presence checks distinguish absence from denied access.
+
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/workspace-archive-service.test.ts -t 'unreadable workspace registry' --bail=1
+  Before the fix: 1 failed, 25 skipped. Expected rejection; received removedDirectory: true.
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/workspace-registry.test.ts packages/server/src/server/workspace-archive-service.test.ts --bail=1
+  Test Files  2 passed (2)
+       Tests  51 passed (51)
+    Duration  1.99s (tests 1.24s)
+The repaired case proves no setup/terminal stop, archive publication, teardown or file deletion
+before successful inventory recovery, then proves normal cleanup still works after repair.
+This closes the corrupt-inventory path. The source-retention work below builds on that boundary;
+backing-checkout identity remains separate implementation work.
+
+Opening-bound cleanup — the real worktree regression explicitly archived a workspace, recreated
+its checkout and reopened the same workspace ID. Its old schedule cleanup previously archived and
+deleted the new opening. WorkspaceRegistry now preserves an opening token across metadata edits and
+archive, and rotates it on reopen or placement changes. Automatic schedule cleanup stores that token
+with the run and uses it after restart; merge-triggered and created-agent cleanup capture it before
+waiting. Archive rechecks after admission and reserves the worktree before any writer stop, teardown
+or deletion. Missing, archived or mismatched openings skip automatic cleanup. An explicit archive
+remains available. Destination publication uses its preallocated identity so replay is idempotent.
+
+The real checkout regression now preserves the reopened files with no stop, teardown or archive,
+including a fresh registry instance, then allows cleanup by the new opening. Additional cases cover
+reopening while admission waits, missing legacy tokens, already-archived records, cleanup reservation
+lifetime, metadata edits, relocation and a scheduler outcome replay against the reopened workspace.
+The scheduler suite passed in the producer run; its combined run then exposed outdated merge-test
+inventory stubs, which were corrected and covered by the following successful run.
+
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/workspace-archive-service.test.ts packages/server/src/server/workspace-registry.test.ts packages/server/src/server/auto-archive-on-merge/archive-if-safe.test.ts packages/server/src/server/auto-archive-on-merge/index.test.ts packages/server/src/server/session/workspace-provisioning/workspace-provisioning-service.test.ts --bail=1
+  Test Files  5 passed (5)
+       Tests  134 passed (134)
+A subsequent archive-only run, after adding the reservation-lifetime case, passed all 31 cases.
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/handoff/ownership.posix.test.ts -t 'recovers hidden destination publication|legacy activation' --bail=1
+  Tests  8 passed, 48 skipped
+$ npx vitest run packages/protocol/src/messages.wire-compat.test.ts --bail=1
+  Tests  46 passed
+
+Four focused create-agent WebSocket cases pass with an isolated daemon and test providers: ordinary
+and nested auto-created worktrees, cleanup after failed nested creation, and shared backing retention.
+The first three passed in the combined run. The sibling-reference case initially raced automatic
+cleanup; it now registers the sibling before explicitly starting the turn, then passes on its own.
+This establishes the intended existing-owner case without admitting a new owner during deletion.
+Build:server, root typecheck, lint and formatting pass. These are Linux results; CI owns native
+macOS/Windows coverage. No production daemon restart or real provider call occurred.
+
+This opening token does not identify an externally replaced backing checkout. The source integration
+below adds reviewed stop scopes and explicit continuation; physical-stop proof and the remaining
+relationship/outcome dispositions still gate the complete retained-job contract.
+
+Durable retained-workspace protection — a second real-worktree regression loaded a retained
+workspace through a fresh registry and requested automatic cleanup with its matching opening.
+Before the change, cleanup returned removedDirectory: true and archived the workspace. The registry
+now preserves a handoff retention marker, checks the expected opening before publishing it, and
+synchronizes file and directory publication before acknowledgement. Failed writes, lost rename
+acknowledgements and failed synchronization keep the exact candidate; later reads and mutations
+must repair it first. Stale upserts and updater snapshots cannot remove the protection. Explicit
+workspace archive clears it, and an old retained snapshot cannot restore it into a new opening.
+
+Automatic workspace/agent cleanup and missing-directory reconciliation preserve retained work.
+Skipped created-worktree cleanup no longer emits an agent-remove notification. The real scheduler
+test creates a managed Git worktree outside its configured source directory, changes tracked bytes,
+publishes retention, stops its held test-provider turn and runs ordinary finally cleanup. It then
+loads a cold registry, exercises interrupted-run cleanup, deletes the schedule, resumes the agent
+explicitly and repeats cleanup. The uncommitted bytes, active workspace and unarchived conversation
+survive. A separate real checkout case proves explicit archive can still remove the retained tree.
+
+$ npx vitest run packages/server/src/server/workspace-archive-service.test.ts -t 'automatic cleanup preserves a source-retained' --bail=1
+  Red: 1 failed, 31 skipped; cleanup archived the retained workspace and removed its directory.
+  Green after the fix: 1 passed, 31 skipped.
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/workspace-registry.test.ts packages/server/src/server/workspace-archive-service.test.ts packages/server/src/server/workspace-reconciliation-service.test.ts packages/server/src/server/schedule/service.test.ts --bail=1
+  Registry, archive and scheduler files passed. Reconciliation exposed a stale exact-object
+  expectation omitting the opening identity added earlier: 166 passed, 1 failed, 15 not run.
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/workspace-reconciliation-service.test.ts --bail=1
+  After correcting that expectation: 27 passed.
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/agent/create-agent-lifecycle-dispatch.test.ts --bail=1
+  3 passed, including agent-only and created-worktree completion with retained records.
+Together the five affected files cover 185 passing cases; no full repository suite was run.
+Root typecheck and lint pass. Initial focused runs also corrected two test-fixture API calls
+before reaching the continuation and lifecycle assertions; those were not product failures.
+
+Source integration — the new two-daemon regression first failed at preview with “The scheduled
+agent is outside the transferred conversations”. Source review now follows active schedule runs
+and overlapping workspaces until the stop set stabilizes. Journal v2 persists those temporary
+scopes; transferred membership stays separate. Preparation drains destructive cleanup admissions,
+publishes workspace and agent retention, holds queues, stops the reviewed runtimes, drains runner
+leases and pauses definitions. Held notifications can still append to retained queues. A local
+history checkpoint survives daemon restart without opening the provider. Other agents cannot resume
+a retained conversation; a human prompt or explicit queue resume can. Workspace cleanup protection
+survives that continuation.
+
+The two-daemon cases use a real Git worktree with uncommitted bytes and archive-on-finish enabled.
+They cover activation and cancellation after both daemon instances restart, stopped readable history,
+held late notifications, refused implicit/agent-origin reopening and an explicit continued turn.
+A nested schedule rooted in retained worktree B creates job K in C: both worktrees and jobs stay on
+the source, the nested definition stays paused there, and only the original definition moves.
+The opposite direction (moving a job's worktree while retaining its parent schedule) still passes
+in native and exported-context modes.
+
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/handoff/ownership.test.ts packages/server/src/server/handoff/ownership.posix.test.ts packages/server/src/server/agent/agent-storage.test.ts packages/server/src/server/schedule/service.test.ts --bail=1
+  211 passed, 1 skipped across four affected files.
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/handoff/archive.e2e.test.ts -t 'handoff retains the scheduled worktree|handoff retains the parent schedule' --bail=1
+  Final combined run, including the nested case: 5 passed, 39 skipped.
+$ npx vitest run packages/protocol/src/messages.wire-compat.test.ts packages/app/src/i18n/resources.test.ts --bail=1
+  87 passed. New review fields remain optional and all nine locale resources match.
+
+The first integration attempt exposed a PR-watch stop guard that only recognized transferred
+agents; it now recognizes the reviewed temporary stop set. Intermediate test failures also corrected
+summary-versus-inspect schedule RPC expectations and waiting for a deliberately held notification.
+These were fixed without raising timeouts or weakening retention, history or continuation checks.
+
+Retained delegation results — the controlled-provider regression stopped a child while its independent
+descendant kept running. Before the fix, the parent received completed with “Child task completed
+without an assistant result.” The child was actually cancelled, and its stopped history contained
+the original response. Delegation now checkpoints that outcome and its pending descendants before
+continuation. Service recovery never opens the retained provider to read the result. Reopening the
+child and starting another descendant cannot substitute its new response or delay the original task.
+Both restart classifications and the usual aggregation-turn behavior are covered.
+
+The focused cases cover service recovery before checkpoint publication and after explicit continuation,
+damaged history refusing a human prompt until the original bytes return, and a failed synchronization
+retrying through a fresh DelegationStore. A later write preserves the original bounded result and its
+truncation flag. AgentStorage refuses continuation until the matching history's results are published.
+An intermediate test setup failure was a missing retained-history fixture directory; creating that
+directory fixed the fixture without changing product behavior or assertions.
+
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/delegation/delegation-service.test.ts packages/server/src/server/delegation/delegation-store.test.ts --bail=1
+  32 passed across two files.
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/delegation/delegation-service.test.ts packages/server/src/server/handoff/ownership.posix.test.ts --bail=1
+  Final checkpoint-coordination and source-fixture validation: 76 passed. Root typecheck, lint and
+  formatting also pass.
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/handoff/archive.e2e.test.ts -t 'handoff retains the scheduled worktree on the source' --bail=1
+  3 passed, 41 skipped. Activation, cancellation, nested retained jobs and source restart still pass
+  with delegation checkpointing integrated into source preparation and explicit continuation.
+
+Interrupted retained-history publication — a filesystem obstruction stopped preparation after the
+job had closed but before its history checkpoint was published. The cases cancel before or after
+restarting both daemon instances, then remove the obstruction. Before repair support, the human prompt
+still failed with “Retained conversation history is unavailable for delegation recovery”. History
+reads and explicit continuation now share the stopped capture and delegation checkpoint, without
+opening a provider. They verify the native files again before binding the history. An existing digest
+cannot be replaced by recapturing: a damaged bound checkpoint refuses continuation until its original
+bytes are restored. All five retained-job cases now also verify one controlled-provider prompt and a
+completed turn after explicit continuation, rather than only accepted dispatch.
+
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/handoff/archive.e2e.test.ts -t 'continue after history failure handoff retains' --bail=1
+  Red: 1 failed, 45 skipped; continuation stayed blocked after removing the filesystem obstruction.
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/handoff/archive.e2e.test.ts -t 'history failure handoff retains' --bail=1
+  Green: 2 passed, 44 skipped. Both history-read and human-prompt recovery pass after cancellation
+  and daemon restart.
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/handoff/archive.e2e.test.ts -t 'handoff retains the scheduled worktree on the source' --bail=1
+  Final run: 5 passed, 41 skipped. An earlier combined run reached the nested creation poll's
+  deadline before the scheduler published its agent ID. The fixture now observes the real scheduler
+  dispatch and waits for turn start, preserving the same identity, history and cleanup assertions.
+  No timeout was increased. Root typecheck, lint and formatting pass.
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/handoff/archive.e2e.test.ts -t 'cancel after history failure handoff retains' --bail=1
+  1 passed, 45 skipped after adding cancellation before shutdown and repeating it after restart.
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/handoff/ownership.posix.test.ts -t '^source' --bail=1
+  6 passed, 50 skipped. Source shutdown deadlines, uncertain cleanup, cancellation fencing and
+  preparation retries remain covered.
+
+Limits: physical-stop proof after a crash, backing-checkout replacement identity, the remaining
+relationship dispositions and unknown outcomes remain unfinished. Retained history currently requires a
+recorded Claude session. These tests use real stores, Git and lifecycle services with controlled
+providers on Linux; they do not establish authenticated provider continuity, power-loss behavior,
+native macOS/Windows behavior or the physical MacBook/VPS transfer. No main daemon restart occurred.
+
+The initial network regression reproduced an unreviewed same-name replacement
+terminal being stopped and the transfer reaching staged state. Source preview now
+identifies the loaded provider-session and terminal instances, plus active setup
+run IDs. The app retains this approval in local intent and both host journals.
+The client rechecks before reservation; source preparation checks before fencing
+and before each stop pass. Retrying after partial cleanup allows approved writers
+to disappear but refuses their replacements. A queued provider reload cannot cause
+a reviewed close to kill the replacement session. Readiness and release refuse
+surviving terminals or setup.
+
+The real-network test covers same-name terminal replacement, direct source RPC
+refusal, cancellation, fresh review, both hosts restarting, unchanged approval in
+both journals, refusal to drop that approval and successful activation. The setup
+regression reloads the ownership journal after failed cleanup and refuses a
+replacement with the same active count. It also tests active setup blocking release.
+
+Shutdown deadline — the initial regression held setup cleanup open and found preparation still
+pending after advancing a controlled clock by 30 seconds. Preparation now bounds the whole
+stop-and-drain phase, including watches and schedule pausing, while retaining its work and fence.
+Five new cases cover those three stop phases, a retained mutation lease and a stop that rejects
+after timeout. They assert that retries join the existing operation, cancellation cannot race late
+stops, no archive appears after a late completion, and a fresh attempt can complete preparation.
+All 54 cases in the changed ownership file pass. The existing recovery case also passes after sharing
+the source fixture. Root typecheck, lint and formatting pass. No browser suite was repeated for this
+server-only change; the existing CI jobs own broader and platform verification.
+These tests use real ownership journals and files with held shutdown adapters and controlled timers.
+They do not prove provider termination or repair unknown run outcomes. The heartbeat integration
+below additionally covers a reviewed live run with a controlled provider adapter.
+
+Scheduler admission — the initial regression ran a schedule after source fencing and consumed
+its final allowed execution. Schedule controls and dispatch now admit the persisted target inside
+the store's per-schedule queue. A run retains admission through workspace cleanup and its outcome
+write. Both sides of a retarget must be admitted; an active run can change future provider settings
+but cannot move its directory or agent. A refused automatic tick consumes no run or cadence, and
+unrelated schedules continue. Manual requests return the refusal. Startup recovery and expiration
+leave fenced records unchanged, including a released heartbeat with no remaining source agent record.
+
+The service/store cases cover stale tick inventories after pause/retarget, symlink targets,
+concurrent run refusal, run completion under a fence, an uncertain ownership journal,
+release/restart, queued deletion against a changed record and cleanup after failed publication.
+One case uses the real schedule executor and agent manager with a test provider, holding workspace
+cleanup open while readiness refuses. Concurrent provider-setting updates remain supported.
+
+Schedule transfer — source preview strictly reads the inventory and binds the selected definitions
+and run histories to review. Preparation pauses and synchronizes them before capture; a failed
+synchronization after rename can be acknowledged again after restart. Cancellation leaves them
+paused. Version 5 bundles include the snapshot and byte estimate. Destination installation remaps
+workspace paths and heartbeat targets, preserves cadence, run budgets and outputs, and records
+original run identities separately from destination links. Completed records remain completed.
+Host MCP connections, permission modes and advanced provider settings are omitted; review names
+the connections and explains that destination setup is required before resume.
+
+Imported records use stable reservation-derived IDs and no-replace publication. Partially installed
+schedules cannot be listed or resumed; their private conversations cannot be used as heartbeat targets. An existing destination schedule
+whose directory contains the private import does not prevent daemon boot. Activation recovers
+from the persisted timestamp and identities without duplicate automation or a provider launch.
+Release refuses a post-capture schedule change. A returned transfer remaps the imported IDs again.
+
+Validation for this slice:
+- Service, store and ownership suites: 135 cases passed; one additional invalid/duplicate review
+  reservation case passed after that run.
+- Wire compatibility: 45 cases passed, including old shapes and optional automation/provenance fields.
+- App form and translation suites: 73 cases passed across the supported language resources.
+- Three isolated two-daemon cases passed: native and exported-context automation transfer through
+  cancellation, host restarts and interrupted installation; unchanged files/terminal review behavior.
+  These use synthetic provider transcripts and a version-only executable, not a provider turn.
+- Desktop and compact Chromium each passed the mixed-continuation case, including automation review,
+  recovery, activation and a return transfer with both records still paused. Captures:
+  handoff-schedules-desktop.png and handoff-schedules-compact.png. The watch-review captures also
+  show the automation disposition. The other regenerated images were unchanged in scope and retained.
+- After the bundle validation refactor and completed/return-provenance assertions, all 19 selected
+  scheduler handoff cases passed (68 unrelated cases skipped).
+
+The first desktop attempt timed out waiting 20 seconds for an isolated daemon, before entering the
+flow. A standalone startup measured 3.9 seconds; the unchanged test then passed in 53.6 seconds.
+The first compact process exited with signal status 143 without a test result. Its traced retry passed
+in about one minute, with normal browser/daemon/Metro shutdown. No assertion or timeout was relaxed.
+These interruptions remain environment observations; their underlying causes were not established.
+
+npm run build:server, root npm run typecheck, npm run lint and npm run format passed.
+The existing CI jobs own platform and full-suite verification; no new feature-specific job was added.
+
+macOS canonical paths — job 114264720395 in run 38069758977, at ce284e34b, failed the retained
+schedule expectation because /var/folders resolves through /private/var/folders. Production correctly
+returned the canonical path. The existing service test now checks review, carried note and exported
+source target against filesystem realpath, and covers both a direct directory and a symlink alias.
+Before adjusting the expectations, the Linux alias case reproduced the same mismatch (one passed,
+one failed). Afterward both cases pass, including source fencing, paused capture, restart and cancel.
+
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/schedule/service.test.ts -t 'retains and fences an outside schedule' --bail=1
+  Tests  2 passed, 90 skipped
+  Duration  2.24s (tests 109ms)
+Only test expectations changed; production path resolution remains canonical. Native macOS
+confirmation of this assertion repair is pending CI.
+
+Strict capture refuses unfinished or untracked runs, ancestor-directory schedules, outside heartbeat owners sharing
+the checkout, damaged inventory, more than 1,000 selected records or metadata beyond 32 MiB. This
+slice does not certify a running job's outcome after a crash. Jobs in other workspaces and
+recovery of uncertain outcomes remain open; an admitted runner can still prevent drain completion,
+with the preparation wait bounded as tested above.
+Completed-outcome recovery — the original regression replaced successful output with an I/O error.
+A second regression restarted the store after failed final publication and found the known result
+had disappeared: the schedule still said running. The store now owns a durable repair record,
+including immutable previous/candidate values, before publishing the completed outcome. The
+existing per-schedule queue repairs it before reads, later writes and startup interrupted-run handling.
+POSIX acknowledgement includes intent publication, final-record publication and intent retirement;
+an empty recovery directory is synchronized after restart before allowing newer writes.
+Conflicting, malformed, mismatched or non-regular recovery records refuse progress and remain retryable.
+
+Current validation: 28 store cases, 89 service cases and two isolated two-daemon cases pass (119 total).
+The added store cases cover restart before final publication, failed intent/file synchronization,
+failed removal/retirement acknowledgement, external changes and damaged metadata. Service startup
+repairs known success and actual execution failure behind a recovered source fence without a second
+provider call. Both native and exported-context network cases inject a stopped job's outcome-write
+failure, verify the source stays preparing and its disk record still says running, restart both
+daemons, recover the original cancellation reason, finish preparation, restart again and activate
+with the job's files, readable history and paused schedule intact.
+
+The added process regression launches a separate Node process running the real ScheduleStore.
+Filesystem permissions leave its repair directory writable while refusing the final record write.
+After observing EACCES, the test sends SIGKILL and verifies signal termination, then recovers the exact
+output from disk with a new store and accepts a later mutation. Against the pre-fix store at
+0a0d2a108, this same test fails because the recovered run is still running with null output; against
+4a125621c it passes. No shared memory or storage mock provides the recovered output.
+
+These tests use real files, ownership journals, scheduler/manager services and local WebSocket RPCs.
+Provider turns are controlled fixtures. Network daemon restart uses fresh in-process instances;
+the separate writer-kill case covers actual process death. Neither is power-loss testing or
+authenticated provider continuity. A failure before the repair record
+becomes durable can still lose the only known result. Pre-dispatch durability and reconciliation of
+unknown run outcomes remain open. Other schedule writes retain their existing durability contract.
+Server-stack build, root typecheck and lint passed. No browser suite was repeated for this storage
+change; the production capability remains unadvertised.
+
+
+Actual writer-process termination (raw command output):
+
+Pre-fix store (0a0d2a108): npx vitest run src/server/schedule/store.test.ts -t "writer process is killed" --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/schedule/store.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  override existing env vars with { override: true }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: 🔐 encrypt with Dotenvx: https://dotenvx.com
+
+ ❯ src/server/schedule/store.test.ts (28 tests | 1 failed | 27 skipped) 422ms
+     × recovers a known outcome after its writer process is killed before final publication 420ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/schedule/store.test.ts > ScheduleStore > recovers a known outcome after its writer process is killed before final publication
+AssertionError: expected [ { id: '8fe2fe2f', …(13) } ] to deeply equal [ { id: '8fe2fe2f', …(13) } ]
+
+- Expected
++ Received
+
+@@ -5,29 +5,29 @@
+        "type": "every",
+      },
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "expiresAt": null,
+      "id": "8fe2fe2f",
+-     "lastRunAt": "2026-01-01T00:00:00.000Z",
++     "lastRunAt": null,
+      "maxRuns": 1,
+      "name": null,
+-     "nextRunAt": null,
++     "nextRunAt": "2026-01-01T00:00:00.000Z",
+      "pausedAt": null,
+      "prompt": "Continue",
+      "runs": [
+        {
+          "agentId": null,
+-         "endedAt": "2026-01-01T00:00:00.000Z",
++         "endedAt": null,
+          "error": null,
+          "id": "run",
+-         "output": "Result from the terminated writer",
++         "output": null,
+          "scheduledFor": "2026-01-01T00:00:00.000Z",
+          "startedAt": "2026-01-01T00:00:00.000Z",
+-         "status": "succeeded",
++         "status": "running",
+        },
+      ],
+-     "status": "completed",
++     "status": "active",
+      "target": {
+        "config": {
+          "cwd": "/tmp/schedule-store-test-uqOsee",
+          "provider": "claude",
+        },
+
+ ❯ src/server/schedule/store.test.ts:297:50
+    295|         await chmod(tempDir, 0o700);
+    296|         const recovered = new ScheduleStore(tempDir, createTestLogger(…
+    297|         expect(await recovered.listForHandoff()).toEqual([candidate]);
+       |                                                  ^
+    298|         expect(await readdir(join(tempDir, ".pending"))).toEqual([]);
+    299|         await recovered.update(schedule.id, (record) => ({ ...record, …
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 27 skipped (28)
+   Start at  16:28:53
+   Duration  828ms (transform 186ms, setup 49ms, import 243ms, tests 422ms, environment 0ms)
+
+
+
+Current store (4a125621c): same selected case
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 27 skipped (28)
+   Start at  16:29:13
+   Duration  657ms (transform 163ms, setup 38ms, import 223ms, tests 306ms, environment 0ms)
+
+
+
+npm run typecheck
+
+> paseo@0.11.1 typecheck
+> npm run typecheck --workspaces --if-present
+
+
+> @getpaseo/builtin-plugins@0.11.1 typecheck
+> tsgo -p tsconfig.json --noEmit
+
+
+> @getpaseo/expo-two-way-audio@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/highlight@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/plugin@0.11.1 typecheck
+> tsgo --noEmit && tsgo -p tsconfig.examples.json --noEmit
+
+
+> @getpaseo/protocol@0.11.1 pretypecheck
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/client@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/server@0.11.1 typecheck
+> tsgo -p tsconfig.server.typecheck.json --noEmit
+
+
+> @getpaseo/app@0.11.0-beta.36 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/relay@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/website@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/desktop@0.11.1 typecheck
+> tsgo --noEmit -p tsconfig.json
+
+
+> @getpaseo/cli@0.11.1 typecheck
+> tsgo --noEmit
+
+
+
+npm run lint
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 2.1s on 5035 files with 177 rules using 4 threads.
+
+
+Outcome restart regression and verification (raw command output):
+
+RED: npx vitest run src/server/schedule/store.test.ts -t "known outcome after restart before" --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/schedule/store.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  write to custom object with { processEnv: myObject }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  enable debug logging with { debug: true }
+
+ ❯ src/server/schedule/store.test.ts (18 tests | 1 failed | 17 skipped) 24ms
+     × handoff recovers a known outcome after restart before its schedule record was published 22ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/schedule/store.test.ts > ScheduleStore > handoff recovers a known outcome after restart before its schedule record was published
+AssertionError: expected { id: 'd9c4b0f7', name: null, …(12) } to deeply equal { id: 'd9c4b0f7', name: null, …(12) }
+
+- Expected
++ Received
+
+@@ -4,29 +4,29 @@
+      "type": "every",
+    },
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "expiresAt": null,
+    "id": "d9c4b0f7",
+-   "lastRunAt": "2026-01-01T00:00:00.000Z",
++   "lastRunAt": null,
+    "maxRuns": 1,
+    "name": null,
+-   "nextRunAt": null,
++   "nextRunAt": "2026-01-01T00:00:00.000Z",
+    "pausedAt": null,
+    "prompt": "Continue",
+    "runs": [
+      {
+        "agentId": null,
+-       "endedAt": "2026-01-01T00:00:00.000Z",
++       "endedAt": null,
+        "error": null,
+        "id": "run",
+-       "output": "Exact completed output",
++       "output": null,
+        "scheduledFor": "2026-01-01T00:00:00.000Z",
+        "startedAt": "2026-01-01T00:00:00.000Z",
+-       "status": "succeeded",
++       "status": "running",
+      },
+    ],
+-   "status": "completed",
++   "status": "active",
+    "target": {
+      "config": {
+        "cwd": "/tmp/schedule-store-test-Gj2Wik",
+        "provider": "claude",
+      },
+
+ ❯ src/server/schedule/store.test.ts:176:48
+    174|       }
+    175|       const restarted = new ScheduleStore(tempDir, createTestLogger());
+    176|       expect(await restarted.get(schedule.id)).toEqual(candidate);
+       |                                                ^
+    177|       expect(await restarted.listForHandoff()).toEqual([candidate]);
+    178|       await restarted.update(schedule.id, (record) => ({ ...record, na…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 17 skipped (18)
+   Start at  16:03:02
+   Duration  386ms (transform 145ms, setup 40ms, import 212ms, tests 24ms, environment 0ms)
+
+
+
+npx vitest run src/server/schedule/store.test.ts --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  27 passed (27)
+   Start at  16:09:23
+   Duration  602ms (transform 157ms, setup 36ms, import 219ms, tests 245ms, environment 0ms)
+
+
+
+npx vitest run src/server/schedule/service.test.ts --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  89 passed (89)
+   Start at  16:10:39
+   Duration  6.97s (transform 1.50s, setup 38ms, import 2.12s, tests 4.70s, environment 0ms)
+
+
+
+npx vitest run src/server/handoff/archive.e2e.test.ts -t "recovers a stopped job outcome after daemon restart" --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  2 passed | 39 skipped (41)
+   Start at  16:11:39
+   Duration  20.26s (transform 8.18s, setup 39ms, import 10.46s, tests 9.65s, environment 0ms)
+
+
+
+Final external-write assertion: npx vitest run src/server/schedule/store.test.ts -t "outcome repair keeps exact inputs" --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 26 skipped (27)
+   Start at  16:14:32
+   Duration  473ms (transform 195ms, setup 40ms, import 285ms, tests 35ms, environment 0ms)
+
+
+
+npm run typecheck
+
+> paseo@0.11.1 typecheck
+> npm run typecheck --workspaces --if-present
+
+
+> @getpaseo/builtin-plugins@0.11.1 typecheck
+> tsgo -p tsconfig.json --noEmit
+
+
+> @getpaseo/expo-two-way-audio@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/highlight@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/plugin@0.11.1 typecheck
+> tsgo --noEmit && tsgo -p tsconfig.examples.json --noEmit
+
+
+> @getpaseo/protocol@0.11.1 pretypecheck
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/client@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/server@0.11.1 typecheck
+> tsgo -p tsconfig.server.typecheck.json --noEmit
+
+
+> @getpaseo/app@0.11.0-beta.36 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/relay@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/website@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/desktop@0.11.1 typecheck
+> tsgo --noEmit -p tsconfig.json
+
+
+> @getpaseo/cli@0.11.1 typecheck
+> tsgo --noEmit
+
+
+
+npm run lint
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 4.0s on 5035 files with 177 rules using 4 threads.
+
+
+Heartbeat cancellation — Stop and provider Close both reproduced a heartbeat recorded as succeeded
+with no error. The wait result now distinguishes a canceled turn from successful idle. Closing marks
+only still-unsettled work canceled, after draining provider events; a completion or failure emitted
+during shutdown retains its outcome. A third regression found a canceled heartbeat lost its agent
+link. Admission now records the current persisted heartbeat target, so the failed outcome retains it.
+
+The service file passes 79 cases. Seven new manager cases cover cancellation before/during wait,
+both wait modes, a successful turn after cancellation, silent shutdown, and completion/failure
+during shutdown. Two new service cases use the real manager and filesystem with a held test-provider
+turn. The selected manager wait/closure/reload cases pass 20 cases (268 skipped), for 99 distinct
+passing cases. Server-stack build, final server build, root typecheck, lint and formatting pass.
+These are process-local outcome tests, not proof of provider termination or crash recovery.
+
+New-agent job closure and cleanup — closing a running job reproduced an "Unknown agent" error
+instead of its cancellation result. Closing a completed job before schedule publication reproduced
+status=failed, output=null and "Agent not found". The collected run now retains its own runtime's
+final handle and outcome; schedule publication does not query an evicted or replacement runtime.
+Cancellation retains the created agent and workspace identities. Manager cases also cover provider
+completion and failure delivered during close.
+
+A separate-worktree case then reproduced automatic archive after the scheduled source was fenced.
+Cleanup now acquires source admission again; a refused cleanup leaves the worktree available.
+The startup case publishes an interrupted-run record and installs the source fence before cleanup,
+verifying the same refusal and retained file bytes. Already-admitted cleanup still holds its lease
+until completion. The startup test does not certify the interrupted run's unknown outcome.
+
+Commands (from packages/server):
+  npx vitest run src/server/schedule/service.test.ts --bail=1
+    Test Files 1 passed (1); Tests 83 passed (83); Duration 7.69s
+  npx vitest run src/server/schedule/service.test.ts -t 'startup cleanup rechecks source ownership' --bail=1
+    Test Files 1 passed (1); Tests 1 passed | 83 skipped (84); Duration 2.40s
+  npx vitest run src/server/agent/agent-manager.test.ts -t 'runAgent|waitForAgentEvent preserves the outcome when provider close' --bail=1
+    Test Files 1 passed (1); Tests 9 passed | 282 skipped (291); Duration 1.67s
+  npm run build:server; npm run typecheck; npm run lint; npm run format (repository root)
+    All completed successfully. Lint: 0 warnings, 0 errors.
+
+These are 93 distinct passing cases: 84 service cases and 9 selected manager cases. They use the
+real manager, stores and filesystem with controlled provider sessions. The worktree fixture uses a
+registry-backed directory and an injected archive that deletes it; it does not exercise Git worktree
+creation or prove OS-process termination. This closure fix alone did not enable active new-agent
+transfer; the next slice covers jobs in the selected workspace. Crash outcome reconciliation remains open.
+
+Created-agent transfer — the initial service regression refused a running job even when its agent
+belonged to the transferred conversations. Review now binds that job's run and exact loaded session.
+The coordinator's existing conversation shutdown closes it, drains outcome publication and captures
+paused automation. The service refuses unknown runners and jobs outside the selected conversation
+set. The store accepts only the reviewed run's terminal transition; definition and prior history
+changes still invalidate review. Automatic cleanup stays fenced, preserving the source workspace.
+
+The two new network cases start a job through scheduleRunOnce, select its newly created workspace,
+prepare the transfer, restart both daemons and activate the destination. Both native and exported
+context modes retain the prompt, failed/canceled run, remapped agent/workspace identities and file
+bytes. The destination schedule remains paused and its provider stays unloaded; the source refuses
+another manual dispatch. The controlled provider writes a synthetic Claude transcript and holds the
+turn until manager closure. These are transport and lifecycle results, not authenticated continuity
+or OS-process termination evidence.
+
+Commands (from packages/server unless stated):
+  npx vitest run src/server/schedule/service.test.ts src/server/schedule/store.test.ts --bail=1
+    Test Files 2 passed (2); Tests 102 passed (102); Duration 7.88s
+  npx vitest run src/server/schedule/service.test.ts -t 'handoff.*(active heartbeat|created agent)|failed new-agent run keeps run error' --bail=1
+    Test Files 1 passed (1); Tests 3 passed | 82 skipped (85); Duration 3.23s
+  npx vitest run src/server/handoff/archive.e2e.test.ts -t 'handoff stops a scheduled created agent' --bail=1
+    Test Files 1 passed (1); Tests 2 passed | 37 skipped (39); Duration 21.31s
+  npx vitest run src/i18n/resources.test.ts --bail=1 (packages/app)
+    Test Files 1 passed (1); Tests 40 passed (40); Duration 2.71s
+  FONTCONFIG_FILE=/tmp/handoff-browser-fonts.conf LD_LIBRARY_PATH=/tmp/handoff-browser-libs/extracted/usr/lib/x86_64-linux-gnu npm run test:e2e -- e2e/browser/workspace-handoff.spec.ts --grep 'reviews and stops a scheduled created agent' --workers=1 --max-failures=1 (packages/app)
+    Desktop passed (39.4s); compact passed (42.6s); 2 passed (1.8m)
+  npm run build:server; npm run typecheck; npm run lint; npm run format (repository root)
+    All completed successfully. Lint: 0 warnings, 0 errors.
+
+There are 146 distinct passing cases: 85 service, 17 store, 40 translation, 2 network and 2 browser.
+The browser cases use the same controlled provider through real app RPCs. They verify the visible
+review warning, preparation, activation, paused automation, remapped history and file bytes. Both
+handoff-active-job-desktop.png and handoff-active-job-compact.png were inspected; the warning wraps
+without clipping and the preparation action remains visible. The first browser attempt exited before
+opening the app because libnspr4.so was unavailable. The unchanged retry used the existing isolated
+libraries and fonts, with no assertion or timeout changes.
+The final server-only build was terminated with exit 143 and no compiler diagnostic. Its handle was
+terminal and no compiler remained; the unchanged isolated retry completed successfully.
+
+The service suite initially exposed three fixture creators returning agent snapshots without a
+runtime. They now create real manager sessions before controlling run output. This adds no production
+fallback. The new review warning distinguishes scheduled jobs from heartbeats in all nine locales.
+Moving a parent schedule directory while a job runs outside the selected workspace, shared-checkout
+ownership and uncertain outcomes after a crash still need disposition and recovery evidence.
+
+Source-retained schedule — the first service regression returned an empty schedule review when
+moving an active job workspace whose schedule targeted another directory. Review now includes that
+outside definition, keeps it paused on the source and captures its terminal result without installing
+it on the destination. The schedule identity participates in existing admission, including an already
+admitted run, so preparation drains publication and prevents automatic workspace deletion. Cancel and
+release permit explicit source schedule resume; the released worktree and conversation remain fenced.
+Unrelated work in the source schedule directory stays available. A carried note identifies the retained
+schedule and source path on the destination.
+
+Release publication — pausing the final ownership write reproduced a retained schedule mutation
+being admitted before release was durable. Release now publishes its candidate before exposing the
+released state, matching cancellation's ordering. The retained and transferred schedule cases both
+verify that admission stays fenced and status stays ready during that write; after acknowledgement
+and a fresh owner, only the retained schedule can mutate. A failed publication still makes the owner
+unavailable until recovery; it does not return a receipt.
+
+$ npx vitest run src/server/handoff/ownership.test.ts -t 'schedule identity fences' --bail=1
+  FAIL retained schedule identity fences outside-directory work through restart and release
+  AssertionError: promise resolved "'too early'" instead of rejecting
+  Tests  1 failed | 12 skipped (14)
+$ npx vitest run src/server/handoff/ownership.test.ts --bail=1
+  Test Files  1 passed (1)
+       Tests  14 passed (14)
+    Duration  369ms (tests 65ms)
+$ npx vitest run src/server/handoff/ownership.posix.test.ts -t 'release survives restart|lost reply after durable release|readable release after failed synchronization|failure before persisting release|cancellation and release serialize|release already verifying' --bail=1
+  Test Files  1 passed (1)
+       Tests  6 passed | 50 skipped (56)
+    Duration  1.82s (tests 46ms)
+
+The six existing recovery cases cover failed writes/synchronization, lost acknowledgement, durable
+receipt replay and both cancellation/release orderings. These are Linux file-backed owner tests;
+they do not prove power-loss behavior or the still-pending external-job retention disposition.
+
+A second regression paused creation after the agent existed but before its run link was persisted.
+Review again returned an empty array. Selection now also uses the already-persisted workspace ID,
+so the incomplete execution refuses review instead of disappearing from it. No provider turn is used
+to discover or repair an unknown outcome.
+
+Both native/context network cases create a real Git worktree through scheduleRunOnce, retain its
+uncommitted file bytes, prepare and restart both daemons, then activate with readable prompt history
+and the carried note. They reject a stripped source-retention approval and an altered schedule after
+capture. Destination schedule inventory stays empty; the parent source schedule remains paused until
+explicit resume. The provider session and Claude transcript writer are controlled test adapters;
+these cases do not prove authenticated continuation or provider process termination.
+
+The optional wire field preserves older parsers. Source preparation rejects an approval that loses
+that disposition. Captures with source-retained records use schedule snapshot version 2, which older
+version-1 readers reject; normal transferred definitions still use version 1. Import skips source
+records and retains transferred heartbeats. This is schema coverage, not released-binary drift QA.
+
+Source-retained validation commands (packages/server unless stated):
+  npx vitest run src/server/schedule/service.test.ts --bail=1
+    Test Files 1 passed (1); Tests 87 passed (87); Duration 6.91s
+  npx vitest run src/server/handoff/ownership.test.ts --bail=1
+    Test Files 1 passed (1); Tests 14 passed (14); Duration 367ms
+  npx vitest run src/server/handoff/ownership.test.ts src/server/schedule/store.test.ts src/server/schedule/service.test.ts --bail=1
+    The store's 17 cases and then-current service's 86 cases passed. The new ownership fixture
+    initially failed because its second transfer directory did not exist; creating that directory
+    fixed the fixture, and the complete ownership file passed as recorded above.
+  npx vitest run src/server/handoff/archive.e2e.test.ts -t 'retains the parent schedule' --bail=1
+    Test Files 1 passed (1); Tests 2 passed | 39 skipped (41); Duration 23.79s
+  npx vitest run src/messages.wire-compat.test.ts --bail=1 (packages/protocol)
+    Test Files 1 passed (1); Tests 45 passed (45); Duration 1.38s
+  npx vitest run src/i18n/resources.test.ts --bail=1 (packages/app)
+    Test Files 1 passed (1); Tests 40 passed (40); Duration 2.14s
+  npm run build:server; npm run typecheck; npm run lint (repository root)
+    All completed successfully. Final server-only build and root typecheck also passed after adding
+    the workspace-ID startup check. Its first build found the source review helper's narrower Pick;
+    that helper now retains workspaceId. Lint: 0 warnings, 0 errors.
+
+  FONTCONFIG_FILE=/tmp/handoff-browser-fonts.conf LD_LIBRARY_PATH=/tmp/handoff-browser-libs/extracted/usr/lib/x86_64-linux-gnu npm run test:e2e -- e2e/browser/workspace-handoff.spec.ts --grep 'reviews a schedule retained on the source' --workers=1 --max-failures=1 (packages/app)
+    Desktop passed (43.3s); compact passed (44.6s); 2 passed (1.9m).
+
+There are 207 distinct passing cases in this slice: service 87, store 17, ownership 14, wire 45,
+translations 40, network 2 and browser 2. The browser cases use real app RPCs and Git worktrees with
+the controlled provider. They verify the visible source-retention notice, preparation, activation,
+retained source files, prompt history and absence of a destination schedule. Both screenshots were
+inspected: handoff-retained-schedule-desktop.png and handoff-retained-schedule-compact.png. The notice
+wraps inside the sheet and the preparation action stays visible in both layouts.
+The first browser attempt timed out starting an isolated fixture daemon, before opening the flow.
+Cleanup finished; no fixture process remained. The unchanged retry passed without relaxed checks or
+timeouts. No main daemon restart, physical-host test or authenticated provider continuation was run.
+
+Active heartbeat transfer — review now binds the observed run and loaded provider session. The
+allowed review change is that run's terminal outcome plus the pause. Prior history, target and
+schedule definition remain bound. Capture waits for the outcome write and refuses running records;
+release compares the complete captured result, including output. Unknown or replaced executions
+refuse. A heartbeat notification is durably annotated before sending the prompt, preserving its
+readable history when the native transcript is reconstructed on the destination.
+
+The first service regression refused the running heartbeat at review. The service/store files now
+pass 95 cases, including completed/failed digest binding, unknown service ownership, changed run
+identity, an outcome synchronization held open while readiness refuses, cancellation and restart.
+The two existing native/context network cases now start a held heartbeat through scheduleRunOnce,
+prepare it through the coordinator, reject changed output after capture, restart both hosts and
+recover interrupted destination installation. Both pass with the failed/canceled run remapped and
+the notification readable on the destination. The initial network fixture lacked native prompt
+identity and ended the heartbeat before its active wait; adding the actual annotation-before-send
+path and a matching controlled transcript writer resolved that failure without relaxing timeouts.
+Wire compatibility passes 45 cases, including absence of activeRun and an older reader stripping
+that optional field. The app form and translation files pass 73 cases. Chromium desktop and compact
+pass the complete active-heartbeat flow (32.9s and 36.7s; 2 passed in 1.7m), including review copy,
+source cancellation result, destination activation, paused automation and readable notification.
+Screenshots: handoff-active-heartbeat-desktop.png and handoff-active-heartbeat-compact.png. The
+held writer is the same test adapter used by the network cases; the browser uses real daemon RPCs.
+
+Commands (each run from its owning workspace, serialized browser cases with one worker):
+  npx vitest run src/server/schedule/service.test.ts src/server/schedule/store.test.ts --bail=1
+    Test Files 2 passed (2); Tests 95 passed (95); Duration 4.96s
+  npx vitest run src/server/handoff/archive.e2e.test.ts -t 'handoff moves reviewed schedules and heartbeats paused' --bail=1
+    Test Files 1 passed (1); Tests 2 passed | 35 skipped (37); Duration 19.74s
+  npx vitest run src/messages.wire-compat.test.ts --bail=1
+    Test Files 1 passed (1); Tests 45 passed (45); Duration 1.36s
+  npx vitest run src/handoff/form-model.test.ts src/i18n/resources.test.ts --bail=1
+    Test Files 2 passed (2); Tests 73 passed (73); Duration 2.06s
+  npm run test:e2e -- e2e/browser/workspace-handoff.spec.ts --grep 'reviews and stops an active heartbeat' --workers=1 --max-failures=1
+    2 passed (1.7m)
+  npm run build:server; npm run typecheck; npm run lint; npm run format
+    All completed successfully. Lint: 0 warnings, 0 errors.
+
+Browser test development
+found three fixture mistakes: asserting inside the admission poll before review existed, omitting
+the Review button click, and asking the schedule list summary for run details. The test now polls
+the complete review response, follows the actual review action and reads runs through inspection.
+An earlier browser process was interrupted without a result; its missing handle and absent processes
+were confirmed before retry. None of these attempts relaxed an assertion or increased a timeout.
+
+These tests use synthetic transcripts and a held adapter, not authenticated provider execution or
+proof of OS process termination. Jobs in other workspaces and crash outcome reconciliation remain open.
+
+Queue conservation — source handoff now holds queues before closing writers. The initial runner
+regression reproduced the pending instruction disappearing when the current turn settled under
+the handoff fence (expected held=true, received no queue). Delivery now joins ownership admission
+before taking an entry, and a handoff refusal during delivery restores the entry and its prompt.
+Enqueue, resume, edit, reorder, cancel, promote and clear obey ownership admission. Reviewed
+process-bound notifications have a separate fenced cancellation path that rejects user messages.
+Cancelling the transfer leaves the source queue held until explicit resume.
+
+Empty-queue Stop recovery — the original regression held an empty queue, restarted its store,
+and unexpectedly delivered a later message. Stop now belongs to the queue file even without
+entries; destination installation publishes the same stop for an empty import. Restart restores
+notification suppression before dispatch. A human prompt revives future notifications without
+draining entries already held. Failed persistence does not clear the runner's stop or start a turn.
+Corrupt queue files refuse dispatch for their agent while other records still load; bootstrap
+still applies restart holds to the restored queues.
+
+The changed queue suites pass 46 distinct cases: 31 store cases and 15 runner cases. Added cases cover fresh managers after user Stop,
+cancelled handoff and destination import, actual system dispatch waiting until resume, final-entry
+removal, explicit clear, revival with retained entries, failed synchronization, damaged metadata
+and repair. A legacy private publication can adopt the new stop marker; an explicitly revived
+queue is refused rather than overwritten. The two existing native/context job-recovery network cases now assert the empty source
+hold after restart and the destination hold after activation and another daemon restart; both pass.
+These are controlled providers and fresh in-process daemon instances, not physical-host or
+power-loss tests. Linux server-stack build, root typecheck, lint and formatting pass. Windows
+atomic restart behavior is covered by the portable cases but was not run locally; handoff and
+POSIX synchronization cases are explicitly skipped there. No browser run was needed for this
+server-only change. Queues written before this change cannot recover a stop that was never stored.
+
+Held-runtime recovery — strengthening the empty-queue regression reproduced a provider session
+being reopened by a late system notification before the persisted Stop was checked (expected zero
+sessions, found one). Dispatch now enqueues held system work before loading a provider, retains the
+post-load Stop check for a concurrent stop, and still rejects messages to missing agents.
+The restart continuation had its own early provider load; a separate regression reproduced that
+path. It now respects Stop before preparation, before dispatch and when rendering the prompt,
+drops the automatic continuation without queueing it, and retains lost-background-work notes for
+the next explicit prompt. A deterministic Stop during dispatch's archive-state read initially
+queued the continuation; the prompt preparation guard now drops it and preserves its note.
+
+The runner cases cover cold queue/store restoration after user Stop, cancelled handoff and empty
+destination import. A real isolated-daemon case snapshots a running turn after the queue hold but
+before a turn-level stop marker, then boots twice with continuation enabled. Both boots leave the
+provider unopened and the queue empty/held; explicit resume of the empty queue opens nothing, and
+a later human prompt receives the pending note. These are controlled provider adapters and fresh
+in-process daemon instances on Linux, not authenticated or physical-host execution.
+
+$ npx vitest run src/server/agent-queue/runner.test.ts -t 'empty queue survives a fresh manager' --bail=1
+  FAIL user_stop with an empty queue survives a fresh manager and gates real system dispatch until resume
+  AssertionError: expected [ …(1) ] to have a length of +0 but got 1
+  Tests  1 failed | 12 skipped (15)
+$ npx vitest run src/server/restart/restart-recovery.test.ts -t 'stopped continuation keeps' --bail=1
+  FAIL a stopped continuation keeps its lost-work note without reopening the provider or queueing a prompt
+  AssertionError: expected { …(35) } to be null
+  Tests  1 failed | 16 skipped (17)
+$ npx vitest run src/server/restart/restart-recovery.test.ts -t 'Stop arriving during' --bail=1
+  FAIL a Stop arriving during continuation dispatch drops the automatic prompt
+  AssertionError: expected 'queued' to be 'finished' // Object.is equality
+  Tests  1 failed | 17 skipped (18)
+$ npx vitest run src/server/agent-queue/runner.test.ts --bail=1
+  Test Files  1 passed (1)
+       Tests  16 passed (16)
+    Duration  1.70s (tests 338ms)
+$ npx vitest run src/server/restart/restart-recovery.test.ts --bail=1
+  Test Files  1 passed (1)
+       Tests  18 passed (18)
+    Duration  1.28s (tests 90ms)
+$ npx vitest run src/server/restart/restart.e2e.test.ts -t 'persisted Stop keeps' --bail=1
+  Test Files  1 passed (1)
+       Tests  1 passed | 11 skipped (12)
+    Duration  12.49s (tests 1.31s)
+
+Legacy activation — the next regression used a captured version 3 archive, which has no queue
+snapshot. Activation reached active without publishing any Stop and skipped an injected queue
+publication failure. The archive reader now supplies an empty queue for these older conversations;
+publication requires every conversation's queue and writes its Stop before visibility. The two
+native/context cases use real signed ownership release, archive validation, destination journals,
+registries and queue stores. Failed synchronization keeps every registry hidden. Fresh instances
+recover activation, another queue reload retains Stop, and a later wake waits for explicit resume.
+All 56 cases in the changed ownership test file passed. Root typecheck, lint and formatting passed.
+These fixtures do not launch a provider or establish physical-host continuity.
+
+Legacy activation recovery (raw command output):
+
+Pre-fix: npx vitest run src/server/handoff/ownership.posix.test.ts -t "legacy activation without queue metadata" --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/handoff/ownership.posix.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: 🛠️  run anywhere with `dotenvx run -- yourcommand`
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  override existing env vars with { override: true }
+
+ ❯ src/server/handoff/ownership.posix.test.ts (56 tests | 1 failed | 54 skipped) 147ms
+   × native legacy activation without queue metadata stays hidden until its empty Stop is durable 145ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/handoff/ownership.posix.test.ts > native legacy activation without queue metadata stays hidden until its empty Stop is durable
+AssertionError: promise resolved "{ …(22) }" instead of rejecting
+
+- Expected
++ Received
+
+- Error {
+-   "message": "rejected promise",
++ {
++   "activationAt": "2026-10-10T14:56:16.528Z",
++   "agentMappings": [
++     {
++       "destinationAgentId": "d9f5938c-d306-4efd-96b7-b60c6ff447de",
++       "sourceAgentId": "source-agent",
++     },
++   ],
++   "binding": {
++     "manifest": {
++       "blobs": [
++         {
++           "sha256": "34f89ada57a6c831fdb0b090f4de79959af2b87d242d25a30c73ce1469f7c1dd",
++           "size": 585,
++         },
++         {
++           "sha256": "b3a91f6ada38a66bf81a3eee7e8fde45373032197004163293f6e76d186f7fc5",
++           "size": 241,
++         },
++         {
++           "sha256": "c46bd1c34981925a0a136476db7d823297eb9c68f840f96ff68963bab0ee57a4",
++           "size": 35,
++         },
++         {
++           "sha256": "ccadcd4b308359481edacb878a28264bd11d00f07499ea79323be2fdbcb0ff42",
++           "size": 132,
++         },
++         {
++           "sha256": "cf23fd83a55ad4b232c8ce09f762b7bf614c91725ae0f3fe29a33029f9a48e16",
++           "size": 216,
++         },
++       ],
++       "entrypoint": {
++         "sha256": "34f89ada57a6c831fdb0b090f4de79959af2b87d242d25a30c73ce1469f7c1dd",
++         "size": 585,
++       },
++       "version": 1,
++     },
++     "publicKey": "MCowBQYDK2VwAyEAki82pH4cXCBY/A+EUgsNgBAtoll0Ki99USbjZb9TJj4=",
++   },
++   "cancellationProof": null,
++   "checkoutIdentity": {
++     "dev": "39",
++     "ino": "823235",
++   },
++   "claudeRuntime": {
++     "cliVersion": "2.1.295",
++     "configDir": "/tmp/paseo-handoff-release-DlqO1W/destination-claude",
++   },
++   "cleanupComplete": false,
++   "continuationMode": "native",
++   "conversationModes": undefined,
++   "destinationCwd": "/tmp/paseo-handoff-release-DlqO1W/paseo-wks_953bc135a13a404a",
++   "destinationParent": "/tmp/paseo-handoff-release-DlqO1W",
++   "preparedConversations": [
++     {
++       "mode": "native",
++       "runtime": {
++         "cliVersion": "2.1.295",
++         "configDir": "/tmp/paseo-handoff-release-DlqO1W/destination-claude",
++       },
++       "sessionId": "5988d18c-d8b6-4bd5-8c34-72a75f7cabb3",
++       "sourceAgentId": "source-agent",
++       "title": "Imported conversation",
++     },
++   ],
++   "projectId": "prj_62b8847dce5d5113",
++   "receipt": {
++     "destinationServerId": "destination-host",
++     "manifestDigest": "34f89ada57a6c831fdb0b090f4de79959af2b87d242d25a30c73ce1469f7c1dd",
++     "reservationId": "bd16ebd3-3992-47ec-87c0-65340f22a4e8",
++     "signature": "jzM9aEeq08fEzeBrvZS8GoQz7rPKE37kfV7b8AzC3WqSRIPmP3vLPByTv6Gd0KcwyZGHOOBxMa6JzzJdOXB3Aw==",
++     "sourceServerId": "source-host",
++     "transferId": "1bfce668-c8f0-4551-8323-e351e2fc76a4",
++     "version": 1,
++   },
++   "reservationId": "bd16ebd3-3992-47ec-87c0-65340f22a4e8",
++   "sourceAgentIds": [
++     "source-agent",
++   ],
++   "sourceServerId": "source-host",
++   "sourceWorkspaceId": "source-workspace",
++   "stagingCwd": "/tmp/paseo-handoff-release-DlqO1W/.paseo-handoff-bd16ebd3-3992-47ec-87c0-65340f22a4e8/checkout",
++   "state": "active",
++   "transferId": "1bfce668-c8f0-4551-8323-e351e2fc76a4",
++   "workspaceId": "wks_953bc135a13a404a",
+  }
+
+ ❯ src/server/handoff/ownership.posix.test.ts:1057:46
+    1055|     }, async () => {});
+    1056|     await current.acceptRelease(transferId, receipt);
+    1057|     await expect(current.activate(transferId)).rejects.toThrow("empty …
+       |                                              ^
+    1058|     expect(await first.agents.list()).toEqual([]);
+    1059|     expect(await first.workspaces.list()).toEqual([]);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 54 skipped (56)
+   Start at  16:56:14
+   Duration  1.85s (transform 1.04s, setup 40ms, import 1.54s, tests 147ms, environment 0ms)
+
+
+npx vitest run src/server/handoff/ownership.posix.test.ts --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  56 passed (56)
+   Start at  16:57:40
+   Duration  5.84s (transform 1.79s, setup 94ms, import 2.56s, tests 3.00s, environment 0ms)
+
+
+Empty-queue recovery (raw command output):
+
+Pre-fix: npx vitest run src/server/agent-queue/store.test.ts -t "empty user-stop hold survives" --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent-queue/store.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  enable debug logging with { debug: true }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  load multiple .env files with { path: ['.env.local', '.env'] }
+
+ ❯ src/server/agent-queue/store.test.ts (26 tests | 1 failed | 25 skipped) 14ms
+   × an empty user-stop hold survives restart and blocks later queued work until explicit resume 12ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent-queue/store.test.ts > an empty user-stop hold survives restart and blocks later queued work until explicit resume
+AssertionError: expected { entry: { id: 'later', …(8) }, …(1) } to be null
+
+- Expected:
+null
+
++ Received:
+{
+  "entry": {
+    "attachmentCount": 0,
+    "createdAt": "2026-10-04T00:00:00.000Z",
+    "id": "later",
+    "origin": "user",
+    "position": 1,
+    "promptFile": "7e5bd87e-49cc-4fb7-a1fd-0468be01c30d.json",
+    "senderAgentId": null,
+    "textPreview": "text of later",
+    "wake": null,
+  },
+  "prompt": "text of later",
+}
+
+ ❯ src/server/agent-queue/store.test.ts:458:50
+    456|   await recovered.holdForRestart("agent-1");
+    457|   await recovered.enqueue("agent-1", userMessage("later"), NOW);
+    458|   expect(await recovered.dequeueNext("agent-1")).toBeNull();
+       |                                                  ^
+    459|   expect(recovered.peek("agent-1")).toMatchObject({ held: true });
+    460|   await recovered.resume("agent-1");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 25 skipped (26)
+   Start at  16:35:27
+   Duration  923ms (transform 504ms, setup 48ms, import 745ms, tests 14ms, environment 0ms)
+
+
+npx vitest run src/server/agent-queue/store.test.ts src/server/agent-queue/runner.test.ts --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  2 passed (2)
+      Tests  45 passed (45)
+   Start at  16:46:12
+   Duration  3.43s (transform 1.35s, setup 81ms, import 2.25s, tests 727ms, environment 0ms)
+
+
+Final store run after the legacy-publication case: npx vitest run src/server/agent-queue/store.test.ts --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  31 passed (31)
+   Start at  16:48:52
+   Duration  1.72s (transform 835ms, setup 120ms, import 1.18s, tests 199ms, environment 0ms)
+
+
+npx vitest run src/server/handoff/archive.e2e.test.ts -t "handoff recovers a stopped job outcome" --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  2 passed | 39 skipped (41)
+   Start at  16:46:35
+   Duration  27.41s (transform 11.27s, setup 42ms, import 14.07s, tests 13.17s, environment 0ms)
+
+
+The two new runner cases use a real ownership journal, agent manager and on-disk queue. They cover
+refusal before dequeue, refusal after dequeue, exact text/image retention and cancellation/resume.
+The two-daemon case prepares, refuses queue mutation RPCs, restarts the source and cancels the
+transfer; the prompt is still editable in the held queue and no provider runtime was opened.
+All 10 runner cases, 30 watcher cases, one selected source coordinator case and two selected
+network cases pass (43 distinct cases). The watcher fixtures now give the real manager and watcher
+the same ownership service. The final selected runner/coordinator run passed 3 cases (52 skipped).
+Queue transport now includes held text and embedded images in version 4 archives. Every
+conversation has a bounded queue snapshot; source release rechecks its content. Destination
+installation writes and synchronizes prompt files and the held queue before acknowledging
+publication. Stable destination message IDs and the reservation/digest binding make interrupted
+publication retryable without duplicate delivery. Sender identities within the transfer are remapped,
+including current and legacy peer envelopes, their reply guidance and stable delivery IDs. A focused
+regression first showed a correctly remapped queue row still instructing replies to the old agent ID;
+the six interruption cases now verify the structured prompt as well as the row and embedded image.
+Native and exported-context network cases preserve the exact prompts across source and destination
+restarts, reject changed prompt files before release, and keep destination agents unloaded.
+
+These queue cases use synthetic Claude artifacts and a version-only executable. They prove
+transport and held installation, not an authenticated continued turn. Senders outside the transfer,
+delegation wakes and other system notifications require a disposition and currently refuse. Recovery of uncertain delivery
+after a crash remains open. The source retains a fenced copy until retirement is implemented.
+
+Typed uploaded-file blocks now carry their bytes in the verified archive, using queue snapshot
+version 2 inside bundle version 4. Plain self-contained queues remain version 1; older readers reject
+the new queue version before activation. The 64 MiB queue capture limit includes referenced file
+bytes. The source reports queue bytes as an optional wire field and the app includes them in the
+review estimate. Uploaded files retain their name, MIME type and contents, with a new destination
+ID and path.
+The source store accepts only its own upload locations, checks declared size, and refuses symlinked
+files or upload directories. Release detects a same-size content change as well as prompt changes.
+
+The destination upload store publishes a complete file without replacing an existing target, then
+synchronizes the file and directory chain before queue publication. A failed synchronization is not
+acknowledged; restarting and retrying uses the reserved path. Conflicting bytes remain untouched.
+The queue's reservation is checked before installing upload files from a different transfer.
+
+The native/context two-daemon cases use real binary upload RPCs and verify the paused file prompt,
+exact bytes, new path, source-change refusal, both host restarts and a return transfer to a fresh
+upload path on the original host. The six publication-interruption cases now include an uploaded
+file. A separate archive case omits that file from the signed inventory and proves refusal.
+Unit cases include empty and binary files, Unicode names, lost synchronization acknowledgement,
+changed destination content, foreign source paths, size limits and symlink refusal.
+
+This covers structured uploaded-file blocks still present in pending prompts. It does not recover
+paths already flattened into opaque agent-message text or historical provider transcripts,
+or establish a continued authenticated provider turn. Upload
+retention/garbage collection and stronger exclusion of concurrent external filesystem writers
+remain part of the existing delivery gates.
+
+Queued reviews and forge attachments — the initial regression reproduced a forge attachment being
+refused because its remote projectPath (group/subgroup/repo) was treated as a local directory.
+Both forge issue and change-request snapshots now retain that identity unchanged through held
+installation and delivery. A separate regression reproduced the blanket refusal of review blocks.
+Review export now resolves the review directory within the selected workspace, including aliases,
+and binds the captured paths to the workspace root. Import changes the working directory to the
+destination without changing comment bodies, line numbers, deleted-file snippets or baseline labels.
+Baseline labels remain historical data; these tests do not prove transport of a named Git ref.
+
+The native/context network cases now include a review and GitLab issue beside the binary file.
+They verify exact metadata, destination paths, both host restarts and the return transfer. Unit
+cases cover nested review directories, aliases, deleted files, both review modes, foreign workspaces,
+symlink escapes, non-directory roots, absolute paths and traversal. Source refusal keeps the original
+pending prompt. The receiver also refuses a signed queue bound to a different workspace before
+creating staging or provider files.
+
+The browser fixture uses the real queue runner through test-process IPC. Desktop and compact
+Chromium show the pending-message review warning, load the destination conversation with its held
+queue and enabled Resume control, and preserve that queue on the return transfer. The uploaded-file
+regression adds a real 64 KiB upload, checks that review includes its bytes and reads the exact file
+from destination storage. Screenshots: handoff-queue-desktop.png and handoff-queue-compact.png.
+
+The first desktop upload run timed out before opening the flow at the existing 20-second
+isolated-daemon startup limit. A standalone diagnostic loaded the modules in 4.9s and reached
+readiness in 5.1s. The next desktop run passed in 50.2s; compact passed in 56.2s. No startup timeout was increased and the
+production daemon was not restarted. The earlier ac48ab7b1 browser runs passed in 51.5s/57.4s after
+fixing a missing required wake:null field in the fixture; their first attempt also hit startup timeout.
+
+Review/forge checks (77 distinct passing cases):
+
+$ npx vitest run src/server/agent-queue/store.test.ts src/server/handoff/ownership.posix.test.ts --bail=1
+  Test Files  2 passed (2)
+       Tests  73 passed (73)
+    Duration  5.51s
+  Includes 25 queue cases and 48 ownership/publication cases.
+
+$ npx vitest run src/server/handoff/archive.e2e.test.ts --bail=1 -t 'transfers queued text, images and uploaded files'
+  Test Files  1 passed (1)
+       Tests  2 passed | 33 skipped (35)
+    Duration  14.85s
+  A comment changed after capture refuses release; restoring it permits the same transfer to finish.
+
+$ npm run test:e2e -- e2e/browser/workspace-handoff.spec.ts --grep 'desktop preserves mixed conversation choices' --workers=1
+  1 passed (case: 54.6s). Exit 0.
+$ npm run test:e2e -- e2e/browser/workspace-handoff.spec.ts --grep 'compact preserves mixed conversation choices' --workers=1
+  1 passed (case: 1.0m). Independently observed npm exit status: 0.
+  Both layouts show the foreign-review error and enabled retry, with no source fence or destination
+  reservation. Removing the invalid queued review and retrying moves the file, review and forge issue.
+  The destination visibly retains three attachments and a held queue; the return trip retains all three.
+  The first compact run recorded a passed test and completed cleanup but its outer command returned
+  143. No test processes remained. Repeating the same npm command under a subprocess observer
+  recorded npm and observer exit 0. The signal's origin was not established; no harness timeout,
+  signal handler or production daemon was changed. Existing review screenshots above predate this slice.
+
+Workspace dependency/server/CLI builds, root typecheck, lint and formatting pass. The first network
+run exposed one preparation call that still passed only agent IDs to the revised queue preview;
+the corrected call passes the source workspace too. Final lint reports zero warnings/errors.
+
+Uploaded-file checks at d9f426cac (151 distinct passing cases, including both browser layouts):
+
+Workspace dependency/server/CLI builds, root typecheck, lint and formatting pass. Lint reports
+zero warnings and errors. No full local suite was run.
+
+$ npx vitest run src/server/file-upload/index.test.ts src/server/agent-queue/store.test.ts src/server/handoff/ownership.posix.test.ts --bail=1
+  71 passed (11 upload, 13 queue, 47 ownership/publication).
+  After adding the optional byte estimate, the affected source coordinator case passed again.
+
+$ npx vitest run src/server/handoff/archive.e2e.test.ts --bail=1 -t 'transfers queued text, images and uploaded files'
+  2 passed, 33 skipped. Native and context modes, binary uploads, changed-file refusal,
+  both hosts restarting, paused activation, idempotent retry and a return transfer.
+
+$ npx vitest run src/messages.wire-compat.test.ts --bail=1
+  43 passed. Both the queue count and byte estimate are optional; old and new shapes parse.
+
+$ npx vitest run src/handoff/form-model.test.ts --bail=1
+  33 passed.
+
+$ npm run test:e2e -- e2e/browser/workspace-handoff.spec.ts --grep 'desktop preserves mixed conversation choices' --workers=1
+$ npm run test:e2e -- e2e/browser/workspace-handoff.spec.ts --grep 'compact preserves mixed conversation choices' --workers=1
+  1 passed in each separate run. Verified transfer estimate: 66 KiB with a 64 KiB queued file.
+
+Self-contained queue checks at ac48ab7b1 (222 distinct passing cases, including both browser layouts):
+
+$ npx vitest run packages/server/src/server/agent-queue/store.test.ts packages/server/src/server/handoff/archive.test.ts packages/server/src/server/handoff/ownership.posix.test.ts --config packages/server/vitest.config.ts --bail=1
+  100 passed. Includes six interrupted-publication phases, source-local attachment refusal,
+  missing prompts, cache/disk disagreement, bounded snapshot reads, fsync acknowledgement loss,
+  archive version coverage and senders outside the transfer.
+  After correcting structured peer identities, the two affected files passed 58 cases again.
+
+$ npx vitest run src/server/handoff/archive.e2e.test.ts --bail=1 -t 'transfers queued text and images|holds source queued messages|reviews and durably stops'
+  4 passed, 31 skipped. Both continuation modes and the existing conservation/watch cases pass.
+
+$ npx vitest run src/messages.wire-compat.test.ts --bail=1
+  43 passed. The queue count is optional on the wire; old and new shapes parse.
+
+$ npx vitest run src/handoff/form-model.test.ts src/i18n/resources.test.ts --bail=1
+  73 passed.
+
+$ npx vitest run src/server/agent-queue/runner.test.ts --bail=1
+  Test Files  1 passed (1)
+       Tests  10 passed (10)
+
+$ npx vitest run src/server/handoff/archive.e2e.test.ts -t 'holds source queued messages|reviews and durably stops' --bail=1
+  Test Files  1 passed (1)
+       Tests  2 passed | 31 skipped (33)
+
+PR watch disposition now participates in the same review. The list includes both stored watches
+and final notifications already waiting for the agent. Preparation durably removes the approved
+watches, cancels their queued notifications and joins admitted delivery. Registration holds an
+admission lease while reading the forge and rechecks it before publication. Later forge results
+cannot revive a removed watch, including after cancelling the transfer. Cancellation leaves the
+watches stopped, as stated in review. A carried note names each stopped PR at destination; it uses
+the existing bounded note presentation and does not claim that the daemon restarted.
+
+The initial focused test failed because handoff had no watch-disposition operation. The service
+cases now cover queued progress and final wakes, late registration, delayed final forge failure
+after cancellation, and retry after removal reached disk but synchronization failed. The full
+changed watcher, ownership and restart-note files pass 91 cases. The two-daemon case rejects a
+replacement watch before fencing, then prepares, restarts both daemons and activates with the
+review and carried note intact. Neither host automatically restarts the watch. The terminal-review
+and signing-checkpoint network cases also pass. Wire compatibility passes 42 cases; form and
+translation resources pass 73. These tests use synthetic forge data and provider artifacts.
+
+Desktop and compact Chromium show the watch title and stopped disposition, then verify removal
+during preparation and complete the existing mixed native/context recovery, activation and history
+flow. Screenshots: handoff-watches-desktop.png and handoff-watches-compact.png. The first desktop
+attempt failed before opening the app because importing the server's TypeScript store mixed CJS
+and ESM protocol modules in Playwright. The fixture now seeds the persisted watch file, as it does
+for native transcripts; production continues to use the store API. Desktop passed in 46.9s and
+compact in 51.7s. This is browser viewport evidence, not native mobile validation.
+
+PR-watch disposition focused checks (211 distinct cases):
+
+$ npx vitest run src/server/pull-request-watch/watcher.test.ts src/server/handoff/ownership.posix.test.ts src/server/restart/restart-recovery.test.ts --bail=1
+  Test Files  3 passed (3)
+       Tests  91 passed (91)
+
+$ npx vitest run src/server/handoff/archive.e2e.test.ts --bail=1 -t 'reviews and durably stops|requires a fresh review when a terminal|persists client signing'
+  Test Files  1 passed (1)
+       Tests  3 passed | 29 skipped (32)
+  The new watch-disposition case passed again after adding destination carried-note assertions.
+
+$ npx vitest run src/messages.wire-compat.test.ts --bail=1
+  Test Files  1 passed (1)
+       Tests  42 passed (42)
+
+$ npx vitest run src/handoff/form-model.test.ts src/i18n/resources.test.ts --bail=1
+  Test Files  2 passed (2)
+       Tests  73 passed (73)
+
+$ npm run test:e2e -- e2e/browser/workspace-handoff.spec.ts --grep 'desktop preserves mixed conversation' --workers=1
+  1 passed (1.2m)
+
+$ npm run test:e2e -- e2e/browser/workspace-handoff.spec.ts --grep 'compact preserves mixed conversation' --workers=1
+  1 passed (1.3m)
+
+These are stop-approval identities, not persisted OS process identities. Uncertain
+process-stop recovery after daemon restart, complete resource/integration inventory
+and dispositions remain open. Optional wire fields preserve old message parsing;
+the unfinished app feature requires the review. Lower-level programmatic calls can omit it only
+when no PR watches need a disposition. Queues unrelated to PR notifications, schedules, goals,
+delegations, plugins, retirement tombstones and complete conversation recovery remain open.
+Production hosts still do not advertise complete handoff.
+
+
+RED — a replacement terminal was stopped without a fresh review
+
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/handoff/archive.e2e.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  write to custom object with { processEnv: myObject }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  specify custom .env file path with { path: '/custom/path/.env' }
+
+ ❯ src/server/handoff/archive.e2e.test.ts (20 tests | 1 failed | 19 skipped) 915ms
+   × requires a fresh review when a terminal is replaced before source preparation 913ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/handoff/archive.e2e.test.ts > requires a fresh review when a terminal is replaced before source preparation
+AssertionError: promise resolved "{ …(15) }" instead of rejecting
+
+- Expected
++ Received
+
+- Error {
+-   "message": "rejected promise",
++ {
++   "agentMappings": [],
++   "cancellationAccepted": false,
++   "cleanupComplete": false,
++   "continuationMode": "context",
++   "destinationCwd": "/tmp/paseo-handoff-network-jvmpvn/paseo-wks_36b88c2f341e11d3",
++   "destinationParent": "/tmp/paseo-handoff-network-jvmpvn",
++   "manifestDigest": "070997c1de3d0e7ce8283992a82aedf5c97200920b739b5b8de921d1ac6ea10e",
++   "projectId": "prj_aefe75826bd0b2f6",
++   "reservationId": "5b80bbec-4285-4202-aa60-35d0550bd21a",
++   "sourceAgentIds": [],
++   "sourceServerId": "srv_2OhZkua34Z9g",
++   "sourceWorkspaceId": "wks_5142aecbee0cd6d8",
++   "state": "staged",
++   "transferId": "c6d1121e-86d4-4c97-b767-ea094cd57aff",
++   "workspaceId": "wks_36b88c2f341e11d3",
+  }
+
+ ❯ src/server/handoff/archive.e2e.test.ts:275:50
+    273|       stoppedWorkReview: preview.result?.stoppedWork?.review,
+    274|     };
+    275|     await expect(prepareWorkspaceHandoff(request)).rejects.toThrow(
+       |                                                  ^
+    276|       "Work that will stop changed after review",
+    277|     );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 19 skipped (20)
+   Start at  21:37:02
+   Duration  12.30s (transform 8.98s, setup 44ms, import 11.19s, tests 915ms, environment 0ms)
+
+
+
+PASS — npx vitest run src/server/handoff/ownership.posix.test.ts --bail=1 (cwd packages/server)
+
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  40 passed (40)
+   Start at  21:40:29
+   Duration  4.18s (transform 1.50s, setup 67ms, import 2.12s, tests 1.80s, environment 0ms)
+
+
+
+PASS — final restart/replacement/release regression: npx vitest run src/server/handoff/ownership.posix.test.ts -t 'source preparation keeps ownership fenced' --bail=1 (cwd packages/server)
+
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 39 skipped (40)
+   Start at  21:43:55
+   Duration  2.04s (transform 1.05s, setup 45ms, import 1.64s, tests 225ms, environment 0ms)
+
+
+
+PASS — npx vitest run src/server/agent/agent-manager.test.ts -t 'reviewed close|closing during reload|concurrent explicit closes' --bail=1 (cwd packages/server)
+
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  3 passed | 253 skipped (256)
+   Start at  21:40:29
+   Duration  2.42s (transform 1.59s, setup 55ms, import 2.15s, tests 18ms, environment 0ms)
+
+
+
+PASS — npx vitest run src/handoff/form-model.test.ts --bail=1 (cwd packages/app)
+
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+
+
+ Test Files  1 passed (1)
+      Tests  19 passed (19)
+   Start at  21:40:29
+   Duration  731ms (transform 350ms, setup 101ms, import 413ms, tests 43ms, environment 1ms)
+
+
+
+PASS — npx vitest run src/messages.wire-compat.test.ts tests/validation/ws-outbound.test.ts --bail=1 (cwd packages/protocol)
+
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/protocol
+
+
+ Test Files  2 passed (2)
+      Tests  63 passed (63)
+   Start at  21:42:39
+   Duration  12.82s (transform 11.93s, setup 0ms, import 14.64s, tests 919ms, environment 0ms)
+
+
+
+PASS — npx vitest run src/server/handoff/archive.e2e.test.ts -t 'requires a fresh review when a terminal is replaced|reviews omitted files' --bail=1 (cwd packages/server)
+
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  2 passed | 18 skipped (20)
+   Start at  21:42:26
+   Duration  24.19s (transform 15.69s, setup 38ms, import 19.57s, tests 4.47s, environment 0ms)
+
+
+
+PASS — npm run build:server
+
+
+> paseo@0.11.1 build:server
+> npm run build:server-deps && npm run build --workspace=@getpaseo/server && npm run build --workspace=@getpaseo/cli
+
+
+> paseo@0.11.1 build:server-deps
+> npm run build:client && concurrently --kill-others-on-fail --names highlight,plugin,relay --prefix-colors yellow,green,blue "npm run build:highlight" "npm run build:plugin" "npm run build:relay"
+
+
+> paseo@0.11.1 build:client
+> npm run build --workspace=@getpaseo/client
+
+
+> @getpaseo/client@0.11.1 build
+> npm run build --workspace=@getpaseo/protocol && npm run build --workspace=@getpaseo/relay && tsc -p tsconfig.json --incremental false
+
+
+> @getpaseo/protocol@0.11.1 prebuild
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 build
+> tsc -p tsconfig.json --incremental false
+
+
+> @getpaseo/relay@0.11.1 build
+> tsc -p tsconfig.json --incremental false
+
+[relay] npm run build:relay exited with code 0
+[highlight] npm run build:highlight exited with code 0
+[plugin] npm run build:plugin exited with code 0
+
+> @getpaseo/server@0.11.1 build
+> npm run build:lib && npm run build:scripts
+
+
+> @getpaseo/server@0.11.1 build:lib
+> tsc -p tsconfig.server.json --incremental false && node scripts/build-opencode-bridge-plugin.mjs && node -e "const fs=require('node:fs'); fs.mkdirSync('dist/server/server/speech/providers/local/sherpa/assets',{recursive:true}); fs.copyFileSync('src/server/speech/providers/local/sherpa/assets/silero_vad.onnx','dist/server/server/speech/providers/local/sherpa/assets/silero_vad.onnx'); fs.cpSync('src/terminal/shell-integration','dist/server/terminal/shell-integration',{recursive:true}); fs.cpSync('src/terminal/shell-integration','dist/src/terminal/shell-integration',{recursive:true}); fs.copyFileSync('src/terminal/terminal-ts-loader.mjs','dist/server/terminal/terminal-ts-loader.mjs'); fs.rmSync('dist/server/skills',{recursive:true,force:true}); fs.cpSync('../../skills','dist/server/skills',{recursive:true}); fs.rmSync('dist/server/builtin-plugins',{recursive:true,force:true}); fs.cpSync('../../plugins','dist/server/builtin-plugins',{recursive:true,filter:(source)=>!source.split(require('node:path').sep).some((segment)=>segment==='node_modules'||segment==='test')&&!/\.(test|spec)\.[cm]?[jt]sx?$/.test(source)&&!source.endsWith('.tsbuildinfo')});"
+
+
+> @getpaseo/server@0.11.1 build:scripts
+> tsc -p tsconfig.scripts.json --incremental false && node -e "const fs=require('node:fs'); fs.mkdirSync('dist/scripts',{recursive:true}); fs.copyFileSync('scripts/mcp-stdio-socket-bridge-cli.mjs','dist/scripts/mcp-stdio-socket-bridge-cli.mjs');"
+
+
+> @getpaseo/cli@0.11.1 build
+> tsc -p tsconfig.json --incremental false
+
+
+
+PASS — npm run build:client (after extracting reservation review validation)
+
+
+> paseo@0.11.1 build:client
+> npm run build --workspace=@getpaseo/client
+
+
+> @getpaseo/client@0.11.1 build
+> npm run build --workspace=@getpaseo/protocol && npm run build --workspace=@getpaseo/relay && tsc -p tsconfig.json --incremental false
+
+
+> @getpaseo/protocol@0.11.1 prebuild
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 build
+> tsc -p tsconfig.json --incremental false
+
+
+> @getpaseo/relay@0.11.1 build
+> tsc -p tsconfig.json --incremental false
+
+
+
+PASS — npm run typecheck
+
+
+> paseo@0.11.1 typecheck
+> npm run typecheck --workspaces --if-present
+
+
+> @getpaseo/builtin-plugins@0.11.1 typecheck
+> tsgo -p tsconfig.json --noEmit
+
+
+> @getpaseo/expo-two-way-audio@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/highlight@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/plugin@0.11.1 typecheck
+> tsgo --noEmit && tsgo -p tsconfig.examples.json --noEmit
+
+
+> @getpaseo/protocol@0.11.1 pretypecheck
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/client@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/server@0.11.1 typecheck
+> tsgo -p tsconfig.server.typecheck.json --noEmit
+
+
+> @getpaseo/app@0.11.0-beta.36 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/relay@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/website@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/desktop@0.11.1 typecheck
+> tsgo --noEmit -p tsconfig.json
+
+
+> @getpaseo/cli@0.11.1 typecheck
+> tsgo --noEmit
+
+
+
+PASS — npm run lint
+
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 2.7s on 5027 files with 177 rules using 4 threads.
+
+
+PASS — focused Chromium browser regression
+
+Environment: FONTCONFIG_FILE=/tmp/handoff-browser-libs/fonts.conf
+LD_LIBRARY_PATH=/tmp/handoff-browser-libs/extracted/usr/lib/x86_64-linux-gnu
+PLAYWRIGHT_BROWSERS_PATH=/tmp/handoff-website-browsers
+PATH=/tmp/handoff-lsof/extracted/usr/bin:$PATH
+
+Command: npm run test:e2e --workspace=@getpaseo/app -- e2e/browser/workspace-handoff.spec.ts
+--grep 'recovers preparation and activation errors'
+
+
+> @getpaseo/app@0.11.0-beta.36 test:e2e
+> playwright test --project=browser e2e/browser/workspace-handoff.spec.ts --grep recovers preparation and activation errors
+
+[metro] Starting project at /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+[metro] Using src/app as the root directory for Expo Router.
+[metro] Experimental Expo Autolinking module resolver is enabled.
+[metro] React Compiler enabled
+[metro] Starting Metro Bundler
+[metro] Waiting on http://localhost:41625
+[metro] Logs for your project will appear below.
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 3740ms packages/app/index.ts (5630 modules)
+[metro] Web packages/app/index.ts ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.9% (5630/5630)
+[e2e] Metro warmed on port 41625
+
+Running 1 test using 1 worker
+
+(node:535437) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:535437) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[e2e] Worker 0 daemon started on port 46771, home: /tmp/paseo-e2e-worker-0-fTuQSw
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 334ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 44ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 254ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 7ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 230ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 6ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 248ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 19ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 310ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 9ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+  ✓  1 [browser] › e2e/browser/workspace-handoff.spec.ts:170:7 › workspace handoff › recovers preparation and activation errors, reloads a transfer and finishes with source offline (37.7s)
+[e2e] Worker 0 daemon stopped
+[e2e] Metro stopped
+
+  1 passed (1.1m)
+
+The browser verifies the visible error after a new terminal starts, both terminals
+remaining active, no reservation or source fence, the new terminal appearing in
+fresh review, preparation stopping both, and completion after source shutdown.
+Screenshot: handoff-writers-changed.png.
+
+
+PASS — npm run format
+
+
+> paseo@0.11.1 format
+> oxfmt .
+
+Finished in 3468ms on 5372 files using 4 threads.
+
+
+Source-retained regression: omitted outside schedule
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/schedule/service.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: 🔐 prevent committing .env to code: https://dotenvx.com/precommit
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: 🔐 prevent committing .env to code: https://dotenvx.com/precommit
+
+ ❯ src/server/schedule/service.test.ts (86 tests | 1 failed | 85 skipped) 71ms
+     × handoff retains and fences an outside schedule while moving its active job workspace 68ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/schedule/service.test.ts > ScheduleService > handoff retains and fences an outside schedule while moving its active job workspace
+AssertionError: expected [] to match object [ { id: 'a08bfa73', …(3) } ]
+
+- Expected
++ Received
+
+- [
+-   {
+-     "activeRun": {
+-       "id": "21217914-2f63-4b29-8e53-0c18bec8d5c2",
+-     },
+-     "id": "a08bfa73",
+-     "kind": "schedule",
+-     "retainedOnSource": {
+-       "cwd": "/tmp/schedule-service-test-yKNWg8/moving",
+-     },
+-   },
+- ]
++ []
+
+ ❯ src/server/schedule/service.test.ts:587:27
+    585|       try {
+    586|         const schedules = await service.reviewForHandoff(moving);
+    587|         expect(schedules).toMatchObject([{
+       |                           ^
+    588|           id: schedule.id, kind: "schedule", activeRun: { id: (await s…
+    589|           retainedOnSource: { cwd: transfer.cwd },
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 85 skipped (86)
+   Start at  15:33:57
+   Duration  2.26s (transform 1.45s, setup 39ms, import 2.04s, tests 71ms, environment 0ms)
+
+
+
+Source-retained regression: missing published agent link
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/schedule/service.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: 🤖 agentic secret storage: https://dotenvx.com/as2
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  suppress all logs with { quiet: true }
+
+ ❯ src/server/schedule/service.test.ts (87 tests | 1 failed | 86 skipped) 65ms
+     × handoff refuses an outside scheduled workspace before its created agent link is published 63ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/schedule/service.test.ts > ScheduleService > handoff refuses an outside scheduled workspace before its created agent link is published
+AssertionError: promise resolved "[]" instead of rejecting
+
+- Expected:
+Error {
+  "message": "rejected promise",
+}
+
++ Received:
+[]
+
+ ❯ src/server/schedule/service.test.ts:683:54
+    681|           { status: "running", workspaceId: agent.workspaceId, agentId…
+    682|         ]);
+    683|         await expect(service.reviewForHandoff(moving)).rejects.toThrow…
+       |                                                      ^
+    684|       } finally {
+    685|         await manager.closeAgent(agent.id);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 86 skipped (87)
+   Start at  15:47:29
+   Duration  2.09s (transform 1.35s, setup 36ms, import 1.87s, tests 65ms, environment 0ms)
+
+
+
+Source-retained startup and paused-note verification
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla
+
+
+ Test Files  1 passed (1)
+      Tests  2 passed | 85 skipped (87)
+   Start at  15:47:42
+   Duration  2.05s (transform 1.27s, setup 34ms, import 1.82s, tests 87ms, environment 0ms)
+
+
+
+Source-retained service regression file
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  87 passed (87)
+   Start at  15:47:58
+   Duration  6.91s (transform 1.51s, setup 35ms, import 2.08s, tests 4.69s, environment 0ms)
+
+
+
+Source-retained ownership regression file
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  14 passed (14)
+   Start at  15:42:13
+   Duration  367ms (transform 121ms, setup 39ms, import 159ms, tests 68ms, environment 0ms)
+
+
+
+Source-retained network validation
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  2 passed | 39 skipped (41)
+   Start at  15:45:42
+   Duration  23.79s (transform 8.46s, setup 45ms, import 10.52s, tests 13.13s, environment 0ms)
+
+
+
+Source-retained wire compatibility
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/protocol
+
+
+ Test Files  1 passed (1)
+      Tests  45 passed (45)
+   Start at  15:44:22
+   Duration  1.38s (transform 680ms, setup 0ms, import 1.09s, tests 150ms, environment 0ms)
+
+
+
+Source-retained translations
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+
+
+ Test Files  1 passed (1)
+      Tests  40 passed (40)
+   Start at  15:45:03
+   Duration  2.14s (transform 1.03s, setup 57ms, import 1.15s, tests 802ms, environment 0ms)
+
+
+
+Source-retained final root typecheck
+
+> paseo@0.11.1 typecheck
+> npm run typecheck --workspaces --if-present
+
+
+> @getpaseo/builtin-plugins@0.11.1 typecheck
+> tsgo -p tsconfig.json --noEmit
+
+
+> @getpaseo/expo-two-way-audio@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/highlight@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/plugin@0.11.1 typecheck
+> tsgo --noEmit && tsgo -p tsconfig.examples.json --noEmit
+
+
+> @getpaseo/protocol@0.11.1 pretypecheck
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/client@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/server@0.11.1 typecheck
+> tsgo -p tsconfig.server.typecheck.json --noEmit
+
+
+> @getpaseo/app@0.11.0-beta.36 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/relay@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/website@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/desktop@0.11.1 typecheck
+> tsgo --noEmit -p tsconfig.json
+
+
+> @getpaseo/cli@0.11.1 typecheck
+> tsgo --noEmit
+
+
+
+Source-retained root lint
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 2.0s on 5035 files with 177 rules using 4 threads.
+
+
+Source-retained browser: first startup failure
+
+> @getpaseo/app@0.11.0-beta.36 test:e2e
+> playwright test --project=browser e2e/browser/workspace-handoff.spec.ts --grep reviews a schedule retained on the source --workers=1 --max-failures=1
+
+[metro] Starting project at /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+[metro] Using src/app as the root directory for Expo Router.
+[metro] Experimental Expo Autolinking module resolver is enabled.
+[metro] React Compiler enabled
+[metro] Starting Metro Bundler
+[metro] Waiting on http://localhost:33111
+[metro] Logs for your project will appear below.
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] | (node:1011887) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[metro] | (Use `node --trace-warnings ...` to show where the warning was created)
+[metro] | (node:1011881) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[metro] | (Use `node --trace-warnings ...` to show where the warning was created)
+[metro] | (node:1011888) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[metro] | (Use `node --trace-warnings ...` to show where the warning was created)
+[metro] Web packages/app/index.ts ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.9% (5630/5631)
+[metro] Web packages/app/index.ts ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.9% (5631/5631)
+[metro] Web Bundled 24251ms packages/app/index.ts (5632 modules)
+[e2e] Metro warmed on port 33111
+
+Running 2 tests using 1 worker
+
+(node:1012024) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:1012024) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[e2e] Worker 0 daemon started on port 46037, home: /tmp/paseo-e2e-worker-0-H4wttD
+[e2e] Worker 0 daemon stopped
+  ✘  1 [browser] › e2e/browser/workspace-handoff.spec.ts:450:9 › workspace handoff › desktop reviews a schedule retained on the source while moving its job worktree (27.8s)
+[31mTesting stopped early after 1 maximum allowed failures.[39m
+[e2e] Metro stopped
+
+
+  1) [browser] › e2e/browser/workspace-handoff.spec.ts:450:9 › workspace handoff › desktop reviews a schedule retained on the source while moving its job worktree
+
+    Error: Timed out starting outdated daemon. (node:1012154) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+    (Use `node --trace-warnings ...` to show where the warning was created)
+    (node:1012154) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+    (Use `node --trace-warnings ...` to show where the warning was created)
+
+
+       at ../support/helpers/daemon-update.ts:157
+
+      155 |   return new Promise((resolve, reject) => {
+      156 |     const timeout = setTimeout(() => {
+    > 157 |       reject(new Error(`Timed out starting outdated daemon. ${stderr.join("")}`));
+          |              ^
+      158 |     }, 20_000);
+      159 |
+      160 |     child.once("exit", (code, signal) => {
+        at Timeout.<anonymous> (/home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app/e2e/support/helpers/daemon-update.ts:157:14)
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    test-results/workspace-handoff-workspac-beb52-ile-moving-its-job-worktree-browser/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #2: video (video/webm) ──────────────────────────────────────────────────────────────
+    test-results/workspace-handoff-workspac-beb52-ile-moving-its-job-worktree-browser/video.webm
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #3: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results/workspace-handoff-workspac-beb52-ile-moving-its-job-worktree-browser/trace.zip
+    Usage:
+
+        npx playwright show-trace test-results/workspace-handoff-workspac-beb52-ile-moving-its-job-worktree-browser/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  1 failed
+    [browser] › e2e/browser/workspace-handoff.spec.ts:450:9 › workspace handoff › desktop reviews a schedule retained on the source while moving its job worktree
+  1 did not run
+  1 error was not a part of any test, see above for details
+npm error Lifecycle script `test:e2e` failed with error:
+npm error code 1
+npm error path /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+npm error workspace @getpaseo/app@0.11.0-beta.36
+npm error location /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+npm error command failed
+npm error command sh -c playwright test --project=browser e2e/browser/workspace-handoff.spec.ts --grep 'reviews a schedule retained on the source' --workers=1 --max-failures=1
+
+
+Source-retained browser: unchanged retry
+
+> @getpaseo/app@0.11.0-beta.36 test:e2e
+> playwright test --project=browser e2e/browser/workspace-handoff.spec.ts --grep reviews a schedule retained on the source --workers=1 --max-failures=1
+
+[metro] Starting project at /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+[metro] Using src/app as the root directory for Expo Router.
+[metro] Experimental Expo Autolinking module resolver is enabled.
+[metro] React Compiler enabled
+[metro] Starting Metro Bundler
+[metro] Waiting on http://localhost:37075
+[metro] Logs for your project will appear below.
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 3823ms packages/app/index.ts (5631 modules)
+[metro] Web packages/app/index.ts ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.9% (5631/5631)
+[e2e] Metro warmed on port 37075
+
+Running 2 tests using 1 worker
+
+(node:1012485) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:1012485) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[e2e] Worker 0 daemon started on port 35009, home: /tmp/paseo-e2e-worker-0-DimYLY
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 263ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 90ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro] Web Bundled 317ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 10ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 245ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 8ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 277ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 22ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 320ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 22ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+  ✓  1 [browser] › e2e/browser/workspace-handoff.spec.ts:450:9 › workspace handoff › desktop reviews a schedule retained on the source while moving its job worktree (43.3s)
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 300ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 7ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 261ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 5ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 257ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 8ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 218ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 7ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 246ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 6ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+  ✓  2 [browser] › e2e/browser/workspace-handoff.spec.ts:450:9 › workspace handoff › compact reviews a schedule retained on the source while moving its job worktree (44.6s)
+[e2e] Worker 0 daemon stopped
+[e2e] Metro stopped
+
+  2 passed (1.9m)
+
+
+Source-retained formatting before commit
+
+> paseo@0.11.1 format
+> oxfmt .
+
+Finished in 3757ms on 5380 files using 4 threads.

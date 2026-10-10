@@ -1,13 +1,713 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
+import { syncFilePublication } from "../atomic-file.js";
+import { AgentStorage } from "./agent-storage.js";
+import { createTestLogger } from "../../test-utils/test-logger.js";
 
 import { PromptAnnotationStore, type PromptAnnotation } from "./prompt-annotations.js";
 
 function notification(message: string): PromptAnnotation {
   return { kind: "notification", level: "info", message };
 }
+
+test("unadmitted cleanup tolerates absent preparation but cannot withdraw a dispatched identity", async () => {
+  const store = new PromptAnnotationStore(null);
+  const attempt = {
+    agentId: "agent",
+    messageId: "carried",
+    nativeMessageId: "00000000-0000-4000-8000-000000000001",
+  } as const;
+  await expect(store.settleNativeDispatch({ ...attempt, state: "withdrawn" })).rejects.toThrow(
+    "not prepared",
+  );
+  await store.settleNativeDispatch({ ...attempt, state: "withdrawn", unadmitted: true });
+  await store.remember("agent", {
+    messageId: "carried",
+    text: "carried context",
+    annotation: { kind: "identity" },
+    nativeMessageIds: true,
+  });
+  await store.prepareNativeDispatch(attempt);
+  await store.settleNativeDispatch({ ...attempt, state: "dispatched" });
+  await expect(
+    store.settleNativeDispatch({ ...attempt, state: "withdrawn", unadmitted: true }),
+  ).rejects.toThrow("cannot change");
+  const matcher = await store.historyMatcherForHandoff("agent");
+  expect(() => matcher.assertNativeDispatchesResolved()).toThrow("absent from provider history");
+  expect(matcher.take("carried context", attempt.nativeMessageId)?.annotation).toEqual({
+    kind: "identity",
+  });
+  expect(() => matcher.assertNativeDispatchesResolved()).not.toThrow();
+});
+
+async function createCheckpointFixture() {
+  const root = mkdtempSync(join(tmpdir(), "annotation-checkpoint-"));
+  const dir = join(root, "annotations");
+  const recordsDir = join(root, "agents");
+  const logger = createTestLogger();
+  const records = new AgentStorage(recordsDir, logger);
+  await records.upsert({
+    id: "agent",
+    provider: "claude",
+    cwd: root,
+    labels: {},
+    lastStatus: "closed",
+    createdAt: "2026-10-10T00:00:00.000Z",
+    updatedAt: "2026-10-10T00:00:00.000Z",
+  });
+  return { root, dir, recordsDir, logger, records, file: join(dir, "agent.json") };
+}
+
+test.skipIf(process.platform === "win32").each([false, true])(
+  "native dispatch recovery survives restart (failed synchronization=$0)",
+  async (failSync) => {
+    const { root, dir, records, recordsDir, logger } = await createCheckpointFixture();
+    let fail = false;
+    const store = new PromptAnnotationStore(dir, {
+      records,
+      synchronize: async (target, parent) => {
+        if (fail) throw new Error("recovery sync failed");
+        await syncFilePublication(target, parent);
+      },
+    });
+    const attempts = [0, 1].map((index) => ({
+      agentId: "agent",
+      messageId: `wake-${index}`,
+      nativeMessageId: randomUUID(),
+    }));
+    try {
+      for (const attempt of attempts) {
+        await store.remember("agent", {
+          messageId: attempt.messageId,
+          text: "same text",
+          annotation: notification(attempt.messageId),
+          nativeMessageIds: true,
+        });
+        await store.prepareNativeDispatch(attempt);
+      }
+      const ids = attempts.map((attempt) => attempt.nativeMessageId);
+      fail = failSync;
+      const recovery = store.recoverNativeDispatches("agent", ids);
+      if (failSync) await expect(recovery).rejects.toThrow("recovery sync failed");
+      else await recovery;
+      const coldRecords = new AgentStorage(recordsDir, logger);
+      const cold = new PromptAnnotationStore(dir, { records: coldRecords });
+      await cold.recoverNativeDispatches("agent", ids);
+      const checkpoint = await coldRecords.checkpointClosedAgent("agent");
+      await cold.recoverNativeDispatches("agent", ids);
+      expect(await coldRecords.checkpointClosedAgent("agent")).toEqual(checkpoint);
+      const matcher = await cold.historyMatcherForHandoff("agent");
+      for (const attempt of attempts)
+        expect(matcher.take("text with carried context", attempt.nativeMessageId)?.messageId).toBe(
+          attempt.messageId,
+        );
+      expect(() => matcher.assertNativeDispatchesResolved()).not.toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test.each(["absent", "duplicate", "withdrawn"] as const)(
+  "native dispatch recovery rejects inconclusive or contradictory evidence: %s",
+  async (evidence) => {
+    const store = new PromptAnnotationStore(null);
+    const attempt = { agentId: "agent", messageId: "wake", nativeMessageId: randomUUID() };
+    await store.remember("agent", {
+      messageId: "wake",
+      text: "same text",
+      annotation: notification("notice"),
+      nativeMessageIds: true,
+    });
+    await store.prepareNativeDispatch(attempt);
+    if (evidence === "withdrawn")
+      await store.settleNativeDispatch({ ...attempt, state: "withdrawn" });
+    const ids = {
+      absent: [randomUUID()],
+      duplicate: [attempt.nativeMessageId, attempt.nativeMessageId],
+      withdrawn: [attempt.nativeMessageId],
+    }[evidence];
+    if (evidence === "absent") await store.recoverNativeDispatches("agent", ids);
+    else
+      await expect(store.recoverNativeDispatches("agent", ids)).rejects.toThrow(
+        evidence === "duplicate" ? "more than once" : "Withdrawn native prompt",
+      );
+    const matcher = await store.historyMatcherForHandoff("agent");
+    expect(matcher.take("same text", ids[0])).toBeNull();
+    if (evidence !== "withdrawn")
+      expect(() => matcher.assertNativeDispatchesResolved()).toThrow("unresolved");
+  },
+);
+
+test.skipIf(process.platform === "win32").each([
+  { change: "append", disk: "base" },
+  { change: "append", disk: "next" },
+  { change: "disposition", disk: "base" },
+  { change: "disposition", disk: "next" },
+])("cold repair recovers a known $change with the $disk file", async ({ change, disk }) => {
+  const fixture = await createCheckpointFixture();
+  const { root, dir, records, recordsDir, logger, file } = fixture;
+  let fail = false;
+  const store = new PromptAnnotationStore(dir, {
+    records,
+    synchronize: async (target, parent) => {
+      if (fail) throw new Error("annotation sync failed");
+      await syncFilePublication(target, parent);
+    },
+  });
+  const attempt = {
+    agentId: "agent",
+    messageId: "first",
+    nativeMessageId: "00000000-0000-4000-8000-000000000001",
+  } as const;
+  try {
+    await store.remember("agent", {
+      messageId: "first",
+      text: "first",
+      annotation: notification("first"),
+      nativeMessageIds: true,
+    });
+    await store.prepareNativeDispatch(attempt);
+    const before = readFileSync(file, "utf8");
+    fail = true;
+    const operation =
+      change === "append"
+        ? store.remember("agent", {
+            messageId: "second",
+            text: "second",
+            annotation: notification("second"),
+          })
+        : store.settleNativeDispatch({ ...attempt, state: "dispatched" });
+    await expect(operation).rejects.toThrow("annotation sync failed");
+    const intended = readFileSync(file, "utf8");
+    const pending = (await records.get("agent"))?.pendingPromptAnnotationPublication;
+    expect(pending?.next.revision).toBe(3);
+    await expect(records.checkpointClosedAgent("agent")).rejects.toThrow(
+      "pending prompt annotation",
+    );
+    if (disk === "base") writeFileSync(file, before);
+
+    const coldRecords = new AgentStorage(recordsDir, logger);
+    const cold = new PromptAnnotationStore(dir, { records: coldRecords });
+    await cold.checkpointForHandoff("agent");
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(JSON.parse(intended));
+    const checkpoint = await coldRecords.checkpointClosedAgent("agent");
+    expect(checkpoint.pendingPromptAnnotationPublication).toBeUndefined();
+    expect(checkpoint.promptAnnotations).toEqual(pending?.next);
+    const matcher = await cold.historyMatcherForHandoff("agent");
+    if (change === "disposition") {
+      expect(matcher.take("context\nfirst", attempt.nativeMessageId)?.messageId).toBe("first");
+      expect(() => matcher.assertNativeDispatchesResolved()).not.toThrow();
+    } else {
+      expect(matcher.take("second")?.messageId).toBe("second");
+      // Publishing bytes cannot resolve an unknown provider outcome.
+      expect(() => matcher.assertNativeDispatchesResolved()).toThrow("outcome is unresolved");
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test.skipIf(process.platform === "win32")(
+  "cold repair refuses an unjournaled suffix without overwriting it",
+  async () => {
+    const { root, dir, records, recordsDir, logger, file } = await createCheckpointFixture();
+    let fail = false;
+    const store = new PromptAnnotationStore(dir, {
+      records,
+      synchronize: async (target, parent) => {
+        if (fail) throw new Error("annotation sync failed");
+        await syncFilePublication(target, parent);
+      },
+    });
+    try {
+      await store.remember("agent", {
+        messageId: "first",
+        text: "first",
+        annotation: notification("first"),
+      });
+      fail = true;
+      await expect(
+        store.remember("agent", {
+          messageId: "second",
+          text: "second",
+          annotation: notification("second"),
+        }),
+      ).rejects.toThrow("annotation sync failed");
+      const unexpected = JSON.parse(readFileSync(file, "utf8"));
+      unexpected.entries.push({ ...unexpected.entries[0], messageId: "unrelated" });
+      const bytes = JSON.stringify(unexpected);
+      writeFileSync(file, bytes);
+      const coldRecords = new AgentStorage(recordsDir, logger);
+      const cold = new PromptAnnotationStore(dir, { records: coldRecords });
+      await expect(cold.checkpointForHandoff("agent")).rejects.toThrow("checkpoint does not match");
+      expect(readFileSync(file, "utf8")).toBe(bytes);
+      expect((await coldRecords.get("agent"))?.pendingPromptAnnotationPublication).toBeDefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test.skipIf(process.platform === "win32").each([
+  { phase: "prepare", restart: false },
+  { phase: "commit", restart: false },
+  { phase: "prepare", restart: true },
+  { phase: "commit", restart: true },
+])(
+  "failed record $phase synchronization recovers the exact operation (restart=$restart)",
+  async ({ phase, restart }) => {
+    const { root, dir, recordsDir, logger, file } = await createCheckpointFixture();
+    let fail = false;
+    const records = new AgentStorage(recordsDir, logger, undefined, async (target, parent) => {
+      const record = JSON.parse(readFileSync(target, "utf8"));
+      const isPreparation = Boolean(record.pendingPromptAnnotationPublication);
+      if (fail && isPreparation === (phase === "prepare")) throw new Error("record sync failed");
+      await syncFilePublication(target, parent);
+    });
+    const store = new PromptAnnotationStore(dir, { records });
+    try {
+      await store.remember("agent", {
+        messageId: "first",
+        text: "first",
+        annotation: notification("first"),
+      });
+      const before = readFileSync(file, "utf8");
+      fail = true;
+      await expect(
+        store.remember("agent", {
+          messageId: "second",
+          text: "second",
+          annotation: notification("second"),
+        }),
+      ).rejects.toThrow("record sync failed");
+      expect((await records.get("agent"))?.promptAnnotations?.entryCount).toBe(1);
+      if (phase === "prepare") expect(readFileSync(file, "utf8")).toBe(before);
+      fail = false;
+      if (!restart) await store.checkpointForHandoff("agent");
+      const coldRecords = new AgentStorage(recordsDir, logger);
+      const cold = new PromptAnnotationStore(dir, { records: coldRecords });
+      const matcher = await cold.historyMatcherForHandoff("agent");
+      expect(matcher.take("first")?.messageId).toBe("first");
+      expect(matcher.take("second")?.messageId).toBe("second");
+      expect((await coldRecords.checkpointClosedAgent("agent")).promptAnnotations).toMatchObject({
+        revision: 2,
+        entryCount: 2,
+        coverage: "adopted",
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test("a cold annotation reader refuses rollback against the agent record's checkpoint", async () => {
+  const root = mkdtempSync(join(tmpdir(), "prompt-annotations-witness-"));
+  const dir = join(root, "annotations");
+  const recordsDir = join(root, "agents");
+  const logger = createTestLogger();
+  const records = new AgentStorage(recordsDir, logger);
+  try {
+    await records.upsert({
+      id: "agent",
+      provider: "claude",
+      cwd: root,
+      labels: {},
+      lastStatus: "closed",
+      createdAt: "2026-10-10T00:00:00.000Z",
+      updatedAt: "2026-10-10T00:00:00.000Z",
+    });
+    const store = new PromptAnnotationStore(dir, { records });
+    await store.remember("agent", {
+      messageId: "first",
+      text: "first",
+      annotation: notification("first"),
+    });
+    const file = join(dir, "agent.json");
+    const before = readFileSync(file, "utf8");
+    await store.remember("agent", {
+      messageId: "second",
+      text: "second",
+      annotation: notification("second"),
+    });
+    writeFileSync(file, before);
+
+    const cold = new PromptAnnotationStore(dir, { records: new AgentStorage(recordsDir, logger) });
+    await expect(cold.historyMatcherForHandoff("agent")).rejects.toThrow(
+      "checkpoint does not match",
+    );
+    expect(readFileSync(file, "utf8")).toBe(before);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("new annotations preserve older presentation instead of evicting it at 500 entries", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "prompt-annotations-retain-"));
+  try {
+    const entries = Array.from({ length: 500 }, (_, index) => ({
+      messageId: `m${index}`,
+      textHash: createHash("sha256").update("same").digest("hex"),
+      annotation: notification(`notification ${index}`),
+    }));
+    writeFileSync(join(dir, "agent.json"), JSON.stringify({ version: 1, entries }));
+    const store = new PromptAnnotationStore(dir);
+    await store.remember("agent", {
+      messageId: "new",
+      text: "new",
+      annotation: notification("new"),
+    });
+    const restored = await new PromptAnnotationStore(dir).historyMatcherForHandoff("agent");
+    expect(restored.take("same")).toEqual({
+      messageId: "m0",
+      annotation: notification("notification 0"),
+    });
+    expect(restored.take("new")).toEqual({ messageId: "new", annotation: notification("new") });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("native annotations distinguish repeated text, unsent attempts and prepended context", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "prompt-annotations-native-"));
+  const store = new PromptAnnotationStore(dir);
+  const firstId = "00000000-0000-4000-8000-000000000001";
+  const secondId = "00000000-0000-4000-8000-000000000002";
+  const withdrawnId = "00000000-0000-4000-8000-000000000003";
+  try {
+    for (const messageId of ["first", "second", "unsent"]) {
+      await store.remember("agent", {
+        messageId,
+        text: "same text",
+        annotation: notification(messageId),
+        nativeMessageIds: true,
+      });
+    }
+    const first = { agentId: "agent", messageId: "first", nativeMessageId: firstId } as const;
+    const second = { agentId: "agent", messageId: "second", nativeMessageId: secondId } as const;
+    const withdrawn = {
+      agentId: "agent",
+      messageId: "first",
+      nativeMessageId: withdrawnId,
+    } as const;
+    await store.prepareNativeDispatch(first);
+    await store.prepareNativeDispatch(second);
+    await store.prepareNativeDispatch(withdrawn);
+    expect((await store.historyMatcher("agent")).take("same text", firstId)).toBeNull();
+    await store.settleNativeDispatch({ ...first, state: "dispatched" });
+    await store.settleNativeDispatch({ ...second, state: "dispatched" });
+    await store.settleNativeDispatch({ ...withdrawn, state: "withdrawn" });
+
+    const matcher = await new PromptAnnotationStore(dir).historyMatcherForHandoff("agent");
+    expect(matcher.take("same text", "unrelated-user-message")).toBeNull();
+    expect((await store.historyMatcher("agent")).take("same text", withdrawnId)).toBeNull();
+    expect(matcher.take("context\n\nsame text", secondId)).toEqual({
+      messageId: "second",
+      annotation: notification("second"),
+    });
+    expect(() => matcher.assertNativeDispatchesResolved()).toThrow("absent from provider history");
+    expect(matcher.take("same text", firstId)).toEqual({
+      messageId: "first",
+      annotation: notification("first"),
+    });
+    expect(matcher.take("same text")).toBeNull();
+    expect(() => matcher.assertNativeDispatchesResolved()).not.toThrow();
+    expect(matcher.take("same text", firstId)).toBeNull();
+    expect(() => matcher.assertNativeDispatchesResolved()).toThrow("more than once");
+    const contradictory = await store.historyMatcherForHandoff("agent");
+    contradictory.take("same text", firstId);
+    contradictory.take("same text", secondId);
+    contradictory.take("same text", withdrawnId);
+    expect(() => contradictory.assertNativeDispatchesResolved()).toThrow("Withdrawn native prompt");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test.skipIf(process.platform === "win32")(
+  "failed disposition synchronization retries the retained publication",
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "prompt-annotations-sync-"));
+    let failSync = false;
+    const store = new PromptAnnotationStore(dir, {
+      synchronize: async (file, root) => {
+        if (failSync) throw new Error("disposition sync failed");
+        await syncFilePublication(file, root);
+      },
+    });
+    const attempt = {
+      agentId: "agent",
+      messageId: "wake",
+      nativeMessageId: "00000000-0000-4000-8000-000000000001",
+    } as const;
+    try {
+      await store.remember("agent", {
+        messageId: "wake",
+        text: "same",
+        annotation: notification("done"),
+        nativeMessageIds: true,
+      });
+      await store.prepareNativeDispatch(attempt);
+      await store.prepareNativeDispatch(attempt);
+      failSync = true;
+      await expect(store.settleNativeDispatch({ ...attempt, state: "dispatched" })).rejects.toThrow(
+        "disposition sync failed",
+      );
+      await expect(store.historyMatcherForHandoff("agent")).rejects.toThrow(
+        "disposition sync failed",
+      );
+      failSync = false;
+      const repaired = await store.historyMatcherForHandoff("agent");
+      expect(repaired.take("same", attempt.nativeMessageId)).toEqual({
+        messageId: "wake",
+        annotation: notification("done"),
+      });
+      expect(() => repaired.assertNativeDispatchesResolved()).not.toThrow();
+      await expect(store.settleNativeDispatch({ ...attempt, state: "withdrawn" })).rejects.toThrow(
+        "disposition cannot change",
+      );
+      const disk = await new PromptAnnotationStore(dir).historyMatcherForHandoff("agent");
+      expect(disk.take("same", attempt.nativeMessageId)).toEqual({
+        messageId: "wake",
+        annotation: notification("done"),
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test("annotation capacity refuses new data without overwriting existing history", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "prompt-annotations-capacity-"));
+  const store = new PromptAnnotationStore(dir);
+  try {
+    await store.remember("agent", {
+      messageId: "first",
+      text: "first",
+      annotation: notification("first"),
+    });
+    const saved = readFileSync(join(dir, "agent.json"), "utf8");
+    await expect(
+      store.remember("agent", {
+        messageId: "too-large",
+        text: "next",
+        annotation: notification("x".repeat(16 * 1024 * 1024)),
+      }),
+    ).rejects.toThrow("storage capacity exceeded");
+    expect(store.forMessage("agent", "too-large")).toBeNull();
+    expect(readFileSync(join(dir, "agent.json"), "utf8")).toBe(saved);
+    await store.remember("agent", {
+      messageId: "next",
+      text: "next",
+      annotation: notification("next"),
+    });
+    const matcher = await new PromptAnnotationStore(dir).historyMatcherForHandoff("agent");
+    expect(matcher.take("first")).toEqual({
+      messageId: "first",
+      annotation: notification("first"),
+    });
+    expect(matcher.take("next")).toEqual({ messageId: "next", annotation: notification("next") });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("preparation reserves room to persist the final dispatch disposition", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "prompt-annotations-reserve-"));
+  const nativeMessageId = "00000000-0000-4000-8000-000000000001";
+  try {
+    const entry = {
+      messageId: "wake",
+      textHash: createHash("sha256").update("wake").digest("hex"),
+      annotation: notification(""),
+      nativeDispatches: [{ messageId: nativeMessageId, state: "prepared" }],
+    };
+    const preparedBytes = Buffer.byteLength(
+      JSON.stringify({ version: 1, entries: [entry] }, null, 2),
+    );
+    const initial = {
+      ...entry,
+      annotation: notification("x".repeat(16 * 1024 * 1024 - preparedBytes)),
+      nativeDispatches: [],
+    };
+    const file = join(dir, "agent.json");
+    const saved = JSON.stringify({ version: 1, entries: [initial] }, null, 2);
+    writeFileSync(file, saved);
+    const store = new PromptAnnotationStore(dir);
+    await expect(
+      store.prepareNativeDispatch({ agentId: "agent", messageId: "wake", nativeMessageId }),
+    ).rejects.toThrow("storage capacity exceeded");
+    expect(readFileSync(file, "utf8")).toBe(saved);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("duplicate prompts do not acknowledge a failed annotation write and can retry", async () => {
+  const root = mkdtempSync(join(tmpdir(), "prompt-annotations-failure-"));
+  const dir = join(root, "annotations");
+  const store = new PromptAnnotationStore(dir);
+  const prompt = { messageId: "m1", text: "wake", annotation: notification("finished") };
+  try {
+    await store.historyMatcher("agent-1");
+    writeFileSync(dir, "blocks annotation storage");
+    const attempts = await Promise.allSettled([
+      store.remember("agent-1", prompt),
+      store.remember("agent-1", prompt),
+    ]);
+    expect(attempts.map((attempt) => attempt.status)).toEqual(["rejected", "rejected"]);
+    expect(store.forMessage("agent-1", "m1")).toBe(null);
+    rmSync(dir);
+    await store.remember("agent-1", prompt);
+    const restored = await new PromptAnnotationStore(dir).historyMatcher("agent-1");
+    expect(restored.take("wake")).toEqual({
+      messageId: "m1",
+      annotation: notification("finished"),
+    });
+    expect(restored.take("wake")).toBe(null);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("handoff waits for submitted annotations and deletion does not resurrect older prompts", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "prompt-annotations-order-"));
+  const store = new PromptAnnotationStore(dir);
+  try {
+    const first = store.remember("agent-1", {
+      messageId: "m1",
+      text: "first",
+      annotation: notification("first"),
+    });
+    const pendingHistory = store.historyMatcherForHandoff("agent-1");
+    await first;
+    expect((await pendingHistory).take("first")).toEqual({
+      messageId: "m1",
+      annotation: notification("first"),
+    });
+    const deletion = store.delete("agent-1");
+    const second = store.remember("agent-1", {
+      messageId: "m2",
+      text: "second",
+      annotation: notification("second"),
+    });
+    await Promise.all([deletion, second]);
+    const restored = await new PromptAnnotationStore(dir).historyMatcherForHandoff("agent-1");
+    expect(restored.take("first")).toBe(null);
+    expect(restored.take("second")).toEqual({
+      messageId: "m2",
+      annotation: notification("second"),
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("handoff refuses a missing committed annotation file until it is restored", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "prompt-annotations-missing-"));
+  const store = new PromptAnnotationStore(dir);
+  try {
+    await store.remember("agent-1", {
+      messageId: "m1",
+      text: "wake",
+      annotation: notification("n"),
+    });
+    const file = join(dir, "agent-1.json");
+    const saved = readFileSync(file);
+    rmSync(file);
+    await expect(store.historyMatcherForHandoff("agent-1")).rejects.toThrow("changed on disk");
+    expect((await store.historyMatcherForHandoff("another-agent")).take("wake")).toBe(null);
+    writeFileSync(file, saved);
+    expect((await store.historyMatcherForHandoff("agent-1")).take("wake")).toEqual({
+      messageId: "m1",
+      annotation: notification("n"),
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test.each(["duplicate IDs", "invalid hash", "invalid native identity"])(
+  "handoff refuses annotation metadata with %s and can retry repaired data",
+  async (fault) => {
+    const dir = mkdtempSync(join(tmpdir(), "prompt-annotations-invalid-"));
+    const store = new PromptAnnotationStore(dir);
+    try {
+      await store.remember("agent-1", {
+        messageId: "m1",
+        text: "wake",
+        annotation: notification("n"),
+      });
+      const file = join(dir, "agent-1.json");
+      const saved = readFileSync(file, "utf8");
+      const data = JSON.parse(saved);
+      if (fault === "duplicate IDs") data.entries.push(data.entries[0]);
+      if (fault === "invalid hash") data.entries[0].textHash = "invalid";
+      if (fault === "invalid native identity")
+        data.entries[0].nativeDispatches = [{ messageId: "invalid", state: "dispatched" }];
+      writeFileSync(file, JSON.stringify(data));
+      const reader = new PromptAnnotationStore(dir);
+      await expect(reader.historyMatcherForHandoff("agent-1")).rejects.toThrow(
+        "Prompt annotation history is invalid",
+      );
+      writeFileSync(file, saved);
+      expect((await reader.historyMatcherForHandoff("agent-1")).take("wake")).toEqual({
+        messageId: "m1",
+        annotation: notification("n"),
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test("handoff bounds the annotation file before parsing it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "prompt-annotations-size-"));
+  try {
+    writeFileSync(join(dir, "agent-1.json"), Buffer.alloc(16 * 1024 * 1024 + 1, 32));
+    await expect(
+      new PromptAnnotationStore(dir).historyMatcherForHandoff("agent-1"),
+    ).rejects.toThrow("Invalid handoff metadata file size");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ordinary history cannot turn damaged annotation metadata into a successful overwrite", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "prompt-annotations-preserve-"));
+  try {
+    const file = join(dir, "agent-1.json");
+    const writer = new PromptAnnotationStore(dir);
+    await writer.remember("agent-1", {
+      messageId: "m1",
+      text: "first",
+      annotation: notification("first"),
+    });
+    const saved = readFileSync(file, "utf8");
+    const damaged = JSON.stringify({ ...JSON.parse(saved), version: 0 });
+    writeFileSync(file, damaged);
+    const reader = new PromptAnnotationStore(dir);
+    expect((await reader.historyMatcher("agent-1")).take("first")).toBe(null);
+    const next = { messageId: "m2", text: "second", annotation: notification("second") };
+    await expect(reader.remember("agent-1", next)).rejects.toThrow(
+      "Prompt annotation history is invalid",
+    );
+    expect(readFileSync(file, "utf8")).toBe(damaged);
+    writeFileSync(file, saved);
+    await reader.remember("agent-1", next);
+    const restored = await new PromptAnnotationStore(dir).historyMatcherForHandoff("agent-1");
+    expect(restored.take("first")).toEqual({ messageId: "m1", annotation: notification("first") });
+    expect(restored.take("second")).toEqual({
+      messageId: "m2",
+      annotation: notification("second"),
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("replayed history matches each remembered prompt once, in send order, across processes", async () => {
   const dir = mkdtempSync(join(tmpdir(), "prompt-annotations-"));

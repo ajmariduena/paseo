@@ -6,7 +6,8 @@ import {
   createProviderEnvSpec,
   type ProviderRuntimeSettings,
 } from "../../provider-launch-config.js";
-import { buildSelfNodeCommand } from "../../../paseo-env.js";
+import { spawnGatedClaudeProcess, type ClaudeProcessLaunch } from "./process-launch.js";
+import { buildSelfNodeCommand, createExternalCommandProcessEnv } from "../../../paseo-env.js";
 import { spawnProcess } from "../../../../utils/spawn.js";
 
 // Keep the raw SDK query import in this module only. Claude process launch behavior
@@ -21,8 +22,9 @@ export interface ClaudeQueryContext {
   runtimeSettings?: ProviderRuntimeSettings;
   launchEnv?: Record<string, string>;
   queryFactory?: ClaudeQueryFactory;
-  /** Called with the spawned child process so the caller can tree-kill it on close. */
-  onChildProcess?: (child: ChildProcess) => void;
+  deferProcessStart?: boolean;
+  /** The owner registers the gated process before calling start(). */
+  onChildProcess?: (launch: ClaudeProcessLaunch) => void;
 }
 
 function isChildProcessWithStreams(child: ChildProcess): child is ChildProcessWithoutNullStreams {
@@ -84,19 +86,36 @@ function applyRuntimeSettingsToClaudeOptions(
         : null;
       const command = selfNodeCommand?.command ?? resolved.command;
       const args = selfNodeCommand?.args ?? resolved.args;
-      const child = spawnProcess(command, args, {
-        cwd: spawnOptions.cwd,
-        ...(selfNodeCommand
-          ? { env: selfNodeCommand.env, envMode: "internal" as const }
-          : providerEnvSpec),
-        signal: spawnOptions.signal,
-        stdio: ["pipe", "pipe", "pipe"],
-        // Bypass cmd.exe on Windows: the SDK passes --mcp-config with inline JSON
-        // containing double quotes, which cmd.exe mangles (strips quotes, breaks parsing).
-        // The command is always a resolved binary path, so shell routing is unnecessary.
-        shell: false,
-      });
-      onChildProcess?.(child);
+      const launch: ClaudeProcessLaunch = context.deferProcessStart
+        ? spawnGatedClaudeProcess({
+            command,
+            args,
+            cwd: spawnOptions.cwd,
+            env: selfNodeCommand?.env ?? createExternalCommandProcessEnv(command, providerEnv),
+            signal: spawnOptions.signal,
+          })
+        : {
+            child: spawnProcess(command, args, {
+              cwd: spawnOptions.cwd,
+              ...(selfNodeCommand
+                ? { env: selfNodeCommand.env, envMode: "internal" as const }
+                : providerEnvSpec),
+              signal: spawnOptions.signal,
+              stdio: ["pipe", "pipe", "pipe"],
+              // Bypass cmd.exe on Windows: the SDK passes --mcp-config with inline JSON
+              // containing double quotes, which cmd.exe mangles (strips quotes, breaks parsing).
+              // The command is always a resolved binary path, so shell routing is unnecessary.
+              shell: false,
+            }),
+            command,
+            get killed() {
+              return this.child.killed;
+            },
+            ready: Promise.resolve(),
+            start: async () => {},
+          };
+      const child = launch.child;
+      onChildProcess?.(launch);
       if (typeof options.stderr === "function") {
         child.stderr?.on("data", (chunk: Buffer | string) => {
           options.stderr?.(chunk.toString());
@@ -105,7 +124,27 @@ function applyRuntimeSettingsToClaudeOptions(
       if (!isChildProcessWithStreams(child)) {
         throw new Error("Claude process was spawned without stdio streams");
       }
-      return child;
+      if (!context.deferProcessStart) return child;
+      // A supervised provider can receive an SDK signal over IPC while its
+      // registered OS root remains alive to join it. Expose provider transport
+      // state without mutating Node's readonly ChildProcess.killed property.
+      return {
+        stdin: child.stdin,
+        stdout: child.stdout,
+        get killed() {
+          return launch.killed;
+        },
+        get exitCode() {
+          return child.exitCode;
+        },
+        get signalCode() {
+          return child.signalCode;
+        },
+        kill: child.kill.bind(child),
+        on: child.on.bind(child),
+        once: child.once.bind(child),
+        off: child.off.bind(child),
+      };
     },
   };
 }

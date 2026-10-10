@@ -1,0 +1,463 @@
+Client checkpoints and release recovery — Linux, 2026-10-10
+
+The client now publishes the destination identity and reservation before preparing the source,
+the source signing key before binding the capture, and the digest/mappings before transport or
+release. The app awaits each publication. Failed storage stops the next host mutation and keeps
+the candidate available for retry. The existing app store serializes its own writes and refuses
+replacement of an already saved host, reservation, digest or signer during discovery refresh.
+This queue is local to one store instance; cross-window coordination remains open.
+
+The new real-daemon regression fails client storage at reservation and signer publication, then
+repairs it without creating a second transfer. After restarting both hosts, changed destination
+identity, signer, reservation, workspace mapping and digest all refuse release/cancellation.
+A changed key reported by the source also refuses both operations before changing ownership.
+The repaired checkpoint finishes activation with the original key and file bytes. Existing lost
+release-reply and reserved/staged cancellation cases still pass. The form suite covers reload,
+storage failure/retry and competing same-instance publications; its first pin assertion failed
+before implementation. A later fixture failure came from returning the wrong transfer identity
+and comparing a noncanonical record with a store-adopted key; the fixture now preserves both.
+
+Desktop Chromium compares the saved signer and complete staged snapshot with the host records,
+reloads without changing that checkpoint, and recovers the same signer/digest/mappings after
+deleting local state and stopping the source. It then completes activation and verifies the files.
+The first run timed out while creating the browser context, before opening the app. After the
+other checks finished, the isolated rerun passed with the same timeout and test assertions.
+The client/server workspace builds, root typecheck, lint and formatting pass.
+
+Current checkpoint validation:
+
+$ npx vitest run src/handoff/form-model.test.ts --bail=1
+  Test Files  1 passed (1)
+       Tests  33 passed (33)
+
+$ npx vitest run src/messages.wire-compat.test.ts --bail=1
+  Test Files  1 passed (1)
+       Tests  41 passed (41)
+
+$ npx vitest run src/server/handoff/archive.e2e.test.ts --bail=1 -t 'persists client signing|coordinates handoff over RPC|cancels a .* handoff after'
+  Test Files  1 passed (1)
+       Tests  4 passed | 27 skipped (31)
+
+$ npm run test:e2e -- e2e/browser/workspace-handoff.spec.ts --grep 'recovers preparation errors and finishes offline' --workers=1
+  ✓ recovers preparation errors and finishes offline after losing local transfer state (45.8s)
+  1 passed (1.2m)
+
+The network regression first failed because released-source status tried to read a deleted capture.
+After release, status and receipt retries now use the durable ownership record. The test restarts
+both daemons, removes the source checkout and capture directory, checks the identical signature,
+alters destination staging, and verifies repair from the destination's private archive. It then
+restarts the destination after receipt acceptance and finishes activation with the source stopped.
+
+The browser case now shuts down the source after destination receipt acceptance, deletes the
+local transfer record, reloads the page, selects that transfer on the destination, restores its
+original identity and completes activation. Recovery exposes Resume and no cancellation action.
+The screenshot handoff-release-offline.png shows the restored plan before activation. That earlier
+case starts from a known source workspace; destination settings now provide an independent entrypoint.
+
+Destination discovery no longer requires a source workspace in the app. The network case first
+failed because scoped list entries lacked origin identities. It now verifies global and filtered
+pagination after destination restart, including a removed source and completed-cleanup exclusion.
+The desktop and compact Chromium cases remove the source through Settings, shut down its daemon,
+clear local transfer state and find the accepted release on the second page of destination host settings.
+They check initial loading, forward/backward pages, a retryable error for an unreleased reservation,
+a real destination path conflict, activation retry, restored file bytes and destination navigation.
+Its first runs exposed test issues: the fixture removed the host before the UI action, the lookup
+error used a different selector, and compact sheet content renders outside its header. Assertions
+now use the visible alert and close button across layouts, without changing production behavior.
+Screenshot review also corrected the shared close notice so it no longer directs destination recovery back to an absent source workspace.
+
+The form cases also include selected destination recovery without cached source state, retry of the
+same selection, closing during lookup, released/activating/active recovery, preservation of context mode,
+and refusals for pre-release states, absent digest, wrong workspace/source or identical hosts.
+The network and browser cases use isolated Linux daemons and a workspace without conversations.
+They establish transaction and UI behavior, not authenticated-provider or physical-host continuity.
+The earlier offline release case ran desktop Chromium only; Electron, native mobile and MacBook/VPS
+remain untested.
+The main daemon was not restarted. Workspace declarations were rebuilt; typecheck/lint/format pass.
+
+Current destination-discovery validation:
+
+$ npx vitest run src/server/handoff/archive.e2e.test.ts --testNamePattern="discovers destination-only reservations" --bail=1
+  Test Files  1 passed (1)
+       Tests  1 passed | 29 skipped (30)
+
+$ npx vitest run src/handoff/form-model.test.ts src/i18n/resources.test.ts --bail=1
+  Test Files  2 passed (2)
+       Tests  69 passed (69)
+  After the close-notice translation edit, all 40 resource cases passed again.
+
+$ npx vitest run src/messages.wire-compat.test.ts --bail=1
+  Test Files  1 passed (1)
+       Tests  40 passed (40)
+
+$ npm run test:e2e -- e2e/browser/workspace-handoff.spec.ts --grep 'desktop discovers incoming transfers' --workers=1
+  ✓ desktop discovers incoming transfers after forgetting the source host and workspace (38.9s)
+  1 passed (1.1m)
+
+$ npm run test:e2e -- e2e/browser/workspace-handoff.spec.ts --grep 'compact discovers incoming transfers' --workers=1
+  ✓  1 [browser] › e2e/browser/workspace-handoff.spec.ts:585:9 › workspace handoff › compact discovers incoming transfers after forgetting the source host and workspace (42.1s)
+  1 passed (1.3m)
+
+Screenshots: handoff-incoming-desktop.png, handoff-incoming-compact.png and
+handoff-incoming-recovery-compact.png. The compact recovery screenshot includes the corrected
+close notice. This is browser viewport evidence, not native iOS/Android validation.
+
+Earlier scoped-release validation:
+
+$ npx vitest run src/handoff/form-model.test.ts --bail=1
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+
+
+ Test Files  1 passed (1)
+      Tests  26 passed (26)
+   Start at  05:55:36
+   Duration  380ms (transform 153ms, setup 53ms, import 180ms, tests 35ms, environment 0ms)
+
+
+$ npx vitest run src/server/handoff/archive.e2e.test.ts --testNamePattern="coordinates handoff over RPC" --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 29 skipped (30)
+   Start at  05:53:28
+   Duration  12.84s (transform 9.03s, setup 52ms, import 11.27s, tests 1.39s, environment 0ms)
+
+
+Browser environment:
+  FONTCONFIG_FILE=/tmp/handoff-browser-fonts.conf
+  LD_LIBRARY_PATH=/tmp/handoff-browser-libs/extracted/usr/lib/x86_64-linux-gnu
+  PLAYWRIGHT_BROWSERS_PATH=/tmp/handoff-website-browsers
+  PATH=/tmp/handoff-lsof/extracted/usr/bin:$PATH
+$ npm run test:e2e --workspace=@getpaseo/app -- workspace-handoff.spec.ts --grep 'losing local transfer state' --workers=1
+  ✓  1 [browser] › e2e/browser/workspace-handoff.spec.ts:570:7 › workspace handoff › recovers preparation errors and finishes offline after losing local transfer state (48.8s)
+[e2e] Worker 0 daemon stopped
+[e2e] Metro stopped
+
+  1 passed (1.3m)
+
+Earlier browser validation:
+
+Handoff app validation — Linux, 2026-10-09
+
+Browser fixtures use two isolated hosts and a directory workspace without conversations.
+They prove read-only review, workspace transfer/reload, source-owned and destination-only recovery
+after local record loss, offline activation recovery, navigation and interrupted cancellation cleanup.
+Per-conversation compatibility uses fixture transcripts in the network test; real provider continuation
+is covered separately in the acceptance plan.
+Browser widths: 1280x720 and 390x844. Compact browser web is not native iOS/Android.
+
+Browser environment used temporary Chromium, native libraries and fonts under /tmp:
+FONTCONFIG_FILE=/tmp/handoff-browser-libs/fonts.conf
+LD_LIBRARY_PATH=/tmp/handoff-browser-libs/extracted/usr/lib/x86_64-linux-gnu
+PLAYWRIGHT_BROWSERS_PATH=/tmp/handoff-website-browsers
+PATH=/tmp/handoff-lsof/extracted/usr/bin:$PATH
+
+All commands below exited 0. Output follows verbatim.
+
+$ cd packages/app && npx vitest run src/handoff/form-model.test.ts --bail=1
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+
+
+ Test Files  1 passed (1)
+      Tests  14 passed (14)
+   Start at  17:11:41
+   Duration  699ms (transform 254ms, setup 87ms, import 313ms, tests 40ms, environment 0ms)
+
+
+$ cd packages/app && npx vitest run src/i18n/resources.test.ts --bail=1
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+
+
+ Test Files  1 passed (1)
+      Tests  40 passed (40)
+   Start at  17:11:43
+   Duration  3.72s (transform 1.35s, setup 104ms, import 1.53s, tests 1.86s, environment 0ms)
+
+
+$ npm run test:e2e --workspace=@getpaseo/app -- e2e/browser/workspace-handoff.spec.ts
+
+> @getpaseo/app@0.11.0-beta.36 test:e2e
+> playwright test --project=browser e2e/browser/workspace-handoff.spec.ts
+
+[metro] Starting project at /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+[metro] Using src/app as the root directory for Expo Router.
+[metro] Experimental Expo Autolinking module resolver is enabled.
+[metro] React Compiler enabled
+[metro] Starting Metro Bundler
+[metro] Waiting on http://localhost:35079
+[metro] Logs for your project will appear below.
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 3575ms packages/app/index.ts (5624 modules)
+[metro] Web packages/app/index.ts ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.9% (5624/5624)
+[e2e] Metro warmed on port 35079
+
+Running 3 tests using 1 worker
+
+(node:373902) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:373902) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[e2e] Worker 0 daemon started on port 36691, home: /tmp/paseo-e2e-worker-0-RjXmU2
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 459ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 108ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (86 modules)
+[metro] Web Bundled 260ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 7ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 311ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 8ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 312ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 23ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 335ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 9ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+  ✓  1 [browser] › e2e/browser/workspace-handoff.spec.ts:115:7 › workspace handoff › chooses a destination-only reservation and resumes its original mode without a local record (34.9s)
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 324ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 14ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 383ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 14ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 208ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 10ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 219ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 5ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 271ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 6ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+  ✓  2 [browser] › e2e/browser/workspace-handoff.spec.ts:198:7 › workspace handoff › recovers preparation and activation errors, reloads a transfer and finishes with source offline (35.6s)
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 311ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 6ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 312ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 11ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 334ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 10ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 221ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 18ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 298ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 13ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 281ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 17ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+  ✓  3 [browser] › e2e/browser/workspace-handoff.spec.ts:273:7 › workspace handoff › compact layout recovers explicit context choice after local state loss and cancels (49.0s)
+[e2e] Worker 0 daemon stopped
+[e2e] Metro stopped
+
+  3 passed (2.4m)
+
+
+$ npm run test:e2e --workspace=@getpaseo/app -- e2e/browser/workspace-handoff.spec.ts -g 'chooses a destination-only reservation'
+
+> @getpaseo/app@0.11.0-beta.36 test:e2e
+> playwright test --project=browser e2e/browser/workspace-handoff.spec.ts -g chooses a destination-only reservation
+
+[metro] Starting project at /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+[metro] Using src/app as the root directory for Expo Router.
+[metro] Experimental Expo Autolinking module resolver is enabled.
+[metro] React Compiler enabled
+[metro] Starting Metro Bundler
+[metro] Waiting on http://localhost:46531
+[metro] Logs for your project will appear below.
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] | (node:375871) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[metro] | (Use `node --trace-warnings ...` to show where the warning was created)
+[metro] Web packages/app/index.ts ▓▓▓▓▓▓▓▓▓░░░░░░░ 59.2% (2604/4864)
+[metro] Web Bundled 5983ms packages/app/index.ts (5625 modules)
+[e2e] Metro warmed on port 46531
+
+Running 1 test using 1 worker
+
+(node:375927) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:375927) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[e2e] Worker 0 daemon started on port 41191, home: /tmp/paseo-e2e-worker-0-cQQuGd
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 1221ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 361ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (86 modules)
+[metro] Web Bundled 378ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 6ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 262ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 6ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 262ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 8ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 207ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 6ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+  ✓  1 [browser] › e2e/browser/workspace-handoff.spec.ts:115:7 › workspace handoff › chooses a destination-only reservation and resumes its original mode without a local record (42.6s)
+[e2e] Worker 0 daemon stopped
+[e2e] Metro stopped
+
+  1 passed (1.3m)
+
+
+$ cd packages/server && npx vitest run src/server/handoff/archive.e2e.test.ts -t "activates an explicit context export" --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 14 skipped (15)
+   Start at  16:30:04
+   Duration  16.63s (transform 11.50s, setup 83ms, import 14.30s, tests 2.06s, environment 0ms)
+
+
+
+$ cd packages/server && npx vitest run src/server/agent/providers/claude/agent.history.test.ts -t "receiver limits|workflow artifacts" --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  2 passed | 19 skipped (21)
+   Start at  16:26:55
+   Duration  2.76s (transform 1.52s, setup 122ms, import 2.26s, tests 139ms, environment 0ms)
+
+
+
+$ cd packages/server && npx vitest run src/server/handoff/archive.e2e.test.ts -t "coordinates handoff over RPC" --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 14 skipped (15)
+   Start at  16:53:47
+   Duration  12.64s (transform 8.96s, setup 38ms, import 11.14s, tests 1.34s, environment 0ms)
+
+
+$ cd packages/server && npx vitest run src/server/handoff/archive.e2e.test.ts -t "discovers destination-only reservations" --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 15 skipped (16)
+   Start at  17:09:57
+   Duration  12.74s (transform 9.53s, setup 82ms, import 11.83s, tests 699ms, environment 0ms)
+
+
+$ cd packages/protocol && npx vitest run tests/validation/ws-outbound.test.ts --bail=1
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/protocol
+
+
+ Test Files  1 passed (1)
+      Tests  26 passed (26)
+   Start at  17:11:41
+   Duration  11.35s (transform 8.68s, setup 0ms, import 9.91s, tests 1.19s, environment 1ms)
+
+
+$ npm run typecheck
+
+> paseo@0.11.1 typecheck
+> npm run typecheck --workspaces --if-present
+
+
+> @getpaseo/builtin-plugins@0.11.1 typecheck
+> tsgo -p tsconfig.json --noEmit
+
+
+> @getpaseo/expo-two-way-audio@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/highlight@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/plugin@0.11.1 typecheck
+> tsgo --noEmit && tsgo -p tsconfig.examples.json --noEmit
+
+
+> @getpaseo/protocol@0.11.1 pretypecheck
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/client@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/server@0.11.1 typecheck
+> tsgo -p tsconfig.server.typecheck.json --noEmit
+
+
+> @getpaseo/app@0.11.0-beta.36 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/relay@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/website@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/desktop@0.11.1 typecheck
+> tsgo --noEmit -p tsconfig.json
+
+
+> @getpaseo/cli@0.11.1 typecheck
+> tsgo --noEmit
+
+
+$ npm run lint
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 2.7s on 5019 files with 177 rules using 4 threads.

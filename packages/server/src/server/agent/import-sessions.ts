@@ -242,7 +242,10 @@ async function importProviderSessionNow(
         timelineSize: input.agentManager.getTimeline(snapshot.id).length,
       };
     } catch (error) {
-      await rollbackArchivedImport(input, archivedRecord, archivedRecord.archivedAt);
+      await rollbackArchivedImport(input, archivedRecord, {
+        workspaceId,
+        labels: labelPatch,
+      });
       throw error;
     }
   }
@@ -305,22 +308,24 @@ async function resolveProviderSessionImportMutationKey(
 async function rollbackArchivedImport(
   input: ImportProviderSessionInput,
   archivedRecord: StoredAgentRecord,
-  archivedAt: string,
+  imported: { workspaceId: string; labels: Record<string, string | null> },
 ): Promise<void> {
   try {
     if (input.agentManager.getAgent(archivedRecord.id)) {
       await input.agentManager.closeAgent(archivedRecord.id);
     }
-    await input.agentManager.archiveSnapshot(archivedRecord.id, archivedAt);
+    if (!archivedRecord.archivedAt) throw new Error("Missing original archive timestamp");
+    await input.agentManager.archiveSnapshot(archivedRecord.id, archivedRecord.archivedAt);
   } catch (error) {
     input.logger.error(
       { err: error, agentId: archivedRecord.id },
       "Failed to re-archive provider session after import failure",
     );
+    return;
   }
 
   try {
-    await input.agentStorage.upsert(archivedRecord);
+    await input.agentStorage.restoreArchivedImportPlacement(archivedRecord, imported);
   } catch (error) {
     input.logger.error(
       { err: error, agentId: archivedRecord.id },

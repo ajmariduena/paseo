@@ -3,6 +3,7 @@ import {
   createTestCreationService,
 } from "./test-utils/session-stubs.js";
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -53,6 +54,7 @@ import { WorkspaceAutoName } from "./workspace-auto-name.js";
 import type { ForgeService } from "../services/forge-service.js";
 import { createNoopWorkspaceGitService } from "./test-utils/workspace-git-service-stub.js";
 import { deriveProjectKey } from "./project-key.js";
+import { HandoffOwnership } from "./handoff/ownership.js";
 import {
   asSessionLogger,
   asAgentManager,
@@ -555,6 +557,7 @@ class CreateAgentTestClient implements AgentClient {
 
 function createSessionForWorkspaceTests(
   options: {
+    handoffOwnership?: HandoffOwnership;
     appVersion?: string | null;
     onMessage?: (message: SessionOutboundMessage) => void;
     onWorkspaceRecovered?: SessionOptions["onWorkspaceRecovered"];
@@ -646,6 +649,7 @@ function createSessionForWorkspaceTests(
 
   const session = asTestSession(
     new Session({
+      handoffOwnership: options.handoffOwnership,
       messageReceipts: createMessageReceiptsStub(),
       creationService: createTestCreationService(),
       clientId: "test-client",
@@ -3854,6 +3858,116 @@ test("archiving the last workspace emits a remove carrying the now-empty project
     },
   });
 });
+
+test.each([
+  { outcome: "success", failure: null, accepted: true, projectRemains: false },
+  { outcome: "failure", failure: "project removal failed", accepted: false, projectRemains: true },
+])(
+  "handoff drains project removal through registry writes and releases admission on $outcome",
+  async ({ failure, accepted, projectRemains }) => {
+    const root = mkdtempSync(path.join(tmpdir(), "paseo-handoff-remove-project-"));
+    const cwd = path.join(root, "workspace");
+    mkdirSync(cwd);
+    const logger = createTestLogger();
+    const projects = new FileBackedProjectRegistry(path.join(root, "projects.json"), logger);
+    const workspaces = new FileBackedWorkspaceRegistry(path.join(root, "workspaces.json"), logger);
+    await projects.initialize();
+    await workspaces.initialize();
+    const project = createPersistedProjectRecord({
+      projectId: "handoff-project",
+      rootPath: cwd,
+      kind: "non_git",
+      displayName: "Handoff",
+      createdAt: "2026-10-09T00:00:00.000Z",
+      updatedAt: "2026-10-09T00:00:00.000Z",
+    });
+    const workspace = createPersistedWorkspaceRecord({
+      workspaceId: "handoff-workspace",
+      projectId: project.projectId,
+      cwd,
+      kind: "directory",
+      displayName: "Handoff",
+      createdAt: project.createdAt,
+      updatedAt: project.updatedAt,
+    });
+    await projects.upsert(project);
+    await workspaces.upsert(workspace);
+    const ownership = new HandoffOwnership({
+      directory: path.join(root, "ownership"),
+      sourceServerId: "source-host",
+    });
+    await ownership.initialize();
+    const emitted: SessionOutboundMessage[] = [];
+    const session = createSessionForWorkspaceTests({
+      handoffOwnership: ownership,
+      paseoHome: root,
+      projectRegistry: projects,
+      workspaceRegistry: workspaces,
+      onMessage: (message) => emitted.push(message),
+    });
+    const archiveEntered = deferred<void>();
+    const finishArchive = deferred<void>();
+    const removeEntered = deferred<void>();
+    const finishRemove = deferred<void>();
+    const archive = workspaces.archive.bind(workspaces);
+    workspaces.archive = async (...args) => {
+      archiveEntered.resolve();
+      await finishArchive.promise;
+      return archive(...args);
+    };
+    const remove = projects.remove.bind(projects);
+    projects.remove = async (id) => {
+      removeEntered.resolve();
+      await finishRemove.promise;
+      if (failure) throw new Error(failure);
+      return remove(id);
+    };
+    const removing = session.handleMessage({
+      type: "project.remove.request",
+      projectId: project.projectId,
+      requestId: "handoff-project-remove",
+    });
+    const transferId = randomUUID();
+    try {
+      await archiveEntered.promise;
+      await ownership.prepare({
+        id: transferId,
+        cwd,
+        workspaceId: workspace.workspaceId,
+        agentIds: [],
+        destinationServerId: "destination-host",
+        reservationId: randomUUID(),
+      });
+      await expect(ownership.markReady(transferId, "a".repeat(64))).rejects.toMatchObject({
+        code: "invalid_state",
+      });
+      finishArchive.resolve();
+      await removeEntered.promise;
+      expect((await workspaces.get(workspace.workspaceId))?.archivedAt).toEqual(expect.any(String));
+      expect(await projects.get(project.projectId)).toEqual(project);
+      await expect(ownership.markReady(transferId, "a".repeat(64))).rejects.toMatchObject({
+        code: "invalid_state",
+      });
+      finishRemove.resolve();
+      await removing;
+      expect(findByType(emitted, "project.remove.response")?.payload).toMatchObject({
+        accepted,
+        error: failure,
+      });
+      const diskProjects = new FileBackedProjectRegistry(path.join(root, "projects.json"), logger);
+      await diskProjects.initialize();
+      expect((await diskProjects.get(project.projectId)) !== null).toBe(projectRemains);
+      await ownership.drain(transferId);
+      expect((await ownership.markReady(transferId, "a".repeat(64))).state).toBe("ready");
+    } finally {
+      finishArchive.resolve();
+      finishRemove.resolve();
+      await removing;
+      await session.cleanup();
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
 
 test("project.remove.request archives active workspaces and removes the project record", async () => {
   const emitted: SessionOutboundMessage[] = [];

@@ -28,8 +28,39 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setImmediate as waitForImmediate, setTimeout as delay } from "node:timers/promises";
 import { stripVTControlCharacters } from "node:util";
+import { ControlledTerminalProcess } from "./test-utils/controlled-terminal-process.js";
 
 const hasZsh = existsSync("/bin/zsh");
+
+it("handoff: refuses to confirm terminal shutdown when the PTY has not exited", async () => {
+  const process = new ControlledTerminalProcess();
+  const terminal = await createTerminal(
+    { cwd: realpathSync(tmpdir()), workspaceId: "ws-test" },
+    { spawnPty: () => process },
+  );
+  const exits: unknown[] = [];
+  terminal.onExit((event) => exits.push(event));
+  try {
+    await expect(terminal.killAndWait({ gracefulTimeoutMs: 0, forceTimeoutMs: 0 })).rejects.toThrow(
+      "Terminal process did not exit",
+    );
+    expect(process.signals).toHaveLength(2);
+    expect(terminal.getExitInfo()).toBeNull();
+    expect(exits).toEqual([]);
+    terminal.send({ type: "input", data: "must not run\r" });
+    await waitForImmediate();
+    expect(process.writes).toEqual([]);
+    process.output("shutdown output\r\n");
+    const retry = terminal.killAndWait();
+    expect(terminal.getExitInfo()).toBeNull();
+    process.exit();
+    await expect(retry).resolves.toBeUndefined();
+    expect(exits).toHaveLength(1);
+    expect(terminal.getExitInfo()?.lastOutputLines).toContain("shutdown output");
+  } finally {
+    process.exit();
+  }
+});
 
 type TerminalRow = ReturnType<TerminalSession["getState"]>["grid"][number];
 

@@ -130,6 +130,26 @@ export interface CreateTerminalOptions {
   args?: string[];
 }
 
+export type TerminalProcess = Pick<
+  pty.IPty,
+  "pid" | "write" | "resize" | "kill" | "onData" | "onExit"
+>;
+
+export interface TerminalDependencies {
+  spawnPty: (...args: Parameters<typeof pty.spawn>) => TerminalProcess;
+}
+
+export class TerminalStopTimeoutError extends Error {
+  readonly code = "terminal_stop_timeout";
+  readonly terminalId: string;
+
+  constructor(terminalId: string) {
+    super(`Terminal process did not exit: ${terminalId}`);
+    this.name = "TerminalStopTimeoutError";
+    this.terminalId = terminalId;
+  }
+}
+
 function toTerminalActivity(snapshot: {
   state: TerminalActivityState | null;
   attentionReason?: TerminalActivity["attentionReason"];
@@ -882,7 +902,10 @@ function extractLastOutputLinesFromText(text: string, limit: number): string[] {
   return lines.slice(-limit);
 }
 
-export async function createTerminal(options: CreateTerminalOptions): Promise<TerminalSession> {
+export async function createTerminal(
+  options: CreateTerminalOptions,
+  dependencies: TerminalDependencies = { spawnPty: pty.spawn },
+): Promise<TerminalSession> {
   const {
     cwd,
     workspaceId,
@@ -904,6 +927,7 @@ export async function createTerminal(options: CreateTerminalOptions): Promise<Te
   const commandFinishedListeners = new Set<(info: TerminalCommandFinishedInfo) => void>();
   const titleChangeListeners = new Set<(title?: string) => void>();
   let killed = false;
+  let stopping = false;
   let disposed = false;
   let exitEmitted = false;
   let processExited = false;
@@ -941,7 +965,7 @@ export async function createTerminal(options: CreateTerminalOptions): Promise<Te
   const { command: spawnCommand, args: spawnArgs } = command
     ? await resolveTerminalSpawnCommand(command, args)
     : { command: resolvedShell, args: [] as string[] };
-  const ptyProcess = pty.spawn(spawnCommand, spawnArgs, {
+  const ptyProcess = dependencies.spawnPty(spawnCommand, spawnArgs, {
     name: "xterm-256color",
     cols,
     rows,
@@ -1287,7 +1311,7 @@ export async function createTerminal(options: CreateTerminalOptions): Promise<Te
     }
     const data = pendingInput;
     pendingInput = "";
-    if (!data || killed || disposed) {
+    if (!data || killed || stopping || disposed) {
       return;
     }
     writeInputToPty(data);
@@ -1304,7 +1328,7 @@ export async function createTerminal(options: CreateTerminalOptions): Promise<Te
   }
 
   function send(msg: ClientMessage): void {
-    if (killed) return;
+    if (killed || stopping) return;
 
     switch (msg.type) {
       case "input": {
@@ -1508,6 +1532,8 @@ export async function createTerminal(options: CreateTerminalOptions): Promise<Te
       return;
     }
 
+    // Refuse more input while stopping, but retain exit observation and resources for retries.
+    stopping = true;
     try {
       killPtyProcess();
     } catch {
@@ -1521,7 +1547,9 @@ export async function createTerminal(options: CreateTerminalOptions): Promise<Te
       } catch {
         // process may already be gone
       }
-      await waitForProcessExit(forceTimeoutMs);
+      if (!(await waitForProcessExit(forceTimeoutMs))) {
+        throw new TerminalStopTimeoutError(id);
+      }
     }
 
     // Finalize bookkeeping (idempotent if ptyProcess.onExit already fired).

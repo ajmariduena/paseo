@@ -186,7 +186,7 @@ Codex MultiAgentV2 real tests use local Codex authentication rather than the Ope
 
 ### Test setup
 
-- Server: `packages/server/src/test-utils/vitest-setup.ts` loads `.env.test`, sets `PASEO_SUPERVISED=0`, and disables Git/SSH prompts. Add new global env shims here, not in individual tests.
+- Server: `packages/server/src/test-utils/vitest-setup.ts` loads `.env.test`, sets `PASEO_SUPERVISED=0`, and disables Git/SSH prompts and system Git attributes. Fixtures declare their own attribute rules; Git for Windows ships system rules that otherwise change test behavior. Add new global env shims here, not in individual tests. For server tests launched from the repository root, use `--config packages/server/vitest.config.ts` so this setup runs.
 - App: `packages/app/vitest.setup.ts` provides `expo`/`__DEV__` shims and stubs a few native-only modules (`react-native-unistyles`, `react-native-svg`, `expo-linking`, `@xterm/addon-ligatures`). Stubbing here is for modules that have no meaningful Node behavior — not a license to mock app code.
 
 ## Running tests locally

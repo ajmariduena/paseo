@@ -3,9 +3,17 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { Logger } from "pino";
 import { z } from "zod";
-import { writeJsonFileAtomic } from "../atomic-file.js";
+import { syncFilePublication, writeJsonFileAtomic } from "../atomic-file.js";
 import { execCommand } from "../../utils/spawn.js";
-import type { ProcessTerminator, TreeKillTarget } from "../../utils/tree-kill.js";
+import {
+  ProcessTreeCheckpointSchema,
+  isProcessTreeStopped,
+  readProcessBootId,
+  type ProcessTreeCheckpoint,
+  type ProcessTreeAccess,
+  type ProcessTerminator,
+  type TreeKillTarget,
+} from "../../utils/tree-kill.js";
 
 const MANAGED_PROCESS_GRACEFUL_SHUTDOWN_TIMEOUT_MS = 5_000;
 const MANAGED_PROCESS_FORCE_SHUTDOWN_TIMEOUT_MS = 1_000;
@@ -13,23 +21,51 @@ const MANAGED_PROCESS_EXIT_POLL_INTERVAL_MS = 50;
 const MANAGED_PROCESS_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 // `ps -o lstart` emits a fixed-width 24-char ctime stamp, e.g. "Sat Jun 20 10:30:40 2026".
 const POSIX_LSTART_WIDTH = 24;
+const POSIX_LSTART_PATTERN =
+  /^(Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [ \d]\d \d{2}:\d{2}:\d{2} \d{4}$/;
 
-const ManagedProcessRecordSchema = z.object({
-  id: z.string().min(1),
-  owner: z.object({
-    provider: z.string().min(1),
-    kind: z.string().min(1),
-  }),
-  pid: z.number().int().positive(),
-  command: z.string().min(1),
-  args: z.array(z.string()),
-  metadata: z.record(z.string(), z.unknown()).default({}),
-  identity: z.object({
-    commandLine: z.string().nullable(),
-    startedAt: z.string().nullable(),
-  }),
-  createdAt: z.string().min(1),
+const ManagedRuntimeSchema = z.object({
+  agentId: z.string().min(1),
+  generationId: z.string().uuid(),
 });
+export type ManagedRuntime = z.infer<typeof ManagedRuntimeSchema>;
+export const ManagedProcessIdsSchema = z.array(z.string().uuid()).max(1024);
+export interface ManagedRuntimeStop {
+  runtime: ManagedRuntime;
+  processIds: string[];
+}
+
+const ManagedProcessRecordSchema = z
+  .object({
+    id: z.string().min(1),
+    owner: z.object({
+      provider: z.string().min(1),
+      kind: z.string().min(1),
+    }),
+    pid: z.number().int().positive(),
+    command: z.string().min(1),
+    args: z.array(z.string()),
+    metadata: z.record(z.string(), z.unknown()).default({}),
+    identity: z.object({
+      commandLine: z.string().nullable(),
+      startedAt: z.string().nullable(),
+    }),
+    createdAt: z.string().min(1),
+    runtime: ManagedRuntimeSchema.optional(),
+    tree: z
+      .object({
+        checkpoint: ProcessTreeCheckpointSchema,
+        inspectionPending: z.boolean(),
+        state: z.enum(["gated", "running", "stopping", "stopped"]),
+      })
+      .optional(),
+  })
+  .refine(
+    (record) =>
+      record.tree?.state !== "stopped" ||
+      (record.runtime !== undefined && !record.tree.inspectionPending),
+    "A stop acknowledgement requires a runtime identity and completed inspection",
+  );
 
 const WindowsProcessSnapshotSchema = z.object({
   ProcessId: z.number().int().positive(),
@@ -62,22 +98,18 @@ export interface ManagedProcessOwner {
 }
 
 export interface ManagedProcessRecordInput {
+  runtime?: ManagedRuntime;
   owner: ManagedProcessOwner;
   pid: number;
   command: string;
   args: string[];
   metadata?: Record<string, unknown>;
+  processTree?: ProcessTreeCheckpoint;
+  // Only a trusted bootstrap that cannot spawn work before admitLaunch().
+  launchGated?: boolean;
 }
 
-export interface ManagedProcessRecord extends ManagedProcessRecordInput {
-  id: string;
-  metadata: Record<string, unknown>;
-  identity: {
-    commandLine: string | null;
-    startedAt: string | null;
-  };
-  createdAt: string;
-}
+export type ManagedProcessRecord = z.infer<typeof ManagedProcessRecordSchema>;
 
 export interface ManagedProcessReapResult {
   checked: number;
@@ -90,8 +122,13 @@ export interface ManagedProcessReapResult {
 
 export interface ManagedProcessRegistry {
   record(input: ManagedProcessRecordInput): Promise<ManagedProcessRecord>;
+  admitLaunch(id: string): Promise<void>;
   remove(id: string): Promise<void>;
-  list(): Promise<ManagedProcessRecord[]>;
+  stop(id: string, runtime?: ManagedRuntime): Promise<void>;
+  stopRuntime(input: ManagedRuntimeStop): Promise<void>;
+  list(options?: { includeStopped?: boolean }): Promise<ManagedProcessRecord[]>;
+  /** Only after the owner's closed record, or its successor opening, is durable. */
+  retireStoppedRuntime(runtime: ManagedRuntime): Promise<void>;
   reapStale(): Promise<ManagedProcessReapResult>;
 }
 
@@ -100,6 +137,75 @@ interface ManagedProcessRegistryOptions {
   processTable: ManagedProcessTable;
   terminateProcess: ProcessTerminator;
   logger: Logger;
+  processTree?: ProcessTreeAccess;
+  syncPublication?: typeof syncFilePublication;
+}
+
+export class ManagedProcessPublicationError extends Error {
+  constructor(
+    readonly recordId: string,
+    cause: unknown,
+  ) {
+    super(`Managed process registration is not durable: ${recordId}`, { cause });
+    this.name = "ManagedProcessPublicationError";
+  }
+}
+
+class ManagedProcessRecordMissingError extends Error {
+  constructor(readonly recordId: string) {
+    super(`Managed process record is missing: ${recordId}`);
+    this.name = "ManagedProcessRecordMissingError";
+  }
+}
+
+class ManagedProcessLaunchStateError extends Error {
+  constructor(readonly recordId: string) {
+    super(`Managed process launch cannot be admitted: ${recordId}`);
+    this.name = "ManagedProcessLaunchStateError";
+  }
+}
+
+class ManagedProcessRuntimeMismatchError extends Error {
+  constructor(readonly recordId: string) {
+    super(`Managed process belongs to another runtime: ${recordId}`);
+    this.name = "ManagedProcessRuntimeMismatchError";
+  }
+}
+
+class ManagedProcessTerminationError extends Error {
+  constructor(
+    readonly pid: number,
+    readonly reason: "timeout" | "still_running",
+  ) {
+    const detail =
+      reason === "timeout" ? "termination timed out" : "is still running after termination";
+    super(`Managed helper ${detail}: ${pid}`);
+    this.name = "ManagedProcessTerminationError";
+  }
+}
+
+class ManagedProcessInspectionError extends Error {
+  constructor(readonly pid: number) {
+    super(`Incomplete process inspection for PID ${pid}`);
+    this.name = "ManagedProcessInspectionError";
+  }
+}
+
+interface ManagedProcessEntry {
+  path: string;
+  record: ManagedProcessRecord;
+}
+
+interface ManagedProcessInventory {
+  entries: ManagedProcessEntry[];
+  errors: ManagedProcessReapResult["errors"];
+}
+
+class ManagedProcessInventoryError extends Error {
+  constructor(readonly errors: ManagedProcessReapResult["errors"]) {
+    super(`Managed process inventory is incomplete: ${errors.map((error) => error.id).join(", ")}`);
+    this.name = "ManagedProcessInventoryError";
+  }
 }
 
 export function createManagedProcessRegistry(
@@ -115,7 +221,7 @@ export function createSystemManagedProcessTable(options?: {
   return new SystemManagedProcessTable({
     platform: options?.platform ?? process.platform,
     commandRunner: options?.commandRunner ?? {
-      exec: execCommand,
+      exec: (command, args) => execCommand(command, args, { envOverlay: { LC_ALL: "C" } }),
     },
   });
 }
@@ -156,18 +262,17 @@ class SystemManagedProcessTable implements ManagedProcessTable {
         "command=",
       ]));
     } catch (error) {
-      // `ps -p <pid>` exits non-zero when no process matches the pid; a numeric
-      // exit code means ps ran and found nothing, distinct from ps failing to run.
-      return isCommandExitFailure(error) ? { status: "not-found" } : { status: "error", error };
+      // Only ps's empty no-match response proves absence. Usage, permission,
+      // timeout and partial-output failures must retain the helper's record.
+      return isNoMatchingProcessError(error) ? { status: "not-found" } : { status: "error", error };
     }
 
     const line = stdout.trimEnd();
-    if (!line) {
-      return { status: "not-found" };
-    }
-
     const startedAt = line.slice(0, POSIX_LSTART_WIDTH).trim();
     const commandLine = line.slice(POSIX_LSTART_WIDTH).trim();
+    if (!POSIX_LSTART_PATTERN.test(startedAt) || !commandLine) {
+      throw new ManagedProcessInspectionError(pid);
+    }
     return {
       status: "alive",
       snapshot: {
@@ -211,8 +316,16 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
   private readonly processTable: ManagedProcessTable;
   private readonly terminateProcess: ProcessTerminator;
   private readonly logger: Logger;
+  private readonly paseoHome: string;
+  private readonly processTree?: ProcessTreeAccess;
+  private readonly syncPublication: typeof syncFilePublication;
+  private readonly writes = new Map<string, Promise<void>>();
+  private readonly unpublished = new Map<string, ManagedProcessRecord>();
 
   constructor(options: ManagedProcessRegistryOptions) {
+    this.paseoHome = options.paseoHome;
+    this.processTree = options.processTree;
+    this.syncPublication = options.syncPublication ?? syncFilePublication;
     this.directory = path.join(options.paseoHome, "runtime", "managed-processes");
     this.processTable = options.processTable;
     this.terminateProcess = options.terminateProcess;
@@ -220,8 +333,11 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
   }
 
   async record(input: ManagedProcessRecordInput): Promise<ManagedProcessRecord> {
-    const inspection = await this.processTable.inspect(input.pid);
-    const snapshot = inspection.status === "alive" ? inspection.snapshot : null;
+    if (input.runtime && !input.processTree) throw new ManagedProcessInspectionError(input.pid);
+    if (input.launchGated && input.processTree?.entries.length !== 1)
+      throw new ManagedProcessInspectionError(input.pid);
+    const inspection = input.processTree ? null : await this.processTable.inspect(input.pid);
+    const snapshot = inspection?.status === "alive" ? inspection.snapshot : null;
     const record: ManagedProcessRecord = {
       id: randomUUID(),
       owner: input.owner,
@@ -234,34 +350,224 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
         startedAt: snapshot?.startedAt ?? null,
       },
       createdAt: new Date().toISOString(),
+      runtime: input.runtime,
+      ...(input.processTree
+        ? {
+            tree: {
+              checkpoint: input.processTree,
+              inspectionPending: false,
+              state: input.launchGated ? "gated" : "running",
+            },
+          }
+        : {}),
     };
 
-    await writeJsonFileAtomic(this.recordPath(record.id), record);
-    return record;
+    const validated = ManagedProcessRecordSchema.parse(record);
+    if (
+      validated.tree &&
+      !validated.tree.checkpoint.entries.some((entry) => entry.pid === validated.pid)
+    ) {
+      throw new ManagedProcessInspectionError(validated.pid);
+    }
+    try {
+      await this.publish(validated);
+    } catch (error) {
+      // The caller must retain this identity even when no file reached disk.
+      throw new ManagedProcessPublicationError(validated.id, error);
+    }
+    return validated;
+  }
+
+  async admitLaunch(id: string): Promise<void> {
+    return this.serialize(id, async () => {
+      await this.repairPublication(id);
+      const record = await this.readRecord(id);
+      if (!record) throw new ManagedProcessRecordMissingError(id);
+      if (
+        !record.tree ||
+        record.tree.inspectionPending ||
+        !["gated", "running"].includes(record.tree.state)
+      )
+        throw new ManagedProcessLaunchStateError(id);
+      // A crash after this publication may have dispatched work. Cold recovery
+      // must no longer treat an exited root as an unused bootstrap.
+      await this.publish({ ...record, tree: { ...record.tree, state: "running" } });
+    });
   }
 
   async remove(id: string): Promise<void> {
-    await fs.rm(this.recordPath(id), { force: true });
+    return this.serialize(id, async () => {
+      await this.repairPublication(id);
+      const record = await this.readRecord(id);
+      if (!record) return;
+      await this.confirmProcessExited(record);
+      await this.completeStop(record);
+    });
   }
 
-  async list(): Promise<ManagedProcessRecord[]> {
-    const entries = await this.readEntries();
-    return entries.map((entry) => entry.record);
+  async stop(id: string, runtime?: ManagedRuntime): Promise<void> {
+    const expected = runtime ? ManagedRuntimeSchema.parse(runtime) : undefined;
+    return this.serialize(id, async () => {
+      await this.repairPublication(id);
+      const stored = await this.readRecord(id);
+      if (!stored) throw new ManagedProcessRecordMissingError(id);
+      if (
+        expected &&
+        (stored.runtime?.agentId !== expected.agentId ||
+          stored.runtime.generationId !== expected.generationId)
+      )
+        throw new ManagedProcessRuntimeMismatchError(id);
+      let record = stored;
+      if (!record.tree) throw new ManagedProcessInspectionError(record.pid);
+      if (record.tree.state === "stopped") {
+        // Re-acknowledge publication after restart without inspecting or signalling reused PIDs.
+        await this.publish(record);
+        return;
+      }
+      const bootId = await (this.processTree?.bootId ?? readProcessBootId)();
+      if (record.tree.checkpoint.bootId !== bootId) {
+        await this.completeStop(record);
+        return;
+      }
+      // Before admission no provider can run or create descendants, so a failed
+      // inspection cannot lose a child inventory. The gated marker survives restart.
+      if (record.tree.inspectionPending && record.tree.state !== "gated")
+        throw new ManagedProcessInspectionError(record.pid);
+      const initialTree = record.tree.checkpoint;
+      const result = await this.terminateProcess(createPidTarget(record.pid), {
+        requireTreeProof: true,
+        initialTree,
+        requireLiveRoot: record.tree.state === "running",
+        processTree: this.processTree,
+        gracefulTimeoutMs: MANAGED_PROCESS_GRACEFUL_SHUTDOWN_TIMEOUT_MS,
+        forceTimeoutMs: MANAGED_PROCESS_FORCE_SHUTDOWN_TIMEOUT_MS,
+        beforeTreeInspection: async () => {
+          record = {
+            ...record,
+            tree: { ...record.tree!, inspectionPending: true },
+          };
+          await this.publish(record);
+        },
+        onTreeObserved: async (checkpoint) => {
+          record = { ...record, tree: { checkpoint, inspectionPending: false, state: "stopping" } };
+          await this.publish(record);
+        },
+      });
+      if (result === "kill-timeout")
+        throw new ManagedProcessTerminationError(record.pid, "timeout");
+      await this.confirmProcessExited(record);
+      await this.completeStop(record);
+    });
+  }
+
+  private async completeStop(record: ManagedProcessRecord): Promise<void> {
+    if (record.runtime && record.tree) {
+      await this.publish({
+        ...record,
+        tree: { ...record.tree, inspectionPending: false, state: "stopped" },
+      });
+    } else {
+      await fs.rm(this.recordPath(record.id), { force: true });
+    }
+  }
+
+  async stopRuntime(input: ManagedRuntimeStop): Promise<void> {
+    const runtime = ManagedRuntimeSchema.parse(input.runtime);
+    const ids = ManagedProcessIdsSchema.parse(input.processIds);
+    for (const id of ids) {
+      await this.stop(id, runtime);
+    }
+  }
+
+  async retireStoppedRuntime(runtime: ManagedRuntime): Promise<void> {
+    const records = await this.list({ includeStopped: true });
+    for (const candidate of records) {
+      if (
+        candidate.runtime?.agentId !== runtime.agentId ||
+        candidate.runtime.generationId !== runtime.generationId
+      )
+        continue;
+      await this.serialize(candidate.id, async () => {
+        await this.repairPublication(candidate.id);
+        const record = await this.readRecord(candidate.id);
+        if (record?.tree?.state !== "stopped") return;
+        await fs.rm(this.recordPath(record.id), { force: true });
+      });
+    }
+  }
+
+  private async readRecord(id: string): Promise<ManagedProcessRecord | null> {
+    try {
+      const record = ManagedProcessRecordSchema.parse(
+        JSON.parse(await fs.readFile(this.recordPath(id), "utf8")),
+      );
+      if (record.id !== id) throw new ManagedProcessInspectionError(record.pid);
+      return record;
+    } catch (error) {
+      if (isNodeErrorWithCode(error, "ENOENT")) return null;
+      throw error;
+    }
+  }
+
+  private async repairPublication(id: string): Promise<void> {
+    const candidate = this.unpublished.get(id);
+    if (!candidate) return;
+    // A failed opening marker prevented the OS inspection from starting. Only
+    // this in-memory failed operation proves that no observation was lost.
+    const repaired = candidate.tree?.inspectionPending
+      ? { ...candidate, tree: { ...candidate.tree, inspectionPending: false } }
+      : candidate;
+    await this.publish(repaired);
+  }
+
+  private async publish(record: ManagedProcessRecord): Promise<void> {
+    const filePath = this.recordPath(record.id);
+    this.unpublished.set(record.id, record);
+    await writeJsonFileAtomic(filePath, record);
+    if (record.tree) await this.syncPublication(filePath, this.paseoHome);
+    this.unpublished.delete(record.id);
+  }
+
+  private async serialize(id: string, operation: () => Promise<void>): Promise<void> {
+    const previous = this.writes.get(id) ?? Promise.resolve();
+    const next = previous.catch(() => {}).then(operation);
+    this.writes.set(id, next);
+    try {
+      await next;
+    } finally {
+      if (this.writes.get(id) === next) this.writes.delete(id);
+    }
+  }
+
+  async list(options?: { includeStopped?: boolean }): Promise<ManagedProcessRecord[]> {
+    const { entries, errors } = await this.readEntries();
+    if (errors.length > 0) throw new ManagedProcessInventoryError(errors);
+    return entries
+      .map((entry) => entry.record)
+      .filter((record) => options?.includeStopped || record.tree?.state !== "stopped");
   }
 
   async reapStale(): Promise<ManagedProcessReapResult> {
+    const inventory = await this.readEntries();
     const result: ManagedProcessReapResult = {
       checked: 0,
       dead: 0,
       mismatched: 0,
       removed: 0,
       terminated: 0,
-      errors: [],
+      errors: inventory.errors,
     };
 
-    for (const entry of await this.readEntries()) {
+    for (const entry of inventory.entries) {
+      if (entry.record.tree?.state === "stopped") continue;
       result.checked += 1;
       try {
+        if (entry.record.tree) {
+          await this.stop(entry.record.id);
+          result.terminated += 1;
+          if (!entry.record.runtime) result.removed += 1;
+          continue;
+        }
         const inspection = await this.processTable.inspect(entry.record.pid);
         if (inspection.status === "not-found") {
           await fs.rm(entry.path, { force: true });
@@ -297,7 +603,7 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
           continue;
         }
 
-        await this.terminateProcess(createPidTarget(entry.record.pid), {
+        const termination = await this.terminateProcess(createPidTarget(entry.record.pid), {
           gracefulTimeoutMs: MANAGED_PROCESS_GRACEFUL_SHUTDOWN_TIMEOUT_MS,
           forceTimeoutMs: MANAGED_PROCESS_FORCE_SHUTDOWN_TIMEOUT_MS,
           onForceSignal: () => {
@@ -311,6 +617,10 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
             );
           },
         });
+        if (termination === "kill-timeout") {
+          throw new ManagedProcessTerminationError(entry.record.pid, "timeout");
+        }
+        await this.confirmProcessExited(entry.record);
         await fs.rm(entry.path, { force: true });
         result.terminated += 1;
         result.removed += 1;
@@ -327,6 +637,27 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
     return result;
   }
 
+  private async confirmProcessExited(record: ManagedProcessRecord): Promise<void> {
+    if (record.tree) {
+      if (record.tree.state === "stopped") return;
+      const bootId = await (this.processTree?.bootId ?? readProcessBootId)();
+      if (record.tree.checkpoint.bootId !== bootId) return;
+      if (record.tree.inspectionPending || record.tree.state === "running")
+        throw new ManagedProcessInspectionError(record.pid);
+      if (await isProcessTreeStopped(record.tree.checkpoint, this.processTree)) return;
+      throw new ManagedProcessTerminationError(record.pid, "still_running");
+    }
+    const inspection = await this.processTable.inspect(record.pid);
+    if (inspection.status === "not-found") return;
+    if (inspection.status === "error") throw inspection.error;
+    const previousStart = record.identity.startedAt;
+    const currentStart = inspection.snapshot.startedAt;
+    // A reused PID proves the original helper exited. Changed argv alone does
+    // not: a live helper can exec another program while retaining its identity.
+    if (previousStart && currentStart && previousStart !== currentStart) return;
+    throw new ManagedProcessTerminationError(record.pid, "still_running");
+  }
+
   private recordPath(id: string): string {
     if (!MANAGED_PROCESS_ID_PATTERN.test(id)) {
       throw new Error(`Invalid managed process record id: ${id}`);
@@ -334,18 +665,19 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
     return path.join(this.directory, `${id}.json`);
   }
 
-  private async readEntries(): Promise<Array<{ path: string; record: ManagedProcessRecord }>> {
+  private async readEntries(): Promise<ManagedProcessInventory> {
     let fileNames: string[];
     try {
       fileNames = await fs.readdir(this.directory);
     } catch (error) {
       if (isNodeErrorWithCode(error, "ENOENT")) {
-        return [];
+        return { entries: [], errors: [] };
       }
       throw error;
     }
 
-    const entries: Array<{ path: string; record: ManagedProcessRecord }> = [];
+    const entries: ManagedProcessEntry[] = [];
+    const errors: ManagedProcessReapResult["errors"] = [];
     for (const fileName of fileNames) {
       if (!fileName.endsWith(".json")) {
         continue;
@@ -354,17 +686,23 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
       try {
         const raw = await fs.readFile(filePath, "utf8");
         const parsed = ManagedProcessRecordSchema.parse(JSON.parse(raw));
+        if (fileName !== `${parsed.id}.json`) throw new ManagedProcessInspectionError(parsed.pid);
         entries.push({ path: filePath, record: parsed });
       } catch (error) {
-        // A single corrupt or partially-written record must not abort the whole
-        // reconcile and leave every other leftover un-reaped. Skip it.
+        if (isNodeErrorWithCode(error, "ENOENT")) continue;
+        // Keep reaping valid entries, but never report an incomplete inventory
+        // as an empty one that could certify handoff quiescence.
+        errors.push({
+          id: fileName,
+          message: error instanceof Error ? error.message : String(error),
+        });
         this.logger.warn(
           { err: error, file: fileName },
           "Skipping unreadable managed process record",
         );
       }
     }
-    return entries;
+    return { entries, errors };
   }
 }
 
@@ -375,6 +713,11 @@ function processIdentityMatches(
   if (record.identity.startedAt && snapshot.startedAt) {
     if (record.identity.startedAt !== snapshot.startedAt) {
       return false;
+    }
+    if (record.identity.commandLine && snapshot.commandLine) {
+      // Keep the OS's quoting instead of reconstructing argv. In particular,
+      // Windows quotes executable paths under Program Files.
+      return record.identity.commandLine === snapshot.commandLine;
     }
     return snapshot.commandLine ? commandLineMatchesRecord(record, snapshot.commandLine) : true;
   }
@@ -438,11 +781,19 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
-function isCommandExitFailure(error: unknown): boolean {
-  // execFile rejects with a numeric `code` (the process exit status) when the
-  // command ran and exited non-zero; a string `code` (e.g. "ENOENT") means it
-  // never ran.
-  return typeof (error as { code?: unknown })?.code === "number";
+function isNoMatchingProcessError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === 1 &&
+    "stdout" in error &&
+    typeof error.stdout === "string" &&
+    error.stdout.trim() === "" &&
+    "stderr" in error &&
+    typeof error.stderr === "string" &&
+    error.stderr.trim() === ""
+  );
 }
 
 function isNodeErrorWithCode(error: unknown, code: string): boolean {

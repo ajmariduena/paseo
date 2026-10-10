@@ -21,6 +21,8 @@ import invariant from "tiny-invariant";
 import { shallow, useShallow } from "zustand/shallow";
 import { useStoreWithEqualityFn } from "zustand/traditional";
 import { AgentStreamView, type AgentStreamViewHandle } from "@/agent-stream/view";
+import { ConversationHandoff } from "@/handoff/history";
+import { useSourceHandoffReadOnly } from "@/handoff/state";
 import { ArchivedAgentCallout } from "@/components/archived-agent-callout";
 import { ComposerDock } from "@/composer/dock";
 import { FileDropZone } from "@/components/file-drop/file-drop-zone";
@@ -1183,7 +1185,9 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
     rows: subagentRows,
   });
   const hasPluginComposerPills = useHasPluginComposerPills(serverId, workspaceId, agentId);
-  const hasActiveComposer = !agentState.archivedAt && !isArchivingCurrentAgent;
+  const isHandoffReadOnly = useSourceHandoffReadOnly(serverId, workspaceId);
+  const hasActiveComposer =
+    !agentState.archivedAt && !isArchivingCurrentAgent && !isHandoffReadOnly;
   const hasVisibleAgentTracks = hasAgentTracks({
     subagentRows,
     tasks,
@@ -1267,6 +1271,7 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
           routeBottomAnchorRequest={routeBottomAnchorRequest}
           hasAppliedAuthoritativeHistory={hasAppliedAuthoritativeHistory}
           hasActiveComposer={hasActiveComposer}
+          readOnly={isHandoffReadOnly}
           hasVisibleAgentTracks={hasVisibleAgentTracks}
           toast={toastApi}
           onOpenWorkspaceFile={onOpenWorkspaceFile}
@@ -1291,6 +1296,7 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
 
   const dockContent = (
     <View style={styles.contentContainer}>
+      <ConversationHandoff key={agentId} serverId={serverId} agentId={agentId} />
       {streamContent}
 
       {showHistorySyncError ? (
@@ -1314,7 +1320,7 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
   const dock = (
     <ChatSurface disabled={isArchivingCurrentAgent}>
       {dockContent}
-      {composerSection}
+      {isHandoffReadOnly ? null : composerSection}
       {dockOverlay}
     </ChatSurface>
   );
@@ -1393,6 +1399,7 @@ const AgentStreamSection = memo(function AgentStreamSection({
   routeBottomAnchorRequest,
   hasAppliedAuthoritativeHistory,
   hasActiveComposer,
+  readOnly,
   hasVisibleAgentTracks,
   toast,
   onOpenWorkspaceFile,
@@ -1405,6 +1412,7 @@ const AgentStreamSection = memo(function AgentStreamSection({
   routeBottomAnchorRequest: RouteBottomAnchorRequest;
   hasAppliedAuthoritativeHistory: boolean;
   hasActiveComposer: boolean;
+  readOnly: boolean;
   hasVisibleAgentTracks: boolean;
   toast: ReturnType<typeof useToastHost>["api"];
   onOpenWorkspaceFile?: (request: WorkspaceFileOpenRequest) => void;
@@ -1470,6 +1478,7 @@ const AgentStreamSection = memo(function AgentStreamSection({
       agentId={agent.id}
       serverId={serverId}
       context={agent}
+      readOnly={readOnly}
       streamItems={streamItems}
       pendingPermissions={pendingPermissions}
       routeBottomAnchorRequest={routeBottomAnchorRequest}

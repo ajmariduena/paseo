@@ -1,3 +1,4 @@
+import { getSourceHandoffReadOnly, useSourceHandoffReadOnly } from "@/handoff/state";
 import { useCallback, useEffect, useMemo, useRef, type ReactElement } from "react";
 import type { GestureResponderEvent } from "react-native";
 import { Pressable, Text, View } from "react-native";
@@ -350,6 +351,7 @@ function ExitCodeBadge({ code }: { code: number }): ReactElement {
 }
 
 interface ScriptRowProps {
+  readOnly: boolean;
   script: WorkspaceDescriptor["scripts"][number];
   liveTerminalIdSet: Set<string>;
   activeConnection: ReturnType<typeof useHostRuntimeSnapshot> extends infer R
@@ -387,6 +389,7 @@ function resolveScriptIconColorMapping(args: {
 
 function ScriptRow({
   script,
+  readOnly,
   liveTerminalIdSet,
   activeConnection,
   isStartPending,
@@ -476,7 +479,7 @@ function ScriptRow({
         scriptName: script.scriptName,
       })}
       testID={`workspace-scripts-stop-${script.scriptName}`}
-      disabled={isStopPending}
+      disabled={readOnly || isStopPending}
       icon="stop"
       onPress={handleStop}
       tooltipLabel={t("workspace.scripts.actions.stop")}
@@ -487,7 +490,7 @@ function ScriptRow({
         scriptName: script.scriptName,
       })}
       testID={`workspace-scripts-start-${script.scriptName}`}
-      disabled={isStartPending}
+      disabled={readOnly || isStartPending}
       icon="start"
       onPress={handleRun}
       tooltipLabel={t("workspace.scripts.actions.run")}
@@ -516,7 +519,7 @@ function ScriptRow({
               scriptName: script.scriptName,
             })}
             testID={`workspace-scripts-restart-${script.scriptName}`}
-            disabled={isStopPending}
+            disabled={readOnly || isStopPending}
             icon="restart"
             onPress={handleRestart}
             tooltipLabel={t("workspace.scripts.actions.restart")}
@@ -552,6 +555,7 @@ export function WorkspaceScriptsButton({
 }: WorkspaceScriptsButtonProps): ReactElement | null {
   const { t } = useTranslation();
   const toast = useToast();
+  const isHandoffReadOnly = useSourceHandoffReadOnly(serverId, workspaceId);
   const isTouchDensity = useControlDensity() === "touch";
   const client = useSessionStore((state) => state.sessions[serverId]?.client ?? null);
   const activeConnection = useHostRuntimeSnapshot(serverId)?.activeConnection ?? null;
@@ -569,6 +573,7 @@ export function WorkspaceScriptsButton({
       if (!client) {
         throw new Error(t("common.errors.daemonClientUnavailable"));
       }
+      if (getSourceHandoffReadOnly(serverId, workspaceId)) return null;
       const result = await client.startWorkspaceScript(workspaceId, scriptName);
       if (result.error) {
         throw new Error(result.error);
@@ -586,7 +591,7 @@ export function WorkspaceScriptsButton({
       );
     },
     onSuccess: (result) => {
-      if (result.terminalId) {
+      if (result?.terminalId) {
         onScriptTerminalStarted?.(result.terminalId);
       }
     },
@@ -624,13 +629,17 @@ export function WorkspaceScriptsButton({
   // reports the script as stopped (it tears the runtime entry down on exit).
   useEffect(() => {
     const pending = pendingRestartRef.current;
+    if (isHandoffReadOnly) {
+      pending.clear();
+      return;
+    }
     if (pending.size === 0) return;
     for (const script of scripts) {
       if (!pending.has(script.scriptName) || script.lifecycle === "running") continue;
       pending.delete(script.scriptName);
       startScript(script.scriptName);
     }
-  }, [scripts, startScript]);
+  }, [isHandoffReadOnly, scripts, startScript]);
 
   const triggerStyle = useCallback(
     ({ hovered, pressed, open }: { hovered: boolean; pressed: boolean; open: boolean }) => [
@@ -642,8 +651,10 @@ export function WorkspaceScriptsButton({
   );
 
   const handleStartScript = useCallback(
-    (scriptName: string) => startScriptMutation.mutate(scriptName),
-    [startScriptMutation],
+    (scriptName: string) => {
+      if (!getSourceHandoffReadOnly(serverId, workspaceId)) startScriptMutation.mutate(scriptName);
+    },
+    [startScriptMutation, serverId, workspaceId],
   );
 
   const handleStopScript = useCallback(
@@ -653,10 +664,11 @@ export function WorkspaceScriptsButton({
 
   const handleRestartScript = useCallback(
     (scriptName: string) => {
+      if (getSourceHandoffReadOnly(serverId, workspaceId)) return;
       pendingRestartRef.current.add(scriptName);
       stopScriptMutation.mutate(scriptName);
     },
-    [stopScriptMutation],
+    [stopScriptMutation, serverId, workspaceId],
   );
 
   const handleCopyUrl = useCallback(
@@ -722,6 +734,7 @@ export function WorkspaceScriptsButton({
               <ScriptRow
                 key={script.scriptName}
                 script={script}
+                readOnly={isHandoffReadOnly}
                 liveTerminalIdSet={liveTerminalIdSet}
                 activeConnection={activeConnection}
                 isStartPending={startScriptMutation.isPending}

@@ -31,7 +31,7 @@ export const test = base.extend<{
       await writeFile(
         path.join(plugin.directory, "index.server.ts"),
         `
-import { readFile, rm } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 export default function contribute(server) {
   return server.before("agent.session_open", async ({ request }) => {
     if (request.reason !== "create") return request;
@@ -42,7 +42,7 @@ export default function contribute(server) {
       command = await readFile(gate, "utf8").catch(() => "release");
     }
     if (command === "fail") {
-      await rm(gate, { force: true });
+      // Background naming may also open a session. Fail every opening until release.
       throw new Error("Creation startup failed for test");
     }
     return request;

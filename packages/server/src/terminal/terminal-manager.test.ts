@@ -5,6 +5,8 @@ import type { TerminalWorkspaceContributionChangedEvent } from "./terminal-manag
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { createTerminal } from "./terminal.js";
+import { ControlledTerminalProcess } from "./test-utils/controlled-terminal-process.js";
 
 if (isPlatform("win32") && !process.env.ComSpec && !process.env.COMSPEC) {
   process.env.ComSpec = "C:\\Windows\\System32\\cmd.exe";
@@ -27,6 +29,29 @@ async function waitForCondition(
 
 let manager: TerminalManager;
 const temporaryDirs: string[] = [];
+
+it("handoff: retains a terminal after failed shutdown so a retry can confirm its exit", async () => {
+  const terminalProcess = new ControlledTerminalProcess();
+  manager = createTerminalManager({
+    createTerminal: (options) => createTerminal(options, { spawnPty: () => terminalProcess }),
+  });
+  const cwd = realpathSync(tmpdir());
+  const terminal = await manager.createTerminal({ cwd, workspaceId: "ws-test" });
+  try {
+    await expect(
+      manager.killTerminalAndWait(terminal.id, { gracefulTimeoutMs: 0, forceTimeoutMs: 0 }),
+    ).rejects.toMatchObject({ code: "terminal_stop_timeout", terminalId: terminal.id });
+    expect(manager.getTerminal(terminal.id)).toBe(terminal);
+    expect((await manager.getTerminals(cwd)).map((session) => session.id)).toEqual([terminal.id]);
+    const retry = manager.killTerminalAndWait(terminal.id);
+    expect(manager.getTerminal(terminal.id)).toBe(terminal);
+    terminalProcess.exit();
+    await retry;
+    expect(manager.getTerminal(terminal.id)).toBeUndefined();
+  } finally {
+    terminalProcess.exit();
+  }
+});
 
 afterEach(async () => {
   if (manager) {

@@ -1,5 +1,6 @@
 import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync } from "node:fs";
 
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -25,6 +26,7 @@ import {
   type WorkspaceProvisioningService,
 } from "./workspace-provisioning-service.js";
 import { withWorktreeCleanupReservation } from "../../worktree-use-lock.js";
+import { HandoffOwnership } from "../../handoff/ownership.js";
 
 // Real file-backed registries + a fake git-service port (the only dependency that
 // shells out to git in production). No module mocks — the service is exercised
@@ -125,6 +127,312 @@ beforeEach(async () => {
 
 afterEach(() => {
   rmSync(tmpDir, { recursive: true, force: true });
+});
+
+async function handoffFixture(beforeCheckout?: () => Promise<void>) {
+  const cwd = path.join(tmpDir, "handoff-source");
+  mkdirSync(cwd);
+  const ownership = new HandoffOwnership({
+    directory: path.join(tmpDir, "ownership"),
+    sourceServerId: "source-host",
+  });
+  await ownership.initialize();
+  const scratchRoot = path.join(tmpDir, "scratch");
+  const git = gitService();
+  const service = createWorkspaceProvisioningService({
+    handoffOwnership: ownership,
+    workspaceRegistry,
+    projectRegistry,
+    workspaceGitService: {
+      ...git,
+      getCheckout: async (directory) => {
+        await beforeCheckout?.();
+        return git.getCheckout(directory);
+      },
+    },
+    isDirectory,
+    logger,
+    scratchRoot,
+  });
+  const transfer = {
+    id: randomUUID(),
+    cwd,
+    workspaceId: "wks_0123456789abcdef",
+    agentIds: [],
+    destinationServerId: "destination-host",
+    reservationId: randomUUID(),
+  };
+  return { service, ownership, transfer, scratchRoot, cwd };
+}
+
+test("handoff refuses scratch creation by workspace identity before writing directories or records", async () => {
+  const { service, ownership, transfer, scratchRoot } = await handoffFixture();
+  await ownership.prepare(transfer);
+
+  await expect(
+    service.createScratchWorkspace({ workspaceId: transfer.workspaceId }),
+  ).rejects.toMatchObject({ code: "fenced" });
+  expect(await isDirectory(scratchRoot)).toBe(false);
+  expect(await workspaceRegistry.list()).toEqual([]);
+  expect(await projectRegistry.list()).toEqual([]);
+
+  await ownership.cancel(transfer.id);
+  const workspace = await service.createScratchWorkspace({ workspaceId: transfer.workspaceId });
+  expect(workspace.cwd).toBe(path.join(scratchRoot, transfer.workspaceId));
+  expect(await isDirectory(workspace.cwd)).toBe(true);
+  expect(await workspaceRegistry.get(workspace.workspaceId)).toEqual(workspace);
+});
+
+test.each([
+  {
+    name: "directory",
+    create: (service: WorkspaceProvisioningService, cwd: string) =>
+      service.createWorkspaceForDirectory(cwd),
+  },
+  {
+    name: "project",
+    create: (service: WorkspaceProvisioningService, cwd: string) =>
+      service.findOrCreateProjectForDirectory(cwd),
+  },
+  {
+    name: "adoption",
+    create: (service: WorkspaceProvisioningService, cwd: string) =>
+      service.findOrCreateWorkspaceForDirectory(cwd),
+  },
+  {
+    name: "agent workspace",
+    create: (service: WorkspaceProvisioningService, cwd: string) =>
+      service.resolveOrCreateWorkspaceIdForCreateAgent({
+        cwd,
+        createdWorktree: null,
+        initialTitle: null,
+      }),
+  },
+])("handoff refuses $name provisioning without changing persisted records", async ({ create }) => {
+  const { service, ownership, transfer, cwd } = await handoffFixture();
+  const alias = path.join(tmpDir, "source-alias");
+  symlinkSync(cwd, alias, directorySymlinkType);
+  await ownership.prepare(transfer);
+
+  await expect(create(service, alias)).rejects.toMatchObject({ code: "fenced" });
+  expect(await workspaceRegistry.list()).toEqual([]);
+  expect(await projectRegistry.list()).toEqual([]);
+
+  await ownership.cancel(transfer.id);
+  await create(service, cwd);
+  expect(await projectRegistry.list()).toHaveLength(1);
+});
+
+test("handoff rejects import before starting a provider, with or without an explicit workspace", async () => {
+  const { service, ownership, transfer, cwd } = await handoffFixture();
+  const workspace = await service.createWorkspaceForDirectory(cwd, null, undefined, {
+    workspaceId: transfer.workspaceId,
+  });
+  const projects = await projectRegistry.list();
+  await ownership.prepare(transfer);
+  let imports = 0;
+  const importProvider = async () => {
+    imports++;
+  };
+
+  await expect(service.runInImportWorkspace({ cwd }, importProvider)).rejects.toMatchObject({
+    code: "fenced",
+  });
+  await expect(
+    service.runInImportWorkspace(
+      { cwd, requestedWorkspaceId: workspace.workspaceId },
+      importProvider,
+    ),
+  ).rejects.toMatchObject({ code: "fenced" });
+  expect(imports).toBe(0);
+  expect(await workspaceRegistry.list()).toEqual([workspace]);
+  expect(await projectRegistry.list()).toEqual(projects);
+
+  await ownership.cancel(transfer.id);
+  await service.runInImportWorkspace({ cwd }, importProvider);
+  expect(imports).toBe(1);
+});
+
+function deferred() {
+  let resolve: () => void = () => {};
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+test("handoff drains an admitted import through provider failure and persisted rollback", async () => {
+  const { service, ownership, transfer, cwd } = await handoffFixture();
+  const entered = deferred();
+  const failImport = deferred();
+  const cleanupEntered = deferred();
+  const finishCleanup = deferred();
+  const removeProject = projectRegistry.remove.bind(projectRegistry);
+  projectRegistry.remove = async (id) => {
+    cleanupEntered.resolve();
+    await finishCleanup.promise;
+    return removeProject(id);
+  };
+  const importing = service.runInImportWorkspace({ cwd }, async () => {
+    entered.resolve();
+    await failImport.promise;
+    throw new Error("provider import failed");
+  });
+  const failed = expect(importing).rejects.toThrow("provider import failed");
+  await entered.promise;
+  await ownership.prepare(transfer);
+  try {
+    await expect(ownership.markReady(transfer.id, "a".repeat(64))).rejects.toMatchObject({
+      code: "invalid_state",
+    });
+    failImport.resolve();
+    await cleanupEntered.promise;
+    expect(await workspaceRegistry.list()).toEqual([]);
+    expect(await projectRegistry.list()).toHaveLength(1);
+    await expect(ownership.markReady(transfer.id, "a".repeat(64))).rejects.toMatchObject({
+      code: "invalid_state",
+    });
+  } finally {
+    failImport.resolve();
+    finishCleanup.resolve();
+    await failed;
+  }
+  await ownership.drain(transfer.id);
+  expect((await ownership.markReady(transfer.id, "a".repeat(64))).state).toBe("ready");
+  const diskProjects = new FileBackedProjectRegistry(
+    path.join(tmpDir, "projects", "projects.json"),
+    logger,
+  );
+  const diskWorkspaces = new FileBackedWorkspaceRegistry(
+    path.join(tmpDir, "projects", "workspaces.json"),
+    logger,
+  );
+  await diskProjects.initialize();
+  await diskWorkspaces.initialize();
+  expect(await diskProjects.list()).toEqual([]);
+  expect(await diskWorkspaces.list()).toEqual([]);
+});
+
+test.each(["source", "sibling", "identity"] as const)(
+  "handoff checks the %s before registering a worktree workspace",
+  async (scope) => {
+    const { service, ownership, transfer, cwd: sourceCwd } = await handoffFixture();
+    const worktreeRoot = path.join(tmpDir, "worktree");
+    const cwd = path.join(worktreeRoot, "selected");
+    const sibling = path.join(worktreeRoot, "sibling");
+    const elsewhere = path.join(tmpDir, "elsewhere");
+    for (const dir of [cwd, sibling, elsewhere]) mkdirSync(dir, { recursive: true });
+    const fenceCwd = { source: sourceCwd, sibling, identity: elsewhere }[scope];
+    const workspaceId = scope === "identity" ? transfer.workspaceId : "wks_abcdef0123456789";
+    await ownership.prepare({ ...transfer, cwd: fenceCwd });
+    const input = {
+      sourceCwd,
+      repoRoot: sourceCwd,
+      worktreeRoot,
+      cwd,
+      workspaceId,
+      branch: "handoff-worktree",
+      baseBranch: "main",
+      title: null,
+    };
+
+    await expect(service.createWorkspaceForWorktree(input)).rejects.toMatchObject({
+      code: "fenced",
+    });
+    expect(await workspaceRegistry.list()).toEqual([]);
+    expect(await projectRegistry.list()).toEqual([]);
+    await ownership.cancel(transfer.id);
+    expect(await service.createWorkspaceForWorktree(input)).toMatchObject({
+      workspaceId,
+      cwd,
+      worktreeRoot,
+      branch: input.branch,
+    });
+  },
+);
+
+test("handoff prevents unarchiving a workspace or its parent project by identity", async () => {
+  const { service, ownership, transfer, cwd } = await handoffFixture();
+  const workspace = await service.createWorkspaceForDirectory(cwd, null, undefined, {
+    workspaceId: transfer.workspaceId,
+  });
+  await workspaceRegistry.archive(workspace.workspaceId, ARCHIVED_AT);
+  const project = (await projectRegistry.list())[0]!;
+  await projectRegistry.upsert({ ...project, archivedAt: ARCHIVED_AT });
+  const archived = (await workspaceRegistry.get(workspace.workspaceId))!;
+  const elsewhere = path.join(tmpDir, "elsewhere");
+  mkdirSync(elsewhere);
+  await ownership.prepare({ ...transfer, cwd: elsewhere });
+
+  await expect(service.ensureWorkspaceRecordUnarchived(archived)).rejects.toMatchObject({
+    code: "fenced",
+  });
+  expect(await workspaceRegistry.get(workspace.workspaceId)).toEqual(archived);
+  expect((await projectRegistry.get(project.projectId))?.archivedAt).toBe(ARCHIVED_AT);
+  await ownership.cancel(transfer.id);
+  expect((await service.ensureWorkspaceRecordUnarchived(archived)).archivedAt).toBe(null);
+  expect((await projectRegistry.get(project.projectId))?.archivedAt).toBe(null);
+});
+
+test("handoff blocks scratch parent creation but permits a separate scratch workspace", async () => {
+  const { service, ownership, transfer, scratchRoot } = await handoffFixture();
+  const first = await service.createScratchWorkspace({ workspaceId: transfer.workspaceId });
+  const projects = await projectRegistry.list();
+  await ownership.prepare({ ...transfer, cwd: first.cwd });
+
+  await expect(service.ensureScratchProject()).rejects.toMatchObject({ code: "fenced" });
+  expect(await projectRegistry.list()).toEqual(projects);
+  const second = await service.createScratchWorkspace({ workspaceId: "wks_abcdef0123456789" });
+  expect(second.cwd).toBe(path.join(scratchRoot, second.workspaceId));
+  expect(second.projectId).toBe(first.projectId);
+  expect(await isDirectory(second.cwd)).toBe(true);
+  expect(await workspaceRegistry.get(first.workspaceId)).toEqual(first);
+});
+
+test("handoff drains admitted provisioning through nested project creation and the final registry write", async () => {
+  const readEntered = deferred();
+  const finishRead = deferred();
+  const writeEntered = deferred();
+  const finishWrite = deferred();
+  const { service, ownership, transfer, cwd } = await handoffFixture(async () => {
+    readEntered.resolve();
+    await finishRead.promise;
+  });
+  const upsert = workspaceRegistry.upsert.bind(workspaceRegistry);
+  workspaceRegistry.upsert = async (workspace, context) => {
+    writeEntered.resolve();
+    await finishWrite.promise;
+    return upsert(workspace, context);
+  };
+  const creating = service.createWorkspaceForDirectory(cwd, "Retained title");
+  await readEntered.promise;
+  await ownership.prepare(transfer);
+  try {
+    await expect(ownership.markReady(transfer.id, "a".repeat(64))).rejects.toMatchObject({
+      code: "invalid_state",
+    });
+    finishRead.resolve();
+    await writeEntered.promise;
+    expect(await workspaceRegistry.list()).toEqual([]);
+    expect(await projectRegistry.list()).toHaveLength(1);
+    await expect(ownership.markReady(transfer.id, "a".repeat(64))).rejects.toMatchObject({
+      code: "invalid_state",
+    });
+  } finally {
+    finishRead.resolve();
+    finishWrite.resolve();
+    await creating;
+  }
+  const workspace = await creating;
+  await ownership.drain(transfer.id);
+  expect((await ownership.markReady(transfer.id, "a".repeat(64))).state).toBe("ready");
+  const diskWorkspaces = new FileBackedWorkspaceRegistry(
+    path.join(tmpDir, "projects", "workspaces.json"),
+    logger,
+  );
+  await diskWorkspaces.initialize();
+  expect(await diskWorkspaces.list()).toEqual([workspace]);
+  expect(workspace.title).toBe("Retained title");
 });
 
 test("scratch workspaces get their own directory under one No project parent", async () => {

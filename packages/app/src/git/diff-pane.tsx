@@ -66,6 +66,7 @@ import { useCheckoutGitActionsStore } from "@/git/actions-store";
 import { useToast } from "@/contexts/toast-context";
 import { useSessionStore } from "@/stores/session-store";
 import { confirmDialog } from "@/utils/confirm-dialog";
+import { getSourceHandoffReadOnly, useSourceHandoffReadOnly } from "@/handoff/state";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { Button } from "@/components/ui/button";
 import {
@@ -125,16 +126,19 @@ function computeSelectedDiffStat(
 
 function useDiscardChangesAction({
   serverId,
+  workspaceId,
   cwd,
   diffMode,
 }: {
   serverId: string;
   cwd: string;
   diffMode: "uncommitted" | "base";
+  workspaceId: string | null | undefined;
 }): ((path: string, oldPath?: string) => void) | undefined {
   const { t } = useTranslation();
   const toast = useToast();
   const discardChanges = useCheckoutGitActionsStore((state) => state.discardChanges);
+  const isHandoffReadOnly = useSourceHandoffReadOnly(serverId, workspaceId);
   // COMPAT(checkoutDiscardChanges): added in v0.3.0, remove gate after 2027-02-08.
   const discardSupported = useSessionStore(
     (s) => s.sessions[serverId]?.serverInfo?.features?.checkoutDiscardChanges === true,
@@ -148,7 +152,7 @@ function useDiscardChangesAction({
         cancelLabel: t("workspace.fileActions.confirmRevert.cancel"),
         destructive: true,
       });
-      if (!confirmed) {
+      if (!confirmed || getSourceHandoffReadOnly(serverId, workspaceId)) {
         return;
       }
       try {
@@ -163,7 +167,7 @@ function useDiscardChangesAction({
         );
       }
     },
-    [cwd, discardChanges, serverId, t, toast],
+    [cwd, discardChanges, serverId, workspaceId, t, toast],
   );
   const handleDiscardPath = useCallback(
     (path: string, oldPath?: string) => {
@@ -171,7 +175,9 @@ function useDiscardChangesAction({
     },
     [discardPath],
   );
-  return discardSupported && diffMode === "uncommitted" ? handleDiscardPath : undefined;
+  return discardSupported && !isHandoffReadOnly && diffMode === "uncommitted"
+    ? handleDiscardPath
+    : undefined;
 }
 
 interface ChangesSurfaceProps {
@@ -1664,7 +1670,7 @@ export function ChangesSurface({
     },
     [client, cwd, t, toast],
   );
-  const onRevertPath = useDiscardChangesAction({ serverId, cwd, diffMode });
+  const onRevertPath = useDiscardChangesAction({ serverId, workspaceId, cwd, diffMode });
   const [localFocusRequest, setLocalFocusRequest] = useState<{
     path: string;
     revision: number;
@@ -1759,6 +1765,7 @@ export function ChangesSurface({
   );
   const { gitActions, branchLabel } = useGitActions({
     serverId,
+    workspaceId,
     cwd,
     icons: GIT_ACTION_ICONS,
   });

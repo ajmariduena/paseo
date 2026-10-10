@@ -1,0 +1,468 @@
+Cancellation discovery and cleanup recovery — 2026-10-09
+
+Baseline: 2944fda36 (editor recovery before handoff).
+
+Coverage: Linux, real filesystem and isolated two-daemon RPCs. The focused browser
+cases use Chromium, browser storage and real isolated daemons. No provider turn;
+no main daemon restart. This does not exercise the physical MacBook/VPS pair,
+Electron, iOS, Android, macOS, Windows or released-version drift.
+
+The source exposes a durable cancellation proof even if preparation never ran.
+The destination persists that proof before cleanup and records completion only
+after cleanup is durable. Pending cleanup stays discoverable and mutation-fenced;
+a retry can reuse the proof with the source offline. Completed retries do not
+remove files later created at the old staging path. Native cleanup retries also
+preserve unrelated provider files. Failure injection covers loss of the cleanup
+completion journal acknowledgement before and after its durable write.
+
+The initial browser run passed pre-preparation recovery and failed staged recovery:
+after source shutdown and reload, the workspace menu hid the saved handoff. The
+passing staged rerun below uses the fixed menu and completes destination cleanup.
+
+Fresh discovery without local state still requires both hosts online. Offline
+browser recovery is exercised after the selected cancellation intent is persisted.
+Transfer archives are retained; quotas and archive garbage collection remain open.
+
+RED — interrupted cleanup disappears from destination discovery
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/handoff/ownership.posix.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: 🛡️ auth for agents: https://vestauth.com
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: 🔐 prevent committing .env to code: https://dotenvx.com/precommit
+
+ ❯ src/server/handoff/ownership.posix.test.ts (38 tests | 1 failed | 37 skipped) 23ms
+   × discovers interrupted cancellation cleanup after restart and retries without contacting the source 21ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/handoff/ownership.posix.test.ts > discovers interrupted cancellation cleanup after restart and retries without contacting the source
+AssertionError: expected [] to include '1beb07b4-f39c-4e41-9a2f-960383eccb30'
+ ❯ src/server/handoff/ownership.posix.test.ts:874:78
+    872|   await expect(destination.cancel(transferId, proof)).rejects.toMatchO…
+    873|   const query = {sourceServerId, sourceWorkspaceId: "source-workspace"…
+    874|   expect(destination.list(query).transfers.map((entry) => entry.transf…
+       |                                                                              ^
+    875|   expect(destination.status(transferId)).toMatchObject({state: "cancel…
+    876|   const recovered = new HandoffDestination(options);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 37 skipped (38)
+   Start at  20:53:31
+   Duration  1.70s (transform 990ms, setup 48ms, import 1.49s, tests 23ms, environment 0ms)
+
+
+
+RED — pending cleanup permits destination mutations
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/handoff/ownership.posix.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  suppress all logs with { quiet: true }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: 🔐 encrypt with Dotenvx: https://dotenvx.com
+
+ ❯ src/server/handoff/ownership.posix.test.ts (40 tests | 1 failed | 39 skipped) 26ms
+   × discovers interrupted cancellation cleanup after restart and retries without contacting the source 25ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/handoff/ownership.posix.test.ts > discovers interrupted cancellation cleanup after restart and retries without contacting the source
+AssertionError: expected [Function] to throw an error
+ ❯ src/server/handoff/ownership.posix.test.ts:915:81
+    913|     cleanupComplete: false,
+    914|   });
+    915|   expect(() => destination.assertMutationAllowed({ cwd: reserved.stagi…
+       |                                                                                 ^
+    916|   const recovered = new HandoffDestination(options);
+    917|   await recovered.initialize();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 39 skipped (40)
+   Start at  21:03:39
+   Duration  1.70s (transform 961ms, setup 39ms, import 1.50s, tests 26ms, environment 0ms)
+
+
+
+PASS — npx vitest run src/server/handoff/ownership.posix.test.ts --bail=1 (cwd packages/server)
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  40 passed (40)
+   Start at  21:03:52
+   Duration  4.73s (transform 1.14s, setup 49ms, import 1.77s, tests 2.79s, environment 0ms)
+
+
+
+PASS — npx vitest run src/handoff/form-model.test.ts --bail=1 (cwd packages/app)
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+
+
+ Test Files  1 passed (1)
+      Tests  18 passed (18)
+   Start at  20:57:55
+   Duration  823ms (transform 400ms, setup 151ms, import 410ms, tests 58ms, environment 0ms)
+
+
+
+PASS — npx vitest run src/messages.wire-compat.test.ts tests/validation/ws-outbound.test.ts --bail=1 (cwd packages/protocol)
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/protocol
+
+
+ Test Files  2 passed (2)
+      Tests  63 passed (63)
+   Start at  20:57:55
+   Duration  7.22s (transform 6.75s, setup 0ms, import 8.06s, tests 631ms, environment 1ms)
+
+
+
+PASS — npx vitest run src/server/handoff/archive.e2e.test.ts -t 'cancels a .* handoff after|discovers destination-only reservations' --bail=1 (cwd packages/server)
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  3 passed | 15 skipped (18)
+   Start at  20:58:34
+   Duration  20.55s (transform 13.38s, setup 38ms, import 16.33s, tests 4.07s, environment 0ms)
+
+
+
+PASS — npm run build:server
+
+> paseo@0.11.1 build:server
+> npm run build:server-deps && npm run build --workspace=@getpaseo/server && npm run build --workspace=@getpaseo/cli
+
+
+> paseo@0.11.1 build:server-deps
+> npm run build:client && concurrently --kill-others-on-fail --names highlight,plugin,relay --prefix-colors yellow,green,blue "npm run build:highlight" "npm run build:plugin" "npm run build:relay"
+
+
+> paseo@0.11.1 build:client
+> npm run build --workspace=@getpaseo/client
+
+
+> @getpaseo/client@0.11.1 build
+> npm run build --workspace=@getpaseo/protocol && npm run build --workspace=@getpaseo/relay && tsc -p tsconfig.json --incremental false
+
+
+> @getpaseo/protocol@0.11.1 prebuild
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 build
+> tsc -p tsconfig.json --incremental false
+
+
+> @getpaseo/relay@0.11.1 build
+> tsc -p tsconfig.json --incremental false
+
+[relay] npm run build:relay exited with code 0
+[highlight] npm run build:highlight exited with code 0
+[plugin] npm run build:plugin exited with code 0
+
+> @getpaseo/server@0.11.1 build
+> npm run build:lib && npm run build:scripts
+
+
+> @getpaseo/server@0.11.1 build:lib
+> tsc -p tsconfig.server.json --incremental false && node scripts/build-opencode-bridge-plugin.mjs && node -e "const fs=require('node:fs'); fs.mkdirSync('dist/server/server/speech/providers/local/sherpa/assets',{recursive:true}); fs.copyFileSync('src/server/speech/providers/local/sherpa/assets/silero_vad.onnx','dist/server/server/speech/providers/local/sherpa/assets/silero_vad.onnx'); fs.cpSync('src/terminal/shell-integration','dist/server/terminal/shell-integration',{recursive:true}); fs.cpSync('src/terminal/shell-integration','dist/src/terminal/shell-integration',{recursive:true}); fs.copyFileSync('src/terminal/terminal-ts-loader.mjs','dist/server/terminal/terminal-ts-loader.mjs'); fs.rmSync('dist/server/skills',{recursive:true,force:true}); fs.cpSync('../../skills','dist/server/skills',{recursive:true}); fs.rmSync('dist/server/builtin-plugins',{recursive:true,force:true}); fs.cpSync('../../plugins','dist/server/builtin-plugins',{recursive:true,filter:(source)=>!source.split(require('node:path').sep).some((segment)=>segment==='node_modules'||segment==='test')&&!/\.(test|spec)\.[cm]?[jt]sx?$/.test(source)&&!source.endsWith('.tsbuildinfo')});"
+
+
+> @getpaseo/server@0.11.1 build:scripts
+> tsc -p tsconfig.scripts.json --incremental false && node -e "const fs=require('node:fs'); fs.mkdirSync('dist/scripts',{recursive:true}); fs.copyFileSync('scripts/mcp-stdio-socket-bridge-cli.mjs','dist/scripts/mcp-stdio-socket-bridge-cli.mjs');"
+
+
+> @getpaseo/cli@0.11.1 build
+> tsc -p tsconfig.json --incremental false
+
+
+
+REGRESSION — reserved cancellation passes; staged cancellation loses its recovery menu on offline reload
+
+> @getpaseo/app@0.11.0-beta.36 test:e2e
+> playwright test --project=browser e2e/browser/workspace-handoff.spec.ts --grep cancellation without local state
+
+[metro] Starting project at /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+[metro] Using src/app as the root directory for Expo Router.
+[metro] Experimental Expo Autolinking module resolver is enabled.
+[metro] React Compiler enabled
+[metro] Starting Metro Bundler
+[metro] Waiting on http://localhost:37597
+[metro] Logs for your project will appear below.
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web packages/app/index.ts ▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░ 88.9% (4765/5055)
+[metro] Web Bundled 5642ms packages/app/index.ts (5631 modules)
+[e2e] Metro warmed on port 37597
+
+Running 2 tests using 1 worker
+
+(node:506235) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:506235) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[e2e] Worker 0 daemon started on port 44303, home: /tmp/paseo-e2e-worker-0-JG3eq9
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 354ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 143ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (86 modules)
+[metro] Web Bundled 326ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 20ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 306ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 9ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 249ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 19ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 224ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 18ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+  ✓  1 [browser] › e2e/browser/workspace-handoff.spec.ts:34:9 › workspace handoff › recovers reserved cancellation without local state and finishes interrupted cleanup (34.8s)
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 300ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 21ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 280ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 6ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 309ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 10ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 253ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 6ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 263ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 10ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 224ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 5ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[e2e] Worker 0 daemon stopped
+  ✘  2 [browser] › e2e/browser/workspace-handoff.spec.ts:34:9 › workspace handoff › recovers staged cancellation without local state and finishes interrupted cleanup (2.0m)
+[e2e] Metro stopped
+
+
+  1) [browser] › e2e/browser/workspace-handoff.spec.ts:34:9 › workspace handoff › recovers staged cancellation without local state and finishes interrupted cleanup 
+
+    [31mTest timeout of 120000ms exceeded.[39m
+
+    Error: locator.click: Test timeout of 120000ms exceeded.
+    Call log:
+    [2m  - waiting for getByTestId('workspace-header-handoff')[22m
+
+
+       at ../support/helpers/workspace-handoff.ts:15
+
+      13 | export async function openHandoff(page: Page) {
+      14 |   await page.getByTestId("workspace-header-menu-trigger").click();
+    > 15 |   await page.getByTestId("workspace-header-handoff").click();
+         |                                                      ^
+      16 |   await expect(page.getByTestId("handoff-sheet")).toBeVisible();
+      17 | }
+      18 |
+        at openHandoff (/home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app/e2e/support/helpers/workspace-handoff.ts:15:54)
+        at /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app/e2e/browser/workspace-handoff.spec.ts:149:11
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    test-results/workspace-handoff-workspac-ac5b7-inishes-interrupted-cleanup-browser/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #2: browser-console (text/plain) ────────────────────────────────────────────────────
+    [console:info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+    [console:log] Running application "main" with appParams:
+     {rootTag: #root, hydrate: undefined} 
+    Development-level warnings: ON.
+    Performance optimizations: OFF.
+    [co...
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #3: video (video/webm) ──────────────────────────────────────────────────────────────
+    test-results/workspace-handoff-workspac-ac5b7-inishes-interrupted-cleanup-browser/video.webm
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: test-results/workspace-handoff-workspac-ac5b7-inishes-interrupted-cleanup-browser/error-context.md
+
+    attachment #5: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results/workspace-handoff-workspac-ac5b7-inishes-interrupted-cleanup-browser/trace.zip
+    Usage:
+
+        npx playwright show-trace test-results/workspace-handoff-workspac-ac5b7-inishes-interrupted-cleanup-browser/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  1 failed
+    [browser] › e2e/browser/workspace-handoff.spec.ts:34:9 › workspace handoff › recovers staged cancellation without local state and finishes interrupted cleanup 
+  1 passed (3.2m)
+npm error Lifecycle script `test:e2e` failed with error:
+npm error code 1
+npm error path /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+npm error workspace @getpaseo/app@0.11.0-beta.36
+npm error location /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+npm error command failed
+npm error command sh -c playwright test --project=browser e2e/browser/workspace-handoff.spec.ts --grep 'cancellation without local state'
+
+
+PASS — npm run test:e2e --workspace=@getpaseo/app -- e2e/browser/workspace-handoff.spec.ts --grep 'recovers staged cancellation'
+
+> @getpaseo/app@0.11.0-beta.36 test:e2e
+> playwright test --project=browser e2e/browser/workspace-handoff.spec.ts --grep recovers staged cancellation
+
+[metro] Starting project at /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+[metro] Using src/app as the root directory for Expo Router.
+[metro] Experimental Expo Autolinking module resolver is enabled.
+[metro] React Compiler enabled
+[metro] Starting Metro Bundler
+[metro] Waiting on http://localhost:41119
+[metro] Logs for your project will appear below.
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] | (node:508447) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[metro] | (Use `node --trace-warnings ...` to show where the warning was created)
+[metro] Web packages/app/index.ts ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.9% (5630/5630)
+[metro] Web Bundled 4181ms packages/app/index.ts (5631 modules)
+[e2e] Metro warmed on port 41119
+
+Running 1 test using 1 worker
+
+(node:508581) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:508581) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[e2e] Worker 0 daemon started on port 40525, home: /tmp/paseo-e2e-worker-0-hQM0JY
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 361ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 178ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (86 modules)
+[metro] Web Bundled 308ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 15ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 341ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 17ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 510ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 15ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 328ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 25ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 591ms packages/app/index.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 15ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+  ✓  1 [browser] › e2e/browser/workspace-handoff.spec.ts:34:9 › workspace handoff › recovers staged cancellation without local state and finishes interrupted cleanup (1.2m)
+[e2e] Worker 0 daemon stopped
+[e2e] Metro stopped
+
+  1 passed (1.7m)
+
+
+PASS — npm run typecheck
+
+> paseo@0.11.1 typecheck
+> npm run typecheck --workspaces --if-present
+
+
+> @getpaseo/builtin-plugins@0.11.1 typecheck
+> tsgo -p tsconfig.json --noEmit
+
+
+> @getpaseo/expo-two-way-audio@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/highlight@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/plugin@0.11.1 typecheck
+> tsgo --noEmit && tsgo -p tsconfig.examples.json --noEmit
+
+
+> @getpaseo/protocol@0.11.1 pretypecheck
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/client@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/server@0.11.1 typecheck
+> tsgo -p tsconfig.server.typecheck.json --noEmit
+
+
+> @getpaseo/app@0.11.0-beta.36 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/relay@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/website@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/desktop@0.11.1 typecheck
+> tsgo --noEmit -p tsconfig.json
+
+
+> @getpaseo/cli@0.11.1 typecheck
+> tsgo --noEmit
+
+
+
+PASS — npm run lint
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 4.2s on 5027 files with 177 rules using 4 threads.
+
+
+PASS — npm run format
+
+> paseo@0.11.1 format
+> oxfmt .
+
+Finished in 3894ms on 5372 files using 4 threads.

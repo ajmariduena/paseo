@@ -1,3 +1,4 @@
+import { getSourceHandoffReadOnly, useSourceHandoffReadOnly } from "@/handoff/state";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -126,10 +127,11 @@ function BlockedSetupNotice({
   const { t } = useTranslation();
   const client = useHostRuntimeClient(serverId);
   const supportsSetupRun = useHostFeature(serverId, "workspaceSetupRun");
+  const readOnly = useSourceHandoffReadOnly(serverId, workspaceId);
   const [runError, setRunError] = useState<string | null>(null);
   const [isRunningSetup, setIsRunningSetup] = useState(false);
   const runSetup = useCallback(async () => {
-    if (!client) return;
+    if (!client || getSourceHandoffReadOnly(serverId, workspaceId)) return;
     setRunError(null);
     setIsRunningSetup(true);
     try {
@@ -140,7 +142,7 @@ function BlockedSetupNotice({
     } finally {
       setIsRunningSetup(false);
     }
-  }, [client, t, workspaceId]);
+  }, [client, serverId, t, workspaceId]);
 
   return (
     <>
@@ -154,7 +156,13 @@ function BlockedSetupNotice({
         testID="workspace-setup-blocked"
       >
         {supportsSetupRun ? (
-          <Button accessibilityRole="button" onPress={runSetup} loading={isRunningSetup} size="sm">
+          <Button
+            accessibilityRole="button"
+            onPress={runSetup}
+            disabled={readOnly}
+            loading={isRunningSetup}
+            size="sm"
+          >
             {t("workspace.setup.blocked.run")}
           </Button>
         ) : null}

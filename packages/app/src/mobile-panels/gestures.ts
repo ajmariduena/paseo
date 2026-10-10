@@ -50,84 +50,84 @@ export function useOpenAgentListGesture(enabled: boolean) {
   const showMobileAgentList = usePanelStore((state) => state.showMobileAgentList);
   const commit = useRevisionCommit(showMobileAgentList);
 
-  return useMemo(
-    () =>
-      Gesture.Pan()
-        .withRef(leftOpenGestureRef)
-        .enabled(enabled)
-        .manualActivation(true)
-        .onTouchesDown((event) => {
-          const touch = event.changedTouches[0];
-          if (touch) {
-            touchStartX.value = touch.absoluteX;
-            touchStartY.value = touch.absoluteY;
-          }
-        })
-        .onTouchesMove((event, stateManager) => {
-          const touch = event.changedTouches[0];
-          if (!touch || event.numberOfTouches !== 1) {
-            stateManager.fail();
-            return;
-          }
-          const deltaX = touch.absoluteX - touchStartX.value;
-          const deltaY = touch.absoluteY - touchStartY.value;
-          if (isMobilePanelGestureCurrent(motionState.value, startedRevision.value)) {
-            return;
-          }
+  return useMemo(() => {
+    // Disabled web handlers still capture pointers; keep the host but attach no handlers.
+    if (isWeb && !enabled) return Gesture.Simultaneous();
+    return Gesture.Pan()
+      .withRef(leftOpenGestureRef)
+      .enabled(enabled)
+      .manualActivation(true)
+      .onTouchesDown((event) => {
+        const touch = event.changedTouches[0];
+        if (touch) {
+          touchStartX.value = touch.absoluteX;
+          touchStartY.value = touch.absoluteY;
+        }
+      })
+      .onTouchesMove((event, stateManager) => {
+        const touch = event.changedTouches[0];
+        if (!touch || event.numberOfTouches !== 1) {
+          stateManager.fail();
+          return;
+        }
+        const deltaX = touch.absoluteX - touchStartX.value;
+        const deltaY = touch.absoluteY - touchStartY.value;
+        if (isMobilePanelGestureCurrent(motionState.value, startedRevision.value)) {
+          return;
+        }
 
-          const panIntent = resolveMobilePanelGestureIntent({
-            deltaX,
-            deltaY,
-            direction: 1,
-            openGesturesBlocked: openGesturesBlocked.value,
-          });
-          if (
-            !canBeginMobilePanelGesture(motionState.value, "agent", position.value) ||
-            horizontalScroll?.isAnyScrolledRight.value ||
-            (isWeb && touchStartX.value > MOBILE_WEB_EDGE_SWIPE_WIDTH) ||
-            panIntent === "fail"
-          ) {
-            stateManager.fail();
-            return;
-          }
-          if (panIntent === "activate") {
-            stateManager.activate();
-          }
-        })
-        .onStart(() => {
-          startedRevision.value = beginGesture({ origin: "agent" });
-        })
-        .onUpdate((event) => {
-          updateGesture(startedRevision.value, -event.translationX / windowWidth);
-        })
-        .onEnd((event, success) => {
-          const shouldOpen = event.translationX > windowWidth / 3 || event.velocityX > 500;
-          const result = finishGesture({
-            startedRevision: startedRevision.value,
-            target: shouldOpen ? "agent-list" : "agent",
-            success,
-          });
-          if (result) {
-            scheduleOnRN(commit, result.startedRevision);
-          }
-        }),
-    [
-      commit,
-      enabled,
-      beginGesture,
-      finishGesture,
-      horizontalScroll?.isAnyScrolledRight,
-      leftOpenGestureRef,
-      motionState,
-      openGesturesBlocked,
-      position,
-      startedRevision,
-      touchStartX,
-      touchStartY,
-      updateGesture,
-      windowWidth,
-    ],
-  );
+        const panIntent = resolveMobilePanelGestureIntent({
+          deltaX,
+          deltaY,
+          direction: 1,
+          openGesturesBlocked: openGesturesBlocked.value,
+        });
+        if (
+          !canBeginMobilePanelGesture(motionState.value, "agent", position.value) ||
+          horizontalScroll?.isAnyScrolledRight.value ||
+          (isWeb && touchStartX.value > MOBILE_WEB_EDGE_SWIPE_WIDTH) ||
+          panIntent === "fail"
+        ) {
+          stateManager.fail();
+          return;
+        }
+        if (panIntent === "activate") {
+          stateManager.activate();
+        }
+      })
+      .onStart(() => {
+        startedRevision.value = beginGesture({ origin: "agent" });
+      })
+      .onUpdate((event) => {
+        updateGesture(startedRevision.value, -event.translationX / windowWidth);
+      })
+      .onEnd((event, success) => {
+        const shouldOpen = event.translationX > windowWidth / 3 || event.velocityX > 500;
+        const result = finishGesture({
+          startedRevision: startedRevision.value,
+          target: shouldOpen ? "agent-list" : "agent",
+          success,
+        });
+        if (result) {
+          scheduleOnRN(commit, result.startedRevision);
+        }
+      });
+  }, [
+    commit,
+    enabled,
+    beginGesture,
+    finishGesture,
+    horizontalScroll?.isAnyScrolledRight,
+    leftOpenGestureRef,
+    motionState,
+    openGesturesBlocked,
+    position,
+    startedRevision,
+    touchStartX,
+    touchStartY,
+    updateGesture,
+    windowWidth,
+  ]);
 }
 
 export function useCloseAgentListGesture() {
@@ -242,86 +242,86 @@ export function useOpenFileExplorerGesture({ enabled, onOpen }: OpenFileExplorer
   const { startedRevision, touchStartX, touchStartY } = useGestureState();
   const commit = useRevisionCommit(onOpen);
 
-  return useMemo(
-    () =>
-      Gesture.Pan()
-        .withRef(rightOpenGestureRef)
-        .simultaneousWithExternalGesture(leftOpenGestureRef)
-        .enabled(enabled)
-        .manualActivation(true)
-        .onTouchesDown((event) => {
-          const touch = event.changedTouches[0];
-          if (touch) {
-            touchStartX.value = touch.absoluteX;
-            touchStartY.value = touch.absoluteY;
-          }
-        })
-        .onTouchesMove((event, stateManager) => {
-          const touch = event.changedTouches[0];
-          if (!touch || event.numberOfTouches !== 1) {
-            stateManager.fail();
-            return;
-          }
-          const deltaX = touch.absoluteX - touchStartX.value;
-          const deltaY = touch.absoluteY - touchStartY.value;
-          if (isMobilePanelGestureCurrent(motionState.value, startedRevision.value)) {
-            return;
-          }
+  return useMemo(() => {
+    // Disabled web handlers still capture pointers; keep the host but attach no handlers.
+    if (isWeb && !enabled) return Gesture.Simultaneous();
+    return Gesture.Pan()
+      .withRef(rightOpenGestureRef)
+      .simultaneousWithExternalGesture(leftOpenGestureRef)
+      .enabled(enabled)
+      .manualActivation(true)
+      .onTouchesDown((event) => {
+        const touch = event.changedTouches[0];
+        if (touch) {
+          touchStartX.value = touch.absoluteX;
+          touchStartY.value = touch.absoluteY;
+        }
+      })
+      .onTouchesMove((event, stateManager) => {
+        const touch = event.changedTouches[0];
+        if (!touch || event.numberOfTouches !== 1) {
+          stateManager.fail();
+          return;
+        }
+        const deltaX = touch.absoluteX - touchStartX.value;
+        const deltaY = touch.absoluteY - touchStartY.value;
+        if (isMobilePanelGestureCurrent(motionState.value, startedRevision.value)) {
+          return;
+        }
 
-          const panIntent = resolveMobilePanelGestureIntent({
-            deltaX,
-            deltaY,
-            direction: -1,
-            openGesturesBlocked: openGesturesBlocked.value,
-          });
-          if (
-            !canBeginMobilePanelGesture(motionState.value, "agent", position.value) ||
-            (isWeb && touchStartX.value < windowWidth - MOBILE_WEB_EDGE_SWIPE_WIDTH) ||
-            panIntent === "fail"
-          ) {
-            stateManager.fail();
-            return;
-          }
-          if (panIntent === "activate") {
-            stateManager.activate();
-          }
-        })
-        .onStart(() => {
-          startedRevision.value = beginGesture({
-            origin: "agent",
-          });
-        })
-        .onUpdate((event) => {
-          updateGesture(startedRevision.value, -event.translationX / windowWidth);
-        })
-        .onEnd((event, success) => {
-          const shouldOpen = event.translationX < -windowWidth / 3 || event.velocityX < -500;
-          const result = finishGesture({
-            startedRevision: startedRevision.value,
-            target: shouldOpen ? "file-explorer" : "agent",
-            success,
-          });
-          if (result) {
-            scheduleOnRN(commit, result.startedRevision);
-          }
-        }),
-    [
-      beginGesture,
-      commit,
-      enabled,
-      finishGesture,
-      leftOpenGestureRef,
-      motionState,
-      openGesturesBlocked,
-      position,
-      rightOpenGestureRef,
-      startedRevision,
-      touchStartX,
-      touchStartY,
-      updateGesture,
-      windowWidth,
-    ],
-  );
+        const panIntent = resolveMobilePanelGestureIntent({
+          deltaX,
+          deltaY,
+          direction: -1,
+          openGesturesBlocked: openGesturesBlocked.value,
+        });
+        if (
+          !canBeginMobilePanelGesture(motionState.value, "agent", position.value) ||
+          (isWeb && touchStartX.value < windowWidth - MOBILE_WEB_EDGE_SWIPE_WIDTH) ||
+          panIntent === "fail"
+        ) {
+          stateManager.fail();
+          return;
+        }
+        if (panIntent === "activate") {
+          stateManager.activate();
+        }
+      })
+      .onStart(() => {
+        startedRevision.value = beginGesture({
+          origin: "agent",
+        });
+      })
+      .onUpdate((event) => {
+        updateGesture(startedRevision.value, -event.translationX / windowWidth);
+      })
+      .onEnd((event, success) => {
+        const shouldOpen = event.translationX < -windowWidth / 3 || event.velocityX < -500;
+        const result = finishGesture({
+          startedRevision: startedRevision.value,
+          target: shouldOpen ? "file-explorer" : "agent",
+          success,
+        });
+        if (result) {
+          scheduleOnRN(commit, result.startedRevision);
+        }
+      });
+  }, [
+    beginGesture,
+    commit,
+    enabled,
+    finishGesture,
+    leftOpenGestureRef,
+    motionState,
+    openGesturesBlocked,
+    position,
+    rightOpenGestureRef,
+    startedRevision,
+    touchStartX,
+    touchStartY,
+    updateGesture,
+    windowWidth,
+  ]);
 }
 
 export function useCloseFileExplorerGesture() {

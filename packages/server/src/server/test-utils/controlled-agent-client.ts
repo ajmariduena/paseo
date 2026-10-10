@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pino, { type Logger } from "pino";
 
-import { AgentManager } from "../agent/agent-manager.js";
+import { AgentManager, type AgentManagerOptions } from "../agent/agent-manager.js";
 import { startAgentRun } from "../agent/agent-prompt.js";
 import { AgentStorage } from "../agent/agent-storage.js";
 import { createTestLogger } from "../../test-utils/test-logger.js";
@@ -288,13 +288,19 @@ export interface ControlledAgentInput {
  * A real AgentManager and AgentStorage on a temp directory. Steerable agents run on the
  * `codex` provider, non-steerable ones on `claude`.
  */
-export function createControlledHost(): ControlledHost {
+export function createControlledHost(
+  options: Pick<
+    AgentManagerOptions,
+    "handoffOwnership" | "messageQueueStore" | "beforeRetainedContinuation"
+  > = {},
+): ControlledHost {
   const root = mkdtempSync(join(tmpdir(), "paseo-controlled-host-"));
   const logger = createTestLogger();
   const steerableClient = new ControlledAgentClient("codex", { steerable: true });
   const plainClient = new ControlledAgentClient("claude", { steerable: false });
   const agentStorage = new AgentStorage(join(root, "agents"), logger);
   const agentManager = new AgentManager({
+    ...options,
     clients: { codex: steerableClient, claude: plainClient },
     registry: agentStorage,
     logger,
@@ -328,9 +334,14 @@ export function createControlledHost(): ControlledHost {
       return session;
     },
     async cleanup() {
-      for (const agentId of sessions.keys()) {
-        await agentManager.closeAgent(agentId).catch(() => undefined);
+      // Queued wakes can resume sessions while teardown closes their previous runtime.
+      // Freeze registration before taking the snapshot, then drain before deleting storage.
+      agentManager.prepareForShutdown();
+      for (const agent of agentManager.listAgents()) {
+        await agentManager.closeAgent(agent.id).catch(() => undefined);
       }
+      await agentManager.flushForShutdown();
+      await agentStorage.flush();
       rmSync(root, { recursive: true, force: true });
     },
   };

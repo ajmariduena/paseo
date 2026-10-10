@@ -545,8 +545,7 @@ export function AdaptiveModalSheet({
   const [isWebClosing, setIsWebClosing] = useState(false);
   const modalLayer = useGlobalWebOverlayLayer("modal", isWeb && !isMobile && shouldRenderWeb);
   const handleDismiss = useCallback(() => {
-    handleSheetDismiss();
-    onDismiss?.();
+    if (handleSheetDismiss()) onDismiss?.();
   }, [handleSheetDismiss, onDismiss]);
 
   const desktopCardStyle = useMemo(

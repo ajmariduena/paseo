@@ -105,6 +105,24 @@ describe("bottom sheet visibility tracker", () => {
     expect(sheet.events).toEqual([]);
   });
 
+  it("keeps visibility intent when switching away from a sheet and presents the next controller", () => {
+    const context = setup();
+    openSheet(context);
+    context.tracker.syncDesired({ visible: true, isEnabled: false });
+    expect(context.backPress.press()).toBe(false);
+    context.tracker.attachController(null);
+    context.tracker.handleSheetDismiss();
+    expect(context.closeCount()).toBe(0);
+
+    const nextSheet = new FakeBottomSheet();
+    context.tracker.attachController(nextSheet);
+    context.tracker.syncDesired({ visible: true, isEnabled: true });
+    expect(nextSheet.events).toEqual([{ type: "present" }]);
+    context.tracker.handleSheetIndexChange(0);
+    context.tracker.handleSheetDismiss();
+    expect(context.closeCount()).toBe(1);
+  });
+
   it("does not treat index -1 as a close because stacked sheets can be hidden without dismissing", () => {
     const { sheet, tracker, closeCount } = setup();
     tracker.attachController(sheet);

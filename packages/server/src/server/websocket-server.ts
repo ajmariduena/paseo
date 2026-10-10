@@ -1,3 +1,7 @@
+import { HandoffArchiveStore } from "./handoff/archive.js";
+import type { HandoffOwnership } from "./handoff/ownership.js";
+import type { HandoffSource } from "./handoff/source.js";
+import type { HandoffDestination } from "./handoff/destination.js";
 import type { NoteStore } from "./notes/store.js";
 import type { HostMetricsSampler } from "./host-metrics/sampler.js";
 import type { GlanceSummaryService } from "./glance/service.js";
@@ -171,6 +175,7 @@ interface WebSocketServerConfig {
   hostnames?: HostnamesConfig;
   getAllowedOrigins?: () => Set<string>;
   getHostnames?: () => HostnamesConfig | undefined;
+  workspaceHandoff?: boolean;
   daemonStatusRpc?: boolean;
   relayConfig?: boolean;
   startPaused?: boolean;
@@ -559,6 +564,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly creationService: CreationService;
   private readonly projectRegistry: ProjectRegistry;
   private readonly workspaceRegistry: WorkspaceRegistry;
+  private readonly handoffOwnership: HandoffOwnership | undefined;
   private readonly workspaceLabelService: WorkspaceLabelService | null;
   private readonly noteStore: NoteStore | undefined;
   private readonly hostMetricsSampler: HostMetricsSampler | undefined;
@@ -614,6 +620,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly browserScreencastBroker: BrowserScreencastBroker | null;
   private readonly hubRelationships: HubRelationshipManagement | null;
   private connectionLifecycle: "starting" | "accepting" | "stopping" = "accepting";
+  private readonly advertiseWorkspaceHandoff: boolean;
   private readonly advertiseDaemonStatusRpc: boolean;
   private readonly advertiseRelayConfig: boolean;
   private readonly directorySync = new DirectorySyncService();
@@ -651,6 +658,7 @@ export class VoiceAssistantWebSocketServer {
     mcpBaseUrl: string | null,
     wsConfig: WebSocketServerConfig,
     workspaceAutoName: WorkspaceAutoName,
+    private readonly handoffArchiveStore: HandoffArchiveStore,
     auth?: DaemonAuthConfig,
     speech?: SpeechService | null,
     terminalManager?: TerminalManager | null,
@@ -691,13 +699,19 @@ export class VoiceAssistantWebSocketServer {
     agentStop?: AgentStop | null,
     noteStore?: NoteStore,
     hostMetricsSampler?: HostMetricsSampler,
+    handoffOwnership?: HandoffOwnership,
+    private readonly handoffSource?: HandoffSource,
+    private readonly handoffDestination?: HandoffDestination,
     private readonly glanceSummaryService?: GlanceSummaryService,
   ) {
+    this.handoffOwnership = handoffOwnership;
     this.logger = logger.child({ module: "websocket-server" });
     this.voiceOrchestrator = voiceOrchestrator;
     this.delegations = delegations;
     this.agentStop = agentStop;
     this.workspaceSetupRuntime = workspaceSetupRuntime;
+    // Only isolated test hosts enable this until the complete handoff delivery gates pass.
+    this.advertiseWorkspaceHandoff = wsConfig.workspaceHandoff === true;
     this.advertiseDaemonStatusRpc = wsConfig.daemonStatusRpc !== false;
     this.advertiseRelayConfig = wsConfig.relayConfig !== false;
     this.connectionLifecycle = wsConfig.startPaused === true ? "starting" : "accepting";
@@ -1541,6 +1555,10 @@ export class VoiceAssistantWebSocketServer {
       projectRegistry: this.projectRegistry,
       workspaceRegistry: this.workspaceRegistry,
       workspaceLabelService: this.workspaceLabelService ?? undefined,
+      handoffArchiveStore: this.handoffArchiveStore,
+      handoffOwnership: this.handoffOwnership,
+      handoffSource: this.handoffSource,
+      handoffDestination: this.handoffDestination,
       noteStore: this.noteStore,
       hostMetricsSampler: this.hostMetricsSampler,
       readAloud: this.readAloudService ?? undefined,
@@ -1899,6 +1917,7 @@ export class VoiceAssistantWebSocketServer {
         forgeLinkSummaries: true,
         // COMPAT(scratchWorkspaces): added in v0.10.3; remove gate after 2027-10-01.
         scratchWorkspaces: true,
+        ...(this.advertiseWorkspaceHandoff ? { workspaceHandoff: true } : {}),
         // COMPAT(daemonStatusRpc): added in v0.1.76, remove gate after 2026-11-18.
         ...(this.advertiseDaemonStatusRpc ? { daemonStatusRpc: true } : {}),
         // COMPAT(daemonConfigReload): added in v0.4.0, remove gate after 2027-02-14.

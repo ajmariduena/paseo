@@ -18,6 +18,12 @@ import { createBranchChangeRouteHandler } from "./script-route-branch-handler.js
 import { startWorktreeStorageSweeper } from "./worktree-storage-sweeper.js";
 import { resolvePaseoWorktreesBaseRoot } from "../utils/worktree.js";
 import { HtmlRenderStore } from "./agent/html-render/store.js";
+import { HandoffOwnership } from "./handoff/ownership.js";
+import { HandoffArchiveStore } from "./handoff/archive.js";
+import { createHandoffPublication } from "./handoff/publication.js";
+import { createHandoffDestination, type HandoffDestination } from "./handoff/destination.js";
+import { HandoffSource } from "./handoff/source.js";
+import { readRetainedHandoffHistory } from "./handoff/history.js";
 
 export type ListenTarget =
   | { type: "tcp"; host: string; port: number }
@@ -176,6 +182,7 @@ import { PullRequestWatcher } from "./pull-request-watch/watcher.js";
 import { AgentStop } from "./agent/stop.js";
 import { PromptAnnotationStore } from "./agent/prompt-annotations.js";
 import { AgentQueueStore } from "./agent-queue/store.js";
+import { FileUploadStore } from "./file-upload/index.js";
 import { createRestoredEntryDeliverer } from "./agent/message-dispatch.js";
 import { RestartIntentStore } from "./restart/restart-intent-store.js";
 import { RestartRecovery } from "./restart/restart-recovery.js";
@@ -513,6 +520,10 @@ export interface PaseoDaemonConfig {
 
 export interface PaseoDaemon {
   config: PaseoDaemonConfig;
+  handoffOwnership: HandoffOwnership;
+  handoffArchives: HandoffArchiveStore;
+  handoffDestination: HandoffDestination;
+  handoffSource: HandoffSource;
   agentManager: AgentManager;
   agentStorage: AgentStorage;
   terminalManager: TerminalManager;
@@ -532,6 +543,7 @@ export interface PaseoDaemonDependencies {
   hubRelationshipRetryPolicy?: HubRelationshipRetryPolicy;
   createHubDaemonId?: () => string;
   serverFeatureOverrides?: {
+    workspaceHandoff?: boolean;
     daemonStatusRpc?: boolean;
     relayConfig?: boolean;
   };
@@ -697,6 +709,29 @@ export async function createPaseoDaemon(
 ): Promise<PaseoDaemon> {
   configureGitProcessPolicy(config.git ?? resolveGitProcessPolicy({ env: process.env }));
   const logger = rootLogger.child({ module: "bootstrap" });
+  const serverId = getOrCreateServerId(config.paseoHome, { logger });
+  const handoffOwnership = new HandoffOwnership({
+    directory: path.join(config.paseoHome, "handoff-ownership"),
+    sourceServerId: serverId,
+    assertAdditionalAdmission: (scope) => handoffDestination.assertMutationAllowed(scope),
+  });
+  // A damaged ledger must stop boot before providers, queues or automation can resume writers.
+  await handoffOwnership.initialize();
+  const handoffArchives = new HandoffArchiveStore(
+    path.join(config.paseoHome, "handoff", "archives"),
+  );
+  const handoffDestination = createHandoffDestination({
+    directory: path.join(config.paseoHome, "handoff-destination"),
+    serverId,
+    archives: handoffArchives,
+    publication: {
+      install: (input) => publication().install(input),
+      publish: (record) => publication().publish(record),
+    },
+    getProviderRuntimeSettings: (provider) =>
+      providerSnapshotManager.getProviderRuntimeSettings(provider),
+  });
+  await handoffDestination.initialize();
   const obsoleteTimelineDirectory = path.join(config.paseoHome, "agent-timelines");
   await rm(obsoleteTimelineDirectory, { recursive: true, force: true }).catch((error) => {
     logger.warn(
@@ -744,15 +779,16 @@ export async function createPaseoDaemon(
     settingsDirectory: path.join(config.paseoHome, "plugin-settings"),
   });
 
-  const serverId = getOrCreateServerId(config.paseoHome, { logger });
   const daemonKeyPair = await loadOrCreateDaemonKeyPair(config.paseoHome, logger);
   const managedProcesses = createBootstrapManagedProcessRegistry(config, logger);
   // Reconcile the helper-process ledger in the background so it never blocks the
   // daemon from coming up; terminating a live leftover can take a few seconds.
   // Best-effort, so a failure is logged here rather than crashing startup.
-  void reconcileManagedProcessLedger(managedProcesses, logger).catch((error) => {
-    logger.warn({ err: error }, "Failed to reconcile managed helper process ledger");
-  });
+  let managedProcessReconciliation = reconcileManagedProcessLedger(managedProcesses, logger).catch(
+    (error) => {
+      logger.warn({ err: error }, "Failed to reconcile managed helper process ledger");
+    },
+  );
   let relayRuntime: RelayRuntime | null = null;
 
   const staticDir = config.staticDir;
@@ -782,6 +818,7 @@ export async function createPaseoDaemon(
   let workspaceRegistry: FileBackedWorkspaceRegistry | null = null;
   const terminalManager = createConfiguredTerminalManager({
     getTerminalActivityUrl: () => createTerminalActivityUrl(boundListenTarget),
+    handoffOwnership,
   });
   applyTerminalAgentHookSetting({ store: daemonConfigStore, logger });
 
@@ -990,14 +1027,27 @@ export async function createPaseoDaemon(
     serviceProxyListenTarget = parseListenString(config.serviceProxy.standaloneListen);
   }
 
-  const agentStorage = new AgentStorage(config.agentStoragePath, logger);
+  const agentStorage = new AgentStorage(
+    config.agentStoragePath,
+    logger,
+    (id) => handoffDestination.isIdentityVisible(id),
+    undefined,
+    (record) =>
+      handoffOwnership.acquireAgentRecordMutation({
+        cwd: record.cwd,
+        workspaceId: record.workspaceId,
+        agentId: record.id,
+      }),
+  );
   const projectRegistry = new FileBackedProjectRegistry(
     path.join(config.paseoHome, "projects", "projects.json"),
     logger,
+    { isVisible: (id) => handoffDestination.isIdentityVisible(id) },
   );
   workspaceRegistry = new FileBackedWorkspaceRegistry(
     path.join(config.paseoHome, "projects", "workspaces.json"),
     logger,
+    { isVisible: (id) => handoffDestination.isIdentityVisible(id) },
   );
   const workspaceLabelService = createWorkspaceLabelService({
     paseoHome: config.paseoHome,
@@ -1020,6 +1070,7 @@ export async function createPaseoDaemon(
     }
   });
   const workspaceProvisioning = createWorkspaceProvisioningService({
+    handoffOwnership,
     lifecycle: pluginRuntime,
     serverId,
     projectRegistry,
@@ -1059,14 +1110,34 @@ export async function createPaseoDaemon(
     if (git) configureGitProcessPolicy(git);
   });
   const initialAgentManagerState = providerSnapshotManager.getAgentManagerProviderState();
+  function publication() {
+    if (!workspaceRegistry) throw new Error("Workspace registry is unavailable");
+    return createHandoffPublication({
+      schedules: scheduleService,
+      queues: agentManager.messageQueue,
+      projects: projectRegistry,
+      workspaces: workspaceRegistry,
+      agents: agentStorage,
+      agentManager,
+    });
+  }
   const agentManager = new AgentManager({
+    onRuntimeClosed: (runtime) => managedProcesses.retireStoppedRuntime(runtime),
+    beforeRetainedContinuation: (agentId): Promise<void> =>
+      handoffSource.checkpointRetainedConversation(agentId),
     paseoHome: config.paseoHome,
+    handoffOwnership,
     pluginLifecycle: pluginRuntime,
     clients: initialAgentManagerState.clients,
     providerDefinitions: initialAgentManagerState.providerDefinitions,
     registry: agentStorage,
-    promptAnnotations: new PromptAnnotationStore(path.join(config.paseoHome, "prompt-annotations")),
-    messageQueueStore: new AgentQueueStore(path.join(config.paseoHome, "agent-queues")),
+    promptAnnotations: new PromptAnnotationStore(
+      path.join(config.paseoHome, "prompt-annotations"),
+      { records: agentStorage },
+    ),
+    messageQueueStore: new AgentQueueStore(path.join(config.paseoHome, "agent-queues"), {
+      uploads: new FileUploadStore({ paseoHome: config.paseoHome }),
+    }),
     idleRuntimeTimeoutMs: config.idleRuntimeTimeoutMs,
     appendSystemPrompt: config.appendSystemPrompt,
     onWorkspaceStateMayHaveChanged: ({ cwd }) => {
@@ -1078,12 +1149,19 @@ export async function createPaseoDaemon(
     logger,
   });
   const delegations = new DelegationService({
+    readRetainedHistory: (agentId, history) =>
+      readRetainedHandoffHistory(
+        path.join(config.paseoHome, "handoff", "source"),
+        agentId,
+        history,
+      ),
     store: new DelegationStore(path.join(config.paseoHome, "delegations")),
     agentManager,
     agentStorage,
     logger,
   });
   const pullRequestWatches = new PullRequestWatcher({
+    handoffOwnership,
     store: new PullRequestWatchStore(path.join(config.paseoHome, "pull-request-watches.json")),
     agentManager,
     agentStorage,
@@ -1135,8 +1213,12 @@ export async function createPaseoDaemon(
   // A damaged queue or delegation file must not keep the daemon from starting.
   await agentManager.messageQueue
     .load()
-    .then(() => restartRecovery.holdQueues())
     .catch((error: unknown) => logger.error({ err: error }, "Failed to restore agent queues"));
+  await restartRecovery
+    .holdQueues()
+    .catch((error: unknown) =>
+      logger.error({ err: error }, "Failed to hold restored agent queues"),
+    );
   await bootstrapWorkspaceRegistries({
     serverId,
     paseoHome: config.paseoHome,
@@ -1156,6 +1238,7 @@ export async function createPaseoDaemon(
       paseoHome: config.paseoHome,
       worktreesRoot: config.worktreesRoot,
       serverId,
+      handoffOwnership,
       listWorkspaces: () => workspaceRegistry.list(),
       listAgentCwds: () =>
         agentManager
@@ -1185,6 +1268,7 @@ export async function createPaseoDaemon(
   };
   const workspaceReconciliation = new WorkspaceReconciliationService({
     serverId,
+    handoffOwnership,
     projectRegistry,
     workspaceRegistry,
     logger,
@@ -1251,6 +1335,8 @@ export async function createPaseoDaemon(
         cwd: workspace.cwd,
         kind: workspace.kind,
         worktreeRoot: workspace.worktreeRoot,
+        incarnation: workspace.incarnation,
+        retention: workspace.retention,
         isPaseoOwnedWorktree: workspace.isPaseoOwnedWorktree,
         mainRepoRoot: workspace.mainRepoRoot,
       }));
@@ -1291,12 +1377,14 @@ export async function createPaseoDaemon(
     wsServer?.broadcast(wrapSessionMessage(message));
   };
   const workspaceAutoName = new WorkspaceAutoName({
+    handoffOwnership,
     agentManager,
     workspaceRegistry,
     workspaceGitService,
     providerSnapshotManager,
     readDaemonConfig: () => ({ metadataGeneration: daemonConfigStore.get().metadataGeneration }),
     gitMutation: createGitMutationService({
+      handoffOwnership,
       workspaceGitService,
       logger,
     }),
@@ -1308,6 +1396,7 @@ export async function createPaseoDaemon(
   });
 
   setupAutoArchiveOnMerge({
+    handoffOwnership,
     paseoHome: config.paseoHome,
     paseoWorktreesBaseRoot: config.worktreesRoot,
     daemonConfigStore,
@@ -1333,12 +1422,14 @@ export async function createPaseoDaemon(
   ) => {
     return createPaseoWorktreeWorkflow(
       {
+        handoffOwnership,
         paseoHome: config.paseoHome,
         worktreesRoot: config.worktreesRoot,
         createPaseoWorktree: async (workflowInput, workflowOptions) => {
           return createRegisteredPaseoWorktree(
             { ...workflowInput, serverId },
             {
+              handoffOwnership,
               github,
               ...(workflowOptions?.resolveDefaultBranch
                 ? {
@@ -1398,6 +1489,7 @@ export async function createPaseoDaemon(
   const archiveWorkspaceByIdExternal = (workspaceId: string, requestId: string) =>
     archiveByScope(
       {
+        handoffOwnership,
         paseoHome: config.paseoHome,
         paseoWorktreesBaseRoot: config.worktreesRoot,
         github,
@@ -1421,6 +1513,7 @@ export async function createPaseoDaemon(
       { scope: { kind: "workspace", workspaceId }, requestId },
     );
   const hubAgentLifecycle = new CreateAgentLifecycleDispatch({
+    handoffOwnership,
     paseoHome: config.paseoHome,
     worktreesRoot: config.worktreesRoot,
     agentManager,
@@ -1516,9 +1609,13 @@ export async function createPaseoDaemon(
     await emitWorkspaceUpdatesExternal([result.workspace.workspaceId]);
     return result;
   };
-  const archiveScheduleWorkspaceExternal = async (workspaceId: string) => {
+  const archiveScheduleWorkspaceExternal = async (
+    workspaceId: string,
+    expectedIncarnation: string | undefined,
+  ) => {
     await archiveByScope(
       {
+        handoffOwnership,
         paseoHome: config.paseoHome,
         paseoWorktreesBaseRoot: config.worktreesRoot,
         github,
@@ -1548,6 +1645,7 @@ export async function createPaseoDaemon(
       {
         scope: { kind: "workspace", workspaceId },
         requestId: "schedule-run-finish",
+        automatic: { expectedIncarnation },
       },
     );
   };
@@ -1555,6 +1653,8 @@ export async function createPaseoDaemon(
   const hostMetricsSampler = new HostMetricsSampler({ logger });
   const scheduleService = new ScheduleService({
     paseoHome: config.paseoHome,
+    handoffOwnership,
+    isHandoffIdentityVisible: (id) => handoffDestination.isIdentityVisible(id),
     logger,
     agentManager,
     agentStorage,
@@ -1582,8 +1682,67 @@ export async function createPaseoDaemon(
     }
   });
   logger.info({ elapsed: elapsed() }, "Schedule service initialized");
+  await handoffDestination.recoverActivations();
+  const handoffSource = new HandoffSource({
+    managedProcesses,
+    delegations,
+    schedules: scheduleService,
+    pullRequestWatches,
+    queues: agentManager.messageQueue,
+    directory: path.join(config.paseoHome, "handoff", "source"),
+    serverId,
+    logger,
+    ownership: handoffOwnership,
+    archives: handoffArchives,
+    destination: handoffDestination,
+    workspaces: workspaceRegistry,
+    agents: agentStorage,
+    agentManager,
+    terminals: terminalManager,
+    setup: workspaceSetupRuntime,
+    onWorkspaceChanged: (workspaceId) => emitWorkspaceUpdatesExternal([workspaceId]),
+  });
   logger.info({ elapsed: elapsed() }, "Loading persisted agent registry");
   const persistedRecords = await agentStorage.list();
+  managedProcessReconciliation = managedProcessReconciliation
+    .then(async () => {
+      const records = new Map(persistedRecords.map((record) => [record.id, record]));
+      const stopped = await managedProcesses.list({ includeStopped: true });
+      const retired = new Set<string>();
+      for (const entry of stopped) {
+        if (entry.tree?.state !== "stopped" || !entry.runtime) continue;
+        const record = records.get(entry.runtime.agentId);
+        if (
+          record?.lastStatus !== "closed" ||
+          record.runtimeGeneration?.id !== entry.runtime.generationId ||
+          retired.has(record.id)
+        )
+          continue;
+        try {
+          await agentStorage.retryClosedSnapshot(record.id);
+          const closed = await agentStorage.get(record.id);
+          if (
+            closed?.lastStatus !== "closed" ||
+            closed.runtimeGeneration?.id !== record.runtimeGeneration.id
+          )
+            continue;
+          await managedProcesses.retireStoppedRuntime({
+            agentId: record.id,
+            generationId: record.runtimeGeneration.id,
+          });
+          retired.add(record.id);
+        } catch (error) {
+          logger.warn(
+            { err: error, agentId: record.id },
+            "Retaining process stop acknowledgements until agent closure is durable",
+          );
+        }
+      }
+      return undefined;
+    })
+    .catch((error) => {
+      logger.warn({ err: error }, "Failed to reconcile managed process stop acknowledgements");
+    });
   logger.info(
     { elapsed: elapsed() },
     `Agent registry loaded (${persistedRecords.length} record${persistedRecords.length === 1 ? "" : "s"}); agents will initialize on demand`,
@@ -1596,6 +1755,7 @@ export async function createPaseoDaemon(
   const createAgentToolHostDependencies = (
     runtime: PaseoToolRuntimeContext,
   ): PaseoToolHostDependencies => ({
+    handoffOwnership,
     agentManager,
     agentStorage,
     terminalManager,
@@ -1622,6 +1782,7 @@ export async function createPaseoDaemon(
       return workspace;
     },
     workspaceScripts: createWorkspaceScriptsService({
+      handoffOwnership,
       serviceProxy,
       scriptRuntimeStore,
       terminalManager,
@@ -1944,11 +2105,13 @@ export async function createPaseoDaemon(
               {
                 getAllowedOrigins: () => allowedOrigins,
                 getHostnames: () => configuredHostnames,
+                workspaceHandoff: dependencies.serverFeatureOverrides?.workspaceHandoff,
                 daemonStatusRpc: dependencies.serverFeatureOverrides?.daemonStatusRpc,
                 relayConfig: dependencies.serverFeatureOverrides?.relayConfig,
                 startPaused: true,
               },
               workspaceAutoName,
+              handoffArchives,
               daemonAuth,
               speechService,
               terminalManager,
@@ -2006,6 +2169,9 @@ export async function createPaseoDaemon(
               agentStop,
               noteStore,
               hostMetricsSampler,
+              handoffOwnership,
+              handoffSource,
+              handoffDestination,
               glanceSummaryService,
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
@@ -2065,7 +2231,7 @@ export async function createPaseoDaemon(
     } catch (error) {
       localCredential = null;
       unsubscribeWorktreeStorageConfig();
-      worktreeStorageSweeper.dispose();
+      await worktreeStorageSweeper.dispose();
       await deleteLocalCredential(config.paseoHome);
       unsubscribePluginProviders();
       await pluginRuntime.stopAllPlugins().catch(() => undefined);
@@ -2075,6 +2241,7 @@ export async function createPaseoDaemon(
         httpServer.closeAllConnections();
         await new Promise<void>((resolve) => httpServer.close(() => resolve()));
       }
+      await managedProcessReconciliation;
       throw error;
     }
   };
@@ -2089,14 +2256,16 @@ export async function createPaseoDaemon(
     unsubscribePluginProviders();
     await hubRelationships.stop();
     unsubscribeWorktreeStorageConfig();
-    worktreeStorageSweeper.dispose();
-    workspaceReconciliation.dispose();
+    await worktreeStorageSweeper.dispose();
+    await workspaceReconciliation.dispose();
     scriptHealthMonitor.stop();
     hostMetricsSampler.dispose();
     // Freeze both ingress and registration before taking the agent closure snapshot.
     wsServer?.prepareForShutdown();
     agentManager.prepareForShutdown();
     glancePrecomputer.stop();
+    await handoffDestination.dispose();
+    await handoffSource.dispose();
     await restartRecovery
       .prepareForShutdown()
       .catch((error: unknown) => logger.error({ err: error }, "Failed to record restart intents"));
@@ -2138,10 +2307,16 @@ export async function createPaseoDaemon(
     if (listenTarget.type === "socket" && existsSync(listenTarget.path)) {
       unlinkSync(listenTarget.path);
     }
+    // Recovery also owns ledger writes; do not let them outlive shutdown.
+    await managedProcessReconciliation;
   };
 
   return {
     config,
+    handoffOwnership,
+    handoffArchives,
+    handoffDestination,
+    handoffSource,
     agentManager,
     agentStorage,
     terminalManager,

@@ -37,7 +37,6 @@ export interface LifecycleAgentManager {
 
 export interface LifecycleAgentStorage {
   get(agentId: string): Promise<StoredAgentRecord | null>;
-  upsert(record: StoredAgentRecord): Promise<void>;
 }
 
 export interface AgentLifecycleCommandDependencies {

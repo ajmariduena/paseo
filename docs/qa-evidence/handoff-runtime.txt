@@ -1,0 +1,332 @@
+Claude handoff runtime provenance — 2026-10-10
+
+Baseline: 8b29be0b3 (persisted history provenance).
+
+The initial provider regression failed because the persistence handle did not record
+its effective Claude storage root or the version reported by system/init. The initial
+manager regression failed because shutdown saved before-close metadata instead of
+the final handle. Both now pass.
+
+Coverage in this slice:
+- Frozen launch environment, SDK-reported version changes on the same session ID,
+  unknown/missing versions, read-only history after configuration changes and refusal
+  to launch against a different storage root. The persisted runtime contains neither
+  the test credential nor other environment variables.
+- Relative configuration paths, Unicode normalization and the child home override.
+  An imported namespace does not inject CLAUDE_CONFIG_DIR when it was absent; this
+  preserves the environment used by Claude's macOS credential lookup. This is a Linux
+  adapter test, not execution against a macOS keychain.
+- Final metadata at closure, failed-close ownership and inactive codec installation.
+- Interrupted current and legacy destination publications. A legacy record already
+  written without runtime metadata remains identical when publication is retried.
+- Two real-daemon mixed native/context cases with separate source storage roots and
+  producer versions, both different from the host's global configuration. Unknown
+  provenance is visibly blocked by source preflight. Release rejects changed storage,
+  import namespace or conversation cwd after restart. Native publication records a
+  destination-local pointer; context mode retains a new-session disposition.
+- Three native network cases: Git, directory and a legacy single-runtime source
+  journal without per-conversation metadata. They restart both hosts, validate source
+  mutations, activate and review a return transfer before a destination provider turn.
+- Desktop Chromium mixed-choice review, recovery after deleting local state and
+  activation. The existing fake provider is explicitly seeded with fixture provenance.
+  The screenshot was inspected locally; no app UI changed in this slice.
+
+The network fixtures begin closed, use synthetic native transcripts and a launcher
+that accepts --version only. The adapter uses synthetic SDK events. This evidence
+proves artifact selection, transaction recovery and UI behavior, not a fresh real
+provider continuation or OS process ownership. No physical MacBook/VPS round trip,
+Electron, iOS, Android or Windows ownership activation is claimed. Complete handoff
+remains unadvertised. The main daemon on port 6767 was not restarted.
+
+The first network attempt could not bind localhost in the sandbox. The focused rerun
+used approved ephemeral local listeners and isolated homes. Full suites are left to
+existing CI jobs. Earlier real-provider evidence predates this change; provider
+reauthentication is still required before fresh real-provider validation.
+
+
+$ Provider regression, initial red
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/providers/claude/agent.env.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  suppress all logs with { quiet: true }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  suppress all logs with { quiet: true }
+
+ ❯ src/server/agent/providers/claude/agent.env.test.ts (3 tests | 1 failed | 2 skipped) 22ms
+     × retains the observed session runtime for handoff after provider configuration changes 15ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/providers/claude/agent.env.test.ts > Claude SDK env > retains the observed session runtime for handoff after provider configuration changes
+AssertionError: expected undefined to deeply equal { …(2) }
+
+- Expected:
+{
+  "cliVersion": "2.1.295",
+  "configDir": "/tmp/claude-runtime-handoff-f4GKuk/original",
+}
+
++ Received:
+undefined
+
+ ❯ src/server/agent/providers/claude/agent.env.test.ts:81:46
+     79|       const handle = session.describePersistence();
+     80|       if (!handle) throw new Error("Missing native persistence");
+     81|       expect(handle.metadata?.claudeRuntime).toEqual({
+       |                                              ^
+     82|         configDir: originalHome,
+     83|         cliVersion: "2.1.295",
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 2 skipped (3)
+   Start at  23:53:28
+   Duration  1.01s (transform 539ms, setup 41ms, import 817ms, tests 22ms, environment 0ms)
+
+
+$ Manager regression, initial red
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/agent-manager.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: 🔐 prevent committing .env to code: https://dotenvx.com/precommit
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: 🛡️ auth for agents: https://vestauth.com
+
+ ❯ src/server/agent/agent-manager.test.ts (258 tests | 1 failed | 257 skipped) 52ms
+   × closing persists provider events emitted during shutdown before the closed snapshot 47ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/agent-manager.test.ts > closing persists provider events emitted during shutdown before the closed snapshot
+AssertionError: expected { …(22) } to match object { lastStatus: 'closed', …(2) }
+(27 matching properties omitted from actual)
+
+- Expected
++ Received
+
+@@ -4,9 +4,9 @@
+      "thinkingOptionId": "high",
+    },
+    "lastStatus": "closed",
+    "persistence": {
+      "metadata": {
+-       "observedVersion": "after-close",
++       "observedVersion": "before-close",
+      },
+    },
+  }
+
+ ❯ src/server/agent/agent-manager.test.ts:11972:41
+    11970|     await manager.closeAgent(agent.id);
+    11971|     await storage.flush();
+    11972|     expect(await storage.get(agent.id)).toMatchObject({
+       |                                         ^
+    11973|       lastStatus: "closed",
+    11974|       config: { modeId: "build", thinkingOptionId: "high" },
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 257 skipped (258)
+   Start at  23:57:26
+   Duration  2.06s (transform 1.29s, setup 63ms, import 1.79s, tests 52ms, environment 0ms)
+
+
+$ Provider environment suite, final (6 cases)
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  6 passed (6)
+   Start at  00:05:46
+   Duration  2.13s (transform 1.31s, setup 73ms, import 1.80s, tests 57ms, environment 0ms)
+
+
+$ Configuration directory cases (2 cases)
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  2 passed | 9 skipped (11)
+   Start at  00:01:36
+   Duration  356ms (transform 88ms, setup 51ms, import 190ms, tests 3ms, environment 0ms)
+
+
+$ Manager closure cases (3 cases)
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  3 passed | 255 skipped (258)
+   Start at  00:00:49
+   Duration  1.69s (transform 1.10s, setup 58ms, import 1.47s, tests 20ms, environment 0ms)
+
+
+$ Inactive codec case (1 case)
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 20 skipped (21)
+   Start at  00:01:00
+   Duration  1.28s (transform 755ms, setup 52ms, import 1.05s, tests 53ms, environment 0ms)
+
+
+$ Current and legacy publication recovery (6 cases)
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  6 passed | 35 skipped (41)
+   Start at  00:01:00
+   Duration  2.79s (transform 1.21s, setup 52ms, import 1.79s, tests 823ms, environment 0ms)
+
+
+$ Desktop Chromium mixed-choice recovery and activation (1 case)
+
+> @getpaseo/app@0.11.0-beta.36 test:e2e
+> playwright test --project=browser e2e/browser/workspace-handoff.spec.ts --grep desktop preserves mixed conversation
+
+[metro] Starting project at /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+[metro] Using src/app as the root directory for Expo Router.
+[metro] Experimental Expo Autolinking module resolver is enabled.
+[metro] React Compiler enabled
+[metro] Starting Metro Bundler
+[metro] Waiting on http://localhost:34663
+[metro] Logs for your project will appear below.
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web packages/app/index.ts ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.9% (5630/5630)
+[metro] Web Bundled 4363ms packages/app/index.ts (5630 modules)
+[e2e] Metro warmed on port 34663
+
+Running 1 test using 1 worker
+
+(node:646262) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:646262) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[e2e] Worker 0 daemon started on port 40307, home: /tmp/paseo-e2e-worker-0-mSfLqn
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 353ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 128ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (86 modules)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 319ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 16ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 260ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 12ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web Bundled 294ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 14ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+[metro] Web packages/app/index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 312ms packages/app/index.ts (1 module)
+[metro] Web packages/app/src/attachments/web/indexeddb-attachment-store.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+[metro] Web Bundled 11ms packages/app/src/attachments/web/indexeddb-attachment-store.ts (1 module)
+[metro]  LOG  [web] Logs will appear in the browser console
+  ✓  1 [browser] › e2e/browser/workspace-handoff.spec.ts:37:9 › workspace handoff › desktop preserves mixed conversation choices through recovery and activation (41.2s)
+[e2e] Worker 0 daemon stopped
+[e2e] Metro stopped
+
+  1 passed (1.2m)
+
+$ Final mixed/native network cases (5 cases)
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  5 passed | 23 skipped (28)
+   Start at  00:07:45
+   Duration  29.23s (transform 12.81s, setup 42ms, import 15.76s, tests 13.31s, environment 0ms)
+
+
+$ npm run typecheck (passed)
+
+> paseo@0.11.1 typecheck
+> npm run typecheck --workspaces --if-present
+
+
+> @getpaseo/builtin-plugins@0.11.1 typecheck
+> tsgo -p tsconfig.json --noEmit
+
+
+> @getpaseo/expo-two-way-audio@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/highlight@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/plugin@0.11.1 typecheck
+> tsgo --noEmit && tsgo -p tsconfig.examples.json --noEmit
+
+
+> @getpaseo/protocol@0.11.1 pretypecheck
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/client@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/server@0.11.1 typecheck
+> tsgo -p tsconfig.server.typecheck.json --noEmit
+
+
+> @getpaseo/app@0.11.0-beta.36 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/relay@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/website@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/desktop@0.11.1 typecheck
+> tsgo --noEmit -p tsconfig.json
+
+
+> @getpaseo/cli@0.11.1 typecheck
+> tsgo --noEmit
+
+
+$ npm run lint (passed)
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 3.0s on 5029 files with 177 rules using 4 threads.
+
+$ npm run format (passed)
+
+> paseo@0.11.1 format
+> oxfmt .
+
+Finished in 3963ms on 5374 files using 4 threads.

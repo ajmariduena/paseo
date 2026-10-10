@@ -1,0 +1,3007 @@
+Durable launch admission and pre-admission exit — Linux, 2026-10-10
+Baseline: 12062b1d7 (plan-machine-handoff-macbook-vps)
+
+A new gated state in the existing managed-process ledger distinguishes the trusted bootstrap from
+an admitted launch. Registration alone cannot release the provider: admission must also synchronize
+before dispatch. An exited gated bootstrap can be removed after restart, including after a failed
+inspection. Admitted or legacy launches still require the live-root closing inventory. Inspection
+faults and already-stopped records cannot be admitted; no missing record is recreated.
+
+Regressions reproduced cold recovery retaining an unused dead bootstrap, dispatch without the new
+admission barrier, and close permanently rejecting after a real spawn ENOENT. Tests also cover close
+during admission, failed admission synchronization, root exit during successful/failed registration,
+and refusal to certify lost roots after admission. When registration fails before assigning a
+record, close kills the unused bootstrap and joins its native close event even while inspection
+remains unavailable. The dependent launch could not have dispatched. A withheld kill reproduces
+a close timeout; cleanup remains pending and a later close confirms exit before retiring the query.
+
+The changed suites cover 79 passing cases: 37 store cases and 42 provider cases. The first
+combined run passed 78; after simplifying unused-bootstrap closure, all 42 provider cases passed.
+The unchanged store cases were not repeated. Node processes and storage are real; SDK frames, storage
+faults and deterministic process-table failures are fixtures. The three new store cases use the
+existing macOS handoff test filter; the complete spawn suite already runs there. Native CI remains
+pending. This does not prove fresh authenticated Claude continuity, physical MacBook/VPS transfer,
+conversation-generation recovery, or uncertain stops after durable admission.
+
+Stopped-runtime acknowledgements — Linux, 2026-10-10, baseline 81288b229
+
+Reproduced: stop removed the launch record before the agent's closed snapshot was durable.
+A fresh registry retry rejected with ManagedProcessRecordMissingError, losing the positive stop
+result even though the process had finished. Registered Claude launches now carry the owner's
+runtime generation and retain synchronized stopped records through SDK cleanup and failed agent
+publication. Ordinary cleanup preserves them; durable owner closure retires them.
+
+Targeted verification:
+- managed-processes.test.ts: 40 passed. New cases cover cold retry with a reused PID, missing
+  records, refusal to readmit a stopped launch, generation-specific retirement, and receipt sync
+  failure with same-instance and fresh-registry retry. No second signal is sent.
+- agent.spawn.test.ts: 46 passed. The real Node bootstrap registration/SDK-cleanup regression now
+  verifies that the generation-bound stop record outlives a failed SDK return and its retry.
+- bootstrap-managed-processes.test.ts: 3 passed. Startup retires receipts for durable closed
+  owners and preserves them for open owners; shutdown joins reconciliation.
+- agent-manager.test.ts: 11 focused cases passed in two selections. Creation, resume, reload
+  and import carry the published generation; failed closed-record synchronization cannot retire
+  stop evidence. Existing unknown-event faults continue to refuse certification.
+
+The existing macOS CI name filter was exercised locally for the store/bootstrap files: 28 passed,
+15 skipped (overlapping the counts above). This is Linux evidence; native macOS remains for CI.
+The server-stack build, root typecheck, lint and formatting pass. An initial lint failure required
+an explicit return from the startup reconciliation callback; the final lint run has no errors.
+
+These are real file-backed records, isolated daemons and harmless Node subprocesses, with injected
+SDK frames, process tables and storage faults. They preserve a known stop; they do not reconstruct
+unknown process inventories, callback outcomes or conversation state after a crash. No authenticated
+provider or physical MacBook/VPS transfer ran. The complete feature remains unadvertised.
+
+Launch membership and source cancellation — Linux, 2026-10-10, baseline 53ba92f6b
+
+Reproduced: cold source cancellation released the fence despite a missing launch stop record.
+A tracked agent generation now binds its launch IDs before provider admission. Cancellation
+requires the exact owner's proof for every current or unresolved launch. It can finish a recorded
+live stop, acknowledge a saved stop without signalling a reused PID, or accept a deliberately
+empty tracked generation. Unknown coverage, missing records and loaded agents remain fenced.
+Wrong destination reservations are rejected before attempting recovery; cancellation retries use
+only the already-published receipt. Physical stop does not fabricate a closed conversation record.
+
+Focused verification (215 distinct passing cases across full files and selections):
+- Claude spawn: 49 passed, including real Node gates held during membership synchronization,
+  successful launch afterward, failed synchronization and close while publication is pending.
+- Managed-process store: 41 passed; the ownership-mismatch case was repeated after giving that
+  refusal its own error. Tests cover every expected launch and repeated receipt synchronization.
+- Agent storage: 48 passed, one platform skip. Launch membership survives snapshots, restart and
+  generation replacement; registration into a stale or closed generation refuses.
+- Source ownership: 62 cases passed across the full-file and changed-case runs. Six new cases
+  cover live/stopped cold recovery, missing/restored records, tracked emptiness, unknown tracking,
+  unresolved predecessors, loaded agents, destination binding and cancellation retry.
+- Agent manager: 10 focused cases passed. A tracking provider receives its registration callback
+  only after its empty inventory is durable; providers without coverage retain unknown tracking.
+- Five retained-job network cases passed using the server's existing Vitest configuration: activate,
+  cancel, nested jobs, cancel after failed history publication and continue after that failure.
+  The initial root-config invocation timed out at its unrelated 5-second default before completing
+  the first case. No product assertion or configured server timeout was relaxed.
+
+The test fixtures initially needed the manager's required workspace option and UUID; both were
+corrected before the loaded-agent refusal passed. The first close-during-publication case exposed
+an admission attempt after closure; the launch now checks closure again after membership settles.
+The server-stack build, root typecheck, lint and formatting are recorded with this change.
+
+Base integration: origin/main e403dbbea introduced overlapping imports, service wiring and store
+documentation. The resolution retains both handoff and glance services, and stops glance precomputation
+before awaiting handoff shutdown. The integrated server stack builds. Protocol wire/validator files
+pass 84 cases, client summary correlation passes two, session summary routing passes three, and all
+five retained-job network cases pass again (overlapping the handoff evidence above).
+
+These tests use real file stores, Node subprocesses and isolated daemons with controlled provider
+frames and injected storage/process-table faults. Terminal/setup launch coverage, unknown callback
+outcomes and conversation recovery remain separate gates. This is not fresh authenticated-provider
+or physical MacBook/VPS evidence; production feature advertisement remains disabled.
+
+Earlier cold recovery regression (generated record ID and PID redacted):
+
+ FAIL  src/server/managed-processes/managed-processes.test.ts > managed process registry > cold recovery removes a gated launch that exited before admission
+AssertionError: expected { checked: 1, dead: +0, …(4) } to match object { checked: 1, removed: 1, errors: [] }
+(3 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+    "checked": 1,
+-   "errors": [],
+-   "removed": 1,
++   "errors": [
++     {
++       "id": "<fixture-record-id>",
++       "message": "Managed helper termination timed out: <fixture-pid>",
++     },
++   ],
++   "removed": 0,
+  }
+
+ ❯ src/server/managed-processes/managed-processes.test.ts:66:45
+     64|         await exited;
+     65|         const recovered = createManagedProcessRegistry(options);
+     66|         expect(await recovered.reapStale()).toMatchObject({ checked: 1…
+       |                                             ^
+     67|         expect(await recovered.list()).toEqual([]);
+     68|       } finally {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 34 skipped (35)
+   Start at  08:20:26
+   Duration  418ms (transform 150ms, setup 40ms, import 198ms, tests 67ms, environment 0ms)
+
+
+Admission-order regression:
+
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/providers/claude/agent.spawn.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  specify custom .env file path with { path: '/custom/path/.env' }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: 🔐 prevent building .env in docker: https://dotenvx.com/prebuild
+
+ ❯ src/server/agent/providers/claude/agent.spawn.test.ts (37 tests | 1 failed | 36 skipped) 178ms
+     × closing during durable launch admission never dispatches the provider 173ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/providers/claude/agent.spawn.test.ts > Claude spawn override > closing during durable launch admission never dispatches the provider
+AssertionError: expected 'provider' to be 'admission' // Object.is equality
+
+Expected: "admission"
+Received: "provider"
+
+ ❯ src/server/agent/providers/claude/agent.spawn.test.ts:1045:40
+    1043|       void opening.catch(() => {});
+    1044|       try {
+    1045|         expect(await observed.promise).toBe("admission");
+       |                                        ^
+    1046|         await expect(access(marker)).rejects.toMatchObject({ code: "EN…
+    1047|         const closing = session.close();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 36 skipped (37)
+   Start at  08:21:33
+   Duration  1.12s (transform 546ms, setup 39ms, import 791ms, tests 178ms, environment 0ms)
+
+
+Bootstrap spawn regression:
+
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/providers/claude/agent.spawn.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚡️ secrets for agents: https://dotenvx.com/as2
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  load multiple .env files with { path: ['.env.local', '.env'] }
+
+ ❯ src/server/agent/providers/claude/agent.spawn.test.ts (38 tests | 1 failed | 37 skipped) 16ms
+     × a bootstrap spawn failure closes without inventing a process record 14ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/providers/claude/agent.spawn.test.ts > Claude spawn override > a bootstrap spawn failure closes without inventing a process record
+Error: spawn /usr/bin/node ENOENT
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 37 skipped (38)
+   Start at  08:23:18
+   Duration  895ms (transform 505ms, setup 36ms, import 731ms, tests 16ms, environment 0ms)
+
+
+Combined validation before the final unused-bootstrap closure adjustment:
+
+Command: npx vitest run src/server/managed-processes/managed-processes.test.ts src/server/agent/providers/claude/agent.spawn.test.ts --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  2 passed (2)
+      Tests  78 passed (78)
+   Start at  08:25:30
+   Duration  4.69s (transform 616ms, setup 56ms, import 927ms, tests 3.48s, environment 0ms)
+
+
+
+Unused-bootstrap regression before removing the inspection dependency:
+
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/providers/claude/agent.spawn.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: 🔐 encrypt with Dotenvx: https://dotenvx.com
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  load multiple .env files with { path: ['.env.local', '.env'] }
+
+ ❯ src/server/agent/providers/claude/agent.spawn.test.ts (41 tests | 1 failed | 40 skipped) 65ms
+     × failed initial inspection stops the unused bootstrap without requiring inspection recovery 61ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/providers/claude/agent.spawn.test.ts > Claude spawn override > failed initial inspection stops the unused bootstrap without requiring inspection recovery
+Error: Process inspection unavailable
+ ❯ src/server/agent/providers/claude/agent.spawn.test.ts:1518:28
+    1516|       });
+    1517|       const capture = vi.spyOn(treeKillUtils, "captureProcessTree")
+    1518|         .mockRejectedValue(new Error("Process inspection unavailable")…
+       |                            ^
+    1519|       const children: SpawnedProcess[] = [];
+    1520|       const exited = Promise.withResolvers<void>();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 40 skipped (41)
+   Start at  08:29:07
+   Duration  1.04s (transform 565ms, setup 42ms, import 818ms, tests 65ms, environment 0ms)
+
+
+Final provider validation:
+
+Command: npx vitest run src/server/agent/providers/claude/agent.spawn.test.ts --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  42 passed (42)
+   Start at  08:30:17
+   Duration  6.63s (transform 590ms, setup 47ms, import 879ms, tests 5.58s, environment 0ms)
+
+
+Failed Claude query construction and inspection recovery — Linux, 2026-10-10
+Baseline: a3f8bc84c (plan-machine-handoff-macbook-vps)
+
+An SDK factory that spawned then threw left a registered process outside session ownership.
+The first regression reproduced a retained registry entry after close. Query attempts are now owned
+before SDK construction. Failed construction closes the same process without releasing its provider;
+failed cleanup retains the attempt and prevents replacement until the storage operation succeeds.
+
+A separate regression reproduced an initial process-inspection failure that blocked every later
+close, even after inspection recovered. Close now retries registration of the same gated process.
+An assigned publication ID is reused; a retry cannot release the original failed provider launch.
+The inspection case injects only the inspection error. All cases use real temporary storage and
+harmless Node processes; SDK messages and constructor failures remain injected fixtures.
+No fresh authenticated Claude turn or physical-host transfer was performed. Unobserved descendants,
+complete generation recovery and failures after a bootstrap itself exits remain separate gates.
+
+Construction regression before the fix (retained-record body omitted):
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  src/server/agent/providers/claude/agent.spawn.test.ts > Claude spawn override > a throwing SDK constructor cannot leave a registered process or start its provider
+AssertionError: expected [ { …(9) } ] to deeply equal []
+ Test Files  1 failed (1)
+      Tests  1 failed | 33 skipped (34)
+
+Inspection regression before the fix:
+
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/providers/claude/agent.spawn.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  load multiple .env files with { path: ['.env.local', '.env'] }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  suppress all logs with { quiet: true }
+
+ ❯ src/server/agent/providers/claude/agent.spawn.test.ts (36 tests | 1 failed | 35 skipped) 57ms
+     × retries initial process inspection during close without releasing the provider 55ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/providers/claude/agent.spawn.test.ts > Claude spawn override > retries initial process inspection during close without releasing the provider
+Error: Process inspection unavailable
+ ❯ src/server/agent/providers/claude/agent.spawn.test.ts:1292:35
+    1290|       const capture = treeKillUtils.captureProcessTree;
+    1291|       vi.spyOn(treeKillUtils, "captureProcessTree").mockImplementation…
+    1292|         if (failInspection) throw new Error("Process inspection unavai…
+       |                                   ^
+    1293|         return capture(child);
+    1294|       });
+ ❯ ClaudeAgentSession.recordQueryProcess src/server/agent/providers/claude/agent.ts:3592:31
+ ❯ src/server/agent/providers/claude/agent.ts:3545:22
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 35 skipped (36)
+   Start at  08:13:41
+   Duration  1.00s (transform 528ms, setup 40ms, import 787ms, tests 57ms, environment 0ms)
+
+
+Final owning-file validation:
+
+Command: npx vitest run src/server/agent/providers/claude/agent.spawn.test.ts --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  36 passed (36)
+   Start at  08:14:05
+   Duration  3.29s (transform 597ms, setup 49ms, import 846ms, tests 2.27s, environment 0ms)
+
+
+macOS-compatible supervised launch — Linux, 2026-10-10
+Baseline: 9e7ac2173 (plan-machine-handoff-macbook-vps)
+
+macOS now selects a registered Node supervisor rather than executing a protected system intermediary.
+The provider receives its environment directly, including DYLD_LIBRARY_PATH, only after admission;
+stdin/stdout/stderr remain inherited pipes. The supervisor joins its child and propagates exit code
+or signal. Linux retains process replacement without a resident supervisor. Windows is unchanged.
+
+The new recovery test first failed because tree shutdown and the supervisor both sent SIGTERM.
+That duplicate interrupted a once-only provider cleanup handler before its marker was written.
+SDK signals now use the supervisor's private IPC channel; OS tree shutdown signals each process
+itself. A fresh registry reads the on-disk root, captures its live child, stops both and removes the
+record. Other cases cover exact environment/streams, signal status, missing executables and forced
+shutdown of a provider that ignores SIGTERM. All 33 cases in the owning Claude spawn suite pass.
+The suite is included in the existing macOS handoff CI step; the native follow-up is recorded below.
+These are real Node/shell processes with injected SDK frames, not fresh authenticated Claude turns.
+
+CI follow-up at 20e11a9f8 (run 38064594811, macOS job 114249684359): the supervisor
+suite reached a script without a shebang and exited 1 instead of 0. Darwin's posix_spawn path
+returns ENOEXEC instead of supplying execvp's shell fallback. The first fix handled the error
+event only and passed 44 cases on Linux. At ce0bb5496, macOS job 114259971250 in run 38068150004
+again failed the absolute-path supervised wrapper (24 earlier cases passed). Its 103 filesystem
+and 278 handoff cases passed, with two handoff platform skips.
+
+Node throws ENOEXEC synchronously before returning a ChildProcess. The supervisor now routes both
+thrown and emitted errors through the same bounded retry. Only ENOEXEC permits sh, after the
+registration gate, retaining literal argv and resolving PATH before sh can prefer a same-named
+file in cwd. Binary providers still receive their environment directly.
+Source: https://github.com/nodejs/node/blob/v22.23.2/lib/internal/child_process.js#L372-L395
+
+The added regression injects one ENOEXEC at Node's native spawn-result boundary inside the
+isolated bootstrap, exercising Node's real error conversion rather than a mocked error handler.
+It first reproduced exit 1 on Linux. The control channel, shell process, script, argv and stdout
+are real. Absolute/PATH cases then pass along with the uninjected cases, cwd shadowing, spaces,
+quotes, metacharacters, environment, signals and tree stopping: all 46 cases pass on Linux.
+At ce284e34b, macOS job 114264720395 (run 38069758977) passed 43 Claude-launch cases with
+three platform skips, confirming the native synchronous-error repair. Its filesystem cases also
+passed (103), as did the core handoff cases (278, two skips). That job then failed a retained-schedule
+path expectation: see handoff-writers-review.txt for the independent canonical-path regression.
+
+$ npx vitest run src/server/agent/providers/claude/agent.spawn.test.ts --bail=1
+  Test Files  1 passed (1)
+       Tests  44 passed (44)
+    Duration  7.41s (tests 6.51s)
+
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/agent/providers/claude/agent.spawn.test.ts -t 'without a shebang.*injected' --bail=1
+  Before the synchronous repair: 1 failed, 44 skipped (bail before the second injected case).
+  AssertionError: Claude process launch failed before exec
+  Expected [0, null], received [1, null].
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/agent/providers/claude/agent.spawn.test.ts --bail=1
+  Test Files  1 passed (1)
+       Tests  46 passed (46)
+    Duration  6.44s (tests 5.58s)
+
+Memory observation: three sequential samples per strategy on Linux/Node 24.21.0. The combined PSS
+increase was 16.59 MiB for this harmless Node provider. PSS apportions shared pages; RSS is also
+recorded below. This is an overhead observation, not a macOS/Electron estimate or a hard bound.
+Each fixture tree was terminated before the next sample. Production packaging and actual MacBook
+memory still need evidence. Boot/generation recovery and unobserved descendants remain separate.
+
+Cold-recovery regression before separating signals:
+
+ FAIL  src/server/agent/providers/claude/agent.spawn.test.ts > Claude spawn override > a fresh registry stops a supervised provider from its durable launch root
+Error: ENOENT: no such file or directory, open '/tmp/paseo-supervised-recovery-OakiHL/provider-stopped'
+ ❯ src/server/agent/providers/claude/agent.spawn.test.ts:831:16
+    829|         });
+    830|         await closed;
+    831|         expect(await readFile(marker, "utf8")).toBe("stopped");
+       |                ^
+    832|         expect(await recovered.list()).toEqual([]);
+    833|       } finally {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 30 skipped (31)
+   Start at  07:39:25
+   Duration  1.25s (transform 619ms, setup 49ms, import 898ms, tests 187ms, environment 0ms)
+
+
+Final focused run:
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  33 passed (33)
+   Start at  07:47:56
+   Duration  3.48s (transform 690ms, setup 71ms, import 980ms, tests 2.29s, environment 0ms)
+
+
+Memory samples (KiB):
+{
+  "platform": "linux",
+  "node": "v24.21.0",
+  "memoryUnit": "KiB",
+  "runs": [
+    {
+      "strategy": "replace",
+      "startupMs": 27.06,
+      "registeredRoot": {
+        "Rss": 46456,
+        "Pss": 23494,
+        "Private_Clean": 72,
+        "Private_Dirty": 10812
+      },
+      "provider": {
+        "Rss": 46456,
+        "Pss": 23494,
+        "Private_Clean": 72,
+        "Private_Dirty": 10812
+      },
+      "residentIntermediary": false
+    },
+    {
+      "strategy": "replace",
+      "startupMs": 27.23,
+      "registeredRoot": {
+        "Rss": 46296,
+        "Pss": 23466,
+        "Private_Clean": 68,
+        "Private_Dirty": 10816
+      },
+      "provider": {
+        "Rss": 46296,
+        "Pss": 23466,
+        "Private_Clean": 68,
+        "Private_Dirty": 10816
+      },
+      "residentIntermediary": false
+    },
+    {
+      "strategy": "replace",
+      "startupMs": 28.2,
+      "registeredRoot": {
+        "Rss": 46344,
+        "Pss": 23471,
+        "Private_Clean": 68,
+        "Private_Dirty": 10812
+      },
+      "provider": {
+        "Rss": 46344,
+        "Pss": 23471,
+        "Private_Clean": 68,
+        "Private_Dirty": 10812
+      },
+      "residentIntermediary": false
+    },
+    {
+      "strategy": "supervise",
+      "startupMs": 29.03,
+      "registeredRoot": {
+        "Rss": 47456,
+        "Pss": 20563,
+        "Private_Clean": 68,
+        "Private_Dirty": 11140
+      },
+      "provider": {
+        "Rss": 46312,
+        "Pss": 19901,
+        "Private_Clean": 68,
+        "Private_Dirty": 10812
+      },
+      "residentIntermediary": true
+    },
+    {
+      "strategy": "supervise",
+      "startupMs": 34.58,
+      "registeredRoot": {
+        "Rss": 47492,
+        "Pss": 20570,
+        "Private_Clean": 68,
+        "Private_Dirty": 11144
+      },
+      "provider": {
+        "Rss": 46356,
+        "Pss": 19904,
+        "Private_Clean": 68,
+        "Private_Dirty": 10816
+      },
+      "residentIntermediary": true
+    },
+    {
+      "strategy": "supervise",
+      "startupMs": 24.59,
+      "registeredRoot": {
+        "Rss": 47492,
+        "Pss": 20567,
+        "Private_Clean": 68,
+        "Private_Dirty": 11140
+      },
+      "provider": {
+        "Rss": 46340,
+        "Pss": 19899,
+        "Private_Clean": 68,
+        "Private_Dirty": 10816
+      },
+      "residentIntermediary": true
+    }
+  ]
+}
+
+Durable Claude launch admission — Linux, 2026-10-10
+Baseline: 609617976 (plan-machine-handoff-macbook-vps)
+
+The regression held managed-process synchronization pending and inspected the real child process.
+Before this change its provider argument was already visible in /proc, before registration was
+acknowledged. The trusted bootstrap now receives the provider command/environment only after that
+acknowledgement. The test proves a NODE_OPTIONS preload does not run while publication is pending,
+then verifies the same registered PID, exact argument/environment values and SDK input/output.
+
+Two fixture parents are killed before dispatch: one sent no packet, the other sent incomplete JSON.
+Both bootstraps exit without executing the target. Closure during synchronization and repair of a
+failed registration also leave the provider unstarted. PATH lookup, environment names unsuitable
+for shell assignments, quoted/newline values and executable scripts without a shebang are covered.
+The first direct-exec implementation aborted on that last case; the launcher now delegates execvp
+semantics to the POSIX env utility after admission, without a resident intermediary.
+
+All 27 cases in the owning Claude spawn suite pass. The SDK frames are injected and the processes
+are harmless Node/shell fixtures. These are not authenticated Claude or physical-host handoffs.
+The gate is enabled only on Linux and requires Node's execve API (available since 22.15; the checkout
+specifies 22.20) and /usr/bin/env. macOS keeps direct launch because a protected env executable can
+purge DYLD_* settings; its durable admission needs another implementation. Windows launch is unchanged.
+macOS admission, Electron packaging, escaped descendants and conversation-generation repair remain
+separate gates. The registration-failure test retains its original POSIX coverage; its additional
+nonexecution assertion also passed in the preceding Linux run before narrowing admission to Linux.
+Root typecheck, lint and formatting pass; the server/CLI stack was rebuilt during validation.
+
+Regression before the gate:
+
+ FAIL  src/server/agent/providers/claude/agent.spawn.test.ts > Claude spawn override > waits for durable registration before executing provider code and preserves exec identity and streams
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ src/server/agent/providers/claude/agent.spawn.test.ts:726:66
+    724|         const child = spawn.mock.results[0]!.value;
+    725|         const commandLine = await readFile(`/proc/${child.pid}/cmdline…
+    726|         expect(commandLine.includes("provider-argument-secret")).toBe(…
+       |                                                                  ^
+    727|         await expect(access(marker)).rejects.toMatchObject({ code: "EN…
+    728|         const [record] = await registry.list();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 21 skipped (22)
+   Start at  07:09:35
+   Duration  1.20s (transform 595ms, setup 48ms, import 883ms, tests 140ms, environment 0ms)
+
+
+Final focused run:
+
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  27 passed (27)
+   Start at  07:30:08
+   Duration  3.23s (transform 878ms, setup 95ms, import 1.29s, tests 1.64s, environment 0ms)
+
+
+
+Process registration and shutdown publication retries — Linux, 2026-10-10
+Baseline: 9cc79e9e7 (plan-machine-handoff-macbook-vps)
+
+A real Node process regression blocked creation of the managed-process directory. After removing
+that obstruction, the old provider still rejected close with the original ENOTDIR: it awaited a
+permanently rejected registration promise and never reached repair. The registration error now
+carries the assigned record ID. Closure repairs that exact candidate and stops the original process.
+The test verifies one query launch, no command delivery after failed registration, and retry of a
+later SDK return failure after the process and ledger are already gone.
+
+Two registry cases fail publication before or after process inspection. The original store repairs
+its known candidate; a fresh store reading the pending inspection refuses without signals. When the
+owner exits after observation, the in-memory candidate retains the child needed to finish cleanup.
+A missing-record case verifies that deletion cannot be acknowledged as termination.
+
+34 registry cases passed in the combined run. Its provider fixture initially had an unmatched
+return-call assertion while being extended; after adding the intended SDK failure, all 21 provider
+cases passed. Thus 55 distinct cases pass across the two affected suites. These tests use real
+temporary storage and harmless Node processes with injected SDK frames, not authenticated Claude.
+They do not establish full launch ownership or recover unknown conversation outcomes. Server/CLI
+builds, root typecheck, lint and formatting pass. The new provider case passed again after replacing
+its nested exit callback with an equivalent bound resolver to meet the repository's lint limit.
+
+Provider regression before the fix:
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/providers/claude/agent.spawn.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: 🔐 prevent building .env in docker: https://dotenvx.com/prebuild
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  write to custom object with { processEnv: myObject }
+
+ ❯ src/server/agent/providers/claude/agent.spawn.test.ts (21 tests | 1 failed | 20 skipped) 42ms
+     × retries failed process registration during close without launching another query 40ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/providers/claude/agent.spawn.test.ts > Claude spawn override > retries failed process registration during close without launching another query
+Error: ENOTDIR: not a directory, mkdir '/tmp/paseo-claude-registration-retry-yk3N1K/runtime/managed-processes'
+ ❯ writeFileAtomic src/server/atomic-file.ts:9:3
+      7|   data: string | NodeJS.ArrayBufferView,
+      8| ): Promise<void> {
+      9|   await fs.mkdir(path.dirname(filePath), { recursive: true });
+       |   ^
+     10|   const tempPath = path.join(
+     11|     path.dirname(filePath),
+ ❯ writeJsonFileAtomic src/server/atomic-file.ts:24:3
+ ❯ FileBackedManagedProcessRegistry.publish src/server/managed-processes/managed-processes.ts:377:5
+ ❯ FileBackedManagedProcessRegistry.record src/server/managed-processes/managed-processes.ts:305:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 20 skipped (21)
+   Start at  06:48:39
+   Duration  1.05s (transform 580ms, setup 39ms, import 838ms, tests 42ms, environment 0ms)
+
+
+Registry validation and the intermediate provider-fixture failure:
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/providers/claude/agent.spawn.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  enable debug logging with { debug: true }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: 🛠️  run anywhere with `dotenvx run -- yourcommand`
+
+ ❯ src/server/agent/providers/claude/agent.spawn.test.ts (21 tests | 1 failed) 295ms
+     × retries failed process registration during close without launching another query 234ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/providers/claude/agent.spawn.test.ts > Claude spawn override > retries failed process registration during close without launching another query
+AssertionError: expected "vi.fn()" to be called 2 times, but got 1 times
+ ❯ src/server/agent/providers/claude/agent.spawn.test.ts:712:30
+    710|         expect(queryFactory).toHaveBeenCalledTimes(1);
+    711|         expect(query.close).toHaveBeenCalledTimes(1);
+    712|         expect(query.return).toHaveBeenCalledTimes(2);
+       |                              ^
+    713|       } finally {
+    714|         fixtureChild?.kill("SIGKILL");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed | 1 passed (2)
+      Tests  1 failed | 50 passed (55)
+   Start at  06:51:41
+   Duration  2.40s (transform 720ms, setup 68ms, import 1.10s, tests 978ms, environment 0ms)
+
+
+Final provider validation:
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  21 passed (21)
+   Start at  06:52:02
+   Duration  1.53s (transform 644ms, setup 47ms, import 945ms, tests 410ms, environment 0ms)
+
+
+
+Persistent observed process trees — Linux, 2026-10-10
+Baseline: c38370f10 (plan-machine-handoff-macbook-vps)
+
+Claude POSIX queries now register with the existing managed-process store. Their ledger excludes
+SDK arguments and OS command lines, which may contain inline MCP credentials. A launch snapshot
+is marked running and cannot certify an unexpected root exit. Before stopping, the registry
+synchronizes an inspection obligation, verifies the root's birth identity, and publishes the
+observed closing tree before signals. Subsequent observations retain previously known identities.
+
+The real-process regression creates a Node owner and detached child. It interrupts shutdown after
+publishing the closing inventory, kills the owner, then creates a fresh registry. Startup recovery
+stops the recorded child and removes the record. A separate provider test exercises production
+Claude process launch/registration/close with a harmless Node executable and verifies that a
+sentinel command argument never enters the ledger. This is not an authenticated Claude turn.
+
+Deterministic cases cover launch-only root exit, a failed inventory publication with no signals,
+cold recovery retaining its unresolved obligation, a different boot without inspecting or
+signalling current PIDs, restored trees, and the existing concurrent/reused-PID stop behavior.
+A failed publication retains its candidate for in-memory retry; a cold unresolved observation is
+not cleared by a smaller current inventory. Unknown conversation outcomes remain separate.
+
+87 cases pass in the five affected suites; two platform-only cases are skipped on Linux. Server/CLI
+builds, root typecheck, lint and formatting pass. The first
+real-descendant fixture timed out because its generated script contained a literal newline inside
+a quoted string. The fixture now emits the delimiter with String.fromCharCode and fails immediately
+if its owner exits before reporting the child. An existing concurrency assertion also exposed an
+unnecessary await before process inspection; the final run includes its corrected ordering.
+
+Remaining: the spawn-to-ledger gap, descendants escaping before observation, stronger macOS birth
+identity, remaining writer surfaces, and semantic recovery of an interrupted conversation generation.
+The production handoff capability remains unadvertised. No main daemon was restarted. The physical
+MacBook/VPS trial and fresh authenticated provider validation remain outstanding.
+
+$ npx vitest run src/utils/tree-kill.test.ts src/server/managed-processes/managed-processes.test.ts src/server/agent/providers/claude/agent.spawn.test.ts src/server/bootstrap-managed-processes.test.ts src/server/agent/providers/opencode-server-manager.test.ts --bail=1
+
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  5 passed (5)
+      Tests  87 passed | 2 skipped (89)
+   Start at  06:41:07
+   Duration  16.51s (transform 9.58s, setup 179ms, import 12.80s, tests 2.28s, environment 1ms)
+
+
+
+Process shutdown proof — Linux, 2026-10-10
+Baseline: c5832f85e (plan-machine-handoff-macbook-vps)
+
+The regression creates a Node owner with a detached child, kills only the owner, and confirms that
+its child remains alive. Previously terminateWithTreeKill returned already-exited. Strict shutdown
+now refuses that unobserved tree on both the first attempt and retry. Test cleanup terminates only
+its own fixture processes. Another deterministic case exits the owner during the first inventory
+and supplies a replacement PID; no signal is sent to that replacement.
+
+Claude POSIX shutdown requests this proof and retains the query on failure. A separate real Node
+process case verifies that unexpected root exit cannot certify query closure or close/return the
+query, even on retry. The existing observed-descendant retry now uses strict proof and confirms an
+idempotent third call after a successful tree stop. Other generic cleanup callers keep their
+existing behavior. Windows Claude termination is unchanged; Windows handoff remains disabled.
+The user-facing runtime-exit error no longer claims that all background work was terminated.
+
+38 distinct cases pass across the three changed test files: 13 tree tests and 25 Claude spawn/exit
+cases. One Windows-only tree case was skipped. The initial 31-case run overlapped these final runs.
+The event-only Claude fixtures now inject their simulated terminator explicitly because they have
+no OS PID. Real-process coverage uses harmless Node children, not an authenticated Claude turn.
+Build, typecheck, lint and formatting pass. The main daemon was not restarted.
+
+This is a certification correction, not durable recovery. Launch-time identity, persistent observed
+process inventories, restart repair and other managed writer surfaces remain unfinished. A source
+whose process stop is unconfirmed stays blocked instead of being certified from root exit alone.
+
+Before the fix:
+$ npx vitest run src/utils/tree-kill.test.ts --testNamePattern='strict termination' --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/utils/tree-kill.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: 🛡️ auth for agents: https://vestauth.com
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚡️ secrets for agents: https://dotenvx.com/as2
+
+ ❯ src/utils/tree-kill.test.ts (14 tests | 1 failed | 12 skipped) 70ms
+     × strict termination refuses an exited owner with an unobserved surviving child 68ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/utils/tree-kill.test.ts > terminateWithTreeKill > strict termination refuses an exited owner with an unobserved surviving child
+AssertionError: expected 'already-exited' to be 'kill-timeout' // Object.is equality
+
+Expected: "kill-timeout"
+Received: "already-exited"
+
+ ❯ src/utils/tree-kill.test.ts:156:66
+    154|       expect(isProcessRunning(descendantPid ?? -1)).toBe(true);
+    155|       const options = { gracefulTimeoutMs: 0, forceTimeoutMs: 0, requi…
+    156|       expect(await terminateWithTreeKill(ownerProcess, options)).toBe(…
+       |                                                                  ^
+    157|       expect(await terminateWithTreeKill(ownerProcess, options)).toBe(…
+    158|       expect(isProcessRunning(descendantPid ?? -1)).toBe(true);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 12 skipped (14)
+   Start at  06:18:02
+   Duration  322ms (transform 94ms, setup 42ms, import 85ms, tests 70ms, environment 0ms)
+
+
+After the fix:
+$ npx vitest run src/utils/tree-kill.test.ts --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  13 passed | 1 skipped (14)
+   Start at  06:21:06
+   Duration  827ms (transform 92ms, setup 44ms, import 85ms, tests 570ms, environment 0ms)
+
+
+$ npx vitest run src/server/agent/providers/claude/agent.spawn.test.ts src/server/agent/providers/claude/agent.runtime-exit.test.ts --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  2 passed (2)
+      Tests  25 passed (25)
+   Start at  06:20:09
+   Duration  1.95s (transform 597ms, setup 61ms, import 1.14s, tests 489ms, environment 0ms)
+
+
+Handoff persistence recovery foundations — 2026-10-10
+
+Release record admission:
+- The regression reproduced a record mutation inside release verification. Release now durably
+  seals agent-record mutations before the final verification and signing step. Publication leases
+  last through required directory sync; release refuses an in-flight publication. Store deletes,
+  late snapshots and new annotations cannot change the certified source afterward.
+- A failed verification retains the seal after restart. Cancellation reopens admission only after
+  its journal write; refused writes are not retained as future retries. Previously admitted failed
+  publications keep their exact repair input. Checkpoints of unchanged records remain available.
+- Seal-acknowledgement failure never enters verification. Existing release rename/fsync failures
+  still recover the irrevocable release, rather than mistaking the new preceding seal for release.
+- A legacy direct-release regression exposed annotation adoption occurring after the seal. Known
+  checkpoint repairs and adoption now run before it, and final verification repeats inside it.
+  The network fixture removes both revision and annotation coverage metadata before cold recovery.
+- Native/context network cases verify post-release write and delete refusal, failed-verification
+  annotation refusal, cancel/reprepare, changed-witness refusal and earlier-history recovery.
+  These synthetic-provider cases do not prove authenticated or physical-host continuity.
+
+Release admission validation:
+$ npx vitest run src/server/agent/agent-storage.test.ts src/server/handoff/ownership.posix.test.ts --bail=1
+  86 passed, 1 Windows-only case skipped.
+$ npx vitest run src/server/handoff/archive.e2e.test.ts --testNamePattern='legacy directory|preserves unsent restart notes|handoff fenced until prompt annotation' --bail=1
+  Legacy directory and native restart-note cases passed; the first annotation case exposed a test
+  entering preflight repair rather than final verification. It now forces a changed-workspace
+  refusal after valid checkpoints, then asserts the retained seal.
+$ npx vitest run src/server/handoff/archive.e2e.test.ts --testNamePattern='preserves unsent restart notes through context|handoff fenced until prompt annotation' --bail=1
+  3 passed, 27 unrelated cases skipped. All five selected network cases pass across these runs.
+Typecheck, lint and formatting pass. The main daemon was not restarted.
+
+Record revision and rollback validation:
+- The initial regression reproduced a stale full-record write erasing a newer title or archive
+  decision. Competing updates now reject the stale candidate, including after a cold load.
+- Closed checkpoints and inactive installation keep the same revision for identical retries.
+  A failed directory sync retains its exact candidate and revision; a later mutation repairs it
+  before advancing. Legacy records acquire a revision on first write; exhaustion refuses to wrap.
+- A manager regression reproduced returning the previous revision after detaching a stored agent.
+  Metadata and archive operations now return the committed record.
+- Ubuntu job 114249684360 in run 38064594811 exposed archive acknowledgement while a
+  background snapshot advanced the record revision (expected 7, found 8 locally). Archiving now
+  applies its fields against the latest record inside the storage queue, with the generation
+  check retained. The isolated Hub WebSocket file passes all 19 cases, including all three CI
+  archive failures. A store regression checks concurrent title/snapshot/archive writes through
+  a fresh store. Full-record stale writes still reject. All 17 selected manager archive,
+  unarchive and cascade cases also pass. Their child-failure fixture now injects at the store's
+  mutation-admission port; overriding upsert no longer exercises the serialized archive path.
+- The same Ubuntu job's seven permission-notification failures came from a fixture replacing
+  manager methods and fabricating non-UUID agents outside its registry. Prompt annotation now
+  goes through the real manager, so that fixture failed before provider dispatch. It now creates
+  registered agents and uses a controlled provider with real storage, subscriptions, annotation
+  and prompt dispatch. The permission/storage selection passes 63 cases, with one platform case
+  skipped. These tests exercise provider rejection, repeated/concurrent permissions, stale
+  notifications and archived callers without bypassing the mutation guard.
+- Windows job 114249684484 in the same run repeated those permission failures and one archive
+  failure. Its carried-prompt case reached the platform's earlier directory-durability refusal;
+  the assertion now checks that Windows error while retaining the unresolved-delivery refusal
+  on POSIX. Recovery remains unavailable on Windows and the persisted obligation is unchanged.
+- Ten Windows workspace checks applied the source verifier to restored destinations. An
+  inherited global pull.rebase value reproduces the same failure on Linux: restoration writes
+  the captured policy locally, and the source verifier reads both global and local entries.
+  Destination assertions now use the archive verifier that destination activation uses. The
+  authentication-rewrite case also captures source-global tracking, changes destination-global
+  policy, verifies installed values and refuses a later local policy change. All 115 workspace
+  cases pass with a nonempty global pull.rebase setting. Source verification stays unchanged.
+  Native Windows verification of these repairs remains pending.
+
+  $ npx vitest run src/server/hub/execution-session.websocket.test.ts --bail=1
+    Test Files  1 passed (1)
+         Tests  19 passed (19)
+      Duration  28.59s (tests 16.98s)
+  $ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/agent/agent-manager.test.ts -t 'archiveAgent|archiveSnapshot|unarchiveSnapshot|archive.*runtime' --bail=1
+    Test Files  1 passed (1)
+         Tests  17 passed | 274 skipped (291)
+      Duration  1.71s (tests 119ms)
+  $ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/agent/agent-prompt.test.ts packages/server/src/server/agent/agent-storage.test.ts --bail=1
+    Test Files  2 passed (2)
+         Tests  63 passed | 1 skipped (64)
+      Duration  2.40s (tests 837ms)
+  $ GIT_CONFIG_GLOBAL=/tmp/handoff-windows-gitconfig GIT_CONFIG_NOSYSTEM=1 npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/handoff/workspace.test.ts --bail=1
+    Test Files  1 passed (1)
+         Tests  115 passed (115)
+      Duration  19.87s (tests 19.19s)
+  $ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/agent/agent-manager.test.ts -t 'a native carried note records its identity' --bail=1
+    Test Files  1 passed (1)
+         Tests  2 passed | 289 skipped (291)
+      Duration  1.60s (tests 72ms)
+
+- Playwright shard 3 (job 114249684474, same run) separately failed two compact plugin
+  navigation cases and retried a single-project filter case. Error snapshots show a plugin
+  screen with Close plugin, no Open menu, and a leftover projects-settings-empty project.
+  Compact cases now close the plugin before reopening it through the sidebar. The empty-project
+  fixture uses the daemon project ID for cleanup instead of the sidebar's cross-host view key.
+  The automatic leak check now enumerates listProjects, including projects with zero workspaces.
+  All four affected/cause cases pass consecutively on one worker, preserving audio, context,
+  clipboard, scrolling and single-project visibility assertions. These fixture repairs do not
+  change app UI behavior.
+
+  $ npm run test:e2e -- e2e/browser/plugin-host-ui.spec.ts e2e/browser/plugin-modal-body.spec.ts e2e/browser/projects-settings.spec.ts e2e/browser/sidebar-project-filter.spec.ts --grep 'plugin modal adapts|plugin bodies support|freshly-added project|hides the filter row' --workers=1 --max-failures=1
+    4 passed (1.4m)
+  Local Chromium used the installed browser library path and font config; isolated test daemon
+  and Metro both stopped normally.
+
+- Playwright shard 1 (job 114249684480, same run) failed image-adjacent text selection on all
+  attempts. A real mouse drag stayed captured by its initial image wrapper even after the pointer
+  reached the text below. The retained mobile-panel detectors still installed web pointer handlers
+  with enabled(false). Disabled web opening gestures now use an empty composition, keeping the
+  navigator's ancestors mounted while removing those handlers. Native and enabled compact
+  gestures keep their existing behavior. The image case verifies the native range and exact
+  clipboard contents, then repeats after a desktop/compact/desktop round trip.
+- The same shard's directory-search retry raced input focus. Its keyboard case now waits for
+  focus and verifies the typed query before checking results. That case and the Markdown-structure
+  selection case pass. The first combined run then caught an over-strict new native-range
+  assertion: the browser includes a gap newline. Only the native range assertion trims that gap;
+  clipboard assertions still require the exact text. The image case subsequently passes (11.9s).
+  That run was interrupted before the two handoff resize cases finished; its image result is
+  retained, and only the unfinished resize cases are rerun.
+
+  $ npm run test:e2e -- e2e/browser/assistant-selection-copy.spec.ts e2e/browser/add-project-flow.spec.ts --grep 'copying .*selection|keyboard directory search' --workers=1 --max-failures=1
+    2 passed; image case failed on the newly added native-range gap assertion.
+  $ npm run test:e2e -- e2e/browser/assistant-selection-copy.spec.ts e2e/browser/workspace-handoff.spec.ts --grep 'copying a selection across an assistant image|pages all exclusions' --workers=1 --max-failures=1
+    Image case passed (11.9s); run interrupted before resize results.
+  $ npm run test:e2e -- e2e/browser/workspace-handoff.spec.ts --grep 'pages all exclusions' --workers=1 --max-failures=1
+    2 passed (1.8m)
+    Desktop 36.3s; compact 44.7s. Both preserve review and preparation across repeated
+    breakpoint changes, then activate the destination with excluded files absent.
+    Isolated daemon and Metro stopped normally.
+  Nine distinct browser cases pass across these focused runs, including the four shard-3 cases.
+
+- Failed provider import restores its placement/label patch while retaining concurrent title,
+  label edits and pending restart notes. It no longer writes an old full-record copy.
+- Native and context network cases reject a v3 preparation missing its revision, and reject a
+  record changed then restored to its captured value. A new preparation succeeds. Retained v1
+  native and v2 context preparations still recover across daemon restart.
+- The store/manager selection passes 51 cases (one Windows-only case and 267 unrelated manager
+  cases skipped); import storage cases pass 17; the three selected network cases pass.
+  These fixtures use synthetic providers. Full writer sealing and crash-stop proof remain open.
+- At 099c1e5a5, running the complete archive test file after the bundle-version fix reached an
+  obsolete MCP fixture write: expected record revision 0, found 1 (34 cases passed before bail).
+  After that fixture was corrected, both MCP modes passed and the mixed-mode fixture exposed the
+  same issue while restoring runtime metadata: expected revision 1, found 2.
+  Both fixtures now patch the current committed record. After a rejected release, they assert
+  that restoration is fenced, cancel the transfer, restore against the current revision and
+  prepare a new transfer. Runtime storage, import namespace and cwd changes remain separate
+  refusal checks. MCP omission and mixed continuation retain their final activation/cancellation
+  and history assertions; no production barrier was relaxed.
+
+  Initial full-file command:
+  $ npx vitest run src/server/handoff/archive.e2e.test.ts --bail=1 --maxWorkers=1
+    Tests  1 failed | 34 passed (41)
+    AgentRecordConflictError: Agent record revision changed: expected 0, found 1
+  Focused MCP/mixed command after the MCP fixture correction:
+  $ npx vitest run src/server/handoff/archive.e2e.test.ts -t 'reviews omitted conversation MCP|retains mixed native/context' --bail=1 --maxWorkers=1
+    Tests  1 failed | 2 passed | 37 skipped (41)
+    AgentRecordConflictError: Agent record revision changed: expected 1, found 2
+  After both fixture corrections:
+  $ npx vitest run src/server/handoff/archive.e2e.test.ts --bail=1 --maxWorkers=1
+    Test Files  1 passed (1)
+         Tests  41 passed (41)
+      Duration  75.09s (tests 64.08s)
+  The final mixed-mode fixtures additionally restart both daemons after the replacement
+  preparation, before final activation or cancellation, then verify the recovered mode choices:
+  $ npx vitest run src/server/handoff/archive.e2e.test.ts -t 'retains mixed native/context' --bail=1 --maxWorkers=1
+    Test Files  1 passed (1)
+         Tests  2 passed | 39 skipped (41)
+      Duration  20.58s (tests 6.66s)
+  No provider turn or browser was run for this fixture repair. The full-file result is from Linux;
+  other platforms remain with CI. The main daemon was not restarted.
+
+Unsent notes and repeated context transfers:
+- Source preparation captures pending restart notes; release refuses a changed note set. Native
+  and context activation retain those notes without acknowledging delivery. The network cases
+  restart both hosts and exercise native return before a first provider turn.
+- macOS CI job 114240121309 at 6c0e075e3 failed the native case's stale bundle-version
+  assertion (expected 4, received 5). Source preparation now includes a schedule snapshot even
+  when it is empty. Both continuation cases assert version 5 and the empty schedule snapshot.
+  Job: https://github.com/ajmariduena/paseo/actions/runs/38061322137/job/114240121309
+  $ npx vitest run src/server/handoff/archive.e2e.test.ts -t 'preserves unsent restart notes' --bail=1
+    Test Files  1 passed (1)
+         Tests  2 passed | 39 skipped (41)
+      Duration  16.13s (tests 5.75s)
+  This rerun used isolated Linux daemons; macOS verification remains with CI. Root typecheck
+  and lint pass. No production behavior changed for this assertion repair.
+- macOS job 114244926311 at f08f0e2ef then reached the context-return provenance assertion:
+  expected /var/folders/.../notes-workspace, received /private/var/folders/.../notes-workspace.
+  The stored source path is canonical. Both continuation fixtures now enter through a real
+  directory symlink, so Linux exercises alias resolution too; context-return expectations use
+  realpath for the original source and retain both repeated-return assertions.
+  Job: https://github.com/ajmariduena/paseo/actions/runs/38062971030/job/114244926311
+  Before correcting the expectation, the symlink reproduced the same failure locally:
+  $ npx vitest run src/server/handoff/archive.e2e.test.ts -t 'preserves unsent restart notes through context' --bail=1
+    Tests  1 failed | 40 skipped (41)
+    Expected sourceCwd: /tmp/<fixture>/notes-workspace
+    Received sourceCwd: /tmp/<fixture>/notes-workspace-target
+  After the correction:
+  $ npx vitest run src/server/handoff/archive.e2e.test.ts -t 'preserves unsent restart notes' --bail=1
+    Test Files  1 passed (1)
+         Tests  2 passed | 39 skipped (41)
+      Duration  15.95s (tests 5.76s)
+  These are isolated Linux daemon tests with synthetic provider files. macOS job 114249684359
+  at 20e11a9f8 subsequently passed all 278 handoff cases (two skipped), including this correction.
+  That job later failed the separate launch-wrapper case documented above. Production path
+  handling was unchanged.
+- Context-only re-export reads the private verified archive after visible copies are deleted or
+  ignored. Three unused-context hops retain original history, artifacts and pending notes. A
+  forced native choice refuses and can be cancelled; damaged history or changed context refuses
+  release and recovers after repair. The retired source serves readable rows without loading it.
+- The new regression first refused a conversation with local native work after context export.
+  Version 3 now carries a flat list of earlier segments with their native artifacts and origin,
+  plus a verified index. Only the current native session resumes. Its brief includes earlier and
+  latest excerpts and points to every segment. The source rechecks prior-archive binding at release.
+- The network case now selects earlier rows by their bound digest, refuses an unknown segment,
+  checks both origins and prompt excerpts, and refuses an altered workspace index. A native
+  return preserves the same session without duplicate segments. Two more context-mode hops
+  preserve both segments, including a hop before any local runtime opens.
+- Archive cases refuse old-format segment inventories, missing indexes, duplicates, excessive
+  segments, reordered indexes and changed provenance. Legacy bundle versions 1 and 2 remain
+  readable. History selection and catalog wire fields are optional; old request/reply shapes parse.
+- Provider files are synthetic; network version-only executables reject provider turns. Browser
+  fixtures use the existing fake provider and seeded transcripts. These establish archive,
+  transaction and UI behavior, not fresh authenticated-provider or physical-host continuity.
+- Remaining producer quiescence, writer inventory, uncertain-completion artifact recovery
+  and durable process identity remain open under the acceptance plan.
+
+Browser setup and regression:
+- The first launch lacked libnspr4; adding only libraries then crashed the target before opening
+  handoff. The documented temporary font configuration and browser path restored rendering.
+- Both layout cases then completed the history assertions, but cleanup tried to delete a project
+  whose workspace had become a released source. Isolated daemons already remove their own project
+  registries on shutdown; fixture cleanup no longer invokes that fenced mutation.
+- Browser environment: FONTCONFIG_FILE=/tmp/handoff-browser-fonts.conf,
+  LD_LIBRARY_PATH=/tmp/handoff-browser-libs/extracted/usr/lib/x86_64-linux-gnu,
+  PLAYWRIGHT_BROWSERS_PATH=/tmp/handoff-website-browsers,
+  PATH=/tmp/handoff-lsof/extracted/usr/bin:$PATH.
+
+Final browser result:
+$ npm run test:e2e --workspace=@getpaseo/app -- workspace-handoff.spec.ts --grep 'preserves mixed conversation choices' --workers=1
+  desktop preserves mixed conversation choices through recovery and activation: passed (53.4s)
+  compact preserves mixed conversation choices through recovery and activation: passed (54.9s)
+  2 passed (2.4m); isolated daemon and Metro stopped.
+Both cases now include a native return after seeded local work, switching to the older host and
+back to the latest one, and a read-only history surface. Captures:
+  handoff-history-parts-desktop.png
+  handoff-history-parts-compact.png
+Typecheck, lint and formatting pass.
+
+Current storage validation:
+Storage suites:
+ Test Files  2 passed (2)
+      Tests  81 passed (81)
+   Duration  8.57s (transform 1.73s, setup 59ms, import 3.19s, tests 5.07s, environment 0ms)
+
+Wire compatibility:
+ Test Files  1 passed (1)
+      Tests  39 passed (39)
+   Duration  2.60s (transform 1.28s, setup 0ms, import 2.16s, tests 206ms, environment 0ms)
+
+Two selected network cases:
+ Test Files  1 passed (1)
+      Tests  2 passed | 28 skipped (30)
+   Duration  25.84s (transform 12.69s, setup 48ms, import 15.58s, tests 10.06s, environment 0ms)
+
+Additional context-hop assertions:
+ Test Files  1 passed (1)
+      Tests  1 passed | 29 skipped (30)
+   Duration  22.49s (transform 11.59s, setup 96ms, import 14.29s, tests 7.90s, environment 0ms)
+
+Translation resources:
+ Test Files  1 passed (1)
+      Tests  40 passed (40)
+   Duration  1.69s (transform 655ms, setup 43ms, import 725ms, tests 804ms, environment 0ms)
+
+Carried-context preparation and acknowledgement:
+- A provider-entry regression first observed no durable association between restart notes and
+  the receiving turn. The record now retains the exact carried notes/context before admission,
+  bound to its runtime generation and native UUID where supported. Plain native user requests
+  get an identity-only annotation so capture can prove presence without changing the visible row.
+- Runtime completion settles that exact delivery with synchronized publication. New notes survive;
+  replacing context refuses the old acknowledgement. An upsert regression also reproduced loss
+  of pending notes; ordinary upserts now retain the store-owned pending note.
+- Known preparation/disposition/completion storage failures retain exact retry outcomes. Closing
+  repairs them without sending another provider turn. Before provider admission, a failed native
+  preparation can be withdrawn; this cannot downgrade a dispatched identity.
+- An unknown provider invocation keeps its durable marker, blocks new user/background turns and
+  refuses the handoff checkpoint. Cold reads, snapshots and a replacement generation preserve it;
+  a new generation cannot settle the old delivery. Replay events never acknowledge a live delivery.
+- The three changed files pass 339 tests (278 manager, 35 storage, 26 annotation); one Windows-only
+  storage test is skipped. A full manager run found a changed cancellation error; restoring the
+  existing cancellation distinction made the complete focused run pass. Execution used the same
+  verified unsandboxed context required by the manager's Node child-stdout tests. No real-provider
+  call, UI assertion or physical-host continuity is added by these fixtures.
+- Uncertain completion still needs provider-artifact recovery, and prior handoff context/history
+  must be combined with subsequent native history. This does not complete the overall persistence barrier.
+
+Current carried-context validation output:
+RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  3 passed (3)
+      Tests  339 passed | 1 skipped (340)
+   Start at  03:44:35
+   Duration  13.24s (transform 1.13s, setup 63ms, import 2.03s, tests 10.79s, environment 0ms)
+
+Annotation checkpoint and bounded publication repair:
+- The cold-reader regression first reproduced silent acceptance of an annotation file rolled
+  back to an older valid prefix. The agent record now witnesses its exact revision/digest/count.
+- Before changing the annotation file, the existing agent store durably retains one entry delta
+  with its base and intended checkpoint. Fresh instances recover only either exact file state;
+  unknown suffixes remain unchanged and refuse certification. Record prepare/commit and annotation
+  synchronization failures are covered before and after restart. Snapshots, upserts and replacement
+  runtimes preserve the witness and pending input. Legacy adoption remains explicitly scoped.
+- Known native-disposition storage failures retry on close without another provider turn. The
+  manager still retains unknown event faults and native prepared-attempt uncertainty.
+- A separate regression reproduced record lookup failure for ephemeral internal prompts. Their
+  annotations now remain runtime-owned in memory, without creating a durable agent or allowing
+  a handoff checkpoint. The notification still appears in the internal timeline.
+- Native/context two-daemon cases restart both hosts, reject corrupted annotation bytes, reject a
+  changed witness even when the projected rows are unchanged, and activate after a fresh transfer.
+  Their closed synthetic conversations are seeded through the store; production annotation admission
+  still requires a live, unfenced runtime. Neither case invokes a real provider.
+- Focused validation: 274 manager cases, 31 storage cases and 25 annotation cases passed; one
+  Windows-only storage case was skipped. Both affected network cases passed (26 unrelated skipped).
+  Full manager execution used the unsandboxed context because the established Node child-stdout
+  sandbox issue affects its process cases. The main daemon was not restarted.
+
+Current checkpoint validation output:
+
+Manager
+RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  274 passed (274)
+   Start at  03:29:52
+   Duration  11.63s (transform 1.06s, setup 39ms, import 1.42s, tests 10.05s, environment 0ms)
+
+Annotation and agent stores
+RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  2 passed (2)
+      Tests  56 passed | 1 skipped (57)
+   Start at  03:26:06
+   Duration  2.02s (transform 609ms, setup 56ms, import 1.19s, tests 533ms, environment 0ms)
+
+Network transfer
+RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  2 passed | 26 skipped (28)
+   Start at  03:25:35
+   Duration  16.22s (transform 10.40s, setup 51ms, import 13.17s, tests 2.87s, environment 0ms)
+
+Native prompt identity and annotation retention:
+- Claude preserves caller UUIDs for start and steer, reports a withdrawn start when startup
+  fails before input admission, and refuses input into a closed SDK input queue. Provider
+  aliases forward this contract. The manager persists a native attempt before the call and
+  its known disposition afterward; an unavailable steer and its retry get different IDs.
+- The new manager case reads the prepared identity from disk inside provider admission, then
+  projects a repeated user prompt, a notification with a prepended restart note, and a retried
+  steer. Only the matching dispatched native messages become notifications. All 271 tests in
+  the affected manager file pass outside the sandbox (the previously verified Node stdout
+  sandbox defect still requires that execution context).
+- Annotation matching excludes prepared/withdrawn attempts. Handoff rejects unresolved
+  attempts or missing dispatched UUIDs. A failed disposition fsync retains its exact candidate
+  and retries publication without invoking a provider; terminal dispositions cannot change.
+- A 501st entry reproduced loss of the first annotation. Entries now remain within the byte
+  budget without eviction; oversize additions preserve existing data. Admission reserves the
+  bytes needed for a final disposition. Matching uses indexes so removing the old entry cap
+  does not introduce a scan of every annotation for each history row.
+- The two affected provider/store files pass 110 tests. After indexing the matcher and
+  tightening duplicate-identity validation, all 15 annotation-store tests pass again.
+- After the admission helper refactor, all three affected files pass together: 381 tests.
+  An additional focused case verifies the source fence rejects annotation writes (1 passed).
+  Closed-runtime annotation writes also refuse without changing the saved presentation file.
+
+These are SDK-boundary fixtures, controlled manager sessions and real annotation files. They
+do not prove authenticated provider continuity, legacy lifetime coverage, crash repair of an ambiguous attempt, error-row capacity or completion of carried
+notes. Native artifacts may be incomplete after compaction; absence still refuses certification.
+
+Restart intent retention and note repair:
+- A failed pending-note write reproduced consumption of the only recovery input. Both idle
+  agents and declined continuations now retain the intent, report the failure and retry from
+  the saved tasks. A second shutdown preserves unresolved tasks; a new storage instance
+  can save the pending note without sending a provider prompt.
+- A held continuation keeps its intent until dispatch settles. Publishing a newer shutdown
+  during that wait retains both task inventories, and the older completion cannot delete it.
+- A completed receipt for a dropped dispatch reproduced loss of its failed fallback note on
+  retry. Receipt hits now retain the note: a receipt does not prove native delivery.
+- A failed POSIX synchronization reproduced acknowledgement of an unsynchronized note.
+  The write now retains its immutable candidate and withholds acknowledgement until repair
+  synchronizes it. Intent publication also synchronizes its file and directories on POSIX.
+- The two changed owning suites pass 45 tests; one Windows-only case is skipped on Linux.
+  Note loss, shutdown overwrite, receipt ambiguity and premature synchronization
+  acknowledgement were reproduced before their fixes. Tests use real AgentStorage and intent files,
+  controlled providers and injected write/synchronization failures. No real provider prompt
+  or main daemon restart was used.
+
+This repairs transfer of restart-note input into storage. It does not prove delivery from
+native history, resolve unknown manager faults, or provide exactly-once note presentation.
+Windows continues using ordinary atomic persistence and cannot certify durable handoff.
+
+Manager runtime work and closure:
+- A held runtime-info lookup reproduced a closed publication before its final metadata
+  arrived. Close and reload now join event work and tracked runtime-info/note descendants.
+  A bounded timeout leaves the same work owned; retry closes with the final metadata.
+- A callback retained after unsubscribe reproduced a mode change on the replacement.
+  Session events now retain the originating live-agent identity at admission and dequeue;
+  retired callbacks cannot mutate the replacement.
+- A failed event and a failed restart-note write each reproduced successful closure.
+  Their outcomes now remain separate from queue progress. Provider shutdown still runs,
+  but no closed snapshot is published. Retry/reload preserve the fault; reconstruction
+  and a later clean generation retain the unresolved predecessor in AgentStorage.
+- A throwing delivery subscriber reproduced lost delivery to the next subscriber.
+  Delivery faults are isolated and do not become authoritative event faults.
+- A blocked event handler reproduced a provider left running during explicit close.
+  Explicit closure now stops it before joining the handler, then publishes the received
+  error row before closing. The injected timeline store holds a real async boundary;
+  this is not certification of the optional durable timeline backend.
+- Eighty selected manager cases passed; the complete affected manager file then passed
+  all 270 cases outside the sandbox. A sandboxed Node child returned empty stdout even
+  in a standalone reproduction; the same harmless probe returned "ok" outside it.
+  No test assertions or provider behavior were bypassed. Two old MCP rejection
+  assertions now require the opening marker, including the retained resume handle.
+  The create assertion also failed at committed 5137b3795; no runtime behavior was changed
+  to satisfy those assertions.
+
+This is admission, drain and refusal coverage. It does not implement durable semantic repair,
+all manager/plugin/automation descendants, presentation coverage, process identity recovery,
+or fresh authenticated/physical-host continuity. A retained fault is not a repair proof.
+
+SDK callback ownership and permission settlement:
+- Queries retain their own admitted hooks and permission callbacks through retirement.
+  The pinned SDK invokes control callbacks without awaiting them in its message reader;
+  EOF alone does not join their async bodies. Shutdown cancels that query's permissions,
+  completes SDK cleanup, seals callback admission and joins admitted callbacks.
+- A failed plan-mode change reproduced an orphaned permission callback. Responses now
+  retain cancellation ownership while awaiting the provider, reject duplicate answers,
+  settle failures and avoid publishing approval after cancellation.
+- The two affected suites passed 110 cases. After adding shutdown-time permissions and
+  adjusting denial settlement, all 16 selected permission/failure cases passed (95 skipped).
+  These cover failed and concurrent plan approvals, SDK abort, query replacement without
+  SDK abort delivery, callbacks arriving during stop, and refusal of retired callbacks.
+
+These tests inject SDK queries and control replies. Manager descendants, semantic repair,
+presentation coverage and durable process recovery remain unfinished. No fresh authenticated
+provider or physical-host continuity is claimed.
+
+Admitted provider operations during closure (bbc880006):
+- A held mode-change response reproduced successful closure before the operation had
+  finished. Closure now waits for admitted public mutations, query opening, detached
+  slash-command rewind and cancellation work. A timeout keeps the work owned for retry.
+- The current spawn suite passes 15 cases, including held mode changes, held binary
+  resolution with no late launch, concurrent controls opening one query, refused
+  mutations after close, detached rewind completion and reentrant/idempotent closure.
+- Six rewind-anchor cases pass. The new case holds a conversation fork across close,
+  then verifies the final handle is the forked session and that the fork happened once.
+- Seventy selected existing control cases pass across three suites (74 unrelated cases
+  skipped), covering mode, model, thinking, features, permissions, steering and interrupt.
+
+These tests inject SDK streams and fork/control replies. They prove operation settlement
+and admission, not durable repair of an operation with an unknown partial outcome. The SDK
+callback follow-up above adds per-query ownership; manager descendants, semantic obligations
+and process recovery remain part of the unfinished conversation barrier.
+
+Claude query shutdown and final session handles (37b74831f):
+- The regression first reproduced buffered assistant rows disappearing during close.
+  Claude now retains current and retiring query resources through process stop,
+  message-pump drain and iterator return. Native stdout reaches EOF before SDK cleanup
+  can discard its buffered frames. Submission timers are tracked and flushed before
+  subscribers and turn correlation are removed.
+- Pump and iterator-return timeouts refuse closure and retain the pending operation.
+  Retrying a rejected return issues a new cleanup attempt; retrying a pending return
+  joins the existing attempt. Handler faults continue to refuse closure after retry.
+- Query replacement drains the old session before selecting the resume handle.
+  AgentManager reload likewise reads the provider handle after close and event drain;
+  its regression first resumed and stored the old handle. A failed replacement keeps
+  its opening generation across a later resume and successful close.
+
+Scope: the six changed Claude suites passed 158 cases with one worker. Two subsequent
+recovery cases bring the final spawn suite to nine passing cases; its remaining sibling
+suites were not repeated. The focused manager run passed 26 cases, then its failed-opening
+case passed again after making the stored-generation assertion portable to Windows.
+Fixtures inject SDK streams; one process-retention case launches a harmless real Node
+child and terminates it. No credentials, provider prompts or production daemons are used.
+Complete opening/control/hook/rewind/manager callback quiescence, durable failure obligations,
+OS-process crash recovery and fresh authenticated provider continuity remain unproved.
+
+Runtime opening generations:
+- Registered, non-internal create, resume, import and reload write an opening marker
+  before calling the provider. POSIX waits for file and directory synchronization.
+  Windows retains ordinary atomic persistence; durable handoff remains unavailable.
+- A fresh AgentStorage observed no record from inside provider create before this
+  change. It now observes the initializing generation. Interrupted replacement calls
+  leave the new opening visible instead of a preceding closed record. A failed sync
+  prevents any provider create call.
+- Delayed snapshots and record replacements cannot write into a different generation
+  or reopen a closed one. Store reads return copies so callers cannot edit recovery
+  metadata outside the write queue. Concurrent create calls for one ID open one provider.
+- An unclosed predecessor is retained across store reconstruction, later opening,
+  clean close and ordinary metadata writes. Handoff checkpoint refuses it. At capacity,
+  another opening fails without dropping any predecessor.
+- Imported history still supplies its title and first ready publication. The initial
+  opening-marker implementation broke this title behavior; the owning regression
+  reproduced it and now passes. Unarchive rereads the closed record before restoring
+  metadata, preserving its runtime closure.
+
+Scope: 29 AgentStorage cases pass (one Windows-only case skipped), along with 16
+focused AgentManager cases. Provider adapters are test doubles; the storage and
+synchronization use real temporary files. This is not fresh provider continuity,
+a physical cross-host test, an OS-process exit proof or a power-cut simulation.
+
+Remaining barrier work: per-record revision guards; semantic obligations and their
+repair evidence; callback quiescence and process-stop recovery; durable presentation
+coverage. The retained predecessor identities report uncertainty but do not implement
+its repair proof. A generation and lastStatus=closed are not a complete certificate.
+Internal agents and transient provider probes still need resource dispositions.
+
+Runtime-info closure regression before the fix
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/agent-manager.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  load multiple .env files with { path: ['.env.local', '.env'] }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  specify custom .env file path with { path: '/custom/path/.env' }
+
+ ❯ src/server/agent/agent-manager.test.ts (265 tests | 1 failed | 264 skipped) 41ms
+   × close joins runtime information work started by a session event 37ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/agent-manager.test.ts > close joins runtime information work started by a session event
+AssertionError: expected [ { …(35) } ] to deeply equal []
+
+- Expected
++ Received
+
+- []
++ [
++   {
++     "activeForegroundTurnId": null,
++     "activeTurnId": null,
++     "activeTurnStartedAt": null,
++     "attention": {
++       "requiresAttention": false,
++     },
++     "availableModes": [],
++     "backgroundTasks": [],
++     "bufferedPermissionResolutions": Map {},
++     "capabilities": {
++       "supportsDynamicModes": false,
++       "supportsMcpServers": false,
++       "supportsReasoningStream": false,
++       "supportsSessionListing": true,
++       "supportsSessionPersistence": false,
++       "supportsStreaming": false,
++       "supportsToolInvocations": false,
++     },
++     "config": {
++       "cwd": "/home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server",
++       "model": "gpt-5.4",
++       "provider": "codex",
++     },
++     "createdAt": 2026-10-10T00:10:29.584Z,
++     "currentModeId": null,
++     "cwd": "/home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server",
++     "finalizedForegroundTurnIds": Set {},
++     "foregroundTurnWaiters": Set {},
++     "historyPrimed": true,
++     "id": "7473648f-95c3-439d-885a-0c0b2962cffe",
++     "inFlightPermissionResponses": Set {},
++     "internal": false,
++     "labels": {},
++     "lastError": undefined,
++     "lastTurnOutcome": undefined,
++     "lastUsage": undefined,
++     "lastUserMessageAt": null,
++     "lifecycle": "closed",
++     "owner": undefined,
++     "pendingPermissions": Map {},
++     "pendingReplacement": false,
++     "persistence": {
++       "metadata": {
++         "cwd": "/home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server",
++       },
++       "provider": "codex",
++       "sessionId": "3f82688b-6051-4580-943e-7d4f981afc71",
++     },
++     "provider": "codex",
++     "runtimeGenerationId": undefined,
++     "runtimeInfo": {
++       "modeId": null,
++       "model": null,
++       "provider": "codex",
++       "sessionId": "3f82688b-6051-4580-943e-7d4f981afc71",
++     },
++     "session": null,
++     "unsubscribeSession": null,
++     "updatedAt": 2026-10-10T00:10:29.587Z,
++     "workspaceId": undefined,
++   },
++ ]
+
+ ❯ src/server/agent/agent-manager.test.ts:3330:68
+    3328|     await providerClosed.promise;
+    3329|     await vi.advanceTimersByTimeAsync(0);
+    3330|     expect(states.filter((state) => state.lifecycle === "closed")).toE…
+       |                                                                    ^
+    3331|     finished.resolve();
+    3332|     await closing;
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 264 skipped (265)
+   Start at  02:10:27
+   Duration  1.65s (transform 1.07s, setup 41ms, import 1.45s, tests 41ms, environment 0ms)
+
+
+
+Retired callback regression against the committed manager
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/agent-manager.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  write to custom object with { processEnv: myObject }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  specify custom .env file path with { path: '/custom/path/.env' }
+
+ ❯ src/server/agent/agent-manager.test.ts (266 tests | 1 failed | 265 skipped) 28ms
+   × a callback retained by a replaced session cannot mutate its replacement 25ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/agent-manager.test.ts > a callback retained by a replaced session cannot mutate its replacement
+AssertionError: expected 'retired-mode' to be 'auto' // Object.is equality
+
+Expected: "auto"
+Received: "retired-mode"
+
+ ❯ src/server/agent/agent-manager.test.ts:3368:57
+    3366|     session.deliverLateEvent({ type: "mode_changed", provider: "codex"…
+    3367|     await manager.flush();
+    3368|     expect(manager.getAgent(created.id)?.config.modeId).toBe("auto");
+       |                                                         ^
+    3369|   } finally {
+    3370|     await manager.closeAgent(created.id);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 265 skipped (266)
+   Start at  02:12:35
+   Duration  1.78s (transform 1.17s, setup 49ms, import 1.55s, tests 28ms, environment 0ms)
+
+
+
+Event failure before fault retention
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/agent-manager.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  write to custom object with { processEnv: myObject }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  override existing env vars with { override: true }
+
+ ❯ src/server/agent/agent-manager.test.ts (267 tests | 1 failed | 266 skipped) 28ms
+   × an event fault stops the provider but cannot certify closure or a later generation 26ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/agent-manager.test.ts > an event fault stops the provider but cannot certify closure or a later generation
+AssertionError: promise resolved "undefined" instead of rejecting
+
+- Expected:
+Error {
+  "message": "rejected promise",
+}
+
++ Received:
+undefined
+
+ ❯ src/server/agent/agent-manager.test.ts:3399:48
+    3397|     await manager.flush();
+    3398|     session.failDescription = false;
+    3399|     await expect(manager.closeAgent(created.id)).rejects.toThrow("even…
+       |                                                ^
+    3400|     expect(session.closes).toBe(1);
+    3401|     await expect(manager.closeAgent(created.id)).rejects.toThrow("even…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 266 skipped (267)
+   Start at  02:13:16
+   Duration  1.47s (transform 962ms, setup 47ms, import 1.28s, tests 28ms, environment 0ms)
+
+
+
+Restart-note failure before task ownership
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/agent-manager.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: 🔐 encrypt with Dotenvx: https://dotenvx.com
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: 🛠️  run anywhere with `dotenvx run -- yourcommand`
+
+ ❯ src/server/agent/agent-manager.test.ts (269 tests | 1 failed | 268 skipped) 37ms
+   × failed restart-note settlement remains part of the runtime closure barrier 35ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/agent-manager.test.ts > failed restart-note settlement remains part of the runtime closure barrier
+AssertionError: promise resolved "undefined" instead of rejecting
+
+- Expected:
+Error {
+  "message": "rejected promise",
+}
+
++ Received:
+undefined
+
+ ❯ src/server/agent/agent-manager.test.ts:3456:48
+    3454|     await manager.runAgent(created.id, "Continue");
+    3455|     await manager.flush();
+    3456|     await expect(manager.closeAgent(created.id)).rejects.toThrow("rest…
+       |                                                ^
+    3457|     expect((await storage.get(created.id))?.lastStatus).not.toBe("clos…
+    3458|     expect((await storage.get(created.id))?.pendingRestartNote).toEqua…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 268 skipped (269)
+   Start at  02:14:44
+   Duration  1.70s (transform 1.10s, setup 56ms, import 1.47s, tests 37ms, environment 0ms)
+
+
+
+Delivery isolation regression before the fix
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/agent-manager.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: 🛡️ auth for agents: https://vestauth.com
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  enable debug logging with { debug: true }
+
+ ❯ src/server/agent/agent-manager.test.ts (268 tests | 1 failed | 267 skipped) 27ms
+   × a throwing delivery subscriber cannot abort an event or block closure 24ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/agent-manager.test.ts > a throwing delivery subscriber cannot abort an event or block closure
+AssertionError: expected undefined to be 'changed' // Object.is equality
+
+- Expected:
+"changed"
+
++ Received:
+undefined
+
+ ❯ src/server/agent/agent-manager.test.ts:3432:42
+    3430|     client.sessions[0].pushEvent({ type: "mode_changed", provider: "co…
+    3431|     await manager.flush();
+    3432|     expect(states.at(-1)?.config.modeId).toBe("changed");
+       |                                          ^
+    3433|     await manager.closeAgent(created.id);
+    3434|     expect(states.at(-1)?.lifecycle).toBe("closed");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 267 skipped (268)
+   Start at  02:14:07
+   Duration  1.73s (transform 1.14s, setup 51ms, import 1.50s, tests 27ms, environment 0ms)
+
+
+
+Provider stop blocked by event handler before the fix
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/agent-manager.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: 🛠️  run anywhere with `dotenvx run -- yourcommand`
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  specify custom .env file path with { path: '/custom/path/.env' }
+
+ ❯ src/server/agent/agent-manager.test.ts (270 tests | 1 failed | 269 skipped) 31ms
+   × explicit close stops the provider before waiting for a blocked event handler 27ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/agent-manager.test.ts > explicit close stops the provider before waiting for a blocked event handler
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ src/server/agent/agent-manager.test.ts:3556:28
+    3554|     const closing = manager.closeAgent(created.id);
+    3555|     await vi.advanceTimersByTimeAsync(0);
+    3556|     expect(session.closed).toBe(true);
+       |                            ^
+    3557|     expect(manager.getAgent(created.id)).not.toBeNull();
+    3558|     finishRead.resolve();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 269 skipped (270)
+   Start at  02:19:00
+   Duration  1.89s (transform 1.18s, setup 48ms, import 1.65s, tests 31ms, environment 0ms)
+
+
+
+Final focused manager validation
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  80 passed | 190 skipped (270)
+   Start at  02:19:52
+   Duration  2.22s (transform 1.07s, setup 40ms, import 1.47s, tests 593ms, environment 0ms)
+
+
+
+Complete affected manager file, outside the subprocess sandbox
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  270 passed (270)
+   Start at  02:23:51
+   Duration  11.37s (transform 986ms, setup 43ms, import 1.31s, tests 9.90s, environment 0ms)
+
+
+Manager barrier workspace checks
+$ npm run typecheck
+Completed successfully for all workspaces.
+
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 2.9s on 5029 files with 177 rules using 4 threads.
+
+
+> paseo@0.11.1 format
+> oxfmt .
+
+Finished in 3781ms on 5374 files using 4 threads.
+
+
+Failed plan approval before callback settlement
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/providers/claude/agent.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: 🛡️ auth for agents: https://vestauth.com
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  override existing env vars with { override: true }
+
+ ❯ src/server/agent/providers/claude/agent.test.ts (91 tests | 1 failed | 90 skipped) 21ms
+     × a failed plan approval settles its SDK callback and permits closure 19ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/providers/claude/agent.test.ts > ClaudeAgentSession features > a failed plan approval settles its SDK callback and permits closure
+AssertionError: expected 'pending' to match object { message: 'mode refused' }
+
+- Expected:
+{
+  "message": "mode refused",
+}
+
++ Received:
+"pending"
+
+ ❯ src/server/agent/providers/claude/agent.test.ts:772:33
+    770|       ).rejects.toThrow("mode refused");
+    771|       await vi.advanceTimersByTimeAsync(0);
+    772|       expect(permissionOutcome).toMatchObject({ message: "mode refused…
+       |                                 ^
+    773|       await permission;
+    774|       expect(session.getPendingPermissions()).toEqual([]);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 90 skipped (91)
+   Start at  02:01:18
+   Duration  1.04s (transform 590ms, setup 45ms, import 856ms, tests 21ms, environment 0ms)
+
+
+
+Affected provider suites before final settlement adjustment
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  2 passed (2)
+      Tests  110 passed (110)
+   Start at  02:04:18
+   Duration  3.08s (transform 851ms, setup 89ms, import 1.87s, tests 745ms, environment 0ms)
+
+
+
+Final permission and callback regressions
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  2 passed (2)
+      Tests  16 passed | 95 skipped (111)
+   Start at  02:05:36
+   Duration  1.57s (transform 672ms, setup 53ms, import 1.22s, tests 66ms, environment 0ms)
+
+
+
+SDK callback final checks
+$ npm run typecheck
+Completed successfully for all workspaces.
+
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 17 skipped (18)
+   Start at  02:07:00
+   Duration  3.44s (transform 1.83s, setup 121ms, import 2.67s, tests 39ms, environment 0ms)
+
+
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 2.1s on 5029 files with 177 rules using 4 threads.
+
+
+> paseo@0.11.1 format
+> oxfmt .
+
+Finished in 6842ms on 5374 files using 4 threads.
+
+
+Held mode-change regression before operation draining
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/providers/claude/agent.spawn.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  specify custom .env file path with { path: '/custom/path/.env' }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  load multiple .env files with { path: ['.env.local', '.env'] }
+
+ ❯ src/server/agent/providers/claude/agent.spawn.test.ts (10 tests | 1 failed | 9 skipped) 20ms
+     × close waits for a mode change admitted before shutdown 14ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/providers/claude/agent.spawn.test.ts > Claude spawn override > close waits for a mode change admitted before shutdown
+AssertionError: expected null to match object { Object (message) }
+
+- Expected:
+{
+  "message": "Claude session operations did not settle during close",
+}
+
++ Received:
+null
+
+ ❯ src/server/agent/providers/claude/agent.spawn.test.ts:351:29
+    349|       const outcome = session.close().then(() => null, (error: unknown…
+    350|       await vi.advanceTimersByTimeAsync(3_000);
+    351|       expect(await outcome).toMatchObject({ message: "Claude session o…
+       |                             ^
+    352|       finish.resolve();
+    353|       await modeChanged;
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 9 skipped (10)
+   Start at  01:46:16
+   Duration  1.02s (transform 537ms, setup 43ms, import 811ms, tests 20ms, environment 0ms)
+
+
+
+Current spawn shutdown and admission cases
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  15 passed (15)
+   Start at  01:51:15
+   Duration  1.15s (transform 549ms, setup 42ms, import 840ms, tests 142ms, environment 0ms)
+
+
+
+Conversation fork shutdown and rewind anchors
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  6 passed (6)
+   Start at  01:50:01
+   Duration  1.05s (transform 576ms, setup 69ms, import 826ms, tests 39ms, environment 0ms)
+
+
+
+Selected existing provider controls
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  3 passed (3)
+      Tests  70 passed | 74 skipped (144)
+   Start at  01:51:45
+   Duration  3.81s (transform 1.50s, setup 148ms, import 2.79s, tests 282ms, environment 0ms)
+
+
+
+Typecheck after operation draining
+
+> paseo@0.11.1 typecheck
+> npm run typecheck --workspaces --if-present
+
+
+> @getpaseo/builtin-plugins@0.11.1 typecheck
+> tsgo -p tsconfig.json --noEmit
+
+
+> @getpaseo/expo-two-way-audio@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/highlight@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/plugin@0.11.1 typecheck
+> tsgo --noEmit && tsgo -p tsconfig.examples.json --noEmit
+
+
+> @getpaseo/protocol@0.11.1 pretypecheck
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/client@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/server@0.11.1 typecheck
+> tsgo -p tsconfig.server.typecheck.json --noEmit
+
+
+> @getpaseo/app@0.11.0-beta.36 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/relay@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/website@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/desktop@0.11.1 typecheck
+> tsgo --noEmit -p tsconfig.json
+
+
+> @getpaseo/cli@0.11.1 typecheck
+> tsgo --noEmit
+
+
+
+Lint after operation draining
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 3.5s on 5029 files with 177 rules using 4 threads.
+
+
+Buffered-frame regression before the fix
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/providers/claude/agent.spawn.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  override existing env vars with { override: true }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: 🔐 prevent committing .env to code: https://dotenvx.com/precommit
+
+ ❯ src/server/agent/providers/claude/agent.spawn.test.ts (4 tests | 1 failed | 3 skipped) 26ms
+     × close drains received frames before returning the iterator or dropping subscribers 18ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/providers/claude/agent.spawn.test.ts > Claude spawn override > close drains received frames before returning the iterator or dropping subscribers
+AssertionError: expected [] to match object [ …(2) ]
+
+- Expected
++ Received
+
+- [
+-   {
+-     "item": {
+-       "text": "queued before shutdown",
+-     },
+-   },
+-   {
+-     "item": {
+-       "text": "final received frame",
+-     },
+-   },
+- ]
++ []
+
+ ❯ src/server/agent/providers/claude/agent.spawn.test.ts:79:20
+     77|       await session.close();
+     78|       const text = events.filter((event) => event.type === "timeline" …
+     79|       expect(text).toMatchObject([
+       |                    ^
+     80|         { item: { text: "queued before shutdown" } },
+     81|         { item: { text: "final received frame" } },
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 3 skipped (4)
+   Start at  01:28:34
+   Duration  930ms (transform 504ms, setup 42ms, import 740ms, tests 26ms, environment 0ms)
+
+
+
+Final-handle reload regression before the fix
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/agent-manager.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  suppress all logs with { quiet: true }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  override existing env vars with { override: true }
+
+ ❯ src/server/agent/agent-manager.test.ts (264 tests | 1 failed | 263 skipped) 36ms
+   × reload resumes the final provider handle observed after shutdown 33ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/agent-manager.test.ts > reload resumes the final provider handle observed after shutdown
+AssertionError: expected '4f930c46-1395-4020-b4be-845a4a5fbcbb' to be '8a2bd0b8-30bb-4f3b-94f3-a6ada7f39f9d' // Object.is equality
+
+Expected: "8a2bd0b8-30bb-4f3b-94f3-a6ada7f39f9d"
+Received: "4f930c46-1395-4020-b4be-845a4a5fbcbb"
+
+ ❯ TestAgentClient.resumeSession src/server/agent/agent-manager.test.ts:12152:68
+    12150|     override async resumeSession(handle: AgentPersistenceHandle, confi…
+    12151|       resumedHandles.push(handle);
+    12152|       expect((await storage.get(agentId))?.persistence?.sessionId).toB…
+       |                                                                    ^
+    12153|       return new (class extends TestAgentSession {
+    12154|         override describePersistence() { return { provider: this.provi…
+ ❯ AgentManager.reloadAgentSessionInternal src/server/agent/agent-manager.ts:1910:11
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 263 skipped (264)
+   Start at  01:37:32
+   Duration  1.54s (transform 991ms, setup 42ms, import 1.34s, tests 36ms, environment 0ms)
+
+
+
+Changed Claude suites (one worker)
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  6 passed (6)
+      Tests  158 passed (158)
+   Start at  01:39:30
+   Duration  4.88s (transform 894ms, setup 122ms, import 2.71s, tests 1.22s, environment 1ms)
+
+
+
+Final spawn suite including retry and handler-fault cases
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  9 passed (9)
+   Start at  01:42:04
+   Duration  2.85s (transform 1.56s, setup 198ms, import 2.13s, tests 222ms, environment 0ms)
+
+
+
+Focused manager closure and reload cases
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  26 passed | 238 skipped (264)
+   Start at  01:39:18
+   Duration  1.93s (transform 1.04s, setup 50ms, import 1.40s, tests 355ms, environment 0ms)
+
+
+
+Portable failed-opening recovery assertion
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 263 skipped (264)
+   Start at  01:42:08
+   Duration  2.00s (transform 1.33s, setup 38ms, import 1.78s, tests 48ms, environment 0ms)
+
+
+
+Typecheck after query-drain changes
+
+> paseo@0.11.1 typecheck
+> npm run typecheck --workspaces --if-present
+
+
+> @getpaseo/builtin-plugins@0.11.1 typecheck
+> tsgo -p tsconfig.json --noEmit
+
+
+> @getpaseo/expo-two-way-audio@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/highlight@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/plugin@0.11.1 typecheck
+> tsgo --noEmit && tsgo -p tsconfig.examples.json --noEmit
+
+
+> @getpaseo/protocol@0.11.1 pretypecheck
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/client@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/server@0.11.1 typecheck
+> tsgo -p tsconfig.server.typecheck.json --noEmit
+
+
+> @getpaseo/app@0.11.0-beta.36 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/relay@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/website@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/desktop@0.11.1 typecheck
+> tsgo --noEmit -p tsconfig.json
+
+
+> @getpaseo/cli@0.11.1 typecheck
+> tsgo --noEmit
+
+
+
+Lint after query-drain changes
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 3.7s on 5029 files with 177 rules using 4 threads.
+
+
+Opening-marker regression: before fix
+$ cd packages/server
+$ npx vitest run src/server/agent/agent-manager.test.ts --bail=1 -t 'publishes an open runtime generation'
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/agent-manager.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  specify custom .env file path with { path: '/custom/path/.env' }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: 🛠️  run anywhere with `dotenvx run -- yourcommand`
+
+ ❯ src/server/agent/agent-manager.test.ts (259 tests | 1 failed | 258 skipped) 29ms
+   × publishes an open runtime generation before creating a provider session 26ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/agent-manager.test.ts > publishes an open runtime generation before creating a provider session
+AssertionError: expected null to match object { …(4) }
+
+- Expected:
+{
+  "id": "f0bea2be-ea14-47dd-91fe-2138a6e9dc5a",
+  "lastStatus": "initializing",
+  "runtimeGeneration": {
+    "id": Any<String>,
+    "openedAt": Any<String>,
+  },
+  "workspaceId": "marker-workspace",
+}
+
++ Received:
+null
+
+ ❯ src/server/agent/agent-manager.test.ts:2224:22
+    2222|     await expect(manager.createAgent({ provider: "codex", cwd: workdir…
+    2223|       .rejects.toThrow("interrupted before registration");
+    2224|     expect(observed).toMatchObject({
+       |                      ^
+    2225|       id: agentId,
+    2226|       workspaceId: "marker-workspace",
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 258 skipped (259)
+   Start at  01:11:44
+   Duration  1.73s (transform 1.13s, setup 48ms, import 1.50s, tests 29ms, environment 0ms)
+
+
+
+Imported-title regression during marker integration: before repair
+$ cd packages/server
+$ npx vitest run src/server/agent/agent-manager.test.ts --bail=1 -t 'importProviderSession imports'
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/agent-manager.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  write to custom object with { processEnv: myObject }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  suppress all logs with { quiet: true }
+
+ ❯ src/server/agent/agent-manager.test.ts (262 tests | 1 failed | 261 skipped) 35ms
+   × importProviderSession imports the selected session without listing and publishes ready state 32ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/agent-manager.test.ts > importProviderSession imports the selected session without listing and publishes ready state
+AssertionError: expected null to be 'Trace provider imports' // Object.is equality
+
+- Expected:
+"Trace provider imports"
+
++ Received:
+null
+
+ ❯ src/server/agent/agent-manager.test.ts:5740:51
+    5738|     },
+    5739|   });
+    5740|   expect((await storage.get(imported.id))?.title).toBe("Trace provider…
+       |                                                   ^
+    5741| });
+    5742|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 261 skipped (262)
+   Start at  01:16:34
+   Duration  1.59s (transform 1.03s, setup 41ms, import 1.39s, tests 35ms, environment 0ms)
+
+
+
+AgentStorage: after generation guards
+$ cd packages/server
+$ npx vitest run src/server/agent/agent-storage.test.ts --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  29 passed | 1 skipped (30)
+   Start at  01:19:38
+   Duration  1.42s (transform 587ms, setup 47ms, import 951ms, tests 284ms, environment 0ms)
+
+
+
+AgentManager: after generation integration
+$ cd packages/server
+$ npx vitest run src/server/agent/agent-manager.test.ts --bail=1 -t 'runtime generation|failed opening synchronization|importProviderSession imports|initializing session after shutdown|reload leaves a closed|reload does not create|unarchive|archive.*runtime|setTitle|persist.*title'
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  16 passed | 247 skipped (263)
+   Start at  01:20:49
+   Duration  1.53s (transform 972ms, setup 40ms, import 1.30s, tests 74ms, environment 0ms)
+
+
+
+Runtime-generation validation
+$ npm run typecheck
+
+> paseo@0.11.1 typecheck
+> npm run typecheck --workspaces --if-present
+
+
+> @getpaseo/builtin-plugins@0.11.1 typecheck
+> tsgo -p tsconfig.json --noEmit
+
+
+> @getpaseo/expo-two-way-audio@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/highlight@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/plugin@0.11.1 typecheck
+> tsgo --noEmit && tsgo -p tsconfig.examples.json --noEmit
+
+
+> @getpaseo/protocol@0.11.1 pretypecheck
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/client@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/server@0.11.1 typecheck
+> tsgo -p tsconfig.server.typecheck.json --noEmit
+
+
+> @getpaseo/app@0.11.0-beta.36 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/relay@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/website@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/desktop@0.11.1 typecheck
+> tsgo --noEmit -p tsconfig.json
+
+
+> @getpaseo/cli@0.11.1 typecheck
+> tsgo --noEmit
+
+
+$ npm run lint
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 3.1s on 5029 files with 177 rules using 4 threads.
+
+$ npm run format
+
+> paseo@0.11.1 format
+> oxfmt .
+
+Finished in 3514ms on 5374 files using 4 threads.
+
+
+Earlier publication and ownership evidence
+
+Agent-record publication:
+- Reproduced false acknowledgement in the cache after a successful rename followed
+  by failed directory synchronization. Failed publication now retains one immutable
+  candidate per agent, including its synchronization requirement. Later mutations
+  complete that candidate before evaluating their own preconditions. The original
+  caller still receives its failure.
+- Reproduced snapshots observing later changes to a live agent's model and timestamp.
+  Snapshot input is now captured at admission; record-owned fields merge in the queue.
+- Closed-record durability/retry (2026-10-10, baseline 91db98547): a regression reproduced a
+  successful close snapshot despite an injected synchronization failure. POSIX closed snapshots
+  now synchronize the file and directories before acknowledging publication. A second regression
+  reproduced a successful repeated close while the stopped provider's publication still failed.
+  Both ordinary and reviewed-session closes now retry the retained input without another provider
+  close, create or resume. A fresh manager also synchronizes a surviving closed record, preserves
+  its revision and opens no provider. The initial manager test used undefined for getAgent's absent
+  result; correcting it to null exposed the intended retry failure before the implementation fix.
+- The strict handoff inventory and checkpoint retain their existing repair path. The checkpoint
+  returns the exact record validated by its serialized publication. Cold closure synchronization
+  leaves unresolved generations and carried prompts intact, and never invents a closed record for
+  an unclosed or missing runtime. A candidate lost before any rename still needs independent proof;
+  this change does not make retained in-memory inputs restart-safe or certify an unknown stop.
+- Current validation: 96 distinct focused cases pass (45 storage cases, 50 selected lifecycle cases
+  and the new cold-manager case). One Windows-only storage case is skipped on Linux. These tests
+  use real temporary record files and synchronization with injected failures, plus provider test
+  doubles; they are not a power-cut experiment or fresh authenticated provider continuity. The new
+  names match the existing macOS handoff filter, which now includes the owning storage suite.
+  Native CI remains pending. No main daemon was restarted.
+- Deletion waits for in-flight publication and removes a renamed file even when
+  synchronization then fails. Windows rejects unsupported durable publication before
+  retaining a candidate, so an unsupported checkpoint cannot poison ordinary writes.
+  The Windows-only regression is skipped locally and awaits Windows CI.
+- Publication suite at 95731bfab: 26 passed, 1 Windows-only case skipped. Full typecheck and lint
+  pass; npm format completed. Tests use real temporary files, injected sync failure
+  and reconstruction of AgentStorage, not a power cut or a provider session.
+
+Earlier foundations, retained below:
+- A rejected queue mutation no longer discards the following restart note.
+- Ownership recovery synchronizes its existing journal before mutations or recovered
+  receipts. A failed sync keeps the source fenced; repair retains the irrevocable
+  binding without revalidating mutable source content. The earlier 42 POSIX and 12
+  common ownership cases passed on 058e2be5f and were not rerun for this storage edit.
+
+Closed-record durability and retry validation:
+
+$ Closed snapshot regression (expected failure)
+
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/agent-storage.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  specify custom .env file path with { path: '/custom/path/.env' }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  write to custom object with { processEnv: myObject }
+
+ ❯ src/server/agent/agent-storage.test.ts (43 tests | 1 failed | 42 skipped) 20ms
+     × closed snapshots retain their exact candidate until durable publication succeeds 16ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/agent-storage.test.ts > AgentStorage > closed snapshots retain their exact candidate until durable publication succeeds
+AssertionError: promise resolved "undefined" instead of rejecting
+
+- Expected:
+Error {
+  "message": "rejected promise",
+}
+
++ Received:
+undefined
+
+ ❯ src/server/agent/agent-storage.test.ts:487:49
+    485|       });
+    486|       failClosedSync = true;
+    487|       await expect(storage.applySnapshot(closed)).rejects.toThrow("clo…
+       |                                                 ^
+    488|       expect(await storage.get(agent.id)).toEqual(before);
+    489|       closed.lastError = "Changed after failure";
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 42 skipped (43)
+   Start at  12:28:26
+   Duration  911ms (transform 461ms, setup 40ms, import 743ms, tests 20ms, environment 0ms)
+
+
+$ Repeated close regression (expected failure)
+
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/agent-manager.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚡️ secrets for agents: https://dotenvx.com/as2
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: 🔐 encrypt with Dotenvx: https://dotenvx.com
+
+ ❯ src/server/agent/agent-manager.test.ts (280 tests | 1 failed | 278 skipped) 30ms
+   × a explicit close retries a failed durable snapshot without reopening its stopped provider 27ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/agent-manager.test.ts > a explicit close retries a failed durable snapshot without reopening its stopped provider
+AssertionError: promise resolved "undefined" instead of rejecting
+
+- Expected:
+Error {
+  "message": "rejected promise",
+}
+
++ Received:
+undefined
+
+ ❯ src/server/agent/agent-manager.test.ts:12404:27
+    12402|       await expect(close()).rejects.toThrow("closed snapshot sync fail…
+    12403|       expect(manager.getAgent(agent.id)).toBeNull();
+    12404|       await expect(close()).rejects.toThrow("closed snapshot sync fail…
+       |                           ^
+    12405|       failClosedSync = false;
+    12406|       await close();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 278 skipped (280)
+   Start at  12:29:41
+   Duration  1.74s (transform 1.20s, setup 45ms, import 1.54s, tests 30ms, environment 0ms)
+
+
+$ Storage suite
+
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  45 passed | 1 skipped (46)
+   Start at  12:31:15
+   Duration  1.23s (transform 582ms, setup 46ms, import 893ms, tests 182ms, environment 0ms)
+
+
+$ Selected close/reload/carried/publication lifecycle cases
+
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  50 passed | 230 skipped (280)
+   Start at  12:31:16
+   Duration  2.02s (transform 935ms, setup 39ms, import 1.27s, tests 607ms, environment 0ms)
+
+
+$ Cold manager close
+
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 280 skipped (281)
+   Start at  12:34:06
+   Duration  1.82s (transform 1.22s, setup 86ms, import 1.54s, tests 25ms, environment 0ms)
+
+
+
+Closed-record build and static validation: npm run build:server completed successfully.
+
+$ Root typecheck
+
+
+> paseo@0.11.1 typecheck
+> npm run typecheck --workspaces --if-present
+
+
+> @getpaseo/builtin-plugins@0.11.1 typecheck
+> tsgo -p tsconfig.json --noEmit
+
+
+> @getpaseo/expo-two-way-audio@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/highlight@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/plugin@0.11.1 typecheck
+> tsgo --noEmit && tsgo -p tsconfig.examples.json --noEmit
+
+
+> @getpaseo/protocol@0.11.1 pretypecheck
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/client@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/server@0.11.1 typecheck
+> tsgo -p tsconfig.server.typecheck.json --noEmit
+
+
+> @getpaseo/app@0.11.0-beta.36 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/relay@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/website@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/desktop@0.11.1 typecheck
+> tsgo --noEmit -p tsconfig.json
+
+
+> @getpaseo/cli@0.11.1 typecheck
+> tsgo --noEmit
+
+
+$ Root lint
+
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 2.4s on 5034 files with 177 rules using 4 threads.
+
+$ Formatting
+
+
+> paseo@0.11.1 format
+> oxfmt .
+
+Finished in 3387ms on 5379 files using 4 threads.
+
+
+Record cache acknowledgement: before fix
+$ cd packages/server
+$ npx vitest run src/server/agent/agent-storage.test.ts --bail=1 -t 'a renamed handoff record'
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/agent-storage.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: 🛡️ auth for agents: https://vestauth.com
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: 🔐 prevent building .env in docker: https://dotenvx.com/prebuild
+
+ ❯ src/server/agent/agent-storage.test.ts (23 tests | 1 failed | 22 skipped) 15ms
+     × a renamed handoff record is not acknowledged before synchronization succeeds 13ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/agent-storage.test.ts > AgentStorage > a renamed handoff record is not acknowledged before synchronization succeeds
+AssertionError: expected { id: 'incoming-agent', …(21) } to be null
+
+- Expected:
+null
+
++ Received:
+{
+  "attentionReason": null,
+  "attentionTimestamp": null,
+  "config": {
+    "modeId": "plan",
+    "model": "gpt-5.1",
+  },
+  "createdAt": "2025-01-01T00:00:00.000Z",
+  "cwd": "/tmp/project",
+  "features": [],
+  "id": "incoming-agent",
+  "internal": undefined,
+  "labels": {},
+  "lastActivityAt": "2025-01-01T00:00:00.000Z",
+  "lastError": undefined,
+  "lastModeId": "plan",
+  "lastStatus": "closed",
+  "lastUserMessageAt": "2025-01-01T00:00:00.000Z",
+  "owner": undefined,
+  "persistence": null,
+  "provider": "claude",
+  "requiresAttention": false,
+  "runtimeInfo": {
+    "modeId": "plan",
+    "model": "gpt-5.1",
+    "provider": "claude",
+    "sessionId": "session-123",
+  },
+  "title": null,
+  "updatedAt": "2025-01-01T00:00:00.000Z",
+  "workspaceId": "incoming-workspace",
+}
+
+ ❯ src/server/agent/agent-storage.test.ts:544:44
+    542|
+    543|       await expect(storage.installHandoffRecord(record)).rejects.toThr…
+    544|       expect(await storage.get(record.id)).toBeNull();
+       |                                            ^
+    545|       await expect(storage.listByWorkspaceForHandoff("incoming-workspa…
+    546|       await expect(storage.setTitle(record.id, "Changed after repair")…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 22 skipped (23)
+   Start at  01:02:21
+   Duration  966ms (transform 509ms, setup 46ms, import 775ms, tests 15ms, environment 0ms)
+
+
+
+Snapshot admission: before fix
+$ cd packages/server
+$ npx vitest run src/server/agent/agent-storage.test.ts --bail=1 -t 'a queued snapshot retains'
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/agent-storage.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  load multiple .env files with { path: ['.env.local', '.env'] }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: 🔐 prevent building .env in docker: https://dotenvx.com/prebuild
+
+ ❯ src/server/agent/agent-storage.test.ts (24 tests | 1 failed | 23 skipped) 21ms
+     × a queued snapshot retains the admitted state while the live agent changes 18ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/agent-storage.test.ts > AgentStorage > a queued snapshot retains the admitted state while the live agent changes
+AssertionError: expected { id: 'changing-agent', …(17) } to match object { …(2) }
+(21 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+    "config": {
+-     "model": "admitted-model",
++     "model": "later-model",
+    },
+-   "updatedAt": "2025-01-01T00:00:00.000Z",
++   "updatedAt": "2030-01-01T00:00:00.000Z",
+  }
+
+ ❯ src/server/agent/agent-storage.test.ts:288:42
+    286|
+    287|     const reloaded = new AgentStorage(storagePath, logger);
+    288|     expect(await reloaded.get(agent.id)).toMatchObject({
+       |                                          ^
+    289|       config: { model: "admitted-model" },
+    290|       updatedAt: admittedTime,
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 23 skipped (24)
+   Start at  01:03:22
+   Duration  1.16s (transform 618ms, setup 50ms, import 970ms, tests 21ms, environment 0ms)
+
+
+
+Retained close: intermediate regression proving inventory must repair before inspection
+$ cd packages/server
+$ npx vitest run src/server/agent/agent-storage.test.ts --bail=1 -t 'handoff retries the retained'
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/agent-storage.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  load multiple .env files with { path: ['.env.local', '.env'] }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: 🔐 prevent committing .env to code: https://dotenvx.com/precommit
+
+ ❯ src/server/agent/agent-storage.test.ts (27 tests | 1 failed | 26 skipped) 17ms
+     × handoff retries the retained closed snapshot after its first write fails 13ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/agent-storage.test.ts > AgentStorage > handoff retries the retained closed snapshot after its first write fails
+AssertionError: promise rejected "Error: Handoff agent publication is still…" instead of resolving
+ ❯ src/server/agent/agent-storage.test.ts:595:72
+    593|       await fs.rm(storagePath);
+    594|       await fs.rename(backup, storagePath);
+    595|       await expect(storage.listByWorkspaceForHandoff("retry-workspace"…
+       |                                                                        ^
+    596|         { id: agentId, lastStatus: "closed" },
+    597|       ]);
+
+Caused by: Error: Handoff agent publication is still pending
+ ❯ AgentStorage.listByWorkspaceForHandoff src/server/agent/agent-storage.ts:190:15
+ ❯ src/server/agent/agent-storage.test.ts:595:7
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 26 skipped (27)
+   Start at  01:06:06
+   Duration  971ms (transform 514ms, setup 44ms, import 789ms, tests 17ms, environment 0ms)
+
+
+
+AgentStorage: after fixes
+$ cd packages/server
+$ npx vitest run src/server/agent/agent-storage.test.ts --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  26 passed | 1 skipped (27)
+   Start at  01:06:24
+   Duration  1.04s (transform 502ms, setup 49ms, import 810ms, tests 56ms, environment 0ms)
+
+
+
+Current publication changes: validation
+$ npm run typecheck
+
+> paseo@0.11.1 typecheck
+> npm run typecheck --workspaces --if-present
+
+
+> @getpaseo/builtin-plugins@0.11.1 typecheck
+> tsgo -p tsconfig.json --noEmit
+
+
+> @getpaseo/expo-two-way-audio@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/highlight@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/plugin@0.11.1 typecheck
+> tsgo --noEmit && tsgo -p tsconfig.examples.json --noEmit
+
+
+> @getpaseo/protocol@0.11.1 pretypecheck
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/client@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/server@0.11.1 typecheck
+> tsgo -p tsconfig.server.typecheck.json --noEmit
+
+
+> @getpaseo/app@0.11.0-beta.36 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/relay@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/website@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/desktop@0.11.1 typecheck
+> tsgo --noEmit -p tsconfig.json
+
+
+> @getpaseo/cli@0.11.1 typecheck
+> tsgo --noEmit
+
+
+$ npm run lint
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 3.1s on 5029 files with 177 rules using 4 threads.
+
+$ npm run format
+
+> paseo@0.11.1 format
+> oxfmt .
+
+Finished in 3699ms on 5374 files using 4 threads.
+
+
+Storage queue: before fix
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/agent/agent-storage.test.ts --bail=1 -t 'a rejected mutation does not discard'
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla
+
+stdout | packages/server/src/server/agent/agent-storage.test.ts
+[dotenv@17.3.1] injecting env (0) from packages/server/.env.test -- tip: ⚙️  suppress all logs with { quiet: true }
+[dotenv@17.3.1] injecting env (0) from packages/.env -- tip: 🔐 encrypt with Dotenvx: https://dotenvx.com
+
+ ❯ packages/server/src/server/agent/agent-storage.test.ts (22 tests | 1 failed | 21 skipped) 16ms
+     × a rejected mutation does not discard the next queued restart note 14ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/server/src/server/agent/agent-storage.test.ts > AgentStorage > a rejected mutation does not discard the next queued restart note
+AssertionError: expected [ { status: 'rejected', …(1) }, …(1) ] to deeply equal [ { status: 'rejected', …(1) }, …(1) ]
+
+- Expected
++ Received
+
+@@ -4,9 +4,11 @@
+        "message": "Agent queued-agent has no handoff context",
+      },
+      "status": "rejected",
+    },
+    {
+-     "status": "fulfilled",
+-     "value": undefined,
++     "reason": Error {
++       "message": "Agent queued-agent has no handoff context",
++     },
++     "status": "rejected",
+    },
+  ]
+
+ ❯ packages/server/src/server/agent/agent-storage.test.ts:519:22
+    517|     ]);
+    518|
+    519|     expect(outcomes).toEqual([
+       |                      ^
+    520|       { status: "rejected", reason: new Error(`Agent ${agentId} has no…
+    521|       { status: "fulfilled", value: undefined },
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 21 skipped (22)
+   Start at  00:52:03
+   Duration  892ms (transform 444ms, setup 43ms, import 712ms, tests 16ms, environment 0ms)
+
+
+Storage queue: after fix
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/agent/agent-storage.test.ts --bail=1
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla
+
+
+ Test Files  1 passed (1)
+      Tests  22 passed (22)
+   Start at  00:52:24
+   Duration  941ms (transform 479ms, setup 40ms, import 739ms, tests 51ms, environment 0ms)
+
+
+Ownership durability: before fix
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/handoff/ownership.posix.test.ts --bail=1 -t 'a readable release after failed synchronization'
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla
+
+stdout | packages/server/src/server/handoff/ownership.posix.test.ts
+[dotenv@17.3.1] injecting env (0) from packages/server/.env.test -- tip: ⚙️  enable debug logging with { debug: true }
+[dotenv@17.3.1] injecting env (0) from packages/.env -- tip: 🛠️  run anywhere with `dotenvx run -- yourcommand`
+
+ ❯ packages/server/src/server/handoff/ownership.posix.test.ts (42 tests | 1 failed | 41 skipped) 24ms
+   × a readable release after failed synchronization is not a durable receipt 23ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/server/src/server/handoff/ownership.posix.test.ts > a readable release after failed synchronization is not a durable receipt
+AssertionError: promise resolved "undefined" instead of rejecting
+
+- Expected:
+Error {
+  "message": "rejected promise",
+}
+
++ Received:
+undefined
+
+ ❯ packages/server/src/server/handoff/ownership.posix.test.ts:1403:38
+    1401|     },
+    1402|   });
+    1403|   await expect(restarted.initialize()).rejects.toThrow("directory sync…
+       |                                      ^
+    1404|   await expect(restarted.release(input.id, binding, async () => {})).r…
+    1405|     code: "storage_uncertain",
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 41 skipped (42)
+   Start at  00:53:25
+   Duration  1.68s (transform 962ms, setup 54ms, import 1.48s, tests 24ms, environment 0ms)
+
+
+Ownership durability: after fix
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/handoff/ownership.posix.test.ts --bail=1
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla
+
+
+ Test Files  1 passed (1)
+      Tests  42 passed (42)
+   Start at  00:53:56
+   Duration  3.30s (transform 916ms, setup 42ms, import 1.41s, tests 1.73s, environment 0ms)
+
+
+Ownership recovery and admission regressions
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/handoff/ownership.test.ts --bail=1
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla
+
+
+ Test Files  1 passed (1)
+      Tests  12 passed (12)
+   Start at  00:55:11
+   Duration  355ms (transform 115ms, setup 49ms, import 139ms, tests 58ms, environment 0ms)
+
+
+Workspace checks
+$ npm run typecheck
+Completed successfully for all workspaces.
+
+$ npm run lint
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 2.0s on 5029 files with 177 rules using 4 threads.
+
+$ npm run format
+
+> paseo@0.11.1 format
+> oxfmt .
+
+Finished in 3510ms on 5374 files using 4 threads.

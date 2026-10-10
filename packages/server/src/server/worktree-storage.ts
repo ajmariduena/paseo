@@ -5,11 +5,12 @@ import { lstat, readdir, realpath, rmdir } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { PersistedWorkspaceRecord } from "./workspace-registry.js";
-import { isPathInsideRoot } from "../utils/path.js";
+import { areEquivalentPaths, isPathInsideRoot } from "../utils/path.js";
 import { readPaseoWorktreeMetadata } from "../utils/worktree-metadata.js";
 import { resolvePaseoWorktreesBaseRoot, runWorktreeTeardownCommands } from "../utils/worktree.js";
 import { runGitCommand } from "../utils/run-git-command.js";
 import { withWorktreeCleanupReservation, withWorktreeProjectLock } from "./worktree-use-lock.js";
+import type { HandoffMutationScope, HandoffOwnership } from "./handoff/ownership.js";
 
 const execFileAsync = promisify(execFile);
 const SIZE_TTL_MS = 10 * 60_000;
@@ -29,6 +30,7 @@ export interface WorktreeStorageContext {
   readProcessCwds?: () => Promise<ProcessCwdReading>;
   processProbeNow?: () => number;
   processCheckTimeoutMs?: number;
+  handoffOwnership?: HandoffOwnership;
 }
 
 export interface WorktreeStorageEntry {
@@ -62,6 +64,36 @@ export interface AutomaticWorktreeCleanupResult {
   removed: number;
   removedPaths: string[];
   failures: Array<{ path: string; error: string }>;
+}
+
+interface StorageMutationInput {
+  context: WorktreeStorageContext;
+  paths: string[];
+  mainRepo: string;
+  workspaces: PersistedWorkspaceRecord[];
+}
+
+async function acquireStorageMutation(input: StorageMutationInput): Promise<() => void> {
+  const ownership = input.context.handoffOwnership;
+  if (!ownership) return () => undefined;
+  const scopes: HandoffMutationScope[] = [{ cwd: input.mainRepo }];
+  for (const path of input.paths) scopes.push({ cwd: path });
+  for (const workspace of input.workspaces) {
+    if (!input.paths.some((path) => referencesPath(workspace, path))) continue;
+    scopes.push({ cwd: workspace.cwd, workspaceId: workspace.workspaceId });
+    if (workspace.worktreeRoot) scopes.push({ cwd: workspace.worktreeRoot });
+    if (workspace.mainRepoRoot) scopes.push({ cwd: workspace.mainRepoRoot });
+  }
+  const releases: Array<() => void> = [];
+  try {
+    for (const scope of scopes) releases.push(await ownership.acquireMutation(scope));
+  } catch (error) {
+    for (const release of releases) release();
+    throw error;
+  }
+  return () => {
+    for (const release of releases) release();
+  };
 }
 
 function entryIdForPath(path: string): string {
@@ -176,7 +208,12 @@ async function inspectGitWorktree(
   if (!isRegistered) return null;
   const mainRepo = registrations[0]?.slice(9);
   if (!mainRepo || (await realpath(mainRepo)) === canonicalPath) return null;
-  const status = (await runGitCommand(["status", "--porcelain", "-unormal"], { cwd: path })).stdout;
+  const status = (
+    await runGitCommand(["status", "--porcelain", "-unormal"], {
+      cwd: path,
+      envOverlay: { GIT_OPTIONAL_LOCKS: "0" },
+    })
+  ).stdout;
   const changes = countLines(status);
   const branch = (await runGitCommand(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: path })).stdout;
   const commits = (
@@ -461,6 +498,7 @@ export async function cleanupWorktreeStorage(
       results.push({ entryId, removed: false, error: "Worktree is no longer available" });
       continue;
     }
+    let release: () => void = () => undefined;
     try {
       await withWorktreeCleanupReservation(path, async () => {
         const beforeTeardown = await liveUse(context, processProbe);
@@ -478,6 +516,13 @@ export async function cleanupWorktreeStorage(
         )
           throw new Error(beforeClassification.reason);
         if (!beforeClassification.mainRepo) throw new Error(beforeClassification.reason);
+        const admittedRepo = beforeClassification.mainRepo;
+        release = await acquireStorageMutation({
+          context,
+          paths: [path],
+          mainRepo: admittedRepo,
+          workspaces: beforeTeardown.workspaces,
+        });
         const archived = beforeTeardown.workspaces.filter(
           (workspace) => workspace.archivedAt && referencesPath(workspace, path),
         );
@@ -508,6 +553,9 @@ export async function cleanupWorktreeStorage(
           )
             throw new Error(classification.reason);
           if (!classification.mainRepo) throw new Error(classification.reason);
+          if (!areEquivalentPaths(classification.mainRepo, admittedRepo)) {
+            throw new Error("Worktree repository changed during cleanup");
+          }
           const processStatus = await freshExternalProcessCwdStatus(path, processProbe);
           if (processStatus === "unknown") throw new Error("Could not check running processes");
           if (processStatus === "busy") throw new Error("used by a running process");
@@ -522,9 +570,11 @@ export async function cleanupWorktreeStorage(
         removed: false,
         error: error instanceof Error ? error.message : String(error),
       });
+    } finally {
+      release();
     }
   }
-  await pruneRepos(pruned);
+  await pruneRepos(pruned, context);
   return results;
 }
 
@@ -538,12 +588,31 @@ async function removeWorktree(path: string, mainRepo: string): Promise<void> {
   }
 }
 
-async function pruneRepos(repos: Set<string>): Promise<void> {
+async function pruneRepos(repos: Set<string>, context: WorktreeStorageContext): Promise<void> {
   for (const mainRepo of repos) {
+    let release: () => void = () => undefined;
     try {
+      // Prune changes registrations for every worktree, including ones outside
+      // managed storage. Admit all of them; a frozen stale entry must survive.
+      const listed = await runGitCommand(["worktree", "list", "--porcelain", "-z"], {
+        cwd: mainRepo,
+      });
+      if (listed.truncated) throw new Error("Incomplete worktree inventory");
+      const paths = listed.stdout
+        .split("\0")
+        .filter((field) => field.startsWith("worktree "))
+        .map((field) => field.slice(9));
+      release = await acquireStorageMutation({
+        context,
+        paths,
+        mainRepo,
+        workspaces: await context.listWorkspaces(),
+      });
       await runGitCommand(["worktree", "prune"], { cwd: mainRepo, timeout: 30_000 });
     } catch {
       // Removal already succeeded; a future git operation can prune registrations.
+    } finally {
+      release();
     }
   }
 }
@@ -603,6 +672,7 @@ export async function sweepOwnedArchivedWorktrees(
     );
     if (!initialClassification.freeable || !initialClassification.mainRepo) continue;
     result.candidates += 1;
+    let release: () => void = () => undefined;
     try {
       await withWorktreeCleanupReservation(path, async () => {
         if (!isEnabled()) return;
@@ -618,6 +688,13 @@ export async function sweepOwnedArchivedWorktrees(
           beforeTeardown.processReading.cwds,
         );
         if (!beforeClassification.freeable || !beforeClassification.mainRepo) return;
+        const admittedRepo = beforeClassification.mainRepo;
+        release = await acquireStorageMutation({
+          context,
+          paths: [path],
+          mainRepo: admittedRepo,
+          workspaces: beforeTeardown.workspaces,
+        });
         for (const cwd of new Set(currentRecords.map((workspace) => workspace.cwd))) {
           await runWorktreeTeardownCommands({
             worktreePath: path,
@@ -639,6 +716,9 @@ export async function sweepOwnedArchivedWorktrees(
             fresh.processReading.cwds,
           );
           if (!classification.freeable || !classification.mainRepo || !isEnabled()) return;
+          if (!areEquivalentPaths(classification.mainRepo, admittedRepo)) {
+            throw new Error("Worktree repository changed during cleanup");
+          }
           if ((await freshExternalProcessCwdStatus(path, processProbe)) !== "clear") return;
           if (!isEnabled()) return;
           await removeWorktree(path, classification.mainRepo);
@@ -649,9 +729,11 @@ export async function sweepOwnedArchivedWorktrees(
       });
     } catch (error) {
       result.failures.push({ path, error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      release();
     }
     await delay(250);
   }
-  await pruneRepos(pruned);
+  await pruneRepos(pruned, context);
   return result;
 }

@@ -1,0 +1,1687 @@
+import { createHash, randomUUID } from "node:crypto";
+import { copyFile, mkdir, realpath, rm } from "node:fs/promises";
+import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
+import type { Logger } from "pino";
+import { z } from "zod";
+import {
+  HandoffArchiveManifestSchema,
+  HandoffTransferIdSchema,
+  HandoffBlobSchema,
+  HandoffDigestSchema,
+} from "@getpaseo/protocol/handoff";
+import {
+  HandoffIntegrationReviewSchema,
+  type HandoffIntegrationReview,
+  type HandoffConversationPreview,
+  type HandoffSourcePreview,
+  type HandoffStoppedWorkReview,
+} from "@getpaseo/protocol/handoff-control";
+import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
+import type { AgentManager, ManagedAgent } from "../agent/agent-manager.js";
+import type { ManagedProcessRegistry } from "../managed-processes/managed-processes.js";
+import {
+  RestartCancelledWorkSchema,
+  type AgentStorage,
+  type StoredAgentRecord,
+} from "../agent/agent-storage.js";
+import {
+  ClaudeSessionRuntimeSchema,
+  readClaudeSessionRuntime,
+} from "../agent/providers/claude/session-runtime.js";
+import {
+  captureClaudeSession,
+  readCapturedClaudeHistory,
+  verifyCapturedClaudeSession,
+  previewClaudeSession,
+} from "../agent/providers/claude/handoff.js";
+import type {
+  FileBackedWorkspaceRegistry,
+  PersistedWorkspaceRecord,
+} from "../workspace-registry.js";
+import type { TerminalManager } from "../../terminal/terminal-manager.js";
+import type { TerminalSession } from "../../terminal/terminal.js";
+import type { WorkspaceSetupRuntime } from "../workspace-setup-runtime.js";
+import type { HandoffArchiveStore } from "./archive.js";
+import { readBoundedFile, syncDirectory, writeJournal } from "./artifacts.js";
+import { syncFilePublication } from "../atomic-file.js";
+import {
+  captureWorkspace,
+  verifyCapturedWorkspace,
+  previewWorkspace,
+  listWorkspaceOmissions,
+} from "./workspace.js";
+import {
+  packHandoffArchive,
+  readHandoffBundle,
+  HandoffHistoryOriginSchema,
+  handoffConversationOrigin,
+  type CapturedConversation,
+  type CapturedPreviousSegment,
+  type HandoffBundle,
+} from "./bundle.js";
+import { HandoffContextSchema, handoffContextDirectory } from "./context.js";
+import { HandoffHistorySegmentSchema, HANDOFF_PREVIOUS_SEGMENTS_MAX } from "./history-segments.js";
+import type { HandoffDestination } from "./destination.js";
+import type { PullRequestWatcher } from "../pull-request-watch/watcher.js";
+import type { AgentQueueRunner } from "../agent-queue/runner.js";
+import type { ScheduleService } from "../schedule/service.js";
+import type { DelegationService } from "../delegation/delegation-service.js";
+import { HANDOFF_QUEUE_MAX_BYTES, handoffQueueBytes } from "../agent-queue/store.js";
+import {
+  writeHandoffHistory,
+  readHandoffHistory,
+  fetchHandoffHistory,
+  HandoffHistorySchema,
+  readRetainedHandoffHistory,
+} from "./history.js";
+import type { AgentTimelineFetchOptions } from "../agent/agent-timeline-store-types.js";
+import {
+  handoffPathsOverlap,
+  resolveHandoffPath,
+  type HandoffOwnership,
+  type SourceHandoffStatus,
+  type HandoffCancellationInput,
+} from "./ownership.js";
+
+const AgentIdentitySchema = z.object({
+  id: z.string().min(1),
+  recordRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+  cwd: z.string().min(1),
+  title: z.string().nullable(),
+  pendingRestartNote: z.array(RestartCancelledWorkSchema).max(1024).optional(),
+});
+const NativeAgentSchema = AgentIdentitySchema.extend({
+  // COMPAT(handoffSourceMode): added in v0.11.1, remove after 2027-04-10 once retained native preparations include a mode.
+  mode: z.literal("native").optional(),
+  sessionId: z.string().uuid(),
+  projectDirName: z.string().optional(),
+  // COMPAT(handoffCapturedRuntime): added in v0.11.1, remove after 2027-02-06 once older prepared transfers expire.
+  runtime: ClaudeSessionRuntimeSchema.optional(),
+  context: HandoffContextSchema.optional(),
+  previous: z.array(HandoffHistorySegmentSchema).max(HANDOFF_PREVIOUS_SEGMENTS_MAX).optional(),
+  previousBinding: z
+    .object({ transferId: HandoffTransferIdSchema, manifestDigest: HandoffDigestSchema })
+    .optional(),
+});
+const ContextAgentSchema = AgentIdentitySchema.extend({
+  mode: z.literal("context"),
+  context: HandoffContextSchema,
+  previousTransferId: HandoffTransferIdSchema,
+  previousManifestDigest: HandoffDigestSchema,
+  session: HandoffBlobSchema,
+  origin: HandoffHistoryOriginSchema,
+  previous: z.array(HandoffHistorySegmentSchema).max(HANDOFF_PREVIOUS_SEGMENTS_MAX).optional(),
+});
+const AgentSchema = z.discriminatedUnion("mode", [NativeAgentSchema, ContextAgentSchema]);
+const PreparedSchema = z.object({
+  // COMPAT(handoffPreparedHistory): added in v0.11.1, remove after 2027-04-10 once retained v1/v2 preparations finish.
+  version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+  transferId: HandoffTransferIdSchema,
+  cwd: z.string().min(1),
+  agents: z.array(AgentSchema).max(1000),
+  runtime: z.object({ configDir: z.string().min(1), cliVersion: z.string().min(1) }).nullable(),
+  manifest: HandoffArchiveManifestSchema,
+});
+type PreparedSource = z.infer<typeof PreparedSchema>;
+interface SourceOptions {
+  managedProcesses?: Pick<ManagedProcessRegistry, "stopRuntime">;
+  delegations: Pick<DelegationService, "checkpointRetainedResults">;
+  schedules: Pick<
+    ScheduleService,
+    "reviewForHandoff" | "pauseForHandoff" | "exportForHandoff" | "estimateForHandoff"
+  >;
+  directory: string;
+  serverId: string;
+  logger: Logger;
+  ownership: HandoffOwnership;
+  archives: HandoffArchiveStore;
+  destination: Pick<HandoffDestination, "withConversationArchive" | "hasConversation">;
+  workspaces: Pick<FileBackedWorkspaceRegistry, "get" | "list" | "retainForHandoff">;
+  agents: AgentStorage;
+  agentManager: Pick<
+    AgentManager,
+    | "getAgent"
+    | "listAgents"
+    | "closeAgent"
+    | "projectHistoryForHandoff"
+    | "checkpointPromptAnnotations"
+    | "recoverPromptAnnotationsForHandoff"
+  >;
+  terminals: Pick<TerminalManager, "listDirectories" | "getTerminals" | "killTerminalAndWait">;
+  setup: Pick<WorkspaceSetupRuntime, "stop" | "activeIds">;
+  pullRequestWatches: Pick<PullRequestWatcher, "reviewForHandoff" | "stopForHandoff">;
+  queues: Pick<AgentQueueRunner, "holdForHandoff" | "entries" | "exportForHandoff">;
+  onWorkspaceChanged?: (workspaceId: string) => Promise<void>;
+}
+interface SourceRequest {
+  transferId: string;
+  workspaceId: string;
+  agentIds: string[];
+  destinationServerId: string;
+  reservationId: string;
+  workspaceReviewDigest?: string;
+  stoppedWorkReview?: HandoffStoppedWorkReview;
+  integrationReview?: HandoffIntegrationReview;
+}
+
+function verifyCapturedRecord(
+  record: StoredAgentRecord,
+  captured: PreparedSource["agents"][number],
+) {
+  if (captured.mode === "context") {
+    if (record.persistence || !isDeepStrictEqual(record.handoffContext, captured.context))
+      refuse("source_changed", "Source carried context changed after capture");
+  } else if (
+    record.persistence?.sessionId !== captured.sessionId ||
+    record.persistence?.metadata?.claudeProjectDirName !== captured.projectDirName ||
+    !isDeepStrictEqual(record.handoffContext, captured.context)
+  ) {
+    refuse("source_changed", "Source conversation changed after capture");
+  }
+  if (!isDeepStrictEqual(record.pendingRestartNote ?? [], captured.pendingRestartNote ?? []))
+    refuse("source_changed", "Pending restart notes changed after capture");
+  // COMPAT(handoffRecordRevision): added in v0.11.1, remove after 2027-04-10 once v1/v2 preparations finish.
+  if (captured.recordRevision !== undefined && record.revision !== captured.recordRevision)
+    refuse("source_changed", "Source conversation record changed after capture");
+}
+
+export class HandoffSourceError extends Error {
+  constructor(
+    readonly code:
+      | "invalid_source"
+      | "inventory_changed"
+      | "stop_uncertain"
+      | "source_changed"
+      | "review_changed",
+    message: string,
+  ) {
+    super(message);
+    this.name = "HandoffSourceError";
+  }
+}
+function refuse(code: HandoffSourceError["code"], message: string): never {
+  throw new HandoffSourceError(code, message);
+}
+function sameIds(left: string[], right: string[]): boolean {
+  return JSON.stringify([...left].sort()) === JSON.stringify([...right].sort());
+}
+
+/** Owns the source-side order: fence, stop, drain, persist, capture, then certify readiness. */
+export class HandoffSource {
+  private tail: Promise<unknown> = Promise.resolve();
+  private readonly writerInstances = new WeakMap<object, string>();
+  private readonly stopping = new Map<string, Promise<void>>();
+  private readonly retainedCheckpoints = new Map<string, Promise<void>>();
+  private closing = false;
+  constructor(private readonly options: SourceOptions) {}
+
+  async inspect(workspaceId: string) {
+    const { records, ...inventory } = await this.inventory(workspaceId);
+    for (const record of records) {
+      const reason = this.conversationBlockReason(record);
+      if (reason) refuse(reason.code, reason.message);
+    }
+    return inventory;
+  }
+
+  async preview(workspaceId: string): Promise<HandoffSourcePreview> {
+    const inventory = await this.inventory(workspaceId);
+    const records = new Map(inventory.records.map((record) => [record.id, record]));
+    const conversations: HandoffConversationPreview[] = [];
+    for (const agentId of inventory.agentIds) {
+      const record = records.get(agentId);
+      const live = this.options.agentManager.getAgent(agentId);
+      const identity = {
+        agentId,
+        title: record?.title ?? null,
+        provider: record?.provider ?? live?.provider ?? "unknown",
+      };
+      try {
+        if (!record)
+          refuse("invalid_source", "Conversation has not finished saving; retry the review");
+        const reason = this.conversationBlockReason(record);
+        if (reason) refuse(reason.code, reason.message);
+        const current = {
+          ...record,
+          persistence: live?.session?.describePersistence() ?? record.persistence,
+        };
+        if (!current.persistence) {
+          const { preview } = await this.contextAgent(current);
+          conversations.push({ ...identity, provider: "claude", state: "available", ...preview });
+          continue;
+        }
+        const agent = this.nativeAgent(current);
+        const previous = await this.previousSegments(current, agent.sessionId);
+        const preview = await previewClaudeSession({
+          handle: {
+            provider: "claude",
+            sessionId: agent.sessionId,
+            metadata: { claudeProjectDirName: agent.projectDirName },
+          },
+          cwd: agent.cwd,
+          ...agent.runtime,
+        });
+        conversations.push({
+          ...identity,
+          provider: "claude",
+          state: "available",
+          ...preview,
+          artifactBytes:
+            preview.artifactBytes +
+            previous.previous.reduce(
+              (sum, item) =>
+                sum + item.manifest.files.reduce((bytes, file) => bytes + file.blob.size, 0),
+              0,
+            ),
+        });
+      } catch (error) {
+        conversations.push({
+          ...identity,
+          state: "blocked",
+          reason: error instanceof Error ? error.message : "Source session could not be inspected",
+        });
+      }
+    }
+    const workspace = await previewWorkspace({ cwd: inventory.cwd });
+    const review = await this.reviewWriters(inventory);
+    const queued = await this.previewQueues(inventory, review.pullRequestWatches ?? []);
+    return {
+      workspaceId,
+      cwd: inventory.cwd,
+      conversations,
+      integrationReview: this.reviewIntegrations(inventory.records),
+      workspace,
+      stoppedWork: {
+        agentIds: review.agents.map(({ id }) => id),
+        terminals: review.terminals.map((terminal) => ({ id: terminal.id, name: terminal.name })),
+        setupOperations: review.setupIds.length,
+        queuedMessages: queued.count,
+        queuedBytes: queued.bytes,
+        scheduledBytes: await this.options.schedules.estimateForHandoff({
+          ...inventory,
+          stoppedWorkReview: review,
+        }),
+        review,
+      },
+    };
+  }
+
+  async listOmissions(input: { workspaceId: string; reviewDigest: string; offset: number }) {
+    const inventory = await this.inventory(input.workspaceId);
+    return listWorkspaceOmissions({ ...input, cwd: inventory.cwd });
+  }
+
+  private conversationBlockReason(record: StoredAgentRecord) {
+    if (
+      record.provider !== "claude" ||
+      record.archivedAt ||
+      record.owner ||
+      record.labels[PARENT_AGENT_ID_LABEL]
+    )
+      return {
+        code: "invalid_source" as const,
+        message: "This conversation requires a handoff disposition that is not implemented yet",
+      };
+    if (record.lastStatus !== "closed" && !this.options.agentManager.getAgent(record.id))
+      return {
+        code: "stop_uncertain" as const,
+        message: "Source runtime exit has not been confirmed",
+      };
+    return null;
+  }
+
+  private async inventory(workspaceId: string) {
+    const workspace = await this.options.workspaces.get(workspaceId);
+    if (!workspace || workspace.archivedAt)
+      refuse("invalid_source", "Source workspace is unavailable");
+    const cwd = await realpath(workspace.cwd);
+    const records = await this.options.agents.listByWorkspaceForHandoff(workspaceId);
+    const live = this.options.agentManager.listAgents();
+    const ids = [
+      ...new Set([
+        ...records.map((record) => record.id),
+        ...live.filter((agent) => agent.workspaceId === workspaceId).map((agent) => agent.id),
+      ]),
+    ].sort();
+    for (const other of await this.options.workspaces.list()) {
+      if (
+        other.workspaceId !== workspaceId &&
+        !other.archivedAt &&
+        handoffPathsOverlap(cwd, await realpath(other.cwd))
+      )
+        refuse("invalid_source", "Another workspace shares the source checkout");
+    }
+    for (const agent of live) {
+      if (agent.workspaceId !== workspaceId && handoffPathsOverlap(cwd, await realpath(agent.cwd)))
+        refuse("invalid_source", "Another agent writes to the source checkout");
+    }
+    return { cwd, workspaceId, agentIds: ids, records };
+  }
+
+  prepare(input: SourceRequest) {
+    return this.serialize(async () => {
+      HandoffTransferIdSchema.parse(input.transferId);
+      const inventory = await this.inspect(input.workspaceId);
+      if (!sameIds(inventory.agentIds, input.agentIds))
+        refuse(
+          "inventory_changed",
+          "Source conversation set changed after destination reservation",
+        );
+      if (input.workspaceReviewDigest) {
+        const current = await previewWorkspace({ cwd: inventory.cwd });
+        if (current.reviewDigest !== input.workspaceReviewDigest)
+          refuse(
+            "review_changed",
+            "Workspace files or exclusions changed after review; cancel this transfer and review again",
+          );
+      }
+      if (
+        input.stoppedWorkReview &&
+        this.options.ownership.forWorkspace(input.workspaceId)?.id !== input.transferId
+      ) {
+        const current = await this.reviewWriters(inventory);
+        if (JSON.stringify(current) !== JSON.stringify(input.stoppedWorkReview))
+          refuse(
+            "review_changed",
+            "Work that will stop changed after review; cancel this transfer and review again",
+          );
+      }
+      await this.requireAutomationReview(input, inventory);
+      await this.previewQueues(
+        inventory,
+        await this.options.pullRequestWatches.reviewForHandoff(inventory.agentIds),
+      );
+      this.assertReviewedIntegrations(
+        input.integrationReview,
+        await this.options.agents.listByWorkspaceForHandoff(input.workspaceId),
+      );
+      let source = await this.options.ownership.prepare({
+        id: input.transferId,
+        ...inventory,
+        destinationServerId: input.destinationServerId,
+        reservationId: input.reservationId,
+        workspaceReviewDigest: input.workspaceReviewDigest,
+        stoppedWorkReview: input.stoppedWorkReview,
+        integrationReview: input.integrationReview,
+      });
+      await this.publishTransfer(input.transferId);
+      if (source.state === "cancelled")
+        refuse("invalid_source", "Cancelled source transfer cannot be prepared");
+      if (source.state === "ready" || source.state === "released") {
+        const prepared = await this.readPrepared(source);
+        await this.verify(source, prepared);
+        return { source, manifest: prepared.manifest };
+      }
+      await this.stopSource(source);
+      const records = await this.checkpointConversations(source.agentIds);
+      this.assertReviewedIntegrations(source.integrationReview, records);
+      const agents: PreparedSource["agents"] = [];
+      const directory = this.captureDirectory(source.id);
+      await mkdir(this.options.directory, { recursive: true, mode: 0o700 });
+      await rm(directory, { recursive: true, force: true });
+      await mkdir(directory, { mode: 0o700 });
+      await syncDirectory(this.options.directory);
+      const workspaceDirectory = path.join(directory, "workspace");
+      await captureWorkspace({
+        cwd: source.cwd,
+        artifactDirectory: workspaceDirectory,
+        expectedReviewDigest: source.workspaceReviewDigest,
+      });
+      const conversations: CapturedConversation[] = [];
+      for (const [index, record] of records.entries()) {
+        const artifactDirectory = path.join(directory, `conversation-${index}`);
+        const historyPath = path.join(directory, `history-${index}.json`);
+        const queuePath = path.join(directory, `queue-${index}.json`);
+        const queueBlobsDirectory = path.join(directory, "queue-files");
+        await writeJournal(
+          queuePath,
+          await this.options.queues.exportForHandoff(record.id, {
+            blobsDirectory: queueBlobsDirectory,
+            workspaceCwd: source.cwd,
+          }),
+        );
+        if (!record.persistence) {
+          const { agent, previous } = await this.contextAgent(record, {
+            artifactDirectory,
+            historyPath,
+          });
+          agents.push(agent);
+          conversations.push({
+            sourceAgentId: agent.id,
+            title: agent.title,
+            artifactDirectory,
+            historyPath,
+            pendingRestartNote: agent.pendingRestartNote,
+            queuePath,
+            queueBlobsDirectory,
+            mode: "context",
+            origin: agent.origin,
+            previous,
+          });
+          continue;
+        }
+        const native = this.nativeAgent(record);
+        const { previous, binding } = await this.previousSegments(record, native.sessionId);
+        const agent = NativeAgentSchema.parse({
+          ...native,
+          runtime: native.runtime,
+          ...(record.handoffContext ? { context: record.handoffContext } : {}),
+          ...(binding ? { previousBinding: binding } : {}),
+          ...(previous.length ? { previous: previous.map((item) => item.segment) } : {}),
+        });
+        agents.push(agent);
+        await captureClaudeSession(this.captureInput(agent, native.runtime, artifactDirectory));
+        const events = await readCapturedClaudeHistory({
+          artifactDirectory,
+          cwd: agent.cwd,
+          logger: this.options.logger,
+        });
+        await this.options.agentManager.recoverPromptAnnotationsForHandoff(agent.id, events);
+        const checkpoint = await this.options.agents.checkpointClosedAgent(agent.id);
+        const {
+          revision: _beforeRevision,
+          promptAnnotations: _beforeAnnotations,
+          ...before
+        } = record;
+        const {
+          revision: _afterRevision,
+          promptAnnotations: _afterAnnotations,
+          ...after
+        } = checkpoint;
+        if (!isDeepStrictEqual(before, after))
+          refuse("source_changed", "Source conversation changed during annotation recovery");
+        // Only the witnessed annotation repair may advance this capture's record revision.
+        agent.recordRevision = checkpoint.revision;
+        records[index] = checkpoint;
+        const rows = await this.options.agentManager.projectHistoryForHandoff(
+          agent.id,
+          events,
+          records[index].createdAt,
+        );
+        await writeHandoffHistory(historyPath, {
+          version: 1,
+          sourceAgentId: agent.id,
+          epoch: source.id,
+          promptAnnotations: records[index].promptAnnotations,
+          rows,
+        });
+        conversations.push({
+          sourceAgentId: agent.id,
+          title: agent.title,
+          artifactDirectory,
+          historyPath,
+          pendingRestartNote: agent.pendingRestartNote,
+          queuePath,
+          queueBlobsDirectory,
+          previous,
+        });
+      }
+      const schedulesPath = path.join(directory, "schedules.json");
+      await writeJournal(schedulesPath, await this.options.schedules.exportForHandoff(source));
+      const manifest = await packHandoffArchive({
+        store: this.options.archives,
+        transferId: source.id,
+        sourceServerId: this.options.serverId,
+        sourceWorkspaceId: source.workspaceId,
+        sourceCwd: source.cwd,
+        workspaceDirectory,
+        conversations,
+        schedulesPath,
+      });
+      const prepared: PreparedSource = {
+        version: 3,
+        transferId: source.id,
+        cwd: source.cwd,
+        agents,
+        runtime: null,
+        manifest,
+      };
+      await writeJournal(path.join(directory, "source.json"), prepared);
+      await this.verify(source, prepared);
+      source = await this.options.ownership.markReady(source.id, manifest.entrypoint.sha256);
+      return { source, manifest };
+    }).finally(() => this.publishTransfer(input.transferId));
+  }
+
+  async status(transferId: string) {
+    const source = this.options.ownership.status(transferId);
+    // Released ownership survives loss of the source checkout and temporary capture.
+    const manifest = source.state === "ready" ? (await this.readPrepared(source)).manifest : null;
+    return { source, manifest };
+  }
+
+  async recoveryStatus(transferId: string) {
+    const cancellation = this.options.ownership.cancellation(transferId);
+    try {
+      return { result: await this.status(transferId), cancellation };
+    } catch (error) {
+      // Cancellation can precede preparation, leaving a tombstone without a workspace snapshot.
+      if (cancellation && error instanceof Error && "code" in error && error.code === "not_found")
+        return { result: null, cancellation };
+      throw error;
+    }
+  }
+
+  findWorkspace(workspaceId: string) {
+    // Discovery must still work after the source checkout has been removed.
+    return this.options.ownership.forWorkspace(workspaceId);
+  }
+
+  workspaceState(workspaceId: string) {
+    const source = this.findWorkspace(workspaceId);
+    return source
+      ? {
+          transferId: source.id,
+          state: source.state,
+          destinationServerId: source.destinationServerId,
+        }
+      : null;
+  }
+
+  private async publishTransfer(transferId: string): Promise<void> {
+    if (!this.options.onWorkspaceChanged) return;
+    try {
+      const source = this.options.ownership.status(transferId);
+      await this.options.onWorkspaceChanged(source.workspaceId);
+    } catch (error) {
+      // Cancellation before preparation has no workspace record to project.
+      if (error instanceof Error && "code" in error && error.code === "not_found") return;
+      // Ownership is authoritative even if a connected client misses the update;
+      // its next workspace snapshot rebuilds the projection from the journal.
+      this.options.logger.warn(
+        { err: error, transferId },
+        "Failed to publish handoff workspace state",
+      );
+    }
+  }
+
+  cancel(input: HandoffCancellationInput) {
+    // Do not reopen source admission while its preparation is still stopping or capturing writers.
+    return this.serialize(() => {
+      if (this.stopping.has(input.transferId))
+        refuse(
+          "stop_uncertain",
+          "Source shutdown is still pending; retry cancellation after it finishes. Handoff remains fenced.",
+        );
+      return this.options.ownership.cancelReservation(input, (source) =>
+        this.stopRecoveredAgentWriters(source),
+      );
+    }).finally(() => this.publishTransfer(input.transferId));
+  }
+
+  private async stopRecoveredAgentWriters(source: SourceHandoffStatus): Promise<void> {
+    for (const agentId of this.stoppedAgentIds(source)) {
+      await this.options.queues.holdForHandoff(agentId);
+      if (this.options.agentManager.getAgent(agentId))
+        refuse(
+          "stop_uncertain",
+          "A source agent has not finished closing. Retry preparation before cancelling.",
+        );
+      await this.options.agentManager.closeAgent(agentId);
+      const record = await this.options.agents.get(agentId);
+      if (!record)
+        refuse(
+          "stop_uncertain",
+          "A source agent record is missing; its process shutdown cannot be confirmed.",
+        );
+      const generations = [...(record.unresolvedRuntimeGenerations ?? [])];
+      if (record.lastStatus !== "closed") {
+        if (!record.runtimeGeneration)
+          refuse(
+            "stop_uncertain",
+            "The interrupted source runtime has no durable process inventory.",
+          );
+        generations.push(record.runtimeGeneration);
+      }
+      for (const generation of generations) {
+        if (generation.managedProcessIds === undefined || !this.options.managedProcesses)
+          refuse(
+            "stop_uncertain",
+            "The interrupted source runtime has no complete process inventory. Handoff remains fenced.",
+          );
+        try {
+          await this.options.managedProcesses.stopRuntime({
+            runtime: { agentId, generationId: generation.id },
+            processIds: generation.managedProcessIds,
+          });
+        } catch (error) {
+          this.options.logger.warn(
+            { err: error, agentId, generationId: generation.id },
+            "Recovered source process shutdown is unconfirmed",
+          );
+          refuse(
+            "stop_uncertain",
+            "Source process shutdown could not be confirmed. Handoff remains fenced; restore missing stop records or retry shutdown.",
+          );
+        }
+      }
+    }
+  }
+
+  release(transferId: string) {
+    return this.serialize(async () => {
+      const source = this.options.ownership.status(transferId);
+      const prepared = source.state === "released" ? null : await this.readPrepared(source);
+      if (!source.manifestDigest)
+        refuse("invalid_source", "Source capture is not ready for release");
+      // Finish known publication repairs and legacy annotation adoption before sealing writes.
+      // Verification repeats these checkpoints inside the sealed ownership transition.
+      if (source.state === "ready") await this.checkpointConversations(source.agentIds);
+      return this.options.ownership.release(
+        transferId,
+        {
+          version: 1,
+          transferId,
+          sourceServerId: this.options.serverId,
+          destinationServerId: source.destinationServerId,
+          reservationId: source.reservationId,
+          manifestDigest: source.manifestDigest,
+        },
+        () => {
+          if (!prepared)
+            refuse("source_changed", "Released handoff cannot repeat source verification");
+          return this.verify(source, prepared);
+        },
+      );
+    }).finally(() => this.publishTransfer(transferId));
+  }
+
+  private async checkpointConversations(agentIds: string[]): Promise<StoredAgentRecord[]> {
+    const records: StoredAgentRecord[] = [];
+    for (const id of agentIds) {
+      await this.options.agentManager.checkpointPromptAnnotations(id);
+      records.push(await this.options.agents.checkpointClosedAgent(id));
+    }
+    return records;
+  }
+
+  private async requireAutomationReview(
+    input: SourceRequest,
+    inventory: Pick<SourceHandoffStatus, "agentIds" | "cwd" | "workspaceId">,
+  ) {
+    if (
+      !input.stoppedWorkReview &&
+      (await this.options.pullRequestWatches.reviewForHandoff(inventory.agentIds)).length > 0
+    )
+      refuse(
+        "review_changed",
+        "Review the PR watches that will stop before preparing this transfer",
+      );
+    if (
+      (await this.options.schedules.reviewForHandoff(inventory)).length &&
+      !input.stoppedWorkReview?.schedules
+    )
+      refuse("review_changed", "Review scheduled automation before preparing the handoff");
+  }
+
+  private async previewQueues(
+    { agentIds, cwd }: { agentIds: string[]; cwd: string },
+    watches: NonNullable<HandoffStoppedWorkReview["pullRequestWatches"]>,
+  ): Promise<{ count: number; bytes: number }> {
+    let count = 0;
+    let bytes = 0;
+    for (const agentId of agentIds) {
+      const ignoreSystemIds = this.options.queues
+        .entries(agentId)
+        .filter(
+          (entry) =>
+            entry.origin === "system" &&
+            watches.some(
+              (watch) => watch.agentId === agentId && entry.id.startsWith(`pr-watch:${watch.id}:`),
+            ),
+        )
+        .map((entry) => entry.id);
+      const queue = await this.options.queues.exportForHandoff(agentId, {
+        requireHeld: false,
+        ignoreSystemIds,
+        workspaceCwd: cwd,
+      });
+      if (
+        queue.entries.some(
+          (entry) => entry.senderAgentId && !agentIds.includes(entry.senderAgentId),
+        )
+      )
+        refuse("invalid_source", "Queued message sender is outside the transferred conversations");
+      count += queue.entries.length;
+      bytes += handoffQueueBytes(queue);
+      if (bytes > HANDOFF_QUEUE_MAX_BYTES)
+        refuse("invalid_source", "Queued messages exceed the handoff byte limit");
+    }
+    return { count, bytes };
+  }
+
+  private async stopWatches(source: SourceHandoffStatus) {
+    const watches = source.stoppedWorkReview?.pullRequestWatches ?? [];
+    const agentIds = this.stoppedAgentIds(source);
+    await this.options.pullRequestWatches.stopForHandoff(agentIds, watches);
+    for (const agentId of agentIds) {
+      const stopped = watches
+        .filter((watch) => watch.agentId === agentId)
+        .map((watch) => ({
+          id: `handoff:${source.id}:pr-watch:${watch.id}`,
+          kind: "handoff_pull_request_watch",
+          label: `PR #${watch.number} (${watch.url}). Restart this watch explicitly if needed.`,
+        }));
+      if (stopped.length) await this.options.agents.addPendingRestartNote(agentId, stopped);
+    }
+  }
+
+  async fetchTimeline(agentId: string, options: AgentTimelineFetchOptions) {
+    let retained = await this.options.agents.get(agentId);
+    if (retained?.handoffRetention && !retained.handoffRetention.history && !retained.internal) {
+      await this.checkpointRetainedConversation(agentId);
+      retained = await this.options.agents.get(agentId);
+    }
+    if (retained?.handoffRetention && !retained.internal) {
+      const blob = retained.handoffRetention.history;
+      if (!blob)
+        refuse(
+          "stop_uncertain",
+          "Retained conversation history is not ready; retry source preparation",
+        );
+      const history = await readRetainedHandoffHistory(this.options.directory, agentId, blob).catch(
+        (error: unknown) =>
+          refuse(
+            "source_changed",
+            error instanceof Error ? error.message : "Retained conversation history is unavailable",
+          ),
+      );
+      return {
+        record: retained,
+        timeline: fetchHandoffHistory(history, options),
+      };
+    }
+    const source = this.options.ownership.forAgent(agentId);
+    if (!source) return null;
+    if ((source.state !== "ready" && source.state !== "released") || !source.manifestDigest)
+      refuse(
+        "invalid_source",
+        "Handoff history is not ready; retry after source preparation completes",
+      );
+    const record = await this.options.agents.get(agentId);
+    if (!record || record.internal) refuse("invalid_source", "Source conversation is unavailable");
+    const manifestDigest = source.manifestDigest;
+    const timeline = await this.options.archives.withVerifiedArchive(source.id, async (archive) => {
+      const { bundle } = await readHandoffBundle(archive, {
+        sourceServerId: this.options.serverId,
+        sourceWorkspaceId: source.workspaceId,
+        sourceAgentIds: source.agentIds,
+        manifestDigest,
+      });
+      const conversation = bundle.conversations.find(
+        (candidate) => candidate.sourceAgentId === agentId,
+      );
+      if (!conversation?.history)
+        refuse("invalid_source", "This transfer does not contain readable history");
+      const history = await readHandoffHistory(
+        path.join(archive.blobsDirectory, conversation.history.sha256),
+        conversation.origin?.sourceAgentId ?? agentId,
+      );
+      return fetchHandoffHistory(history, options);
+    });
+    return { record, timeline };
+  }
+
+  async dispose(): Promise<void> {
+    this.closing = true;
+    await this.tail;
+    await Promise.allSettled(this.stopping.values());
+    await Promise.allSettled(this.retainedCheckpoints.values());
+  }
+
+  private async stopSource(source: SourceHandoffStatus): Promise<void> {
+    let operation = this.stopping.get(source.id);
+    if (!operation) {
+      operation = this.stopAndDrainSource(source).finally(() => this.stopping.delete(source.id));
+      this.stopping.set(source.id, operation);
+      void operation.catch((error: unknown) => {
+        this.options.logger.warn(
+          { err: error, transferId: source.id },
+          "Source shutdown failed; handoff remains fenced",
+        );
+      });
+    }
+    // A request deadline must not abandon commands that can still stop a source writer.
+    // Retries join the retained operation; only the waiting request can proceed to capture.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        operation,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () =>
+              reject(
+                new HandoffSourceError(
+                  "stop_uncertain",
+                  "Source shutdown did not finish within 30 seconds. Handoff remains fenced; retry preparation to wait for the same shutdown.",
+                ),
+              ),
+            30_000,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async stopAndDrainSource(source: SourceHandoffStatus): Promise<void> {
+    await this.options.ownership.drainCleanup(source.id);
+    this.assertReviewedWriters(source.stoppedWorkReview, await this.reviewWriters(source));
+    for (const workspace of source.stoppedWorkReview?.retainedWorkspaces ?? []) {
+      await this.options.workspaces.retainForHandoff({
+        workspaceId: workspace.workspaceId,
+        expectedIncarnation: workspace.incarnation,
+        transferId: source.id,
+        retainedAt: new Date().toISOString(),
+      });
+      for (const agentId of workspace.agentIds)
+        await this.options.agents.retainForHandoff(agentId, source.id);
+    }
+    // Setup and provider commands may hold admission leases until cancellation settles.
+    await this.stopWriters(source);
+    await this.options.ownership.drain(source.id);
+    const finalInventory = await this.inspect(source.workspaceId);
+    if (!sameIds(finalInventory.agentIds, source.agentIds))
+      refuse("inventory_changed", "Source conversation set changed while draining admitted work");
+    await this.stopWriters(source);
+    await this.stopWatches(source);
+    await this.options.schedules.pauseForHandoff(source);
+    for (const workspace of source.stoppedWorkReview?.retainedWorkspaces ?? []) {
+      for (const agentId of workspace.agentIds) await this.checkpointRetainedConversation(agentId);
+    }
+  }
+
+  /** Finish a stopped conversation's publication even after its transfer was cancelled. */
+  async checkpointRetainedConversation(agentId: string): Promise<void> {
+    if (this.closing) refuse("invalid_source", "Source preparation service is stopping");
+    const existing = this.retainedCheckpoints.get(agentId);
+    if (existing) return existing;
+    const checkpoint = this.persistRetainedConversation(agentId);
+    this.retainedCheckpoints.set(agentId, checkpoint);
+    try {
+      await checkpoint;
+    } finally {
+      this.retainedCheckpoints.delete(agentId);
+    }
+  }
+
+  private async persistRetainedConversation(agentId: string): Promise<void> {
+    const retention = (await this.options.agents.get(agentId))?.handoffRetention;
+    if (!retention) return;
+    if (retention.history) {
+      // An existing binding cannot adopt a replacement after bytes were lost or changed.
+      await readRetainedHandoffHistory(this.options.directory, agentId, retention.history);
+    } else {
+      await this.checkpointRetainedHistory(agentId);
+    }
+    await this.options.delegations.checkpointRetainedResults(agentId);
+  }
+
+  private async checkpointRetainedHistory(agentId: string): Promise<void> {
+    const record = await this.options.agents.checkpointClosedAgent(agentId);
+    const directory = path.join(this.options.directory, "retained");
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    const artifacts = path.join(directory, randomUUID());
+    try {
+      const agent = this.nativeAgent(record);
+      const input = this.captureInput(agent, agent.runtime, artifacts);
+      await captureClaudeSession(input);
+      const events = await readCapturedClaudeHistory({
+        artifactDirectory: artifacts,
+        cwd: record.cwd,
+        logger: this.options.logger,
+      });
+      await this.options.agentManager.recoverPromptAnnotationsForHandoff(agentId, events);
+      await this.options.agentManager.checkpointPromptAnnotations(agentId);
+      const rows = await this.options.agentManager.projectHistoryForHandoff(
+        agentId,
+        events,
+        record.createdAt,
+      );
+      const history = HandoffHistorySchema.parse({
+        version: 1,
+        sourceAgentId: agentId,
+        epoch: record.handoffRetention!.transferId,
+        promptAnnotations: (await this.options.agents.get(agentId))?.promptAnnotations,
+        rows,
+      });
+      const bytes = Buffer.from(JSON.stringify(history));
+      const blob = { sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.length };
+      const file = path.join(directory, `${blob.sha256}.json`);
+      await writeHandoffHistory(file, history);
+      await syncFilePublication(file, path.dirname(this.options.directory));
+      await verifyCapturedClaudeSession(input);
+      await this.options.agents.checkpointRetainedHistory(agentId, blob);
+    } finally {
+      await rm(artifacts, { recursive: true, force: true });
+    }
+  }
+
+  private async sourceTerminals(source: {
+    workspaceId: string;
+    cwd: string;
+    stoppedWorkReview?: HandoffStoppedWorkReview;
+    state?: SourceHandoffStatus["state"];
+  }) {
+    const scopes = [
+      source,
+      ...(source.state === "released" ? [] : (source.stoppedWorkReview?.retainedWorkspaces ?? [])),
+    ];
+    const terminals = new Map<string, TerminalSession>();
+    for (const directory of this.options.terminals.listDirectories()) {
+      for (const terminal of await this.options.terminals.getTerminals(directory)) {
+        if (
+          scopes.some(
+            (scope) =>
+              terminal.workspaceId === scope.workspaceId ||
+              handoffPathsOverlap(scope.cwd, terminal.cwd),
+          )
+        )
+          terminals.set(terminal.id, terminal);
+      }
+    }
+    if (terminals.size > 1000) refuse("invalid_source", "Too many terminals to review for handoff");
+    return [...terminals.values()].sort((left, right) => left.id.localeCompare(right.id));
+  }
+
+  private async stopWriters(source: SourceHandoffStatus): Promise<void> {
+    const agentIds = this.stoppedAgentIds(source);
+    for (const agentId of agentIds) await this.options.queues.holdForHandoff(agentId);
+    const terminals = await this.sourceTerminals(source);
+    this.assertReviewedWriters(source.stoppedWorkReview, await this.reviewWriters(source));
+    const stops = [
+      source.workspaceId,
+      ...(source.stoppedWorkReview?.retainedWorkspaces ?? []).map(
+        (workspace) => workspace.workspaceId,
+      ),
+    ].map((id) => () => this.options.setup.stop(id));
+    for (const id of agentIds) {
+      const session = this.options.agentManager.getAgent(id)?.session;
+      if (session || !source.stoppedWorkReview)
+        stops.push(() => this.options.agentManager.closeAgent(id, session ?? undefined));
+    }
+    for (const terminal of terminals)
+      stops.push(() => this.options.terminals.killTerminalAndWait(terminal.id));
+    const results = await Promise.allSettled(stops.map(async (stop) => stop()));
+    const failures = results.filter((result) => result.status === "rejected");
+    if (failures.length > 0)
+      throw new AggregateError(
+        failures.map((result) => result.reason),
+        "Source writers did not all stop; handoff remains fenced",
+      );
+  }
+
+  private stoppedAgentIds(source: {
+    agentIds: string[];
+    stoppedWorkReview?: HandoffStoppedWorkReview;
+  }): string[] {
+    return [
+      ...new Set([
+        ...source.agentIds,
+        ...(source.stoppedWorkReview?.retainedWorkspaces ?? []).flatMap(
+          (workspace) => workspace.agentIds,
+        ),
+      ]),
+    ].sort();
+  }
+
+  /** Follow write scopes and runner leases, never parent/child relationships. */
+  private async reviewRetainedWorkspaces(source: {
+    workspaceId: string;
+    agentIds: string[];
+    cwd: string;
+    stoppedWorkReview?: HandoffStoppedWorkReview;
+  }): Promise<NonNullable<HandoffStoppedWorkReview["retainedWorkspaces"]>> {
+    const selected = new Set(
+      (source.stoppedWorkReview?.retainedWorkspaces ?? []).map(
+        (workspace) => workspace.workspaceId,
+      ),
+    );
+    const workspaces = await this.options.workspaces.list();
+    const live = this.options.agentManager.listAgents();
+    let retained: NonNullable<HandoffStoppedWorkReview["retainedWorkspaces"]> = [];
+    for (;;) {
+      const before = JSON.stringify(retained);
+      const schedules = await this.options.schedules.reviewForHandoff({
+        ...source,
+        stoppedWorkReview: {
+          agents: [],
+          terminals: [],
+          setupIds: [],
+          ...source.stoppedWorkReview,
+          retainedWorkspaces: retained,
+        },
+      });
+      for (const schedule of schedules) {
+        const agentId = schedule.activeRun?.retainedAgentId;
+        if (!agentId) continue;
+        const agent = await this.options.agents.get(agentId);
+        if (
+          !agent ||
+          agent.archivedAt ||
+          !agent.workspaceId ||
+          agent.workspaceId === source.workspaceId
+        )
+          refuse("review_changed", "The scheduled job has no active source workspace to retain");
+        selected.add(agent.workspaceId);
+      }
+      await this.includeOverlappingWorkspaces(selected, source, workspaces, live);
+      retained = [];
+      for (const id of [...selected].sort())
+        retained.push(await this.reviewRetainedWorkspace(id, workspaces, live));
+      if (
+        source.agentIds.length +
+          retained.reduce((count, workspace) => count + workspace.agentIds.length, 0) >
+        1000
+      )
+        refuse("invalid_source", "Too many conversations to stop for handoff");
+      if (JSON.stringify(retained) === before) return retained;
+    }
+  }
+
+  private async includeOverlappingWorkspaces(
+    selected: Set<string>,
+    source: Pick<SourceHandoffStatus, "workspaceId" | "agentIds">,
+    workspaces: PersistedWorkspaceRecord[],
+    live: ManagedAgent[],
+  ): Promise<void> {
+    for (const id of selected) {
+      const workspace = workspaces.find((candidate) => candidate.workspaceId === id);
+      if (!workspace || workspace.archivedAt || !workspace.incarnation)
+        refuse("review_changed", "A retained workspace is no longer active");
+      const cwd = await realpath(workspace.cwd);
+      for (const other of workspaces) {
+        if (
+          other.workspaceId !== source.workspaceId &&
+          !other.archivedAt &&
+          handoffPathsOverlap(cwd, await resolveHandoffPath(other.cwd))
+        )
+          selected.add(other.workspaceId);
+      }
+      for (const agent of live) {
+        if (
+          source.agentIds.includes(agent.id) ||
+          !handoffPathsOverlap(cwd, await resolveHandoffPath(agent.cwd))
+        )
+          continue;
+        if (!agent.workspaceId)
+          refuse("invalid_source", "A retained checkout has an agent without a workspace");
+        selected.add(agent.workspaceId);
+      }
+      if (selected.size > 32) refuse("invalid_source", "Too many retained workspaces to review");
+    }
+  }
+
+  private async reviewRetainedWorkspace(
+    id: string,
+    workspaces: PersistedWorkspaceRecord[],
+    live: ManagedAgent[],
+  ): Promise<NonNullable<HandoffStoppedWorkReview["retainedWorkspaces"]>[number]> {
+    const workspace = workspaces.find((candidate) => candidate.workspaceId === id);
+    if (!workspace || workspace.archivedAt || !workspace.incarnation)
+      refuse("review_changed", "A retained workspace is no longer active");
+    const records = (await this.options.agents.listByWorkspaceForHandoff(id)).filter(
+      (record) => !record.archivedAt,
+    );
+    for (const record of records) {
+      if (
+        record.provider !== "claude" ||
+        !record.persistence ||
+        !readClaudeSessionRuntime(record.persistence)
+      )
+        refuse(
+          "invalid_source",
+          "A retained conversation needs a recorded Claude session for stopped history",
+        );
+      if (record.lastStatus !== "closed" && !this.options.agentManager.getAgent(record.id))
+        refuse("stop_uncertain", "A retained job's runtime exit has not been confirmed");
+    }
+    return {
+      workspaceId: id,
+      incarnation: workspace.incarnation,
+      cwd: await realpath(workspace.cwd),
+      agentIds: [
+        ...new Set([
+          ...records.map((agent) => agent.id),
+          ...live.filter((agent) => agent.workspaceId === id).map((agent) => agent.id),
+        ]),
+      ].sort(),
+    };
+  }
+
+  private async reviewWriters(source: {
+    workspaceId: string;
+    agentIds: string[];
+    cwd: string;
+    stoppedWorkReview?: HandoffStoppedWorkReview;
+  }): Promise<HandoffStoppedWorkReview> {
+    const retainedWorkspaces = await this.reviewRetainedWorkspaces(source);
+    const scope = {
+      ...source,
+      stoppedWorkReview: {
+        agents: [],
+        terminals: [],
+        setupIds: [],
+        ...source.stoppedWorkReview,
+        ...(retainedWorkspaces.length ? { retainedWorkspaces } : {}),
+      },
+    };
+    const agentIds = this.stoppedAgentIds(scope);
+    const terminals = await this.sourceTerminals(scope);
+    const instanceId = (writer: object) => {
+      let id = this.writerInstances.get(writer);
+      if (!id) {
+        id = randomUUID();
+        this.writerInstances.set(writer, id);
+      }
+      return id;
+    };
+    const agents = agentIds.flatMap((id) => {
+      const session = this.options.agentManager.getAgent(id)?.session;
+      return session ? [{ id, instanceId: instanceId(session) }] : [];
+    });
+    const review = {
+      agents,
+      terminals: terminals.map((terminal) => ({
+        id: terminal.id,
+        instanceId: instanceId(terminal),
+        name: terminal.name,
+      })),
+      setupIds: [
+        source.workspaceId,
+        ...retainedWorkspaces.map((workspace) => workspace.workspaceId),
+      ]
+        .flatMap((id) => this.options.setup.activeIds(id))
+        .sort(),
+      pullRequestWatches: await this.options.pullRequestWatches.reviewForHandoff(agentIds),
+      schedules: await this.options.schedules.reviewForHandoff(scope),
+      ...(retainedWorkspaces.length ? { retainedWorkspaces } : {}),
+    };
+    if (review.setupIds.length > 1000)
+      refuse("invalid_source", "Too many setup operations to review for handoff");
+    return review;
+  }
+
+  private assertReviewedWriters(
+    approved: HandoffStoppedWorkReview | undefined,
+    current: HandoffStoppedWorkReview,
+  ) {
+    if (!approved) return;
+    // Stops and natural exits shrink the set. A retry may not stop a replacement runtime.
+    const has = <T>(allowed: T[], values: T[]) => {
+      const entries = new Set(allowed.map((value) => JSON.stringify(value)));
+      return values.every((value) => entries.has(JSON.stringify(value)));
+    };
+    // COMPAT(handoffSchedules): added in v0.11.1, remove after 2027-04-10 once pre-v5 reviews finish.
+    if (
+      !has(approved.agents, current.agents) ||
+      !has(approved.terminals, current.terminals) ||
+      !has(approved.setupIds, current.setupIds) ||
+      !isDeepStrictEqual(approved.retainedWorkspaces ?? [], current.retainedWorkspaces ?? []) ||
+      !has(approved.pullRequestWatches ?? [], current.pullRequestWatches ?? []) ||
+      (current.schedules ?? []).some(
+        (record) =>
+          !(approved.schedules ?? []).some(
+            (entry) =>
+              entry.id === record.id &&
+              entry.digest === record.digest &&
+              entry.retainedOnSource?.cwd === record.retainedOnSource?.cwd,
+          ),
+      )
+    )
+      refuse(
+        "review_changed",
+        "Work that will stop changed after review; cancel this transfer and review again",
+      );
+  }
+
+  private reviewIntegrations(records: StoredAgentRecord[]): HandoffIntegrationReview {
+    // Only caller-supplied MCP names belong in the review. Commands, URLs, headers and env stay local.
+    // Provider-discovered host/project integrations are not part of this inventory.
+    const review = records
+      .map((record) => ({
+        agentId: record.id,
+        omittedMcpServers: Object.keys(record.config?.mcpServers ?? {}).sort(),
+      }))
+      .sort((left, right) => left.agentId.localeCompare(right.agentId));
+    const parsed = HandoffIntegrationReviewSchema.safeParse(review);
+    if (!parsed.success)
+      refuse("invalid_source", "Conversation integrations exceed the handoff review limits");
+    return parsed.data;
+  }
+
+  private assertReviewedIntegrations(
+    approved: HandoffIntegrationReview | undefined,
+    records: StoredAgentRecord[],
+  ) {
+    if (approved && JSON.stringify(approved) !== JSON.stringify(this.reviewIntegrations(records)))
+      refuse(
+        "review_changed",
+        "Conversation MCP connections changed after review; cancel this transfer and review again",
+      );
+  }
+
+  private async verifyStoppedConversations(source: SourceHandoffStatus, prepared: PreparedSource) {
+    if (
+      (
+        await this.options.pullRequestWatches.reviewForHandoff(
+          source.state === "released" ? source.agentIds : this.stoppedAgentIds(source),
+        )
+      ).length > 0
+    )
+      refuse("stop_uncertain", "Source PR watches have not stopped");
+    const records = new Map<string, StoredAgentRecord>();
+    for (const id of source.agentIds) {
+      if (this.options.agentManager.getAgent(id))
+        refuse("stop_uncertain", "Source provider runtime is still loaded");
+      await this.options.agentManager.checkpointPromptAnnotations(id);
+      const record = await this.options.agents.checkpointClosedAgent(id);
+      const captured = prepared.agents.find((agent) => agent.id === id);
+      if (!record || !captured || record.lastStatus !== "closed" || record.cwd !== captured.cwd)
+        refuse("source_changed", "Source conversation changed after capture");
+      verifyCapturedRecord(record, captured);
+      records.set(id, record);
+    }
+    return records;
+  }
+
+  private async verifyRetainedWorkspaces(source: SourceHandoffStatus): Promise<void> {
+    if (source.state !== "released") {
+      for (const workspace of source.stoppedWorkReview?.retainedWorkspaces ?? []) {
+        const current = await this.options.workspaces.get(workspace.workspaceId);
+        if (
+          !current ||
+          current.archivedAt ||
+          current.incarnation !== workspace.incarnation ||
+          !current.retention
+        )
+          refuse("source_changed", "Retained workspace protection changed after preparation");
+        for (const agentId of workspace.agentIds) {
+          if (this.options.agentManager.getAgent(agentId))
+            refuse("stop_uncertain", "A retained provider runtime is still loaded");
+          const record = await this.options.agents.checkpointClosedAgent(agentId);
+          if (
+            !record.handoffRetention?.history ||
+            record.handoffRetention.delegationsPending !== false
+          )
+            refuse("stop_uncertain", "Retained history has not been checkpointed");
+          await this.fetchTimeline(agentId, { direction: "tail", limit: 1 });
+        }
+      }
+    }
+  }
+
+  private setupStillRunning(source: SourceHandoffStatus): boolean {
+    return [
+      source.workspaceId,
+      ...(source.state === "released"
+        ? []
+        : (source.stoppedWorkReview?.retainedWorkspaces ?? [])
+      ).map((workspace) => workspace.workspaceId),
+    ].some((id) => this.options.setup.activeIds(id).length > 0);
+  }
+
+  private async verify(source: SourceHandoffStatus, prepared: PreparedSource): Promise<void> {
+    const inventory = await this.inspect(source.workspaceId);
+    if (!sameIds(inventory.agentIds, source.agentIds))
+      refuse("inventory_changed", "Source conversation inventory changed after capture");
+    if ((await this.sourceTerminals(source)).length > 0 || this.setupStillRunning(source))
+      refuse("stop_uncertain", "Source terminals or setup are still running");
+    await this.verifyRetainedWorkspaces(source);
+    this.assertReviewedIntegrations(
+      source.integrationReview,
+      await this.options.agents.listByWorkspaceForHandoff(source.workspaceId),
+    );
+    const records = await this.verifyStoppedConversations(source, prepared);
+    const directory = this.captureDirectory(source.id);
+    await verifyCapturedWorkspace({
+      cwd: source.cwd,
+      artifactDirectory: path.join(directory, "workspace"),
+      expectedReviewDigest: source.workspaceReviewDigest,
+    });
+    for (const [index, agent] of prepared.agents.entries()) {
+      const record = records.get(agent.id);
+      if (!record) refuse("source_changed", "Captured conversation is missing from the source");
+      if (agent.mode === "context") {
+        const current = await this.contextAgent(record);
+        if (
+          !isDeepStrictEqual(
+            { ...current.agent, recordRevision: agent.recordRevision },
+            { ...agent, recordRevision: agent.recordRevision },
+          )
+        )
+          refuse("source_changed", "Source carried history changed after capture");
+        continue;
+      }
+      const previous = await this.previousSegments(record, agent.sessionId);
+      if (
+        // COMPAT(handoffPreparedHistory): v1 did not bind a prior native import when it contained no earlier segments.
+        (prepared.version >= 2 && !isDeepStrictEqual(previous.binding, agent.previousBinding)) ||
+        !isDeepStrictEqual(
+          previous.previous.map((item) => item.segment),
+          agent.previous ?? [],
+        )
+      )
+        refuse("source_changed", "Earlier conversation history changed after capture");
+      // COMPAT(handoffCapturedRuntime): added in v0.11.1, remove after 2027-02-06 once older prepared transfers expire.
+      const runtime = agent.runtime ?? prepared.runtime;
+      if (!runtime) refuse("invalid_source", "Source provider configuration is missing");
+      if (
+        agent.runtime &&
+        !isDeepStrictEqual(agent.runtime, readClaudeSessionRuntime(record.persistence ?? undefined))
+      )
+        refuse("source_changed", "Source conversation runtime changed after capture");
+      const artifactDirectory = path.join(directory, `conversation-${index}`);
+      await verifyCapturedClaudeSession(this.captureInput(agent, runtime, artifactDirectory));
+      const history = await readHandoffHistory(
+        path.join(directory, `history-${index}.json`),
+        agent.id,
+      );
+      const events = await readCapturedClaudeHistory({
+        artifactDirectory,
+        cwd: agent.cwd,
+        logger: this.options.logger,
+      });
+      const rows = await this.options.agentManager.projectHistoryForHandoff(
+        agent.id,
+        events,
+        record.createdAt,
+      );
+      const projected = HandoffHistorySchema.parse({
+        ...history,
+        promptAnnotations: record.promptAnnotations,
+        rows,
+      });
+      // Compare the persisted representation; optional undefined fields are absent from JSON.
+      if (!isDeepStrictEqual(history, JSON.parse(JSON.stringify(projected))))
+        refuse("source_changed", "Source conversation history presentation changed after capture");
+    }
+    await this.options.archives.withVerifiedArchive(source.id, async (archive) => {
+      if (archive.manifest.entrypoint.sha256 !== prepared.manifest.entrypoint.sha256)
+        refuse("source_changed", "Source archive changed after capture");
+      const { bundle, queues, schedules } = await readHandoffBundle(archive, {
+        sourceServerId: this.options.serverId,
+        sourceWorkspaceId: source.workspaceId,
+        sourceAgentIds: source.agentIds,
+        manifestDigest: prepared.manifest.entrypoint.sha256,
+      });
+      if (!isDeepStrictEqual(await this.options.schedules.exportForHandoff(source), schedules))
+        refuse("source_changed", "Scheduled automation changed after capture");
+      for (const agent of prepared.agents) {
+        const queue = await this.options.queues.exportForHandoff(agent.id, {
+          workspaceCwd: source.cwd,
+        });
+        // COMPAT(handoffQueueCapture): added in v0.11.1, remove after 2027-04-10 once retained pre-v4 transfers finish.
+        if (!isDeepStrictEqual(queue, queues.get(agent.id) ?? { version: 1, entries: [] }))
+          refuse("source_changed", "Source queued messages changed after capture");
+        const captured = bundle.conversations.find(
+          (conversation) => conversation.sourceAgentId === agent.id,
+        );
+        if (!isDeepStrictEqual(captured?.previous ?? [], agent.previous ?? []))
+          refuse("source_changed", "Captured earlier history differs from its verified source");
+        if (agent.mode !== "context") continue;
+        if (
+          captured?.mode !== "context" ||
+          !isDeepStrictEqual(captured.history, agent.context.history) ||
+          !isDeepStrictEqual(captured.session, agent.session) ||
+          !isDeepStrictEqual(captured.origin, agent.origin)
+        )
+          refuse(
+            "source_changed",
+            "Captured context differs from the original verified conversation",
+          );
+      }
+    });
+  }
+
+  private async contextAgent(
+    record: StoredAgentRecord,
+    capture?: { artifactDirectory: string; historyPath: string },
+  ) {
+    if (record.provider !== "claude" || record.persistence || !record.handoffContext?.pending)
+      refuse("invalid_source", "Conversation has no saved session or pending exported context");
+    if (record.runtimeGeneration || (record.promptAnnotations?.entryCount ?? 0) !== 0)
+      refuse(
+        "invalid_source",
+        "This conversation has local activity that requires a saved provider session",
+      );
+    return this.options.destination.withConversationArchive(
+      record.id,
+      async ({ transferId, reservationId, sourceAgentId, continuationMode, archive, content }) => {
+        const conversation = content.bundle.conversations.find(
+          (item) => item.sourceAgentId === sourceAgentId,
+        );
+        const session = content.sessions.get(sourceAgentId);
+        if (!conversation?.history || !session)
+          refuse("invalid_source", "Original exported conversation is incomplete");
+        const origin = handoffConversationOrigin(content.bundle, conversation);
+        if (continuationMode !== "context")
+          refuse("invalid_source", "A native conversation is missing its persistence handle");
+        const context = {
+          sourceServerId: origin.sourceServerId,
+          sourceAgentId: origin.sourceAgentId,
+          sourceCwd: origin.sourceCwd,
+          directory: handoffContextDirectory(reservationId, record.id),
+          history: conversation.history,
+          pending: true,
+          ...(conversation.historyIndex ? { historyIndex: conversation.historyIndex } : {}),
+          // COMPAT(handoffContextMode): added in v0.11.1, remove after 2027-04-10 once retained v1/v2 publications finish.
+          ...(content.bundle.version >= 3 ? { continuationMode: "context" as const } : {}),
+        };
+        if (!isDeepStrictEqual(record.handoffContext, context))
+          refuse("source_changed", "Carried context differs from its original verified archive");
+        const agent = ContextAgentSchema.parse({
+          id: record.id,
+          recordRevision: record.revision,
+          cwd: record.cwd,
+          title: record.title ?? null,
+          mode: "context",
+          context,
+          ...(record.pendingRestartNote !== undefined
+            ? { pendingRestartNote: record.pendingRestartNote }
+            : {}),
+          previousTransferId: transferId,
+          previousManifestDigest: archive.manifest.entrypoint.sha256,
+          session: conversation.session,
+          origin,
+          ...(conversation.previous?.length ? { previous: conversation.previous } : {}),
+        });
+        if (capture) {
+          const blobs = path.join(capture.artifactDirectory, "blobs");
+          await mkdir(blobs, { recursive: true, mode: 0o700 });
+          await copyFile(
+            path.join(archive.blobsDirectory, conversation.session.sha256),
+            path.join(capture.artifactDirectory, "manifest.json"),
+          );
+          for (const file of session.files)
+            await copyFile(
+              path.join(archive.blobsDirectory, file.blob.sha256),
+              path.join(blobs, file.blob.sha256),
+            );
+          await copyFile(
+            path.join(archive.blobsDirectory, conversation.history.sha256),
+            capture.historyPath,
+          );
+        }
+        const previous = (conversation.previous ?? []).map((segment): CapturedPreviousSegment => {
+          const manifest = content.previousSessions.get(segment.session.sha256);
+          if (!manifest) refuse("invalid_source", "Earlier conversation artifacts are missing");
+          return { segment, manifest, blobsDirectory: archive.blobsDirectory };
+        });
+        return {
+          agent,
+          previous,
+          preview: {
+            cliVersion: session.cliVersion,
+            hasWorkflows: session.files.some((file) => file.path.startsWith("session/workflows/")),
+            artifactBytes: [session, ...previous.map((item) => item.manifest)].reduce(
+              (sum, manifest) =>
+                sum + manifest.files.reduce((bytes, file) => bytes + file.blob.size, 0),
+              0,
+            ),
+            nativeUnavailableReason:
+              "This conversation contains exported context, not a local native session",
+          },
+        };
+      },
+    );
+  }
+
+  private assertPreviousContext(
+    record: StoredAgentRecord,
+    bundle: HandoffBundle,
+    conversation: HandoffBundle["conversations"][number],
+    reservationId: string,
+    continuationMode: "native" | "context",
+  ) {
+    if (continuationMode !== "context" && !conversation.previous?.length) {
+      if (record.handoffContext)
+        refuse("source_changed", "Unexpected carried context on a native conversation");
+      return;
+    }
+    if (!record.handoffContext || !conversation.history)
+      refuse("invalid_source", "Earlier conversation context is missing from the agent record");
+    const origin = handoffConversationOrigin(bundle, conversation);
+    const expected = {
+      sourceServerId: origin.sourceServerId,
+      sourceAgentId: origin.sourceAgentId,
+      sourceCwd: origin.sourceCwd,
+      directory: handoffContextDirectory(reservationId, record.id),
+      history: conversation.history,
+      pending: record.handoffContext.pending,
+      ...(conversation.historyIndex ? { historyIndex: conversation.historyIndex } : {}),
+      // COMPAT(handoffContextMode): added in v0.11.1, remove after 2027-04-10 once retained v1/v2 publications finish.
+      ...(bundle.version >= 3 ? { continuationMode } : {}),
+    };
+    if (!isDeepStrictEqual(record.handoffContext, expected))
+      refuse("source_changed", "Carried context differs from its original verified archive");
+  }
+
+  private async previousSegments(
+    record: StoredAgentRecord,
+    currentSessionId: string,
+  ): Promise<{
+    previous: CapturedPreviousSegment[];
+    binding?: { transferId: string; manifestDigest: string };
+  }> {
+    if (!record.handoffContext && !this.options.destination.hasConversation(record.id))
+      return { previous: [] };
+    return this.options.destination.withConversationArchive(
+      record.id,
+      async ({ transferId, reservationId, sourceAgentId, continuationMode, archive, content }) => {
+        const conversation = content.bundle.conversations.find(
+          (item) => item.sourceAgentId === sourceAgentId,
+        );
+        const session = content.sessions.get(sourceAgentId);
+        if (!conversation || !session)
+          refuse("invalid_source", "Original exported conversation is missing");
+        this.assertPreviousContext(
+          record,
+          content.bundle,
+          conversation,
+          reservationId,
+          continuationMode,
+        );
+        const segments = [...(conversation.previous ?? [])];
+        if (continuationMode === "context" || currentSessionId !== session.sessionId) {
+          if (!conversation.history)
+            refuse("invalid_source", "Earlier conversation has no readable history");
+          segments.push({
+            origin: handoffConversationOrigin(content.bundle, conversation),
+            history: conversation.history,
+            session: conversation.session,
+          });
+        }
+        if (segments.length > HANDOFF_PREVIOUS_SEGMENTS_MAX)
+          refuse("invalid_source", "Conversation exceeds the handoff history segment limit");
+        return {
+          binding: { transferId, manifestDigest: archive.manifest.entrypoint.sha256 },
+          previous: segments.map((segment) => {
+            const manifest =
+              segment.session.sha256 === conversation.session.sha256
+                ? session
+                : content.previousSessions.get(segment.session.sha256);
+            if (!manifest) refuse("invalid_source", "Earlier conversation artifacts are missing");
+            return { segment, manifest, blobsDirectory: archive.blobsDirectory };
+          }),
+        };
+      },
+    );
+  }
+
+  private nativeAgent(record: StoredAgentRecord) {
+    if (record.provider !== "claude" || !record.persistence)
+      refuse("invalid_source", "Conversation has no saved session that can be exported");
+    const runtime = readClaudeSessionRuntime(record.persistence);
+    if (!runtime)
+      refuse(
+        "invalid_source",
+        "This conversation has no recorded Claude runtime. Resume it on the source host before transferring it.",
+      );
+    const agent = NativeAgentSchema.parse({
+      mode: "native",
+      id: record.id,
+      recordRevision: record.revision,
+      cwd: record.cwd,
+      title: record.title ?? null,
+      sessionId: record.persistence.sessionId,
+      projectDirName: record.persistence.metadata?.claudeProjectDirName,
+      pendingRestartNote: record.pendingRestartNote,
+    });
+    return { ...agent, runtime };
+  }
+  private captureInput(
+    agent: z.infer<typeof NativeAgentSchema>,
+    runtime: NonNullable<PreparedSource["runtime"]>,
+    artifactDirectory: string,
+  ) {
+    return {
+      handle: {
+        provider: "claude",
+        sessionId: agent.sessionId,
+        metadata: { claudeProjectDirName: agent.projectDirName },
+      },
+      cwd: agent.cwd,
+      ...runtime,
+      artifactDirectory,
+    };
+  }
+  private captureDirectory(transferId: string): string {
+    HandoffTransferIdSchema.parse(transferId);
+    return path.join(this.options.directory, transferId);
+  }
+  private async readPrepared(source: SourceHandoffStatus): Promise<PreparedSource> {
+    const bytes = await readBoundedFile(
+      path.join(this.captureDirectory(source.id), "source.json"),
+      20 * 1024 * 1024,
+    );
+    const prepared = PreparedSchema.parse(JSON.parse(bytes.toString("utf8")));
+    if (
+      prepared.version === 3 &&
+      prepared.agents.some((agent) => agent.recordRevision === undefined)
+    )
+      refuse("source_changed", "Source preparation is missing its record revision");
+    if (
+      prepared.transferId !== source.id ||
+      prepared.cwd !== source.cwd ||
+      !sameIds(
+        prepared.agents.map((agent) => agent.id),
+        source.agentIds,
+      ) ||
+      prepared.manifest.entrypoint.sha256 !== source.manifestDigest
+    )
+      refuse("source_changed", "Source preparation does not match its ownership journal");
+    return prepared;
+  }
+  private serialize<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.closing)
+      return Promise.reject(
+        new HandoffSourceError("invalid_source", "Source preparation service is stopping"),
+      );
+    const result = this.tail.then(operation);
+    this.tail = result.catch(() => undefined);
+    return result;
+  }
+}

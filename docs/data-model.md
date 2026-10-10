@@ -121,7 +121,75 @@ Each agent is stored as a separate JSON file, grouped by project directory.
 | `attentionTimestamp` | `string?` (ISO 8601)                     | When attention was flagged                                                                                                                                                                                                                                                                                                                                                          |
 | `internal`           | `boolean?`                               | Whether this is a system-internal agent                                                                                                                                                                                                                                                                                                                                             |
 | `archivedAt`         | `string?` (ISO 8601)                     | Soft-delete timestamp                                                                                                                                                                                                                                                                                                                                                               |
-| `pendingRestartNote` | `{ kind, label, id }[]?`                 | Background work a daemon restart cancelled. The agent's next foreground turn that is not a `<paseo-system>` envelope gets it prepended, and it is removed once that turn completes.                                                                                                                                                                                                 |
+| `pendingRestartNote` | `{ kind, label, id }[]?`                 | Cancelled background work retained until the carried-context acknowledgement below.                                                                                                                                                                                                                                                                                                 |
+
+### Record revisions
+
+Agent records carry an optional monotonic `revision`. The store assigns it at publication; callers
+must retain it when replacing a full record. A stale replacement fails instead of discarding newer
+metadata. Identical retries retain the committed revision, including across restart. Legacy records
+gain their first revision on the next write, without a migration.
+
+On POSIX, synchronize a closed snapshot and its directories before acknowledging closure.
+Startup uses that record to decide whether an earlier runtime generation ended. A failed
+publication retains its exact candidate for same-process retry; repeating close also synchronizes
+an already closed record read after restart, without opening a provider. Neither operation clears
+unresolved generations or carried prompts, or invents closure when no closed record survived.
+Windows keeps ordinary atomic writes until directory durability is available.
+
+Use a store-owned field operation for a semantic change or rollback. A failed provider import may
+undo its placement and label patch, but must preserve later edits and runtime recovery obligations.
+Handoff preparation binds the exact closed checkpoint revision; changing a record and changing it
+back still requires a fresh preparation. Before final release verification, the ownership journal
+durably seals agent-record mutations. Store writes and deletes participate in admission; a refused
+write must not become a pending retry. Checkpointing unchanged data remains available. Failed
+verification retains the seal across restart until cancellation is durable. Finish known repairs
+and legacy annotation adoption before entering this boundary.
+
+A source-retained conversation carries `handoffRetention` until a human prompt or explicit queue
+resume continues it. Publish that marker before stopping its runtime; snapshots preserve it and
+runtime opening refuses it, including after restart. It is separate from the workspace's lasting
+cleanup protection. A content-addressed local history checkpoint lets clients read the stopped
+conversation without opening a provider. Held system notifications append to its local queue;
+they do not belong to the transferred archive. Explicit continuation waits for the
+[delegation checkpoint](#delegation-store), so a new turn cannot replace an earlier result.
+
+Cancellation must not strand a successfully stopped conversation behind unfinished history
+publication. Reading history or explicitly continuing may finish that capture from the stopped
+provider's files, including after restart. Keep the first published history digest: lost or altered
+checkpoint bytes must be restored before continuation. These repairs never open a provider or
+clear unresolved runtime or prompt outcomes.
+
+This seal protects records; it does not prove that all provider callbacks or OS processes stopped.
+The remaining certification requirements live in the
+[conversation persistence contract](refactors/cross-host-handoff-plan.md#conversation-persistence-contract).
+
+### Carried context acknowledgement
+
+Retain the exact restart notes and handoff context before invoking a provider. The agent record
+owns one unfinished delivery, bound to its runtime generation and native prompt identity where
+supported. Only that runtime's completion callback can consume the matching context; newer notes
+and replaced context must survive an older callback. Synchronize the acknowledgement before
+forgetting its retry input.
+
+Known storage failures retry the original outcome without another provider turn. An unadmitted
+prompt can be withdrawn while retaining its notes. An uncertain invocation blocks new turns and
+handoff certification, including after restart; reopening a runtime is not delivery evidence.
+Recovering that uncertainty from provider artifacts remains implementation work.
+
+Unsent background-work notes travel in the verified handoff bundle and stay pending in the destination
+record. Activation does not acknowledge delivery. Source release checks that the captured note set
+is unchanged. Archive compatibility and delivery gates are in the [handoff plan](refactors/cross-host-handoff-plan.md).
+
+Before a destination opens its first local runtime, another context transfer uses the private
+verified archive and retains the original history identity. Workspace copies may be edited,
+deleted or ignored; they are not the authority for re-export. Never resume those historical native
+artifacts as the destination's own session. After local work, retain the earlier history and raw
+artifacts as separate segments with their original host, workspace and conversation identity.
+Only the current native session is eligible for resume. The private archive owns the flat segment
+inventory; its verified index binds the workspace copies. The continuation brief points to that
+index even in native mode. Repeated native transfers of the same session must not duplicate it.
+Refuse histories beyond the segment limit instead of silently dropping older work.
 
 ### Nested: SerializableConfig
 
@@ -155,6 +223,12 @@ Each agent is stored as a separate JSON file, grouped by project directory.
 | `sessionId`    | `string`               | Session ID for resumption                                             |
 | `nativeHandle` | `any?`                 | Provider-specific handle (Codex thread ID, Claude resume token, etc.) |
 | `metadata`     | `Record<string, any>?` | Extra metadata                                                        |
+
+Claude handles retain host-local transcript storage and the version reported by the session's
+`system/init`, independently of later provider settings. Keep credentials and launch environment
+out of this provenance. Reading history uses the recorded location; resuming under another
+location requires restoring the original configuration. Native handoff installs destination-local
+provenance. See the [handoff evidence and limits](refactors/cross-host-handoff-plan.md#current-evidence-and-integration-gaps).
 
 ### Nested: AgentFeature (discriminated union on `type`)
 
@@ -443,11 +517,35 @@ A key restricted to the Text to Speech permission is enough to speak. Listing vo
 
 **Path:** `$PASEO_HOME/schedules/{id}.json`
 
-One file per schedule. ID is 8 hex characters.
+One file per schedule. New local IDs use 8 hex characters; handoff imports use 32.
+
+Use the persisted target when admitting schedule changes and runs into workspace ownership.
+Checking a prior list result lets a concurrent retarget bypass the source handoff fence.
+Keep run admission through workspace cleanup and the outcome write; changing its directory or
+agent requires the run to finish first. Startup recovery and expiration leave fenced records
+unchanged.
+
+Keep execution failure separate from failure to save its result. Before publishing a known outcome,
+the store retains immutable previous/candidate records in `schedules/.pending/{id}.json`. Reads,
+later mutations and startup recovery finish that publication first, without rerunning the provider
+or replacing its output with an I/O error. Refuse conflicting or damaged recovery records.
+On POSIX, acknowledgement includes synchronizing the intent, final record and retirement of the
+intent. Flush an empty recovery directory on startup too: an unacknowledged unlink must not let an
+old intent reappear after a newer mutation. Windows keeps atomic-write semantics while source
+handoff remains unavailable. A crash before the outcome's recovery record is durable still needs
+evidence from the provider; a restart alone does not establish what the run did.
+
+Handoff reads a strict inventory and durably pauses the reviewed records before capture. Cancel
+leaves them paused. Destination IDs derive from the reservation so interrupted installation can
+retry without duplicates. Keep imported records hidden and unrunnable until the destination journal
+publishes activation; a heartbeat must also respect its target conversation's visibility. Run history
+keeps original host identities in `origin`, separately from links remapped into the destination.
+The [handoff plan](refactors/cross-host-handoff-plan.md#delivery-gates) owns limits and outstanding
+interrupted-run recovery and shutdown gates.
 
 | Field       | Type                                  | Description                      |
 | ----------- | ------------------------------------- | -------------------------------- |
-| `id`        | `string`                              | 8-char hex ID                    |
+| `id`        | `string`                              | Local or imported hex ID         |
 | `name`      | `string?`                             | Human-readable name              |
 | `prompt`    | `string`                              | The prompt to send               |
 | `cadence`   | `ScheduleCadence`                     | Timing (see below)               |
@@ -474,16 +572,17 @@ One file per schedule. ID is 8 hex characters.
 
 ### Nested: ScheduleRun
 
-| Field          | Type                                   | Description             |
-| -------------- | -------------------------------------- | ----------------------- |
-| `id`           | `string`                               | Run ID                  |
-| `scheduledFor` | `string` (ISO 8601)                    | Intended execution time |
-| `startedAt`    | `string` (ISO 8601)                    |                         |
-| `endedAt`      | `string?` (ISO 8601)                   |                         |
-| `status`       | `"running" \| "succeeded" \| "failed"` |                         |
-| `agentId`      | `string?` (UUID)                       | Agent used for this run |
-| `output`       | `string?`                              | Agent output text       |
-| `error`        | `string?`                              | Error message if failed |
+| Field          | Type                                              | Description                             |
+| -------------- | ------------------------------------------------- | --------------------------------------- |
+| `id`           | `string`                                          | Run ID                                  |
+| `scheduledFor` | `string` (ISO 8601)                               | Intended execution time                 |
+| `startedAt`    | `string` (ISO 8601)                               |                                         |
+| `endedAt`      | `string?` (ISO 8601)                              |                                         |
+| `status`       | `"running" \| "succeeded" \| "failed"`            |                                         |
+| `agentId`      | `string?` (UUID)                                  | Agent used for this run                 |
+| `output`       | `string?`                                         | Agent output text                       |
+| `error`        | `string?`                                         | Error message if failed                 |
+| `origin`       | `{ serverId, scheduleId, agentId, workspaceId }?` | Original run provenance across handoffs |
 
 ---
 
@@ -528,6 +627,27 @@ workspace together with its owning project.
 **Path:** `$PASEO_HOME/projects/workspaces.json`
 
 Array of workspace records. A workspace is a specific working directory within a project.
+
+Read project and workspace registries strictly. Only a missing file means an empty registry;
+unreadable files, invalid records and duplicate identities refuse reads and mutations until
+repaired. Cleanup uses this inventory to decide whether a checkout still has owners, so treating
+damage as an empty list can delete retained work.
+
+Automatic cleanup belongs to one workspace opening. The registry preserves its `incarnation`
+through metadata edits and archive, then changes it when the record is reopened or relocated.
+Schedules keep that identity with the run, including restart recovery. A callback with no matching
+active opening skips cleanup; an explicit archive can still remove an archived checkout.
+Check after admission and reserve the backing worktree before stopping or tearing down anything.
+The opening token does not prove that an external process has not replaced files at the same path.
+
+Retained source work belongs to the workspace registry, independently of the schedule that created
+it. Its `retention` marker survives continuation, metadata edits and schedule deletion. Automatic
+archive, including missing-directory reconciliation, leaves that workspace and its conversations
+available; explicit workspace archive consumes the marker. Publish retention only after fencing
+and draining earlier destructive operations, and acknowledge it only after file and directory
+synchronization. A failed publication keeps its candidate and must repair before later registry
+reads or writes can proceed. This protection does not certify process shutdown; source integration
+still follows the [handoff recovery contract](refactors/cross-host-handoff-plan.md#ownership-and-recovery).
 
 | Field                          | Type                                                         | Description                                                                                                                                                                                   |
 | ------------------------------ | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -630,18 +750,37 @@ One file per parent agent, because every transition (finalize a child's result, 
 
 `by-child.json` is written after the parent file. A missing entry is recoverable by scanning the parent files.
 
+For a source-retained child, bind its stopped outcome, history and outstanding child tasks to
+the parent's original task before allowing continuation. Synchronize that checkpoint and later
+writes which preserve it. Descendants may finish elsewhere while the stopped child stays held;
+their completion releases the saved result without opening its provider. New turns and new
+descendants do not change that original obligation. Recovery scans parent files rather than
+trusting the index, and refuses missing or damaged history. Ordinary delegation still waits for
+the child's aggregation turn; retaining a child is the explicit boundary that freezes its result.
+
 ---
 
 ## Agent Queue Store
 
 **Path:** `$PASEO_HOME/agent-queues/{agentId}.json`, plus one prompt file per entry in `agent-queues/{agentId}/`
 
-Messages that arrived while the agent's turn was running, delivered one per settled run: delegation wakes first, then by `position`. Each `AgentQueueStore` method is one atomic write of the agent's file; the file is deleted when the queue empties, and an empty queue is never held. Schema: `packages/server/src/server/agent-queue/store.ts`.
+Messages that arrived while the agent's turn was running, delivered one per settled run: delegation wakes first, then by `position`. The queue file also owns user Stop, which must survive an empty queue and a daemon restart. Delete the file only after its entries and that stop are gone. Schema: `packages/server/src/server/agent-queue/store.ts`.
 
 - **Entry:** `origin` is `user`, `agent` (with `senderAgentId`), `delegation_wake`, or `system`. A wake entry stores only its cohort reference; its text is rendered from the delegation store at delivery, so results that joined it while it waited go out with it. User and agent entries keep their prompt in a separate file so images do not inflate the queue file, capped at 32 MiB per entry and 200 entries per agent.
-- **Hold:** `held` with `heldReason` `failure` (the turn that just ended failed), `user_stop`, or `restart`. What a hold blocks is in [agent-lifecycle.md](agent-lifecycle.md#relationships).
+- **Hold:** `held` with `heldReason` `failure` (the turn that just ended failed), `user_stop`, or `restart`. `userStopped` separately suppresses future system turns: a human prompt clears that suppression without resuming entries already held. What a hold blocks is in [agent-lifecycle.md](agent-lifecycle.md#relationships).
 
 The prompt file is written before the queue file references it and deleted after the queue file stops referencing it. `load` at boot removes prompt files nothing references.
+
+On POSIX, acknowledge a stored Stop or its removal only after synchronizing the file and its
+publication directories. Keep the previous cached state if acknowledgement fails. Ordinary Windows
+queue writes remain atomic; durable cross-host ownership is unavailable there. A damaged queue
+blocks that agent's dispatch rather than being interpreted as an empty queue. Other queues still
+load and retain their stops.
+
+Uploaded-file blocks refer to the upload store under `$PASEO_HOME/uploads/`. During handoff, the
+queue archive must carry those bytes as well as the prompt. Destination publication keeps the
+queue hidden until its uploads and prompt files are durable. The upload store owns installation
+and refuses to overwrite a conflicting file; activation alone never resumes the queue.
 
 ---
 
@@ -650,6 +789,51 @@ The prompt file is written before the queue file references it and deleted after
 **Path:** `$PASEO_HOME/pull-request-watches.json`
 
 Every `watch_pull_request` watch in one file; each `PullRequestWatchStore` method is one atomic write. A watch names the agent, its `cwd`, the pull request (`number`, canonical `url`, `headRefName`), and `progress`: what the agent was last told (the head commit, failed check names, whether the gate passed and which checks were in it, the remark watermark, whether the branch conflicts, and comment-only wakes in a row). `headSha` and `passedChecks` are absent from watches saved before they existed; such a watch adopts the current head and passed checks without a wake. `progress` is written only after the wake was delivered, so a wake lost to a restart is found again on the next pass; the failed-read count and the last read of each pull request are in memory. Schema: `packages/server/src/server/pull-request-watch/watch-store.ts`.
+
+---
+
+## Managed Process Store
+
+Keep OS process ownership in `runtime/managed-processes/`, alongside the existing helper records.
+Register a Claude launcher with a closed gate, then durably admit it before releasing its command,
+arguments and environment. Before admission only a trusted, childless bootstrap can run. Its durable
+gated state permits cleanup after it exits, including an interrupted inspection; admission removes
+that exemption before provider execution becomes possible. Losing the control channel without a complete
+launch message ends the bootstrap. Closing during publication or repairing failed registration must stop that
+bootstrap without opening the gate. Linux replaces that root with the provider. macOS retains a
+Node supervisor until its child exits: going through a protected `env` executable would purge
+`DYLD_*` settings. That extra resident process belongs in the platform's memory budget. Provider
+streams remain direct. SDK cancellation and tree shutdown must stay separate; relaying an OS tree
+signal sends the child a duplicate and can interrupt its cleanup handler.
+
+Claude POSIX queries record a bounded tree with a boot identity and process birth identities;
+SDK arguments and command lines are excluded because they can contain inline credentials.
+After admission a launch snapshot does not certify closure: the owner must still match when shutdown first
+observes its tree. Persist that closing inventory before sending signals. Startup recovery can
+then finish an interrupted stop even if the original owner has exited.
+
+Publish an inspection obligation before reading the process table, and synchronize the complete
+inventory before acknowledging it. Failed registration retains its assigned identity and exact
+candidate, so closure can repair publication and stop that process without launching another query.
+If the inspection marker itself failed, the live store knows inspection never started and can retry;
+after a crash, a pending marker for an admitted launch does not carry that evidence. Never clear it from a smaller current
+process list. A missing record does not prove exit. Registered Claude launches bind their record to
+the agent's durable runtime generation. That generation retains each launch ID before admission.
+An absent launch list means unknown coverage; an explicitly empty list means this tracked generation
+has not admitted a provider. Preserve the list through snapshots and unresolved generation replacement,
+and refuse further launches at its bound rather than evicting evidence. Cold source cancellation
+checks every expected launch against its agent and generation. Missing records or unknown coverage
+keep ownership fenced; a known closed record can repair its publication without opening a provider.
+After a confirmed stop, keep a synchronized `stopped` record
+while SDK cleanup and agent closure are unfinished. Retrying that exact launch acknowledges the saved
+outcome without signalling current PIDs. Ordinary process cleanup cannot erase it. Retire these records
+only after the owning generation's closed snapshot is durable; startup retries this retirement for
+closed owners and retains acknowledgements for unresolved generations. Active-process inventories
+exclude acknowledgements, so an empty inventory is never a substitute for a launch's stop result.
+A different OS boot proves the prior processes are gone without signalling reused PIDs. Process exit
+does not repair a conversation's unresolved persistence obligations.
+The [handoff boundary](refactors/cross-host-handoff-plan.md#boundary) tracks the remaining launch
+and process-coverage gaps.
 
 ---
 
@@ -665,7 +849,19 @@ Every `watch_pull_request` watch in one file; each `PullRequestWatchStore` metho
 
 **Path:** `$PASEO_HOME/runtime/restart-intents.json`
 
-Written by a graceful shutdown before agents close, because closing persists every agent as `closed` and the record no longer says which ones were mid-turn. It lists the cut runs (`agentId`, `provider`, in-memory `runKey`, `cutAt`, `stopRequested`, `outOfBand`) and the background tasks every agent held. Boot reads it, adds every agent whose record still says `running` or `initializing` (a crash writes no intents), decides continuations, moves lost background work of agents it does not continue into `pendingRestartNote`, settles delegations, and deletes the file. A continuation's prompt goes through the message receipts under `restart-continuation:{agentId}:{runKey}`, so a repeated boot does not send it twice. Schema: `packages/server/src/server/restart/restart-intent-store.ts`.
+Written by a graceful shutdown before agents close, because closing persists every agent as `closed` and the record no longer says which ones were mid-turn. It lists the cut runs (`agentId`, `provider`, in-memory `runKey`, `cutAt`, `stopRequested`, `outOfBand`) and the background tasks every agent held. Boot adds agents whose records still say `running` or `initializing` (a crash writes no intents), decides continuations and settles delegations. Lost background work for agents it does not continue goes into `pendingRestartNote`. Schema: `packages/server/src/server/restart/restart-intent-store.ts`.
+
+Keep the intent file until continuation dispatch and pending-note writes succeed. A failed write
+leaves retry input on disk; the next shutdown retains those background tasks while replacing the
+cut runs with its current snapshot. A late continuation cannot consume a newer shutdown's file.
+On POSIX, intent publication and pending-note acknowledgement synchronize the file and directories;
+Windows keeps ordinary atomic writes and remains outside durable handoff support.
+
+A continuation uses the receipt `restart-continuation:{agentId}:{runKey}` so a repeated boot does
+not send its prompt twice. That receipt does not distinguish a started dispatch from a dropped one,
+or prove note delivery. Recovery retains its background note on a receipt hit, deduplicating pending
+entries by task id. A note may be repeated after an interrupted recovery; proving delivery from
+native history belongs to the [handoff persistence contract](refactors/cross-host-handoff-plan.md#conversation-persistence-contract).
 
 ---
 
@@ -673,7 +869,42 @@ Written by a graceful shutdown before agents close, because closing persists eve
 
 **Path:** `$PASEO_HOME/prompt-annotations/{agentId}.json`
 
-The timeline is rebuilt from provider history on load, and provider history keeps only the prompt text. When the daemon sends a prompt the user didn't write, it records the prompt's `messageId`, a SHA-256 of its text, and how to show it: a wake or permission notification becomes a `notification` row with its `source`, and a prompt another agent sent through its Paseo tools keeps its `origin`. Replayed user messages match entries by text hash, each entry once, in send order. A replayed `<paseo-system>` envelope without an entry has no timeline row. The newest 500 entries per agent are kept, and the file is deleted with the agent's state. Schema: `packages/server/src/server/agent/prompt-annotations.ts`.
+Provider history does not carry Paseo's logical message id. An annotation preserves how to show a
+daemon prompt: a notification with its source, or a user message with its sender. Claude attempts
+bind that annotation to a caller-assigned native UUID before starting or steering. Prepared and
+withdrawn attempts do not match replayed rows; dispatched attempts match their native UUID even
+when text repeats or continuation context was prepended. A retry gets a separate attempt identity.
+Carried-context prompts also retain an identity entry when there is no presentation annotation;
+that entry checks native history without changing its displayed row.
+Schema: `packages/server/src/server/agent/prompt-annotations.ts`. Internal runtimes keep these
+annotations in memory because they have no durable agent record.
+
+Older entries and adapters without native identity support retain text-hash matching in send order.
+That preserves available presentation without proving lifetime coverage. A replayed system envelope
+without an annotation has no timeline row. Handoff refuses unresolved native attempts and dispatched
+UUIDs absent from the captured history; an adapter input acknowledgement does not prove completion
+of the turn or delivery of carried notes.
+
+Keep entries until agent deletion. Refuse additional data at the 16 MiB file budget rather than
+evicting older presentation, and reserve room for each prepared attempt's final disposition before
+dispatch. POSIX writes synchronize publication before acknowledgement; Windows retains ordinary
+atomic writes. The agent record owns the expected annotation revision, digest and entry count,
+plus at most one pending entry change. Persist that change before replacing the annotation file;
+advance the witness only after the file is synchronized. Recovery accepts the exact previous or
+intended file, never an unrelated suffix. Snapshots and replacement runtimes preserve this state.
+A known disposition-write failure can retry on close without another provider call. For a closed
+conversation, one matching native prompt identity in the captured provider history can also prove
+dispatch after a lost acknowledgement. Publish that repair through the same witnessed store and
+bind the resulting record revision into the capture. Missing identities remain unresolved: compacted
+history cannot prove non-delivery. Duplicate identities or an observed withdrawn attempt contradict
+the stored disposition and refuse certification. Dispatch evidence cannot acknowledge carried notes,
+prove turn completion or clear an unresolved runtime generation.
+
+A new runtime records an empty witness before opening. Older histories adopt only their available
+prefix and retain `adopted` coverage; this does not certify lifetime presentation. Captured handoff
+history binds its witness so release detects changes even when the rendered rows are unchanged.
+Complete presentation coverage and outcomes without sufficient native evidence remain in the
+[handoff plan](refactors/cross-host-handoff-plan.md#conversation-persistence-contract).
 
 ---
 

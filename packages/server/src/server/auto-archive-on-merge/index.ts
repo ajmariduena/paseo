@@ -60,6 +60,10 @@ export function setupAutoArchiveOnMerge(
     inFlightCwds.add(snapshotCwd);
 
     void (async () => {
+      const attachedWorkspaces = (await options.listActiveWorkspaces()).filter(
+        (workspace) => deps.resolvePath(workspace.cwd) === snapshotCwd,
+      );
+
       let freshSnapshot: WorkspaceGitRuntimeSnapshot | null;
       try {
         freshSnapshot = await options.workspaceGitService.getSnapshot(snapshot.cwd, {
@@ -84,12 +88,10 @@ export function setupAutoArchiveOnMerge(
         return;
       }
 
-      const attachedWorkspaces = (await options.listActiveWorkspaces()).filter(
-        (workspace) => deps.resolvePath(workspace.cwd) === snapshotCwd,
-      );
       for (const workspace of attachedWorkspaces) {
         await deps.archiveIfSafe({
           workspaceId: workspace.workspaceId,
+          expectedIncarnation: workspace.incarnation,
           snapshot: freshSnapshot,
           options,
           log,

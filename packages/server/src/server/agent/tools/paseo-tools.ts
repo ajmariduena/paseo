@@ -142,6 +142,7 @@ import type { ProviderPaseoToolsPolicy } from "@getpaseo/protocol/provider-confi
 import { isPaseoToolEnabled } from "../paseo-tool-policy.js";
 
 export interface PaseoToolHostDependencies {
+  handoffOwnership?: ArchiveDependencies["handoffOwnership"];
   agentManager: AgentManager;
   agentStorage: AgentStorage;
   terminalManager?: TerminalManager | null;
@@ -4570,6 +4571,7 @@ function archiveWorktreeDependencies(
   return {
     paseoHome: options.paseoHome,
     paseoWorktreesBaseRoot: options.worktreesRoot,
+    handoffOwnership: options.handoffOwnership,
     github: options.github,
     workspaceGitService: options.workspaceGitService,
     agentManager: context.agentManager,

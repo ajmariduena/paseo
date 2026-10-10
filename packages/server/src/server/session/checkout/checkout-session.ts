@@ -54,6 +54,7 @@ import {
   getCommitFileDiff,
 } from "../../../utils/checkout-git.js";
 import { runGitCommand } from "../../../utils/run-git-command.js";
+import type { HandoffOwnership } from "../../handoff/ownership.js";
 import { expandTilde } from "../../../utils/path.js";
 import type { GitMetadataGenerator } from "./git-metadata-generator.js";
 
@@ -120,6 +121,7 @@ export interface CheckoutDiffSubscriber {
 }
 
 export interface CheckoutSessionOptions {
+  handoffOwnership?: HandoffOwnership;
   host: CheckoutSessionHost;
   gitMutation: Pick<GitMutationService, "checkoutExistingBranch" | "notifyGitMutation">;
   workspaceGitService: WorkspaceGitService;
@@ -142,6 +144,7 @@ export interface CheckoutSessionOptions {
  * workspace git observer streams branch changes through emitStatusUpdate().
  */
 export class CheckoutSession {
+  private readonly handoffOwnership: HandoffOwnership | undefined;
   private static readonly PASEO_STASH_PREFIX = "paseo-auto-stash:";
 
   private readonly host: CheckoutSessionHost;
@@ -159,6 +162,7 @@ export class CheckoutSession {
   private readonly statusUpdateFingerprints = new Map<string, string>();
 
   constructor(options: CheckoutSessionOptions) {
+    this.handoffOwnership = options.handoffOwnership;
     this.host = options.host;
     this.gitMutation = options.gitMutation;
     this.workspaceGitService = options.workspaceGitService;
@@ -168,6 +172,12 @@ export class CheckoutSession {
     this.paseoHome = options.paseoHome;
     this.worktreesRoot = options.worktreesRoot;
     this.logger = options.logger;
+  }
+
+  private withMutation<T>(cwd: string, operation: () => Promise<T>): Promise<T> {
+    return this.handoffOwnership
+      ? this.handoffOwnership.withMutation({ cwd: expandTilde(cwd) }, operation)
+      : operation();
   }
 
   private async resolveForgeService(
@@ -558,23 +568,25 @@ export class CheckoutSession {
     const { cwd, branch, requestId } = msg;
 
     try {
-      const checkoutResult = await this.gitMutation.checkoutExistingBranch(cwd, branch);
-      this.scheduleDiffRefresh(cwd);
+      await this.withMutation(cwd, async () => {
+        const checkoutResult = await this.gitMutation.checkoutExistingBranch(cwd, branch);
+        this.scheduleDiffRefresh(cwd);
 
-      // Push a workspace_update immediately so the sidebar/header reflect
-      // the new branch name without waiting for the background git watcher.
-      await this.host.emitWorkspaceUpdateForCwd(cwd);
+        // Push a workspace_update immediately so the sidebar/header reflect
+        // the new branch name without waiting for the background git watcher.
+        await this.host.emitWorkspaceUpdateForCwd(cwd);
 
-      this.host.emit({
-        type: "checkout_switch_branch_response",
-        payload: {
-          cwd,
-          success: true,
-          branch,
-          source: checkoutResult.source,
-          error: null,
-          requestId,
-        },
+        this.host.emit({
+          type: "checkout_switch_branch_response",
+          payload: {
+            cwd,
+            success: true,
+            branch,
+            source: checkoutResult.source,
+            error: null,
+            requestId,
+          },
+        });
       });
     } catch (error) {
       this.host.emit({
@@ -609,28 +621,30 @@ export class CheckoutSession {
     }
 
     try {
-      const result = await this.host.renameCurrentBranch(cwd, branch);
-      await this.gitMutation.notifyGitMutation(cwd, "rename-branch", { invalidateForge: true });
-      this.scheduleDiffRefresh(cwd);
-      this.host.handleWorkspaceGitBranchSnapshot(cwd, result.currentBranch);
+      await this.withMutation(cwd, async () => {
+        const result = await this.host.renameCurrentBranch(cwd, branch);
+        await this.gitMutation.notifyGitMutation(cwd, "rename-branch", { invalidateForge: true });
+        this.scheduleDiffRefresh(cwd);
+        this.host.handleWorkspaceGitBranchSnapshot(cwd, result.currentBranch);
 
-      // Branch is a git fact derived per-descriptor from each workspace's own
-      // live git snapshot (id → cwd); the reconciliation pass re-persists the
-      // `branch` field per workspace from its own cwd. No cwd → ids fan-out here.
+        // Branch is a git fact derived per-descriptor from each workspace's own
+        // live git snapshot (id → cwd); the reconciliation pass re-persists the
+        // `branch` field per workspace from its own cwd. No cwd → ids fan-out here.
 
-      // Push a workspace_update immediately so the sidebar/header reflect
-      // the new branch name without waiting for the background git watcher.
-      await this.host.emitWorkspaceUpdateForCwd(cwd);
+        // Push a workspace_update immediately so the sidebar/header reflect
+        // the new branch name without waiting for the background git watcher.
+        await this.host.emitWorkspaceUpdateForCwd(cwd);
 
-      this.host.emit({
-        type: "checkout.rename_branch.response",
-        payload: {
-          cwd,
-          success: true,
-          currentBranch: result.currentBranch,
-          error: null,
-          requestId,
-        },
+        this.host.emit({
+          type: "checkout.rename_branch.response",
+          payload: {
+            cwd,
+            success: true,
+            currentBranch: result.currentBranch,
+            error: null,
+            requestId,
+          },
+        });
       });
     } catch (error) {
       this.host.emit({
@@ -651,12 +665,14 @@ export class CheckoutSession {
   ): Promise<void> {
     const { cwd, paths, requestId } = msg;
     try {
-      await discardChanges(cwd, paths);
-      await this.gitMutation.notifyGitMutation(cwd, "discard-changes");
-      this.scheduleDiffRefresh(cwd);
-      this.host.emit({
-        type: "checkout.discard_changes.response",
-        payload: { cwd, success: true, error: null, requestId },
+      await this.withMutation(cwd, async () => {
+        await discardChanges(cwd, paths);
+        await this.gitMutation.notifyGitMutation(cwd, "discard-changes");
+        this.scheduleDiffRefresh(cwd);
+        this.host.emit({
+          type: "checkout.discard_changes.response",
+          payload: { cwd, success: true, error: null, requestId },
+        });
       });
     } catch (error) {
       this.host.emit({
@@ -671,19 +687,21 @@ export class CheckoutSession {
   ): Promise<void> {
     const { cwd, requestId } = msg;
     try {
-      const branchLabel = msg.branch?.trim() ?? "";
-      const message = branchLabel
-        ? `${CheckoutSession.PASEO_STASH_PREFIX} ${branchLabel}`
-        : `${CheckoutSession.PASEO_STASH_PREFIX} unnamed`;
-      await runGitCommand(["stash", "push", "--include-untracked", "-m", message], {
-        cwd,
-        timeout: 120_000,
-      });
-      await this.gitMutation.notifyGitMutation(cwd, "stash-push");
-      this.scheduleDiffRefresh(cwd);
-      this.host.emit({
-        type: "stash_save_response",
-        payload: { cwd, success: true, error: null, requestId },
+      await this.withMutation(cwd, async () => {
+        const branchLabel = msg.branch?.trim() ?? "";
+        const message = branchLabel
+          ? `${CheckoutSession.PASEO_STASH_PREFIX} ${branchLabel}`
+          : `${CheckoutSession.PASEO_STASH_PREFIX} unnamed`;
+        await runGitCommand(["stash", "push", "--include-untracked", "-m", message], {
+          cwd,
+          timeout: 120_000,
+        });
+        await this.gitMutation.notifyGitMutation(cwd, "stash-push");
+        this.scheduleDiffRefresh(cwd);
+        this.host.emit({
+          type: "stash_save_response",
+          payload: { cwd, success: true, error: null, requestId },
+        });
       });
     } catch (error) {
       this.host.emit({
@@ -698,15 +716,17 @@ export class CheckoutSession {
   ): Promise<void> {
     const { cwd, stashIndex, requestId } = msg;
     try {
-      await runGitCommand(["stash", "pop", `stash@{${stashIndex}}`], {
-        cwd,
-        timeout: 120_000,
-      });
-      await this.gitMutation.notifyGitMutation(cwd, "stash-pop");
-      this.scheduleDiffRefresh(cwd);
-      this.host.emit({
-        type: "stash_pop_response",
-        payload: { cwd, success: true, error: null, requestId },
+      await this.withMutation(cwd, async () => {
+        await runGitCommand(["stash", "pop", `stash@{${stashIndex}}`], {
+          cwd,
+          timeout: 120_000,
+        });
+        await this.gitMutation.notifyGitMutation(cwd, "stash-pop");
+        this.scheduleDiffRefresh(cwd);
+        this.host.emit({
+          type: "stash_pop_response",
+          payload: { cwd, success: true, error: null, requestId },
+        });
       });
     } catch (error) {
       this.host.emit({
@@ -742,29 +762,31 @@ export class CheckoutSession {
     const { cwd, requestId } = msg;
 
     try {
-      let message = msg.message?.trim() ?? "";
-      if (!message) {
-        message = await this.gitMetadataGenerator.generateCommitMessage(cwd);
-      }
-      if (!message) {
-        throw new Error("Commit message is required");
-      }
+      await this.withMutation(cwd, async () => {
+        let message = msg.message?.trim() ?? "";
+        if (!message) {
+          message = await this.gitMetadataGenerator.generateCommitMessage(cwd);
+        }
+        if (!message) {
+          throw new Error("Commit message is required");
+        }
 
-      await commitChanges(cwd, {
-        message,
-        addAll: msg.addAll ?? true,
-      });
-      await this.gitMutation.notifyGitMutation(cwd, "commit-changes");
-      this.scheduleDiffRefresh(cwd);
+        await commitChanges(cwd, {
+          message,
+          addAll: msg.addAll ?? true,
+        });
+        await this.gitMutation.notifyGitMutation(cwd, "commit-changes");
+        this.scheduleDiffRefresh(cwd);
 
-      this.host.emit({
-        type: "checkout_commit_response",
-        payload: {
-          cwd,
-          success: true,
-          error: null,
-          requestId,
-        },
+        this.host.emit({
+          type: "checkout_commit_response",
+          payload: {
+            cwd,
+            success: true,
+            error: null,
+            requestId,
+          },
+        });
       });
     } catch (error) {
       this.host.emit({
@@ -785,47 +807,55 @@ export class CheckoutSession {
     const { cwd, requestId } = msg;
 
     try {
-      const snapshot = await this.workspaceGitService.getSnapshot(cwd);
-      if (!snapshot.git.isGit) {
-        throw new Error(`Not a git repository: ${cwd}`);
-      }
-
-      if (msg.requireCleanTarget) {
-        if (snapshot.git.isDirty) {
-          throw new Error("Working directory has uncommitted changes.");
+      await this.withMutation(cwd, async () => {
+        const snapshot = await this.workspaceGitService.getSnapshot(cwd);
+        if (!snapshot.git.isGit) {
+          throw new Error(`Not a git repository: ${cwd}`);
         }
-      }
 
-      let baseRef = msg.baseRef ?? snapshot.git.baseRef;
-      if (!baseRef) {
-        throw new Error("Base branch is required for merge");
-      }
-      if (baseRef.startsWith("origin/")) {
-        baseRef = baseRef.slice("origin/".length);
-      }
+        if (msg.requireCleanTarget) {
+          if (snapshot.git.isDirty) {
+            throw new Error("Working directory has uncommitted changes.");
+          }
+        }
 
-      const mutatedCwd = await mergeToBase(
-        cwd,
-        {
-          baseRef,
-          mode: msg.strategy === "squash" ? "squash" : "merge",
-        },
-        { paseoHome: this.paseoHome, worktreesRoot: this.worktreesRoot },
-      );
-      await Promise.all([
-        this.gitMutation.notifyGitMutation(mutatedCwd, "merge-to-base", { invalidateForge: true }),
-        ...(mutatedCwd !== cwd ? [this.gitMutation.notifyGitMutation(cwd, "merge-to-base")] : []),
-      ]);
-      this.scheduleDiffRefresh(cwd);
+        let baseRef = msg.baseRef ?? snapshot.git.baseRef;
+        if (!baseRef) {
+          throw new Error("Base branch is required for merge");
+        }
+        if (baseRef.startsWith("origin/")) {
+          baseRef = baseRef.slice("origin/".length);
+        }
 
-      this.host.emit({
-        type: "checkout_merge_response",
-        payload: {
+        const mutatedCwd = await mergeToBase(
           cwd,
-          success: true,
-          error: null,
-          requestId,
-        },
+          {
+            baseRef,
+            mode: msg.strategy === "squash" ? "squash" : "merge",
+          },
+          {
+            paseoHome: this.paseoHome,
+            worktreesRoot: this.worktreesRoot,
+            withMutation: (targetCwd, operation) => this.withMutation(targetCwd, operation),
+          },
+        );
+        await Promise.all([
+          this.gitMutation.notifyGitMutation(mutatedCwd, "merge-to-base", {
+            invalidateForge: true,
+          }),
+          ...(mutatedCwd !== cwd ? [this.gitMutation.notifyGitMutation(cwd, "merge-to-base")] : []),
+        ]);
+        this.scheduleDiffRefresh(cwd);
+
+        this.host.emit({
+          type: "checkout_merge_response",
+          payload: {
+            cwd,
+            success: true,
+            error: null,
+            requestId,
+          },
+        });
       });
     } catch (error) {
       this.host.emit({
@@ -846,32 +876,34 @@ export class CheckoutSession {
     const { cwd, requestId } = msg;
 
     try {
-      if (msg.requireCleanTarget ?? true) {
-        const snapshot = await this.workspaceGitService.getSnapshot(cwd);
-        if (snapshot.git.isDirty) {
-          throw new Error("Working directory has uncommitted changes.");
+      await this.withMutation(cwd, async () => {
+        if (msg.requireCleanTarget ?? true) {
+          const snapshot = await this.workspaceGitService.getSnapshot(cwd);
+          if (snapshot.git.isDirty) {
+            throw new Error("Working directory has uncommitted changes.");
+          }
         }
-      }
 
-      await mergeFromBase(
-        cwd,
-        {
-          baseRef: msg.baseRef,
-          requireCleanTarget: msg.requireCleanTarget ?? true,
-        },
-        { paseoHome: this.paseoHome, worktreesRoot: this.worktreesRoot },
-      );
-      await this.gitMutation.notifyGitMutation(cwd, "merge-from-base", { invalidateForge: true });
-      this.scheduleDiffRefresh(cwd);
-
-      this.host.emit({
-        type: "checkout_merge_from_base_response",
-        payload: {
+        await mergeFromBase(
           cwd,
-          success: true,
-          error: null,
-          requestId,
-        },
+          {
+            baseRef: msg.baseRef,
+            requireCleanTarget: msg.requireCleanTarget ?? true,
+          },
+          { paseoHome: this.paseoHome, worktreesRoot: this.worktreesRoot },
+        );
+        await this.gitMutation.notifyGitMutation(cwd, "merge-from-base", { invalidateForge: true });
+        this.scheduleDiffRefresh(cwd);
+
+        this.host.emit({
+          type: "checkout_merge_from_base_response",
+          payload: {
+            cwd,
+            success: true,
+            error: null,
+            requestId,
+          },
+        });
       });
     } catch (error) {
       this.host.emit({
@@ -892,18 +924,20 @@ export class CheckoutSession {
     const { cwd, requestId } = msg;
 
     try {
-      await pullCurrentBranch(cwd);
-      await this.gitMutation.notifyGitMutation(cwd, "pull", { invalidateForge: true });
-      this.scheduleDiffRefresh(cwd);
+      await this.withMutation(cwd, async () => {
+        await pullCurrentBranch(cwd);
+        await this.gitMutation.notifyGitMutation(cwd, "pull", { invalidateForge: true });
+        this.scheduleDiffRefresh(cwd);
 
-      this.host.emit({
-        type: "checkout_pull_response",
-        payload: {
-          cwd,
-          success: true,
-          error: null,
-          requestId,
-        },
+        this.host.emit({
+          type: "checkout_pull_response",
+          payload: {
+            cwd,
+            success: true,
+            error: null,
+            requestId,
+          },
+        });
       });
     } catch (error) {
       this.host.emit({
@@ -924,16 +958,18 @@ export class CheckoutSession {
     const { cwd, requestId } = msg;
 
     try {
-      await pushCurrentBranch(cwd);
-      await this.gitMutation.notifyGitMutation(cwd, "push", { invalidateForge: true });
-      this.host.emit({
-        type: "checkout_push_response",
-        payload: {
-          cwd,
-          success: true,
-          error: null,
-          requestId,
-        },
+      await this.withMutation(cwd, async () => {
+        await pushCurrentBranch(cwd);
+        await this.gitMutation.notifyGitMutation(cwd, "push", { invalidateForge: true });
+        this.host.emit({
+          type: "checkout_push_response",
+          payload: {
+            cwd,
+            success: true,
+            error: null,
+            requestId,
+          },
+        });
       });
     } catch (error) {
       this.host.emit({
@@ -954,37 +990,42 @@ export class CheckoutSession {
     const { cwd, requestId } = msg;
 
     try {
-      let title = msg.title?.trim() ?? "";
-      let body = msg.body?.trim() ?? "";
+      await this.withMutation(cwd, async () => {
+        let title = msg.title?.trim() ?? "";
+        let body = msg.body?.trim() ?? "";
 
-      if (!title || !body) {
-        const generated = await this.gitMetadataGenerator.generatePullRequestText(cwd, msg.baseRef);
-        if (!title) title = generated.title;
-        if (!body) body = generated.body;
-      }
+        if (!title || !body) {
+          const generated = await this.gitMetadataGenerator.generatePullRequestText(
+            cwd,
+            msg.baseRef,
+          );
+          if (!title) title = generated.title;
+          if (!body) body = generated.body;
+        }
 
-      const { service } = await this.requireForgeService(cwd);
-      const result = await createPullRequest(
-        cwd,
-        {
-          title,
-          body,
-          base: msg.baseRef,
-        },
-        service,
-        { paseoHome: this.paseoHome, worktreesRoot: this.worktreesRoot },
-      );
-      await this.gitMutation.notifyGitMutation(cwd, "create-pr", { invalidateForge: true });
-
-      this.host.emit({
-        type: "checkout_pr_create_response",
-        payload: {
+        const { service } = await this.requireForgeService(cwd);
+        const result = await createPullRequest(
           cwd,
-          url: result.url ?? null,
-          number: result.number ?? null,
-          error: null,
-          requestId,
-        },
+          {
+            title,
+            body,
+            base: msg.baseRef,
+          },
+          service,
+          { paseoHome: this.paseoHome, worktreesRoot: this.worktreesRoot },
+        );
+        await this.gitMutation.notifyGitMutation(cwd, "create-pr", { invalidateForge: true });
+
+        this.host.emit({
+          type: "checkout_pr_create_response",
+          payload: {
+            cwd,
+            url: result.url ?? null,
+            number: result.number ?? null,
+            error: null,
+            requestId,
+          },
+        });
       });
     } catch (error) {
       this.host.emit({
@@ -1006,28 +1047,30 @@ export class CheckoutSession {
     const { cwd, requestId } = msg;
 
     try {
-      const pullRequest = await this.resolveCurrentPullRequest(cwd, "merge", {
-        force: true,
-        includeForge: true,
-        reason: "merge-pr-validation",
-      });
-      const { service } = await this.requireForgeService(cwd);
-      await service.mergePullRequest({
-        cwd,
-        prNumber: pullRequest.number,
-        mergeMethod: msg.mergeMethod,
-        status: pullRequest,
-      });
-      await this.gitMutation.notifyGitMutation(cwd, "merge-pr", { invalidateForge: true });
-
-      this.host.emit({
-        type: "checkout_pr_merge_response",
-        payload: {
+      await this.withMutation(cwd, async () => {
+        const pullRequest = await this.resolveCurrentPullRequest(cwd, "merge", {
+          force: true,
+          includeForge: true,
+          reason: "merge-pr-validation",
+        });
+        const { service } = await this.requireForgeService(cwd);
+        await service.mergePullRequest({
           cwd,
-          success: true,
-          error: null,
-          requestId,
-        },
+          prNumber: pullRequest.number,
+          mergeMethod: msg.mergeMethod,
+          status: pullRequest,
+        });
+        await this.gitMutation.notifyGitMutation(cwd, "merge-pr", { invalidateForge: true });
+
+        this.host.emit({
+          type: "checkout_pr_merge_response",
+          payload: {
+            cwd,
+            success: true,
+            error: null,
+            requestId,
+          },
+        });
       });
     } catch (error) {
       this.host.emit({
@@ -1057,50 +1100,52 @@ export class CheckoutSession {
         : "checkout.github.set_auto_merge.response";
 
     try {
-      const pullRequest = await this.resolveCurrentPullRequest(cwd, "auto-merge", {
-        force: true,
-        includeForge: true,
-        reason: "auto-merge-validation",
-      });
-      const { service } = await this.requireForgeService(cwd);
-      if (msg.enabled) {
-        const mergeMethod = msg.mergeMethod;
-        if (!mergeMethod) {
-          throw new Error("mergeMethod is required when enabling auto-merge");
-        }
-        await service.enablePullRequestAutoMerge({
-          cwd,
-          prNumber: pullRequest.number,
-          mergeMethod,
-          status: pullRequest,
+      await this.withMutation(cwd, async () => {
+        const pullRequest = await this.resolveCurrentPullRequest(cwd, "auto-merge", {
+          force: true,
+          includeForge: true,
+          reason: "auto-merge-validation",
         });
-      } else {
-        if (msg.mergeMethod) {
-          throw new Error("mergeMethod is not allowed when disabling auto-merge");
+        const { service } = await this.requireForgeService(cwd);
+        if (msg.enabled) {
+          const mergeMethod = msg.mergeMethod;
+          if (!mergeMethod) {
+            throw new Error("mergeMethod is required when enabling auto-merge");
+          }
+          await service.enablePullRequestAutoMerge({
+            cwd,
+            prNumber: pullRequest.number,
+            mergeMethod,
+            status: pullRequest,
+          });
+        } else {
+          if (msg.mergeMethod) {
+            throw new Error("mergeMethod is not allowed when disabling auto-merge");
+          }
+          await service.disablePullRequestAutoMerge({
+            cwd,
+            prNumber: pullRequest.number,
+            status: pullRequest,
+          });
         }
-        await service.disablePullRequestAutoMerge({
+        await this.gitMutation.notifyGitMutation(
           cwd,
-          prNumber: pullRequest.number,
-          status: pullRequest,
-        });
-      }
-      await this.gitMutation.notifyGitMutation(
-        cwd,
-        msg.enabled ? "enable-pr-auto-merge" : "disable-pr-auto-merge",
-        {
-          invalidateForge: true,
-        },
-      );
+          msg.enabled ? "enable-pr-auto-merge" : "disable-pr-auto-merge",
+          {
+            invalidateForge: true,
+          },
+        );
 
-      this.host.emit({
-        type: responseType,
-        payload: {
-          cwd,
-          enabled: msg.enabled,
-          success: true,
-          error: null,
-          requestId,
-        },
+        this.host.emit({
+          type: responseType,
+          payload: {
+            cwd,
+            enabled: msg.enabled,
+            success: true,
+            error: null,
+            requestId,
+          },
+        });
       });
     } catch (error) {
       this.host.emit({

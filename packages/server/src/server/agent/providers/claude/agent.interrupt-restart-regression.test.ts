@@ -145,7 +145,7 @@ function createScriptedQuery(params: {
     return: vi.fn(async () => {
       output.end();
     }),
-    close: vi.fn(() => undefined),
+    close: vi.fn(() => output.end()),
     setPermissionMode: vi.fn(async () => undefined),
     setModel: vi.fn(async () => undefined),
     supportedModels: vi.fn(async () => [{ value: "opus", displayName: "Opus" }]),
@@ -708,6 +708,7 @@ test("recovers when the query pump sees a single interrupt abort before the next
       return: vi.fn(async () => {
         output.end();
       }),
+      close: vi.fn(() => output.end()),
       setPermissionMode: vi.fn(async () => undefined),
       setModel: vi.fn(async () => undefined),
       supportedModels: vi.fn(async () => [{ value: "opus", displayName: "Opus" }]),

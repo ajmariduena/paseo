@@ -1,3 +1,9 @@
+import type { HandoffArchiveStore } from "./handoff/archive.js";
+import type { HandoffOwnership } from "./handoff/ownership.js";
+import type { HandoffSource } from "./handoff/source.js";
+import type { HandoffDestination } from "./handoff/destination.js";
+import { dispatchHandoffControlMessage } from "./handoff/control-rpc.js";
+import { dispatchHandoffArchiveMessage } from "./handoff/rpc.js";
 import type { GlanceSummaryService } from "./glance/service.js";
 import type { GlanceSummaryPush } from "./glance/precompute.js";
 import { searchTimeline } from "./agent/chat-search/index.js";
@@ -563,6 +569,10 @@ export interface SessionOptions {
   workspaceRegistry: WorkspaceRegistry;
   directorySync?: DirectorySyncService;
   workspaceLabelService?: WorkspaceLabelService;
+  handoffArchiveStore?: HandoffArchiveStore;
+  handoffOwnership?: HandoffOwnership;
+  handoffSource?: HandoffSource;
+  handoffDestination?: HandoffDestination;
   readAloud?: ReadAloudService;
   glanceSummary?: GlanceSummaryService;
   voiceOrchestrator?: VoiceOrchestrator | null;
@@ -889,6 +899,10 @@ export class Session {
     string,
     WorkspaceUpdatesSubscriptionState
   >();
+  private readonly handoffArchiveStore: HandoffArchiveStore | undefined;
+  private readonly handoffOwnership: HandoffOwnership | undefined;
+  private readonly handoffSource: HandoffSource | undefined;
+  private readonly handoffDestination: HandoffDestination | undefined;
   private readonly workspaceLabelService: WorkspaceLabelService | null;
   private readonly glanceSummary: GlanceSummaryService | undefined;
   private readonly readAloud: ReadAloudService | undefined;
@@ -1029,6 +1043,7 @@ export class Session {
       sessionId: this.sessionId,
     });
     this.workspaceFilesSession = new WorkspaceFilesSession({
+      handoffOwnership: options.handoffOwnership,
       host: {
         emit: (msg, source) => this.emitForSource(msg, source),
         emitBinary: (frame, source) => this.emitBinaryForFileTransfer(frame, source),
@@ -1043,6 +1058,10 @@ export class Session {
     this.projectRegistry = projectRegistry;
     this.workspaceRegistry = workspaceRegistry;
     this.directorySync = resolveDirectorySync(directorySync);
+    this.handoffArchiveStore = options.handoffArchiveStore;
+    this.handoffOwnership = options.handoffOwnership;
+    this.handoffSource = options.handoffSource;
+    this.handoffDestination = options.handoffDestination;
     this.workspaceLabelService = resolveWorkspaceLabelService(workspaceLabelService);
     this.readAloud = readAloud;
     this.glanceSummary = glanceSummary;
@@ -1060,11 +1079,13 @@ export class Session {
     this.renameCurrentBranch = renameCurrentBranch ?? renameCurrentBranchDefault;
     this.workspaceGitService = workspaceGitService;
     this.gitMutation = createGitMutationService({
+      handoffOwnership: options.handoffOwnership,
       workspaceGitService: this.workspaceGitService,
       logger: this.sessionLogger,
     });
     this.workspaceAutoName = workspaceAutoName;
     this.workspaceProvisioning = createWorkspaceProvisioningService({
+      handoffOwnership: options.handoffOwnership,
       lifecycle: this.pluginRuntime,
       serverId,
       workspaceRegistry: this.workspaceRegistry,
@@ -1079,17 +1100,22 @@ export class Session {
       }),
     });
     this.workspaceRecovery = createWorkspaceRecoveryService({
+      handoffOwnership: options.handoffOwnership,
       paseoHome: this.paseoHome,
       worktreesRoot: this.worktreesRoot,
       serverId,
       getWorkspace: (workspaceId) => this.workspaceRegistry.get(workspaceId),
       getProject: (projectId) => this.projectRegistry.get(projectId),
       isDirectory: (path) => this.filesystem.isDirectory(path),
-      unarchiveWorkspace: async (workspace) => {
-        await this.workspaceProvisioning.ensureWorkspaceRecordUnarchived(workspace);
+      unarchiveWorkspace: async (workspace, restoreDirectory) => {
+        await this.workspaceProvisioning.ensureWorkspaceRecordUnarchived(
+          workspace,
+          restoreDirectory,
+        );
       },
     });
     this.checkoutSession = new CheckoutSession({
+      handoffOwnership: options.handoffOwnership,
       host: {
         emit: (msg) => this.emit(msg),
         emitWorkspaceUpdateForCwd: (cwd) => this.emitWorkspaceUpdateForCwd(cwd),
@@ -1281,6 +1307,7 @@ export class Session {
       logger: this.sessionLogger,
     });
     this.createAgentLifecycleDispatch = new CreateAgentLifecycleDispatch({
+      handoffOwnership: options.handoffOwnership,
       paseoHome: this.paseoHome,
       worktreesRoot: this.worktreesRoot,
       agentManager: this.agentManager,
@@ -1314,6 +1341,7 @@ export class Session {
     this.serviceProxyPublicBaseUrl = serviceProxyPublicBaseUrl ?? null;
     this.resolveScriptHealth = resolveScriptHealth ?? null;
     this.workspaceScripts = createWorkspaceScriptsService({
+      handoffOwnership: options.handoffOwnership,
       serviceProxy: this.serviceProxy,
       scriptRuntimeStore: this.scriptRuntimeStore,
       terminalManager: this.terminalManager,
@@ -2690,6 +2718,17 @@ export class Session {
 
   private dispatchWorkspaceLifecycleMessage(msg: SessionInboundMessage): Promise<void> | undefined {
     return (
+      dispatchHandoffControlMessage({
+        source: this.handoffSource,
+        destination: this.handoffDestination,
+        message: msg,
+        emit: (reply) => this.emit(reply),
+      }) ??
+      dispatchHandoffArchiveMessage({
+        store: this.handoffArchiveStore,
+        message: msg,
+        emit: (reply) => this.emit(reply),
+      }) ??
       this.dispatchWorkspaceStateMessage(msg) ??
       this.dispatchWorkspaceLabelMessage(msg) ??
       this.dispatchWorkspaceSetupMessage(msg) ??
@@ -4325,6 +4364,7 @@ export class Session {
   ): Promise<void> {
     const { projectId, requestId } = request;
     this.sessionLogger.info({ projectId, requestId }, "session: project.remove.request");
+    const releases: Array<() => void> = [];
 
     try {
       const project = await this.projectRegistry.get(projectId);
@@ -4332,6 +4372,19 @@ export class Session {
       const projectWorkspaces = (await this.workspaceRegistry.list()).filter(
         (workspace) => workspace.projectId === resolvedProjectId,
       );
+      if (this.handoffOwnership) {
+        for (const workspace of projectWorkspaces) {
+          releases.push(
+            await this.handoffOwnership.acquireMutation({
+              cwd: workspace.worktreeRoot ?? workspace.cwd,
+              workspaceId: workspace.workspaceId,
+            }),
+          );
+        }
+        if (project) {
+          releases.push(await this.handoffOwnership.acquireMutation({ cwd: project.rootPath }));
+        }
+      }
       const activeWorkspaceIds = projectWorkspaces
         .filter((workspace) => !workspace.archivedAt)
         .map((workspace) => workspace.workspaceId);
@@ -4416,6 +4469,8 @@ export class Session {
           error: getErrorMessageOr(error, "Failed to remove project"),
         },
       });
+    } finally {
+      for (const release of releases.toReversed()) release();
     }
   }
 
@@ -5909,6 +5964,7 @@ export class Session {
       paseoHome: this.paseoHome,
       worktreesRoot: this.worktreesRoot,
       serverId: this.serverId,
+      handoffOwnership: this.handoffOwnership,
       listWorkspaces: () => this.workspaceRegistry.list(),
       listAgentCwds: () =>
         this.agentManager
@@ -5998,6 +6054,7 @@ export class Session {
   ): Promise<void> {
     return handleWorktreeArchiveRequest(
       {
+        handoffOwnership: this.handoffOwnership,
         paseoHome: this.paseoHome,
         paseoWorktreesBaseRoot: this.worktreesRoot,
         github: this.github,
@@ -6426,6 +6483,7 @@ export class Session {
       worktreeSlug,
       projectKind: (resolvedProjectRecord?.kind ?? "directory") === "git" ? "git" : "non_git",
       workspaceKind: workspace.kind,
+      handoff: this.handoffSource ? this.handoffSource.workspaceState(workspace.workspaceId) : null,
       name: resolveWorkspaceDisplayName(workspace),
       title: workspace.title,
       pinnedAt: workspace.pinnedAt,
@@ -6659,6 +6717,7 @@ export class Session {
                 activityAtMs: snapshot.activityAtMs,
                 waitingOnSubagentsCount: snapshot.waitingOnSubagentsCount,
                 delegatedByAgentId: snapshot.delegatedByAgentId,
+                handoff: snapshot.handoff,
               }
             : null,
           update: {
@@ -6667,6 +6726,7 @@ export class Session {
             activityAtMs: Number.isNaN(updateActivityAtMs) ? null : updateActivityAtMs,
             waitingOnSubagentsCount: payload.workspace.waitingOnSubagents?.count,
             delegatedByAgentId: payload.workspace.delegatedByAgentId,
+            handoff: payload.workspace.handoff,
           },
         });
         if (!shouldEmit) {
@@ -6742,6 +6802,7 @@ export class Session {
     const result = await createPaseoWorktree(
       { ...input, serverId: this.serverId },
       {
+        handoffOwnership: this.handoffOwnership,
         github: this.github,
         ...(options?.resolveDefaultBranch
           ? { resolveDefaultBranch: options.resolveDefaultBranch }
@@ -6771,6 +6832,8 @@ export class Session {
         cwd: workspace.cwd,
         kind: workspace.kind,
         worktreeRoot: workspace.worktreeRoot,
+        incarnation: workspace.incarnation,
+        retention: workspace.retention,
         isPaseoOwnedWorktree: workspace.isPaseoOwnedWorktree,
         mainRepoRoot: workspace.mainRepoRoot,
       }));
@@ -7448,6 +7511,7 @@ export class Session {
         activityAtMs: Number.isNaN(parsedActivity) ? null : parsedActivity,
         waitingOnSubagentsCount: entry.waitingOnSubagents?.count,
         delegatedByAgentId: entry.delegatedByAgentId,
+        handoff: entry.handoff,
       });
     }
     return { snapshotByWorkspaceId };
@@ -8144,6 +8208,7 @@ export class Session {
   ): Promise<CreatePaseoWorktreeWorkflowResult> {
     return createWorktreeWorkflow(
       {
+        handoffOwnership: this.handoffOwnership,
         paseoHome: this.paseoHome,
         worktreesRoot: this.worktreesRoot,
         createPaseoWorktree: (workflowInput, serviceOptions) =>
@@ -8197,6 +8262,7 @@ export class Session {
   ): Promise<void> {
     return handleWorkspaceSetupRunRequestMessage(
       {
+        handoffOwnership: this.handoffOwnership,
         getWorkspace: (workspaceId) => this.workspaceRegistry.get(workspaceId),
         clearAutomationBlock: (workspaceId) =>
           clearWorkspaceAutomationBlock(this.workspaceRegistry, workspaceId),
@@ -8234,6 +8300,7 @@ export class Session {
 
       await archiveByScope(
         {
+          handoffOwnership: this.handoffOwnership,
           paseoHome: this.paseoHome,
           paseoWorktreesBaseRoot: this.worktreesRoot,
           github: this.github,
@@ -8535,18 +8602,22 @@ export class Session {
       : undefined;
 
     try {
-      const snapshot = await ensureAgentLoaded(msg.agentId, {
-        agentManager: this.agentManager,
-        agentStorage: this.agentStorage,
-        logger: this.sessionLogger,
-      });
-      const agentPayload = await this.buildAgentPayload(snapshot);
-
-      const fetchedControlTimeline = this.agentManager.fetchTimeline(msg.agentId, {
-        direction,
-        cursor,
-        limit: pageLimit,
-      });
+      const fetchOptions = { direction, cursor, limit: pageLimit };
+      const transferred = await this.handoffSource?.fetchTimeline(msg.agentId, fetchOptions);
+      let agentPayload: AgentSnapshotPayload;
+      let fetchedControlTimeline: AgentTimelineFetchResult;
+      if (transferred) {
+        agentPayload = this.buildStoredAgentPayload(transferred.record);
+        fetchedControlTimeline = transferred.timeline;
+      } else {
+        const snapshot = await ensureAgentLoaded(msg.agentId, {
+          agentManager: this.agentManager,
+          agentStorage: this.agentStorage,
+          logger: this.sessionLogger,
+        });
+        agentPayload = await this.buildAgentPayload(snapshot);
+        fetchedControlTimeline = this.agentManager.fetchTimeline(msg.agentId, fetchOptions);
+      }
       const selectedTimeline = {
         timeline: fetchedControlTimeline,
         entries: fetchedControlTimeline.rows,
@@ -8588,7 +8659,7 @@ export class Session {
             ...(msg.mergeWindow === true ? { mergeWindow: true } : {}),
             entries: entries.map((entry) => {
               const payloadEntry = {
-                provider: snapshot.provider,
+                provider: agentPayload.provider,
                 item: entry.item,
                 timestamp: entry.timestamp,
                 seqStart: entry.seqStart,

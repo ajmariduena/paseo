@@ -8,15 +8,13 @@ import type {
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { createTestLogger } from "../../../../test-utils/test-logger.js";
+import type { ProcessTerminator } from "../../../../utils/tree-kill.js";
 import * as spawnUtils from "../../../../utils/spawn.js";
 import type { AgentStreamEvent } from "../../agent-sdk-types.js";
 import { ClaudeAgentClient } from "./agent.js";
 import type { ClaudeQueryInput } from "./query.js";
 
 interface QueryMockOptions {
-  // Runs while the session retires this query, modelling a process that dies as
-  // part of the retirement handshake.
-  onReturn?: () => void;
   // Awaited once the scripted events run out, so the query stays open the way a
   // real one does. Resolving it with a value delivers one more event.
   tail?: Promise<unknown>;
@@ -24,12 +22,13 @@ interface QueryMockOptions {
 
 function createQueryMock(events: unknown[], options: QueryMockOptions = {}): Query {
   let index = 0;
+  const closed = Promise.withResolvers<undefined>();
   return {
     next: vi.fn(async () => {
       if (index < events.length) {
         return { done: false, value: events[index++] };
       }
-      const late = await options.tail;
+      const late = await Promise.race([options.tail, closed.promise]);
       if (late !== undefined) {
         options.tail = undefined;
         return { done: false, value: late };
@@ -37,11 +36,10 @@ function createQueryMock(events: unknown[], options: QueryMockOptions = {}): Que
       return { done: true, value: undefined };
     }),
     return: vi.fn(async () => {
-      options.onReturn?.();
       return { done: true, value: undefined };
     }),
     interrupt: vi.fn(async () => undefined),
-    close: vi.fn(() => undefined),
+    close: vi.fn(() => closed.resolve(undefined)),
     setPermissionMode: vi.fn(async () => undefined),
     setModel: vi.fn(async () => undefined),
     supportedModels: vi.fn(async () => [{ value: "opus", displayName: "Opus" }]),
@@ -68,6 +66,12 @@ function createChildProcessStub(): ChildProcess & { killSignals: (NodeJS.Signals
   }) as ChildProcess["kill"];
   return child;
 }
+
+// These event-stream fixtures have no OS PID; model their termination explicitly.
+const stopStub: ProcessTerminator = async (child) => {
+  child.kill("SIGTERM");
+  return "terminated";
+};
 
 const COMPLETED_TURN_EVENTS = [
   {
@@ -146,6 +150,7 @@ describe("Claude runtime exit", () => {
     const child = createChildProcessStub();
     vi.spyOn(spawnUtils, "spawnProcess").mockReturnValue(child);
     const client = new ClaudeAgentClient({
+      processTerminator: stopStub,
       logger: createTestLogger(),
       queryFactory,
       resolveBinary: async () => "/test/claude/bin",
@@ -163,7 +168,9 @@ describe("Claude runtime exit", () => {
 
       const failure = events.find((event) => event.type === "turn_failed");
       expect(failure).toBeDefined();
-      expect(failure && "error" in failure ? failure.error : "").toContain("background shells");
+      expect(failure && "error" in failure ? failure.error : "").toContain(
+        "shutdown has not been confirmed",
+      );
     } finally {
       await session.close();
     }
@@ -178,6 +185,7 @@ describe("Claude runtime exit", () => {
     const child = createChildProcessStub();
     vi.spyOn(spawnUtils, "spawnProcess").mockReturnValue(child);
     const client = new ClaudeAgentClient({
+      processTerminator: stopStub,
       logger: createTestLogger(),
       queryFactory,
       resolveBinary: async () => "/test/claude/bin",
@@ -211,6 +219,7 @@ describe("Claude runtime exit", () => {
     const child = createChildProcessStub();
     vi.spyOn(spawnUtils, "spawnProcess").mockReturnValue(child);
     const client = new ClaudeAgentClient({
+      processTerminator: stopStub,
       logger: createTestLogger(),
       queryFactory,
       resolveBinary: async () => "/test/claude/bin",
@@ -232,17 +241,19 @@ describe("Claude runtime exit", () => {
   test("stays quiet when a query restart retires the process", async () => {
     let capturedOptions: Options | undefined;
     const child = createChildProcessStub();
+    const processExit = Promise.withResolvers<undefined>();
+    child.once("exit", () => processExit.resolve(undefined));
     const queryFactory = vi.fn(({ options }: ClaudeQueryInput) => {
       capturedOptions = options;
       // A real query stays open between turns, so hold it open; the process
       // dies when the session retires it, as ending its stdin does in practice.
       return createQueryMock(RUNNING_WORKFLOW_TURN_EVENTS, {
-        tail: new Promise<never>(() => undefined),
-        onReturn: () => child.emit("exit", 0, null),
+        tail: processExit.promise,
       });
     });
     vi.spyOn(spawnUtils, "spawnProcess").mockReturnValue(child);
     const client = new ClaudeAgentClient({
+      processTerminator: stopStub,
       logger: createTestLogger(),
       queryFactory,
       resolveBinary: async () => "/test/claude/bin",
@@ -288,6 +299,7 @@ describe("Claude runtime exit", () => {
     const child = createChildProcessStub();
     vi.spyOn(spawnUtils, "spawnProcess").mockReturnValue(child);
     const client = new ClaudeAgentClient({
+      processTerminator: stopStub,
       logger: createTestLogger(),
       queryFactory,
       resolveBinary: async () => "/test/claude/bin",
@@ -322,6 +334,7 @@ describe("Claude runtime exit", () => {
     const child = createChildProcessStub();
     vi.spyOn(spawnUtils, "spawnProcess").mockReturnValue(child);
     const client = new ClaudeAgentClient({
+      processTerminator: stopStub,
       logger: createTestLogger(),
       queryFactory,
       resolveBinary: async () => "/test/claude/bin",

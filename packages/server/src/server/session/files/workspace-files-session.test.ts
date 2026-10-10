@@ -6,7 +6,10 @@ import {
   realpathSync,
   rmSync,
   writeFileSync,
+  readdirSync,
+  statSync,
 } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -23,6 +26,8 @@ import {
 } from "./workspace-files-session.js";
 import { DownloadTokenStore } from "../../file-download/token-store.js";
 import type { SessionOutboundMessage } from "../../messages.js";
+import { HandoffOwnership } from "../../handoff/ownership.js";
+import { writeExplorerFile } from "../../file-explorer/service.js";
 
 const tempDirs: string[] = [];
 
@@ -42,6 +47,8 @@ function makeSubsystem(
   options: {
     hasBinaryChannel?: boolean;
     emitBinary?: (frame: Uint8Array) => Promise<void> | void;
+    handoffOwnership?: HandoffOwnership;
+    writeFile?: typeof writeExplorerFile;
   } = {},
 ) {
   const emitted: SessionOutboundMessage[] = [];
@@ -61,6 +68,8 @@ function makeSubsystem(
     downloadTokenStore: new DownloadTokenStore({ ttlMs: 60_000 }),
     paseoHome,
     logger: pino({ level: "silent" }),
+    handoffOwnership: options.handoffOwnership,
+    writeFile: options.writeFile,
   });
   return {
     subsystem,
@@ -82,6 +91,165 @@ function uploadFrame(args: Parameters<typeof encodeFileTransferFrame>[0]): FileT
 }
 
 describe("WorkspaceFilesSession", () => {
+  test("handoff drains an admitted file write, keeps reads available, and permits writes after cancellation", async () => {
+    const cwd = makeDir("handoff-file-admission-");
+    const home = makeDir("handoff-file-admission-ledger-");
+    writeFileSync(join(cwd, "notes.txt"), "original");
+    const ownership = new HandoffOwnership({
+      directory: join(home, "ownership"),
+      sourceServerId: "source",
+    });
+    await ownership.initialize();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const { subsystem, emitted } = makeSubsystem({
+      handoffOwnership: ownership,
+      writeFile: async (input) => {
+        entered.resolve();
+        await release.promise;
+        return writeExplorerFile(input);
+      },
+    });
+    const writing = subsystem.handleFileWriteRequest({
+      type: "fs.file.write.request",
+      cwd,
+      path: "notes.txt",
+      content: "admitted",
+      expectedModifiedAt: statSync(join(cwd, "notes.txt"), { bigint: true }).mtime.toISOString(),
+      requestId: "admitted",
+    });
+    try {
+      await entered.promise;
+      const id = randomUUID();
+      await ownership.prepare({
+        id,
+        cwd,
+        workspaceId: "workspace",
+        agentIds: [],
+        destinationServerId: "target",
+        reservationId: randomUUID(),
+      });
+      await expect(ownership.markReady(id, "a".repeat(64))).rejects.toMatchObject({
+        code: "invalid_state",
+      });
+      release.resolve();
+      await writing;
+      await ownership.drain(id);
+      expect(emitted[0]).toMatchObject({
+        type: "fs.file.write.response",
+        payload: { result: { status: "written" } },
+      });
+      expect(readFileSync(join(cwd, "notes.txt"), "utf8")).toBe("admitted");
+      await subsystem.handleFileExplorerRequest({
+        type: "file_explorer_request",
+        cwd,
+        path: "notes.txt",
+        mode: "file",
+        requestId: "read-fenced",
+      });
+      expect(emitted.at(-1)).toMatchObject({
+        type: "file_explorer_response",
+        payload: { error: null, file: { content: "admitted" } },
+      });
+      await ownership.cancel(id);
+      await subsystem.handleFileWriteRequest({
+        type: "fs.file.write.request",
+        cwd,
+        path: "notes.txt",
+        content: "continued",
+        expectedModifiedAt: statSync(join(cwd, "notes.txt"), { bigint: true }).mtime.toISOString(),
+        requestId: "after-cancel",
+      });
+      expect(emitted.at(-1)).toMatchObject({
+        type: "fs.file.write.response",
+        payload: { result: { status: "written" }, requestId: "after-cancel" },
+      });
+      expect(readFileSync(join(cwd, "notes.txt"), "utf8")).toBe("continued");
+    } finally {
+      release.resolve();
+      await writing;
+    }
+  });
+
+  test.each(["create", "rename", "duplicate", "delete", "write"])(
+    "handoff rejects file %s with a correlated response and leaves the workspace intact",
+    async (operation) => {
+      const cwd = makeDir("handoff-file-workspace-");
+      const home = makeDir("handoff-file-ledger-");
+      writeFileSync(join(cwd, "notes.txt"), "original");
+      const ownership = new HandoffOwnership({
+        directory: join(home, "ownership"),
+        sourceServerId: "source",
+      });
+      await ownership.initialize();
+      const id = randomUUID();
+      await ownership.prepare({
+        id,
+        cwd,
+        workspaceId: "workspace",
+        agentIds: [],
+        destinationServerId: "target",
+        reservationId: randomUUID(),
+      });
+      const { subsystem, emitted } = makeSubsystem({ handoffOwnership: ownership });
+      const requestId = `handoff-${operation}`;
+      const operations: Record<string, () => Promise<void>> = {
+        create: () =>
+          subsystem.handleFileEntryCreateRequest({
+            type: "fs.entry.create.request",
+            cwd,
+            parentPath: ".",
+            name: "new.txt",
+            kind: "file",
+            requestId,
+          }),
+        rename: () =>
+          subsystem.handleFileEntryRenameRequest({
+            type: "fs.entry.rename.request",
+            cwd,
+            path: "notes.txt",
+            name: "new.txt",
+            requestId,
+          }),
+        duplicate: () =>
+          subsystem.handleFileEntryDuplicateRequest({
+            type: "fs.entry.duplicate.request",
+            cwd,
+            path: "notes.txt",
+            requestId,
+          }),
+        delete: () =>
+          subsystem.handleFileEntryDeleteRequest({
+            type: "fs.entry.delete.request",
+            cwd,
+            path: "notes.txt",
+            requestId,
+          }),
+        write: () =>
+          subsystem.handleFileWriteRequest({
+            type: "fs.file.write.request",
+            cwd,
+            path: "notes.txt",
+            content: "changed",
+            expectedModifiedAt: statSync(join(cwd, "notes.txt"), {
+              bigint: true,
+            }).mtime.toISOString(),
+            requestId,
+          }),
+      };
+      await operations[operation]();
+      expect(emitted).toHaveLength(1);
+      const error = `Workspace is held by handoff ${id} (preparing)`;
+      const payload =
+        operation === "write"
+          ? { result: { status: "error", error }, requestId }
+          : { success: false, error, requestId };
+      expect(emitted[0]).toMatchObject({ payload });
+      expect(readdirSync(cwd)).toEqual(["notes.txt"]);
+      expect(readFileSync(join(cwd, "notes.txt"), "utf8")).toBe("original");
+    },
+  );
+
   test("creates an entry and emits the complete success response", async () => {
     const cwd = makeDir("workspace-files-create-");
     const { subsystem, emitted } = makeSubsystem();

@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   mkdirSync,
   existsSync,
@@ -35,6 +36,8 @@ import type { TerminalSession } from "../terminal/terminal.js";
 import type { AgentStorage, StoredAgentRecord } from "./agent/agent-storage.js";
 import {
   createPersistedProjectRecord,
+  createPersistedWorkspaceRecord,
+  FileBackedWorkspaceRegistry,
   type PersistedProjectRecord,
   type PersistedWorkspaceRecord,
   type ProjectRegistry,
@@ -50,7 +53,13 @@ import { WorkspaceGitServiceImpl } from "./workspace-git-service.js";
 import type { WorkspaceGitService } from "./workspace-git-service.js";
 import { isPlatform } from "../test-utils/platform.js";
 import { createWorkspaceProvisioningService } from "./session/workspace-provisioning/workspace-provisioning-service.js";
-import { WorkspaceAutomationBlockedError } from "./workspace-automation-gate.js";
+import {
+  clearWorkspaceAutomationBlock,
+  WorkspaceAutomationBlockedError,
+} from "./workspace-automation-gate.js";
+import { HandoffOwnership } from "./handoff/ownership.js";
+import { readPaseoWorktreeRuntimePort } from "../utils/worktree-metadata.js";
+import { WorkspaceSetupRuntime } from "./workspace-setup-runtime.js";
 
 interface LegacyCreateWorktreeTestOptions {
   branchName: string;
@@ -591,6 +600,87 @@ describe("create-agent worktree setup boundary", () => {
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  test("handoff fences a delayed agent setup continuation registered in the workspace runtime", async () => {
+    const { tempDir, repoDir } = createGitRepo({
+      paseoConfig: {
+        worktree: { setup: ["node -e \"require('fs').writeFileSync('setup-ran', 'ran')\""] },
+      },
+    });
+    const paseoHome = path.join(tempDir, ".paseo");
+    const ownership = new HandoffOwnership({
+      directory: path.join(tempDir, "ownership"),
+      sourceServerId: "source",
+    });
+    await ownership.initialize();
+    const runtime = new WorkspaceSetupRuntime();
+    const scheduled: string[] = [];
+    const published = Promise.withResolvers<void>();
+    const timeline: unknown[] = [];
+    try {
+      const result = await createPaseoWorktreeWorkflow(
+        {
+          handoffOwnership: ownership,
+          paseoHome,
+          createPaseoWorktree: createPaseoWorktreeForTest({ paseoHome }),
+          warmWorkspaceGitData: async () => {},
+          autoNameWorkspaceBranchForFirstAgent: () => {},
+          emitWorkspaceUpdateForWorkspaceId: async () => {},
+          cacheWorkspaceSetupSnapshot: () => {},
+          emit: () => {},
+          startWorkspaceSetup: (workspaceId, operation) => {
+            scheduled.push(workspaceId);
+            runtime.start(workspaceId, operation);
+          },
+          sessionLogger: createLogger(),
+          terminalManager: null,
+          serviceProxy: null,
+          scriptRuntimeStore: null,
+          getDaemonTcpPort: null,
+          getDaemonTcpHost: null,
+          onScriptsChanged: null,
+        },
+        { cwd: repoDir, worktreeSlug: "delayed-setup", paseoHome },
+        {
+          setupContinuation: {
+            kind: "agent",
+            terminalManager: null,
+            appendTimelineItem: async ({ item }) => {
+              timeline.push(item);
+              published.resolve();
+              return true;
+            },
+            emitLiveTimelineItem: async () => true,
+            logger: createLogger(),
+          },
+        },
+      );
+      const id = randomUUID();
+      await ownership.prepare({
+        id,
+        cwd: result.workspace.cwd,
+        workspaceId: result.workspace.workspaceId,
+        agentIds: [],
+        destinationServerId: "target",
+        reservationId: randomUUID(),
+      });
+      result.setupContinuation?.startAfterAgentCreate({ agentId: "agent" });
+      expect(scheduled).toEqual([result.workspace.workspaceId]);
+      await published.promise;
+      await runtime.stop(result.workspace.workspaceId);
+      expect(existsSync(path.join(result.workspace.cwd, "setup-ran"))).toBe(false);
+      expect(timeline).toHaveLength(1);
+      expect(timeline[0]).toMatchObject({
+        type: "tool_call",
+        name: "paseo_worktree_setup",
+        status: "failed",
+        error: { message: `Workspace is held by handoff ${id} (preparing)` },
+      });
+    } finally {
+      for (const workspaceId of scheduled) await runtime.stop(workspaceId);
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });
 
 function createAgentStorageStub(): Pick<AgentStorage, "list"> {
@@ -670,6 +760,221 @@ describe("runWorktreeSetupInBackground", () => {
   afterEach(() => {
     for (const target of cleanupPaths.splice(0)) {
       rmSync(target, { recursive: true, force: true });
+    }
+  });
+
+  test("handoff stop cancels every admitted setup for a shared workspace", async () => {
+    const runtime = new WorkspaceSetupRuntime();
+    const cancelled: number[] = [];
+    const entered = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+    const finish = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+    for (const index of [0, 1]) {
+      const cancel = () => {
+        cancelled.push(index);
+        finish[index]!.resolve();
+      };
+      runtime.start("shared-workspace", async (signal) => {
+        signal.addEventListener("abort", cancel, { once: true });
+        entered[index]!.resolve();
+        await finish[index]!.promise;
+      });
+    }
+    await Promise.all(entered.map((gate) => gate.promise));
+    try {
+      expect(runtime.countActive("shared-workspace")).toBe(2);
+      expect(runtime.countActive("other-workspace")).toBe(0);
+      await runtime.stop("shared-workspace");
+      expect(cancelled).toEqual([0, 1]);
+      expect(runtime.countActive("shared-workspace")).toBe(0);
+    } finally {
+      for (const gate of finish) gate.resolve();
+    }
+  });
+
+  test.each([
+    "workspace path",
+    "workspace identity",
+    "backing sibling",
+    "source repository",
+  ] as const)(
+    "handoff refuses background setup by %s before commands and metadata, then permits cancel/retry",
+    async (scope) => {
+      const { tempDir, repoDir } = createGitRepo({
+        paseoConfig: {
+          worktree: { setup: ["node -e \"require('fs').writeFileSync('setup-ran', 'ran')\""] },
+        },
+      });
+      cleanupPaths.push(tempDir);
+      const paseoHome = path.join(tempDir, ".paseo");
+      const worktree = await createLegacyWorktreeForTest({
+        cwd: repoDir,
+        branchName: "setup",
+        baseBranch: "main",
+        worktreeSlug: "setup",
+        runSetup: false,
+        paseoHome,
+      });
+      const ownership = new HandoffOwnership({
+        directory: path.join(tempDir, "ownership"),
+        sourceServerId: "source",
+      });
+      await ownership.initialize();
+      const workspaceCwd = path.join(worktree.worktreePath, "selected");
+      const sibling = path.join(worktree.worktreePath, "sibling");
+      const elsewhere = path.join(tempDir, "elsewhere");
+      for (const directory of [workspaceCwd, sibling, elsewhere]) mkdirSync(directory);
+      writeFileSync(
+        path.join(workspaceCwd, "paseo.json"),
+        readFileSync(path.join(worktree.worktreePath, "paseo.json")),
+      );
+      const paths = {
+        "workspace path": workspaceCwd,
+        "workspace identity": elsewhere,
+        "backing sibling": sibling,
+        "source repository": repoDir,
+      };
+      const id = randomUUID();
+      await ownership.prepare({
+        id,
+        cwd: paths[scope],
+        workspaceId: scope === "workspace identity" ? "setup" : "other",
+        agentIds: [],
+        destinationServerId: "target",
+        reservationId: randomUUID(),
+      });
+      const emitted: SessionOutboundMessage[] = [];
+      const dependencies = {
+        handoffOwnership: ownership,
+        paseoHome,
+        emitWorkspaceUpdateForWorkspaceId: async () => {},
+        cacheWorkspaceSetupSnapshot: () => {},
+        emit: (message: SessionOutboundMessage) => emitted.push(message),
+        sessionLogger: createLogger(),
+        terminalManager: null,
+        serviceProxy: null,
+        scriptRuntimeStore: null,
+        getDaemonTcpPort: null,
+        getDaemonTcpHost: null,
+        onScriptsChanged: null,
+      };
+      const options = {
+        requestCwd: repoDir,
+        repoRoot: repoDir,
+        workspaceId: "setup",
+        worktree,
+        shouldBootstrap: true,
+        slug: "setup",
+        worktreePath: worktree.worktreePath,
+        workspaceCwd,
+      };
+      await runWorktreeSetupInBackground(dependencies, options);
+      expect(existsSync(path.join(workspaceCwd, "setup-ran"))).toBe(false);
+      expect(readPaseoWorktreeRuntimePort(worktree.worktreePath)).toBe(null);
+      expect(emitted).toContainEqual(
+        expect.objectContaining({
+          type: "workspace_setup_progress",
+          payload: expect.objectContaining({
+            status: "failed",
+            error: `Workspace is held by handoff ${id} (preparing)`,
+          }),
+        }),
+      );
+      await ownership.cancel(id);
+      await runWorktreeSetupInBackground(dependencies, options);
+      expect(readFileSync(path.join(workspaceCwd, "setup-ran"), "utf8")).toBe("ran");
+      expect(emitted.at(-1)).toMatchObject({
+        type: "workspace_setup_progress",
+        payload: { status: "completed", error: null },
+      });
+    },
+  );
+
+  test("handoff drains running setup through cancellation and its final workspace update", async () => {
+    const { tempDir, repoDir } = createGitRepo({
+      paseoConfig: {
+        worktree: {
+          setup: [
+            "node -e \"require('fs').writeFileSync('setup-running', String(process.pid)); setInterval(()=>{},1000); setTimeout(()=>process.exit(0),15000).unref()\"",
+            "node -e \"require('fs').writeFileSync('unexpected-second-command', 'ran')\"",
+          ],
+        },
+      },
+    });
+    cleanupPaths.push(tempDir);
+    const ownership = new HandoffOwnership({
+      directory: path.join(tempDir, "ownership"),
+      sourceServerId: "source",
+    });
+    await ownership.initialize();
+    const runtime = new WorkspaceSetupRuntime();
+    const updateEntered = Promise.withResolvers<void>();
+    const finishUpdate = Promise.withResolvers<void>();
+    const emitted: SessionOutboundMessage[] = [];
+    const dependencies = {
+      handoffOwnership: ownership,
+      emitWorkspaceUpdateForWorkspaceId: async () => {
+        updateEntered.resolve();
+        await finishUpdate.promise;
+      },
+      cacheWorkspaceSetupSnapshot: () => {},
+      emit: (message: SessionOutboundMessage) => emitted.push(message),
+      sessionLogger: createLogger(),
+      terminalManager: null,
+      serviceProxy: null,
+      scriptRuntimeStore: null,
+      getDaemonTcpPort: null,
+      getDaemonTcpHost: null,
+      onScriptsChanged: null,
+    };
+    runtime.start("setup", (signal) =>
+      runWorktreeSetupInBackground(
+        dependencies,
+        {
+          requestCwd: repoDir,
+          repoRoot: repoDir,
+          workspaceId: "setup",
+          worktree: { worktreePath: repoDir, branchName: "main" },
+          shouldBootstrap: true,
+          slug: "setup",
+          worktreePath: repoDir,
+          runAutoTerminals: true,
+        },
+        signal,
+      ),
+    );
+    const id = randomUUID();
+    try {
+      await expect
+        .poll(() => existsSync(path.join(repoDir, "setup-running")), { timeout: 10000 })
+        .toBe(true);
+      await ownership.prepare({
+        id,
+        cwd: repoDir,
+        workspaceId: "setup",
+        agentIds: [],
+        destinationServerId: "target",
+        reservationId: randomUUID(),
+      });
+      await expect(ownership.markReady(id, "a".repeat(64))).rejects.toMatchObject({
+        code: "invalid_state",
+      });
+      const stopping = runtime.stop("setup");
+      await updateEntered.promise;
+      await expect(ownership.markReady(id, "a".repeat(64))).rejects.toMatchObject({
+        code: "invalid_state",
+      });
+      expect(existsSync(path.join(repoDir, "unexpected-second-command"))).toBe(false);
+      finishUpdate.resolve();
+      await stopping;
+      await ownership.drain(id);
+      expect((await ownership.markReady(id, "a".repeat(64))).state).toBe("ready");
+      expect(emitted.at(-1)).toMatchObject({
+        type: "workspace_setup_progress",
+        payload: { status: "failed" },
+      });
+    } finally {
+      finishUpdate.resolve();
+      await runtime.stop("setup");
     }
   });
 
@@ -1440,6 +1745,117 @@ describe("runWorktreeSetupInBackground", () => {
         payload: { requestId: "req-run-2", workspaceId: "ws-fork", started: false, error: null },
       },
     ]);
+  });
+
+  test("handoff rejects Run setup before clearing persisted provenance and permits cancellation retry", async () => {
+    const { tempDir, repoDir } = createGitRepo({
+      paseoConfig: {
+        worktree: { setup: ["node -e \"require('fs').writeFileSync('setup-ran', 'ran')\""] },
+      },
+    });
+    cleanupPaths.push(tempDir);
+    const logger = createLogger();
+    const registry = new FileBackedWorkspaceRegistry(path.join(tempDir, "workspaces.json"), logger);
+    await registry.initialize();
+    const timestamp = new Date().toISOString();
+    const workspace = createPersistedWorkspaceRecord({
+      workspaceId: "setup",
+      projectId: "project",
+      cwd: repoDir,
+      kind: "local_checkout",
+      displayName: "Setup",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      untrustedSource: {
+        kind: "change_request",
+        forge: "github",
+        number: 42,
+        headRepository: "contributor/repo",
+      },
+    });
+    await registry.upsert(workspace);
+    const ownership = new HandoffOwnership({
+      directory: path.join(tempDir, "ownership"),
+      sourceServerId: "source",
+    });
+    await ownership.initialize();
+    const id = randomUUID();
+    await ownership.prepare({
+      id,
+      cwd: repoDir,
+      workspaceId: "setup",
+      agentIds: [],
+      destinationServerId: "target",
+      reservationId: randomUUID(),
+    });
+    const emitted: SessionOutboundMessage[] = [];
+    const operations: Array<(signal: AbortSignal) => Promise<void>> = [];
+    const dependencies = {
+      handoffOwnership: ownership,
+      getWorkspace: (workspaceId: string) => registry.get(workspaceId),
+      clearAutomationBlock: (workspaceId: string) =>
+        clearWorkspaceAutomationBlock(registry, workspaceId),
+      startWorkspaceSetup: (
+        _workspaceId: string,
+        operation: (signal: AbortSignal) => Promise<void>,
+      ) => {
+        operations.push(operation);
+      },
+      emitWorkspaceUpdateForWorkspaceId: async () => {},
+      cacheWorkspaceSetupSnapshot: () => {},
+      emit: (message: SessionOutboundMessage) => emitted.push(message),
+      sessionLogger: logger,
+      terminalManager: null,
+      serviceProxy: null,
+      scriptRuntimeStore: null,
+      getDaemonTcpPort: null,
+      getDaemonTcpHost: null,
+      onScriptsChanged: null,
+    };
+    const request = {
+      type: "workspace.setup.run.request" as const,
+      workspaceId: "setup",
+      requestId: "blocked",
+    };
+    await handleWorkspaceSetupRunRequest(dependencies, request);
+    expect(emitted.at(-1)).toEqual({
+      type: "workspace.setup.run.response",
+      payload: {
+        workspaceId: "setup",
+        requestId: "blocked",
+        started: false,
+        error: `Workspace is held by handoff ${id} (preparing)`,
+      },
+    });
+    expect(operations).toHaveLength(0);
+    const persisted = new FileBackedWorkspaceRegistry(
+      path.join(tempDir, "workspaces.json"),
+      logger,
+    );
+    await persisted.initialize();
+    expect(await persisted.get("setup")).toEqual(workspace);
+    await handleWorkspaceSetupStatusRequest(
+      {
+        emit: dependencies.emit,
+        workspaceSetupSnapshots: new Map(),
+        getWorkspace: dependencies.getWorkspace,
+      },
+      { type: "workspace_setup_status_request", workspaceId: "setup", requestId: "read" },
+    );
+    expect(emitted.at(-1)).toMatchObject({
+      type: "workspace_setup_status_response",
+      payload: { snapshot: { status: "blocked", blockedSource: workspace.untrustedSource } },
+    });
+    await ownership.cancel(id);
+    await handleWorkspaceSetupRunRequest(dependencies, { ...request, requestId: "retry" });
+    expect(emitted.at(-1)).toMatchObject({
+      type: "workspace.setup.run.response",
+      payload: { started: true, error: null },
+    });
+    expect(operations).toHaveLength(1);
+    await operations[0]!(new AbortController().signal);
+    expect(readFileSync(path.join(repoDir, "setup-ran"), "utf8")).toBe("ran");
+    expect((await registry.get("setup"))?.untrustedSource).toBeUndefined();
   });
 });
 

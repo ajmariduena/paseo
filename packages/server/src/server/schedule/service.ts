@@ -1,10 +1,10 @@
 import { formatSystemNotificationPrompt } from "../agent/agent-messages/index.js";
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
-import { join } from "node:path";
+import path, { join } from "node:path";
 import type { Logger } from "pino";
-import type { AgentManager } from "../agent/agent-manager.js";
-import type { AgentSessionConfig } from "../agent/agent-sdk-types.js";
+import type { AgentManager, WaitForAgentResult } from "../agent/agent-manager.js";
+import type { AgentSession, AgentSessionConfig } from "../agent/agent-sdk-types.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
 import { curateAgentActivity } from "../agent/activity-curator.js";
 import { ensureAgentLoaded } from "../agent/agent-loading.js";
@@ -13,7 +13,26 @@ import { resolveCreateAgentTitles } from "../agent/create-agent-title.js";
 import { type BoundCreateAgentCommand, formatProviderModel } from "../agent/create-agent/create.js";
 import type { PersistedWorkspaceRecord } from "../workspace-registry.js";
 import type { CreatePaseoWorktreeWorkflowResult } from "../worktree-session.js";
-import { ScheduleStore } from "./store.js";
+import { ScheduleStore, type ScheduleMutation } from "./store.js";
+import {
+  HandoffOwnershipError,
+  handoffPathsOverlap,
+  resolveHandoffPath,
+  type HandoffOwnership,
+  type SourceHandoffStatus,
+} from "../handoff/ownership.js";
+import { HandoffDestinationError } from "../handoff/destination.js";
+import {
+  captureHandoffSchedules,
+  estimateHandoffSchedules,
+  reviewScheduleForHandoff,
+  type HandoffActiveRun,
+  type InstallHandoffSchedulesInput,
+} from "./handoff.js";
+import {
+  HandoffScheduleReviewSchema,
+  type HandoffScheduleReview,
+} from "@getpaseo/protocol/handoff-control";
 import { computeNextRunAt, validateScheduleCadence } from "./cron.js";
 import type {
   CreateScheduleInput,
@@ -27,6 +46,16 @@ import type {
 import type { FirstAgentContext } from "@getpaseo/protocol/messages";
 
 const SCHEDULE_TICK_INTERVAL_MS = 1000;
+
+type HandoffScheduleSource = Pick<
+  SourceHandoffStatus,
+  "cwd" | "workspaceId" | "agentIds" | "stoppedWorkReview"
+>;
+interface ActiveScheduledRun {
+  activeRun: HandoffActiveRun;
+  agentId: string;
+  session: AgentSession;
+}
 
 // A run failed because its target no longer exists: the agent was deleted or
 // archived, or a new-agent cwd was removed. These are permanent, so the schedule
@@ -59,6 +88,12 @@ function normalizePrompt(prompt: string): string {
     throw new Error("Schedule prompt is required");
   }
   return trimmed;
+}
+
+function targetScopeKey(target: ScheduleTarget): string {
+  return JSON.stringify(
+    target.type === "agent" ? [target.type, target.agentId] : [target.type, target.config.cwd],
+  );
 }
 
 function applyNewAgentConfig(
@@ -196,6 +231,18 @@ function buildRunOutput(params: {
   return null;
 }
 
+function assertScheduledAgentSucceeded(agentId: string, result: WaitForAgentResult): void {
+  if (result.canceled) {
+    throw new Error(`Scheduled agent ${agentId} was canceled`);
+  }
+  if (result.permission) {
+    throw new Error(`Scheduled agent ${agentId} is waiting for permission`);
+  }
+  if (result.status === "error") {
+    throw new Error(result.lastMessage ?? `Scheduled agent ${agentId} failed`);
+  }
+}
+
 type ScheduleAgentManager = Pick<
   AgentRunController,
   | "getAgent"
@@ -215,6 +262,7 @@ type ScheduleAgentManager = Pick<
     | "runAgent"
     | "waitForAgentEvent"
     | "waitForAgentClose"
+    | "annotatePrompt"
   >;
 
 interface ScheduleWorkspaceCreateInput {
@@ -224,6 +272,8 @@ interface ScheduleWorkspaceCreateInput {
 
 export interface ScheduleServiceOptions {
   paseoHome: string;
+  handoffOwnership: HandoffOwnership | null;
+  isHandoffIdentityVisible: (id: string) => boolean;
   logger: Logger;
   agentManager: ScheduleAgentManager;
   agentStorage: AgentStorage;
@@ -234,13 +284,16 @@ export interface ScheduleServiceOptions {
   createPaseoWorktreeWorkspace: (
     input: ScheduleWorkspaceCreateInput,
   ) => Promise<CreatePaseoWorktreeWorkflowResult>;
-  archiveWorkspace: (workspaceId: string) => Promise<void>;
+  archiveWorkspace: (workspaceId: string, expectedIncarnation: string | undefined) => Promise<void>;
   now?: () => Date;
   runner?: (schedule: StoredSchedule, runId: string) => Promise<ScheduleExecutionResult>;
 }
 
 export class ScheduleService {
+  private readonly activeScheduledRuns = new Map<string, ActiveScheduledRun>();
   private readonly store: ScheduleStore;
+  private readonly handoffOwnership: HandoffOwnership | null;
+  private readonly isHandoffIdentityVisible: (id: string) => boolean;
   private readonly logger: Logger;
   private readonly agentManager: ScheduleAgentManager;
   private readonly agentStorage: AgentStorage;
@@ -251,7 +304,10 @@ export class ScheduleService {
   private readonly createPaseoWorktreeWorkspace: (
     input: ScheduleWorkspaceCreateInput,
   ) => Promise<CreatePaseoWorktreeWorkflowResult>;
-  private readonly archiveWorkspace: (workspaceId: string) => Promise<void>;
+  private readonly archiveWorkspace: (
+    workspaceId: string,
+    expectedIncarnation: string | undefined,
+  ) => Promise<void>;
   private readonly now: () => Date;
   private readonly runner: (
     schedule: StoredSchedule,
@@ -262,7 +318,12 @@ export class ScheduleService {
 
   constructor(options: ScheduleServiceOptions) {
     this.logger = options.logger.child({ module: "schedule-service" });
-    this.store = new ScheduleStore(join(options.paseoHome, "schedules"), this.logger);
+    this.handoffOwnership = options.handoffOwnership;
+    this.isHandoffIdentityVisible = options.isHandoffIdentityVisible;
+    this.store = new ScheduleStore(join(options.paseoHome, "schedules"), this.logger, {
+      admitMutation: (mutation) => this.acquireScheduleMutation(mutation),
+      isVisible: options.isHandoffIdentityVisible,
+    });
     this.agentManager = options.agentManager;
     this.agentStorage = options.agentStorage;
     this.createAgent = options.createAgent;
@@ -274,6 +335,7 @@ export class ScheduleService {
   }
 
   async start(): Promise<void> {
+    await this.store.repairPendingPersistence();
     await this.recoverInterruptedRuns();
     await this.sweepOrphanedSchedules();
     if (this.tickTimer) {
@@ -375,10 +437,200 @@ export class ScheduleService {
   }
 
   async list(): Promise<StoredSchedule[]> {
+    await this.store.repairPendingPersistence();
     return this.store.list();
   }
 
+  private async schedulesForHandoff(source: HandoffScheduleSource) {
+    const cwd = await resolveHandoffPath(source.cwd);
+    const retained = source.stoppedWorkReview?.retainedWorkspaces ?? [];
+    const heldAgentIds = new Set([
+      ...source.agentIds,
+      ...retained.flatMap((workspace) => workspace.agentIds),
+    ]);
+    const records: StoredSchedule[] = [];
+    const relativeCwds = new Map<string, string>();
+    const retainedOnSource = new Map<
+      string,
+      NonNullable<HandoffScheduleReview["retainedOnSource"]>
+    >();
+    for (const record of await this.store.listForHandoff()) {
+      if (record.target.type === "agent") {
+        if (!source.agentIds.includes(record.target.agentId)) {
+          const agent = await this.agentStorage.get(record.target.agentId);
+          if (agent && heldAgentIds.has(record.target.agentId)) {
+            retainedOnSource.set(record.id, { cwd: await resolveHandoffPath(agent.cwd) });
+            records.push(record);
+            continue;
+          }
+          if (agent && handoffPathsOverlap(cwd, await resolveHandoffPath(agent.cwd)))
+            throw new Error(
+              "A heartbeat belongs to another conversation sharing the source directory",
+            );
+          continue;
+        }
+      } else {
+        const targetCwd = await resolveHandoffPath(record.target.config.cwd);
+        if (!handoffPathsOverlap(cwd, targetCwd)) {
+          const runsHere = record.runs.some(
+            (run) =>
+              run.status === "running" &&
+              (run.workspaceId === source.workspaceId || heldAgentIds.has(run.agentId ?? "")),
+          );
+          const reviewed = source.stoppedWorkReview?.schedules?.find(
+            (entry) => entry.id === record.id,
+          )?.retainedOnSource;
+          if (
+            !runsHere &&
+            !reviewed &&
+            !retained.some((workspace) => handoffPathsOverlap(workspace.cwd, targetCwd))
+          )
+            continue;
+          retainedOnSource.set(record.id, { cwd: targetCwd });
+          records.push(record);
+          continue;
+        }
+        relativeCwds.set(record.id, this.portableScheduleCwd(cwd, targetCwd));
+      }
+      records.push(record);
+    }
+    const reviews = records.map((record) => ({
+      ...this.reviewSchedule(record, source),
+      ...(retainedOnSource.has(record.id)
+        ? { retainedOnSource: retainedOnSource.get(record.id) }
+        : {}),
+    }));
+    return { records, relativeCwds, reviews };
+  }
+
+  private portableScheduleCwd(cwd: string, targetCwd: string): string {
+    const relativeCwd = path.relative(cwd, targetCwd);
+    if (
+      relativeCwd === ".." ||
+      relativeCwd.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relativeCwd)
+    )
+      throw new Error("A schedule targets an ancestor of the transferred workspace");
+    return relativeCwd.split(path.sep).join("/") || ".";
+  }
+
+  private reviewSchedule(
+    record: StoredSchedule,
+    source: HandoffScheduleSource,
+  ): HandoffScheduleReview {
+    const approved = source.stoppedWorkReview?.schedules?.find(
+      (entry) => entry.id === record.id,
+    )?.activeRun;
+    const running = record.runs.filter((run) => run.status === "running");
+    const tracked = this.activeScheduledRuns.get(record.id);
+    if (running.length || this.runningScheduleIds.has(record.id)) {
+      if (
+        !tracked ||
+        running.length > 1 ||
+        running.some((run) => run.id !== tracked.activeRun.id || run.agentId !== tracked.agentId)
+      )
+        throw new Error(
+          "A scheduled run is still active and cannot be stopped by this handoff; stop or finish it before handoff",
+        );
+      const currentSession = this.agentManager.getAgent(tracked.agentId)?.session;
+      if (currentSession !== tracked.session && (!approved || currentSession))
+        throw new Error("The active scheduled runtime changed after review");
+      if (
+        approved &&
+        (approved.id !== tracked.activeRun.id ||
+          approved.previousLastRunAt !== tracked.activeRun.previousLastRunAt)
+      )
+        throw new Error("The active scheduled execution changed after review");
+    }
+    const activeRun =
+      approved ??
+      (tracked
+        ? {
+            ...tracked.activeRun,
+            ...(!source.agentIds.includes(tracked.agentId)
+              ? { retainedAgentId: tracked.agentId }
+              : {}),
+          }
+        : undefined);
+    return reviewScheduleForHandoff(record, activeRun);
+  }
+
+  async reviewForHandoff(source: HandoffScheduleSource): Promise<HandoffScheduleReview[]> {
+    const { reviews } = await this.schedulesForHandoff(source);
+    return HandoffScheduleReviewSchema.array().max(1000).parse(reviews);
+  }
+
+  async pauseForHandoff(source: SourceHandoffStatus): Promise<void> {
+    const held = this.handoffOwnership?.status(source.id);
+    if (
+      !held ||
+      held.state !== "preparing" ||
+      held.cwd !== source.cwd ||
+      held.workspaceId !== source.workspaceId
+    )
+      throw new Error("Schedule pause requires the matching source handoff fence");
+    // COMPAT(handoffSchedules): added in v0.11.1, remove after 2027-04-10 once pre-v5 transfers finish.
+    const approved = held.stoppedWorkReview?.schedules ?? [];
+    const current = await this.reviewForHandoff(held);
+    if (
+      current.length !== approved.length ||
+      current.some(
+        (record, index) =>
+          record.id !== approved[index].id ||
+          record.digest !== approved[index].digest ||
+          record.retainedOnSource?.cwd !== approved[index].retainedOnSource?.cwd,
+      )
+    )
+      throw new Error("Scheduled automation changed after handoff review");
+    for (const record of approved) {
+      const paused = await this.store.pauseForHandoff({
+        id: record.id,
+        digest: record.digest,
+        pausedAt: this.now().toISOString(),
+        activeRun: record.activeRun,
+      });
+      if (record.retainedOnSource) {
+        const resume =
+          paused.status === "paused" ? " Resume it on the source explicitly if needed." : "";
+        for (const agentId of source.agentIds)
+          await this.agentStorage.addPendingRestartNote(agentId, [
+            {
+              id: `handoff:${source.id}:schedule:${record.id}`,
+              kind: "handoff_retained_schedule",
+              label: `Schedule ${record.name ?? record.id} (${record.id}) remains ${paused.status} on the source host in ${record.retainedOnSource.cwd}. It was not installed on the destination.${resume}`,
+            },
+          ]);
+      }
+    }
+  }
+
+  async exportForHandoff(source: HandoffScheduleSource) {
+    const selected = await this.schedulesForHandoff(source);
+    if (selected.records.some((record) => this.runningScheduleIds.has(record.id)))
+      throw new Error("A scheduled run is still active; wait for its outcome before handoff");
+    return captureHandoffSchedules(selected);
+  }
+
+  async estimateForHandoff(source: HandoffScheduleSource): Promise<number> {
+    const selected = await this.schedulesForHandoff(source);
+    const pausedAt = this.now().toISOString();
+    // Inventory records are fresh disk reads; estimating never writes the store.
+    for (const record of selected.records) {
+      if (record.status !== "active") continue;
+      record.status = "paused";
+      record.nextRunAt = null;
+      record.pausedAt = pausedAt;
+      record.updatedAt = pausedAt;
+    }
+    return estimateHandoffSchedules(selected);
+  }
+
+  async installHandoffSchedules(input: InstallHandoffSchedulesInput): Promise<void> {
+    await this.store.installHandoffSchedules(input);
+  }
+
   async inspect(id: string): Promise<StoredSchedule> {
+    await this.store.repairPendingPersistence(id);
     const schedule = await this.store.get(id);
     if (!schedule) {
       throw new Error(`Schedule not found: ${id}`);
@@ -544,23 +796,24 @@ export class ScheduleService {
   }
 
   async tick(): Promise<void> {
+    await this.store.repairPendingPersistence();
     const now = this.now();
     const schedules = await this.store.list();
     for (const schedule of schedules) {
-      if (schedule.status !== "active" || !schedule.nextRunAt) {
+      const nextRunAt = schedule.nextRunAt;
+      if (schedule.status !== "active" || !nextRunAt) {
         continue;
       }
       if (this.runningScheduleIds.has(schedule.id)) {
         continue;
       }
-      if (shouldCompleteSchedule(schedule, now)) {
-        await this.completeScheduleIfDue(schedule.id, now);
-        continue;
-      }
-      if (new Date(schedule.nextRunAt).getTime() > now.getTime()) {
-        continue;
-      }
-      await this.runSchedule(schedule, now);
+      await this.skipFencedSchedule(async () => {
+        if (shouldCompleteSchedule(schedule, now)) {
+          await this.completeScheduleIfDue(schedule.id, now);
+        } else if (new Date(nextRunAt).getTime() <= now.getTime()) {
+          await this.runSchedule(schedule, now);
+        }
+      });
     }
   }
 
@@ -582,17 +835,20 @@ export class ScheduleService {
     const schedules = await this.store.list();
     const now = this.now();
     await Promise.all(
-      schedules.map((schedule) => this.recoverInterruptedSchedule(schedule.id, now)),
+      schedules.map((schedule) =>
+        this.skipFencedSchedule(() => this.recoverInterruptedSchedule(schedule.id, now)),
+      ),
     );
   }
 
   private async recoverInterruptedSchedule(scheduleId: string, now: Date): Promise<void> {
     const interruptedWorkspaces: Array<{
       workspaceId: string;
+      workspaceIncarnation: string | undefined;
       agentId: string | null;
       runId: string;
     }> = [];
-    await this.store.update(scheduleId, (current) => {
+    const recovered = await this.store.update(scheduleId, (current) => {
       let updated = { ...current };
       let dirty = false;
 
@@ -610,6 +866,7 @@ export class ScheduleService {
         ) {
           interruptedWorkspaces.push({
             workspaceId: runningRun.workspaceId,
+            workspaceIncarnation: runningRun.workspaceIncarnation,
             agentId: runningRun.agentId,
             runId: runningRun.id,
           });
@@ -647,7 +904,12 @@ export class ScheduleService {
       return;
     }
     try {
-      await this.archiveWorkspace(interruptedWorkspace.workspaceId);
+      const schedule = requireSchedule(recovered, scheduleId);
+      await this.archiveRunWorkspace(
+        schedule,
+        interruptedWorkspace.workspaceId,
+        interruptedWorkspace.workspaceIncarnation,
+      );
     } catch (error) {
       this.logger.warn(
         {
@@ -668,7 +930,24 @@ export class ScheduleService {
   private async sweepOrphanedSchedules(): Promise<void> {
     const now = this.now();
     const schedules = await this.store.list();
-    await Promise.all(schedules.map((schedule) => this.sweepOrphanedSchedule(schedule.id, now)));
+    await Promise.all(
+      schedules.map((schedule) =>
+        this.skipFencedSchedule(() => this.sweepOrphanedSchedule(schedule.id, now)),
+      ),
+    );
+  }
+
+  private async skipFencedSchedule(operation: () => Promise<void>): Promise<void> {
+    try {
+      await operation();
+    } catch (error) {
+      // A fenced schedule keeps its cadence and run budget. Other schedules still
+      // tick and startup still serves unrelated work; storage faults remain errors.
+      const sourceFenced = error instanceof HandoffOwnershipError && error.code === "fenced";
+      const destinationFenced =
+        error instanceof HandoffDestinationError && error.code === "invalid_state";
+      if (!sourceFenced && !destinationFenced) throw error;
+    }
   }
 
   private async sweepOrphanedSchedule(scheduleId: string, now: Date): Promise<void> {
@@ -690,7 +969,12 @@ export class ScheduleService {
     options?: { manual?: boolean },
   ): Promise<void> {
     const manual = options?.manual === true;
+    if (this.runningScheduleIds.has(schedule.id)) {
+      if (manual) throw new Error(`Schedule ${schedule.id} is already running`);
+      return;
+    }
     this.runningScheduleIds.add(schedule.id);
+    let release: (() => void) | undefined;
     try {
       const runId = randomUUID();
       const runningRun: ScheduleRun = {
@@ -703,20 +987,50 @@ export class ScheduleService {
         output: null,
         error: null,
       };
-      const scheduleWithRun = await this.appendRunningRun(schedule.id, runningRun);
+      const updated = await this.store.update(
+        schedule.id,
+        (current) => {
+          if (current.status === "completed") {
+            if (manual) throw new Error(`Schedule ${current.id} is already completed`);
+            return current;
+          }
+          if (
+            !manual &&
+            (current.status !== "active" ||
+              !current.nextRunAt ||
+              new Date(current.nextRunAt).getTime() > now.getTime() ||
+              shouldCompleteSchedule(current, now))
+          )
+            return current;
+          return {
+            ...current,
+            updatedAt: runningRun.startedAt,
+            runs: [
+              ...current.runs,
+              {
+                ...runningRun,
+                agentId: current.target.type === "agent" ? current.target.agentId : null,
+                scheduledFor: manual ? now.toISOString() : (current.nextRunAt ?? now.toISOString()),
+              },
+            ],
+          };
+        },
+        {
+          admitMutation: async (mutation) => {
+            if (mutation.previous === mutation.next) return () => {};
+            // Admission belongs to the persisted target, inside its mutation queue.
+            // Keep it through provider completion, workspace cleanup and the outcome write.
+            release = await this.acquireScheduleMutation(mutation);
+            return () => {};
+          },
+        },
+      );
+      const scheduleWithRun = requireSchedule(updated, schedule.id);
+      if (!scheduleWithRun.runs.some((run) => run.id === runId)) return;
 
+      let result: ScheduleExecutionResult;
       try {
-        const result = await this.runner(scheduleWithRun, runId);
-        await this.finishRun({
-          scheduleId: schedule.id,
-          runId,
-          status: "succeeded",
-          agentId: result.agentId,
-          output: result.output,
-          error: null,
-          targetGone: false,
-          manual,
-        });
+        result = await this.runner(scheduleWithRun, runId);
       } catch (error) {
         await this.finishRun({
           scheduleId: schedule.id,
@@ -728,22 +1042,71 @@ export class ScheduleService {
           targetGone: error instanceof ScheduleTargetGoneError,
           manual,
         });
+        return;
       }
+      // Provider execution and outcome publication have separate failure domains.
+      // Retrying storage must preserve this result, not invent a failed execution.
+      await this.finishRun({
+        scheduleId: schedule.id,
+        runId,
+        status: "succeeded",
+        agentId: result.agentId,
+        output: result.output,
+        error: null,
+        targetGone: false,
+        manual,
+      });
     } finally {
+      release?.();
       this.runningScheduleIds.delete(schedule.id);
+      this.activeScheduledRuns.delete(schedule.id);
     }
   }
 
-  private async appendRunningRun(
+  private async acquireTargetMutation(
+    target: ScheduleTarget,
     scheduleId: string,
-    runningRun: ScheduleRun,
-  ): Promise<StoredSchedule> {
-    const updated = await this.store.update(scheduleId, (schedule) => ({
-      ...schedule,
-      updatedAt: runningRun.startedAt,
-      runs: [...schedule.runs, runningRun],
-    }));
-    return requireSchedule(updated, scheduleId);
+  ): Promise<() => void> {
+    if (target.type === "agent" && !this.isHandoffIdentityVisible(target.agentId))
+      throw new HandoffDestinationError(
+        "invalid_state",
+        "Destination handoff must finish activation before scheduling this conversation",
+      );
+    if (!this.handoffOwnership) return () => {};
+    if (target.type === "new-agent") {
+      return this.handoffOwnership.acquireMutation({ cwd: target.config.cwd, scheduleId });
+    }
+    const record = await this.agentStorage.get(target.agentId);
+    // A deleted target can still belong to a released transfer. Its durable fence
+    // must outlive the source agent record.
+    const source = record ?? this.handoffOwnership.forAgent(target.agentId);
+    if (!source) return () => {};
+    return this.handoffOwnership.acquireMutation({
+      cwd: source.cwd,
+      workspaceId: source.workspaceId,
+      agentId: target.agentId,
+      scheduleId,
+    });
+  }
+
+  private async acquireScheduleMutation({ previous, next }: ScheduleMutation): Promise<() => void> {
+    const targetChanged =
+      previous && next && targetScopeKey(previous.target) !== targetScopeKey(next.target);
+    if (targetChanged && this.runningScheduleIds.has(previous.id))
+      throw new Error(`Cannot change schedule ${previous.id} target while a run is active`);
+    const releases: Array<() => void> = [];
+    const release = () => {
+      for (const finish of releases) finish();
+    };
+    try {
+      if (previous) releases.push(await this.acquireTargetMutation(previous.target, previous.id));
+      if (next && (!previous || targetChanged))
+        releases.push(await this.acquireTargetMutation(next.target, next.id));
+      return release;
+    } catch (error) {
+      release();
+      throw error;
+    }
   }
 
   private async finishRun(params: {
@@ -756,57 +1119,61 @@ export class ScheduleService {
     targetGone: boolean;
     manual: boolean;
   }): Promise<void> {
-    const updatedSchedule = await this.store.update(params.scheduleId, (schedule) => {
-      const now = this.now();
-      const completedRuns = schedule.runs.map((run) =>
-        run.id === params.runId
-          ? {
-              ...run,
-              status: params.status,
-              endedAt: now.toISOString(),
-              agentId: params.agentId ?? run.agentId,
-              output: params.output,
-              error: params.error,
-            }
-          : run,
-      );
-      let updated: StoredSchedule = {
-        ...schedule,
-        runs: completedRuns,
-        lastRunAt: now.toISOString(),
-        updatedAt: now.toISOString(),
-      };
-
-      if (params.targetGone) {
-        // The target is permanently gone; retrying only burns the schedule down to
-        // its expiry, so complete it now regardless of manual/scheduled origin.
-        updated = completeSchedule(updated, now);
-      } else if (updated.status === "completed") {
-        // Completed concurrently (e.g. the target agent was archived mid-run);
-        // record the run outcome but leave the schedule terminal — don't advance.
-      } else if (params.manual) {
-        // Manual one-shot runs do not advance the cadence or recompute completion.
-      } else if (shouldCompleteSchedule(updated, now)) {
-        updated = completeSchedule(updated, now);
-      } else if (updated.status === "paused") {
-        updated = {
-          ...updated,
-          nextRunAt: null,
+    const updatedSchedule = await this.store.update(
+      params.scheduleId,
+      (schedule) => {
+        const now = this.now();
+        const completedRuns = schedule.runs.map((run) =>
+          run.id === params.runId
+            ? {
+                ...run,
+                status: params.status,
+                endedAt: now.toISOString(),
+                agentId: params.agentId ?? run.agentId,
+                output: params.output,
+                error: params.error,
+              }
+            : run,
+        );
+        let updated: StoredSchedule = {
+          ...schedule,
+          runs: completedRuns,
+          lastRunAt: now.toISOString(),
+          updatedAt: now.toISOString(),
         };
-      } else {
-        const after = new Date(schedule.nextRunAt ?? now.toISOString());
-        let nextRunAt = computeNextRunAt(updated.cadence, after);
-        while (nextRunAt.getTime() <= now.getTime()) {
-          nextRunAt = computeNextRunAt(updated.cadence, nextRunAt);
+
+        if (params.targetGone) {
+          // The target is permanently gone; retrying only burns the schedule down to
+          // its expiry, so complete it now regardless of manual/scheduled origin.
+          updated = completeSchedule(updated, now);
+        } else if (updated.status === "completed") {
+          // Completed concurrently (e.g. the target agent was archived mid-run);
+          // record the run outcome but leave the schedule terminal — don't advance.
+        } else if (params.manual) {
+          // Manual one-shot runs do not advance the cadence or recompute completion.
+        } else if (shouldCompleteSchedule(updated, now)) {
+          updated = completeSchedule(updated, now);
+        } else if (updated.status === "paused") {
+          updated = {
+            ...updated,
+            nextRunAt: null,
+          };
+        } else {
+          const after = new Date(schedule.nextRunAt ?? now.toISOString());
+          let nextRunAt = computeNextRunAt(updated.cadence, after);
+          while (nextRunAt.getTime() <= now.getTime()) {
+            nextRunAt = computeNextRunAt(updated.cadence, nextRunAt);
+          }
+          updated = {
+            ...updated,
+            nextRunAt: nextRunAt.toISOString(),
+          };
         }
-        updated = {
-          ...updated,
-          nextRunAt: nextRunAt.toISOString(),
-        };
-      }
 
-      return updated;
-    });
+        return updated;
+      },
+      { admitMutation: async () => () => {}, durable: true },
+    );
     requireSchedule(updatedSchedule, params.scheduleId);
   }
 
@@ -814,21 +1181,27 @@ export class ScheduleService {
     scheduleId: string;
     runId: string;
     workspaceId: string;
+    workspaceIncarnation: string | undefined;
     agentId: string | null;
   }): Promise<void> {
-    const updatedSchedule = await this.store.update(params.scheduleId, (schedule) => ({
-      ...schedule,
-      updatedAt: this.now().toISOString(),
-      runs: schedule.runs.map((run) =>
-        run.id === params.runId && run.status === "running"
-          ? {
-              ...run,
-              workspaceId: params.workspaceId,
-              agentId: params.agentId,
-            }
-          : run,
-      ),
-    }));
+    const updatedSchedule = await this.store.update(
+      params.scheduleId,
+      (schedule) => ({
+        ...schedule,
+        updatedAt: this.now().toISOString(),
+        runs: schedule.runs.map((run) =>
+          run.id === params.runId && run.status === "running"
+            ? {
+                ...run,
+                workspaceId: params.workspaceId,
+                workspaceIncarnation: params.workspaceIncarnation,
+                agentId: params.agentId,
+              }
+            : run,
+        ),
+      }),
+      { admitMutation: async () => () => {} },
+    );
     requireSchedule(updatedSchedule, params.scheduleId);
   }
 
@@ -837,7 +1210,8 @@ export class ScheduleService {
     runId: string,
   ): Promise<ScheduleExecutionResult> {
     if (schedule.target.type === "agent") {
-      const wrappedPrompt = formatSystemNotificationPrompt(buildScheduleFireBody(schedule, runId));
+      const message = buildScheduleFireBody(schedule, runId);
+      const wrappedPrompt = formatSystemNotificationPrompt(message);
       const record = await this.agentStorage.get(schedule.target.agentId);
       if (!record) {
         throw new ScheduleTargetGoneError(`Agent ${schedule.target.agentId} no longer exists`);
@@ -854,19 +1228,30 @@ export class ScheduleService {
       if (this.agentManager.hasInFlightRun(agent.id)) {
         throw new Error(`Agent ${agent.id} already has an active run`);
       }
+      const session = agent.session;
+      if (!session) throw new Error(`Scheduled agent ${agent.id} has no active runtime`);
+      const messageId = `schedule:${schedule.id}:${runId}`;
+      await this.agentManager.annotatePrompt(agent.id, {
+        messageId,
+        prompt: wrappedPrompt,
+        annotation: { kind: "notification", level: "info", message },
+      });
       await startAgentRun(this.agentManager, agent.id, wrappedPrompt, this.logger, {
         replaceRunning: true,
         activeTurnBehavior: "steer",
+        runOptions: { clientMessageId: messageId },
+      });
+      if (this.agentManager.getAgent(agent.id)?.session !== session)
+        throw new Error(`Scheduled agent ${agent.id} runtime changed during dispatch`);
+      this.activeScheduledRuns.set(schedule.id, {
+        activeRun: { id: runId, previousLastRunAt: schedule.lastRunAt },
+        agentId: agent.id,
+        session,
       });
       const waitResult = await this.agentManager.waitForAgentEvent(agent.id, {
         waitForActive: true,
       });
-      if (waitResult.permission) {
-        throw new Error(`Scheduled agent ${agent.id} is waiting for permission`);
-      }
-      if (waitResult.status === "error") {
-        throw new Error(waitResult.lastMessage ?? `Scheduled agent ${agent.id} failed`);
-      }
+      assertScheduledAgentSucceeded(agent.id, waitResult);
       return {
         agentId: agent.id,
         output: buildRunOutput({
@@ -890,6 +1275,7 @@ export class ScheduleService {
         scheduleId: schedule.id,
         runId,
         workspaceId: workspace.workspaceId,
+        workspaceIncarnation: workspace.incarnation,
         agentId: null,
       });
       const runConfig = { ...config, cwd: workspace.cwd };
@@ -918,29 +1304,28 @@ export class ScheduleService {
         scheduleId: schedule.id,
         runId,
         workspaceId: workspace.workspaceId,
+        workspaceIncarnation: workspace.incarnation,
         agentId,
       });
       if (created.initialPromptError) {
         throw created.initialPromptError;
       }
-      const result = await this.agentManager.runAgent(agent.id, schedule.prompt);
-      const waitResult = await this.agentManager.waitForAgentEvent(agent.id, {
-        waitForActive: true,
+      const session = this.agentManager.getAgent(agent.id)?.session;
+      if (!session) throw new Error(`Scheduled agent ${agent.id} has no active runtime`);
+      this.activeScheduledRuns.set(schedule.id, {
+        activeRun: { id: runId, previousLastRunAt: schedule.lastRunAt },
+        agentId: agent.id,
+        session,
       });
+      const result = await this.agentManager.runAgent(agent.id, schedule.prompt);
       if (result.canceled) {
         throw new Error(`Scheduled agent ${agent.id} was canceled`);
-      }
-      if (waitResult.permission) {
-        throw new Error(`Scheduled agent ${agent.id} is waiting for permission`);
-      }
-      if (waitResult.status === "error") {
-        throw new Error(waitResult.lastMessage ?? `Scheduled agent ${agent.id} failed`);
       }
       const timelineText = curateAgentActivity(result.timeline);
       return {
         agentId: agent.id,
         output: buildRunOutput({
-          output: waitResult.lastMessage ?? null,
+          output: null,
           timelineText,
           finalText: result.finalText,
         }),
@@ -951,7 +1336,7 @@ export class ScheduleService {
         shouldArchiveScheduleRunWorkspace({ agentId, archiveOnFinish: config.archiveOnFinish })
       ) {
         try {
-          await this.archiveWorkspace(workspace.workspaceId);
+          await this.archiveRunWorkspace(schedule, workspace.workspaceId, workspace.incarnation);
         } catch (error) {
           this.logger.warn(
             {
@@ -966,6 +1351,26 @@ export class ScheduleService {
         }
       }
     }
+  }
+
+  private async archiveRunWorkspace(
+    schedule: Pick<StoredSchedule, "id" | "target">,
+    workspaceId: string,
+    expectedIncarnation: string | undefined,
+  ): Promise<void> {
+    // COMPAT(workspaceIncarnation): added in v0.11.1; old runs cannot prove
+    // which opening they own. Explicit archive remains available. Remove after 2027-04-10.
+    if (!expectedIncarnation) return;
+    // A run's worktree may be outside its scheduled directory. Re-admit cleanup
+    // against that source so a handoff cannot trigger destructive automatic archive.
+    await this.skipFencedSchedule(async () => {
+      const release = await this.acquireTargetMutation(schedule.target, schedule.id);
+      try {
+        await this.archiveWorkspace(workspaceId, expectedIncarnation);
+      } finally {
+        release();
+      }
+    });
   }
 
   private async createScheduleRunWorkspace(

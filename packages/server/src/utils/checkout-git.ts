@@ -901,6 +901,8 @@ export interface CheckoutContext {
   logger?: Pick<Logger, "trace" | "warn">;
   facts?: CheckoutSnapshotFacts | null;
   runGitCommand?: RunGitCommand;
+  // The caller leases cwd; merge-to-base also leases its separately resolved target.
+  withMutation?: <T>(cwd: string, operation: () => Promise<T>) => Promise<T>;
 }
 
 export type CheckoutSnapshotFacts =
@@ -3671,48 +3673,52 @@ export async function mergeToBase(
   const baseWorktree = await getWorktreePathForBranch(cwd, normalizedBaseRef);
   const operationCwd = baseWorktree ?? currentWorktreeRoot;
   const isSameCheckout = resolve(operationCwd) === resolve(currentWorktreeRoot);
-  const originalBranch = await getCurrentBranch(operationCwd);
-  const mode = options.mode ?? "merge";
-  try {
-    await runGitCommand(["checkout", normalizedBaseRef], {
-      cwd: operationCwd,
-      timeout: 120_000,
-    });
-    if (mode === "squash") {
-      await runGitCommand(["merge", "--squash", currentBranch], {
+  const mutate = async () => {
+    const originalBranch = await getCurrentBranch(operationCwd);
+    const mode = options.mode ?? "merge";
+    try {
+      await runGitCommand(["checkout", normalizedBaseRef], {
         cwd: operationCwd,
         timeout: 120_000,
       });
-      const message =
-        options.commitMessage ?? `Squash merge ${currentBranch} into ${normalizedBaseRef}`;
-      await runGitCommand(["commit", "-m", message], {
-        cwd: operationCwd,
-        timeout: 120_000,
-      });
-    } else {
-      await runGitCommand(["merge", currentBranch], { cwd: operationCwd, timeout: 120_000 });
-    }
-  } catch (error) {
-    await detectAndThrowMergeToBaseConflict({
-      operationCwd,
-      error,
-      baseRef: normalizedBaseRef,
-      currentBranch,
-    });
-    throw error;
-  } finally {
-    if (isSameCheckout && originalBranch && originalBranch !== normalizedBaseRef) {
-      try {
-        await runGitCommand(["checkout", originalBranch], {
+      if (mode === "squash") {
+        await runGitCommand(["merge", "--squash", currentBranch], {
           cwd: operationCwd,
           timeout: 120_000,
         });
-      } catch {
-        // ignore
+        const message =
+          options.commitMessage ?? `Squash merge ${currentBranch} into ${normalizedBaseRef}`;
+        await runGitCommand(["commit", "-m", message], {
+          cwd: operationCwd,
+          timeout: 120_000,
+        });
+      } else {
+        await runGitCommand(["merge", currentBranch], { cwd: operationCwd, timeout: 120_000 });
+      }
+    } catch (error) {
+      await detectAndThrowMergeToBaseConflict({
+        operationCwd,
+        error,
+        baseRef: normalizedBaseRef,
+        currentBranch,
+      });
+      throw error;
+    } finally {
+      if (isSameCheckout && originalBranch && originalBranch !== normalizedBaseRef) {
+        try {
+          await runGitCommand(["checkout", originalBranch], {
+            cwd: operationCwd,
+            timeout: 120_000,
+          });
+        } catch {
+          // ignore
+        }
       }
     }
-  }
-  return operationCwd;
+    return operationCwd;
+  };
+  // A merge requested from one worktree can write a different checkout.
+  return context?.withMutation ? context.withMutation(operationCwd, mutate) : mutate();
 }
 
 export async function mergeFromBase(

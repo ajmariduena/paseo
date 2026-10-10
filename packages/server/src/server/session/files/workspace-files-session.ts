@@ -33,9 +33,12 @@ import {
   renameExplorerEntry,
   streamExplorerFile,
   writeExplorerFile,
+  type ExplorerEntryMutationResult,
 } from "../../file-explorer/service.js";
 import { workspaceFileObserver, type FileObserver } from "../../file-explorer/observer.js";
 import { getProjectIcon } from "../../../utils/project-icon.js";
+import type { HandoffOwnership } from "../../handoff/ownership.js";
+import { expandUserPath } from "../../path-utils.js";
 
 /**
  * What a workspace file-access request reaches outside its own domain: the
@@ -55,6 +58,8 @@ export interface WorkspaceFilesSessionOptions {
   paseoHome: string;
   logger: pino.Logger;
   fileObserver?: FileObserver;
+  handoffOwnership?: HandoffOwnership;
+  writeFile?: typeof writeExplorerFile;
 }
 
 /**
@@ -70,6 +75,8 @@ export class WorkspaceFilesSession {
   private readonly logger: pino.Logger;
   private readonly fileUploads: FileUploadStore;
   private readonly fileObserver: FileObserver;
+  private readonly handoffOwnership: HandoffOwnership | undefined;
+  private readonly writeFile: typeof writeExplorerFile;
 
   constructor(options: WorkspaceFilesSessionOptions) {
     this.host = options.host;
@@ -77,6 +84,22 @@ export class WorkspaceFilesSession {
     this.logger = options.logger;
     this.fileUploads = new FileUploadStore({ paseoHome: options.paseoHome });
     this.fileObserver = options.fileObserver ?? workspaceFileObserver;
+    this.handoffOwnership = options.handoffOwnership;
+    this.writeFile = options.writeFile ?? writeExplorerFile;
+  }
+
+  private async mutate<T>(
+    cwd: string,
+    operation: () => Promise<T>,
+  ): Promise<T | Extract<ExplorerEntryMutationResult, { status: "error" }>> {
+    try {
+      if (this.handoffOwnership) {
+        return await this.handoffOwnership.withMutation({ cwd: expandUserPath(cwd) }, operation);
+      }
+      return await operation();
+    } catch (error) {
+      return { status: "error", error: getErrorMessage(error) };
+    }
   }
 
   async handleFileSubscribeRequest(
@@ -156,13 +179,15 @@ export class WorkspaceFilesSession {
   }
 
   async handleFileWriteRequest(request: FileWriteRequest): Promise<void> {
-    const result = await writeExplorerFile({
-      root: request.cwd,
-      relativePath: request.path,
-      content: request.content,
-      expectedModifiedAt: request.expectedModifiedAt,
-      expectedRevision: request.expectedRevision,
-    });
+    const result = await this.mutate(request.cwd, () =>
+      this.writeFile({
+        root: request.cwd,
+        relativePath: request.path,
+        content: request.content,
+        expectedModifiedAt: request.expectedModifiedAt,
+        expectedRevision: request.expectedRevision,
+      }),
+    );
     this.host.emit({
       type: "fs.file.write.response",
       payload: { result, requestId: request.requestId },
@@ -170,12 +195,14 @@ export class WorkspaceFilesSession {
   }
 
   async handleFileEntryCreateRequest(request: FileEntryCreateRequest): Promise<void> {
-    const result = await createExplorerEntry({
-      root: request.cwd,
-      parentPath: request.parentPath,
-      name: request.name,
-      kind: request.kind,
-    });
+    const result = await this.mutate(request.cwd, () =>
+      createExplorerEntry({
+        root: request.cwd,
+        parentPath: request.parentPath,
+        name: request.name,
+        kind: request.kind,
+      }),
+    );
     this.host.emit({
       type: "fs.entry.create.response",
       payload: {
@@ -190,11 +217,13 @@ export class WorkspaceFilesSession {
   }
 
   async handleFileEntryRenameRequest(request: FileEntryRenameRequest): Promise<void> {
-    const result = await renameExplorerEntry({
-      root: request.cwd,
-      relativePath: request.path,
-      name: request.name,
-    });
+    const result = await this.mutate(request.cwd, () =>
+      renameExplorerEntry({
+        root: request.cwd,
+        relativePath: request.path,
+        name: request.name,
+      }),
+    );
     this.host.emit({
       type: "fs.entry.rename.response",
       payload: {
@@ -209,10 +238,12 @@ export class WorkspaceFilesSession {
   }
 
   async handleFileEntryDuplicateRequest(request: FileEntryDuplicateRequest): Promise<void> {
-    const result = await duplicateExplorerEntry({
-      root: request.cwd,
-      relativePath: request.path,
-    });
+    const result = await this.mutate(request.cwd, () =>
+      duplicateExplorerEntry({
+        root: request.cwd,
+        relativePath: request.path,
+      }),
+    );
     this.host.emit({
       type: "fs.entry.duplicate.response",
       payload: {
@@ -227,10 +258,12 @@ export class WorkspaceFilesSession {
   }
 
   async handleFileEntryDeleteRequest(request: FileEntryDeleteRequest): Promise<void> {
-    const result = await deleteExplorerEntry({
-      root: request.cwd,
-      relativePath: request.path,
-    });
+    const result = await this.mutate(request.cwd, () =>
+      deleteExplorerEntry({
+        root: request.cwd,
+        relativePath: request.path,
+      }),
+    );
     this.host.emit({
       type: "fs.entry.delete.response",
       payload: {

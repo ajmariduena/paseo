@@ -10,6 +10,8 @@ import type { DelegationFile } from "../delegation/delegation-store.js";
 import { ControlledAgentClient } from "../test-utils/controlled-agent-client.js";
 import { DaemonClient } from "../test-utils/daemon-client.js";
 import { createTestPaseoDaemon, type TestPaseoDaemon } from "../test-utils/paseo-daemon.js";
+import { RestartIntentStore } from "./restart-intent-store.js";
+import { restartCancelledWorkNote } from "./background-note.js";
 
 interface RunningDaemon {
   daemon: TestPaseoDaemon;
@@ -262,6 +264,57 @@ async function editRecord(
 }
 
 describe("restart continuation", () => {
+  test("a persisted Stop keeps restart recovery closed and preserves the next explicit prompt's note", async () => {
+    const first = await startDaemon();
+    const agent = await first.client.createAgent({ provider: "claude", cwd: homeRoot });
+    await first.client.sendAgentMessage(agent.id, "long task");
+    sessionOf(first, agent.id).setBackgroundTasks([
+      {
+        id: "bg-stop",
+        taskType: "shell",
+        description: "npm run dev",
+        startedAt: "2026-10-04T12:00:00.000Z",
+      },
+    ]);
+    await first.client.waitForAgentUpsert(
+      agent.id,
+      (snapshot) => snapshot.backgroundTasks?.length === 1,
+    );
+    // Handoff persists this hold before it starts closing the provider. Shutdown can snapshot
+    // the still-running turn in that interval without a turn-level stopRequested marker.
+    await first.daemon.daemon.agentManager.messageQueue.hold(agent.id, "user_stop");
+    await stopDaemon(first);
+    const intents = RestartIntentStore.at(first.daemon.paseoHome);
+    expect((await intents.read())?.cutRuns).toEqual([
+      expect.objectContaining({ agentId: agent.id, stopRequested: false }),
+    ]);
+
+    const second = await startDaemon({ continueAfterRestart: true });
+    await expect.poll(() => intents.read()).toBeNull();
+    expect(second.provider.sessions).toHaveLength(0);
+    expect(second.daemon.daemon.agentManager.getAgent(agent.id)).toBeNull();
+    expect((await second.client.listAgentQueue(agent.id)).queue).toMatchObject({
+      held: true,
+      heldReason: "user_stop",
+      entries: [],
+    });
+    const work = [{ id: "bg-stop", kind: "shell", label: "npm run dev" }];
+    expect((await second.daemon.daemon.agentStorage.get(agent.id))?.pendingRestartNote).toEqual(
+      work,
+    );
+    await stopDaemon(second);
+
+    const third = await startDaemon({ continueAfterRestart: true });
+    await expect.poll(() => intents.read()).toBeNull();
+    expect(third.provider.sessions).toHaveLength(0);
+    await third.client.resumeAgentQueue(agent.id);
+    expect(third.provider.sessions).toHaveLength(0);
+    await third.client.sendAgentMessage(agent.id, "Resume this work explicitly");
+    expect(sessionOf(third, agent.id).startPrompts).toEqual([
+      `${restartCancelledWorkNote(work)}\n\nResume this work explicitly`,
+    ]);
+  });
+
   test("a cut turn continues with one stable-id prompt shown as a notification", async () => {
     const first = await startDaemon();
     const agent = await first.client.createAgent({ provider: "claude", cwd: homeRoot });

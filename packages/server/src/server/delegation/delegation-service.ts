@@ -6,6 +6,8 @@ import type { AgentManager, AgentManagerEvent, ManagedAgent } from "../agent/age
 import { setupPermissionNotification } from "../agent/agent-prompt.js";
 import { hasPendingDispatch } from "../agent/message-dispatch.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
+import type { HandoffBlob } from "@getpaseo/protocol/handoff";
+import { lastHandoffAssistantMessage, type HandoffHistory } from "../handoff/history.js";
 import { ensureAgentLoaded } from "../agent/agent-loading.js";
 import type { QueueDelivery, QueueDeliveryResult } from "../agent-queue/runner.js";
 import {
@@ -35,6 +37,7 @@ export interface DelegationServiceOptions {
   agentManager: AgentManager;
   agentStorage: AgentStorage;
   logger: Logger;
+  readRetainedHistory?: (agentId: string, history: HandoffBlob) => Promise<HandoffHistory>;
 }
 
 /**
@@ -42,6 +45,7 @@ export interface DelegationServiceOptions {
  * once per cohort of siblings, without ever interrupting the parent's turn.
  */
 export class DelegationService {
+  private readonly readRetainedHistory: DelegationServiceOptions["readRetainedHistory"];
   private readonly store: DelegationStore;
   private readonly agentManager: AgentManager;
   private readonly agentStorage: AgentStorage;
@@ -52,6 +56,7 @@ export class DelegationService {
   private readonly runningChildren = new Map<string, Set<string>>();
   private readonly pendingWakeOffers = new Set<string>();
   private readonly childChecks = new Map<string, Promise<void>>();
+  private readonly retainedCheckpoints = new Map<string, Promise<void>>();
   private readonly queuedChildChecks = new Set<string>();
   private readonly finalizeWaiters = new Set<() => void>();
   private readonly unsubscribe: () => void;
@@ -60,6 +65,7 @@ export class DelegationService {
   private readonly continuingChildren = new Map<string, string[]>();
 
   constructor(options: DelegationServiceOptions) {
+    this.readRetainedHistory = options.readRetainedHistory;
     this.store = options.store;
     this.agentManager = options.agentManager;
     this.agentStorage = options.agentStorage;
@@ -281,6 +287,10 @@ export class DelegationService {
       );
       for (const task of runningTasks) {
         const childRecord = await this.agentStorage.get(task.childAgentId);
+        if (task.handoffSettlement || childRecord?.handoffRetention) {
+          addParent(settledChildren, task.childAgentId, parentAgentId);
+          continue;
+        }
         const childGone = !childRecord || Boolean(childRecord.archivedAt);
         if (!childGone && input.continuing.has(task.childAgentId)) {
           addParent(this.continuingChildren, task.childAgentId, parentAgentId);
@@ -418,11 +428,16 @@ export class DelegationService {
    */
   private async reloadSettledChild(childAgentId: string, parents: string[]): Promise<void> {
     try {
-      await ensureAgentLoaded(childAgentId, {
-        agentManager: this.agentManager,
-        agentStorage: this.agentStorage,
-        logger: this.logger,
-      });
+      const retained = (await this.agentStorage.get(childAgentId))?.handoffRetention;
+      const tasks = (
+        await Promise.all(parents.map((parent) => this.runningTasks(parent, childAgentId)))
+      ).flat();
+      if (!retained && tasks.some((task) => !task.handoffSettlement))
+        await ensureAgentLoaded(childAgentId, {
+          agentManager: this.agentManager,
+          agentStorage: this.agentStorage,
+          logger: this.logger,
+        });
     } catch (error) {
       this.logger.warn({ err: error, childAgentId }, "delegation.settled_child_reload_failed");
     }
@@ -472,10 +487,25 @@ export class DelegationService {
 
   /** Port of T3 `delegatedTaskProgress`: a child has a result only once all its work settled. */
   private async checkChild(childAgentId: string): Promise<void> {
+    if (this.closed) return;
     const parents = [...(this.runningChildren.get(childAgentId) ?? [])];
     if (parents.length === 0) {
       return;
     }
+    const retained = (await this.agentStorage.get(childAgentId))?.handoffRetention;
+    if (retained) {
+      // The source publishes history after closing; it rechecks us when the checkpoint is ready.
+      if (!retained.history) return;
+      await this.checkpointRetainedResults(childAgentId);
+    }
+    for (const parentAgentId of parents)
+      await this.finalizeRetainedResults(parentAgentId, childAgentId);
+    const unsealed = (
+      await Promise.all(parents.map((parent) => this.runningTasks(parent, childAgentId)))
+    )
+      .flat()
+      .some((task) => !task.handoffSettlement);
+    if (!unsealed) return;
     await this.agentManager.waitForRunToSettle(childAgentId);
     // Shutdown closes children without settling their work; boot recovery reports them.
     if (this.closed) return;
@@ -495,7 +525,9 @@ export class DelegationService {
     const settledTasks = await Promise.all(
       parents.map(async (parentAgentId) => ({
         parentAgentId,
-        taskIds: await this.runningTaskIds(parentAgentId, childAgentId),
+        taskIds: (await this.runningTasks(parentAgentId, childAgentId))
+          .filter((task) => !task.handoffSettlement)
+          .map((task) => task.id),
       })),
     );
     const status = this.terminalStatus(childAgentId, child);
@@ -506,10 +538,91 @@ export class DelegationService {
   }
 
   private async runningTaskIds(parentAgentId: string, childAgentId: string): Promise<string[]> {
+    return (await this.runningTasks(parentAgentId, childAgentId)).map((task) => task.id);
+  }
+
+  private async runningTasks(
+    parentAgentId: string,
+    childAgentId: string,
+  ): Promise<DelegationTask[]> {
     const file = await this.store.get(parentAgentId);
-    return Object.values(file?.tasks ?? {})
-      .filter((task) => task.childAgentId === childAgentId && task.status === "running")
+    return Object.values(file?.tasks ?? {}).filter(
+      (task) => task.childAgentId === childAgentId && task.status === "running",
+    );
+  }
+
+  /** Seal results before lifting retained-agent continuation admission. No provider is opened. */
+  async checkpointRetainedResults(childAgentId: string): Promise<void> {
+    const existing = this.retainedCheckpoints.get(childAgentId);
+    if (existing) return existing;
+    const checkpoint = this.persistRetainedResults(childAgentId);
+    this.retainedCheckpoints.set(childAgentId, checkpoint);
+    try {
+      await checkpoint;
+    } finally {
+      this.retainedCheckpoints.delete(childAgentId);
+    }
+  }
+
+  private async persistRetainedResults(childAgentId: string): Promise<void> {
+    const stored = await this.agentStorage.get(childAgentId);
+    if (!stored?.handoffRetention || stored.handoffRetention.delegationsPending === false) return;
+    const record = await this.agentStorage.checkpointClosedAgent(childAgentId);
+    const retention = record.handoffRetention;
+    if (!retention?.history || !this.readRetainedHistory)
+      throw new Error("Retained conversation history is unavailable for delegation recovery");
+    const history = await this.readRetainedHistory(childAgentId, retention.history);
+    const status: TerminalTaskStatus =
+      record.lastTurnOutcome === "canceled"
+        ? "cancelled"
+        : (record.lastTurnOutcome ?? "interrupted");
+    const result =
+      (status === "failed" ? record.lastError : null) ||
+      lastHandoffAssistantMessage(history)?.trim() ||
+      `Child task ended with status ${status}.`;
+    const children = await this.store.get(childAgentId);
+    const pendingChildTaskIds = Object.values(children?.tasks ?? {})
+      .filter((task) => task.status === "running" && !isDeliveryFinal(task))
       .map((task) => task.id);
+    // The index is only a cache: inspect parent files so a lost index write cannot lose a result.
+    for (const parentAgentId of await this.store.listParents()) {
+      if (!(await this.runningTasks(parentAgentId, childAgentId)).length) continue;
+      await this.store.checkpointHandoffResults(parentAgentId, childAgentId, {
+        transferId: retention.transferId,
+        history: retention.history,
+        status,
+        result,
+        resultTruncated: false,
+        pendingChildTaskIds,
+      });
+    }
+    await this.agentStorage.checkpointRetainedDelegations(childAgentId, retention.history);
+    this.scheduleChildCheck(childAgentId);
+  }
+
+  private async finalizeRetainedResults(
+    parentAgentId: string,
+    childAgentId: string,
+  ): Promise<void> {
+    const dependencies = await this.store.get(childAgentId);
+    for (const task of await this.runningTasks(parentAgentId, childAgentId)) {
+      const settlement = task.handoffSettlement;
+      if (!settlement) continue;
+      const pending = settlement.pendingChildTaskIds.some((id) => {
+        const dependency = dependencies?.tasks[id];
+        if (!dependency) throw new Error("Retained delegation dependency is unavailable");
+        return dependency.status === "running" && !isDeliveryFinal(dependency);
+      });
+      if (pending) continue;
+      await this.finalizeForParent({
+        parentAgentId,
+        childAgentId,
+        taskIds: [task.id],
+        status: settlement.status,
+        result: settlement.result,
+        resultTruncated: settlement.resultTruncated,
+      });
+    }
   }
 
   private async finalizeForParent(input: {
@@ -518,6 +631,7 @@ export class DelegationService {
     taskIds: string[];
     status: TerminalTaskStatus;
     result: string;
+    resultTruncated?: boolean;
   }): Promise<void> {
     const file = await this.store.get(input.parentAgentId);
     if (!file) return;
@@ -533,6 +647,7 @@ export class DelegationService {
         {
           status: input.status,
           result: input.result,
+          resultTruncated: input.resultTruncated,
           wake: task.source !== "create_agent" || ownedByParent,
         },
         context,

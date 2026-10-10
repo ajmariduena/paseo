@@ -23,7 +23,29 @@ primed.
 
 Reload releases the old runtime before resuming its durable session: an idle provider process can
 still own an exclusive writer. A close failure retains that runtime for cleanup and blocks the
-replacement. Once closure succeeds, a failed resume leaves the durable agent closed and retryable.
+replacement. Own each query attempt before calling the SDK: construction can spawn a process and
+then throw without returning a query. Retain failed cleanup for retry and keep its provider launch
+blocked. If initial inspection fails before registration, stop the unused bootstrap and join its
+native exit; no provider could have run behind that closed gate. Closure must join already admitted provider operations, including a rewind that can
+change the session handle after its process stops. SDK callbacks can outlive the message stream;
+retire their permissions and join their work before releasing the query. Read the final provider
+handle after closure before resuming. A failed replacement
+retains its opening marker and the preceding session handle for retry; a later successful resume
+does not certify that failed opening. Handoff requires recovery evidence for unresolved generations
+([conversation persistence contract](refactors/cross-host-handoff-plan.md#conversation-persistence-contract)).
+
+A provider can be stopped while its manager work remains unfinished. Explicit closure stops the
+provider before waiting for event handlers and their admitted work; conditional idle eviction first
+checks current liveness. A drain timeout retains the work for retry. An event or note-settlement
+fault prevents a closed checkpoint, including after a later successful event. Subscriber delivery
+failures are isolated from these authoritative effects.
+
+For Claude on POSIX, an admitted root process that exits before shutdown observes its tree leaves
+closure unconfirmed. It may have surviving children; the earlier launch snapshot does not resolve that.
+Retain that runtime instead of certifying closure or claiming its background work stopped.
+The [managed process store](data-model.md#managed-process-store) retains closing inventories for
+startup recovery. A successful process stop still needs the conversation persistence checkpoint;
+it cannot clear unknown event or prompt outcomes.
 
 An idle agent releases its runtime after `agents.idleRuntimeTimeoutMs` (default two hours; `0`
 disables it) when its provider opts in and confirms nothing depends on the live process. The agent
@@ -78,6 +100,12 @@ their work after an ambiguous interruption would create a split-brain session. S
 It settles the run locally (`turn_canceled`, pending permissions resolved, output so far kept) and
 abandons the turn, so a late provider event for that turn cannot revive or fail the stopped agent.
 
+Closing a runtime preserves a terminal result delivered during provider shutdown. A run still
+unsettled after shutdown is canceled, including for scheduled-run history. A collected result belongs
+to that runtime even after it leaves memory; looking up the agent again can lose the result or read
+a replacement runtime. A cancellation outcome does not prove that external effects were undone or
+clear conversation recovery obligations.
+
 ## Relationships
 
 Agents can launch other agents via the agent-scoped `create_agent` MCP tool. Agent-scoped creation is always asynchronous and always stamps `paseo.parent-agent-id`, pointing back at the caller. Omit `workspaceId` to use the caller's workspace, or pass an existing workspace ID returned by `create_workspace`. Placement never changes parentage.
@@ -111,9 +139,9 @@ Each notified prompt is a durable delegated task (see [data-model.md](data-model
 - A user Stop drops every result the agent was still waiting for, from any of its runs, even while it sits idle waiting on children. It also stops the work the agent started: its pull request watches end, and every live Paseo descendant, depth first, has its queue held, its results dropped, its watches ended, and its run cancelled. One descendant that fails to stop does not shield the rest. A tool call from the run Stop reached cannot start more work: `create_agent` and `watch_pull_request` answer with a stopped-run error. Archiving the parent drops all of its results. The parent's `cancel_agent` on a child drops that child's results and stops the child's subtree the same way, even when the child itself already finished. The snapshot's `lastTurnOutcome` (`completed`, `failed`, `canceled`) records how the latest turn settled and persists with the agent record, so a child whose turn was cancelled reads Stopped in subagent rows, across daemon restarts too. Daemons that predate the field omit it, and the app reads that as before.
 - A child that closes before it finishes reports as stopped, so delegated work cannot disappear silently during archive or workspace teardown.
 - A daemon restart is not a result. At boot, a child the restart cut reports `cancelled` and wakes its parent, even an idle one. A wake turn the restart cut hands its results to the next wake. A wake that was claimed but never sent is offered once, under the same id, so the parent's timeline keeps one row for it. A child that settled before a crash but whose result was not recorded is reloaded, and its result comes from its provider history. Queues come back held with reason `restart` until `agent.queue.resume`; a held queue does not stop a wake from starting an idle parent. Permission notices waiting in a queue are dropped, because pending permissions do not survive a restart.
-- With `agents.continueAfterRestart` on (off by default), a turn the restart cut gets one `Continue where you left off.`, shown as a notification row. It is declined when the agent was archived, switched provider, got a newer prompt, was asked to stop, was running an out-of-band command, or has no provider session to resume; a turn started by something else first also wins. A continued child keeps its task open and reports when it settles; a declined one reports `cancelled`. An agent that was idle when the daemon stopped stays asleep even if its background work was cancelled: its next turn starts with a note listing that work.
+- With `agents.continueAfterRestart` on (off by default), a turn the restart cut gets one `Continue where you left off.`, shown as a notification row. It is declined when the agent was archived, switched provider, got a newer prompt, was asked to stop (including a persisted queue Stop), was running an out-of-band command, or has no provider session to resume; a turn started by something else first also wins. A continued child keeps its task open and reports when it settles; a declined one reports `cancelled`. An agent that was idle when the daemon stopped stays asleep even if its background work was cancelled: its next turn starts with a note listing that work.
 
-`send_agent_prompt` from an agent never interrupts a busy target unless it passes `delivery: "restart"`. The default `auto` steers into the running turn when the provider can steer and otherwise runs the prompt after that turn ends (`queued`); `steer` fails instead of falling back. Top-level callers keep `restart` as the default. A queued prompt waits in the agent's durable queue ([data-model.md](data-model.md#agent-queue-store)) and starts when the running turn settles. A failed turn or a user Stop holds the queue: it delivers nothing until `agent.queue.resume`, but a message sent to an idle agent still starts. A user Stop holds the queue even when it is empty: until the user resumes or writes to the agent, system messages (child results, permission notices, pull request news) wait in the held queue instead of starting a turn. The app's `send_agent_message_request` accepts the same `queue` and `auto` behaviors, and its `interrupt` and `steer` keep their meaning: a `steer` the provider cannot take replaces the turn it was admitted against, and a steer that arrives after its turn ended starts a new turn, or queues behind a newer one, instead of replacing it. A `clientRequestId` makes `create_agent` and `send_agent_prompt` safe to retry: the agent created under a key is persisted with it, and a resent prompt answers `duplicate`.
+`send_agent_prompt` from an agent never interrupts a busy target unless it passes `delivery: "restart"`. The default `auto` steers into the running turn when the provider can steer and otherwise runs the prompt after that turn ends (`queued`); `steer` fails instead of falling back. Top-level callers keep `restart` as the default. A queued prompt waits in the agent's durable queue ([data-model.md](data-model.md#agent-queue-store)) and starts when the running turn settles. A failed turn or a user Stop holds the queue: it delivers nothing until `agent.queue.resume`, but a message sent to an idle agent still starts. A user Stop holds the queue even when it is empty: until the user resumes or writes to the agent, system messages (child results, permission notices, pull request news) wait in the held queue without opening the provider session. A restart continuation is declined rather than queued behind that Stop. The app's `send_agent_message_request` accepts the same `queue` and `auto` behaviors, and its `interrupt` and `steer` keep their meaning: a `steer` the provider cannot take replaces the turn it was admitted against, and a steer that arrives after its turn ended starts a new turn, or queues behind a newer one, instead of replacing it. A `clientRequestId` makes `create_agent` and `send_agent_prompt` safe to retry: the agent created under a key is persisted with it, and a resent prompt answers `duplicate`.
 
 Permission requests are checkpoints. The parent hears each request as it happens, through the same never-interrupt delivery, with the normalized request plus the child and request IDs so it can respond without fetching agent status. A request resolved before the parent hears it is dropped.
 

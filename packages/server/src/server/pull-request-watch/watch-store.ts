@@ -1,7 +1,25 @@
 import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { z } from "zod";
 
-import { writeJsonFileAtomic } from "../atomic-file.js";
+import { syncFilePublication, writeJsonFileAtomic } from "../atomic-file.js";
+import {
+  HandoffPullRequestWatchReviewSchema,
+  type HandoffPullRequestWatchReview,
+} from "@getpaseo/protocol/handoff-control";
+
+export function reviewPullRequestWatch(watch: PullRequestWatch): HandoffPullRequestWatchReview {
+  return HandoffPullRequestWatchReviewSchema.parse(watch);
+}
+
+export function assertReviewedPullRequestWatches(
+  current: HandoffPullRequestWatchReview[],
+  approved: readonly HandoffPullRequestWatchReview[],
+) {
+  const reviewed = new Set(approved.map((watch) => JSON.stringify(watch)));
+  if (current.some((watch) => !reviewed.has(JSON.stringify(watch))))
+    throw new Error("PR watches changed after review; cancel this transfer and review again");
+}
 
 const WatchProgressSchema = z.object({
   /**
@@ -47,10 +65,28 @@ type WatchFile = z.infer<typeof WatchFileSchema>;
 export class PullRequestWatchStore {
   private tail: Promise<unknown> = Promise.resolve();
 
-  constructor(private readonly filePath: string) {}
+  constructor(
+    private readonly filePath: string,
+    private readonly options: { sync?: typeof syncFilePublication } = {},
+  ) {}
 
   async list(): Promise<PullRequestWatch[]> {
+    await this.tail.catch(() => {});
     return (await this.read()).watches;
+  }
+
+  /** The source fence blocks new registrations; serialize validation and durable removal together. */
+  async stopForHandoff(
+    agentIds: string[],
+    approved: readonly HandoffPullRequestWatchReview[],
+  ): Promise<PullRequestWatch[]> {
+    const ids = new Set(agentIds);
+    return this.mutate((file) => {
+      const removed = file.watches.filter((watch) => ids.has(watch.agentId));
+      assertReviewedPullRequestWatches(removed.map(reviewPullRequestWatch), approved);
+      file.watches = file.watches.filter((watch) => !ids.has(watch.agentId));
+      return removed;
+    }, true);
   }
 
   async get(id: string): Promise<PullRequestWatch | null> {
@@ -108,13 +144,18 @@ export class PullRequestWatchStore {
     }
   }
 
-  private mutate<T>(apply: (file: WatchFile) => T): Promise<T> {
+  private mutate<T>(apply: (file: WatchFile) => T, durable = false): Promise<T> {
     const result = this.tail
       .catch(() => undefined)
       .then(async () => {
         const file = await this.read();
         const value = apply(file);
         await writeJsonFileAtomic(this.filePath, file);
+        if (durable)
+          await (this.options.sync ?? syncFilePublication)(
+            this.filePath,
+            path.dirname(this.filePath),
+          );
         return value;
       });
     this.tail = result;

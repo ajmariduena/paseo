@@ -8,6 +8,7 @@ import {
   WorkspaceGitHubRuntimePayloadSchema,
 } from "@getpaseo/protocol/messages";
 import { AgentProviderSchema } from "@getpaseo/protocol/provider-manifest";
+import { HandoffWorkspaceStateSchema } from "@getpaseo/protocol/handoff-control";
 import type { PluginTimelineData } from "@getpaseo/plugin";
 import {
   normalizeProjectDescriptor,
@@ -320,6 +321,9 @@ const StoredWorkspaceSchema = z.strictObject({
   // dropped them painted its row without its chips and stayed that way: the directory cursor is
   // current on reconnect, so the daemon has nothing newer to send back.
   labels: z.array(z.string()).optional(),
+  // A current directory cursor may return no rows on reconnect; ownership must
+  // survive in the same cached workspace as that cursor.
+  handoff: HandoffWorkspaceStateSchema.nullable().optional(),
   status: z.enum(["needs_input", "failed", "running", "attention", "done"]),
   statusEnteredAt: IsoDateSchema.nullable(),
   activityAt: z.null(),
@@ -716,6 +720,7 @@ function serializeWorkspace(workspace: WorkspaceDescriptor): StoredWorkspace {
     title: workspace.title ?? null,
     pinnedAt: workspace.pinnedAt ?? null,
     labels: workspace.labels,
+    handoff: workspace.handoff,
     status: workspace.status,
     statusEnteredAt: workspace.statusEnteredAt?.toISOString() ?? null,
     activityAt: null,

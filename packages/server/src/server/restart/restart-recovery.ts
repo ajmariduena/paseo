@@ -144,10 +144,11 @@ export class RestartRecovery {
       cut: new Set(cutRuns.map((cut) => cut.agentId)),
       continuing: continuingIds,
     });
-    await intents.delete();
+    // A declined continuation still owes its background note. Keep the retry input until
+    // every continuation has either been dispatched or stored that note successfully.
     const continuations = Promise.all(
       continuing.map((cut) => this.continueRun(cut, backgroundWork[cut.agentId] ?? [])),
-    ).then(() => undefined);
+    ).then(() => intents.consume(intentFile));
     return { continuations };
   }
 
@@ -162,11 +163,13 @@ export class RestartRecovery {
       return "dropped" as const;
     });
     this.logger.info({ agentId, outcome }, "restart.continuation_dispatched");
+    // Receipts remember dispatch completion, including a dropped dispatch. They do not prove
+    // that its note was delivered or that the fallback write succeeded before a crash.
+    if (outcome !== "started") await this.rememberLostWork(agentId, lostWork);
     if (outcome === "started" || outcome === "already_sent") {
       this.options.delegations.adoptContinuedChild(agentId);
       return;
     }
-    await this.rememberLostWork(agentId, lostWork);
     await this.options.delegations.reportCutChild(agentId);
   }
 
@@ -185,11 +188,15 @@ export class RestartRecovery {
       messageId,
       request: { kind: "restart_continuation", runKey: cut.runKey },
       prepare: async () => {
+        if (agentManager.messageQueue.isHeldForUserStop(agentId)) return;
         await ensureAgentLoaded(agentId, { agentManager, agentStorage, logger });
       },
       send: async () => {
-        // Anything that started the agent since boot came after the cut and takes precedence.
-        if (agentManager.getActiveRun(agentId)) {
+        // A newer turn or durable Stop wins, including one arriving during preparation.
+        if (
+          agentManager.getActiveRun(agentId) ||
+          agentManager.messageQueue.isHeldForUserStop(agentId)
+        ) {
           sent.disposition = "dropped";
           return;
         }
@@ -202,13 +209,16 @@ export class RestartRecovery {
             kind: "system",
             maySteer: false,
             queueAs: { origin: "system" },
-            prepare: async () => ({
-              prompt:
-                lostWork.length > 0
-                  ? `${restartCancelledWorkNote(lostWork)}\n\n${CONTINUE_PROMPT}`
-                  : CONTINUE_PROMPT,
-              notification: { level: "info", message: "Continued after the daemon restarted" },
-            }),
+            prepare: async () => {
+              if (agentManager.messageQueue.isHeldForUserStop(agentId)) return null;
+              return {
+                prompt:
+                  lostWork.length > 0
+                    ? `${restartCancelledWorkNote(lostWork)}\n\n${CONTINUE_PROMPT}`
+                    : CONTINUE_PROMPT,
+                notification: { level: "info", message: "Continued after the daemon restarted" },
+              };
+            },
           },
           logger,
         });
@@ -223,6 +233,7 @@ export class RestartRecovery {
       await this.options.agentStorage.addPendingRestartNote(agentId, work);
     } catch (error) {
       this.logger.warn({ err: error, agentId }, "restart.background_note_failed");
+      throw error;
     }
   }
 }

@@ -127,6 +127,7 @@ export interface WorkspaceDescriptor {
   labels?: string[];
   status: WorkspaceDescriptorPayload["status"];
   waitingOnSubagents?: WorkspaceDescriptorPayload["waitingOnSubagents"];
+  handoff?: WorkspaceDescriptorPayload["handoff"];
   delegatedByAgentId?: string;
   statusEnteredAt: Date | null;
   archivingAt: string | null;
@@ -168,6 +169,7 @@ export function normalizeWorkspaceDescriptor(
     labels: payload.labels ?? [],
     status: payload.status,
     waitingOnSubagents: payload.waitingOnSubagents,
+    handoff: payload.handoff,
     delegatedByAgentId: payload.delegatedByAgentId,
     statusEnteredAt,
     archivingAt: payload.archivingAt ?? null,

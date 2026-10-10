@@ -187,10 +187,11 @@ const HUB_E2E_PROVIDER_CONTRACT: ProviderContract = {
 };
 
 const PROVIDER_CLIENT_FACTORIES: Record<string, ProviderClientFactory> = {
-  claude: (logger, runtimeSettings) =>
+  claude: (logger, runtimeSettings, options) =>
     new ClaudeAgentClient({
       logger,
       runtimeSettings,
+      managedProcesses: options?.managedProcesses,
     }),
   codex: (logger, runtimeSettings, options) =>
     new CodexAppServerAgentClient(logger, runtimeSettings, {
@@ -443,6 +444,9 @@ export function wrapSessionProvider(provider: AgentProvider, inner: AgentSession
     },
     get capabilities() {
       return inner.capabilities;
+    },
+    get nativeMessageIds() {
+      return inner.nativeMessageIds;
     },
     get initialTimeline() {
       return inner.initialTimeline;

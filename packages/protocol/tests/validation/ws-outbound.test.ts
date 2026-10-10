@@ -67,6 +67,344 @@ async function compileInlineSchema(sourceSchema: string): Promise<GeneratedSchem
 }
 
 describe("WS outbound zod-aot validation", () => {
+  it("retains optional source ownership in workspace updates and rejects destination-only states", () => {
+    const workspace = {
+      id: "workspace",
+      projectId: "project",
+      projectDisplayName: "Project",
+      projectRootPath: "/source",
+      workspaceDirectory: "/source",
+      projectKind: "non_git",
+      workspaceKind: "directory",
+      name: "Original",
+      status: "done",
+      archivingAt: null,
+      statusEnteredAt: null,
+      activityAt: null,
+      scripts: [],
+    };
+    const handoff = {
+      transferId: "00000000-0000-4000-8000-000000000001",
+      destinationServerId: "destination",
+      state: "released",
+    };
+    const envelope = (value: unknown) => ({
+      type: "session",
+      message: { type: "workspace_update", payload: { kind: "upsert", workspace: value } },
+    });
+    for (const value of [workspace, { ...workspace, handoff: null }, { ...workspace, handoff }]) {
+      expect(GeneratedWSOutboundMessageSchema.safeParse(envelope(value))).toMatchObject({
+        success: true,
+        data: envelope(value),
+      });
+    }
+    expect(
+      GeneratedWSOutboundMessageSchema.safeParse(
+        envelope({ ...workspace, handoff: { ...handoff, state: "active" } }),
+      ).success,
+    ).toBe(false);
+    expect(
+      GeneratedWSOutboundMessageSchema.safeParse(
+        envelope({ ...workspace, handoff: { ...handoff, transferId: "invalid" } }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("preserves bounded handoff review data while accepting older source previews", () => {
+    const envelope = (result: unknown) => ({
+      type: "session",
+      message: {
+        type: "workspace.handoff.preview_source.response",
+        payload: { requestId: "preview", result, error: null },
+      },
+    });
+    const conversation = {
+      agentId: "agent",
+      title: null,
+      provider: "claude",
+      state: "available",
+      cliVersion: "1.0.0",
+      hasWorkflows: false,
+    };
+    const older = { workspaceId: "workspace", cwd: "/source", conversations: [conversation] };
+    const workspace = {
+      kind: "directory",
+      fileCount: 1,
+      directoryCount: 0,
+      symlinkCount: 0,
+      fileBytes: 123,
+      gitHistoryBytes: 0,
+      omittedPaths: [".env"],
+      omittedPathCount: 1,
+    };
+    const current = {
+      ...older,
+      conversations: [{ ...conversation, artifactBytes: 456 }],
+      workspace,
+      stoppedWork: {
+        agentIds: ["agent"],
+        terminals: [{ id: "terminal", name: "Build" }],
+        setupOperations: 1,
+      },
+    };
+    for (const result of [
+      older,
+      current,
+      { ...current, workspace: { ...workspace, reviewDigest: "a".repeat(64) } },
+      { ...current, integrationReview: [{ agentId: "agent", omittedMcpServers: ["browser"] }] },
+      {
+        ...current,
+        stoppedWork: {
+          ...current.stoppedWork,
+          review: {
+            agents: [{ id: "agent", instanceId: "00000000-0000-4000-8000-000000000001" }],
+            terminals: [],
+            setupIds: [],
+          },
+        },
+      },
+    ]) {
+      expect(GeneratedWSOutboundMessageSchema.safeParse(envelope(result))).toEqual({
+        success: true,
+        data: envelope(result),
+      });
+    }
+    for (const result of [
+      { ...current, workspace: { ...workspace, fileBytes: -1 } },
+      { ...current, workspace: { ...workspace, reviewDigest: "invalid" } },
+      { ...current, workspace: { ...workspace, omittedPaths: Array(51).fill(".env") } },
+      { ...current, conversations: [{ ...conversation, artifactBytes: -1 }] },
+      {
+        ...current,
+        integrationReview: [{ agentId: "agent", omittedMcpServers: ["x".repeat(4097)] }],
+      },
+      { ...current, stoppedWork: { ...current.stoppedWork, setupOperations: "one" } },
+      {
+        ...current,
+        stoppedWork: {
+          ...current.stoppedWork,
+          review: {
+            agents: [],
+            terminals: [{ id: "terminal", name: "Build", instanceId: "invalid" }],
+            setupIds: [],
+          },
+        },
+      },
+    ]) {
+      expect(GeneratedWSOutboundMessageSchema.safeParse(envelope(result)).success).toBe(false);
+    }
+  });
+
+  it("validates bounded omission pages and their reviewed digest", () => {
+    const page = {
+      paths: [".env", "node_modules/"],
+      offset: 50,
+      total: 52,
+      nextOffset: null,
+      reviewDigest: "a".repeat(64),
+    };
+    const envelope = (result: unknown) => ({
+      type: "session",
+      message: {
+        type: "workspace.handoff.list_omissions.response",
+        payload: { requestId: "page", result, error: null },
+      },
+    });
+    expect(GeneratedWSOutboundMessageSchema.safeParse(envelope(page))).toEqual({
+      success: true,
+      data: envelope(page),
+    });
+    for (const invalid of [
+      { ...page, paths: Array(51).fill(".env") },
+      { ...page, offset: -1 },
+      { ...page, reviewDigest: "invalid" },
+      { ...page, nextOffset: 1.5 },
+    ])
+      expect(GeneratedWSOutboundMessageSchema.safeParse(envelope(invalid)).success).toBe(false);
+  });
+
+  it("preserves transferred history and rejects malformed nested entries", () => {
+    const epoch = "00000000-0000-4000-8000-000000000001";
+    const entry = {
+      provider: "claude",
+      item: { type: "user_message", text: "Previous conversation", messageId: "original" },
+      timestamp: "2026-10-09T00:00:00.000Z",
+      seqStart: 1,
+      seqEnd: 1,
+      sourceSeqRanges: [{ startSeq: 1, endSeq: 1 }],
+      collapsed: [],
+    };
+    const envelope = (entries: unknown[]) => ({
+      type: "session",
+      message: {
+        type: "workspace.handoff.get_conversation_history.response",
+        payload: {
+          requestId: "history",
+          result: {
+            mode: "context",
+            provider: "claude",
+            sourceServerId: "source",
+            sourceWorkspaceId: "workspace",
+            sourceAgentId: "original-agent",
+            sourceCwd: "/original/workspace",
+            title: null,
+            timeline: {
+              direction: "tail",
+              projection: "projected",
+              epoch,
+              reset: false,
+              staleCursor: false,
+              gap: false,
+              window: { minSeq: 1, maxSeq: 1, nextSeq: 2 },
+              startCursor: { epoch, seq: 1 },
+              endCursor: { epoch, seq: 1 },
+              hasOlder: false,
+              hasNewer: false,
+              entries,
+            },
+          },
+          error: null,
+        },
+      },
+    });
+    const message = envelope([entry]);
+    expect(GeneratedWSOutboundMessageSchema.safeParse(message)).toEqual({
+      success: true,
+      data: message,
+    });
+    expect(
+      GeneratedWSOutboundMessageSchema.safeParse(
+        envelope([{ ...entry, item: { ...entry.item, text: 42 } }]),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("discovers cancellation tombstones without a prepared source and still accepts old status replies", () => {
+    const cancellation = {
+      publicKey: "source-key",
+      receipt: {
+        version: 1,
+        outcome: "cancelled",
+        transferId: "00000000-0000-4000-8000-000000000001",
+        reservationId: "00000000-0000-4000-8000-000000000002",
+        sourceServerId: "source",
+        destinationServerId: "destination",
+        signature: "signature",
+      },
+    };
+    const envelope = (extra: object) => ({
+      type: "session",
+      message: {
+        type: "workspace.handoff.get_source_status.response",
+        payload: { requestId: "status", result: null, error: null, ...extra },
+      },
+    });
+    for (const extra of [{}, { cancellation: null }, { cancellation }]) {
+      const message = envelope(extra);
+      expect(GeneratedWSOutboundMessageSchema.safeParse(message)).toEqual({
+        success: true,
+        data: message,
+      });
+    }
+    expect(
+      GeneratedWSOutboundMessageSchema.safeParse(
+        envelope({
+          cancellation: { ...cancellation, receipt: { ...cancellation.receipt, signature: "" } },
+        }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("validates handoff activation snapshots without losing continuation mode or correlation", () => {
+    const result = {
+      transferId: "00000000-0000-4000-8000-000000000001",
+      reservationId: "00000000-0000-4000-8000-000000000002",
+      sourceServerId: "source",
+      sourceWorkspaceId: "original-workspace",
+      sourceAgentIds: ["original-agent"],
+      destinationParent: "/workspaces",
+      destinationCwd: "/workspaces/imported",
+      workspaceId: "new-workspace",
+      projectId: "new-project",
+      agentMappings: [
+        {
+          sourceAgentId: "original-agent",
+          destinationAgentId: "00000000-0000-4000-8000-000000000003",
+        },
+      ],
+      continuationMode: "context",
+      state: "active",
+      manifestDigest: "a".repeat(64),
+    };
+    const envelope = (value: unknown) => ({
+      type: "session",
+      message: {
+        type: "workspace.handoff.activate_destination.response",
+        payload: { requestId: "activate", result: value, error: null },
+      },
+    });
+    for (const continuationMode of ["native", "context"]) {
+      const message = envelope({
+        ...result,
+        continuationMode,
+        conversationModes: [{ sourceAgentId: "agent", mode: "context" }],
+        cleanupComplete: false,
+        cancellationAccepted: false,
+        workspaceReviewDigest: "a".repeat(64),
+        stoppedWorkReview: { agents: [], terminals: [], setupIds: [] },
+        integrationReview: [{ agentId: "agent", omittedMcpServers: ["tracker"] }],
+      });
+      expect(GeneratedWSOutboundMessageSchema.safeParse(message)).toEqual({
+        success: true,
+        data: message,
+      });
+    }
+    for (const invalid of [
+      { ...result, continuationMode: "unknown" },
+      { ...result, manifestDigest: "corrupt" },
+      { ...result, state: "unknown" },
+      { ...result, cleanupComplete: "true" },
+      { ...result, cancellationAccepted: "false" },
+      { ...result, workspaceReviewDigest: "invalid" },
+      { ...result, stoppedWorkReview: { agents: [], terminals: [], setupIds: ["invalid"] } },
+    ]) {
+      expect(GeneratedWSOutboundMessageSchema.safeParse(envelope(invalid)).success).toBe(false);
+    }
+  });
+
+  it.each([
+    "get_conversation_history",
+    "list_destination",
+    "find_source",
+    "cancel_source",
+    "cancel_destination",
+    "inspect_source",
+    "prepare_source",
+    "get_source_status",
+    "release_source",
+    "reserve_destination",
+    "bind_destination",
+    "stage_destination",
+    "get_destination_status",
+    "activate_destination",
+  ])("accepts correlated handoff errors for %s", (operation) => {
+    const envelope = {
+      type: "session",
+      message: {
+        type: `workspace.handoff.${operation}.response`,
+        payload: {
+          requestId: "failed",
+          result: null,
+          error: { code: "invalid_state", message: "Cannot continue", blob: null },
+        },
+      },
+    };
+    expect(GeneratedWSOutboundMessageSchema.safeParse(envelope)).toEqual({
+      success: true,
+      data: envelope,
+    });
+  });
+
   it("applies defaults inside discriminated-union branches", async () => {
     const schema = await compileInlineSchema(`
 const SourceSchema = z.discriminatedUnion("type", [

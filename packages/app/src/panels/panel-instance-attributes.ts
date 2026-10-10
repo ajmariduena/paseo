@@ -10,6 +10,7 @@ export interface PanelInstanceIdentity {
 export interface PanelInstanceAttributes {
   modified: boolean;
   suspendPendingSave?: () => () => void;
+  discardChanges?: () => Promise<() => void>;
 }
 
 const DEFAULT_ATTRIBUTES: PanelInstanceAttributes = { modified: false };
@@ -36,7 +37,8 @@ export function setPanelInstanceAttributes(
   const previous = attributesByPanel.get(key) ?? DEFAULT_ATTRIBUTES;
   if (
     previous.modified === attributes.modified &&
-    previous.suspendPendingSave === attributes.suspendPendingSave
+    previous.suspendPendingSave === attributes.suspendPendingSave &&
+    previous.discardChanges === attributes.discardChanges
   ) {
     return;
   }
@@ -110,9 +112,10 @@ export function usePublishPanelInstanceAttributes(attributes: PanelInstanceAttri
   const { serverId, workspaceId, tabId } = usePaneContext();
   const modified = attributes.modified;
   const suspendPendingSave = attributes.suspendPendingSave;
+  const discardChanges = attributes.discardChanges;
   useEffect(() => {
     const identity = { serverId, workspaceId, tabId };
-    setPanelInstanceAttributes(identity, { modified, suspendPendingSave });
+    setPanelInstanceAttributes(identity, { modified, suspendPendingSave, discardChanges });
     return () => setPanelInstanceAttributes(identity, DEFAULT_ATTRIBUTES);
-  }, [modified, serverId, suspendPendingSave, tabId, workspaceId]);
+  }, [modified, serverId, suspendPendingSave, discardChanges, tabId, workspaceId]);
 }

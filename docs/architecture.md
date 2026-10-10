@@ -39,6 +39,8 @@ Your code never leaves your machine. Paseo is local-first.
 - **Desktop app:** Electron wrapper around the web app that bundles and auto-manages its own daemon.
 - **Relay:** Optional encrypted bridge for remote access without opening ports directly.
 
+Cross-host workspace transfer is under design in the [handoff plan](refactors/cross-host-handoff-plan.md).
+
 ## Packages
 
 ### `packages/server` — The daemon

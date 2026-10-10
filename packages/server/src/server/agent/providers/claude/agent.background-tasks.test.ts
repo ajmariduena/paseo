@@ -7,17 +7,18 @@ import { streamSession } from "../test-utils/session-stream-adapter.js";
 
 function buildQueryMock(events: unknown[]) {
   let index = 0;
+  const closed = Promise.withResolvers<IteratorResult<unknown>>();
   return {
     next: vi.fn(async () => {
       // A live CLI keeps its stream open between turns; ending it would tear the runtime down.
-      if (index >= events.length) return new Promise<never>(() => undefined);
+      if (index >= events.length) return closed.promise;
       const value = events[index];
       index += 1;
       return { done: false, value };
     }),
     interrupt: vi.fn(async () => undefined),
     return: vi.fn(async () => undefined),
-    close: vi.fn(() => undefined),
+    close: vi.fn(() => closed.resolve({ done: true, value: undefined })),
     setPermissionMode: vi.fn(async () => undefined),
     setModel: vi.fn(async () => undefined),
     supportedModels: vi.fn(async () => []),

@@ -117,7 +117,8 @@ export default defineConfig((): UserConfig => {
     },
     plugins: [
       cloudflare({ viteEnvironment: { name: "ssr" } }),
-      tsConfigPaths(),
+      // Resolve website aliases without crawling copied tsconfigs in other packages' dist trees.
+      tsConfigPaths({ projects: [path.join(__dirname, "tsconfig.json")] }),
       tanstackStart({
         router: {
           quoteStyle: "double",

@@ -1,4 +1,6 @@
-import { writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import pino from "pino";
@@ -19,6 +21,8 @@ import {
 } from "../test-utils/controlled-agent-client.js";
 import { PULL_REQUEST_WATCH_WAKE_LIMIT } from "./watch-report.js";
 import { PullRequestWatchStore } from "./watch-store.js";
+import { HandoffOwnership } from "../handoff/ownership.js";
+import { syncFilePublication } from "../atomic-file.js";
 import {
   PULL_REQUEST_READ_FAILURE_LIMIT,
   PULL_REQUEST_WATCH_INTERVAL_MS,
@@ -139,6 +143,8 @@ function comment(id: string, author: string, createdAt: number, body: string) {
 }
 
 interface Scenario {
+  handoffDirectory: string;
+  ownership: HandoffOwnership;
   host: ControlledHost;
   forge: FakeForge;
   store: PullRequestWatchStore;
@@ -154,13 +160,24 @@ let scenario: Scenario | null = null;
 afterEach(async () => {
   scenario?.watcher.close();
   await scenario?.host.cleanup();
+  if (scenario) await rm(scenario.handoffDirectory, { recursive: true, force: true });
   scenario = null;
 });
 
-async function startWatching(options: { busy?: boolean } = {}): Promise<Scenario> {
-  const host = createControlledHost();
+async function startWatching(
+  options: { busy?: boolean; sync?: typeof syncFilePublication } = {},
+): Promise<Scenario> {
+  const handoffDirectory = await mkdtemp(join(tmpdir(), "paseo-watch-handoff-"));
+  const ownership = new HandoffOwnership({
+    directory: join(handoffDirectory, "ownership"),
+    sourceServerId: "source",
+  });
+  await ownership.initialize();
+  const host = createControlledHost({ handoffOwnership: ownership });
   const forge = createFakeForge();
-  const store = new PullRequestWatchStore(join(host.root, "pull-request-watches.json"));
+  const store = new PullRequestWatchStore(join(host.root, "pull-request-watches.json"), {
+    sync: options.sync,
+  });
   const clock = { now: Date.parse("2026-10-04T12:00:00Z") };
   const logs: Record<string, unknown>[] = [];
   const logger = pino(
@@ -168,6 +185,7 @@ async function startWatching(options: { busy?: boolean } = {}): Promise<Scenario
     { write: (line: string) => logs.push(JSON.parse(line) as Record<string, unknown>) },
   );
   const watcher = new PullRequestWatcher({
+    handoffOwnership: ownership,
     store,
     agentManager: host.agentManager,
     agentStorage: host.agentStorage,
@@ -178,7 +196,7 @@ async function startWatching(options: { busy?: boolean } = {}): Promise<Scenario
   });
   const agentId = await host.createAgent({ steerable: false });
   if (options.busy) await host.startTurn(agentId, "agent work");
-  scenario = { host, forge, store, watcher, clock, agentId, logs };
+  scenario = { host, forge, store, watcher, clock, agentId, logs, ownership, handoffDirectory };
   return scenario;
 }
 
@@ -205,6 +223,151 @@ function notifications(current: Scenario) {
     .getTimeline(current.agentId)
     .filter((item) => item.type === "notification");
 }
+
+async function fence(current: Scenario) {
+  return current.ownership.prepare({
+    id: randomUUID(),
+    workspaceId: "workspace",
+    cwd: current.host.root,
+    agentIds: [current.agentId],
+    destinationServerId: "destination",
+    reservationId: randomUUID(),
+  });
+}
+
+test.skipIf(process.platform === "win32").each(["progress", "final"] as const)(
+  "handoff cancels queued %s PR notifications and retains a durable stopped disposition",
+  async (kind) => {
+    const current = await startWatching({ busy: true });
+    await watch(current);
+    const review = await current.watcher.reviewForHandoff([current.agentId]);
+    expect(review).toEqual([
+      expect.objectContaining({ agentId: current.agentId, number: 42, url: PR_URL }),
+    ]);
+    current.forge.checks = [check("test", "failure")];
+    if (kind === "final") {
+      current.forge.unreadable = true;
+      for (let i = 1; i < PULL_REQUEST_READ_FAILURE_LIMIT; i++) await current.watcher.sweep();
+    }
+    await current.watcher.sweep();
+    await vi.waitFor(() =>
+      expect(current.host.agentManager.messageQueue.entries(current.agentId)).toHaveLength(1),
+    );
+    const source = await fence(current);
+    await current.watcher.stopForHandoff([current.agentId], review);
+    expect(current.host.agentManager.messageQueue.entries(current.agentId)).toEqual([]);
+    expect(
+      await new PullRequestWatchStore(join(current.host.root, "pull-request-watches.json")).list(),
+    ).toEqual([]);
+    current.host.session(current.agentId).completeTurn("done");
+    await current.watcher.idle();
+    expect(prompts(current)).toEqual(["agent work"]);
+    await expect(watch(current)).rejects.toThrow("handoff");
+    await current.ownership.cancelReservation({
+      transferId: source.id,
+      destinationServerId: "destination",
+      reservationId: source.reservationId,
+    });
+    await sweep(current);
+    expect(prompts(current)).toEqual(["agent work"]);
+    expect(await current.store.list()).toEqual([]);
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "handoff retries an unacknowledged watch removal before certifying it",
+  async () => {
+    let fail = true;
+    let publications = 0;
+    const current = await startWatching({
+      sync: async (...args) => {
+        publications++;
+        if (fail) throw new Error("Watch sync failed");
+        await syncFilePublication(...args);
+      },
+    });
+    await watch(current);
+    const review = await current.watcher.reviewForHandoff([current.agentId]);
+    await fence(current);
+    await expect(current.watcher.stopForHandoff([current.agentId], review)).rejects.toThrow(
+      "Watch sync failed",
+    );
+    expect(await current.store.list()).toEqual([]);
+    fail = false;
+    await current.watcher.stopForHandoff([current.agentId], review);
+    expect(publications).toBe(2);
+    expect(await current.watcher.reviewForHandoff([current.agentId])).toEqual([]);
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "a late final forge failure cannot wake a watch stopped by a cancelled handoff",
+  async () => {
+    const current = await startWatching();
+    await watch(current);
+    const review = await current.watcher.reviewForHandoff([current.agentId]);
+    current.forge.unreadable = true;
+    for (let i = 1; i < PULL_REQUEST_READ_FAILURE_LIMIT; i++) await current.watcher.sweep();
+    const entered = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<void>();
+    current.forge.service.getCurrentPullRequestStatus = async () => {
+      entered.resolve();
+      await released.promise;
+      throw new Error("Late forge failure");
+    };
+    const checking = current.watcher.sweep();
+    await entered.promise;
+    const source = await fence(current);
+    await current.watcher.stopForHandoff([current.agentId], review);
+    await current.ownership.cancelReservation({
+      transferId: source.id,
+      destinationServerId: "destination",
+      reservationId: source.reservationId,
+    });
+    released.resolve();
+    await checking;
+    await current.watcher.idle();
+    expect(prompts(current)).toEqual([]);
+    expect(await current.store.list()).toEqual([]);
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "a PR watch registration waiting on the forge cannot cross handoff admission",
+  async () => {
+    const current = await startWatching();
+    let continueRead = () => {};
+    let enteredRead = () => {};
+    const entered = new Promise<void>((resolve) => {
+      enteredRead = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      continueRead = resolve;
+    });
+    const read = current.forge.service.getPullRequest;
+    current.forge.service.getPullRequest = async (input) => {
+      enteredRead();
+      await held;
+      return read(input);
+    };
+    const registering = watch(current);
+    const refused = expect(registering).rejects.toThrow("handoff");
+    await entered;
+    const source = await fence(current);
+    let drained = false;
+    const draining = current.ownership.drain(source.id).then(() => {
+      drained = true;
+      return true;
+    });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    continueRead();
+    await refused;
+    await draining;
+    expect(drained).toBe(true);
+    expect(await current.store.list()).toEqual([]);
+  },
+);
 
 test("watching reports the current checks and wakes only on what changes later", async () => {
   const current = await startWatching();

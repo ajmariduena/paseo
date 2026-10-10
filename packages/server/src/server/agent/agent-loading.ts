@@ -2,7 +2,7 @@ import type { Logger } from "pino";
 
 import type { AgentProvider } from "./agent-sdk-types.js";
 import type { AgentManager, ManagedAgent } from "./agent-manager.js";
-import type { AgentStorage } from "./agent-storage.js";
+import { HandoffRetainedAgentError, type AgentStorage } from "./agent-storage.js";
 import {
   buildConfigOverrides,
   buildSessionConfig,
@@ -97,6 +97,7 @@ export async function ensureAgentLoaded(
     if (!record) {
       throw new Error(`Agent not found: ${agentId}`);
     }
+    if (record.handoffRetention) throw new HandoffRetainedAgentError(agentId);
 
     const validProviders = deps.validProviders ?? deps.agentManager.getRegisteredProviderIds();
     if (!isStoredAgentProviderAvailable(record, validProviders)) {

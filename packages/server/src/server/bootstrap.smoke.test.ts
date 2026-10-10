@@ -2,6 +2,8 @@ import { resolveDaemonVersion } from "./daemon-version.js";
 import os from "node:os";
 import http from "node:http";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import pino from "pino";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -15,7 +17,20 @@ import { generateLocalPairingOffer } from "./pairing-offer.js";
 import { createTestPaseoDaemon } from "./test-utils/paseo-daemon.js";
 import { createTestAgentClients } from "./test-utils/fake-agent-client.js";
 import { DaemonClient } from "./test-utils/daemon-client.js";
+import { HandoffOwnership } from "./handoff/ownership.js";
+import { WorkspaceReconciliationService } from "./workspace-reconciliation-service.js";
+import * as worktreeStorageSweeper from "./worktree-storage-sweeper.js";
+import { sweepOwnedArchivedWorktrees, type WorktreeStorageContext } from "./worktree-storage.js";
+import { writePaseoWorktreeMetadata } from "../utils/worktree-metadata.js";
+import { getOrCreateServerId } from "./server-id.js";
+import {
+  createPersistedProjectRecord,
+  createPersistedWorkspaceRecord,
+  FileBackedProjectRegistry,
+  FileBackedWorkspaceRegistry,
+} from "./workspace-registry.js";
 import { isPlatform } from "../test-utils/platform.js";
+import { createWorktree } from "../utils/worktree.js";
 import { findFreePort } from "./service-proxy.js";
 import {
   configureGitProcessPolicy,
@@ -52,6 +67,566 @@ type WebSocketProbeResult =
 describe("paseo daemon bootstrap", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  test("loads the handoff fence before accepting agent creation over the real connection", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paseo-handoff-boot-"));
+    const paseoHome = path.join(root, ".paseo");
+    const cwd = path.join(root, "workspace");
+    await mkdir(paseoHome);
+    await mkdir(cwd);
+    await writeFile(path.join(cwd, "notes.txt"), "source content");
+    // Port allocation executes before terminal creation. A terminal-only fence
+    // would still let this pre-launch process mutate the source workspace.
+    const portScript = path.join(cwd, isPlatform("win32") ? "port.cmd" : "port");
+    await writeFile(
+      portScript,
+      isPlatform("win32")
+        ? "@echo off\r\necho unsafe> blocked-port-script.txt\r\necho 32123\r\n"
+        : "#!/bin/sh\nprintf unsafe > blocked-port-script.txt\nprintf '32123\\n'\n",
+      { mode: 0o755 },
+    );
+    await writeFile(
+      path.join(cwd, "paseo.json"),
+      JSON.stringify({
+        worktree: { servicePorts: { portScript } },
+        scripts: { app: { type: "service", command: "echo should-not-run" } },
+      }),
+    );
+    const registryLogger = pino({ level: "silent" });
+    const projects = new FileBackedProjectRegistry(
+      path.join(paseoHome, "projects", "projects.json"),
+      registryLogger,
+    );
+    const workspaces = new FileBackedWorkspaceRegistry(
+      path.join(paseoHome, "projects", "workspaces.json"),
+      registryLogger,
+    );
+    await projects.initialize();
+    await workspaces.initialize();
+    const now = new Date().toISOString();
+    await projects.upsert(
+      createPersistedProjectRecord({
+        projectId: "handoff-project",
+        rootPath: cwd,
+        kind: "non_git",
+        displayName: "Handoff",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+    await workspaces.upsert(
+      createPersistedWorkspaceRecord({
+        workspaceId: "moved-workspace",
+        projectId: "handoff-project",
+        cwd,
+        kind: "directory",
+        displayName: "Handoff",
+        createdAt: now,
+        updatedAt: now,
+        untrustedSource: {
+          kind: "change_request",
+          forge: "github",
+          number: 42,
+          headRepository: "contributor/repo",
+        },
+      }),
+    );
+    const ownership = new HandoffOwnership({
+      directory: path.join(paseoHome, "handoff-ownership"),
+      sourceServerId: getOrCreateServerId(paseoHome),
+    });
+    await ownership.initialize();
+    const transferId = randomUUID();
+    await ownership.prepare({
+      id: transferId,
+      cwd,
+      workspaceId: "moved-workspace",
+      agentIds: [],
+      destinationServerId: "target-host",
+      reservationId: randomUUID(),
+    });
+    const daemon = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+    const client = new DaemonClient({ url: `ws://127.0.0.1:${daemon.port}/ws` });
+    try {
+      await client.connect();
+      await client.fetchAgents();
+      await expect(client.createAgent({ provider: "codex", cwd })).rejects.toThrow(
+        `Workspace is held by handoff ${transferId}`,
+      );
+      expect((await client.fetchAgents()).entries).toEqual([]);
+      const error = `Workspace is held by handoff ${transferId} (preparing)`;
+      expect(await client.runWorkspaceSetup("moved-workspace", "handoff-run-setup")).toEqual({
+        requestId: "handoff-run-setup",
+        workspaceId: "moved-workspace",
+        started: false,
+        error,
+      });
+      expect(
+        await client.createWorkspace({ source: { kind: "directory", path: cwd } }),
+      ).toMatchObject({
+        workspace: null,
+        error,
+      });
+      expect(await client.openProject(cwd, "handoff-open-project")).toMatchObject({
+        requestId: "handoff-open-project",
+        workspace: null,
+        error,
+      });
+      expect(
+        await client.archiveWorkspace("moved-workspace", "handoff-archive-workspace"),
+      ).toMatchObject({
+        requestId: "handoff-archive-workspace",
+        workspaceId: "moved-workspace",
+        archivedAt: null,
+        error,
+      });
+      await expect(client.removeProject("handoff-project")).rejects.toThrow(error);
+      expect(
+        await client.archivePaseoWorktree(
+          { workspaceId: "moved-workspace", worktreePath: cwd },
+          "handoff-archive-worktree",
+        ),
+      ).toMatchObject({
+        requestId: "handoff-archive-worktree",
+        success: false,
+        error: { message: error },
+      });
+      const persisted = new FileBackedWorkspaceRegistry(
+        path.join(paseoHome, "projects", "workspaces.json"),
+        registryLogger,
+      );
+      await persisted.initialize();
+      expect((await persisted.list()).map((workspace) => workspace.workspaceId)).toEqual([
+        "moved-workspace",
+      ]);
+      expect((await persisted.get("moved-workspace"))?.archivedAt).toBe(null);
+      expect((await persisted.get("moved-workspace"))?.untrustedSource).toEqual({
+        kind: "change_request",
+        forge: "github",
+        number: 42,
+        headRepository: "contributor/repo",
+      });
+      expect(await client.startWorkspaceScript("moved-workspace", "app", "handoff-script")).toEqual(
+        {
+          requestId: "handoff-script",
+          workspaceId: "moved-workspace",
+          scriptName: "app",
+          terminalId: null,
+          error,
+        },
+      );
+      await expect(access(path.join(cwd, "blocked-port-script.txt"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      expect(
+        await client.createFileEntry({ cwd, parentPath: ".", name: "blocked.txt", kind: "file" }),
+      ).toMatchObject({ success: false, error });
+      expect(
+        await client.writeFile({
+          cwd,
+          path: "notes.txt",
+          content: "blocked",
+          expectedModifiedAt: new Date(0).toISOString(),
+        }),
+      ).toEqual({ status: "error", error });
+      expect(await client.checkoutSwitchBranch(cwd, "blocked-branch")).toMatchObject({
+        success: false,
+        error: { message: error },
+      });
+      expect(await client.checkoutCommit(cwd, { message: "blocked commit" })).toMatchObject({
+        success: false,
+        error: { message: error },
+      });
+      const otherCwd = path.join(root, "unrelated-workspace");
+      await mkdir(otherCwd);
+      const other = await client.createWorkspace({ source: { kind: "directory", path: otherCwd } });
+      if (!other.workspace) throw new Error(other.error ?? "Missing unrelated workspace");
+      expect(
+        await client.createTerminal(cwd, "Blocked terminal", "handoff-terminal", {
+          workspaceId: other.workspace.id,
+          command: process.execPath,
+          args: ["-e", 'require("node:fs").writeFileSync("blocked-terminal.txt", "unsafe")'],
+        }),
+      ).toMatchObject({ terminal: null, error, requestId: "handoff-terminal" });
+      expect((await client.listTerminals(cwd)).terminals).toEqual([]);
+      await expect(access(path.join(cwd, "blocked-terminal.txt"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      expect(await readFile(path.join(cwd, "notes.txt"), "utf8")).toBe("source content");
+      await expect(access(path.join(cwd, "blocked.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+      await client.close();
+      // Shutdown drains the boot reconciliation, so this observes its persisted
+      // result even when the background pass starts after the RPC assertions.
+      await daemon.daemon.stop();
+      // Snapshot reads already in flight can finish after watcher disposal. Wait for
+      // their subprocesses before removing a cwd that Windows still has open.
+      await expect
+        .poll(
+          () => {
+            const { active, pending } = snapshotGitCommandRuntimeMetrics();
+            return { active, pending };
+          },
+          { timeout: 10_000 },
+        )
+        .toEqual({ active: 0, pending: 0 });
+      const reloadedProjects = new FileBackedProjectRegistry(
+        path.join(paseoHome, "projects", "projects.json"),
+        registryLogger,
+      );
+      const reloadedWorkspaces = new FileBackedWorkspaceRegistry(
+        path.join(paseoHome, "projects", "workspaces.json"),
+        registryLogger,
+      );
+      expect(await reloadedProjects.get("handoff-project")).toEqual(
+        await projects.get("handoff-project"),
+      );
+      expect(await reloadedWorkspaces.get("moved-workspace")).toEqual(
+        await workspaces.get("moved-workspace"),
+      );
+    } finally {
+      await client.close();
+      await daemon.close();
+      await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    }
+  });
+
+  test("handoff refuses worktree creation and reconstruction through the real connection", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paseo-handoff-recovery-boot-"));
+    const paseoHome = path.join(root, ".paseo");
+    const cwd = path.join(root, "repo");
+    await mkdir(paseoHome);
+    await mkdir(cwd);
+    const git = (...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" });
+    git("init", "-b", "main");
+    git(
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.com",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "initial",
+    );
+    const worktree = await createWorktree({
+      cwd,
+      paseoHome,
+      worktreeSlug: "archived",
+      source: { kind: "branch-off", branchName: "archived", baseBranch: "main" },
+      runSetup: false,
+    });
+    await rm(worktree.worktreePath, { recursive: true, force: true });
+    const before = git("worktree", "list", "--porcelain");
+    const refs = git("show-ref");
+    const logger = pino({ level: "silent" });
+    const projects = new FileBackedProjectRegistry(
+      path.join(paseoHome, "projects", "projects.json"),
+      logger,
+    );
+    const workspaces = new FileBackedWorkspaceRegistry(
+      path.join(paseoHome, "projects", "workspaces.json"),
+      logger,
+    );
+    await projects.initialize();
+    await workspaces.initialize();
+    const now = new Date().toISOString();
+    await projects.upsert(
+      createPersistedProjectRecord({
+        projectId: "recovery-project",
+        rootPath: cwd,
+        kind: "git",
+        displayName: "Recovery",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+    await workspaces.upsert(
+      createPersistedWorkspaceRecord({
+        workspaceId: "recovery-source",
+        projectId: "recovery-project",
+        cwd,
+        kind: "local_checkout",
+        displayName: "Source",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+    const archived = createPersistedWorkspaceRecord({
+      workspaceId: "recovery-target",
+      projectId: "recovery-project",
+      cwd: worktree.worktreePath,
+      kind: "worktree",
+      displayName: "Archived",
+      worktreeRoot: worktree.worktreePath,
+      mainRepoRoot: cwd,
+      branch: "archived",
+      baseBranch: "main",
+      isPaseoOwnedWorktree: true,
+      archivedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await workspaces.upsert(archived);
+    const ownership = new HandoffOwnership({
+      directory: path.join(paseoHome, "handoff-ownership"),
+      sourceServerId: getOrCreateServerId(paseoHome),
+    });
+    await ownership.initialize();
+    const transferId = randomUUID();
+    await ownership.prepare({
+      id: transferId,
+      cwd,
+      workspaceId: "recovery-source",
+      agentIds: [],
+      destinationServerId: "target-host",
+      reservationId: randomUUID(),
+    });
+    const daemon = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+    const client = new DaemonClient({ url: `ws://127.0.0.1:${daemon.port}/ws` });
+    try {
+      await client.connect();
+      expect(
+        await client.createPaseoWorktree({ cwd, worktreeSlug: "blocked-creation" }),
+      ).toMatchObject({
+        workspace: null,
+        error: `Workspace is held by handoff ${transferId} (preparing)`,
+      });
+      expect(git("show-ref")).toBe(refs);
+      expect(
+        await client.createWorkspace({
+          source: { kind: "worktree", cwd, worktreeSlug: "blocked-workspace" },
+        }),
+      ).toMatchObject({
+        workspace: null,
+        error: `Workspace is held by handoff ${transferId} (preparing)`,
+      });
+      expect(git("show-ref")).toBe(refs);
+      expect(git("worktree", "list", "--porcelain")).toBe(before);
+      expect(await client.inspectWorkspaceRecovery(archived.workspaceId)).toMatchObject({
+        kind: "recoverable",
+        action: "restore",
+      });
+      await expect(client.restoreWorkspace(archived.workspaceId)).rejects.toThrow(
+        `Workspace is held by handoff ${transferId}`,
+      );
+      await expect(access(worktree.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(git("worktree", "list", "--porcelain")).toBe(before);
+      const persisted = new FileBackedWorkspaceRegistry(
+        path.join(paseoHome, "projects", "workspaces.json"),
+        logger,
+      );
+      await persisted.initialize();
+      expect(await persisted.get(archived.workspaceId)).toEqual(archived);
+    } finally {
+      await client.close();
+      await daemon.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test.each(["missing", "corrupt"])("refuses boot with a %s handoff ledger", async (failure) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paseo-handoff-damaged-"));
+    const daemon = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+    await daemon.close();
+    const ledger = path.join(daemon.paseoHome, "handoff-ownership", "ownership.json");
+    try {
+      if (failure === "missing") await rm(ledger);
+      else await writeFile(ledger, "{");
+      await expect(createPaseoDaemon(daemon.config, pino({ level: "silent" }))).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(isPlatform("win32"))(
+    "handoff refuses manual and automatic storage cleanup after boot",
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "paseo-handoff-storage-boot-"));
+      const paseoHome = path.join(root, ".paseo");
+      const repo = path.join(root, "repo");
+      const checkout = path.join(paseoHome, "worktrees", "project", "archived");
+      await mkdir(repo);
+      await mkdir(path.dirname(checkout), { recursive: true });
+      const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" });
+      git("init", "-b", "main");
+      await writeFile(
+        path.join(repo, "paseo.json"),
+        JSON.stringify({
+          worktree: {
+            teardown:
+              "node -e \"require('fs').writeFileSync(process.env.PASEO_SOURCE_CHECKOUT_PATH + '/teardown-ran', 'yes')\"",
+          },
+        }),
+      );
+      git("add", ".");
+      git(
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-m",
+        "initial",
+      );
+      git("update-ref", "refs/remotes/origin/main", "HEAD");
+      git("worktree", "add", "-b", "archived", checkout);
+      const serverId = getOrCreateServerId(paseoHome);
+      writePaseoWorktreeMetadata(checkout, { baseRefName: "main", serverId, paseoHome });
+      const logger = pino({ level: "silent" });
+      const projects = new FileBackedProjectRegistry(
+        path.join(paseoHome, "projects", "projects.json"),
+        logger,
+      );
+      const workspaces = new FileBackedWorkspaceRegistry(
+        path.join(paseoHome, "projects", "workspaces.json"),
+        logger,
+      );
+      const now = new Date().toISOString();
+      await projects.upsert(
+        createPersistedProjectRecord({
+          projectId: "storage-project",
+          rootPath: repo,
+          kind: "git",
+          displayName: "Project",
+          createdAt: now,
+          updatedAt: now,
+        }),
+      );
+      await workspaces.upsert(
+        createPersistedWorkspaceRecord({
+          workspaceId: "moving",
+          projectId: "storage-project",
+          cwd: checkout,
+          worktreeRoot: checkout,
+          mainRepoRoot: repo,
+          kind: "worktree",
+          displayName: "Archived",
+          archivedAt: now,
+          createdAt: now,
+          updatedAt: now,
+        }),
+      );
+      const ownership = new HandoffOwnership({
+        directory: path.join(paseoHome, "handoff-ownership"),
+        sourceServerId: serverId,
+      });
+      await ownership.initialize();
+      const id = randomUUID();
+      await ownership.prepare({
+        id,
+        cwd: checkout,
+        workspaceId: "moving",
+        agentIds: [],
+        destinationServerId: "target",
+        reservationId: randomUUID(),
+      });
+      const before = git("worktree", "list", "--porcelain");
+      const automaticContext = Promise.withResolvers<WorktreeStorageContext>();
+      const startSweeper = worktreeStorageSweeper.startWorktreeStorageSweeper;
+      const capture = vi
+        .spyOn(worktreeStorageSweeper, "startWorktreeStorageSweeper")
+        .mockImplementation((options) => {
+          automaticContext.resolve(options.context);
+          return startSweeper(options);
+        });
+      const daemon = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+      const client = new DaemonClient({ url: `ws://127.0.0.1:${daemon.port}/ws` });
+      try {
+        await client.connect();
+        const storage = await client.listWorktreeStorage();
+        expect(storage.error).toBeNull();
+        expect(storage.entries).toHaveLength(1);
+        const entry = storage.entries[0]!;
+        expect(entry).toMatchObject({ freeable: true, reason: "archived" });
+        expect(await client.cleanupWorktreeStorage([entry.entryId])).toMatchObject({
+          results: [
+            {
+              entryId: entry.entryId,
+              removed: false,
+              error: `Workspace is held by handoff ${id} (preparing)`,
+            },
+          ],
+          error: null,
+        });
+        expect(
+          await sweepOwnedArchivedWorktrees(await automaticContext.promise, () => true),
+        ).toMatchObject({
+          removed: 0,
+          failures: [{ error: `Workspace is held by handoff ${id} (preparing)` }],
+        });
+        await expect(access(path.join(repo, "teardown-ran"))).rejects.toMatchObject({
+          code: "ENOENT",
+        });
+        expect(git("worktree", "list", "--porcelain")).toBe(before);
+      } finally {
+        await client.close();
+        await daemon.close();
+        capture.mockRestore();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test("handoff daemon shutdown waits for storage cleanup and reconciliation before releasing its state", async () => {
+    const sweepEntered = Promise.withResolvers<void>();
+    const finishSweep = Promise.withResolvers<void>();
+    let sweepDrained = false;
+    const startSweeper = worktreeStorageSweeper.startWorktreeStorageSweeper;
+    const sweeping = vi
+      .spyOn(worktreeStorageSweeper, "startWorktreeStorageSweeper")
+      .mockImplementation((options) => {
+        const sweeper = startSweeper(options);
+        return {
+          scheduleSoon: sweeper.scheduleSoon,
+          dispose: async () => {
+            sweepEntered.resolve();
+            await finishSweep.promise;
+            await sweeper.dispose();
+            sweepDrained = true;
+          },
+        };
+      });
+    const daemon = await createTestPaseoDaemon();
+    const entered = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    const dispose = WorkspaceReconciliationService.prototype.dispose;
+    let drained = false;
+    const disposal = vi
+      .spyOn(WorkspaceReconciliationService.prototype, "dispose")
+      .mockImplementation(async function (this: WorkspaceReconciliationService) {
+        entered.resolve();
+        expect(sweepDrained).toBe(true);
+        await finish.promise;
+        await dispose.call(this);
+        drained = true;
+      });
+    const prepare = daemon.daemon.agentManager.prepareForShutdown.bind(daemon.daemon.agentManager);
+    const preparation = vi
+      .spyOn(daemon.daemon.agentManager, "prepareForShutdown")
+      .mockImplementation(() => {
+        expect(drained).toBe(true);
+        prepare();
+      });
+    try {
+      const stopping = expect(daemon.daemon.stop()).resolves.toBeUndefined();
+      await sweepEntered.promise;
+      finishSweep.resolve();
+      await entered.promise;
+      finish.resolve();
+      await stopping;
+    } finally {
+      finishSweep.resolve();
+      finish.resolve();
+      disposal.mockRestore();
+      preparation.mockRestore();
+      await daemon.close();
+      sweeping.mockRestore();
+    }
   });
 
   test("starts and serves health endpoint", async () => {

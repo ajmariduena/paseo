@@ -2,6 +2,120 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const fr: TranslationResources = {
+  handoff: {
+    retainedWorkspace:
+      "Le travail dans ce dossier s’arrête et reste sur l’hôte source. Ses fichiers et conversations sont conservés. Envoyez un message ou reprenez explicitement la file pour continuer.",
+    retainedSchedule:
+      "Cette planification reste sur l’hôte source dans {{cwd}}. Elle sera suspendue si elle n’est pas terminée.",
+    activeScheduleStops:
+      "Cette tâche planifiée est en cours. La préparation arrête son agent et enregistre le résultat avant le transfert.",
+    activeHeartbeatStops:
+      "Ce rappel est en cours. La préparation l’arrête et enregistre son résultat avant le transfert.",
+    automationPaused:
+      "Les tâches planifiées et les rappels sont transférés en pause. Les tâches terminées le restent. En cas d’annulation, reprenez-les manuellement sur l’hôte source.",
+    automationSettingsOmitted:
+      "Les connexions, les autorisations et les paramètres avancés du fournisseur restent sur cet hôte. Configurez-les sur la destination avant de reprendre.",
+    previousTransfers: "Page précédente",
+    nextTransfers: "Page suivante",
+    noPendingTransfers: "Aucun transfert en attente.",
+    sourceUnavailable: "Hôte source indisponible",
+    unsavedFiles: "Fichiers non enregistrés dans cette application",
+    saveBeforePrepare:
+      "La préparation enregistre ces fichiers en premier. Résolvez les conflits avant le transfert.",
+    unsavedFileError:
+      "Enregistrez ou résolvez les modifications de {{path}}, puis reprenez le transfert.",
+    sourceHeld:
+      "Cet espace est en lecture seule pendant la préparation du transfert vers {{host}}.",
+    sourceReleased: "Continuez sur {{host}}. Cet espace source est en lecture seule.",
+    reviewTransfer: "Voir le transfert",
+    continueDestination: "Continuer à destination",
+    sourceChanged: "Le transfert a changé. Rouvrez-le pour consulter son état actuel.",
+    dataEstimate: "Taille estimée du transfert",
+    fileCounts: "Fichiers : {{files}} · Dossiers : {{directories}} · Liens : {{links}}",
+    estimateNotice: "Estimation pendant le travail en cours ; la taille finale peut varier.",
+    omittedPaths: "Exclus par les règles d’exclusion ({{count}})",
+    noOmissions: "Aucun chemin ne correspond aux règles d’exclusion.",
+    omissionRange: "{{first}}–{{last}} / {{total}}",
+    previousOmissions: "Précédent",
+    nextOmissions: "Suivant",
+    omittedDirectories: "Un dossier exclu comprend tout son contenu.",
+    queuedMessagesHeld:
+      "Messages en attente : {{count}}. Ils seront transférés en pause ; reprenez la file sur la destination quand vous le souhaitez.",
+    prWatchesStop:
+      "Ces suivis de PR seront arrêtés. Relancez-les manuellement si vous annulez le transfert ou continuez sur la destination.",
+    workToStop: "Travail qui sera arrêté",
+    activeWork: "Agents actifs : {{agents}} · Opérations de configuration : {{setup}}",
+    noTerminals: "Aucun terminal ouvert.",
+    history: "Conversation précédente",
+    historyConnect: "Connectez l’hôte de destination pour consulter cet historique.",
+    historyUnavailable: "L’historique transféré est indisponible.",
+    historyPart: "Partie de la conversation",
+    historyPartLabel: "{{number}} · {{host}}",
+    historyOrigin: "Historique en lecture seule de {{host}}",
+    historyNotice:
+      "Les fichiers et ressources liés appartiennent à l’hôte source et peuvent être indisponibles.",
+    continuedNative: "Session native conservée",
+    continuedContext: "Nouvelle session avec historique exporté",
+    cancelPending:
+      "L’annulation est incomplète. Reprenez pour terminer l’annulation de ce transfert.",
+    pendingTransfers: "Transferts en cours",
+    chooseTransfer: "Choisir un transfert à reprendre",
+    loadMoreTransfers: "Charger plus de transferts",
+    review: "Vérifier le transfert",
+    conversations: "Conversations",
+    omittedMcpServers: "Connexions MCP à reconfigurer : {{names}}",
+    integrationScope:
+      "Les connexions MCP de l’hôte et du projet n’ont pas été vérifiées. Les identifiants et autorisations de destination s’appliquent.",
+    emptyConversations: "Cet espace de travail ne contient aucune conversation.",
+    untitledConversation: "Conversation sans titre",
+    location: "Dossier de destination",
+    busy: {
+      reviewing: "Vérification…",
+      loading: "Chargement...",
+      preparing: "Préparation...",
+      moving: "Déplacement...",
+      cancelling: "Annulation...",
+    },
+    title: "Déplacer le workspace vers un autre hôte",
+    destination: "Hôte de destination",
+    chooseHost: "Choisir un hôte",
+    noHosts: "Connectez un autre hôte pour déplacer ce workspace",
+    parent: "Dossier parent de destination",
+    mode: "Continuité des conversations",
+    native: "Conserver les sessions natives",
+    mixed: "Mixte : sessions natives et historique exporté",
+    context: "Continuer avec l’historique exporté",
+    nativeDescription:
+      "Les sessions natives nécessitent des versions compatibles du fournisseur sur les deux hôtes. Une session incompatible arrêtera le transfert.",
+    contextDescription:
+      "Les conversations ouvriront de nouvelles sessions avec l’historique exporté lisible et un résumé de reprise.",
+    stopNotice:
+      "La préparation arrête les agents, terminaux et scripts de configuration. Les fichiers ignorés non suivis sont exclus ; les fichiers suivis, y compris les secrets, sont transférés. Les identifiants et la configuration MCP restent sur chaque hôte. Les modifications ultérieures à la source ne sont pas synchronisées.",
+    prepare: "Préparer le transfert",
+    activate: "Déplacer le workspace",
+    resume: "Reprendre",
+    cancel: "Annuler le transfert",
+    open: "Ouvrir la destination",
+    startOver: "Nouveau transfert",
+    loading: "Chargement du transfert enregistré…",
+    inspecting: "Inspection du workspace…",
+    preparing_source: "Arrêt de la source et capture du workspace…",
+    transferring: "Transfert des fichiers…",
+    preparing_destination: "Préparation de la destination…",
+    ready: "Destination prête. Déplacez le workspace pour y continuer ; la source est arrêtée.",
+    releasing: "Libération du contrôle à la source…",
+    activating: "Activation de la destination…",
+    active: "Workspace déplacé. Continuez sur l’hôte de destination.",
+    cancelled: "Transfert annulé. La source peut être réutilisée.",
+    paused: "Transfert enregistré. Reprenez pour vérifier les deux hôtes et continuer.",
+    forward:
+      "Terminez l’activation à destination. La source a peut-être déjà cédé le contrôle et ne permet pas d’annuler le déplacement.",
+    saving: "Enregistrement du transfert…",
+    closeNotice: "Vous pouvez fermer cette fenêtre et reprendre le transfert plus tard.",
+    connectHosts: "Connectez les deux hôtes pour continuer",
+    updateHosts:
+      "Mettez les deux hôtes à jour vers une version prenant en charge le transfert de workspaces",
+  },
   quickPrompts: {
     longPressOpens: "Appui long pour choisir un autre prompt",
     defaultBadge: "Par défaut",
@@ -2339,6 +2453,12 @@ export const fr: TranslationResources = {
       failedToLoad: "Impossible de charger le fichier",
       failedToLoadPreview: "Impossible de charger l’aperçu du fichier",
       editor: {
+        recoveryLoadError:
+          "Impossible de restaurer les modifications non enregistrées. La copie de récupération est conservée.",
+        recoverySaveError:
+          "Impossible de conserver une copie de récupération. Enregistrez le fichier ou copiez vos modifications avant de fermer l’application.",
+        recoveryClearError:
+          "Impossible de supprimer la copie de récupération. Le fichier reste ouvert.",
         fileSize: "Taille du fichier : {{size}}",
         copyContents: "Copier le contenu du fichier",
         contentsCopied: "Copié",

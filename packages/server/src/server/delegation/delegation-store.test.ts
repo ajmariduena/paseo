@@ -1,7 +1,9 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, test } from "vitest";
+import { randomUUID } from "node:crypto";
+import { afterEach, expect, test, vi } from "vitest";
+import * as atomicFile from "../atomic-file.js";
 
 import {
   DelegationStore,
@@ -160,6 +162,7 @@ test("the first terminal task opens a new wake generation with a stable messageI
 let directory: string | null = null;
 
 afterEach(() => {
+  vi.restoreAllMocks();
   if (directory) rmSync(directory, { recursive: true, force: true });
   directory = null;
 });
@@ -208,6 +211,64 @@ test("each store method commits the whole parent file atomically", async () => {
     "child-a": ["parent"],
   });
 });
+
+test.skipIf(process.platform === "win32")(
+  "retained results retry failed synchronization and remain bound across restart and later writes",
+  async () => {
+    const store = createStore();
+    await store.createTask(
+      "parent",
+      {
+        id: "a",
+        childAgentId: "child-a",
+        spawningRunKey: "run-1",
+        source: "create_agent",
+        title: "Task a",
+        prompt: "Do work",
+        completionWake: "always",
+      },
+      NOW,
+    );
+    const settlement = {
+      transferId: randomUUID(),
+      status: "cancelled" as const,
+      result: "é".repeat(40_000),
+      resultTruncated: false,
+      history: { sha256: "a".repeat(64), size: 100 },
+      pendingChildTaskIds: ["descendant-task"],
+    };
+    const sync = vi
+      .spyOn(atomicFile, "syncFilePublication")
+      .mockRejectedValueOnce(new Error("Disk sync failed"));
+    await expect(store.checkpointHandoffResults("parent", "child-a", settlement)).rejects.toThrow(
+      "Disk sync failed",
+    );
+    const cold = new DelegationStore(directory!);
+    await cold.checkpointHandoffResults("parent", "child-a", settlement);
+    const frozen = (await cold.get("parent"))!.tasks.a.handoffSettlement!;
+    expect(sync).toHaveBeenCalledTimes(2);
+    expect(frozen).toMatchObject({
+      status: "cancelled",
+      resultTruncated: true,
+      pendingChildTaskIds: ["descendant-task"],
+    });
+    expect(Buffer.byteLength(frozen.result)).toBeLessThanOrEqual(64 * 1024);
+    await cold.checkpointHandoffResults("parent", "child-a", {
+      ...settlement,
+      result: "Later execution",
+      pendingChildTaskIds: ["new-task"],
+    });
+    await cold.finalizeTask("parent", "a", { ...frozen, wake: true }, IDLE_PARENT, NOW);
+    const saved = (await new DelegationStore(directory!).get("parent"))!.tasks.a;
+    expect(saved).toMatchObject({
+      status: "cancelled",
+      result: frozen.result,
+      resultTruncated: true,
+      handoffSettlement: frozen,
+    });
+    expect(sync).toHaveBeenCalledTimes(4);
+  },
+);
 
 test("acknowledging clears a wake that has not started, and repeats are no-ops", async () => {
   const store = createStore();

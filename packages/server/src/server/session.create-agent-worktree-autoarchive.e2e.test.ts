@@ -96,6 +96,7 @@ async function expectWorktreeListEmpty(repoDir: string): Promise<void> {
 
 async function createAgentInBranchOffWorktree(options?: {
   autoArchive?: boolean;
+  startTurn?: boolean;
   branchName?: string;
   repoDir?: string;
 }): Promise<{ repoDir: string; agentId: string; worktreePath: string }> {
@@ -112,7 +113,7 @@ async function createAgentInBranchOffWorktree(options?: {
       base: "main",
     },
     ...(options?.autoArchive !== undefined ? { autoArchive: options.autoArchive } : {}),
-    initialPrompt: "Say done.",
+    ...(options?.startTurn === false ? {} : { initialPrompt: "Say done." }),
   });
   return { repoDir, agentId: created.id, worktreePath: created.cwd };
 }
@@ -350,8 +351,10 @@ test("archiving a created worktree removes the directory on last reference", asy
 });
 
 test("auto-archiving a created worktree keeps the directory when a sibling workspace references it", async () => {
-  const created = await createAgentInBranchOffWorktree({ autoArchive: true });
+  const created = await createAgentInBranchOffWorktree({ autoArchive: true, startTurn: false });
 
+  // Establish the shared reference before allowing the first turn to finish.
+  // Once cleanup has begun, provisioning correctly refuses this worktree.
   // Create a sibling workspace that shares the same backing directory.
   const sibling = await ctx.client.createWorkspace({
     source: { kind: "directory", path: created.worktreePath },
@@ -361,6 +364,7 @@ test("auto-archiving a created worktree keeps the directory when a sibling works
     throw new Error(sibling.error ?? "Failed to create sibling workspace");
   }
 
+  await ctx.client.sendMessage(created.agentId, "Say done.");
   await ctx.client.waitForFinish(created.agentId, 10000);
 
   await expectAgentAbsentFromActiveList(created.agentId);

@@ -1,8 +1,16 @@
 import os from "node:os";
 import path from "node:path";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+  promises as fs,
+} from "node:fs";
 
-import { beforeEach, afterEach, describe, expect, test } from "vitest";
+import { beforeEach, afterEach, describe, expect, test, vi } from "vitest";
 
 import { createTestLogger } from "../test-utils/test-logger.js";
 import { writeJsonFileAtomic } from "./atomic-file.js";
@@ -63,8 +71,265 @@ describe("workspace registries", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     rmSync(tmpDir, { recursive: true, force: true });
   });
+
+  test.each(["invalid JSON", "invalid record", "duplicate identity"])(
+    "a registry with %s refuses reads and writes until its file is repaired",
+    async (damage) => {
+      const record = createPersistedWorkspaceRecord({
+        workspaceId: "retained-workspace",
+        projectId: "project-one",
+        cwd: tmpDir,
+        kind: "directory",
+        displayName: "Retained work",
+        createdAt: "2026-10-10T00:00:00.000Z",
+        updatedAt: "2026-10-10T00:00:00.000Z",
+      });
+      const file = path.join(tmpDir, "projects", "workspaces.json");
+      const damaged =
+        damage === "invalid JSON"
+          ? "[broken"
+          : JSON.stringify(
+              damage === "invalid record" ? [record, { workspaceId: "invalid" }] : [record, record],
+            );
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, damaged);
+
+      for (const operation of [
+        () => workspaceRegistry.initialize(),
+        () => workspaceRegistry.list(),
+        () => workspaceRegistry.get(record.workspaceId),
+        () => workspaceRegistry.upsert({ ...record, workspaceId: "replacement" }),
+        () => workspaceRegistry.archive(record.workspaceId, "2026-10-11T00:00:00.000Z"),
+        () => workspaceRegistry.remove(record.workspaceId),
+      ]) {
+        await expect(operation()).rejects.toThrow("Failed to load registry");
+        expect(readFileSync(file, "utf8")).toBe(damaged);
+      }
+
+      writeFileSync(file, JSON.stringify([record]));
+      expect(await workspaceRegistry.list()).toEqual([record]);
+      await workspaceRegistry.update(record.workspaceId, (current) => ({
+        ...current,
+        title: "Recovered",
+      }));
+      const cold = new FileBackedWorkspaceRegistry(file, logger);
+      expect(await cold.get(record.workspaceId)).toMatchObject({ title: "Recovered" });
+    },
+  );
+
+  test("a failed presence check cannot describe an unreadable registry as absent", async () => {
+    const error = Object.assign(new Error("Registry access denied"), { code: "EACCES" });
+    vi.spyOn(fs, "access").mockRejectedValueOnce(error);
+    await expect(workspaceRegistry.existsOnDisk()).rejects.toBe(error);
+    expect(await workspaceRegistry.existsOnDisk()).toBe(false);
+  });
+
+  test("a project registry refuses damaged records without replacing its file", async () => {
+    const file = path.join(tmpDir, "projects", "projects.json");
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, "[broken");
+    await expect(projectRegistry.initialize()).rejects.toThrow("Failed to load registry");
+    await expect(projectRegistry.remove("project-one")).rejects.toThrow("Failed to load registry");
+    expect(readFileSync(file, "utf8")).toBe("[broken");
+    writeFileSync(file, "[]");
+    expect(await projectRegistry.list()).toEqual([]);
+  });
+
+  test("concurrent initial reads and mutations share one registry snapshot", async () => {
+    const file = path.join(tmpDir, "projects", "workspaces.json");
+    const record = createPersistedWorkspaceRecord({
+      workspaceId: "workspace-one",
+      projectId: "project-one",
+      cwd: tmpDir,
+      kind: "directory",
+      displayName: "Original",
+      createdAt: "2026-10-10T00:00:00.000Z",
+      updatedAt: "2026-10-10T00:00:00.000Z",
+    });
+    await writeJsonFileAtomic(file, [record]);
+    const originalRead = fs.readFile.bind(fs);
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const reads = vi.spyOn(fs, "readFile").mockImplementationOnce(async (...args) => {
+      const result = await originalRead(...args);
+      started.resolve();
+      await release.promise;
+      return result;
+    });
+    const initial = workspaceRegistry.get(record.workspaceId);
+    await started.promise;
+    const update = workspaceRegistry.update(record.workspaceId, (current) => ({
+      ...current,
+      title: "Latest",
+    }));
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(reads).toHaveBeenCalledTimes(1);
+    } finally {
+      release.resolve();
+      await Promise.all([initial, update]);
+    }
+    expect(await workspaceRegistry.get(record.workspaceId)).toMatchObject({ title: "Latest" });
+    const cold = new FileBackedWorkspaceRegistry(file, logger);
+    expect(await cold.get(record.workspaceId)).toMatchObject({ title: "Latest" });
+  });
+
+  test("workspace openings survive metadata edits and restart but change on restore and relocation", async () => {
+    const record = createPersistedWorkspaceRecord({
+      workspaceId: "opening",
+      projectId: "project",
+      cwd: tmpDir,
+      kind: "directory",
+      displayName: "Opening",
+      createdAt: "2026-10-10T00:00:00Z",
+      updatedAt: "2026-10-10T00:00:00Z",
+    });
+    await workspaceRegistry.upsert(record);
+    await workspaceRegistry.update(record.workspaceId, (current) => ({
+      ...current,
+      title: "Renamed",
+    }));
+    expect((await workspaceRegistry.get(record.workspaceId))?.incarnation).toBe(record.incarnation);
+    await workspaceRegistry.archive(record.workspaceId, "2026-10-10T01:00:00Z");
+    expect((await workspaceRegistry.get(record.workspaceId))?.incarnation).toBe(record.incarnation);
+    const restored = await workspaceRegistry.update(record.workspaceId, (current) => ({
+      ...current,
+      archivedAt: null,
+    }));
+    expect(restored?.incarnation).toEqual(expect.any(String));
+    expect(restored?.incarnation).not.toBe(record.incarnation);
+    const cold = new FileBackedWorkspaceRegistry(
+      path.join(tmpDir, "projects", "workspaces.json"),
+      logger,
+    );
+    expect(await cold.get(record.workspaceId)).toEqual(restored);
+    const relocated = await cold.update(record.workspaceId, (current) => ({
+      ...current,
+      cwd: path.join(tmpDir, "other"),
+    }));
+    expect(relocated?.incarnation).not.toBe(restored?.incarnation);
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "handoff retention survives stale edits until explicit archive",
+    async () => {
+      const record = createPersistedWorkspaceRecord({
+        workspaceId: "retained",
+        projectId: "project",
+        cwd: tmpDir,
+        kind: "directory",
+        displayName: "Retained",
+        createdAt: "2026-10-10T00:00:00Z",
+        updatedAt: "2026-10-10T00:00:00Z",
+      });
+      await workspaceRegistry.upsert(record);
+      const request = {
+        workspaceId: record.workspaceId,
+        expectedIncarnation: record.incarnation!,
+        transferId: "3edce3ba-874a-428e-b940-5f493b520f19",
+        retainedAt: "2026-10-10T01:00:00Z",
+      };
+      const retained = await workspaceRegistry.retainForHandoff(request);
+      expect(retained.retention).toEqual({
+        kind: "handoff",
+        transferId: request.transferId,
+        retainedAt: request.retainedAt,
+      });
+      await workspaceRegistry.archive(record.workspaceId, request.retainedAt, {
+        automatic: { expectedIncarnation: record.incarnation },
+      });
+      expect(await workspaceRegistry.get(record.workspaceId)).toEqual(retained);
+      await workspaceRegistry.upsert({ ...record, title: "Stale snapshot" });
+      await workspaceRegistry.update(record.workspaceId, () => ({
+        ...record,
+        title: "Stale updater",
+      }));
+      const cold = new FileBackedWorkspaceRegistry(
+        path.join(tmpDir, "projects", "workspaces.json"),
+        logger,
+      );
+      expect(await cold.get(record.workspaceId)).toMatchObject({
+        retention: retained.retention,
+        title: "Stale updater",
+      });
+      expect(
+        (await cold.retainForHandoff({ ...request, retainedAt: "2026-10-10T02:00:00Z" })).retention,
+      ).toEqual(retained.retention);
+      await cold.archive(record.workspaceId, "2026-10-10T03:00:00Z");
+      expect((await cold.get(record.workspaceId))?.retention).toBeUndefined();
+      await expect(cold.retainForHandoff(request)).rejects.toThrow("opening changed");
+      // An old retained snapshot cannot reinstate the marker when reopening.
+      await cold.upsert({ ...retained, archivedAt: null });
+      const reopened = await cold.get(record.workspaceId);
+      expect(reopened?.retention).toBeUndefined();
+      expect(reopened?.incarnation).not.toBe(record.incarnation);
+      await expect(cold.retainForHandoff(request)).rejects.toThrow("opening changed");
+    },
+  );
+
+  test.skipIf(process.platform === "win32").each(["write", "rename", "sync"] as const)(
+    "failed retention %s is repaired before another mutation can drop the protection",
+    async (phase) => {
+      let fail = false;
+      const file = path.join(tmpDir, "projects", "workspaces.json");
+      class InterruptedPublicationRegistry extends FileBackedWorkspaceRegistry {
+        protected override async synchronizePublication() {
+          if (fail && phase === "sync") throw new Error("retention sync failed");
+          await super.synchronizePublication();
+        }
+      }
+      const registry = new InterruptedPublicationRegistry(file, logger, {
+        writeRecords: async (filePath, records) => {
+          if (fail && phase === "write") throw new Error("retention write failed");
+          await writeJsonFileAtomic(filePath, records);
+          if (fail && phase === "rename") throw new Error("retention rename acknowledgement lost");
+        },
+      });
+      const record = createPersistedWorkspaceRecord({
+        workspaceId: "retained",
+        projectId: "project",
+        cwd: tmpDir,
+        kind: "directory",
+        displayName: "Retained",
+        createdAt: "2026-10-10T00:00:00Z",
+        updatedAt: "2026-10-10T00:00:00Z",
+      });
+      await registry.upsert(record);
+      const notify = vi.fn();
+      registry.subscribeToMutations(notify);
+      const request = {
+        workspaceId: record.workspaceId,
+        expectedIncarnation: record.incarnation!,
+        transferId: "3edce3ba-874a-428e-b940-5f493b520f19",
+        retainedAt: "2026-10-10T01:00:00Z",
+      };
+      fail = true;
+      await expect(registry.retainForHandoff(request)).rejects.toThrow("retention");
+      await expect(registry.get(record.workspaceId)).rejects.toThrow("retention");
+      await expect(registry.list()).rejects.toThrow("retention");
+      await expect(registry.upsert(record)).rejects.toThrow("retention");
+      await expect(registry.archive(record.workspaceId, request.retainedAt)).rejects.toThrow(
+        "retention",
+      );
+      await expect(registry.remove(record.workspaceId)).rejects.toThrow("retention");
+      expect(notify).not.toHaveBeenCalled();
+      fail = false;
+      await registry.update(record.workspaceId, () => ({ ...record, title: "Edit after failure" }));
+      const cold = new FileBackedWorkspaceRegistry(file, logger);
+      expect(await cold.get(record.workspaceId)).toMatchObject({
+        archivedAt: null,
+        title: "Edit after failure",
+        retention: {
+          kind: "handoff",
+          transferId: request.transferId,
+          retainedAt: request.retainedAt,
+        },
+      });
+    },
+  );
 
   test("creates, updates, archives, deletes, and lists project records", async () => {
     await projectRegistry.initialize();

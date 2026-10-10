@@ -95,6 +95,7 @@ export interface TerminalManager {
 
 export interface TerminalManagerOptions {
   getTerminalActivityUrl?: () => string | null;
+  createTerminal?: typeof createTerminal;
 }
 
 function createActivityToken(): string {
@@ -344,7 +345,7 @@ export function createTerminalManager(
       let session: TerminalSession;
       try {
         session = registerSession(
-          await createTerminal({
+          await (managerOptions.createTerminal ?? createTerminal)({
             id: terminalId,
             cwd: options.cwd,
             workspaceId: options.workspaceId,
@@ -438,11 +439,8 @@ export function createTerminalManager(
       if (!session) {
         return;
       }
-      try {
-        await session.killAndWait(options);
-      } finally {
-        removeSessionById(id, { kill: false });
-      }
+      await session.killAndWait(options);
+      removeSessionById(id, { kill: false });
     },
 
     async captureTerminal(

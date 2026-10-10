@@ -41,6 +41,7 @@ export interface NewTabLauncher {
   showChanges: boolean;
   showPullRequest: boolean;
   showBrowser: boolean;
+  agentDisabled: boolean;
   terminalDisabled: boolean;
   launch: (selection: NewTabSelection, destination: WorkspaceTabLaunchDestination) => void;
 }
@@ -131,7 +132,7 @@ export function useWorkspaceTabLaunchCatalog(input: {
         label: t("workspace.tabs.fallback.agent"),
         Icon: SquarePen,
         shortcutActionId: "workspace-tab-target-agent",
-        disabled: false,
+        disabled: launcher.agentDisabled,
         panelKind: "draft",
         hidden: isExplorerMenu,
         launch: launchSelection(BUILT_IN_SELECTIONS.agent),

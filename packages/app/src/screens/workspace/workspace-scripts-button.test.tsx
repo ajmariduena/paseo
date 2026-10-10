@@ -14,6 +14,7 @@ void testI18n;
 
 const {
   theme,
+  setSourceHeldMock,
   startWorkspaceScriptMock,
   killTerminalMock,
   setStringAsyncMock,
@@ -50,6 +51,7 @@ const {
 
   return {
     theme: hoistedTheme,
+    setSourceHeldMock: vi.fn<(held: boolean) => void>(),
     startWorkspaceScriptMock: vi.fn(async () => ({ terminalId: "terminal-script-1" })),
     killTerminalMock: vi.fn(async () => ({
       terminalId: "terminal-script-1",
@@ -113,19 +115,33 @@ vi.mock("@/workspace-service-routes/store", async () => {
   };
 });
 
-vi.mock("@/stores/session-store", () => ({
-  useSessionStore: (selector: (state: unknown) => unknown) =>
-    selector({
+vi.mock("@/stores/session-store", async () => {
+  const { create } = await import("zustand");
+  const store = create(() => ({
+    sessions: {
+      "test-server": {
+        client: { startWorkspaceScript: startWorkspaceScriptMock, killTerminal: killTerminalMock },
+        workspaces: new Map([
+          ["workspace-1", { id: "workspace-1", handoff: null as { state: "prepared" } | null }],
+        ]),
+      },
+    },
+  }));
+  setSourceHeldMock.mockImplementation((held) =>
+    store.setState((state) => ({
       sessions: {
+        ...state.sessions,
         "test-server": {
-          client: {
-            startWorkspaceScript: startWorkspaceScriptMock,
-            killTerminal: killTerminalMock,
-          },
+          ...state.sessions["test-server"],
+          workspaces: new Map([
+            ["workspace-1", { id: "workspace-1", handoff: held ? { state: "prepared" } : null }],
+          ]),
         },
       },
-    }),
-}));
+    })),
+  );
+  return { useSessionStore: store };
+});
 
 vi.mock("@/contexts/toast-context", () => ({
   useToast: () => ({ show: vi.fn(), error: vi.fn(), copied: copiedToastMock }),
@@ -320,6 +336,7 @@ describe("WorkspaceScriptsButton", () => {
       },
     );
     document.body.innerHTML = "";
+    setSourceHeldMock(false);
     startWorkspaceScriptMock.mockClear();
     killTerminalMock.mockClear();
     setStringAsyncMock.mockClear();
@@ -584,6 +601,40 @@ describe("WorkspaceScriptsButton", () => {
     expect(
       document.querySelector('[data-testid="workspace-scripts-route-dev-tooltip"]')?.textContent,
     ).toBe("Choose URL");
+  });
+
+  it("drops a queued restart when handoff holds the source", async () => {
+    current = renderScripts([
+      script({ scriptName: "dev", lifecycle: "running", terminalId: "terminal-script-1" }),
+    ]);
+    const restart = requireRow("dev").querySelector(
+      '[data-testid="workspace-scripts-restart-dev"]',
+    );
+    expect(restart).not.toBeNull();
+    fireEvent.click(restart as HTMLElement);
+    await act(async () => {});
+    expect(killTerminalMock).toHaveBeenCalledWith("terminal-script-1");
+    act(() => setSourceHeldMock(true));
+    await current.rerender([
+      script({
+        scriptName: "dev",
+        lifecycle: "stopped",
+        exitCode: 0,
+        terminalId: "terminal-script-1",
+      }),
+    ]);
+    expect(startWorkspaceScriptMock).not.toHaveBeenCalled();
+    const start = requireRow("dev").querySelector<HTMLButtonElement>(
+      '[data-testid="workspace-scripts-start-dev"]',
+    );
+    expect(start?.disabled).toBe(true);
+    act(() => setSourceHeldMock(false));
+    await act(async () => {});
+    expect(startWorkspaceScriptMock).not.toHaveBeenCalled();
+    expect(start?.disabled).toBe(false);
+    fireEvent.click(start!);
+    await act(async () => {});
+    expect(startWorkspaceScriptMock).toHaveBeenCalledWith("workspace-1", "dev");
   });
 
   it("restarts a script once its stopped lifecycle arrives", async () => {

@@ -6,7 +6,7 @@ const SWEEP_INTERVAL_MS = 24 * 60 * 60_000;
 
 export interface WorktreeStorageSweeper {
   scheduleSoon(): void;
-  dispose(): void;
+  dispose(): Promise<void>;
 }
 
 export function startWorktreeStorageSweeper(options: {
@@ -16,7 +16,7 @@ export function startWorktreeStorageSweeper(options: {
 }): WorktreeStorageSweeper {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
-  let running = false;
+  let running: Promise<void> | null = null;
 
   function schedule(delayMs: number): void {
     if (stopped) return;
@@ -25,10 +25,18 @@ export function startWorktreeStorageSweeper(options: {
     timer.unref();
   }
 
-  async function run(): Promise<void> {
+  function run(): Promise<void> {
     timer = null;
-    if (stopped || running) return;
-    running = true;
+    if (stopped) return Promise.resolve();
+    if (running) return running;
+    running = sweep().finally(() => {
+      running = null;
+      schedule(SWEEP_INTERVAL_MS);
+    });
+    return running;
+  }
+
+  async function sweep(): Promise<void> {
     try {
       if (!options.isEnabled()) return;
       const result = await sweepOwnedArchivedWorktrees(
@@ -52,9 +60,6 @@ export function startWorktreeStorageSweeper(options: {
       );
     } catch (error) {
       options.logger.warn({ err: error }, "Automatic worktree cleanup sweep failed");
-    } finally {
-      running = false;
-      schedule(SWEEP_INTERVAL_MS);
     }
   }
 
@@ -65,6 +70,7 @@ export function startWorktreeStorageSweeper(options: {
       stopped = true;
       if (timer) clearTimeout(timer);
       timer = null;
+      return running ?? Promise.resolve();
     },
   };
 }

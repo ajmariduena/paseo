@@ -9,6 +9,11 @@ import type {
 } from "../../services/forge-service.js";
 import type { AgentManager } from "../agent/agent-manager.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
+import type { HandoffOwnership } from "../handoff/ownership.js";
+import {
+  HandoffPullRequestWatchReviewSchema,
+  type HandoffPullRequestWatchReview,
+} from "@getpaseo/protocol/handoff-control";
 import { dispatchAgentMessage, type SystemMessage } from "../agent/message-dispatch.js";
 import {
   evaluatePullRequestWatch,
@@ -24,6 +29,7 @@ import {
 } from "./background-task.js";
 import { WatchLifetimes, type WatchEndReason } from "./lifetimes.js";
 import type { PullRequestWatch, PullRequestWatchStore, WatchProgress } from "./watch-store.js";
+import { assertReviewedPullRequestWatches, reviewPullRequestWatch } from "./watch-store.js";
 
 /** One pass a minute; a pull request is read on it only while a check runs or the read is due. */
 export const PULL_REQUEST_WATCH_INTERVAL_MS = 60_000;
@@ -46,6 +52,7 @@ export type PullRequestWatchForgeService = Pick<
 >;
 
 export interface PullRequestWatcherOptions {
+  handoffOwnership?: HandoffOwnership;
   store: PullRequestWatchStore;
   agentManager: AgentManager;
   agentStorage: AgentStorage;
@@ -128,6 +135,7 @@ export class PullRequestWatcher {
   private readonly now: () => number;
   private readonly logger: Logger;
   private readonly wakesInFlight = new Map<string, Promise<void>>();
+  private readonly wakingWatches = new Map<string, PullRequestWatch>();
   // Per pull request URL. Kept in memory: a restart only delays giving up.
   private readonly readFailures = new Map<string, number>();
   private readonly lastReads = new Map<string, LastRead>();
@@ -167,6 +175,15 @@ export class PullRequestWatcher {
   }
 
   async watch(target: PullRequestTarget): Promise<WatchPullRequestResult> {
+    return this.options.handoffOwnership
+      ? this.options.handoffOwnership.withMutation(
+          { cwd: target.cwd, agentId: target.agentId },
+          () => this.watchAdmitted(target),
+        )
+      : this.watchAdmitted(target);
+  }
+
+  private async watchAdmitted(target: PullRequestTarget): Promise<WatchPullRequestResult> {
     const service = await this.requireForge(target.cwd);
     const number = await this.resolveNumber(target);
     const summary = await service.getPullRequest({ cwd: target.cwd, number });
@@ -206,10 +223,17 @@ export class PullRequestWatcher {
     }
     // The agent reads the current state in this result, so only later changes wake it.
     const baseline = evaluatePullRequestWatch(draft.progress, reading.observation).next;
-    const { watch, added } = await this.options.store.add({
-      ...draft,
-      progress: { ...baseline, wakes: 0 },
-    });
+    const add = () =>
+      this.options.store.add({
+        ...draft,
+        progress: { ...baseline, wakes: 0 },
+      });
+    const { watch, added } = this.options.handoffOwnership
+      ? await this.options.handoffOwnership.withMutation(
+          { cwd: target.cwd, agentId: target.agentId },
+          add,
+        )
+      : await add();
     this.states.set(watch.id, watchedState(baseline, reading));
     await this.publishTasks();
     const checks = reading.observation.checks;
@@ -249,6 +273,46 @@ export class PullRequestWatcher {
     for (const watch of await this.options.store.removeForAgent(agentId)) {
       this.lifetimes.ended(watch, "archived");
     }
+    await this.publishTasks();
+  }
+
+  async reviewForHandoff(agentIds: string[]): Promise<HandoffPullRequestWatchReview[]> {
+    const ids = new Set(agentIds);
+    const watches = new Map(
+      [...(await this.options.store.list()), ...this.wakingWatches.values()]
+        .filter((watch) => ids.has(watch.agentId))
+        .map((watch) => [watch.id, watch]),
+    );
+    return HandoffPullRequestWatchReviewSchema.array()
+      .max(1000)
+      .parse(
+        [...watches.values()].sort((a, b) => a.id.localeCompare(b.id)).map(reviewPullRequestWatch),
+      );
+  }
+
+  /** Watches stay stopped after cancellation; the review names that disposition before preparation. */
+  async stopForHandoff(
+    agentIds: string[],
+    approved: HandoffPullRequestWatchReview[],
+  ): Promise<void> {
+    if (agentIds.some((id) => !this.options.handoffOwnership?.holdsAgent(id)))
+      throw new Error("PR watch shutdown requires the source handoff fence");
+    assertReviewedPullRequestWatches(await this.reviewForHandoff(agentIds), approved);
+    if (approved.length === 0) return;
+    for (const watch of await this.options.store.stopForHandoff(agentIds, approved))
+      this.lifetimes.ended(watch, "handoff");
+    // The review retains ids even if a previous stop committed before its reply was lost.
+    const reviewed = new Set(approved.map((watch) => watch.id));
+    for (const agentId of agentIds) {
+      for (const entry of this.options.agentManager.messageQueue.entries(agentId)) {
+        if (
+          entry.origin === "system" &&
+          [...reviewed].some((id) => entry.id.startsWith(`pr-watch:${id}:`))
+        )
+          await this.options.agentManager.messageQueue.cancelForHandoff(agentId, entry.id);
+      }
+    }
+    await Promise.all([...reviewed].map((id) => this.wakesInFlight.get(id)));
     await this.publishTasks();
   }
 
@@ -432,6 +496,7 @@ export class PullRequestWatcher {
   }
 
   private async evaluate(watch: PullRequestWatch, reading: OpenReading): Promise<void> {
+    if ((await this.options.store.get(watch.id))?.startedAt !== watch.startedAt) return;
     const report = evaluatePullRequestWatch(watch.progress, reading.observation);
     this.states.set(watch.id, watchedState(report.next, reading));
     if (report.changes.length === 0) {
@@ -447,7 +512,7 @@ export class PullRequestWatcher {
       report,
     });
     if (report.exhausted) {
-      await this.options.store.remove(watch.id);
+      if (!(await this.options.store.remove(watch.id))) return;
       this.wake(watch, message, { kind: "final" });
       this.lifetimes.ended(watch, "comment-limit");
       return;
@@ -468,7 +533,7 @@ export class PullRequestWatcher {
     }
     this.readFailures.delete(key);
     for (const watch of group) {
-      await this.options.store.remove(watch.id);
+      if (!(await this.options.store.remove(watch.id))) continue;
       this.wake(
         watch,
         renderUnreadableWake({
@@ -483,6 +548,8 @@ export class PullRequestWatcher {
   }
 
   private wake(watch: PullRequestWatch, message: SystemMessage, outcome: WakeOutcome): void {
+    if (this.options.handoffOwnership?.forAgent(watch.agentId)) return;
+    this.wakingWatches.set(watch.id, watch);
     this.lifetimes.woke(watch);
     const delivery = this.deliverWake(watch, message, outcome)
       .catch((error: unknown) => {
@@ -490,6 +557,7 @@ export class PullRequestWatcher {
       })
       .finally(() => {
         this.wakesInFlight.delete(watch.id);
+        this.wakingWatches.delete(watch.id);
       });
     this.wakesInFlight.set(watch.id, delivery);
   }
@@ -504,20 +572,26 @@ export class PullRequestWatcher {
     outcome: WakeOutcome,
   ): Promise<void> {
     const { store, agentManager, agentStorage } = this.options;
+    const messageId = `pr-watch:${watch.id}:${randomUUID()}`;
     const disposition = await dispatchAgentMessage({
       agentManager,
       agentStorage,
       agentId: watch.agentId,
-      messageId: `pr-watch:${watch.id}:${randomUUID()}`,
+      messageId,
       policy: {
         kind: "system",
         maySteer: true,
         prepare: async () => {
+          if (this.options.handoffOwnership?.forAgent(watch.agentId)) return null;
           if (outcome.kind === "final") return message;
           const current = await store.get(watch.id);
           return current?.startedAt === watch.startedAt ? message : null;
         },
         queueAs: { origin: "system" },
+        onQueued: async () => {
+          if (this.options.handoffOwnership?.forAgent(watch.agentId))
+            await agentManager.messageQueue.cancelForHandoff(watch.agentId, messageId);
+        },
       },
       logger: this.logger,
     });

@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pino } from "pino";
@@ -25,6 +26,7 @@ import type {
 import type { WorkspaceGitService } from "../../workspace-git-service.js";
 import { createWorkspaceScriptsService } from "./workspace-scripts-service.js";
 import { deriveProjectServiceSlug } from "../../workspace-git-metadata.js";
+import { HandoffOwnership } from "../../handoff/ownership.js";
 
 // The production module reads only WorkspaceGitService.{peekSnapshot,getProjectSlug},
 // WorkspaceRegistry.get, and forwards the launcher + opaque managers to the injected
@@ -74,6 +76,8 @@ function fakeGitService() {
 const availableTerminalManager = {} as unknown as TerminalManager;
 
 interface BuildOptions {
+  handoffOwnership?: HandoffOwnership;
+  spawn?: (options: SpawnWorkspaceScriptOptions) => Promise<WorktreeScriptResult>;
   serviceProxy?: ServiceProxySubsystem | null;
   scriptRuntimeStore?: WorkspaceScriptRuntimeStore | null;
   terminalManager?: TerminalManager | null;
@@ -94,6 +98,7 @@ function buildService(options: BuildOptions = {}) {
       : options.workspace;
 
   const service = createWorkspaceScriptsService({
+    handoffOwnership: options.handoffOwnership,
     serviceProxy:
       options.serviceProxy === undefined
         ? createServiceProxySubsystem({ logger })
@@ -116,6 +121,7 @@ function buildService(options: BuildOptions = {}) {
     publishStatusUpdate: (message) => published.push(message),
     async spawnWorkspaceScript(spawnOptions): Promise<WorktreeScriptResult> {
       spawnCalls.push(spawnOptions);
+      if (options.spawn) return options.spawn(spawnOptions);
       if (options.spawnThrows) {
         throw new Error(options.spawnThrows);
       }
@@ -151,6 +157,130 @@ afterEach(() => {
     }
   }
 });
+
+async function handoffFixture() {
+  const root = mkdtempSync(join(tmpdir(), "paseo-handoff-scripts-"));
+  tempDirs.push(root);
+  const cwd = join(root, "workspace");
+  mkdirSync(cwd);
+  writeFileSync(
+    join(cwd, "paseo.json"),
+    JSON.stringify({ scripts: { app: { command: "echo ready", type: "script" } } }),
+  );
+  const ownership = new HandoffOwnership({
+    directory: join(root, "ownership"),
+    sourceServerId: "source-host",
+  });
+  await ownership.initialize();
+  const transfer = {
+    id: randomUUID(),
+    cwd,
+    workspaceId: "ws-1",
+    agentIds: [],
+    destinationServerId: "target-host",
+    reservationId: randomUUID(),
+  };
+  const workspace = { workspaceId: "ws-1", cwd } as PersistedWorkspaceRecord;
+  return { ownership, transfer, workspace };
+}
+
+test("handoff blocks both script entry points before calling the launcher and cancellation permits retry", async () => {
+  const { ownership, transfer, workspace } = await handoffFixture();
+  const { service, emitted, spawnCalls } = buildService({ handoffOwnership: ownership, workspace });
+  await ownership.prepare(transfer);
+  await service.start(request);
+  expect(spawnCalls).toEqual([]);
+  expect(emitted).toEqual([
+    {
+      type: "start_workspace_script_response",
+      payload: {
+        requestId: "req-1",
+        workspaceId: "ws-1",
+        scriptName: "app",
+        terminalId: null,
+        error: `Workspace is held by handoff ${transfer.id} (preparing)`,
+      },
+    },
+  ]);
+  await expect(service.launch(request)).rejects.toMatchObject({ code: "fenced" });
+  expect(spawnCalls).toEqual([]);
+  expect(await service.list("ws-1")).toHaveLength(1);
+  await ownership.cancel(transfer.id);
+  await service.start(request);
+  expect(spawnCalls).toHaveLength(1);
+  expect(emitted.at(-1)).toMatchObject({
+    type: "start_workspace_script_response",
+    payload: { error: null, terminalId: "terminal-1" },
+  });
+});
+
+test.each([null, "Launcher failed"])(
+  "handoff drains script admission and releases it on completion (%s)",
+  async (failureMessage) => {
+    const { ownership, transfer, workspace } = await handoffFixture();
+    const entered = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    const runtimeStore = new WorkspaceScriptRuntimeStore();
+    const { service, emitted } = buildService({
+      handoffOwnership: ownership,
+      workspace,
+      scriptRuntimeStore: runtimeStore,
+      spawn: async () => {
+        entered.resolve();
+        await finish.promise;
+        if (failureMessage) throw new Error(failureMessage);
+        runtimeStore.set({
+          workspaceId: "ws-1",
+          scriptName: "app",
+          type: "script",
+          lifecycle: "running",
+          terminalId: "terminal-1",
+          exitCode: null,
+        });
+        return { scriptName: "app", hostname: null, port: null, terminalId: "terminal-1" };
+      },
+    });
+    const starting = service.start(request);
+    await entered.promise;
+    try {
+      await ownership.prepare(transfer);
+      await expect(ownership.markReady(transfer.id, "a".repeat(64))).rejects.toMatchObject({
+        code: "invalid_state",
+      });
+    } finally {
+      finish.resolve();
+      await starting;
+    }
+    await ownership.drain(transfer.id);
+    expect((await ownership.markReady(transfer.id, "a".repeat(64))).state).toBe("ready");
+    expect(emitted).toEqual([
+      {
+        type: "start_workspace_script_response",
+        payload: {
+          requestId: "req-1",
+          workspaceId: "ws-1",
+          scriptName: "app",
+          terminalId: failureMessage ? null : "terminal-1",
+          error: failureMessage,
+        },
+      },
+    ]);
+    expect(runtimeStore.listForWorkspace("ws-1")).toEqual(
+      failureMessage
+        ? []
+        : [
+            {
+              workspaceId: "ws-1",
+              scriptName: "app",
+              type: "script",
+              lifecycle: "running",
+              terminalId: "terminal-1",
+              exitCode: null,
+            },
+          ],
+    );
+  },
+);
 
 describe("buildSnapshot", () => {
   test("returns no scripts when the service proxy is unavailable", async () => {
@@ -232,9 +362,9 @@ describe("emitStatusUpdate", () => {
 });
 
 describe("stop", () => {
-  test("kills the supervised terminal and returns the stopped service metadata", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "workspace-scripts-"));
-    tempDirs.push(dir);
+  test("handoff keeps supervised script stopping available and returns its stopped metadata", async () => {
+    const { ownership, transfer, workspace } = await handoffFixture();
+    const dir = workspace.cwd;
     writeFileSync(
       join(dir, "paseo.json"),
       JSON.stringify({ scripts: { web: { type: "service", command: "npm run web", port: 3000 } } }),
@@ -263,11 +393,13 @@ describe("stop", () => {
       },
     } as unknown as TerminalManager;
     const { service } = buildService({
-      workspace: { workspaceId: "ws-1", cwd: dir } as PersistedWorkspaceRecord,
+      handoffOwnership: ownership,
+      workspace,
       scriptRuntimeStore: runtimeStore,
       terminalManager,
     });
 
+    await ownership.prepare(transfer);
     await expect(service.stop({ workspaceId: "ws-1", scriptName: "web" })).resolves.toMatchObject({
       scriptName: "web",
       type: "service",

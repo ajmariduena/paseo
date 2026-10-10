@@ -90,7 +90,7 @@ jobs:
         run: node scripts/npm-retry.mjs ci
 
       - name: Lint lockfile
-        run: npx --yes lockfile-lint --path package-lock.json --type npm --allowed-hosts npm --validate-https --validate-integrity
+        run: npm run lint:lockfile
 
       - name: Verify dependency signatures
         run: npm audit signatures
@@ -192,8 +192,8 @@ jobs:
 
   # native-recursive.ts serves darwin and win32, but windows-latest above is the only
   # runner that exercises it. macOS — the platform the reported watcher bug was on —
-  # otherwise has no server-test coverage. Scoped to the observer/watcher suites to
-  # bound runtime.
+  # otherwise has no server-test coverage. Keep observation and handoff contracts
+  # scoped here to bound runtime.
   server-tests-macos:
     name: server-tests (macos-14, file observation)
     needs: changes
@@ -217,9 +217,54 @@ jobs:
         run: |
           npm run test:unit --workspace=@getpaseo/server -- \
             src/server/file-observer \
+            src/server/watcher-liveness-canary.test.ts \
             src/server/workspace-git-service.observation.test.ts \
             src/server/workspace-git-service.observation.integration.test.ts \
+            src/server/workspace-reconciliation-observation.test.ts \
             --bail=1
+
+      - name: Run handoff tests
+        run: |
+          npx vitest run --config packages/server/vitest.config.ts \
+            packages/server/src/server/handoff/workspace.test.ts \
+            packages/server/src/server/handoff/workspace.posix.test.ts \
+            packages/server/src/server/handoff/archive.test.ts \
+            packages/server/src/server/handoff/ownership.test.ts \
+            packages/server/src/server/handoff/ownership.posix.test.ts \
+            packages/server/src/server/handoff/archive.e2e.test.ts \
+            --bail=1 --maxWorkers=1
+          npx vitest run --config packages/server/vitest.config.ts \
+            packages/server/src/server/agent/providers/claude/agent.spawn.test.ts \
+            --bail=1 --maxWorkers=1
+          npx vitest run --config packages/server/vitest.config.ts \
+            packages/server/src/server/agent/agent-manager.test.ts \
+            packages/server/src/server/agent/agent-storage.test.ts \
+            packages/server/src/server/schedule/service.test.ts \
+            packages/server/src/server/schedule/store.test.ts \
+            packages/server/src/server/agent/mcp-server.test.ts \
+            packages/server/src/server/bootstrap.smoke.test.ts \
+            packages/server/src/server/bootstrap-managed-processes.test.ts \
+            packages/server/src/server/managed-processes/managed-processes.test.ts \
+            packages/server/src/utils/tree-kill.test.ts \
+            packages/server/src/server/workspace-auto-name.test.ts \
+            packages/server/src/server/workspace-reconciliation-service.test.ts \
+            packages/server/src/server/worktree-storage.test.ts \
+            packages/server/src/server/workspace-archive-service.test.ts \
+            packages/server/src/server/paseo-worktree-service.test.ts \
+            packages/server/src/server/worktree-session.test.ts \
+            packages/server/src/server/worktree-bootstrap.test.ts \
+            packages/server/src/server/auto-archive-on-merge/archive-if-safe.test.ts \
+            packages/server/src/server/session.workspaces.test.ts \
+            packages/server/src/server/session/workspace-provisioning/workspace-provisioning-service.test.ts \
+            packages/server/src/server/session/workspace-recovery/workspace-recovery-service.test.ts \
+            packages/server/src/server/session/workspace-scripts/workspace-scripts-service.test.ts \
+            packages/server/src/server/session/files/workspace-files-session.test.ts \
+            packages/server/src/server/session/git-mutation/git-mutation-service.test.ts \
+            packages/server/src/server/session/checkout/checkout-session.test.ts \
+            packages/server/src/terminal/terminal.test.ts \
+            packages/server/src/terminal/terminal-manager.test.ts \
+            packages/server/src/terminal/worker-terminal-manager.test.ts \
+            -t handoff --bail=1 --maxWorkers=1
 
   desktop-tests-ubuntu:
     name: desktop-tests (ubuntu-latest)

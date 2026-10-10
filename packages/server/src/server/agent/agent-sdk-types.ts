@@ -1,3 +1,4 @@
+import type { UUID } from "node:crypto";
 import type {
   AgentBackgroundTask,
   AgentFeature,
@@ -215,6 +216,14 @@ export interface AgentRunOptions {
   resumeFrom?: AgentPersistenceHandle;
   maxThinkingTokens?: number;
   clientMessageId?: string;
+  /** Caller-assigned identity for adapters that advertise nativeMessageIds. Never a client key. */
+  nativeMessageId?: UUID;
+}
+
+export interface AgentTurnStart {
+  turnId: string;
+  /** Required when nativeMessageId was supplied. Dispatched means accepted by adapter input. */
+  promptDisposition?: "dispatched" | "withdrawn";
 }
 
 export interface AgentSteerOptions extends AgentRunOptions {
@@ -627,6 +636,9 @@ export interface AgentSessionConfig {
 
 export interface AgentLaunchContext {
   agentId?: string;
+  runtimeGenerationId?: string;
+  /** Resolve durable owner membership before admitting this process launch. */
+  registerManagedProcess?: (processId: string) => Promise<void>;
   env?: Record<string, string>;
   /**
    * Runtime-only internal Paseo tools. This must never be persisted into
@@ -679,6 +691,8 @@ export interface AgentSession {
   readonly provider: AgentProvider;
   readonly id: string | null;
   readonly capabilities: AgentCapabilityFlags;
+  /** Preserves caller nativeMessageId in provider history and reports start disposition. */
+  readonly nativeMessageIds?: boolean;
   /** The provider can reopen this persisted session after releasing its idle runtime. */
   readonly idleBackendEvictionEligible?: boolean;
   /** Return false while provider-owned background work needs this runtime; reject if it cannot be checked. */
@@ -688,7 +702,7 @@ export interface AgentSession {
    * replay them at their original timestamps; restored sessions omit old rows. */
   readonly initialTimeline?: ImportedTimelineEntry[];
   run(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<AgentRunResult>;
-  startTurn(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<{ turnId: string }>;
+  startTurn(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<AgentTurnStart>;
   steerActiveTurn?(prompt: AgentPromptInput, options: SteerActiveTurnOptions): Promise<SteerResult>;
   subscribe(callback: (event: AgentStreamEvent) => void): () => void;
   streamHistory(): AsyncGenerator<AgentStreamEvent>;
@@ -764,6 +778,8 @@ export interface ResolveAgentDefaultModeInput {
 export interface AgentClient {
   readonly provider: AgentProvider;
   readonly capabilities: AgentCapabilityFlags;
+  /** Every session writer process is registered before its admission gate opens. */
+  readonly tracksManagedProcesses?: boolean;
   createSession(
     config: AgentSessionConfig,
     launchContext?: AgentLaunchContext,

@@ -50,8 +50,17 @@ export const ScheduleRunSchema = z.object({
   status: z.enum(["running", "succeeded", "failed"]),
   agentId: z.guid().nullable(),
   workspaceId: z.string().nullable().optional(),
+  workspaceIncarnation: z.string().optional(),
   output: z.string().nullable(),
   error: z.string().nullable(),
+  origin: z
+    .object({
+      serverId: z.string().min(1),
+      scheduleId: z.string().min(1),
+      agentId: z.string().nullable(),
+      workspaceId: z.string().nullable(),
+    })
+    .optional(),
 });
 export type ScheduleRun = z.infer<typeof ScheduleRunSchema>;
 

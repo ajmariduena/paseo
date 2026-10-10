@@ -3,6 +3,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { mkdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import pino from "pino";
 import {
@@ -30,6 +32,7 @@ import {
 import { createWorktree, deletePaseoWorktree } from "../../../utils/worktree.js";
 import { expandTilde } from "../../../utils/path.js";
 import type { GitMetadataGenerator } from "./git-metadata-generator.js";
+import { HandoffOwnership } from "../../handoff/ownership.js";
 
 function isCheckDetailsResponse(msg: SessionOutboundMessage): boolean {
   return msg.type === "checkout.forge.get_check_details.response";
@@ -107,6 +110,7 @@ interface RecordedGeneratorCalls {
 }
 
 function makeCheckoutSession(options?: {
+  handoffOwnership?: HandoffOwnership;
   paseoHome?: string;
   git?: Partial<WorkspaceGitService>;
   diff?: CheckoutDiffSubscriber;
@@ -166,6 +170,7 @@ function makeCheckoutSession(options?: {
   };
   const github: ForgeService = { ...createGitHubService(), ...options?.github };
   const checkout = new CheckoutSession({
+    handoffOwnership: options?.handoffOwnership,
     host,
     gitMutation,
     workspaceGitService: createNoopWorkspaceGitService(options?.git),
@@ -223,6 +228,200 @@ function createGitSnapshot(
 }
 
 describe("CheckoutSession", () => {
+  it.each([
+    "switch",
+    "rename",
+    "discard",
+    "stash-save",
+    "stash-pop",
+    "commit",
+    "merge",
+    "merge-from-base",
+    "pull",
+    "push",
+    "create-pr",
+    "merge-pr",
+    "auto-merge",
+  ])("handoff rejects checkout %s before running Git or provider operations", async (operation) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "handoff-checkout-operation-")));
+    const cwd = join(root, "workspace");
+    mkdirSync(cwd);
+    try {
+      const ownership = new HandoffOwnership({
+        directory: join(root, "ownership"),
+        sourceServerId: "source",
+      });
+      await ownership.initialize();
+      const id = randomUUID();
+      await ownership.prepare({
+        id,
+        cwd,
+        workspaceId: "workspace",
+        agentIds: [],
+        destinationServerId: "target",
+        reservationId: randomUUID(),
+      });
+      const { checkout, emitted, hostCalls, gitMutationCalls, generatorCalls } =
+        makeCheckoutSession({ handoffOwnership: ownership });
+      const requestId = `handoff-${operation}`;
+      const operations: Record<string, () => Promise<void>> = {
+        switch: () =>
+          checkout.handleCheckoutSwitchBranchRequest({
+            type: "checkout_switch_branch_request",
+            cwd,
+            branch: "feature",
+            requestId,
+          }),
+        rename: () =>
+          checkout.handleCheckoutRenameBranchRequest({
+            type: "checkout.rename_branch.request",
+            cwd,
+            branch: "feature",
+            requestId,
+          }),
+        discard: () =>
+          checkout.handleCheckoutDiscardChangesRequest({
+            type: "checkout.discard_changes.request",
+            cwd,
+            paths: ["notes.txt"],
+            requestId,
+          }),
+        "stash-save": () =>
+          checkout.handleStashSaveRequest({ type: "stash_save_request", cwd, requestId }),
+        "stash-pop": () =>
+          checkout.handleStashPopRequest({
+            type: "stash_pop_request",
+            cwd,
+            stashIndex: 0,
+            requestId,
+          }),
+        commit: () =>
+          checkout.handleCheckoutCommitRequest({ type: "checkout_commit_request", cwd, requestId }),
+        merge: () =>
+          checkout.handleCheckoutMergeRequest({
+            type: "checkout_merge_request",
+            cwd,
+            baseRef: "main",
+            requestId,
+          }),
+        "merge-from-base": () =>
+          checkout.handleCheckoutMergeFromBaseRequest({
+            type: "checkout_merge_from_base_request",
+            cwd,
+            baseRef: "main",
+            requestId,
+          }),
+        pull: () =>
+          checkout.handleCheckoutPullRequest({ type: "checkout_pull_request", cwd, requestId }),
+        push: () =>
+          checkout.handleCheckoutPushRequest({ type: "checkout_push_request", cwd, requestId }),
+        "create-pr": () =>
+          checkout.handleCheckoutPrCreateRequest({
+            type: "checkout_pr_create_request",
+            cwd,
+            requestId,
+          }),
+        "merge-pr": () =>
+          checkout.handleCheckoutPrMergeRequest({
+            type: "checkout_pr_merge_request",
+            cwd,
+            mergeMethod: "squash",
+            requestId,
+          }),
+        "auto-merge": () =>
+          checkout.handleCheckoutForgeSetAutoMergeRequest({
+            type: "checkout.forge.set_auto_merge.request",
+            cwd,
+            enabled: true,
+            mergeMethod: "squash",
+            requestId,
+          }),
+      };
+      await operations[operation]();
+      expect(emitted).toHaveLength(1);
+      expect(emitted[0]).toMatchObject({
+        payload: {
+          requestId,
+          error: { message: `Workspace is held by handoff ${id} (preparing)` },
+        },
+      });
+      expect(hostCalls.renameCurrentBranch).toEqual([]);
+      expect(gitMutationCalls).toEqual({ notifyGitMutation: [], checkoutExistingBranch: [] });
+      expect(generatorCalls).toEqual({ generateCommitMessage: [], generatePullRequestText: [] });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("handoff prevents a merge from another worktree into the fenced target checkout", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "handoff-merge-target-")));
+    const base = join(root, "base");
+    const source = join(root, "source");
+    mkdirSync(base);
+    const git = (cwd: string, ...args: string[]) =>
+      execFileSync("git", args, { cwd, stdio: "pipe" }).toString().trim();
+    try {
+      git(base, "init", "-b", "main");
+      git(base, "config", "user.email", "test@example.com");
+      git(base, "config", "user.name", "Paseo Test");
+      writeFileSync(join(base, "notes.txt"), "base\n");
+      git(base, "add", "-A");
+      git(base, "commit", "-m", "base");
+      git(base, "worktree", "add", "-b", "feature", source);
+      writeFileSync(join(source, "notes.txt"), "feature\n");
+      git(source, "commit", "-am", "feature");
+      const before = git(base, "rev-parse", "HEAD");
+      const ownership = new HandoffOwnership({
+        directory: join(root, "ownership"),
+        sourceServerId: "source-host",
+      });
+      await ownership.initialize();
+      const id = randomUUID();
+      await ownership.prepare({
+        id,
+        cwd: base,
+        workspaceId: "base-workspace",
+        agentIds: [],
+        destinationServerId: "target-host",
+        reservationId: randomUUID(),
+      });
+      const { checkout, emitted } = makeCheckoutSession({
+        handoffOwnership: ownership,
+        paseoHome: root,
+        git: { getSnapshot: async () => createGitSnapshot(source, "feature") },
+      });
+      const request = {
+        type: "checkout_merge_request" as const,
+        cwd: source,
+        baseRef: "main",
+        requestId: "merge-handoff",
+      };
+      await checkout.handleCheckoutMergeRequest(request);
+      expect(emitted).toMatchObject([
+        {
+          type: "checkout_merge_response",
+          payload: {
+            success: false,
+            requestId: request.requestId,
+            error: { message: `Workspace is held by handoff ${id} (preparing)` },
+          },
+        },
+      ]);
+      expect(git(base, "rev-parse", "HEAD")).toBe(before);
+      expect(readFileSync(join(base, "notes.txt"), "utf8")).toBe("base\n");
+      await ownership.cancel(id);
+      await checkout.handleCheckoutMergeRequest(request);
+      expect(emitted[1]).toMatchObject({
+        type: "checkout_merge_response",
+        payload: { success: true, error: null },
+      });
+      expect(readFileSync(join(base, "notes.txt"), "utf8").replaceAll("\r\n", "\n")).toBe(
+        "feature\n",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
   describe("status", () => {
     it("emits a checkout status response built from the git snapshot", async () => {
       const { checkout, emitted } = makeCheckoutSession({

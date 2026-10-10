@@ -569,7 +569,16 @@ class FakeOpenCodeProcess extends EventEmitter {
 }
 
 class FakeManagedProcesses implements ManagedProcessRegistry {
+  async stopRuntime(): Promise<void> {
+    throw new Error("No tracked runtime in this fixture");
+  }
+  async retireStoppedRuntime(): Promise<void> {}
+
   private records: ManagedProcessRecord[] = [];
+
+  async stop(): Promise<void> {
+    throw new Error("No tracked process tree in this fixture");
+  }
 
   async record(input: ManagedProcessRecordInput): Promise<ManagedProcessRecord> {
     const record: ManagedProcessRecord = {

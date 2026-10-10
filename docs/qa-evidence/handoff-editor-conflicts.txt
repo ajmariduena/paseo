@@ -1,0 +1,205 @@
+Editor and creation regressions — 2026-10-10
+
+CI: https://github.com/ajmariduena/paseo/actions/runs/37988796056/job/114017778113
+The cancelled workflow ran head ff9be424c. Shard 2 independently completed with
+three failing browser cases, each also failing its retry. Two failures were:
+- a clean file replaced on disk offers one working reload action
+- a file check error offers a working retry
+Both expected no Overwrite button but received one. The relevant editor code
+was unchanged between that head and the current baseline 6fa01234d.
+
+A disk observation must preserve whether the user has local edits. Comparing
+an untouched buffer with newly observed disk bytes incorrectly marks it modified,
+creates a recovery draft and offers to overwrite a file the user never edited.
+Explicit editor edits still compare against the newer disk version during a
+conflict, preserving the existing regression for reverting locally edited bytes.
+
+The new missing/error cases prove no local edits, no recovery draft, no writes
+during the handoff save barrier, and successful explicit reload. All 47 cases
+in the existing editor model suite pass. Both originally failing editor cases now
+pass in real Chromium against an isolated daemon (10.5 seconds each). The run
+used explicit local browser libraries and font configuration because this Linux
+host has no system font installation. No app changes were needed for that setup.
+The workspace-creation failure also reproduced locally. The one-shot startup
+fixture removed its failure gate when automatic workspace naming opened an
+internal session, allowing the requested Codex agent to start afterward. The gate
+now fails every creation until explicitly released. Retry tests release it only
+after checking the visible failure and preserved workspace.
+
+The four affected startup cases pass in Chromium: navigation before initialization,
+retry, retry after remount, and Codex Full Access preference retention with the
+expected visible startup failure. No real provider turn is required for the Codex
+failure path.
+This evidence makes no provider continuity or physical-host handoff claim.
+
+Before fix (expected failure)
+$ cd packages/app && npx vitest run src/file-pane/editor/model.test.ts --bail=1 -t 'a clean replacement after'
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+
+ ❯ |unit| src/file-pane/editor/model.test.ts (47 tests | 1 failed | 45 skipped) 13ms
+     × a clean replacement after 'missing' offers reload without local edits 9ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |unit| src/file-pane/editor/model.test.ts > FileEditorModel > a clean replacement after 'missing' offers reload without local edits
+AssertionError: expected { readOnly: false, …(8) } to match object { status: 'conflict', …(2) }
+(16 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+    "content": "one",
+-   "modified": false,
++   "modified": true,
+    "status": "conflict",
+  }
+
+ ❯ src/file-pane/editor/model.test.ts:1041:33
+    1039|     observeFile(model, { content: "replacement", hasBom: false, versio…
+    1040|
+    1041|     expect(model.getSnapshot()).toMatchObject({
+       |                                 ^
+    1042|       status: "conflict",
+    1043|       content: "one",
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 45 skipped (47)
+   Start at  00:24:08
+   Duration  772ms (transform 394ms, setup 44ms, import 600ms, tests 13ms, environment 0ms)
+
+
+After fix
+$ cd packages/app && npx vitest run src/file-pane/editor/model.test.ts --bail=1
+
+ RUN  v4.1.7 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/app
+
+
+ Test Files  1 passed (1)
+      Tests  47 passed (47)
+   Start at  00:24:17
+   Duration  926ms (transform 469ms, setup 49ms, import 734ms, tests 24ms, environment 0ms)
+
+
+
+$ npm run typecheck
+
+> paseo@0.11.1 typecheck
+> npm run typecheck --workspaces --if-present
+
+
+> @getpaseo/builtin-plugins@0.11.1 typecheck
+> tsgo -p tsconfig.json --noEmit
+
+
+> @getpaseo/expo-two-way-audio@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/highlight@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/plugin@0.11.1 typecheck
+> tsgo --noEmit && tsgo -p tsconfig.examples.json --noEmit
+
+
+> @getpaseo/protocol@0.11.1 pretypecheck
+> npm run generate:validators
+
+
+> @getpaseo/protocol@0.11.1 generate:validators
+> node scripts/generate-validation-aot.mjs
+
+generated src/generated/validation/ws-outbound.aot.ts from codegen/ws-outbound.compile.ts (WSOutboundMessageSchema)
+
+> @getpaseo/protocol@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/client@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/server@0.11.1 typecheck
+> tsgo -p tsconfig.server.typecheck.json --noEmit
+
+
+> @getpaseo/app@0.11.0-beta.36 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/relay@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/website@0.11.1 typecheck
+> tsgo --noEmit
+
+
+> @getpaseo/desktop@0.11.1 typecheck
+> tsgo --noEmit -p tsconfig.json
+
+
+> @getpaseo/cli@0.11.1 typecheck
+> tsgo --noEmit
+
+
+$ npm run lint
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 2.1s on 5029 files with 177 rules using 4 threads.
+
+$ npm run format
+
+> paseo@0.11.1 format
+> oxfmt .
+
+Finished in 3795ms on 5374 files using 4 threads.
+
+Focused browser confirmation
+$ FONTCONFIG_FILE=/tmp/handoff-browser-libs/fonts.conf LD_LIBRARY_PATH=/tmp/handoff-browser-libs/extracted/usr/lib/x86_64-linux-gnu PLAYWRIGHT_BROWSERS_PATH=/tmp/handoff-website-browsers npm run test:e2e --workspace=@getpaseo/app -- e2e/browser/file-change-conflicts.spec.ts e2e/browser/new-workspace-codex-mode-preferences.spec.ts --grep 'a clean file replaced on disk|a file check error offers|keeps Full Access as the global Codex mode'
+
+  ✓ a clean file replaced on disk offers one working reload action (10.5s)
+  ✓ a file check error offers a working retry (10.5s)
+Creation case: failed; this does not validate the separate creation path.
+The creation case was subsequently rerun with corrected system-ui font fallback
+and reproduced CI's missing startup-error message.
+
+Startup failure reproduction (before fixture fix)
+$ npm run test:e2e --workspace=@getpaseo/app -- e2e/browser/new-workspace-codex-mode-preferences.spec.ts --grep 'keeps Full Access as the global Codex mode'
+
+  1 failed
+  Locator: getByText(/Creation startup failed for test/).first()
+  Expected: visible
+  Timeout: 10000ms
+  Error: element(s) not found
+
+Temporary diagnostic logs identified two session openings:
+  STARTUP_HOOK create interactive
+  STARTUP_COMMAND fail
+  Structured branch name generation failed
+  STARTUP_HOOK create interactive
+  STARTUP_COMMAND release
+The diagnostic logging was removed before the final verification.
+
+Startup verification (after fixture fix)
+$ FONTCONFIG_FILE=/tmp/handoff-browser-fonts.conf LD_LIBRARY_PATH=/tmp/handoff-browser-libs/extracted/usr/lib/x86_64-linux-gnu PLAYWRIGHT_BROWSERS_PATH=/tmp/handoff-website-browsers npm run test:e2e --workspace=@getpaseo/app -- e2e/browser/new-workspace-codex-mode-preferences.spec.ts e2e/browser/creation-idempotency.spec.ts --grep 'keeps Full Access as the global Codex mode|retrying failed agent initialization preserves its workspace|new workspace navigation and optimistic prompt precede agent initialization'
+
+  ✓  1 [browser] › e2e/browser/creation-idempotency.spec.ts:93:5 › new workspace navigation and optimistic prompt precede agent initialization (16.2s)
+  ✓  2 [browser] › e2e/browser/creation-idempotency.spec.ts:116:7 › retrying failed agent initialization preserves its workspace (13.4s)
+  ✓  3 [browser] › e2e/browser/creation-idempotency.spec.ts:116:7 › retrying failed agent initialization preserves its workspace after remount (23.6s)
+  ✓  4 [browser] › e2e/browser/new-workspace-codex-mode-preferences.spec.ts:117:7 › New workspace Codex mode preferences › keeps Full Access as the global Codex mode after the workspace draft auto-submit handoff (18.0s)
+[e2e] Worker 0 daemon stopped
+[e2e] Metro stopped
+  4 passed (1.6m)
+
+Startup change checks: npm run typecheck completed for all workspaces; npm run lint
+reported 0 warnings and 0 errors; npm run format completed.

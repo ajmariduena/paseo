@@ -1,15 +1,21 @@
 import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
 import { afterEach, expect, test, vi } from "vitest";
 
 import {
   createControlledHost,
   createTraceRecorder,
   SteerableControlledAgentSession,
+  ControlledAgentSession,
   type ControlledHost,
   type TraceRecorder,
 } from "../test-utils/controlled-agent-client.js";
 import { DelegationService } from "./delegation-service.js";
 import { DelegationStore } from "./delegation-store.js";
+import { readRetainedHandoffHistory, writeHandoffHistory } from "../handoff/history.js";
+import { sendPromptToAgent } from "../agent/agent-prompt.js";
 
 interface DelegationScenario {
   host: ControlledHost;
@@ -32,7 +38,9 @@ async function startDelegation(options: {
   parentSteerable: boolean;
   children: number;
 }): Promise<DelegationScenario> {
-  const host = createControlledHost();
+  const host = createControlledHost({
+    beforeRetainedContinuation: (agentId) => scenario!.service.checkpointRetainedResults(agentId),
+  });
   const trace = createTraceRecorder();
   const store = new DelegationStore(join(host.root, "delegations"));
   const service = new DelegationService({
@@ -40,6 +48,7 @@ async function startDelegation(options: {
     agentManager: host.agentManager,
     agentStorage: host.agentStorage,
     logger: trace.logger,
+    readRetainedHistory: (agentId, blob) => readRetainedHandoffHistory(host.root, agentId, blob),
   });
   const parentId = await host.createAgent({ steerable: options.parentSteerable });
   await host.startTurn(parentId, "parent work");
@@ -126,6 +135,174 @@ test("two children finishing while the parent runs produce one wake with both re
   expect(parent.startPrompts).toHaveLength(2);
   expect(parent.interruptCount).toBe(0);
 });
+
+async function retainChild(current: DelegationScenario) {
+  const { host, service, childIds } = current;
+  const childId = childIds[0];
+  const descendantId = await host.createAgent({
+    steerable: false,
+    labels: { "paseo.parent-agent-id": childId },
+  });
+  await host.startTurn(descendantId, "Independent work continues");
+  await service.delegate({
+    parentAgentId: childId,
+    childAgentId: descendantId,
+    source: "create_agent",
+    title: "Independent descendant",
+    prompt: "Independent work continues",
+    requireParentOwnership: true,
+  });
+  host.session(childId).completeTurn("Original result before handoff");
+  await vi.waitFor(() => expect(host.agentManager.getAgent(childId)?.lifecycle).toBe("idle"));
+  await host.startTurn(childId, "Still working when handoff stops me");
+  const rows = await host.agentManager.getTimelineRows(childId);
+  const transferId = randomUUID();
+  await host.agentStorage.retainForHandoff(childId, transferId);
+  await host.agentManager.messageQueue.hold(childId, "user_stop");
+  await host.agentManager.closeAgent(childId);
+  await mkdir(join(host.root, "retained"), { recursive: true });
+  const temporary = join(host.root, "retained", "pending.json");
+  await writeHandoffHistory(temporary, {
+    version: 1,
+    sourceAgentId: childId,
+    epoch: transferId,
+    rows,
+  });
+  const bytes = await readFile(temporary);
+  const blob = { sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.length };
+  await rename(temporary, join(host.root, "retained", `${blob.sha256}.json`));
+  await host.agentStorage.checkpointRetainedHistory(childId, blob);
+  expect(host.agentManager.getAgent(childId)).toBeNull();
+  expect(host.agentManager.getAgent(descendantId)?.lifecycle).toBe("running");
+  return { childId, descendantId, blob };
+}
+
+async function continueRetainedChild(
+  current: DelegationScenario,
+  childId: string,
+): Promise<string> {
+  const { host, service } = current;
+  await sendPromptToAgent({
+    agentId: childId,
+    prompt: "A new human request",
+    agentManager: host.agentManager,
+    agentStorage: host.agentStorage,
+    logger: host.logger,
+  });
+  await host.agentManager.waitForAgentRunStart(childId);
+  const session = host.agentManager.getAgent(childId)!.session as ControlledAgentSession;
+  session.completeTurn("New response must not replace the stopped result");
+  await vi.waitFor(() => expect(host.agentManager.getAgent(childId)?.lifecycle).toBe("idle"));
+  await host.startTurn(childId, "More unrelated work");
+  const newChildId = await host.createAgent({
+    steerable: false,
+    labels: { "paseo.parent-agent-id": childId },
+  });
+  await host.startTurn(newChildId, "New descendant must not delay the stopped result");
+  await service.delegate({
+    parentAgentId: childId,
+    childAgentId: newChildId,
+    source: "create_agent",
+    title: "New descendant",
+    prompt: "Unrelated work",
+    requireParentOwnership: true,
+  });
+  return newChildId;
+}
+
+async function recoverDelegationService(
+  current: DelegationScenario,
+  childId: string,
+  descendantId: string,
+) {
+  current.service.close();
+  const { host, trace } = current;
+  current.store = new DelegationStore(join(host.root, "delegations"));
+  current.service = new DelegationService({
+    store: current.store,
+    agentManager: host.agentManager,
+    agentStorage: host.agentStorage,
+    logger: trace.logger,
+    readRetainedHistory: (agentId, blob) => readRetainedHandoffHistory(host.root, agentId, blob),
+  });
+  await current.service.recoverAfterRestart({
+    cut: new Set([childId]),
+    continuing: new Set([descendantId]),
+  });
+  current.service.adoptContinuedChild(descendantId);
+}
+
+test
+  .skipIf(process.platform === "win32")
+  .each(["held", "continued", "recovered before checkpoint", "recovered after continuation"])(
+  "a retained child preserves its stopped result with a late descendant: %s",
+  async (mode) => {
+    const current = await startDelegation({ parentSteerable: false, children: 1 });
+    const { host, parentId } = current;
+    const { childId, descendantId } = await retainChild(current);
+    if (mode === "recovered before checkpoint")
+      await recoverDelegationService(current, childId, descendantId);
+    const continued = mode === "continued" || mode === "recovered after continuation";
+    const newChildId = continued ? await continueRetainedChild(current, childId) : undefined;
+    await current.service.checkpointRetainedResults(childId);
+    await vi.waitFor(async () =>
+      expect(Object.values((await current.store.get(parentId))!.tasks)).toMatchObject([
+        {
+          status: "running",
+          handoffSettlement: {
+            status: "cancelled",
+            result: "Original result before handoff",
+            pendingChildTaskIds: [expect.any(String)],
+          },
+        },
+      ]),
+    );
+    if (mode === "recovered after continuation")
+      await recoverDelegationService(current, childId, descendantId);
+    host.session(descendantId).completeTurn("Late descendant result");
+    await vi.waitFor(async () =>
+      expect(Object.values((await current.store.get(parentId))!.tasks)).toMatchObject([
+        { status: "cancelled", result: "Original result before handoff" },
+      ]),
+    );
+    if (newChildId) {
+      expect(host.agentManager.getAgent(childId)?.lifecycle).toBe("running");
+      expect(host.agentManager.getAgent(newChildId)?.lifecycle).toBe("running");
+    } else {
+      expect(host.agentManager.getAgent(childId)).toBeNull();
+      expect(host.agentManager.messageQueue.isHeldForUserStop(childId)).toBe(true);
+    }
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "damaged retained history blocks explicit continuation until the original checkpoint is restored",
+  async () => {
+    const current = await startDelegation({ parentSteerable: false, children: 1 });
+    const { host } = current;
+    // Stop automatic checks so the explicit-continuation hook owns this publication attempt.
+    current.service.close();
+    const { childId, blob } = await retainChild(current);
+    const file = join(host.root, "retained", `${blob.sha256}.json`);
+    const original = await readFile(file);
+    await writeFile(file, "damaged");
+    const prompt = {
+      agentId: childId,
+      prompt: "Resume after handoff",
+      agentManager: host.agentManager,
+      agentStorage: host.agentStorage,
+      logger: host.logger,
+    };
+    await expect(sendPromptToAgent(prompt)).rejects.toThrow(
+      "Retained conversation history is damaged",
+    );
+    expect(host.agentManager.getAgent(childId)).toBeNull();
+    expect((await host.agentStorage.get(childId))?.handoffRetention?.delegationsPending).toBe(true);
+    expect(host.agentManager.messageQueue.isHeldForUserStop(childId)).toBe(true);
+    await writeFile(file, original);
+    await expect(sendPromptToAgent(prompt)).resolves.toMatchObject({ disposition: "started" });
+  },
+);
 
 test("a delegated wake owns the parent's finished attention", async () => {
   const current = await startDelegation({ parentSteerable: false, children: 1 });
@@ -285,6 +462,42 @@ test("parent archive disposes pending wakes", async () => {
   ]);
   expect(await deliveryStates(current)).toEqual(["disposed"]);
   expect(host.session(parentId).startPrompts).toEqual(["parent work"]);
+});
+
+test("host cleanup waits for registration writes before removing its directory", async () => {
+  const host = createControlledHost();
+  let enter = () => {};
+  let release = () => {};
+  const entered = new Promise<void>((resolve) => (enter = resolve));
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  let writeSettled = false;
+  const applySnapshot = host.agentStorage.applySnapshot.bind(host.agentStorage);
+  // Hold a real registration write across teardown, as a queued wake can do.
+  const delayed = vi
+    .spyOn(host.agentStorage, "applySnapshot")
+    .mockImplementationOnce(async (value) => {
+      enter();
+      await gate;
+      try {
+        await applySnapshot(value);
+      } finally {
+        writeSettled = true;
+      }
+    });
+  const creating = host.createAgent({ steerable: false }).catch((error: unknown) => error);
+  try {
+    await entered;
+    const cleaned = host.cleanup().then(() => ({ writeSettled, exists: existsSync(host.root) }));
+    release();
+    const [, atCleanup] = await Promise.all([creating, cleaned]);
+    expect(atCleanup).toEqual({ writeSettled: true, exists: false });
+    expect(existsSync(host.root)).toBe(false);
+  } finally {
+    release();
+    await creating;
+    delayed.mockRestore();
+    await host.cleanup();
+  }
 });
 
 test("user Stop of the spawning turn stops its cohort", async () => {

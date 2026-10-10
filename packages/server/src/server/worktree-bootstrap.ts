@@ -31,6 +31,8 @@ import {
   refreshWorkspaceServicePort,
 } from "./workspace-service-port-registry.js";
 import type { PaseoServicePortAllocation } from "@getpaseo/protocol/paseo-config-schema";
+import type { HandoffOwnership } from "./handoff/ownership.js";
+import { acquireWorkspaceSetupMutation } from "./workspace-setup-runtime.js";
 
 export interface WorktreeBootstrapTerminalResult {
   name: string | null;
@@ -41,6 +43,9 @@ export interface WorktreeBootstrapTerminalResult {
 }
 
 export interface RunAsyncWorktreeBootstrapOptions {
+  handoffOwnership?: HandoffOwnership;
+  repoRoot?: string;
+  signal?: AbortSignal;
   agentId: string;
   // Workspace the bootstrapped terminals belong to. Stamping it lets
   // workspaceId-scoped archive tear these terminals down.
@@ -543,6 +548,7 @@ async function runWorktreeTerminalBootstrap(
   const results = await Promise.all(
     terminalSpecs.map(async (spec): Promise<WorktreeBootstrapTerminalResult> => {
       try {
+        options.signal?.throwIfAborted();
         const terminal = await terminalManager.createTerminal({
           cwd: workspaceCwd,
           name: spec.name,
@@ -550,6 +556,7 @@ async function runWorktreeTerminalBootstrap(
           workspaceId: options.workspaceId,
         });
         await waitForTerminalBootstrapReadiness(terminal);
+        options.signal?.throwIfAborted();
         terminal.send({
           type: "input",
           data: `${spec.command}\r`,
@@ -595,7 +602,9 @@ export async function runWorktreeAutoTerminals(options: {
   workspaceCwd: string;
   terminalManager: TerminalManager | null;
   logger?: Logger;
+  signal?: AbortSignal;
 }): Promise<void> {
+  options.signal?.throwIfAborted();
   const runtimeEnv = await resolveWorktreeRuntimeEnv({
     worktreePath: options.worktree.worktreePath,
     branchName: options.worktree.branchName,
@@ -609,6 +618,7 @@ export async function runWorktreeAutoTerminals(options: {
       terminalManager: options.terminalManager,
       appendTimelineItem: async () => true,
       logger: options.logger,
+      signal: options.signal,
     },
     runtimeEnv,
   );
@@ -628,6 +638,7 @@ export async function runAsyncWorktreeBootstrap(
   const progressAccumulator = createWorktreeSetupProgressAccumulator();
   const workspaceCwd = options.workspaceCwd ?? options.worktree.worktreePath;
   let liveEmitQueue = Promise.resolve();
+  let release = () => {};
 
   const queueLiveRunningEmit = () => {
     if (!emitLiveTimelineItem) {
@@ -657,60 +668,76 @@ export async function runAsyncWorktreeBootstrap(
   };
 
   try {
-    runtimeEnv = await resolveWorktreeRuntimeEnv({
-      worktreePath: options.worktree.worktreePath,
-      branchName: options.worktree.branchName,
-    });
-    options.terminalManager?.registerCwdEnv({
-      cwd: workspaceCwd,
-      env: runtimeEnv,
-    });
+    try {
+      options.signal?.throwIfAborted();
+      release = await acquireWorkspaceSetupMutation(options.handoffOwnership, {
+        cwd: options.worktree.worktreePath,
+        workspaceId: options.workspaceId,
+        agentId: options.agentId,
+        repoRoot: options.repoRoot,
+      });
+      options.signal?.throwIfAborted();
+      runtimeEnv = await resolveWorktreeRuntimeEnv({
+        worktreePath: options.worktree.worktreePath,
+        branchName: options.worktree.branchName,
+        repoRootPath: options.repoRoot,
+      });
+      options.signal?.throwIfAborted();
+      options.terminalManager?.registerCwdEnv({
+        cwd: workspaceCwd,
+        env: runtimeEnv,
+      });
 
-    setupResults = await runWorktreeSetupCommands({
-      worktreePath: workspaceCwd,
-      branchName: options.worktree.branchName,
-      cleanupOnFailure: false,
-      runtimeEnv,
-      onEvent: (event) => {
-        applyWorktreeSetupProgressEvent(progressAccumulator, event);
-        queueLiveRunningEmit();
-      },
-    });
-    await liveEmitQueue;
+      setupResults = await runWorktreeSetupCommands({
+        worktreePath: workspaceCwd,
+        branchName: options.worktree.branchName,
+        cleanupOnFailure: false,
+        runtimeEnv,
+        signal: options.signal,
+        onEvent: (event) => {
+          applyWorktreeSetupProgressEvent(progressAccumulator, event);
+          queueLiveRunningEmit();
+        },
+      });
+      await liveEmitQueue;
 
-    const completed = await options.appendTimelineItem(
-      buildSetupTimelineItem({
-        callId: setupCallId,
-        status: "completed",
-        worktree: options.worktree,
-        results: setupResults,
-        outputAccumulatorsByIndex: progressAccumulator.outputAccumulatorsByIndex,
-        errorMessage: null,
-      }),
-    );
-    if (!completed) {
+      const completed = await options.appendTimelineItem(
+        buildSetupTimelineItem({
+          callId: setupCallId,
+          status: "completed",
+          worktree: options.worktree,
+          results: setupResults,
+          outputAccumulatorsByIndex: progressAccumulator.outputAccumulatorsByIndex,
+          errorMessage: null,
+        }),
+      );
+      if (!completed) {
+        return;
+      }
+    } catch (error) {
+      if (error instanceof WorktreeSetupError) {
+        setupResults = error.results;
+      }
+      await liveEmitQueue;
+      const message = error instanceof Error ? error.message : String(error);
+      await options.appendTimelineItem(
+        buildSetupTimelineItem({
+          callId: setupCallId,
+          status: "failed",
+          worktree: options.worktree,
+          results: setupResults,
+          outputAccumulatorsByIndex: progressAccumulator.outputAccumulatorsByIndex,
+          errorMessage: message,
+        }),
+      );
       return;
     }
-  } catch (error) {
-    if (error instanceof WorktreeSetupError) {
-      setupResults = error.results;
-    }
-    await liveEmitQueue;
-    const message = error instanceof Error ? error.message : String(error);
-    await options.appendTimelineItem(
-      buildSetupTimelineItem({
-        callId: setupCallId,
-        status: "failed",
-        worktree: options.worktree,
-        results: setupResults,
-        outputAccumulatorsByIndex: progressAccumulator.outputAccumulatorsByIndex,
-        errorMessage: message,
-      }),
-    );
-    return;
-  }
 
-  await runWorktreeTerminalBootstrap(options, runtimeEnv);
+    options.signal?.throwIfAborted();
+    await runWorktreeTerminalBootstrap(options, runtimeEnv);
+  } finally {
+    release();
+  }
 }
 
 // ---------------------------------------------------------------------------

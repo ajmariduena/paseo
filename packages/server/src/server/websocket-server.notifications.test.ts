@@ -1,3 +1,4 @@
+import { HandoffArchiveStore } from "./handoff/archive.js";
 import { SessionDelivery } from "./session/owned-subscriptions/index.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Server as HTTPServer } from "http";
@@ -117,6 +118,7 @@ function createServer(agentManagerOverrides?: Record<string, unknown>) {
     null,
     { allowedOrigins: new Set() },
     createWorkspaceAutoNameStub(),
+    new HandoffArchiveStore("/tmp/paseo-test/handoff/archives"),
     undefined,
     undefined,
     undefined,

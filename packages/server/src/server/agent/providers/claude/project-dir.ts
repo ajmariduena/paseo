@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, realpathSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 // Verbatim port of the Claude Agent SDK's project-directory encoding so
 // paseo computes the same `~/.claude/projects/<dir>` path the SDK does.
@@ -13,6 +13,14 @@ const PROJECT_DIR_LENGTH_CAP = 200;
 
 export interface ClaudeProjectDirOptions {
   configDir?: string;
+  projectDirName?: string;
+}
+
+export function validateClaudeProjectDirName(value: unknown): string {
+  if (typeof value !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,199}$/.test(value)) {
+    throw new Error("Invalid Claude project directory name");
+  }
+  return value;
 }
 
 export async function claudeProjectDir(
@@ -21,13 +29,13 @@ export async function claudeProjectDir(
 ): Promise<string> {
   const canonical = await canonicalize(cwd);
   const projectsRoot = join(resolveConfigDir(options), "projects");
-  return join(projectsRoot, encode(canonical));
+  return join(projectsRoot, resolveProjectDirName(canonical, options));
 }
 
 export function claudeProjectDirSync(cwd: string, options?: ClaudeProjectDirOptions): string {
   const canonical = canonicalizeSync(cwd);
   const projectsRoot = join(resolveConfigDir(options), "projects");
-  return join(projectsRoot, encode(canonical));
+  return join(projectsRoot, resolveProjectDirName(canonical, options));
 }
 
 // Claude Code resumes a session by id from any working directory and keeps appending to the
@@ -39,11 +47,14 @@ export function claudeTranscriptPathSync(input: {
   cwd: string;
   sessionId: string;
   configDir?: string;
+  projectDirName?: string;
 }): string {
-  const options = { configDir: input.configDir };
+  const options = { configDir: input.configDir, projectDirName: input.projectDirName };
   const fileName = `${input.sessionId}.jsonl`;
   const expected = join(claudeProjectDirSync(input.cwd, options), fileName);
-  if (existsSync(expected)) {
+  // An imported session has an exact namespace. Falling back could select the stale
+  // source copy after a return handoff, which has the same native session ID.
+  if (input.projectDirName !== undefined || existsSync(expected)) {
     return expected;
   }
   const projectsRoot = join(resolveConfigDir(options), "projects");
@@ -107,10 +118,18 @@ function hashSuffix(input: string): string {
 }
 
 // Claude Code keeps its settings and transcripts here for a process launched with `env`.
-export function claudeConfigDir(env: NodeJS.ProcessEnv): string {
-  return env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
+export function claudeConfigDir(env: NodeJS.ProcessEnv, cwd = process.cwd()): string {
+  const home = (process.platform === "win32" ? env.USERPROFILE : env.HOME) || homedir();
+  const configDir = env.CLAUDE_CONFIG_DIR ?? join(home, ".claude");
+  return resolve(cwd, configDir.normalize("NFC"));
 }
 
 function resolveConfigDir(options?: ClaudeProjectDirOptions): string {
   return options?.configDir ?? claudeConfigDir(process.env);
+}
+
+function resolveProjectDirName(canonical: string, options?: ClaudeProjectDirOptions): string {
+  return options?.projectDirName === undefined
+    ? encode(canonical)
+    : validateClaudeProjectDirName(options.projectDirName);
 }

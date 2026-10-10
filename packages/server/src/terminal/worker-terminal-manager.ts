@@ -5,6 +5,7 @@ import { assertAbsolutePath, isSameOrDescendantPath } from "../server/path-utils
 import type { TerminalState } from "@getpaseo/protocol/messages";
 import type { TerminalActivity, TerminalActivityState } from "@getpaseo/protocol/terminal-activity";
 import { deriveTerminalActivityStatusBucket } from "@getpaseo/protocol/terminal-activity";
+import type { HandoffMutationGuard, HandoffOwnership } from "../server/handoff/ownership.js";
 import type {
   ClientMessage,
   ServerMessage,
@@ -60,6 +61,7 @@ interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   timeout: ReturnType<typeof setTimeout>;
+  confirmed?: () => void;
 }
 
 interface WorkerTerminalRecord {
@@ -93,6 +95,7 @@ interface WorkerTerminalManagerOptions {
   requestTimeoutMs?: number;
   forkWorker?: () => TerminalWorkerProcess;
   getTerminalActivityUrl?: () => string | null;
+  handoffOwnership?: HandoffOwnership;
 }
 
 function createActivityToken(): string {
@@ -156,6 +159,8 @@ export function createWorkerTerminalManager(
   const recordsById = new Map<string, WorkerTerminalRecord>();
   const terminalIdsByCwd = new Map<string, Set<string>>();
   const terminalActivityTokenById = new Map<string, string>();
+  const mutationGuards = new Map<string, HandoffMutationGuard>();
+  const creatingMutations = new Map<string, () => void>();
   const terminalsChangedListeners = new Set<TerminalsChangedListener>();
   const terminalActivityListeners = new Set<TerminalActivityListener>();
   const terminalWorkspaceContributionChangedListeners =
@@ -257,6 +262,17 @@ export function createWorkerTerminalManager(
         return record.info.workspaceId;
       },
       send(message: ClientMessage): void {
+        let release: (() => void) | undefined;
+        if (managerOptions.handoffOwnership) {
+          if (recordsById.get(record.info.id) !== record)
+            throw new Error("Terminal is no longer registered");
+          const guard = mutationGuards.get(record.info.id);
+          if (!guard) throw new Error("Terminal mutation scope is unavailable");
+          // A stalled worker must not accumulate unbounded leases from keyboard input.
+          if (pendingRequests.size >= 1024)
+            throw new Error("Terminal worker request limit reached");
+          release = guard.acquire();
+        }
         if (message.type === "resize") {
           record.state = {
             ...record.state,
@@ -264,7 +280,7 @@ export function createWorkerTerminalManager(
             cols: message.cols,
           };
         }
-        sendBestEffortRequest({ type: "send", terminalId: record.info.id, message });
+        sendBestEffortRequest({ type: "send", terminalId: record.info.id, message }, release);
       },
       subscribe(
         listener: (msg: ServerMessage) => void,
@@ -405,6 +421,7 @@ export function createWorkerTerminalManager(
       return undefined;
     }
     recordsById.delete(terminalId);
+    mutationGuards.delete(terminalId);
     terminalActivityTokenById.delete(terminalId);
     const terminalIds = terminalIdsByCwd.get(record.info.cwd);
     if (terminalIds) {
@@ -541,6 +558,15 @@ export function createWorkerTerminalManager(
 
   function handleWorkerEvent(message: TerminalWorkerToParentMessage): void {
     switch (message.type) {
+      case "terminalCreateSettled": {
+        creatingMutations.get(message.terminalId)?.();
+        creatingMutations.delete(message.terminalId);
+        if (!recordsById.has(message.terminalId)) {
+          mutationGuards.delete(message.terminalId);
+          terminalActivityTokenById.delete(message.terminalId);
+        }
+        return;
+      }
       case "terminalCreated": {
         registerRecord({
           info: asRequiredWorkerTerminalInfo(message.terminal),
@@ -596,6 +622,7 @@ export function createWorkerTerminalManager(
       }
       clearTimeout(pending.timeout);
       pendingRequests.delete(message.requestId);
+      pending.confirmed?.();
       if (message.ok) {
         pending.resolve(message.result);
       } else {
@@ -615,31 +642,37 @@ export function createWorkerTerminalManager(
     rejectPendingRequests(new Error(`Terminal worker exited (${signal ?? code ?? "unknown"})`));
   });
 
-  function sendRequest(input: TerminalWorkerRequestInput): Promise<unknown> {
+  function sendRequest(
+    input: TerminalWorkerRequestInput,
+    confirmed?: () => void,
+  ): Promise<unknown> {
     if (workerExited || !worker.connected) {
+      confirmed?.();
       return Promise.reject(new Error("Terminal worker is not running"));
     }
     const requestId = randomUUID();
     const message = { ...input, requestId } as TerminalWorkerRequest;
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        pendingRequests.delete(requestId);
+        // A caller timeout does not cancel work already delivered over IPC.
+        // Keep leased requests until a real response, including a late response.
+        if (!confirmed) pendingRequests.delete(requestId);
         reject(new Error(`Terminal worker request timed out: ${input.type}`));
       }, requestTimeoutMs);
-      pendingRequests.set(requestId, { resolve, reject, timeout });
+      pendingRequests.set(requestId, { resolve, reject, timeout, confirmed });
       worker.send(message, (error) => {
         if (!error) {
           return;
         }
         clearTimeout(timeout);
-        pendingRequests.delete(requestId);
+        if (!confirmed) pendingRequests.delete(requestId);
         reject(error);
       });
     });
   }
 
-  function sendBestEffortRequest(input: TerminalWorkerRequestInput): void {
-    void sendRequest(input).catch(() => {
+  function sendBestEffortRequest(input: TerminalWorkerRequestInput, confirmed?: () => void): void {
+    void sendRequest(input, confirmed).catch(() => {
       // The public terminal methods that call this are intentionally synchronous.
       // Worker failures are surfaced through awaitable manager methods and worker
       // lifecycle state; do not let fire-and-forget sends crash the daemon.
@@ -685,6 +718,22 @@ export function createWorkerTerminalManager(
       const terminalId = options.id ?? randomUUID();
       const activityToken = createActivityToken();
       const terminalActivityUrl = managerOptions.getTerminalActivityUrl?.() ?? null;
+      if (recordsById.has(terminalId) || creatingMutations.has(terminalId))
+        throw new Error(`Terminal ID already exists: ${terminalId}`);
+      if (managerOptions.handoffOwnership) {
+        const guard = await managerOptions.handoffOwnership.bindMutation({
+          cwd: options.cwd,
+          workspaceId: options.workspaceId,
+        });
+        if (pendingRequests.size >= 1024 || creatingMutations.size >= 1024)
+          throw new Error("Terminal worker request limit reached");
+        if (workerExited || !worker.connected) throw new Error("Terminal worker is not running");
+        // Another create may have acquired the same ID while this one resolved its path.
+        if (recordsById.has(terminalId) || creatingMutations.has(terminalId))
+          throw new Error(`Terminal ID already exists: ${terminalId}`);
+        creatingMutations.set(terminalId, guard.acquire());
+        mutationGuards.set(terminalId, guard);
+      }
       terminalActivityTokenById.set(terminalId, activityToken);
       let result: {
         terminal: RequiredWorkerTerminalInfo;
@@ -704,7 +753,7 @@ export function createWorkerTerminalManager(
           state: TerminalState;
         };
       } catch (error) {
-        terminalActivityTokenById.delete(terminalId);
+        if (!creatingMutations.has(terminalId)) terminalActivityTokenById.delete(terminalId);
         throw error;
       }
       const session = registerRecord({ info: result.terminal, state: result.state });

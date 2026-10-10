@@ -23,6 +23,63 @@ import type {
 } from "../agent/agent-sdk-types.js";
 import type { AgentPermissionRequest, AgentPermissionResponse } from "../agent/agent-sdk-types.js";
 import { isLikelyExternalToolName } from "@getpaseo/protocol/tool-name-normalization";
+import type { ClaudeSessionRuntime } from "../agent/providers/claude/session-runtime.js";
+import type { AgentManager } from "../agent/agent-manager.js";
+import { claudeProjectDirSync } from "../agent/providers/claude/project-dir.js";
+
+interface HeldClaudeTestTurn {
+  session: AgentSession;
+  sessionId: string;
+  transcriptFile: string;
+  generateMessageId?: boolean;
+}
+
+// A controlled writer for handoff transport tests, not a real provider/process boundary.
+export function holdNextClaudeTestTurn(input: HeldClaudeTestTurn): void {
+  const originalStart = input.session.startTurn.bind(input.session);
+  Object.defineProperty(input.session, "nativeMessageIds", { value: true });
+  input.session.startTurn = async (prompt, options) => {
+    input.session.startTurn = originalStart;
+    const messageId = options?.nativeMessageId ?? (input.generateMessageId ? randomUUID() : null);
+    if (!messageId) throw new Error("Missing native test prompt identity");
+    await appendFile(
+      input.transcriptFile,
+      JSON.stringify({
+        type: "user",
+        uuid: messageId,
+        sessionId: input.sessionId,
+        message: { role: "user", content: prompt },
+      }) + "\n",
+    );
+    return { turnId: randomUUID(), promptDisposition: "dispatched" };
+  };
+}
+
+export function holdNextScheduledClaudeTestTurn(input: {
+  manager: AgentManager;
+  scheduleId: string;
+  configDir: string;
+}): void {
+  const create = input.manager.createAgent.bind(input.manager);
+  input.manager.createAgent = async (...args) => {
+    if (args[2].labels?.["paseo.schedule-id"] !== input.scheduleId) return create(...args);
+    input.manager.createAgent = create;
+    const agent = await create(...args);
+    const sessionId = agent.persistence?.sessionId;
+    if (!agent.session || !sessionId) throw new Error("Missing scheduled test session");
+    const directory = claudeProjectDirSync(agent.config.cwd, { configDir: input.configDir });
+    await mkdir(directory, { recursive: true });
+    const transcriptFile = path.join(directory, `${sessionId}.jsonl`);
+    await appendFile(transcriptFile, "");
+    holdNextClaudeTestTurn({
+      session: agent.session,
+      sessionId,
+      transcriptFile,
+      generateMessageId: true,
+    });
+    return agent;
+  };
+}
 
 const TEST_CAPABILITIES: AgentCapabilityFlags = {
   supportsStreaming: true,
@@ -52,6 +109,7 @@ interface Deferred<T> {
 }
 
 interface FakeAgentSessionOptions {
+  claudeRuntime?: ClaudeSessionRuntime;
   providerName: string;
   config: AgentSessionConfig;
   supportsMcpServers?: boolean;
@@ -62,6 +120,7 @@ interface FakeAgentSessionOptions {
 }
 
 export interface TestAgentClientOptions {
+  claudeRuntime?: ClaudeSessionRuntime;
   beforeCreateSession?: () => Promise<void>;
   closeSession?: () => Promise<void>;
   onStartTurn?: (prompt: AgentPromptInput) => void;
@@ -323,6 +382,7 @@ function buildLargeTimelineItem(input: {
 }
 
 class FakeAgentSession implements AgentSession {
+  private readonly claudeRuntime: ClaudeSessionRuntime | undefined;
   readonly capabilities: AgentCapabilityFlags;
   readonly id: string;
   private readonly providerName: string;
@@ -340,6 +400,7 @@ class FakeAgentSession implements AgentSession {
   private readonly onStartTurn: ((prompt: AgentPromptInput) => void) | undefined;
 
   constructor(options: FakeAgentSessionOptions) {
+    this.claudeRuntime = options.claudeRuntime;
     this.capabilities = {
       ...TEST_CAPABILITIES,
       supportsMcpServers: options.supportsMcpServers === true,
@@ -872,6 +933,7 @@ class FakeAgentSession implements AgentSession {
 
   describePersistence(): AgentPersistenceHandle | null {
     const metadata = {
+      ...(this.claudeRuntime ? { claudeRuntime: this.claudeRuntime } : {}),
       ...(this.memoryMarker ? { marker: this.memoryMarker } : {}),
       ...(this.config.mcpServers ? { mcpServers: this.config.mcpServers } : {}),
     };
@@ -1217,6 +1279,7 @@ class FakeAgentClient implements AgentClient {
     return new FakeAgentSession({
       providerName: this.provider,
       config: { ...config },
+      claudeRuntime: this.provider === "claude" ? this.options.claudeRuntime : undefined,
       supportsMcpServers: this.options.supportsMcpServers,
       closeSession: this.options.closeSession,
       onStartTurn: this.options.onStartTurn,
@@ -1240,6 +1303,7 @@ class FakeAgentClient implements AgentClient {
     return new FakeAgentSession({
       providerName: this.provider,
       config: cfg,
+      claudeRuntime: this.provider === "claude" ? this.options.claudeRuntime : undefined,
       supportsMcpServers: this.options.supportsMcpServers,
       sessionId: handle.sessionId,
       memoryMarker: typeof marker === "string" ? marker : null,

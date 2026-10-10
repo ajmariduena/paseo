@@ -48,7 +48,11 @@ import {
   createPaseoWorktreeCommand,
   listPaseoWorktreesCommand,
 } from "./worktree/commands.js";
-import type { WorkspaceSetupOperation } from "./workspace-setup-runtime.js";
+import {
+  acquireWorkspaceSetupMutation,
+  type WorkspaceSetupOperation,
+} from "./workspace-setup-runtime.js";
+import type { HandoffOwnership } from "./handoff/ownership.js";
 import {
   formatWorkspaceAutomationBlockedMessage,
   WorkspaceAutomationBlockedError,
@@ -101,6 +105,7 @@ interface BuildAgentSessionConfigDependencies {
 }
 
 interface CreatePaseoWorktreeInBackgroundDependencies {
+  handoffOwnership?: HandoffOwnership;
   paseoHome?: string;
   worktreesRoot?: string;
   emitWorkspaceUpdateForWorkspaceId: (workspaceId: string) => Promise<void>;
@@ -697,18 +702,27 @@ export async function createPaseoWorktreeWorkflow(
       setupContinuation: {
         kind: "agent",
         startAfterAgentCreate: ({ agentId }) => {
-          void runAsyncWorktreeBootstrap({
-            agentId,
-            workspaceId: workspace.workspaceId,
-            worktree: createdWorktree.worktree,
-            workspaceCwd: workspace.cwd,
-            shouldBootstrap: createdWorktree.created,
-            terminalManager: setupContinuation.terminalManager,
-            appendTimelineItem: (item) => setupContinuation.appendTimelineItem({ agentId, item }),
-            emitLiveTimelineItem: (item) =>
-              setupContinuation.emitLiveTimelineItem({ agentId, item }),
-            logger: setupContinuation.logger,
-          });
+          const runSetup = (signal: AbortSignal) =>
+            runAsyncWorktreeBootstrap({
+              handoffOwnership: dependencies.handoffOwnership,
+              repoRoot: createdWorktree.repoRoot,
+              signal,
+              agentId,
+              workspaceId: workspace.workspaceId,
+              worktree: createdWorktree.worktree,
+              workspaceCwd: workspace.cwd,
+              shouldBootstrap: createdWorktree.created,
+              terminalManager: setupContinuation.terminalManager,
+              appendTimelineItem: (item) => setupContinuation.appendTimelineItem({ agentId, item }),
+              emitLiveTimelineItem: (item) =>
+                setupContinuation.emitLiveTimelineItem({ agentId, item }),
+              logger: setupContinuation.logger,
+            });
+          if (dependencies.startWorkspaceSetup) {
+            dependencies.startWorkspaceSetup(workspace.workspaceId, runSetup);
+          } else {
+            void runSetup(new AbortController().signal);
+          }
         },
       },
     };
@@ -755,11 +769,17 @@ export async function handleWorkspaceSetupRunRequest(
   dependencies: HandleWorkspaceSetupRunRequestDependencies,
   request: Extract<SessionInboundMessage, { type: "workspace.setup.run.request" }>,
 ): Promise<void> {
+  let release = () => {};
   try {
     const workspace = await dependencies.getWorkspace(request.workspaceId);
     if (!workspace || workspace.archivedAt) {
       throw new Error(`Workspace not found: ${request.workspaceId}`);
     }
+    release = await acquireWorkspaceSetupMutation(dependencies.handoffOwnership, {
+      cwd: workspace.worktreeRoot ?? workspace.cwd,
+      workspaceId: workspace.workspaceId,
+      repoRoot: workspace.mainRepoRoot ?? undefined,
+    });
     const started = await dependencies.clearAutomationBlock(request.workspaceId);
     if (started) {
       const worktree: WorktreeConfig = {
@@ -804,6 +824,8 @@ export async function handleWorkspaceSetupRunRequest(
         error: error instanceof Error ? error.message : "Failed to run workspace setup",
       },
     });
+  } finally {
+    release();
   }
 }
 
@@ -826,6 +848,7 @@ export async function runWorktreeSetupInBackground(
   let setupResults: WorktreeSetupCommandResult[] = [];
   const progressAccumulator = createWorktreeSetupProgressAccumulator();
   const workspaceId = options.workspaceId;
+  let release = () => {};
 
   const emitSetupProgress = (status: "running" | "completed" | "failed", error: string | null) => {
     const snapshot: WorkspaceSetupSnapshot = {
@@ -852,6 +875,13 @@ export async function runWorktreeSetupInBackground(
 
   try {
     try {
+      signal?.throwIfAborted();
+      release = await acquireWorkspaceSetupMutation(dependencies.handoffOwnership, {
+        cwd: worktree.worktreePath,
+        workspaceId,
+        repoRoot: options.repoRoot,
+      });
+      signal?.throwIfAborted();
       emitSetupProgress("running", null);
 
       if (!options.shouldBootstrap) {
@@ -867,6 +897,7 @@ export async function runWorktreeSetupInBackground(
             branchName: worktree.branchName,
             repoRootPath: options.repoRoot,
           });
+          signal?.throwIfAborted();
           dependencies.terminalManager?.registerCwdEnv({
             cwd: workspaceCwd,
             env: runtimeEnv,
@@ -886,7 +917,9 @@ export async function runWorktreeSetupInBackground(
           emitSetupProgress("completed", null);
         }
         if (options.runAutoTerminals) {
+          signal?.throwIfAborted();
           await runWorktreeAutoTerminals({
+            signal,
             workspaceId,
             worktree,
             workspaceCwd,
@@ -915,6 +948,10 @@ export async function runWorktreeSetupInBackground(
       return;
     }
   } finally {
-    await dependencies.emitWorkspaceUpdateForWorkspaceId(options.workspaceId);
+    try {
+      await dependencies.emitWorkspaceUpdateForWorkspaceId(options.workspaceId);
+    } finally {
+      release();
+    }
   }
 }

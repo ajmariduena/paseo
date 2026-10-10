@@ -2,6 +2,117 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const es: TranslationResources = {
+  handoff: {
+    retainedWorkspace:
+      "El trabajo en este directorio se detiene y permanece en el host de origen. Se conservan sus archivos y conversaciones. Envía un mensaje o reanuda la cola explícitamente para continuar.",
+    retainedSchedule:
+      "Esta programación se queda en el host de origen, en {{cwd}}. Quedará en pausa si no ha terminado.",
+    activeScheduleStops:
+      "Esta tarea programada está en ejecución. La preparación detiene su agente y guarda el resultado antes del traslado.",
+    activeHeartbeatStops:
+      "Este recordatorio está en ejecución. La preparación lo detiene y guarda su resultado antes del traslado.",
+    automationPaused:
+      "Los horarios y recordatorios se trasladan en pausa. Los horarios completados conservan su estado. Si cancelas, reanúdalos manualmente en el origen.",
+    automationSettingsOmitted:
+      "Las conexiones, los permisos y los ajustes avanzados del proveedor permanecen en este host. Configúralos en el destino antes de reanudar.",
+    previousTransfers: "Página anterior",
+    nextTransfers: "Página siguiente",
+    noPendingTransfers: "No hay traslados pendientes.",
+    sourceUnavailable: "Host de origen no disponible",
+    unsavedFiles: "Archivos sin guardar en esta app",
+    saveBeforePrepare:
+      "La preparación guarda estos archivos primero. Resuelve los conflictos antes de trasladar.",
+    unsavedFileError: "Guarda o resuelve los cambios de {{path}} y reanuda el traslado.",
+    sourceHeld: "Este workspace es de solo lectura mientras se prepara el traslado a {{host}}.",
+    sourceReleased: "Continúa en {{host}}. Este workspace de origen es de solo lectura.",
+    reviewTransfer: "Revisar traslado",
+    continueDestination: "Continuar en destino",
+    sourceChanged: "El traslado cambió. Ábrelo de nuevo para revisar su estado actual.",
+    dataEstimate: "Tamaño estimado del traslado",
+    fileCounts: "Archivos: {{files}} · Carpetas: {{directories}} · Enlaces: {{links}}",
+    estimateNotice: "Estimado mientras el trabajo sigue activo; el tamaño final puede variar.",
+    omittedPaths: "Excluidos por reglas de ignorado ({{count}})",
+    noOmissions: "Ninguna ruta coincide con las reglas de exclusión.",
+    omissionRange: "{{first}}–{{last}} / {{total}}",
+    previousOmissions: "Anterior",
+    nextOmissions: "Siguiente",
+    omittedDirectories: "Un directorio excluido incluye todo su contenido.",
+    queuedMessagesHeld:
+      "Mensajes pendientes: {{count}}. Se trasladarán en pausa; reanuda la cola en destino cuando quieras.",
+    prWatchesStop:
+      "Estas vigilancias de PR se detendrán. Reinícialas manualmente si cancelas el traslado o continúas en el destino.",
+    workToStop: "Trabajo que se detendrá",
+    activeWork: "Agentes activos: {{agents}} · Tareas de configuración: {{setup}}",
+    noTerminals: "No hay terminales abiertos.",
+    history: "Conversación anterior",
+    historyConnect: "Conecta el host de destino para leer este historial.",
+    historyUnavailable: "El historial transferido no está disponible.",
+    historyPart: "Tramo de la conversación",
+    historyPartLabel: "{{number}} · {{host}}",
+    historyOrigin: "Historial de solo lectura de {{host}}",
+    historyNotice:
+      "Los archivos y recursos enlazados pertenecen al host de origen y podrían no estar disponibles.",
+    continuedNative: "Sesión nativa conservada",
+    continuedContext: "Nueva sesión con historial exportado",
+    cancelPending:
+      "La cancelación está incompleta. Reanuda para terminar de cancelar este traslado.",
+    pendingTransfers: "Traslados pendientes",
+    chooseTransfer: "Elige un traslado para retomarlo",
+    loadMoreTransfers: "Cargar más traslados",
+    review: "Revisar traslado",
+    conversations: "Conversaciones",
+    omittedMcpServers: "Conexiones MCP que debes reconfigurar: {{names}}",
+    integrationScope:
+      "No se han comprobado las conexiones MCP del host y del proyecto. Se usarán las credenciales y los permisos del destino.",
+    emptyConversations: "Este workspace no tiene conversaciones.",
+    untitledConversation: "Conversación sin título",
+    location: "Directorio de destino",
+    busy: {
+      reviewing: "Revisando…",
+      loading: "Cargando...",
+      preparing: "Preparando...",
+      moving: "Trasladando...",
+      cancelling: "Cancelando...",
+    },
+    title: "Mover workspace a otro host",
+    destination: "Host de destino",
+    chooseHost: "Elige un host",
+    noHosts: "Conecta otro host para mover este workspace",
+    parent: "Directorio padre en destino",
+    mode: "Continuidad de las conversaciones",
+    native: "Conservar sesiones nativas",
+    mixed: "Mixto: sesiones nativas e historial exportado",
+    context: "Continuar con historial exportado",
+    nativeDescription:
+      "Las sesiones nativas requieren versiones compatibles del proveedor en ambos hosts. Una sesión incompatible detendrá el traslado.",
+    contextDescription:
+      "Las conversaciones abrirán sesiones nuevas del proveedor con el historial exportado legible y un resumen para continuar.",
+    stopNotice:
+      "La preparación detiene agentes, terminales y configuración. Se excluyen los archivos ignorados sin seguimiento; los versionados, incluidos los secretos, se trasladan. Las credenciales y la configuración MCP del host permanecen en cada host. Los cambios posteriores en origen no se sincronizan.",
+    prepare: "Preparar traslado",
+    activate: "Mover workspace",
+    resume: "Reanudar",
+    cancel: "Cancelar traslado",
+    open: "Abrir destino",
+    startOver: "Nuevo traslado",
+    loading: "Cargando traslado guardado…",
+    inspecting: "Inspeccionando workspace…",
+    preparing_source: "Deteniendo origen y capturando workspace…",
+    transferring: "Transfiriendo archivos…",
+    preparing_destination: "Preparando destino…",
+    ready: "Destino preparado. Mueve el workspace para continuar allí; el origen está detenido.",
+    releasing: "Liberando el control del origen…",
+    activating: "Activando destino…",
+    active: "Workspace trasladado. Continúa en el host de destino.",
+    cancelled: "Traslado cancelado. Puedes volver a usar el origen.",
+    paused: "Traslado guardado. Reanuda para consultar ambos hosts y continuar.",
+    forward:
+      "Completa la activación en destino. El origen podría haber cedido ya el control y no permite revertir el traslado.",
+    saving: "Guardando traslado…",
+    closeNotice: "Puedes cerrar esta ventana y reanudar el traslado más tarde.",
+    connectHosts: "Conecta ambos hosts para continuar",
+    updateHosts: "Actualiza ambos hosts a una versión compatible con el traslado de workspaces",
+  },
   quickPrompts: {
     longPressOpens: "Mantén pulsado para elegir otro prompt",
     defaultBadge: "Predeterminado",
@@ -2342,6 +2453,12 @@ export const es: TranslationResources = {
       failedToLoad: "No se pudo cargar el archivo",
       failedToLoadPreview: "No se pudo cargar la vista previa del archivo",
       editor: {
+        recoveryLoadError:
+          "No se pudieron recuperar los cambios sin guardar. La copia de recuperación se conserva.",
+        recoverySaveError:
+          "No se pudo guardar una copia de recuperación. Guarda el archivo o copia tus cambios antes de cerrar la app.",
+        recoveryClearError:
+          "No se pudo descartar la copia de recuperación. El archivo sigue abierto.",
         fileSize: "Tamaño {{size}}",
         copyContents: "Copiar contenido del archivo",
         contentsCopied: "Copiado",

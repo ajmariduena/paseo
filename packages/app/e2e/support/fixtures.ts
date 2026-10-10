@@ -82,14 +82,14 @@ const daemonTest = metroTest.extend<
   projectOwnership: [
     async ({ e2eWorkerClient }, provide, testInfo) => {
       const before = new Set(
-        (await e2eWorkerClient.fetchWorkspaces()).entries.map((workspace) => workspace.projectId),
+        (await e2eWorkerClient.listProjects()).projects.map((project) => project.projectId),
       );
 
       await provide();
 
       const leaked = [
         ...new Set(
-          (await e2eWorkerClient.fetchWorkspaces()).entries.map((workspace) => workspace.projectId),
+          (await e2eWorkerClient.listProjects()).projects.map((project) => project.projectId),
         ),
       ].filter((projectId) => !before.has(projectId));
       for (const projectId of leaked) {

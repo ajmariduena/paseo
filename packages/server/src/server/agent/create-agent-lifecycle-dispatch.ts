@@ -16,8 +16,10 @@ import type {
 } from "../messages.js";
 import type { AgentManager, AgentSubscriber, SubscribeOptions } from "./agent-manager.js";
 import type { AgentStorage } from "./agent-storage.js";
+import type { HandoffOwnership } from "../handoff/ownership.js";
 
 interface CreateAgentLifecycleDispatchDependencies {
+  handoffOwnership?: HandoffOwnership;
   paseoHome: string;
   worktreesRoot?: string;
   agentManager: AgentManager;
@@ -178,7 +180,23 @@ export class CreateAgentLifecycleDispatch {
         return;
       }
 
-      await this.dependencies.archiveAgentForClose(agentId);
+      const agent = await this.dependencies.agentStorage.get(agentId);
+      if (!agent) return;
+      const release = await this.dependencies.handoffOwnership?.acquireMutation({
+        cwd: agent.cwd,
+        workspaceId: agent.workspaceId,
+        agentId,
+        operation: "cleanup",
+      });
+      try {
+        const workspace = (await this.dependencies.listActiveWorkspaces()).find(
+          (record) => record.workspaceId === agent.workspaceId,
+        );
+        if (workspace?.retention) return;
+        await this.dependencies.archiveAgentForClose(agentId);
+      } finally {
+        release?.();
+      }
     } catch (error) {
       this.dependencies.logger.warn({ err: error, agentId }, "Failed to auto-archive agent");
     }
@@ -198,8 +216,9 @@ export class CreateAgentLifecycleDispatch {
       throw new Error("Auto-created worktree is not a Paseo-owned worktree");
     }
 
-    await archiveByScope(
+    const archived = await archiveByScope(
       {
+        handoffOwnership: this.dependencies.handoffOwnership,
         paseoHome: this.dependencies.paseoHome,
         paseoWorktreesBaseRoot: this.dependencies.worktreesRoot,
         github: this.dependencies.github,
@@ -218,10 +237,11 @@ export class CreateAgentLifecycleDispatch {
       {
         scope: { kind: "workspace", workspaceId: createdWorktree.workspace.workspaceId },
         requestId: randomUUID(),
+        automatic: { expectedIncarnation: createdWorktree.workspace.incarnation },
       },
     );
 
-    if (options.agentId) {
+    if (options.agentId && archived.archivedAgentIds.includes(options.agentId)) {
       await this.dependencies.emitAgentRemove(options.agentId);
     }
   }
