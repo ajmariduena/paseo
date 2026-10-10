@@ -815,6 +815,24 @@ Unsent notes and repeated context transfers:
       Duration  16.13s (tests 5.75s)
   This rerun used isolated Linux daemons; macOS verification remains with CI. Root typecheck
   and lint pass. No production behavior changed for this assertion repair.
+- macOS job 114244926311 at f08f0e2ef then reached the context-return provenance assertion:
+  expected /var/folders/.../notes-workspace, received /private/var/folders/.../notes-workspace.
+  The stored source path is canonical. Both continuation fixtures now enter through a real
+  directory symlink, so Linux exercises alias resolution too; context-return expectations use
+  realpath for the original source and retain both repeated-return assertions.
+  Job: https://github.com/ajmariduena/paseo/actions/runs/38062971030/job/114244926311
+  Before correcting the expectation, the symlink reproduced the same failure locally:
+  $ npx vitest run src/server/handoff/archive.e2e.test.ts -t 'preserves unsent restart notes through context' --bail=1
+    Tests  1 failed | 40 skipped (41)
+    Expected sourceCwd: /tmp/<fixture>/notes-workspace
+    Received sourceCwd: /tmp/<fixture>/notes-workspace-target
+  After the correction:
+  $ npx vitest run src/server/handoff/archive.e2e.test.ts -t 'preserves unsent restart notes' --bail=1
+    Test Files  1 passed (1)
+         Tests  2 passed | 39 skipped (41)
+      Duration  15.95s (tests 5.76s)
+  These are isolated Linux daemon tests with synthetic provider files. Native macOS verification
+  remains with CI; production path handling was unchanged.
 - Context-only re-export reads the private verified archive after visible copies are deleted or
   ignored. Three unused-context hops retain original history, artifacts and pending notes. A
   forced native choice refuses and can be cancelled; damaged history or changed context refuses

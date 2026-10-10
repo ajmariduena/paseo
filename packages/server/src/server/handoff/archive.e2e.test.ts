@@ -11,7 +11,16 @@ import type { WorkspaceHandoffCheckpoint } from "@getpaseo/client/internal/works
 import { WSOutboundMessageSchema } from "@getpaseo/protocol/messages";
 import { StoredScheduleSchema } from "@getpaseo/protocol/schedule/types";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import os from "node:os";
@@ -3747,7 +3756,10 @@ for (const continuationMode of ["native", "context"] as const) {
       let source = await startHost("source-notes", true);
       let destination = await startHost("destination-notes", true);
       const cwd = path.join(root, "notes-workspace");
-      await mkdir(cwd);
+      const workspaceTarget = path.join(root, "notes-workspace-target");
+      await mkdir(workspaceTarget);
+      // Exercise canonical provenance on Linux too; macOS temporary paths already have aliases.
+      await symlink(workspaceTarget, cwd, "dir");
       const created = await source.client.createWorkspace({
         source: { kind: "directory", path: cwd },
       });
@@ -3897,7 +3909,7 @@ for (const continuationMode of ["native", "context"] as const) {
           destination,
           agentId: destinationAgentId,
           originalAgentId: agentId,
-          originalCwd: cwd,
+          originalCwd: await realpath(cwd),
           originalTranscript: path.join(project, `${sessionId}.jsonl`),
           originalTransferId: transferId,
           sessionId,
