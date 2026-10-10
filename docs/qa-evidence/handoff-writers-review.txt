@@ -706,6 +706,48 @@ atomic restart behavior is covered by the portable cases but was not run locally
 POSIX synchronization cases are explicitly skipped there. No browser run was needed for this
 server-only change. Queues written before this change cannot recover a stop that was never stored.
 
+Held-runtime recovery — strengthening the empty-queue regression reproduced a provider session
+being reopened by a late system notification before the persisted Stop was checked (expected zero
+sessions, found one). Dispatch now enqueues held system work before loading a provider, retains the
+post-load Stop check for a concurrent stop, and still rejects messages to missing agents.
+The restart continuation had its own early provider load; a separate regression reproduced that
+path. It now respects Stop before preparation, before dispatch and when rendering the prompt,
+drops the automatic continuation without queueing it, and retains lost-background-work notes for
+the next explicit prompt. A deterministic Stop during dispatch's archive-state read initially
+queued the continuation; the prompt preparation guard now drops it and preserves its note.
+
+The runner cases cover cold queue/store restoration after user Stop, cancelled handoff and empty
+destination import. A real isolated-daemon case snapshots a running turn after the queue hold but
+before a turn-level stop marker, then boots twice with continuation enabled. Both boots leave the
+provider unopened and the queue empty/held; explicit resume of the empty queue opens nothing, and
+a later human prompt receives the pending note. These are controlled provider adapters and fresh
+in-process daemon instances on Linux, not authenticated or physical-host execution.
+
+$ npx vitest run src/server/agent-queue/runner.test.ts -t 'empty queue survives a fresh manager' --bail=1
+  FAIL user_stop with an empty queue survives a fresh manager and gates real system dispatch until resume
+  AssertionError: expected [ …(1) ] to have a length of +0 but got 1
+  Tests  1 failed | 12 skipped (15)
+$ npx vitest run src/server/restart/restart-recovery.test.ts -t 'stopped continuation keeps' --bail=1
+  FAIL a stopped continuation keeps its lost-work note without reopening the provider or queueing a prompt
+  AssertionError: expected { …(35) } to be null
+  Tests  1 failed | 16 skipped (17)
+$ npx vitest run src/server/restart/restart-recovery.test.ts -t 'Stop arriving during' --bail=1
+  FAIL a Stop arriving during continuation dispatch drops the automatic prompt
+  AssertionError: expected 'queued' to be 'finished' // Object.is equality
+  Tests  1 failed | 17 skipped (18)
+$ npx vitest run src/server/agent-queue/runner.test.ts --bail=1
+  Test Files  1 passed (1)
+       Tests  16 passed (16)
+    Duration  1.70s (tests 338ms)
+$ npx vitest run src/server/restart/restart-recovery.test.ts --bail=1
+  Test Files  1 passed (1)
+       Tests  18 passed (18)
+    Duration  1.28s (tests 90ms)
+$ npx vitest run src/server/restart/restart.e2e.test.ts -t 'persisted Stop keeps' --bail=1
+  Test Files  1 passed (1)
+       Tests  1 passed | 11 skipped (12)
+    Duration  12.49s (tests 1.31s)
+
 Legacy activation — the next regression used a captured version 3 archive, which has no queue
 snapshot. Activation reached active without publishing any Stop and skipped an injected queue
 publication failure. The archive reader now supplies an empty queue for these older conversations;

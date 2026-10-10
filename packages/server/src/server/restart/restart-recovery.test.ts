@@ -238,6 +238,126 @@ test("a cut run continues once even when its intents are processed twice", async
   expect(adopted).toEqual([agentId, agentId]);
 });
 
+test("a stopped continuation keeps its lost-work note without reopening the provider or queueing a prompt", async () => {
+  host = createControlledHost();
+  const agentId = await host.createAgent({ steerable: false });
+  await host.agentManager.closeAgent(agentId);
+  await host.agentManager.messageQueue.hold(agentId, "user_stop");
+  const intents = new RestartIntentStore(join(host.root, "runtime", "restart-intents.json"));
+  const cut: CutRun = { ...CUT, agentId, cutAt: new Date().toISOString() };
+  const work = [{ kind: "shell", label: "npm run dev", id: "lost-task" }];
+  await intents.write({
+    version: 1,
+    writtenAt: cut.cutAt,
+    cutRuns: [cut],
+    backgroundWork: { [agentId]: work },
+  });
+  const prepared = Promise.withResolvers<void>();
+  const receipts = new MessageReceipts(join(host.root, "agent-requests"));
+  const recovery = new RestartRecovery({
+    intents,
+    receipts: {
+      send: (input) =>
+        receipts.send({
+          ...input,
+          prepare: async () => {
+            await input.prepare?.();
+            prepared.resolve();
+          },
+        }),
+    },
+    agentManager: host.agentManager,
+    agentStorage: host.agentStorage,
+    delegations: {
+      recoverAfterRestart: async () => undefined,
+      adoptContinuedChild: () => undefined,
+      reportCutChild: async () => undefined,
+    },
+    continueAfterRestart: () => true,
+    logger: host.logger,
+  });
+  const { continuations } = await recovery.recoverAfterRestart();
+  try {
+    await prepared.promise;
+    expect(host.agentManager.getAgent(agentId)).toBeNull();
+    await continuations;
+    expect(host.agentManager.messageQueue.entries(agentId)).toEqual([]);
+    expect(host.agentManager.messageQueue.isHeldForUserStop(agentId)).toBe(true);
+    expect((await host.agentStorage.get(agentId))?.pendingRestartNote).toEqual(work);
+    expect(await intents.read()).toBeNull();
+  } finally {
+    await host.agentManager.messageQueue.clear(agentId);
+    await continuations;
+  }
+});
+
+test("a Stop arriving during continuation dispatch drops the automatic prompt", async () => {
+  const controlled = createControlledHost();
+  host = controlled;
+  const agentId = await controlled.createAgent({ steerable: false });
+  await controlled.agentStorage.flush();
+  const intents = new RestartIntentStore(join(controlled.root, "runtime", "restart-intents.json"));
+  const cut: CutRun = { ...CUT, agentId, cutAt: new Date().toISOString() };
+  const work = [{ kind: "shell", label: "npm run dev", id: "lost-task" }];
+  await intents.write({
+    version: 1,
+    writtenAt: cut.cutAt,
+    cutRuns: [cut],
+    backgroundWork: { [agentId]: work },
+  });
+  const queue = controlled.agentManager.messageQueue;
+  const queued = Promise.withResolvers<"queued">();
+  const enqueue = queue.enqueue.bind(queue);
+  vi.spyOn(queue, "enqueue").mockImplementation(async (...args) => {
+    const result = await enqueue(...args);
+    queued.resolve("queued");
+    return result;
+  });
+  const receipts = new MessageReceipts(join(controlled.root, "agent-requests"));
+  const get = controlled.agentStorage.get.bind(controlled.agentStorage);
+  const recovery = new RestartRecovery({
+    intents,
+    receipts: {
+      send: (input) =>
+        receipts.send({
+          ...input,
+          send: async () => {
+            // Stop while dispatch reads the archive state, after the receipt's admission check.
+            vi.spyOn(controlled.agentStorage, "get").mockImplementationOnce(async (id) => {
+              const record = await get(id);
+              await queue.hold(agentId, "user_stop");
+              return record;
+            });
+            await input.send();
+          },
+        }),
+    },
+    agentManager: controlled.agentManager,
+    agentStorage: controlled.agentStorage,
+    delegations: {
+      recoverAfterRestart: async () => undefined,
+      adoptContinuedChild: () => undefined,
+      reportCutChild: async () => undefined,
+    },
+    continueAfterRestart: () => true,
+    logger: controlled.logger,
+  });
+  const { continuations } = await recovery.recoverAfterRestart();
+  try {
+    await expect(
+      Promise.race([continuations.then(() => "finished"), queued.promise]),
+    ).resolves.toBe("finished");
+    expect(controlled.session(agentId).startPrompts).toEqual([]);
+    expect(queue.entries(agentId)).toEqual([]);
+    expect(queue.isHeldForUserStop(agentId)).toBe(true);
+    expect((await controlled.agentStorage.get(agentId))?.pendingRestartNote).toEqual(work);
+    expect(await intents.read()).toBeNull();
+  } finally {
+    await queue.clear(agentId);
+    await continuations;
+  }
+});
+
 test("a pending continuation keeps its intent and cannot consume a newer shutdown", async () => {
   host = createControlledHost();
   const agentId = await host.createAgent({ steerable: false });

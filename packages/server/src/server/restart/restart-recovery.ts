@@ -188,11 +188,15 @@ export class RestartRecovery {
       messageId,
       request: { kind: "restart_continuation", runKey: cut.runKey },
       prepare: async () => {
+        if (agentManager.messageQueue.isHeldForUserStop(agentId)) return;
         await ensureAgentLoaded(agentId, { agentManager, agentStorage, logger });
       },
       send: async () => {
-        // Anything that started the agent since boot came after the cut and takes precedence.
-        if (agentManager.getActiveRun(agentId)) {
+        // A newer turn or durable Stop wins, including one arriving during preparation.
+        if (
+          agentManager.getActiveRun(agentId) ||
+          agentManager.messageQueue.isHeldForUserStop(agentId)
+        ) {
           sent.disposition = "dropped";
           return;
         }
@@ -205,13 +209,16 @@ export class RestartRecovery {
             kind: "system",
             maySteer: false,
             queueAs: { origin: "system" },
-            prepare: async () => ({
-              prompt:
-                lostWork.length > 0
-                  ? `${restartCancelledWorkNote(lostWork)}\n\n${CONTINUE_PROMPT}`
-                  : CONTINUE_PROMPT,
-              notification: { level: "info", message: "Continued after the daemon restarted" },
-            }),
+            prepare: async () => {
+              if (agentManager.messageQueue.isHeldForUserStop(agentId)) return null;
+              return {
+                prompt:
+                  lostWork.length > 0
+                    ? `${restartCancelledWorkNote(lostWork)}\n\n${CONTINUE_PROMPT}`
+                    : CONTINUE_PROMPT,
+                notification: { level: "info", message: "Continued after the daemon restarted" },
+              };
+            },
           },
           logger,
         });

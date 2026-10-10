@@ -341,7 +341,8 @@ test.for(["user_stop", "handoff_cancel", "destination"] as const)(
       await agentManager.messageQueue.holdAllForRestart();
       const wake = dispatchSystemMessage({ agentManager, agentStorage }, agentId, "late-result");
       expect(await Promise.race([wake.queued.then(() => "queued"), wake.settled])).toBe("queued");
-      expect(client.latestSession().startPrompts).toEqual([]);
+      expect(client.sessions).toHaveLength(0);
+      expect(agentManager.getAgent(agentId)).toBeNull();
       await agentManager.messageQueue.resume(agentId);
       await expect(wake.settled).resolves.toBe("started");
       expect(client.latestSession().startPrompts).toEqual([
@@ -460,6 +461,17 @@ test("after a user Stop a system message waits in the held queue instead of star
     "first task",
     "<paseo-system>\npr-watch:1\n</paseo-system>",
   ]);
+});
+
+test("a stored Stop for a missing agent does not accept a system message", async () => {
+  const host = createControlledHost();
+  activeHost = host;
+  const agentId = randomUUID();
+  await host.agentManager.messageQueue.hold(agentId, "user_stop");
+  await expect(dispatchSystemMessage(host, agentId, "orphaned-result").settled).rejects.toThrow(
+    `Agent not found: ${agentId}`,
+  );
+  expect(host.agentManager.messageQueue.entries(agentId)).toEqual([]);
 });
 
 test("a message from the user revives a stopped agent for later system messages", async () => {

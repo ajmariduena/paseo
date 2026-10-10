@@ -164,8 +164,12 @@ export async function dispatchAgentMessage(
     if (params.policy.kind === "system" && (await isArchived(params))) {
       return "skipped_archived";
     }
-    await loadAgent(params);
     const queue = params.agentManager.messageQueue;
+    if (params.policy.kind === "system" && queue.isHeldForUserStop(params.agentId)) {
+      return await enqueue(params);
+    }
+    await loadAgent(params);
+    // A Stop may arrive while the provider session is being restored.
     if (params.policy.kind === "system" && queue.isHeldForUserStop(params.agentId)) {
       return await enqueue(params);
     }
@@ -387,6 +391,9 @@ async function start(
 
 async function isArchived(params: DispatchAgentMessageParams): Promise<boolean> {
   const record = await params.agentStorage.get(params.agentId);
+  if (!record && !params.agentManager.getAgent(params.agentId)) {
+    throw new Error(`Agent not found: ${params.agentId}`);
+  }
   return Boolean(record?.archivedAt);
 }
 
