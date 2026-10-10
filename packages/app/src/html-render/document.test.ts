@@ -117,6 +117,32 @@ test("maps live light and dark themes and bounds height messages", () => {
     readRenderBridgeMessage(
       {
         jsonrpc: "2.0",
+        nonce: "n",
+        renderId: "r",
+        method: "ui/notifications/size-changed",
+        params: { height: 500, overflowX: true },
+      },
+      "n",
+      "r",
+    )?.params,
+  ).toEqual({ height: 500, overflowX: true });
+  expect(
+    readRenderBridgeMessage(
+      {
+        jsonrpc: "2.0",
+        nonce: "n",
+        renderId: "r",
+        method: "ui/notifications/size-changed",
+        params: { height: 500, overflowX: "yes" },
+      },
+      "n",
+      "r",
+    ),
+  ).toBeNull();
+  expect(
+    readRenderBridgeMessage(
+      {
+        jsonrpc: "2.0",
         nonce: "wrong",
         renderId: "r",
         method: "ui/notifications/size-changed",

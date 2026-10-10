@@ -82,7 +82,7 @@ export interface RenderBridgeMessage {
   renderId: string;
   id?: string | number;
   method: "ui/notifications/size-changed" | "ui/notifications/hover-changed" | "ui/open-link";
-  params: { height: number } | { hovered: boolean } | { url: string };
+  params: { height: number; overflowX?: boolean } | { hovered: boolean } | { url: string };
 }
 
 function validRenderBridgeParams(
@@ -90,7 +90,12 @@ function validRenderBridgeParams(
   fields: Record<string, unknown>,
 ): boolean {
   if (message.method === "ui/notifications/size-changed") {
-    return typeof fields.height === "number" && Number.isFinite(fields.height) && fields.height > 0;
+    return (
+      typeof fields.height === "number" &&
+      Number.isFinite(fields.height) &&
+      fields.height > 0 &&
+      (fields.overflowX === undefined || typeof fields.overflowX === "boolean")
+    );
   }
   if (message.method === "ui/notifications/hover-changed") {
     return typeof fields.hovered === "boolean";
@@ -179,11 +184,13 @@ export function prepareRenderDocument(input: PrepareRenderDocumentInput): string
       }catch(x){}
     },true);
     if(p.web){var hovering=false;function hover(value){if(hovering===value)return;hovering=value;send("ui/notifications/hover-changed",{hovered:value});}window.addEventListener("mouseenter",function(){hover(true);});document.addEventListener("pointermove",function(){hover(true);},{passive:true});window.addEventListener("mouseleave",function(){hover(false);});}
-    var h=0;
+    var h=0,w;
     function size(){
-      var b=document.body,v=b?Math.ceil(Math.max(b.scrollHeight,b.getBoundingClientRect().height)):0;
-      if(v>0&&v!==h){h=v;send("ui/notifications/size-changed",{height:v});}
+      var b=document.body,r=document.documentElement,v=b?Math.ceil(Math.max(b.scrollHeight,b.getBoundingClientRect().height)):0;
+      var x=Math.max(r.scrollWidth,b?b.scrollWidth:0)>window.innerWidth+1;
+      if(v>0&&(v!==h||x!==w)){h=v;w=x;send("ui/notifications/size-changed",{height:v,overflowX:x});}
     }
+    window.addEventListener("resize",size);
     document.addEventListener("DOMContentLoaded",function(){
       if(window.ResizeObserver){var o=new ResizeObserver(size);o.observe(document.documentElement);if(document.body)o.observe(document.body);}
       size();
