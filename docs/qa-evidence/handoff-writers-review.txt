@@ -144,6 +144,19 @@ These interruptions remain environment observations; their underlying causes wer
 npm run build:server, root npm run typecheck, npm run lint and npm run format passed.
 The existing CI jobs own platform and full-suite verification; no new feature-specific job was added.
 
+macOS canonical paths — job 114264720395 in run 38069758977, at ce284e34b, failed the retained
+schedule expectation because /var/folders resolves through /private/var/folders. Production correctly
+returned the canonical path. The existing service test now checks review, carried note and exported
+source target against filesystem realpath, and covers both a direct directory and a symlink alias.
+Before adjusting the expectations, the Linux alias case reproduced the same mismatch (one passed,
+one failed). Afterward both cases pass, including source fencing, paused capture, restart and cancel.
+
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/schedule/service.test.ts -t 'retains and fences an outside schedule' --bail=1
+  Tests  2 passed, 90 skipped
+  Duration  2.24s (tests 109ms)
+Only test expectations changed; production path resolution remains canonical. Native macOS
+confirmation of this assertion repair is pending CI.
+
 Strict capture refuses unfinished or untracked runs, ancestor-directory schedules, outside heartbeat owners sharing
 the checkout, damaged inventory, more than 1,000 selected records or metadata beyond 32 MiB. This
 slice does not certify a running job's outcome after a crash. Jobs in other workspaces and

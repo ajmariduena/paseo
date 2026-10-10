@@ -1,4 +1,13 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -570,10 +579,21 @@ describe("ScheduleService", () => {
     },
   );
 
-  test.skipIf(process.platform === "win32")(
-    "handoff retains and fences an outside schedule while moving its active job workspace",
-    async () => {
+  test.skipIf(process.platform === "win32").each([false, true])(
+    "handoff retains and fences an outside schedule while moving its active job workspace (symlink: %s)",
+    async (useAlias) => {
       const { ownership, transfer, schedule, options, otherCwd } = await handoffFixture();
+      if (useAlias) {
+        const alias = join(tempDir, "scheduled-directory-alias");
+        await symlink(transfer.cwd, alias, "dir");
+        transfer.cwd = alias;
+        const store = new ScheduleStore(join(tempDir, "schedules"), createTestLogger());
+        await store.update(schedule.id, (record) => ({
+          ...record,
+          target: { type: "new-agent", config: { provider: "claude", cwd: alias } },
+        }));
+      }
+      const retainedCwd = await realpath(transfer.cwd);
       const manager = new AgentManager({
         logger: createTestLogger(),
         clients: createTestAgentClients(),
@@ -604,7 +624,7 @@ describe("ScheduleService", () => {
             id: schedule.id,
             kind: "schedule",
             activeRun: { id: (await service.logs(schedule.id))[0].id },
-            retainedOnSource: { cwd: transfer.cwd },
+            retainedOnSource: { cwd: retainedCwd },
           },
         ]);
         const source = await ownership.prepare({
@@ -626,7 +646,7 @@ describe("ScheduleService", () => {
           {
             id: `handoff:${source.id}:schedule:${schedule.id}`,
             kind: "handoff_retained_schedule",
-            label: expect.stringContaining(`remains paused on the source host in ${transfer.cwd}`),
+            label: expect.stringContaining(`remains paused on the source host in ${retainedCwd}`),
           },
         ]);
         const captured = await service.exportForHandoff(source);
@@ -636,7 +656,7 @@ describe("ScheduleService", () => {
             {
               id: schedule.id,
               status: "paused",
-              target: { type: "source", cwd: transfer.cwd },
+              target: { type: "source", cwd: retainedCwd },
               runs: [{ agentId, workspaceId, status: "failed" }],
             },
           ],

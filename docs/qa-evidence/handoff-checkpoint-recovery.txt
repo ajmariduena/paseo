@@ -270,7 +270,7 @@ SDK signals now use the supervisor's private IPC channel; OS tree shutdown signa
 itself. A fresh registry reads the on-disk root, captures its live child, stops both and removes the
 record. Other cases cover exact environment/streams, signal status, missing executables and forced
 shutdown of a provider that ignores SIGTERM. All 33 cases in the owning Claude spawn suite pass.
-The suite is now included in the existing macOS handoff CI step; its native result is pending.
+The suite is included in the existing macOS handoff CI step; the native follow-up is recorded below.
 These are real Node/shell processes with injected SDK frames, not fresh authenticated Claude turns.
 
 CI follow-up at 20e11a9f8 (run 38064594811, macOS job 114249684359): the supervisor
@@ -290,8 +290,11 @@ The added regression injects one ENOEXEC at Node's native spawn-result boundary 
 isolated bootstrap, exercising Node's real error conversion rather than a mocked error handler.
 It first reproduced exit 1 on Linux. The control channel, shell process, script, argv and stdout
 are real. Absolute/PATH cases then pass along with the uninjected cases, cwd shadowing, spaces,
-quotes, metacharacters, environment, signals and tree stopping: all 46 cases pass. Native macOS
-confirmation of the synchronous repair remains pending CI.
+quotes, metacharacters, environment, signals and tree stopping: all 46 cases pass on Linux.
+At ce284e34b, macOS job 114264720395 (run 38069758977) passed 43 Claude-launch cases with
+three platform skips, confirming the native synchronous-error repair. Its filesystem cases also
+passed (103), as did the core handoff cases (278, two skips). That job then failed a retained-schedule
+path expectation: see handoff-writers-review.txt for the independent canonical-path regression.
 
 $ npx vitest run src/server/agent/providers/claude/agent.spawn.test.ts --bail=1
   Test Files  1 passed (1)
