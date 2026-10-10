@@ -2227,8 +2227,12 @@ class ClaudeAgentSession implements AgentSession {
   private pendingFreshSessionId: string | null = null;
   private recentStderr = "";
   private closed = false;
-  /** Submission of the active foreground turn; terminal turn events settle this one. */
-  private foregroundSubmission: PendingClaudeSubmission | null = null;
+  /**
+   * The attempt that owns the foreground: admitting until its prompt is pushed. Query frames and
+   * the terminal helpers never act on an admitting attempt, which has nothing on any query yet;
+   * only its own Stop, close or startTurn can end it. Null during a rewind turn.
+   */
+  private foregroundAttempt: ClaudeTurnAttempt | null = null;
   /** Every submission still awaiting a verdict, including those of cancelled turns. */
   private readonly outstandingSubmissions = new Set<PendingClaudeSubmission>();
   /** A cancel still withdrawing or interrupting; a replacement turn waits for it to settle. */
@@ -2378,18 +2382,24 @@ class ClaudeAgentSession implements AgentSession {
     });
     const pending: PendingClaudeSubmission = {
       uuid: sdkUserMessageId,
+      settled: false,
       resolve: resolveSubmission,
     };
-    this.foregroundSubmission = pending;
+    const attempt: ClaudeTurnAttempt = {
+      turnId,
+      uuid: sdkUserMessageId,
+      state: "admitting",
+      cancelRequested: false,
+      submission: pending,
+    };
+    this.foregroundAttempt = attempt;
     this.outstandingSubmissions.add(pending);
 
-    let cancelIssued = false;
-    let pushed = false;
     const requestCancel = () => {
-      if (cancelIssued) {
+      if (attempt.cancelRequested) {
         return;
       }
-      cancelIssued = true;
+      attempt.cancelRequested = true;
       if (this.cancelCurrentTurn === requestCancel) {
         this.cancelCurrentTurn = null;
       }
@@ -2404,11 +2414,10 @@ class ClaudeAgentSession implements AgentSession {
         provider: "claude",
         reason: "Interrupted",
       });
-      if (!pushed) {
+      if (attempt.state === "admitting") {
         // Stopped while still waiting for Claude: withdrawn by never sending it, nothing to
         // interrupt. The previous turn's cancellation keeps its own cleanup.
-        if (sdkUserMessageId) this.unstartedMessageUuids.delete(sdkUserMessageId);
-        this.settleSubmission(pending, "unsent");
+        this.abandonAdmission(attempt);
         return;
       }
       // The interrupt withdraws a prompt Claude never started; its confirmation is the only
@@ -2434,10 +2443,11 @@ class ClaudeAgentSession implements AgentSession {
       while (this.cancellationInFlight) {
         await this.cancellationInFlight;
       }
-      if (!cancelIssued) {
-        await this.ensureQuery();
+      if (!this.ownsAdmission(attempt)) {
+        return { turnId, submission };
       }
-      if (cancelIssued) {
+      await this.ensureQuery();
+      if (!this.ownsAdmission(attempt)) {
         return { turnId, submission };
       }
       if (!this.input) {
@@ -2448,18 +2458,17 @@ class ClaudeAgentSession implements AgentSession {
       this.activeForegroundInput = this.input;
       this.startQueryPump();
       this.input.push(sdkMessage);
-      pushed = true;
+      attempt.state = "pushed";
       setTimeout(() => {
         if (this.activeForegroundTurnId === turnId) {
           this.emitSubmittedUserMessage(sdkMessage, turnId, options?.clientMessageId);
         }
       }, 0);
     } catch (error) {
-      if (cancelIssued) {
+      if (!this.ownsAdmission(attempt)) {
         return { turnId, submission };
       }
-      this.settleSubmission(pending, "unsent");
-      if (sdkUserMessageId) this.unstartedMessageUuids.delete(sdkUserMessageId);
+      this.abandonAdmission(attempt);
       this.finishForegroundTurn(
         this.buildTurnFailedEvent(error instanceof Error ? error.message : "Claude stream failed"),
       );
@@ -2468,28 +2477,70 @@ class ClaudeAgentSession implements AgentSession {
     return { turnId, submission };
   }
 
+  /**
+   * Whether an attempt may still go on to push: the session is open, nothing cancelled it, and
+   * no terminal path took the foreground from it while it waited. Anything else already settled
+   * it, so the caller returns the start as is.
+   */
+  private ownsAdmission(attempt: ClaudeTurnAttempt): boolean {
+    if (
+      !this.closed &&
+      this.foregroundAttempt === attempt &&
+      !attempt.cancelRequested &&
+      attempt.state === "admitting"
+    ) {
+      return true;
+    }
+    if (attempt.state === "admitting") this.abandonAdmission(attempt);
+    return false;
+  }
+
+  /** An attempt that never reached Claude: provably unsent, nothing to withdraw or interrupt. */
+  private abandonAdmission(attempt: ClaudeTurnAttempt): void {
+    if (attempt.uuid) this.unstartedMessageUuids.delete(attempt.uuid);
+    this.settleSubmission(attempt.submission, "unsent");
+  }
+
   private settleSubmission(
     pending: PendingClaudeSubmission,
     outcome: AgentSubmissionOutcome,
   ): void {
-    if (this.foregroundSubmission === pending) {
-      this.foregroundSubmission = null;
-    }
+    if (pending.settled) return;
+    pending.settled = true;
     this.outstandingSubmissions.delete(pending);
     pending.resolve(outcome);
   }
 
+  /** The foreground attempt's verdict at a terminal event: unsent if it never reached Claude. */
   private settleActiveSubmission(outcome: AgentSubmissionOutcome): void {
-    if (this.foregroundSubmission) {
-      this.settleSubmission(this.foregroundSubmission, outcome);
+    const attempt = this.foregroundAttempt;
+    if (!attempt) return;
+    this.settleSubmission(attempt.submission, attempt.state === "admitting" ? "unsent" : outcome);
+  }
+
+  /**
+   * Nothing can prove a verdict once the query is gone: every submission on it is unknown. An
+   * attempt still admitting has nothing on the query and keeps waiting.
+   */
+  private settleAllSubmissions(outcome: AgentSubmissionOutcome): void {
+    const admitting =
+      this.foregroundAttempt?.state === "admitting" ? this.foregroundAttempt.submission : null;
+    for (const pending of this.outstandingSubmissions) {
+      if (pending !== admitting) this.settleSubmission(pending, outcome);
     }
   }
 
-  /** Nothing can prove a verdict once the query is gone: every open submission is unknown. */
-  private settleAllSubmissions(outcome: AgentSubmissionOutcome): void {
-    for (const pending of this.outstandingSubmissions) {
-      this.settleSubmission(pending, outcome);
-    }
+  /** Releases the foreground; an admitting attempt learns of it through ownsAdmission. */
+  private clearForegroundTurn(): void {
+    this.activeForegroundTurnId = null;
+    this.activeForegroundQuery = null;
+    this.activeForegroundInput = null;
+    this.cancelCurrentTurn = null;
+    this.foregroundAttempt = null;
+  }
+
+  private foregroundIsAdmitting(): boolean {
+    return this.foregroundAttempt?.state === "admitting";
   }
 
   private findOutstandingSubmission(uuid: string): PendingClaudeSubmission | null {
@@ -3013,11 +3064,8 @@ class ClaudeAgentSession implements AgentSession {
     this.cancelCurrentTurn?.();
     this.settleAllSubmissions("unknown");
     this.subscribers.clear();
-    this.activeForegroundTurnId = null;
-    this.activeForegroundQuery = null;
-    this.activeForegroundInput = null;
+    this.clearForegroundTurn();
     this.autonomousTurn = null;
-    this.cancelCurrentTurn = null;
     this.turnState = "idle";
     this.sidechainTracker.clear();
     this.taskProtocolSource.reset();
@@ -3438,6 +3486,9 @@ class ClaudeAgentSession implements AgentSession {
   }
 
   private async ensureQuery(launchMode: PermissionMode = this.currentMode): Promise<Query> {
+    if (this.closed) {
+      throw new Error("Claude session is closed");
+    }
     if (this.query && !this.queryRestartNeeded) {
       return this.query;
     }
@@ -3973,10 +4024,7 @@ class ClaudeAgentSession implements AgentSession {
       this.settleActiveSubmission("unknown");
     }
     this.notifySubscribers(event);
-    this.activeForegroundTurnId = null;
-    this.activeForegroundQuery = null;
-    this.activeForegroundInput = null;
-    this.cancelCurrentTurn = null;
+    this.clearForegroundTurn();
     this.activeTurnHasAssistantText = false;
     this.compactionMarkerOpen = false;
     this.syncTurnState("foreground turn terminal");
@@ -3991,12 +4039,9 @@ class ClaudeAgentSession implements AgentSession {
 
     if (terminalSeen) {
       this.compactionMarkerOpen = false;
-      if (this.activeForegroundTurnId) {
+      if (this.activeForegroundTurnId && !this.foregroundIsAdmitting()) {
         this.settleActiveSubmission("unknown");
-        this.activeForegroundTurnId = null;
-        this.activeForegroundQuery = null;
-        this.activeForegroundInput = null;
-        this.cancelCurrentTurn = null;
+        this.clearForegroundTurn();
         this.activeTurnHasAssistantText = false;
         this.syncTurnState("foreground turn terminal");
       } else if (this.autonomousTurn) {
@@ -4040,6 +4085,9 @@ class ClaudeAgentSession implements AgentSession {
   private failActiveTurns(errorMessage: string): void {
     const failure = this.buildTurnFailedEvent(errorMessage);
     this.flushPendingToolCalls();
+    if (this.foregroundIsAdmitting()) {
+      return;
+    }
     if (this.activeForegroundTurnId) {
       this.finishForegroundTurn(failure);
       return;
@@ -4291,7 +4339,8 @@ class ClaudeAgentSession implements AgentSession {
       return;
     }
 
-    const isForeground = Boolean(this.activeForegroundTurnId);
+    // An admitting attempt has nothing on the query: frames here belong to the turn before it.
+    const isForeground = Boolean(this.activeForegroundTurnId) && !this.foregroundIsAdmitting();
     if (this.opensAutonomousTurn(message)) {
       this.startAutonomousTurn();
     }
@@ -4299,7 +4348,7 @@ class ClaudeAgentSession implements AgentSession {
       return;
     }
 
-    const turnId = this.activeForegroundTurnId ?? this.autonomousTurn?.id ?? null;
+    const turnId = this.routedTurnId(isForeground);
     const identifiers = readEventIdentifiers(message);
     this.rememberTranscriptProgress(message, readTranscriptUuid(message));
 
@@ -4337,7 +4386,7 @@ class ClaudeAgentSession implements AgentSession {
       this.activeTurnHasAssistantText = true;
     }
     if (
-      this.activeForegroundTurnId &&
+      isForeground &&
       events.some(
         (event) =>
           event.type === "timeline" ||
@@ -4349,6 +4398,11 @@ class ClaudeAgentSession implements AgentSession {
     }
 
     this.dispatchEvents(events);
+  }
+
+  private routedTurnId(isForeground: boolean): string | null {
+    if (isForeground) return this.activeForegroundTurnId;
+    return this.autonomousTurn?.id ?? null;
   }
 
   private async buildPumpedMessageEvents(
@@ -4428,9 +4482,7 @@ class ClaudeAgentSession implements AgentSession {
     this.queryRestartNeeded = false;
     this.autonomousTurn = null;
     this.settleAllSubmissions("unknown");
-    this.activeForegroundTurnId = null;
-    this.activeForegroundQuery = null;
-    this.activeForegroundInput = null;
+    if (!this.foregroundIsAdmitting()) this.clearForegroundTurn();
     this.syncTurnState("missing resumed conversation");
     return true;
   }
@@ -6937,7 +6989,17 @@ const WITHDRAWAL_TIMEOUT_MS = 3_000;
 interface PendingClaudeSubmission {
   /** SDK user uuid of the pushed message; null when the message carries none. */
   uuid: string | null;
+  settled: boolean;
   resolve: (outcome: AgentSubmissionOutcome) => void;
+}
+
+interface ClaudeTurnAttempt {
+  turnId: string;
+  uuid: string | null;
+  /** admitting: waiting for the previous cancellation and the query; pushed: handed to Claude. */
+  state: "admitting" | "pushed";
+  cancelRequested: boolean;
+  submission: PendingClaudeSubmission;
 }
 
 /** Runtime-only Claude frames are validated here because the SDK's public union omits them. */
