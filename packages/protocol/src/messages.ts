@@ -2962,6 +2962,14 @@ export const GlanceSummaryItemSchema = z.object({
 
 export const GlanceSummaryLineSchema = z.object({ id: z.string(), line: z.string() });
 
+export const GlanceSummaryPushItemSchema = z.object({
+  id: z.string(),
+  role: z.enum(["user", "assistant"]),
+  line: z.string(),
+  /** sha256 hex of `${role}\n${text}`, text trimmed and cut to 3000 characters. */
+  textHash: z.string(),
+});
+
 export const GlanceSummarizeRequestSchema = z.object({
   type: z.literal("glance.summarize.request"),
   requestId: z.string(),
@@ -2971,6 +2979,7 @@ export const GlanceSummarizeRequestSchema = z.object({
 
 export type GlanceSummaryItem = z.infer<typeof GlanceSummaryItemSchema>;
 export type GlanceSummaryLine = z.infer<typeof GlanceSummaryLineSchema>;
+export type GlanceSummaryPushItem = z.infer<typeof GlanceSummaryPushItemSchema>;
 export type GlanceSummarizeRequest = z.infer<typeof GlanceSummarizeRequestSchema>;
 
 export const SpeechReadAloudPrepareRequestSchema = z.object({
@@ -3958,6 +3967,13 @@ export const ServerCapabilityStateSchema = z.object({
   reason: z.string(),
 });
 
+export const GlanceSummaryCapabilitySchema = ServerCapabilityStateSchema.extend({
+  // COMPAT(glanceSummaryPrecompute): added in v0.11.1; absent on daemons that only summarize on request, remove optional after 2027-10-10.
+  precompute: z.boolean().optional(),
+});
+
+export type GlanceSummaryCapability = z.infer<typeof GlanceSummaryCapabilitySchema>;
+
 export const ServerVoiceCapabilitiesSchema = z.object({
   dictation: ServerCapabilityStateSchema,
   voice: ServerCapabilityStateSchema,
@@ -3992,7 +4008,7 @@ export const ServerCapabilitiesSchema = z
     // COMPAT(readAloud): added in v0.10.3; absent on older daemons, remove optional after 2027-09-29.
     readAloud: ServerCapabilityStateSchema.optional(),
     // COMPAT(glanceSummary): added in v0.11.1; absent on older daemons, remove optional after 2027-10-10.
-    glanceSummary: ServerCapabilityStateSchema.optional(),
+    glanceSummary: GlanceSummaryCapabilitySchema.optional(),
     // COMPAT(dictationSelection): added in v0.11.0; absent on older daemons, remove optional after 2027-10-04.
     dictationStt: ServerDictationSttSchema.optional(),
   })
@@ -5519,6 +5535,16 @@ export const GlanceSummarizeResponseSchema = z.object({
     error: z.string().nullable(),
   }),
 });
+
+export const GlanceSummaryMessageSchema = z.object({
+  type: z.literal("glance.summary"),
+  payload: z.object({
+    agentId: z.string(),
+    items: z.array(GlanceSummaryPushItemSchema),
+  }),
+});
+
+export type GlanceSummaryMessage = z.infer<typeof GlanceSummaryMessageSchema>;
 
 export const SpeechReadAloudPrepareResponseSchema = z.object({
   type: z.literal("speech.read_aloud.prepare.response"),
@@ -7788,6 +7814,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   WorkspaceClearAttentionResponseSchema,
   WorkspaceMarkUnreadResponseSchema,
   GlanceSummarizeResponseSchema,
+  GlanceSummaryMessageSchema,
   SpeechReadAloudPrepareResponseSchema,
   SpeechReadAloudSynthesizeResponseSchema,
   VoiceOrchestratorStartResponseSchema,
@@ -8465,6 +8492,7 @@ export const WSHelloMessageSchema = z.object({
       [CLIENT_CAPS.timelineReplacementInvalidation]: z.boolean().optional(),
       [CLIENT_CAPS.timelineNotifications]: z.boolean().optional(),
       [CLIENT_CAPS.browserHost]: BrowserAutomationHostCapabilitySchema.optional(),
+      [CLIENT_CAPS.glanceSummary]: z.boolean().optional(),
     })
     .passthrough()
     .optional(),

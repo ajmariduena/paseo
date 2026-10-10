@@ -1,4 +1,8 @@
-import { SessionInboundMessageSchema } from "../../src/messages.js";
+import {
+  ServerCapabilitiesSchema,
+  SessionInboundMessageSchema,
+  WSHelloMessageSchema,
+} from "../../src/messages.js";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
@@ -437,5 +441,30 @@ describe("glance summary wire contract", () => {
         },
       }).success,
     ).toBe(false);
+  });
+
+  it("validates pushed summaries and the precompute capability", () => {
+    const item = { id: "seq:7", role: "assistant", line: "Terminé el cambio.", textHash: "ab" };
+    const push = (items: unknown[]) =>
+      GeneratedWSOutboundMessageSchema.safeParse({
+        type: "session",
+        message: { type: "glance.summary", payload: { agentId: "agent", items } },
+      }).success;
+    expect(push([item])).toBe(true);
+    expect(push([{ ...item, textHash: undefined }])).toBe(false);
+    expect(
+      ServerCapabilitiesSchema.parse({
+        glanceSummary: { enabled: true, reason: "", precompute: true },
+      }).glanceSummary,
+    ).toEqual({ enabled: true, reason: "", precompute: true });
+    expect(
+      WSHelloMessageSchema.parse({
+        type: "hello",
+        clientId: "glasses",
+        clientType: "mobile",
+        protocolVersion: 1,
+        capabilities: { glance_summary: true },
+      }).capabilities,
+    ).toEqual({ glance_summary: true });
   });
 });

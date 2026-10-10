@@ -3,7 +3,7 @@ import type { HostMetricsSampler } from "./host-metrics/sampler.js";
 import { homedir } from "node:os";
 import type { GlanceSummaryService } from "./glance/service.js";
 import { stat } from "node:fs/promises";
-import type { CreationSnapshot } from "@getpaseo/protocol/messages";
+import type { CreationSnapshot, GlanceSummaryCapability } from "@getpaseo/protocol/messages";
 import { CreationService } from "./creation/index.js";
 import { MessageReceipts } from "./message-receipts/index.js";
 import { WebSocket, WebSocketServer } from "ws";
@@ -563,9 +563,10 @@ export class VoiceAssistantWebSocketServer {
   private readonly workspaceLabelService: WorkspaceLabelService | null;
   private readonly noteStore: NoteStore | undefined;
   private readonly hostMetricsSampler: HostMetricsSampler | undefined;
-  private glanceSummaryCapability: ServerCapabilityState = {
+  private glanceSummaryCapability: GlanceSummaryCapability = {
     enabled: false,
     reason: "Discovering structured-generation providers.",
+    precompute: true,
   };
   private readAloudService!: ReadAloudService | null;
   private readonly voiceOrchestrator: VoiceOrchestrator | null | undefined;

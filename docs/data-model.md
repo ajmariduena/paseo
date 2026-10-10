@@ -66,6 +66,9 @@ $PASEO_HOME/
 │   ├── {agentId}.json                   # Messages waiting for the agent's running turn
 │   └── {agentId}/{uuid}.json            # Full prompt of one queued message
 ├── pull-request-watches.json            # Pull requests agents asked Paseo to watch
+├── glance/
+│   ├── state.json                       # When the host was first paired with glasses
+│   └── summaries.json                   # Glance summary cache, least recently used first
 ├── projects/
 │   ├── projects.json                    # Project registry
 │   ├── workspaces.json                  # Workspace registry
@@ -647,6 +650,14 @@ The prompt file is written before the queue file references it and deleted after
 **Path:** `$PASEO_HOME/pull-request-watches.json`
 
 Every `watch_pull_request` watch in one file; each `PullRequestWatchStore` method is one atomic write. A watch names the agent, its `cwd`, the pull request (`number`, canonical `url`, `headRefName`), and `progress`: what the agent was last told (the head commit, failed check names, whether the gate passed and which checks were in it, the remark watermark, whether the branch conflicts, and comment-only wakes in a row). `headSha` and `passedChecks` are absent from watches saved before they existed; such a watch adopts the current head and passed checks without a wake. `progress` is written only after the wake was delivered, so a wake lost to a restart is found again on the next pass; the failed-read count and the last read of each pull request are in memory. Schema: `packages/server/src/server/pull-request-watch/watch-store.ts`.
+
+---
+
+## Glance Store
+
+**Path:** `$PASEO_HOME/glance/`
+
+`state.json` records `glassesPairedAt`, written the first time a client says hello with `glance_summary`. From then on the daemon summarizes each finished turn and pending question in the background, even with no glasses connected. It sits outside `config.json` because older daemons reject unknown config keys. `summaries.json` holds up to 1000 `[sha256(role + "\n" + text), line]` pairs, least recently used first. It is written a couple of seconds after new lines land and again at shutdown, so summaries survive a restart. Schema: `packages/server/src/server/glance/store.ts`.
 
 ---
 

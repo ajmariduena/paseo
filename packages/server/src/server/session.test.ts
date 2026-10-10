@@ -6028,4 +6028,31 @@ describe("glance summarize requests", () => {
       },
     ]);
   });
+
+  test("glasses clients pair the host and only they receive pushed summaries", () => {
+    const targetedMessages: Array<{ source: object; message: SessionOutboundMessage }> = [];
+    const service = new GlanceSummaryService({
+      agentManager: asAgentManager({}),
+      providerSnapshotManager: { listProviders: async () => [] },
+      getConfig: () => ({}),
+      logger: pino({ level: "silent" }),
+    });
+    const session = createSessionForTest({ glanceSummary: service, targetedMessages });
+    const glasses = {};
+    const phone = {};
+    session.updateClientCapabilities({ selective_agent_timeline: true }, phone);
+    expect(service.isGlassesMode()).toBe(false);
+    session.updateClientCapabilities({ glance_summary: true }, glasses);
+    expect(service.isGlassesMode()).toBe(true);
+    targetedMessages.length = 0;
+
+    const payload = {
+      agentId: "agent",
+      items: [{ id: "seq:7", role: "assistant" as const, line: "Terminé.", textHash: "abc" }],
+    };
+    session.emitGlanceSummary(payload);
+    expect(targetedMessages).toEqual([
+      { source: glasses, message: { type: "glance.summary", payload } },
+    ]);
+  });
 });

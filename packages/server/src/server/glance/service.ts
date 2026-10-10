@@ -2,9 +2,9 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import type pino from "pino";
 import type {
+  GlanceSummaryCapability,
   GlanceSummaryItem,
   GlanceSummaryLine,
-  ServerCapabilityState,
 } from "@getpaseo/protocol/messages";
 import type { AgentManager } from "../agent/agent-manager.js";
 import { generateStructuredAgentResponseWithFallback } from "../agent/agent-response-loop.js";
@@ -13,6 +13,20 @@ import {
   resolveStructuredGenerationProviders,
   type StructuredGenerationDaemonConfig,
 } from "../agent/structured-generation-providers.js";
+import type { GlanceStore } from "./store.js";
+
+const MAX_SOURCE_CHARS = 3000;
+
+export function normalizeGlanceText(text: string): string {
+  return text.trim().slice(0, MAX_SOURCE_CHARS);
+}
+
+/** The cache key; clients receive it as `textHash` to match lines without a shared message id. */
+export function glanceSummaryKey(role: GlanceSummaryItem["role"], text: string): string {
+  return createHash("sha256")
+    .update(`${role}\n${normalizeGlanceText(text)}`)
+    .digest("hex");
+}
 
 const SUMMARY_INSTRUCTIONS = `Condense a coding-agent chat for smart glasses where a line holds about 45 characters.
 Use the same language as each source item (usually Spanish).
@@ -30,6 +44,8 @@ export interface GlanceSummaryServiceOptions {
   logger: pino.Logger;
   generateStructured?: typeof generateStructuredAgentResponseWithFallback;
   cacheSize?: number;
+  store?: GlanceStore;
+  persistDelayMs?: number;
 }
 
 interface SummarizeInput {
@@ -39,10 +55,54 @@ interface SummarizeInput {
 
 export class GlanceSummaryService {
   private readonly cache = new Map<string, string>();
+  private glassesMode = false;
+  private persistTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly options: GlanceSummaryServiceOptions) {}
 
-  async getCapability(cwd: string): Promise<ServerCapabilityState> {
+  async load(): Promise<void> {
+    const store = this.options.store;
+    if (!store) return;
+    try {
+      this.glassesMode = (await store.readGlassesPairedAt()) !== null;
+    } catch (error) {
+      this.options.logger.warn({ err: error }, "Failed to read glance state");
+    }
+    try {
+      for (const [key, line] of await store.readSummaries()) this.remember(key, line);
+    } catch (error) {
+      this.options.logger.warn({ err: error }, "Failed to read glance summary cache");
+    }
+  }
+
+  isGlassesMode(): boolean {
+    return this.glassesMode;
+  }
+
+  /** Pairing is permanent: the host keeps precomputing while the glasses are away. */
+  async enableGlassesMode(): Promise<void> {
+    if (this.glassesMode) return;
+    this.glassesMode = true;
+    this.options.logger.info("Host paired with glasses; precomputing glance summaries");
+    try {
+      await this.options.store?.markGlassesPaired(new Date());
+    } catch (error) {
+      this.options.logger.warn({ err: error }, "Failed to persist glance state");
+    }
+  }
+
+  getCachedLine(role: GlanceSummaryItem["role"], text: string): string | undefined {
+    return this.cache.get(glanceSummaryKey(role, text));
+  }
+
+  async flush(): Promise<void> {
+    if (!this.persistTimer) return;
+    clearTimeout(this.persistTimer);
+    this.persistTimer = null;
+    await this.persist();
+  }
+
+  async getCapability(cwd: string): Promise<GlanceSummaryCapability> {
     try {
       // Discovery events refresh this snapshot without delaying the client handshake.
       const providers = await this.resolveProviders({ cwd, wait: false });
@@ -52,21 +112,21 @@ export class GlanceSummaryService {
           providers.length > 0
             ? ""
             : "No structured-generation provider is configured on this host.",
+        precompute: true,
       };
     } catch {
       return {
         enabled: false,
         reason: "Structured-generation providers are unavailable on this host.",
+        precompute: true,
       };
     }
   }
 
   async summarize(input: SummarizeInput): Promise<GlanceSummaryLine[]> {
     if (input.items.length > 20) throw new Error("Glance summaries accept at most 20 items");
-    const items = input.items.map((item) => ({ ...item, text: item.text.slice(0, 3000) }));
-    const keys = items.map((item) =>
-      createHash("sha256").update(`${item.role}\n${item.text}`).digest("hex"),
-    );
+    const items = input.items.map((item) => ({ ...item, text: normalizeGlanceText(item.text) }));
+    const keys = items.map((item) => glanceSummaryKey(item.role, item.text));
     const lines = new Map<string, string>();
     const missing = new Map<string, GlanceSummaryItem>();
     for (const [index, item] of items.entries()) {
@@ -124,14 +184,35 @@ export class GlanceSummaryService {
         lines.set(key, line);
       }
       // Commit only a fully validated batch; partial failures must not poison the cache.
-      for (const key of missing.keys()) {
-        this.cache.set(key, lines.get(key)!);
-        if (this.cache.size > (this.options.cacheSize ?? 1000)) {
-          this.cache.delete(this.cache.keys().next().value!);
-        }
-      }
+      for (const key of missing.keys()) this.remember(key, lines.get(key)!);
+      this.schedulePersist();
     }
     return items.map((item, index) => ({ id: item.id, line: lines.get(keys[index])! }));
+  }
+
+  private remember(key: string, line: string): void {
+    this.cache.delete(key);
+    this.cache.set(key, line);
+    if (this.cache.size > (this.options.cacheSize ?? 1000)) {
+      this.cache.delete(this.cache.keys().next().value!);
+    }
+  }
+
+  private schedulePersist(): void {
+    if (!this.options.store || this.persistTimer) return;
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = null;
+      void this.persist();
+    }, this.options.persistDelayMs ?? 2000);
+    this.persistTimer.unref?.();
+  }
+
+  private async persist(): Promise<void> {
+    try {
+      await this.options.store?.writeSummaries([...this.cache.entries()]);
+    } catch (error) {
+      this.options.logger.warn({ err: error }, "Failed to persist glance summary cache");
+    }
   }
 
   private resolveProviders(input: { cwd: string; wait: boolean }) {

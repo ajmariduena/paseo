@@ -485,6 +485,7 @@ const OUTBOUND_PERMISSION = {
   set_daemon_config_response: "daemon.manage",
   set_voice_mode_response: "workspace.write",
   "glance.summarize.response": "workspace.write",
+  "glance.summary": "workspace.read",
   "speech.read_aloud.prepare.response": "workspace.write",
   "speech.read_aloud.synthesize.response": "workspace.write",
   "voice.orchestrator.start.response": "workspace.write",

@@ -145,10 +145,12 @@ describe("GlanceSummaryService", () => {
     expect(await createService().service.getCapability("/tmp")).toEqual({
       enabled: true,
       reason: "",
+      precompute: true,
     });
     expect(await createService({ getConfig: () => ({}) }).service.getCapability("/tmp")).toEqual({
       enabled: false,
       reason: "No structured-generation provider is configured on this host.",
+      precompute: true,
     });
     expect(
       await createService({
@@ -161,6 +163,7 @@ describe("GlanceSummaryService", () => {
     ).toEqual({
       enabled: false,
       reason: "Structured-generation providers are unavailable on this host.",
+      precompute: true,
     });
   });
   it("defaults to Haiku 5.5 when Claude is available and nothing is configured", async () => {
