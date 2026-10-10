@@ -38,7 +38,8 @@ const CancellationRecordSchema = HandoffCancellationBindingSchema.extend({
   publicKey: z.string().min(1).max(1024),
 });
 const JournalSchema = z.object({
-  version: z.literal(1),
+  // COMPAT(handoffOwnershipV1): added in v0.11.1, remove after 2027-04-10 once v1 journals have been republished.
+  version: z.union([z.literal(1), z.literal(2)]),
   sourceServerId: z.string().min(1),
   records: z.array(RecordSchema).max(10_000),
   cancellations: z.array(CancellationRecordSchema).max(10_000).optional(),
@@ -60,6 +61,7 @@ export interface HandoffMutationScope {
   workspaceId?: string;
   agentId?: string;
   scheduleId?: string;
+  operation?: "cleanup" | "retained_notification";
 }
 export interface HandoffMutationGuard {
   acquire(): () => void;
@@ -106,6 +108,14 @@ function protects(record: SourceRecord, scope: HandoffMutationScope): boolean {
     record.state !== "cancelled" &&
     (record.workspaceId === scope.workspaceId ||
       record.agentIds.includes(scope.agentId ?? "") ||
+      (record.state !== "released" &&
+        scope.operation !== "retained_notification" &&
+        record.stoppedWorkReview?.retainedWorkspaces?.some(
+          (workspace) =>
+            workspace.workspaceId === scope.workspaceId ||
+            workspace.agentIds.includes(scope.agentId ?? "") ||
+            handoffPathsOverlap(workspace.cwd, scope.cwd),
+        )) ||
       (schedule && (record.state !== "released" || !schedule.retainedOnSource)) ||
       handoffPathsOverlap(record.cwd, scope.cwd))
   );
@@ -251,6 +261,11 @@ export class HandoffOwnership {
         reject("invalid_state", "Ownership journal reached its transfer limit");
       this.assertAllowed({ cwd: source.cwd, workspaceId: source.workspaceId });
       for (const agentId of source.agentIds) this.assertAllowed({ cwd: source.cwd, agentId });
+      for (const workspace of source.stoppedWorkReview?.retainedWorkspaces ?? []) {
+        this.assertAllowed({ cwd: workspace.cwd, workspaceId: workspace.workspaceId });
+        for (const agentId of workspace.agentIds)
+          this.assertAllowed({ cwd: workspace.cwd, agentId });
+      }
       for (const schedule of source.stoppedWorkReview?.schedules ?? [])
         this.assertAllowed({ cwd: source.cwd, scheduleId: schedule.id });
       const record: SourceRecord = {
@@ -321,6 +336,31 @@ export class HandoffOwnership {
       [...this.mutations]
         .filter((mutation) => protects(record, mutation.scope))
         .map((mutation) => mutation.done),
+    );
+  }
+
+  /** Cleanup must finish before retention is published; runner leases drain only after stopping. */
+  async drainCleanup(id: string): Promise<void> {
+    const record = this.requireRecord(id);
+    await Promise.all(
+      [...this.mutations]
+        .filter(
+          (mutation) => mutation.scope.operation === "cleanup" && protects(record, mutation.scope),
+        )
+        .map((mutation) => mutation.done),
+    );
+  }
+
+  holdsAgent(agentId: string): boolean {
+    this.assertHealthy();
+    return [...this.records.values()].some(
+      (record) =>
+        record.state !== "cancelled" &&
+        (record.agentIds.includes(agentId) ||
+          (record.state !== "released" &&
+            record.stoppedWorkReview?.retainedWorkspaces?.some((workspace) =>
+              workspace.agentIds.includes(agentId),
+            ))),
     );
   }
 
@@ -510,7 +550,7 @@ export class HandoffOwnership {
     );
     try {
       const journal = JournalSchema.parse({
-        version: 1,
+        version: 2,
         sourceServerId: this.options.sourceServerId,
         records,
         cancellations: [...this.cancellations.values(), ...(cancellation ? [cancellation] : [])],

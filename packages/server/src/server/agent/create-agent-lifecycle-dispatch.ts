@@ -186,6 +186,7 @@ export class CreateAgentLifecycleDispatch {
         cwd: agent.cwd,
         workspaceId: agent.workspaceId,
         agentId,
+        operation: "cleanup",
       });
       try {
         const workspace = (await this.dependencies.listActiveWorkspaces()).find(

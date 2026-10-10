@@ -143,6 +143,13 @@ write must not become a pending retry. Checkpointing unchanged data remains avai
 verification retains the seal across restart until cancellation is durable. Finish known repairs
 and legacy annotation adoption before entering this boundary.
 
+A source-retained conversation carries `handoffRetention` until a human prompt or explicit queue
+resume continues it. Publish that marker before stopping its runtime; snapshots preserve it and
+runtime opening refuses it, including after restart. It is separate from the workspace's lasting
+cleanup protection. A content-addressed local history checkpoint lets clients read the stopped
+conversation without opening a provider. Held system notifications append to its local queue;
+they do not belong to the transferred archive.
+
 This seal protects records; it does not prove that all provider callbacks or OS processes stopped.
 The remaining certification requirements live in the
 [conversation persistence contract](refactors/cross-host-handoff-plan.md#conversation-persistence-contract).

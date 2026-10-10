@@ -41,7 +41,9 @@ export interface QueuedMessage {
 
 export interface AgentQueueRunnerHost {
   withMutation<T>(agentId: string, operation: () => Promise<T>): Promise<T>;
+  withHeldNotification?<T>(agentId: string, operation: () => Promise<T>): Promise<T>;
   isHandoffHeld(agentId: string): boolean;
+  beforeExplicitResume?(agentId: string): Promise<void>;
   waitForRunToSettle(agentId: string): Promise<void>;
   subscribe(callback: (event: AgentManagerEvent) => void): () => void;
   isArchived(agentId: string): Promise<boolean>;
@@ -149,6 +151,15 @@ export class AgentQueueRunner {
     input: NewQueueEntry,
     deliver: QueueDeliverer,
   ): Promise<QueuedMessage> {
+    if (
+      this.isHeldForUserStop(agentId) &&
+      (input.origin === "system" || input.origin === "delegation_wake") &&
+      this.host.withHeldNotification
+    ) {
+      return this.host.withHeldNotification(agentId, () =>
+        this.enqueueAdmitted(agentId, input, deliver),
+      );
+    }
     return this.host.withMutation(agentId, () => this.enqueueAdmitted(agentId, input, deliver));
   }
 
@@ -251,6 +262,7 @@ export class AgentQueueRunner {
   }
 
   private async resumeAdmitted(agentId: string): Promise<void> {
+    await this.host.beforeExplicitResume?.(agentId);
     const changed = await this.store.resume(agentId);
     this.userStopped.delete(agentId);
     if (changed) {
@@ -267,6 +279,7 @@ export class AgentQueueRunner {
   /** The user sent the stopped agent a message; entries already held stay held until resumed. */
   async releaseUserStop(agentId: string): Promise<void> {
     await this.host.withMutation(agentId, async () => {
+      await this.host.beforeExplicitResume?.(agentId);
       await this.store.releaseUserStop(agentId);
       this.userStopped.delete(agentId);
     });

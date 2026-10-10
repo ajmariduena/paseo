@@ -295,7 +295,7 @@ export class PullRequestWatcher {
     agentIds: string[],
     approved: HandoffPullRequestWatchReview[],
   ): Promise<void> {
-    if (agentIds.some((id) => !this.options.handoffOwnership?.forAgent(id)))
+    if (agentIds.some((id) => !this.options.handoffOwnership?.holdsAgent(id)))
       throw new Error("PR watch shutdown requires the source handoff fence");
     assertReviewedPullRequestWatches(await this.reviewForHandoff(agentIds), approved);
     if (approved.length === 0) return;

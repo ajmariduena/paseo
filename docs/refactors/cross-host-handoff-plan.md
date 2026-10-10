@@ -594,8 +594,14 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   are installed at the destination. Source-retained definitions can be resumed explicitly after release
   or cancellation; completed definitions stay completed. Heartbeat notifications
   are persisted before dispatch so exported history can retain them. Review refuses replaced or
-  unknown runs; capture still refuses unfinished runs, active jobs outside the transferred conversation
-  set, ancestor-directory schedules, outside heartbeat owners, damaged
+  unknown runs. Moving a schedule whose active Claude job runs in another worktree now reviews and
+  stops that worktree on the source. Review expands through overlapping write scopes and active
+  schedule leases, with a temporary journal-v2 fence distinct from transferred membership. Cleanup
+  admissions drain before workspace retention is published; runners drain after their agents stop.
+  Retained definitions stay paused, and retained conversations require a human prompt or explicit
+  queue resume. Their stopped history remains readable after restart without opening a provider.
+  Capture still refuses unfinished runs, retained conversations without a recorded Claude session,
+  ancestor-directory schedules, outside heartbeat owners, damaged
   inventory, more than 1,000 reviewed schedules or metadata beyond 32 MiB. Two-daemon tests cover
   both continuation modes, readable notifications, source changes, restarts and interrupted installation.
   Known completed outcomes survive restart once their repair inputs are durably recorded by the

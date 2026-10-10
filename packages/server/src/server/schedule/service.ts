@@ -443,6 +443,11 @@ export class ScheduleService {
 
   private async schedulesForHandoff(source: HandoffScheduleSource) {
     const cwd = await resolveHandoffPath(source.cwd);
+    const retained = source.stoppedWorkReview?.retainedWorkspaces ?? [];
+    const heldAgentIds = new Set([
+      ...source.agentIds,
+      ...retained.flatMap((workspace) => workspace.agentIds),
+    ]);
     const records: StoredSchedule[] = [];
     const relativeCwds = new Map<string, string>();
     const retainedOnSource = new Map<
@@ -453,6 +458,11 @@ export class ScheduleService {
       if (record.target.type === "agent") {
         if (!source.agentIds.includes(record.target.agentId)) {
           const agent = await this.agentStorage.get(record.target.agentId);
+          if (agent && heldAgentIds.has(record.target.agentId)) {
+            retainedOnSource.set(record.id, { cwd: await resolveHandoffPath(agent.cwd) });
+            records.push(record);
+            continue;
+          }
           if (agent && handoffPathsOverlap(cwd, await resolveHandoffPath(agent.cwd)))
             throw new Error(
               "A heartbeat belongs to another conversation sharing the source directory",
@@ -465,25 +475,22 @@ export class ScheduleService {
           const runsHere = record.runs.some(
             (run) =>
               run.status === "running" &&
-              (run.workspaceId === source.workspaceId ||
-                source.agentIds.includes(run.agentId ?? "")),
+              (run.workspaceId === source.workspaceId || heldAgentIds.has(run.agentId ?? "")),
           );
           const reviewed = source.stoppedWorkReview?.schedules?.find(
             (entry) => entry.id === record.id,
           )?.retainedOnSource;
-          if (!runsHere && !reviewed) continue;
+          if (
+            !runsHere &&
+            !reviewed &&
+            !retained.some((workspace) => handoffPathsOverlap(workspace.cwd, targetCwd))
+          )
+            continue;
           retainedOnSource.set(record.id, { cwd: targetCwd });
           records.push(record);
           continue;
         }
-        const relativeCwd = path.relative(cwd, targetCwd);
-        if (
-          relativeCwd === ".." ||
-          relativeCwd.startsWith(`..${path.sep}`) ||
-          path.isAbsolute(relativeCwd)
-        )
-          throw new Error("A schedule targets an ancestor of the transferred workspace");
-        relativeCwds.set(record.id, relativeCwd.split(path.sep).join("/") || ".");
+        relativeCwds.set(record.id, this.portableScheduleCwd(cwd, targetCwd));
       }
       records.push(record);
     }
@@ -494,6 +501,17 @@ export class ScheduleService {
         : {}),
     }));
     return { records, relativeCwds, reviews };
+  }
+
+  private portableScheduleCwd(cwd: string, targetCwd: string): string {
+    const relativeCwd = path.relative(cwd, targetCwd);
+    if (
+      relativeCwd === ".." ||
+      relativeCwd.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relativeCwd)
+    )
+      throw new Error("A schedule targets an ancestor of the transferred workspace");
+    return relativeCwd.split(path.sep).join("/") || ".";
   }
 
   private reviewSchedule(
@@ -514,10 +532,6 @@ export class ScheduleService {
         throw new Error(
           "A scheduled run is still active and cannot be stopped by this handoff; stop or finish it before handoff",
         );
-      if (!source.agentIds.includes(tracked.agentId))
-        throw new Error(
-          "The scheduled agent is outside the transferred conversations; this task needs a separate workspace review",
-        );
       const currentSession = this.agentManager.getAgent(tracked.agentId)?.session;
       if (currentSession !== tracked.session && (!approved || currentSession))
         throw new Error("The active scheduled runtime changed after review");
@@ -528,7 +542,17 @@ export class ScheduleService {
       )
         throw new Error("The active scheduled execution changed after review");
     }
-    return reviewScheduleForHandoff(record, approved ?? tracked?.activeRun);
+    const activeRun =
+      approved ??
+      (tracked
+        ? {
+            ...tracked.activeRun,
+            ...(!source.agentIds.includes(tracked.agentId)
+              ? { retainedAgentId: tracked.agentId }
+              : {}),
+          }
+        : undefined);
+    return reviewScheduleForHandoff(record, activeRun);
   }
 
   async reviewForHandoff(source: HandoffScheduleSource): Promise<HandoffScheduleReview[]> {

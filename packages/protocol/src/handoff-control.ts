@@ -75,6 +75,7 @@ export const HandoffScheduleReviewSchema = z.object({
     .object({
       id: z.string().uuid(),
       previousLastRunAt: z.string().datetime({ offset: true }).nullable(),
+      retainedAgentId: z.string().min(1).optional(),
     })
     .optional(),
   omittedSettings: z.array(z.string().min(1).max(4096)).max(1000),
@@ -95,6 +96,17 @@ export const HandoffStoppedWorkReviewSchema = z.object({
   setupIds: z.array(z.string().uuid()).max(1000),
   pullRequestWatches: z.array(HandoffPullRequestWatchReviewSchema).max(1000).optional(),
   schedules: z.array(HandoffScheduleReviewSchema).max(1000).optional(),
+  retainedWorkspaces: z
+    .array(
+      z.object({
+        workspaceId: z.string().min(1),
+        incarnation: z.string().uuid(),
+        cwd: z.string().min(1).max(8192),
+        agentIds: z.array(z.string().min(1)).max(1000),
+      }),
+    )
+    .max(32)
+    .optional(),
 });
 export type HandoffStoppedWorkReview = z.infer<typeof HandoffStoppedWorkReviewSchema>;
 export const HandoffStoppedWorkPreviewSchema = z.object({

@@ -102,6 +102,32 @@ test("handoff schedule review and size remain optional for older clients and dae
   ).toEqual(preview);
 });
 
+test("retained handoff stop membership stays optional on the wire", () => {
+  const legacy = { agents: [], terminals: [], setupIds: [] };
+  const current = {
+    ...legacy,
+    retainedWorkspaces: [
+      {
+        workspaceId: "job-workspace",
+        incarnation: "12345678-1234-4234-8234-123456789abc",
+        cwd: "/source/job",
+        agentIds: ["job-agent"],
+      },
+    ],
+  };
+  expect(HandoffStoppedWorkReviewSchema.parse(legacy)).toEqual(legacy);
+  expect(HandoffStoppedWorkReviewSchema.parse(current)).toEqual(current);
+  expect(HandoffStoppedWorkReviewSchema.omit({ retainedWorkspaces: true }).parse(current)).toEqual(
+    legacy,
+  );
+  const active = { id: "12345678-1234-4234-8234-123456789abc", previousLastRunAt: null };
+  const schema = HandoffScheduleReviewSchema.shape.activeRun.unwrap();
+  expect(schema.parse(active)).toEqual(active);
+  expect(
+    schema.omit({ retainedAgentId: true }).parse({ ...active, retainedAgentId: "job-agent" }),
+  ).toEqual(active);
+});
+
 test("handoff schedule run provenance does not turn source identities into destination links", () => {
   const timestamp = "2026-01-01T00:00:00Z";
   const run = {

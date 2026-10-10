@@ -14,6 +14,7 @@ import type { ManagedAgent } from "./agent-manager.js";
 import type { AgentSessionConfig } from "./agent-sdk-types.js";
 import { AgentOwnerSchema, daemonExecutionKey, type DaemonAgentOwner } from "./agent-owner.js";
 import { HandoffContextSchema } from "../handoff/context.js";
+import { HandoffBlobSchema } from "@getpaseo/protocol/handoff";
 import {
   initialPromptAnnotationCheckpoint,
   PromptAnnotationCheckpointSchema,
@@ -127,6 +128,13 @@ const STORED_AGENT_SCHEMA = z.object({
   /** Background work a restart cancelled, told to the agent's next turn once it completes. */
   pendingRestartNote: z.array(RestartCancelledWorkSchema).optional(),
   handoffContext: HandoffContextSchema.optional(),
+  handoffRetention: z
+    .object({
+      transferId: z.string().uuid(),
+      retainedAt: z.string().datetime(),
+      history: HandoffBlobSchema.optional(),
+    })
+    .optional(),
   runtimeGeneration: RuntimeGenerationSchema.optional(),
   unresolvedRuntimeGenerations: z.array(RuntimeGenerationSchema).max(32).optional(),
   promptAnnotations: PromptAnnotationCheckpointSchema.optional(),
@@ -148,6 +156,16 @@ export type SerializableAgentConfig = Pick<
 >;
 
 export type StoredAgentRecord = z.infer<typeof STORED_AGENT_SCHEMA>;
+
+export class HandoffRetainedAgentError extends Error {
+  readonly code = "handoff_retained";
+  constructor(readonly agentId: string) {
+    super(
+      "This conversation was stopped by handoff and stays on this host. Send it a message or resume its queue explicitly to continue.",
+    );
+    this.name = "HandoffRetainedAgentError";
+  }
+}
 
 export class AgentRecordConflictError extends Error {
   constructor(
@@ -320,6 +338,7 @@ export class AgentStorage {
         ...candidate,
         ...recordRecoveryState(existing),
         pendingRestartNote: existing ? existing.pendingRestartNote : candidate.pendingRestartNote,
+        handoffRetention: existing ? existing.handoffRetention : candidate.handoffRetention,
       };
       // Identical retries reuse the committed revision, including after publication repair.
       if (existing && sameRecordContent(existing, next)) return existing;
@@ -341,6 +360,7 @@ export class AgentStorage {
     const opened = await this.queueRecordMutation(
       input.id,
       (existing) => {
+        if (existing?.handoffRetention) throw new HandoffRetainedAgentError(input.id);
         const unresolved = [...(existing?.unresolvedRuntimeGenerations ?? [])];
         if (existing && existing.lastStatus !== "closed") {
           if (unresolved.length === 32)
@@ -743,9 +763,57 @@ export class AgentStorage {
           record.pendingRestartNote = existing.pendingRestartNote;
         }
         if (existing?.handoffContext) record.handoffContext = existing.handoffContext;
+        if (existing?.handoffRetention) record.handoffRetention = existing.handoffRetention;
         return record;
       },
       synchronize,
+    );
+  }
+
+  async retainForHandoff(agentId: string, transferId: string): Promise<void> {
+    await this.load();
+    await this.queueRecordMutation(
+      agentId,
+      (record) => {
+        if (!record || record.archivedAt) throw new Error("Retained conversation is unavailable");
+        return {
+          ...record,
+          handoffRetention: record.handoffRetention ?? {
+            transferId,
+            retainedAt: new Date().toISOString(),
+          },
+        };
+      },
+      this.syncPublication,
+    );
+  }
+
+  async continueAfterHandoff(agentId: string): Promise<void> {
+    if (!(await this.get(agentId))?.handoffRetention) return;
+    await this.queueRecordMutation(
+      agentId,
+      (record) => {
+        if (!record) throw new Error("Retained conversation is unavailable");
+        return { ...record, handoffRetention: undefined };
+      },
+      this.syncPublication,
+    );
+  }
+
+  async checkpointRetainedHistory(
+    agentId: string,
+    history: z.infer<typeof HandoffBlobSchema>,
+  ): Promise<void> {
+    const input = HandoffBlobSchema.parse(history);
+    await this.load();
+    await this.queueRecordMutation(
+      agentId,
+      (record) => {
+        if (!record?.handoffRetention || record.lastStatus !== "closed")
+          throw new Error("Retained history requires a stopped conversation");
+        return { ...record, handoffRetention: { ...record.handoffRetention, history: input } };
+      },
+      this.syncPublication,
     );
   }
 

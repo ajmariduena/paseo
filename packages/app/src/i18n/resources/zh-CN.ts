@@ -3,8 +3,9 @@ import { pluginSettings } from "./plugin-settings";
 
 export const zhCN: TranslationResources = {
   handoff: {
-    retainedSchedule:
-      "此计划保留在源主机的 {{cwd}}。如果尚未完成，它将被暂停；仅迁移其工作区和对话。",
+    retainedWorkspace:
+      "此目录中的工作将停止并保留在源主机上，文件和对话会被保留。要继续，请发送消息或手动恢复队列。",
+    retainedSchedule: "此计划保留在源主机的 {{cwd}}。未完成的计划将暂停。",
     activeScheduleStops: "此计划任务正在运行。准备过程会停止其代理并保存结果，然后再进行迁移。",
     activeHeartbeatStops: "此心跳任务正在运行。准备过程会停止任务并保存结果，然后再进行迁移。",
     automationPaused:

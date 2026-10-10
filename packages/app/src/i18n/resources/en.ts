@@ -1,7 +1,9 @@
 export const en = {
   handoff: {
+    retainedWorkspace:
+      "Work in this directory stops and stays on the source host. Its files and conversations are kept. Send a message or resume the queue explicitly to continue.",
     retainedSchedule:
-      "This schedule stays on the source host at {{cwd}}. It will be paused if unfinished; only its workspace and conversation move.",
+      "This schedule stays on the source host at {{cwd}}. It will be paused if unfinished.",
     activeScheduleStops:
       "This scheduled task is running. Preparation stops its agent and saves the result before moving.",
     activeHeartbeatStops:

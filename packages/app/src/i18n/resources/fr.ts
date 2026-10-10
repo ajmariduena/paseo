@@ -3,8 +3,10 @@ import { pluginSettings } from "./plugin-settings";
 
 export const fr: TranslationResources = {
   handoff: {
+    retainedWorkspace:
+      "Le travail dans ce dossier s’arrête et reste sur l’hôte source. Ses fichiers et conversations sont conservés. Envoyez un message ou reprenez explicitement la file pour continuer.",
     retainedSchedule:
-      "Cette planification reste sur l’hôte source dans {{cwd}}. Elle sera suspendue si elle n’est pas terminée ; seuls son espace de travail et sa conversation sont transférés.",
+      "Cette planification reste sur l’hôte source dans {{cwd}}. Elle sera suspendue si elle n’est pas terminée.",
     activeScheduleStops:
       "Cette tâche planifiée est en cours. La préparation arrête son agent et enregistre le résultat avant le transfert.",
     activeHeartbeatStops:

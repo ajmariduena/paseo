@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { copyFile, mkdir, realpath, rm } from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -18,7 +18,7 @@ import {
   type HandoffStoppedWorkReview,
 } from "@getpaseo/protocol/handoff-control";
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
-import type { AgentManager } from "../agent/agent-manager.js";
+import type { AgentManager, ManagedAgent } from "../agent/agent-manager.js";
 import {
   RestartCancelledWorkSchema,
   type AgentStorage,
@@ -34,12 +34,16 @@ import {
   verifyCapturedClaudeSession,
   previewClaudeSession,
 } from "../agent/providers/claude/handoff.js";
-import type { WorkspaceRegistry } from "../workspace-registry.js";
+import type {
+  FileBackedWorkspaceRegistry,
+  PersistedWorkspaceRecord,
+} from "../workspace-registry.js";
 import type { TerminalManager } from "../../terminal/terminal-manager.js";
 import type { TerminalSession } from "../../terminal/terminal.js";
 import type { WorkspaceSetupRuntime } from "../workspace-setup-runtime.js";
 import type { HandoffArchiveStore } from "./archive.js";
 import { readBoundedFile, syncDirectory, writeJournal } from "./artifacts.js";
+import { syncFilePublication } from "../atomic-file.js";
 import {
   captureWorkspace,
   verifyCapturedWorkspace,
@@ -67,10 +71,13 @@ import {
   readHandoffHistory,
   fetchHandoffHistory,
   HandoffHistorySchema,
+  HANDOFF_HISTORY_MAX_BYTES,
+  parseHandoffHistory,
 } from "./history.js";
 import type { AgentTimelineFetchOptions } from "../agent/agent-timeline-store-types.js";
 import {
   handoffPathsOverlap,
+  resolveHandoffPath,
   type HandoffOwnership,
   type SourceHandoffStatus,
   type HandoffCancellationInput,
@@ -127,7 +134,7 @@ interface SourceOptions {
   ownership: HandoffOwnership;
   archives: HandoffArchiveStore;
   destination: Pick<HandoffDestination, "withConversationArchive" | "hasConversation">;
-  workspaces: Pick<WorkspaceRegistry, "get" | "list">;
+  workspaces: Pick<FileBackedWorkspaceRegistry, "get" | "list" | "retainForHandoff">;
   agents: AgentStorage;
   agentManager: Pick<
     AgentManager,
@@ -273,8 +280,7 @@ export class HandoffSource {
       }
     }
     const workspace = await previewWorkspace({ cwd: inventory.cwd });
-    const terminals = await this.sourceTerminals(inventory);
-    const review = await this.reviewWriters(inventory, terminals);
+    const review = await this.reviewWriters(inventory);
     const queued = await this.previewQueues(inventory, review.pullRequestWatches ?? []);
     return {
       workspaceId,
@@ -284,11 +290,14 @@ export class HandoffSource {
       workspace,
       stoppedWork: {
         agentIds: review.agents.map(({ id }) => id),
-        terminals: terminals.map((terminal) => ({ id: terminal.id, name: terminal.name })),
+        terminals: review.terminals.map((terminal) => ({ id: terminal.id, name: terminal.name })),
         setupOperations: review.setupIds.length,
         queuedMessages: queued.count,
         queuedBytes: queued.bytes,
-        scheduledBytes: await this.options.schedules.estimateForHandoff(inventory),
+        scheduledBytes: await this.options.schedules.estimateForHandoff({
+          ...inventory,
+          stoppedWorkReview: review,
+        }),
         review,
       },
     };
@@ -367,7 +376,7 @@ export class HandoffSource {
         input.stoppedWorkReview &&
         this.options.ownership.forWorkspace(input.workspaceId)?.id !== input.transferId
       ) {
-        const current = await this.reviewWriters(inventory, await this.sourceTerminals(inventory));
+        const current = await this.reviewWriters(inventory);
         if (JSON.stringify(current) !== JSON.stringify(input.stoppedWorkReview))
           refuse(
             "review_changed",
@@ -689,8 +698,9 @@ export class HandoffSource {
 
   private async stopWatches(source: SourceHandoffStatus) {
     const watches = source.stoppedWorkReview?.pullRequestWatches ?? [];
-    await this.options.pullRequestWatches.stopForHandoff(source.agentIds, watches);
-    for (const agentId of source.agentIds) {
+    const agentIds = this.stoppedAgentIds(source);
+    await this.options.pullRequestWatches.stopForHandoff(agentIds, watches);
+    for (const agentId of agentIds) {
       const stopped = watches
         .filter((watch) => watch.agentId === agentId)
         .map((watch) => ({
@@ -703,6 +713,28 @@ export class HandoffSource {
   }
 
   async fetchTimeline(agentId: string, options: AgentTimelineFetchOptions) {
+    const retained = await this.options.agents.get(agentId);
+    if (retained?.handoffRetention && !retained.internal) {
+      const blob = retained.handoffRetention.history;
+      if (!blob)
+        refuse(
+          "stop_uncertain",
+          "Retained conversation history is not ready; retry source preparation",
+        );
+      const bytes = await readBoundedFile(
+        path.join(this.options.directory, "retained", `${blob.sha256}.json`),
+        HANDOFF_HISTORY_MAX_BYTES,
+      );
+      if (
+        bytes.length !== blob.size ||
+        createHash("sha256").update(bytes).digest("hex") !== blob.sha256
+      )
+        refuse("source_changed", "Retained conversation history is damaged");
+      return {
+        record: retained,
+        timeline: fetchHandoffHistory(parseHandoffHistory(bytes, agentId), options),
+      };
+    }
     const source = this.options.ownership.forAgent(agentId);
     if (!source) return null;
     if ((source.state !== "ready" && source.state !== "released") || !source.manifestDigest)
@@ -777,6 +809,18 @@ export class HandoffSource {
   }
 
   private async stopAndDrainSource(source: SourceHandoffStatus): Promise<void> {
+    await this.options.ownership.drainCleanup(source.id);
+    this.assertReviewedWriters(source.stoppedWorkReview, await this.reviewWriters(source));
+    for (const workspace of source.stoppedWorkReview?.retainedWorkspaces ?? []) {
+      await this.options.workspaces.retainForHandoff({
+        workspaceId: workspace.workspaceId,
+        expectedIncarnation: workspace.incarnation,
+        transferId: source.id,
+        retainedAt: new Date().toISOString(),
+      });
+      for (const agentId of workspace.agentIds)
+        await this.options.agents.retainForHandoff(agentId, source.id);
+    }
     // Setup and provider commands may hold admission leases until cancellation settles.
     await this.stopWriters(source);
     await this.options.ownership.drain(source.id);
@@ -786,15 +830,68 @@ export class HandoffSource {
     await this.stopWriters(source);
     await this.stopWatches(source);
     await this.options.schedules.pauseForHandoff(source);
+    for (const workspace of source.stoppedWorkReview?.retainedWorkspaces ?? []) {
+      for (const agentId of workspace.agentIds) await this.checkpointRetainedHistory(agentId);
+    }
   }
 
-  private async sourceTerminals(source: { workspaceId: string; cwd: string }) {
+  private async checkpointRetainedHistory(agentId: string): Promise<void> {
+    const record = await this.options.agents.checkpointClosedAgent(agentId);
+    const directory = path.join(this.options.directory, "retained");
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    const artifacts = path.join(directory, randomUUID());
+    try {
+      const agent = this.nativeAgent(record);
+      await captureClaudeSession(this.captureInput(agent, agent.runtime, artifacts));
+      const events = await readCapturedClaudeHistory({
+        artifactDirectory: artifacts,
+        cwd: record.cwd,
+        logger: this.options.logger,
+      });
+      await this.options.agentManager.recoverPromptAnnotationsForHandoff(agentId, events);
+      await this.options.agentManager.checkpointPromptAnnotations(agentId);
+      const rows = await this.options.agentManager.projectHistoryForHandoff(
+        agentId,
+        events,
+        record.createdAt,
+      );
+      const history = HandoffHistorySchema.parse({
+        version: 1,
+        sourceAgentId: agentId,
+        epoch: record.handoffRetention!.transferId,
+        promptAnnotations: (await this.options.agents.get(agentId))?.promptAnnotations,
+        rows,
+      });
+      const bytes = Buffer.from(JSON.stringify(history));
+      const blob = { sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.length };
+      const file = path.join(directory, `${blob.sha256}.json`);
+      await writeHandoffHistory(file, history);
+      await syncFilePublication(file, path.dirname(this.options.directory));
+      await this.options.agents.checkpointRetainedHistory(agentId, blob);
+    } finally {
+      await rm(artifacts, { recursive: true, force: true });
+    }
+  }
+
+  private async sourceTerminals(source: {
+    workspaceId: string;
+    cwd: string;
+    stoppedWorkReview?: HandoffStoppedWorkReview;
+    state?: SourceHandoffStatus["state"];
+  }) {
+    const scopes = [
+      source,
+      ...(source.state === "released" ? [] : (source.stoppedWorkReview?.retainedWorkspaces ?? [])),
+    ];
     const terminals = new Map<string, TerminalSession>();
     for (const directory of this.options.terminals.listDirectories()) {
       for (const terminal of await this.options.terminals.getTerminals(directory)) {
         if (
-          terminal.workspaceId === source.workspaceId ||
-          handoffPathsOverlap(source.cwd, terminal.cwd)
+          scopes.some(
+            (scope) =>
+              terminal.workspaceId === scope.workspaceId ||
+              handoffPathsOverlap(scope.cwd, terminal.cwd),
+          )
         )
           terminals.set(terminal.id, terminal);
       }
@@ -804,14 +901,17 @@ export class HandoffSource {
   }
 
   private async stopWriters(source: SourceHandoffStatus): Promise<void> {
-    for (const agentId of source.agentIds) await this.options.queues.holdForHandoff(agentId);
+    const agentIds = this.stoppedAgentIds(source);
+    for (const agentId of agentIds) await this.options.queues.holdForHandoff(agentId);
     const terminals = await this.sourceTerminals(source);
-    this.assertReviewedWriters(
-      source.stoppedWorkReview,
-      await this.reviewWriters(source, terminals),
-    );
-    const stops = [() => this.options.setup.stop(source.workspaceId)];
-    for (const id of source.agentIds) {
+    this.assertReviewedWriters(source.stoppedWorkReview, await this.reviewWriters(source));
+    const stops = [
+      source.workspaceId,
+      ...(source.stoppedWorkReview?.retainedWorkspaces ?? []).map(
+        (workspace) => workspace.workspaceId,
+      ),
+    ].map((id) => () => this.options.setup.stop(id));
+    for (const id of agentIds) {
       const session = this.options.agentManager.getAgent(id)?.session;
       if (session || !source.stoppedWorkReview)
         stops.push(() => this.options.agentManager.closeAgent(id, session ?? undefined));
@@ -827,10 +927,163 @@ export class HandoffSource {
       );
   }
 
-  private async reviewWriters(
-    source: { workspaceId: string; agentIds: string[]; cwd: string },
-    terminals: TerminalSession[],
-  ): Promise<HandoffStoppedWorkReview> {
+  private stoppedAgentIds(source: {
+    agentIds: string[];
+    stoppedWorkReview?: HandoffStoppedWorkReview;
+  }): string[] {
+    return [
+      ...new Set([
+        ...source.agentIds,
+        ...(source.stoppedWorkReview?.retainedWorkspaces ?? []).flatMap(
+          (workspace) => workspace.agentIds,
+        ),
+      ]),
+    ].sort();
+  }
+
+  /** Follow write scopes and runner leases, never parent/child relationships. */
+  private async reviewRetainedWorkspaces(source: {
+    workspaceId: string;
+    agentIds: string[];
+    cwd: string;
+    stoppedWorkReview?: HandoffStoppedWorkReview;
+  }): Promise<NonNullable<HandoffStoppedWorkReview["retainedWorkspaces"]>> {
+    const selected = new Set(
+      (source.stoppedWorkReview?.retainedWorkspaces ?? []).map(
+        (workspace) => workspace.workspaceId,
+      ),
+    );
+    const workspaces = await this.options.workspaces.list();
+    const live = this.options.agentManager.listAgents();
+    let retained: NonNullable<HandoffStoppedWorkReview["retainedWorkspaces"]> = [];
+    for (;;) {
+      const before = JSON.stringify(retained);
+      const schedules = await this.options.schedules.reviewForHandoff({
+        ...source,
+        stoppedWorkReview: {
+          agents: [],
+          terminals: [],
+          setupIds: [],
+          ...source.stoppedWorkReview,
+          retainedWorkspaces: retained,
+        },
+      });
+      for (const schedule of schedules) {
+        const agentId = schedule.activeRun?.retainedAgentId;
+        if (!agentId) continue;
+        const agent = await this.options.agents.get(agentId);
+        if (
+          !agent ||
+          agent.archivedAt ||
+          !agent.workspaceId ||
+          agent.workspaceId === source.workspaceId
+        )
+          refuse("review_changed", "The scheduled job has no active source workspace to retain");
+        selected.add(agent.workspaceId);
+      }
+      await this.includeOverlappingWorkspaces(selected, source, workspaces, live);
+      retained = [];
+      for (const id of [...selected].sort())
+        retained.push(await this.reviewRetainedWorkspace(id, workspaces, live));
+      if (
+        source.agentIds.length +
+          retained.reduce((count, workspace) => count + workspace.agentIds.length, 0) >
+        1000
+      )
+        refuse("invalid_source", "Too many conversations to stop for handoff");
+      if (JSON.stringify(retained) === before) return retained;
+    }
+  }
+
+  private async includeOverlappingWorkspaces(
+    selected: Set<string>,
+    source: Pick<SourceHandoffStatus, "workspaceId" | "agentIds">,
+    workspaces: PersistedWorkspaceRecord[],
+    live: ManagedAgent[],
+  ): Promise<void> {
+    for (const id of selected) {
+      const workspace = workspaces.find((candidate) => candidate.workspaceId === id);
+      if (!workspace || workspace.archivedAt || !workspace.incarnation)
+        refuse("review_changed", "A retained workspace is no longer active");
+      const cwd = await realpath(workspace.cwd);
+      for (const other of workspaces) {
+        if (
+          other.workspaceId !== source.workspaceId &&
+          !other.archivedAt &&
+          handoffPathsOverlap(cwd, await resolveHandoffPath(other.cwd))
+        )
+          selected.add(other.workspaceId);
+      }
+      for (const agent of live) {
+        if (
+          source.agentIds.includes(agent.id) ||
+          !handoffPathsOverlap(cwd, await resolveHandoffPath(agent.cwd))
+        )
+          continue;
+        if (!agent.workspaceId)
+          refuse("invalid_source", "A retained checkout has an agent without a workspace");
+        selected.add(agent.workspaceId);
+      }
+      if (selected.size > 32) refuse("invalid_source", "Too many retained workspaces to review");
+    }
+  }
+
+  private async reviewRetainedWorkspace(
+    id: string,
+    workspaces: PersistedWorkspaceRecord[],
+    live: ManagedAgent[],
+  ): Promise<NonNullable<HandoffStoppedWorkReview["retainedWorkspaces"]>[number]> {
+    const workspace = workspaces.find((candidate) => candidate.workspaceId === id);
+    if (!workspace || workspace.archivedAt || !workspace.incarnation)
+      refuse("review_changed", "A retained workspace is no longer active");
+    const records = (await this.options.agents.listByWorkspaceForHandoff(id)).filter(
+      (record) => !record.archivedAt,
+    );
+    for (const record of records) {
+      if (
+        record.provider !== "claude" ||
+        !record.persistence ||
+        !readClaudeSessionRuntime(record.persistence)
+      )
+        refuse(
+          "invalid_source",
+          "A retained conversation needs a recorded Claude session for stopped history",
+        );
+      if (record.lastStatus !== "closed" && !this.options.agentManager.getAgent(record.id))
+        refuse("stop_uncertain", "A retained job's runtime exit has not been confirmed");
+    }
+    return {
+      workspaceId: id,
+      incarnation: workspace.incarnation,
+      cwd: await realpath(workspace.cwd),
+      agentIds: [
+        ...new Set([
+          ...records.map((agent) => agent.id),
+          ...live.filter((agent) => agent.workspaceId === id).map((agent) => agent.id),
+        ]),
+      ].sort(),
+    };
+  }
+
+  private async reviewWriters(source: {
+    workspaceId: string;
+    agentIds: string[];
+    cwd: string;
+    stoppedWorkReview?: HandoffStoppedWorkReview;
+  }): Promise<HandoffStoppedWorkReview> {
+    const retainedWorkspaces = await this.reviewRetainedWorkspaces(source);
+    const scope = {
+      ...source,
+      stoppedWorkReview: {
+        agents: [],
+        terminals: [],
+        setupIds: [],
+        ...source.stoppedWorkReview,
+        ...(retainedWorkspaces.length ? { retainedWorkspaces } : {}),
+      },
+    };
+    const agentIds = this.stoppedAgentIds(scope);
+    const terminals = await this.sourceTerminals(scope);
     const instanceId = (writer: object) => {
       let id = this.writerInstances.get(writer);
       if (!id) {
@@ -839,7 +1092,7 @@ export class HandoffSource {
       }
       return id;
     };
-    const agents = source.agentIds.flatMap((id) => {
+    const agents = agentIds.flatMap((id) => {
       const session = this.options.agentManager.getAgent(id)?.session;
       return session ? [{ id, instanceId: instanceId(session) }] : [];
     });
@@ -850,9 +1103,15 @@ export class HandoffSource {
         instanceId: instanceId(terminal),
         name: terminal.name,
       })),
-      setupIds: this.options.setup.activeIds(source.workspaceId),
-      pullRequestWatches: await this.options.pullRequestWatches.reviewForHandoff(source.agentIds),
-      schedules: await this.options.schedules.reviewForHandoff(source),
+      setupIds: [
+        source.workspaceId,
+        ...retainedWorkspaces.map((workspace) => workspace.workspaceId),
+      ]
+        .flatMap((id) => this.options.setup.activeIds(id))
+        .sort(),
+      pullRequestWatches: await this.options.pullRequestWatches.reviewForHandoff(agentIds),
+      schedules: await this.options.schedules.reviewForHandoff(scope),
+      ...(retainedWorkspaces.length ? { retainedWorkspaces } : {}),
     };
     if (review.setupIds.length > 1000)
       refuse("invalid_source", "Too many setup operations to review for handoff");
@@ -874,6 +1133,7 @@ export class HandoffSource {
       !has(approved.agents, current.agents) ||
       !has(approved.terminals, current.terminals) ||
       !has(approved.setupIds, current.setupIds) ||
+      !isDeepStrictEqual(approved.retainedWorkspaces ?? [], current.retainedWorkspaces ?? []) ||
       !has(approved.pullRequestWatches ?? [], current.pullRequestWatches ?? []) ||
       (current.schedules ?? []).some(
         (record) =>
@@ -918,7 +1178,13 @@ export class HandoffSource {
   }
 
   private async verifyStoppedConversations(source: SourceHandoffStatus, prepared: PreparedSource) {
-    if ((await this.options.pullRequestWatches.reviewForHandoff(source.agentIds)).length > 0)
+    if (
+      (
+        await this.options.pullRequestWatches.reviewForHandoff(
+          source.state === "released" ? source.agentIds : this.stoppedAgentIds(source),
+        )
+      ).length > 0
+    )
       refuse("stop_uncertain", "Source PR watches have not stopped");
     const records = new Map<string, StoredAgentRecord>();
     for (const id of source.agentIds) {
@@ -935,15 +1201,46 @@ export class HandoffSource {
     return records;
   }
 
+  private async verifyRetainedWorkspaces(source: SourceHandoffStatus): Promise<void> {
+    if (source.state !== "released") {
+      for (const workspace of source.stoppedWorkReview?.retainedWorkspaces ?? []) {
+        const current = await this.options.workspaces.get(workspace.workspaceId);
+        if (
+          !current ||
+          current.archivedAt ||
+          current.incarnation !== workspace.incarnation ||
+          !current.retention
+        )
+          refuse("source_changed", "Retained workspace protection changed after preparation");
+        for (const agentId of workspace.agentIds) {
+          if (this.options.agentManager.getAgent(agentId))
+            refuse("stop_uncertain", "A retained provider runtime is still loaded");
+          const record = await this.options.agents.checkpointClosedAgent(agentId);
+          if (!record.handoffRetention?.history)
+            refuse("stop_uncertain", "Retained history has not been checkpointed");
+          await this.fetchTimeline(agentId, { direction: "tail", limit: 1 });
+        }
+      }
+    }
+  }
+
+  private setupStillRunning(source: SourceHandoffStatus): boolean {
+    return [
+      source.workspaceId,
+      ...(source.state === "released"
+        ? []
+        : (source.stoppedWorkReview?.retainedWorkspaces ?? [])
+      ).map((workspace) => workspace.workspaceId),
+    ].some((id) => this.options.setup.activeIds(id).length > 0);
+  }
+
   private async verify(source: SourceHandoffStatus, prepared: PreparedSource): Promise<void> {
     const inventory = await this.inspect(source.workspaceId);
     if (!sameIds(inventory.agentIds, source.agentIds))
       refuse("inventory_changed", "Source conversation inventory changed after capture");
-    if (
-      (await this.sourceTerminals(source)).length > 0 ||
-      this.options.setup.activeIds(source.workspaceId).length > 0
-    )
+    if ((await this.sourceTerminals(source)).length > 0 || this.setupStillRunning(source))
       refuse("stop_uncertain", "Source terminals or setup are still running");
+    await this.verifyRetainedWorkspaces(source);
     this.assertReviewedIntegrations(
       source.integrationReview,
       await this.options.agents.listByWorkspaceForHandoff(source.workspaceId),

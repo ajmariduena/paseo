@@ -58,9 +58,9 @@ This establishes the intended existing-owner case without admitting a new owner 
 Build:server, root typecheck, lint and formatting pass. These are Linux results; CI owns native
 macOS/Windows coverage. No production daemon restart or real provider call occurred.
 
-This opening token does not identify an externally replaced backing checkout. Fixed-point stop
-closure, retained-agent continuation admission and physical-stop proof remain required before the
-full source-retained-job contract can be advertised.
+This opening token does not identify an externally replaced backing checkout. The source integration
+below adds reviewed stop scopes and explicit continuation; physical-stop proof and the remaining
+relationship/outcome dispositions still gate the complete retained-job contract.
 
 Durable retained-workspace protection — a second real-worktree regression loaded a retained
 workspace through a fresh registry and requested automatic cleanup with its matching opening.
@@ -93,14 +93,41 @@ Together the five affected files cover 185 passing cases; no full repository sui
 Root typecheck and lint pass. Initial focused runs also corrected two test-fixture API calls
 before reaching the continuation and lifecycle assertions; those were not product failures.
 
-Limits: the scheduler test publishes retention through the registry operation directly. Source
-preparation still refuses the external-job case; it must calculate the reviewed stop closure,
-publish its temporary scopes in a versioned journal, drain prior destructive admissions, and
-publish these markers before stopping those writers. The queue/agent gate allowing only explicit
-continuation, uncertain stop recovery, backing-checkout identity and physical MacBook/VPS proof
-remain unfinished. These tests use real stores, Git and lifecycle services with controlled providers
-on Linux; they do not establish authenticated provider continuity, power-loss behavior or native
-macOS/Windows behavior. No main daemon restart occurred.
+Source integration — the new two-daemon regression first failed at preview with “The scheduled
+agent is outside the transferred conversations”. Source review now follows active schedule runs
+and overlapping workspaces until the stop set stabilizes. Journal v2 persists those temporary
+scopes; transferred membership stays separate. Preparation drains destructive cleanup admissions,
+publishes workspace and agent retention, holds queues, stops the reviewed runtimes, drains runner
+leases and pauses definitions. Held notifications can still append to retained queues. A local
+history checkpoint survives daemon restart without opening the provider. Other agents cannot resume
+a retained conversation; a human prompt or explicit queue resume can. Workspace cleanup protection
+survives that continuation.
+
+The two-daemon cases use a real Git worktree with uncommitted bytes and archive-on-finish enabled.
+They cover activation and cancellation after both daemon instances restart, stopped readable history,
+held late notifications, refused implicit/agent-origin reopening and an explicit continued turn.
+A nested schedule rooted in retained worktree B creates job K in C: both worktrees and jobs stay on
+the source, the nested definition stays paused there, and only the original definition moves.
+The opposite direction (moving a job's worktree while retaining its parent schedule) still passes
+in native and exported-context modes.
+
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/handoff/ownership.test.ts packages/server/src/server/handoff/ownership.posix.test.ts packages/server/src/server/agent/agent-storage.test.ts packages/server/src/server/schedule/service.test.ts --bail=1
+  211 passed, 1 skipped across four affected files.
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/handoff/archive.e2e.test.ts -t 'handoff retains the scheduled worktree|handoff retains the parent schedule' --bail=1
+  Final combined run, including the nested case: 5 passed, 39 skipped.
+$ npx vitest run packages/protocol/src/messages.wire-compat.test.ts packages/app/src/i18n/resources.test.ts --bail=1
+  87 passed. New review fields remain optional and all nine locale resources match.
+
+The first integration attempt exposed a PR-watch stop guard that only recognized transferred
+agents; it now recognizes the reviewed temporary stop set. Intermediate test failures also corrected
+summary-versus-inspect schedule RPC expectations and waiting for a deliberately held notification.
+These were fixed without raising timeouts or weakening retention, history or continuation checks.
+
+Limits: physical-stop proof after a crash, backing-checkout replacement identity, execution-bound
+relationship results and unknown outcomes remain unfinished. Retained history currently requires a
+recorded Claude session. These tests use real stores, Git and lifecycle services with controlled
+providers on Linux; they do not establish authenticated provider continuity, power-loss behavior,
+native macOS/Windows behavior or the physical MacBook/VPS transfer. No main daemon restart occurred.
 
 The initial network regression reproduced an unreviewed same-name replacement
 terminal being stopped and the transfer reaching staged state. Source preview now

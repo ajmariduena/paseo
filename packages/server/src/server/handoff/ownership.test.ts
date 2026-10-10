@@ -42,6 +42,79 @@ function deferred() {
   return { promise, resolve };
 }
 
+test.skipIf(process.platform === "win32")(
+  "retained stop scopes survive restart without becoming transferred membership",
+  async () => {
+    const retainedCwd = path.join(root, "retained");
+    await mkdir(retainedCwd);
+    const retained = {
+      workspaceId: "retained-workspace",
+      incarnation: randomUUID(),
+      cwd: retainedCwd,
+      agentIds: ["retained-agent"],
+    };
+    const scope = {
+      cwd: retainedCwd,
+      workspaceId: retained.workspaceId,
+      agentId: retained.agentIds[0],
+    };
+    const input = {
+      ...source(),
+      stoppedWorkReview: {
+        agents: [],
+        terminals: [],
+        setupIds: [],
+        retainedWorkspaces: [retained],
+      },
+    };
+    const finishRunner = await ownership.acquireMutation(scope);
+    const finishCleanup = await ownership.acquireMutation({ ...scope, operation: "cleanup" });
+    await ownership.prepare(input);
+    let drained = false;
+    const cleanup = ownership.drainCleanup(input.id).then(() => {
+      drained = true;
+      return undefined;
+    });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    finishCleanup();
+    await cleanup;
+    await expect(ownership.markReady(input.id, "a".repeat(64))).rejects.toMatchObject({
+      code: "invalid_state",
+    });
+    finishRunner();
+    expect(ownership.forAgent(retained.agentIds[0])).toBeNull();
+    expect(ownership.forWorkspace(retained.workspaceId)).toBeNull();
+    expect(ownership.holdsAgent(retained.agentIds[0])).toBe(true);
+    expect(JSON.parse(await readFile(path.join(directory, "ownership.json"), "utf8")).version).toBe(
+      2,
+    );
+    ownership = new HandoffOwnership({ directory, sourceServerId });
+    await ownership.initialize();
+    await expect(ownership.acquireMutation(scope)).rejects.toMatchObject({ code: "fenced" });
+    (await ownership.acquireMutation({ ...scope, operation: "retained_notification" }))();
+    await expect(
+      ownership.acquireMutation({ cwd, operation: "retained_notification" }),
+    ).rejects.toMatchObject({ code: "fenced" });
+    await ownership.markReady(input.id, "a".repeat(64));
+    await ownership.release(
+      input.id,
+      {
+        version: 1,
+        transferId: input.id,
+        sourceServerId,
+        destinationServerId: input.destinationServerId,
+        reservationId: input.reservationId,
+        manifestDigest: "a".repeat(64),
+      },
+      async () => {},
+    );
+    expect(ownership.holdsAgent(retained.agentIds[0])).toBe(false);
+    (await ownership.acquireMutation(scope))();
+    await expect(ownership.acquireMutation({ cwd })).rejects.toMatchObject({ code: "fenced" });
+  },
+);
+
 test("restores an existing source fence before allowing any mutation", async () => {
   const input = source();
   const status = await ownership.prepare(input);

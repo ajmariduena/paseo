@@ -175,6 +175,31 @@ describe("AgentStorage", () => {
     });
   });
 
+  test.skipIf(process.platform === "win32")(
+    "retention survives snapshots and restart until explicit continuation",
+    async () => {
+      const agent = createManagedAgent({ lifecycle: "closed" });
+      await storage.applySnapshot(agent);
+      const transferId = randomUUID();
+      await storage.retainForHandoff(agent.id, transferId);
+      await storage.applySnapshot(agent);
+      const cold = new AgentStorage(storagePath, logger);
+      const retained = await cold.get(agent.id);
+      expect(retained?.handoffRetention).toMatchObject({ transferId });
+      await expect(cold.beginRuntimeGeneration(retained!)).rejects.toMatchObject({
+        code: "handoff_retained",
+      });
+      await cold.continueAfterHandoff(agent.id);
+      await cold.applySnapshot(agent);
+      expect(
+        (await new AgentStorage(storagePath, logger).get(agent.id))?.handoffRetention,
+      ).toBeUndefined();
+      await expect(cold.beginRuntimeGeneration((await cold.get(agent.id))!)).resolves.toEqual(
+        expect.any(String),
+      );
+    },
+  );
+
   test("archiving serializes with snapshots and preserves the newest record fields", async () => {
     const agent = createManagedAgent({ lifecycle: "running" });
     await storage.applySnapshot(agent);

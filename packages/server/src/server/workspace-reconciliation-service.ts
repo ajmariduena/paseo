@@ -261,7 +261,10 @@ export class WorkspaceReconciliationService {
     if (!this.handoffOwnership) return true;
     const acquired: Array<() => void> = [];
     try {
-      for (const scope of scopes) acquired.push(await this.handoffOwnership.acquireMutation(scope));
+      for (const scope of scopes)
+        acquired.push(
+          await this.handoffOwnership.acquireMutation({ ...scope, operation: "cleanup" }),
+        );
     } catch (error) {
       for (const release of acquired) release();
       if (error instanceof HandoffOwnershipError && error.code === "fenced") return false;

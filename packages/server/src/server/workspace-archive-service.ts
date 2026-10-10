@@ -155,6 +155,7 @@ async function archiveByScopeWithPriority(
           await dependencies.handoffOwnership.acquireMutation({
             cwd: target.backing.path,
             workspaceId,
+            operation: "cleanup",
           }),
         );
       }
@@ -162,6 +163,7 @@ async function archiveByScopeWithPriority(
         releases.push(
           await dependencies.handoffOwnership.acquireMutation({
             cwd: target.backing.mainRepoRoot,
+            operation: "cleanup",
           }),
         );
       }

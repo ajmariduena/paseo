@@ -413,7 +413,13 @@ function createSourceFixture(
         throw new Error("No previous transfer in this test");
       },
     },
-    workspaces: { get: async () => workspace, list: async () => [workspace] },
+    workspaces: {
+      get: async () => workspace,
+      list: async () => [workspace],
+      retainForHandoff: async () => {
+        throw new Error("No retained workspace in this fixture");
+      },
+    },
     agents: new AgentStorage(path.join(root, "agents"), createTestLogger()),
     agentManager: {
       getAgent: () => null,

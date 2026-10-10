@@ -323,6 +323,8 @@ async function resolvePromptSource(
 export async function sendPromptToAgent(
   params: SendPromptToAgentParams,
 ): Promise<BackgroundDispatch> {
+  if (!params.source && (await params.agentStorage.get(params.agentId))?.handoffRetention)
+    await params.agentManager.messageQueue.releaseUserStop(params.agentId);
   if (!(await prepareAgentForPrompt(params))) {
     return { disposition: "skipped_archived", settled: Promise.resolve("skipped_archived") };
   }

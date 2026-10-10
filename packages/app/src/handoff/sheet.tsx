@@ -520,6 +520,18 @@ function ReviewWorkspace({
               ))}
             </View>
           ) : null}
+          {stoppedWork.review?.retainedWorkspaces?.map((retained) => (
+            <View
+              key={retained.workspaceId}
+              style={styles.status}
+              testID="handoff-retained-workspace-review"
+            >
+              <Text selectable style={styles.path}>
+                {retained.cwd}
+              </Text>
+              <Text style={styles.text}>{t("handoff.retainedWorkspace")}</Text>
+            </View>
+          ))}
         </View>
       </Field>
     </>

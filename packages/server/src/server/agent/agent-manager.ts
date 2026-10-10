@@ -1013,7 +1013,12 @@ export class AgentManager {
       store ?? new AgentQueueStore(null),
       {
         withMutation: (agentId, operation) => this.withQueueMutation(agentId, operation),
-        isHandoffHeld: (agentId) => Boolean(this.handoffOwnership?.forAgent(agentId)),
+        withHeldNotification: (agentId, operation) =>
+          this.withQueueMutation(agentId, operation, "retained_notification"),
+        isHandoffHeld: (agentId) => Boolean(this.handoffOwnership?.holdsAgent(agentId)),
+        beforeExplicitResume: async (agentId) => {
+          await this.registry?.continueAfterHandoff(agentId);
+        },
         waitForRunToSettle: (agentId) => this.waitForRunToSettle(agentId),
         subscribe: (callback) => this.subscribe(callback, { replayState: false }),
         isArchived: async (agentId) => Boolean((await this.registry?.get(agentId))?.archivedAt),
@@ -1034,14 +1039,18 @@ export class AgentManager {
     this.paseoToolCatalogFactory = options.paseoToolCatalogFactory ?? null;
   }
 
-  private async withQueueMutation<T>(agentId: string, operation: () => Promise<T>): Promise<T> {
+  private async withQueueMutation<T>(
+    agentId: string,
+    operation: () => Promise<T>,
+    kind?: "retained_notification",
+  ): Promise<T> {
     if (!this.handoffOwnership) return operation();
     const agent = this.agents.get(agentId);
     const record = agent ? null : await this.registry?.get(agentId);
     const cwd = agent?.config.cwd ?? record?.cwd;
     if (!cwd) throw new Error(`Cannot mutate the queue of unknown agent ${agentId}`);
     return this.withHandoffMutation(
-      { cwd, workspaceId: agent?.workspaceId ?? record?.workspaceId, agentId },
+      { cwd, workspaceId: agent?.workspaceId ?? record?.workspaceId, agentId, operation: kind },
       operation,
     );
   }

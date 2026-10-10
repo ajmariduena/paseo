@@ -34,6 +34,9 @@ import { HandoffArchiveStore } from "./archive.js";
 import { readHandoffBundle } from "./bundle.js";
 import { prependHandoffContext } from "./context.js";
 import { PromptAnnotationStore } from "../agent/prompt-annotations.js";
+import { ensureAgentLoaded } from "../agent/agent-loading.js";
+import { sendPromptToAgent } from "../agent/agent-prompt.js";
+import { dispatchAgentMessage } from "../agent/message-dispatch.js";
 import { PullRequestWatchStore } from "../pull-request-watch/watch-store.js";
 import { parseStoredAgentRecord, type StoredAgentRecord } from "../agent/agent-storage.js";
 import { captureWorkspace, packWorkspaceArchive, restoreWorkspaceArchive } from "./workspace.js";
@@ -617,6 +620,308 @@ test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
     expect(destination.daemon.daemon.agentManager.getAgent(destinationAgentId)).toBeNull();
   },
   30_000,
+);
+
+test.skipIf(process.platform === "win32").each(["activate", "cancel", "nested"] as const)(
+  "%s handoff retains the scheduled worktree on the source",
+  async (completion) => {
+    let source = await startHost("source", true);
+    let destination = await startHost("destination", true);
+    const cwd = path.join(await realpath(root), "scheduled-parent");
+    await mkdir(cwd);
+    await writeFile(path.join(cwd, "work.txt"), "Parent workspace bytes");
+    const git = (args: string[]) =>
+      exec("git", args, {
+        cwd,
+        env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
+      });
+    await git(["init", "--initial-branch=main"]);
+    await git(["add", "."]);
+    await git([
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.test",
+      "-c",
+      "commit.gpgSign=false",
+      "commit",
+      "-m",
+      "Initial work",
+    ]);
+    const created = await source.client.createWorkspace({
+      source: { kind: "directory", path: cwd },
+    });
+    if (!created.workspace) throw new Error("Missing parent workspace");
+    const workspaceId = created.workspace.id;
+    const manager = source.daemon.daemon.agentManager;
+    const configDir = path.join(root, "source", "claude");
+    manager.registerClient(
+      "claude",
+      createTestAgentClient("claude", { claudeRuntime: { configDir, cliVersion: "2.1.295" } }),
+    );
+    const result = await source.client.scheduleCreate({
+      name: "Moving task",
+      prompt: "Continue the unfinished job",
+      cadence: { type: "cron", expression: "0 0 1 1 *", timezone: "UTC" },
+      runOnCreate: false,
+      target: {
+        type: "new-agent",
+        config: { provider: "claude", cwd, isolation: "worktree", archiveOnFinish: true },
+      },
+    });
+    if (!result.schedule) throw new Error("Missing schedule");
+    const scheduleId = result.schedule.id;
+    holdNextScheduledClaudeTestTurn({ manager, scheduleId, configDir });
+    const execution = source.client
+      .scheduleRunOnce({ id: scheduleId })
+      .catch((error: unknown) => error);
+    await expect
+      .poll(async () => (await source.client.scheduleInspect({ id: scheduleId })).schedule?.runs)
+      .toMatchObject([
+        { status: "running", agentId: expect.any(String), workspaceId: expect.any(String) },
+      ]);
+    const run = (await source.client.scheduleInspect({ id: scheduleId })).schedule!.runs[0];
+    const agentId = run.agentId!;
+    const worktree = manager.getAgent(agentId)!.cwd;
+    await writeFile(path.join(worktree, "work.txt"), "Retained uncommitted job bytes");
+    let nested:
+      | {
+          agentId: string;
+          cwd: string;
+          scheduleId: string;
+          workspaceId: string;
+          execution: Promise<unknown>;
+        }
+      | undefined;
+    if (completion === "nested") {
+      const second = await source.client.scheduleCreate({
+        name: "Retained task",
+        prompt: "Nested unfinished job",
+        cadence: { type: "cron", expression: "0 0 1 1 *", timezone: "UTC" },
+        runOnCreate: false,
+        target: {
+          type: "new-agent",
+          config: {
+            provider: "claude",
+            cwd: worktree,
+            isolation: "worktree",
+            archiveOnFinish: true,
+          },
+        },
+      });
+      if (!second.schedule) throw new Error("Missing retained schedule");
+      holdNextScheduledClaudeTestTurn({ manager, scheduleId: second.schedule.id, configDir });
+      const secondExecution = source.client
+        .scheduleRunOnce({ id: second.schedule.id })
+        .catch((error: unknown) => error);
+      await expect
+        .poll(
+          async () =>
+            (await source.client.scheduleInspect({ id: second.schedule!.id })).schedule?.runs,
+        )
+        .toMatchObject([{ status: "running", agentId: expect.any(String) }]);
+      const secondRun = (await source.client.scheduleInspect({ id: second.schedule.id })).schedule!
+        .runs[0];
+      nested = {
+        agentId: secondRun.agentId!,
+        workspaceId: secondRun.workspaceId!,
+        cwd: manager.getAgent(secondRun.agentId!)!.cwd,
+        scheduleId: second.schedule.id,
+        execution: secondExecution,
+      };
+      await writeFile(path.join(nested.cwd, "nested.txt"), "Second retained worktree bytes");
+    }
+    try {
+      const preview = await source.client.handoffPreviewSource({ workspaceId });
+      expect(preview.error).toBeNull();
+      expect(preview.result?.stoppedWork?.review).toMatchObject({
+        agents: expect.arrayContaining([expect.objectContaining({ id: agentId })]),
+        retainedWorkspaces: expect.arrayContaining([
+          expect.objectContaining({
+            workspaceId: run.workspaceId,
+            cwd: worktree,
+            agentIds: [agentId],
+          }),
+        ]),
+        schedules: expect.arrayContaining([
+          expect.objectContaining({
+            id: scheduleId,
+            activeRun: expect.objectContaining({ id: run.id }),
+          }),
+        ]),
+      });
+      expect(preview.result!.stoppedWork!.review!.retainedWorkspaces).toHaveLength(nested ? 2 : 1);
+      if (nested) {
+        expect(preview.result!.stoppedWork!.review).toMatchObject({
+          retainedWorkspaces: expect.arrayContaining([
+            expect.objectContaining({
+              workspaceId: nested.workspaceId,
+              agentIds: [nested.agentId],
+            }),
+          ]),
+          schedules: expect.arrayContaining([
+            expect.objectContaining({ id: nested.scheduleId, retainedOnSource: { cwd: worktree } }),
+          ]),
+        });
+      }
+      const transferId = randomUUID();
+      await prepareWorkspaceHandoff({
+        transferId,
+        workspaceId,
+        destinationParent: root,
+        continuationMode: "context",
+        source: source.client,
+        destination: destination.client,
+        stoppedWorkReview: preview.result!.stoppedWork!.review,
+      });
+      expect((await execution).schedule.runs).toMatchObject([
+        { id: run.id, status: "failed", agentId, workspaceId: run.workspaceId },
+      ]);
+      expect(manager.getAgent(agentId)).toBeNull();
+      expect(await readFile(path.join(worktree, "work.txt"), "utf8")).toBe(
+        "Retained uncommitted job bytes",
+      );
+      expect((await source.daemon.daemon.agentStorage.get(agentId))?.archivedAt).toBeUndefined();
+      expect(manager.messageQueue.isHeldForUserStop(agentId)).toBe(true);
+      const retainedDeps = {
+        agentManager: manager,
+        agentStorage: source.daemon.daemon.agentStorage,
+        logger: createTestLogger(),
+      };
+      await expect(ensureAgentLoaded(agentId, retainedDeps)).rejects.toMatchObject({
+        code: "handoff_retained",
+      });
+      await expect(
+        sendPromptToAgent({
+          ...retainedDeps,
+          agentId,
+          prompt: "An outside agent must not resume this job",
+          source: { kind: "agent-message", agentId: "outside-agent" },
+        }),
+      ).rejects.toMatchObject({ code: "handoff_retained" });
+      const notificationQueued = Promise.withResolvers<void>();
+      const notification = dispatchAgentMessage({
+        ...retainedDeps,
+        agentId,
+        messageId: "retained-notification",
+        policy: {
+          kind: "system",
+          maySteer: false,
+          queueAs: { origin: "system" },
+          onQueued: async () => notificationQueued.resolve(),
+          prepare: async () => ({
+            prompt: "A late notification waits",
+            notification: { level: "info", message: "Late notification" },
+          }),
+        },
+      });
+      void notification.catch(() => undefined);
+      await notificationQueued.promise;
+      expect(manager.messageQueue.entries(agentId)).toMatchObject([
+        { id: "retained-notification" },
+      ]);
+      await stopHost(source);
+      await stopHost(destination);
+      source = await startHost("source", true);
+      destination = await startHost("destination", true);
+      if (completion !== "cancel") {
+        const active = await activateWorkspaceHandoff({
+          transferId,
+          sourceServerId: source.daemon.daemon.getServerId(),
+          getSource: () => source.client,
+          destination: destination.client,
+        });
+        expect(active.agentMappings).toEqual([]);
+        expect(await readFile(path.join(active.destinationCwd, "work.txt"), "utf8")).toBe(
+          "Parent workspace bytes",
+        );
+        expect(await readFile(path.join(worktree, "work.txt"), "utf8")).toBe(
+          "Retained uncommitted job bytes",
+        );
+        const moved = (await destination.client.scheduleList()).schedules[0];
+        expect((await destination.client.scheduleInspect({ id: moved.id })).schedule).toMatchObject(
+          {
+            status: "paused",
+            runs: [
+              {
+                agentId: null,
+                workspaceId: null,
+                origin: {
+                  agentId,
+                  workspaceId: run.workspaceId,
+                  serverId: source.daemon.daemon.getServerId(),
+                },
+              },
+            ],
+          },
+        );
+      } else {
+        await cancelWorkspaceHandoff({
+          transferId,
+          sourceServerId: source.daemon.daemon.getServerId(),
+          getSource: () => source.client,
+          destination: destination.client,
+        });
+        expect((await destination.client.scheduleList()).schedules).toEqual([]);
+        expect((await source.client.scheduleInspect({ id: scheduleId })).schedule?.status).toBe(
+          "paused",
+        );
+      }
+      expect(source.daemon.daemon.agentManager.getAgent(agentId)).toBeNull();
+      expect(source.daemon.daemon.agentManager.messageQueue.isHeldForUserStop(agentId)).toBe(true);
+      expect((await source.daemon.daemon.agentStorage.get(agentId))?.archivedAt).toBeUndefined();
+      expect(
+        (await source.daemon.daemon.agentStorage.get(agentId))?.handoffRetention,
+      ).toMatchObject({ transferId });
+      if (nested) {
+        await nested.execution;
+        expect(source.daemon.daemon.agentManager.getAgent(nested.agentId)).toBeNull();
+        expect(
+          (await source.client.scheduleInspect({ id: nested.scheduleId })).schedule?.status,
+        ).toBe("paused");
+        expect(
+          source.daemon.daemon.agentManager.messageQueue.isHeldForUserStop(nested.agentId),
+        ).toBe(true);
+        expect(await readFile(path.join(nested.cwd, "nested.txt"), "utf8")).toBe(
+          "Second retained worktree bytes",
+        );
+        expect(
+          (await source.daemon.daemon.agentStorage.get(nested.agentId))?.handoffRetention?.history,
+        ).toBeDefined();
+      }
+      const retainedAfterRestart = {
+        agentManager: source.daemon.daemon.agentManager,
+        agentStorage: source.daemon.daemon.agentStorage,
+        logger: createTestLogger(),
+      };
+      await expect(ensureAgentLoaded(agentId, retainedAfterRestart)).rejects.toMatchObject({
+        code: "handoff_retained",
+      });
+      const history = await source.client.fetchAgentTimeline(agentId);
+      expect(JSON.stringify(history.entries)).toContain("Continue the unfinished job");
+      expect(retainedAfterRestart.agentManager.getAgent(agentId)).toBeNull();
+      await expect(
+        sendPromptToAgent({
+          ...retainedAfterRestart,
+          agentId,
+          prompt: "Continue the retained job explicitly",
+        }),
+      ).resolves.toMatchObject({ disposition: "started" });
+      expect(
+        (await retainedAfterRestart.agentStorage.get(agentId))?.handoffRetention,
+      ).toBeUndefined();
+      expect(await readFile(path.join(worktree, "work.txt"), "utf8")).toBe(
+        "Retained uncommitted job bytes",
+      );
+    } finally {
+      if (nested) {
+        await manager.closeAgent(nested.agentId);
+        await nested.execution;
+      }
+      await manager.closeAgent(agentId);
+      await execution;
+    }
+  },
 );
 
 test.skipIf(process.platform === "win32").each(["native", "context"] as const)(

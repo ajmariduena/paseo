@@ -565,9 +565,9 @@ describe("ScheduleService", () => {
             previousLastRunAt: null,
           },
         });
-        await expect(service.reviewForHandoff({ ...transfer, agentIds: [] })).rejects.toThrow(
-          "outside the transferred conversations",
-        );
+        await expect(
+          service.reviewForHandoff({ ...transfer, agentIds: [] }),
+        ).resolves.toMatchObject([{ activeRun: { retainedAgentId: agentId } }]);
         await expect(createScheduleService(options).reviewForHandoff(transfer)).rejects.toThrow(
           "cannot be stopped by this handoff",
         );
