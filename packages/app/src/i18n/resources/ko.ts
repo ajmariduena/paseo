@@ -3,6 +3,8 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ko: TranslationResources = {
   handoff: {
+    activeHeartbeatStops:
+      "이 하트비트가 실행 중입니다. 준비 과정에서 실행을 중지하고 결과를 저장한 후 이동합니다.",
     automationPaused:
       "일정과 알림은 일시 중지된 상태로 이동합니다. 완료된 일정은 그대로 유지됩니다. 취소한 경우 원본 호스트에서 수동으로 재개하세요.",
     automationSettingsOmitted:

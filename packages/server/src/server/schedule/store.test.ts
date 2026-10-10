@@ -2,6 +2,7 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Writable } from "node:stream";
+import { randomUUID } from "node:crypto";
 import pino from "pino";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createTestLogger } from "../../test-utils/test-logger.js";
@@ -27,6 +28,111 @@ describe("ScheduleStore", () => {
   afterEach(async () => {
     await rm(tempDir, { recursive: true, force: true });
   });
+
+  test.skipIf(process.platform === "win32").each(["succeeded", "failed"] as const)(
+    "handoff binds a reviewed heartbeat run while accepting its %s outcome",
+    async (status) => {
+      const previous = "2026-01-01T00:00:00.000Z";
+      const started = "2026-01-01T00:01:00.000Z";
+      const ended = "2026-01-01T00:02:00.000Z";
+      const agentId = randomUUID();
+      const activeRun = { id: randomUUID(), previousLastRunAt: previous };
+      const schedule = await store.create({
+        name: "Heartbeat",
+        prompt: "Continue",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: { type: "agent", agentId },
+        status: "active",
+        createdAt: previous,
+        updatedAt: started,
+        nextRunAt: started,
+        lastRunAt: previous,
+        pausedAt: null,
+        expiresAt: null,
+        maxRuns: 2,
+        runs: [
+          {
+            id: randomUUID(),
+            scheduledFor: previous,
+            startedAt: previous,
+            endedAt: previous,
+            status: "succeeded",
+            agentId,
+            output: "earlier output",
+            error: null,
+          },
+          {
+            id: activeRun.id,
+            scheduledFor: started,
+            startedAt: started,
+            endedAt: null,
+            status: "running",
+            agentId,
+            output: null,
+            error: null,
+          },
+        ],
+      });
+      const review = reviewScheduleForHandoff(schedule, activeRun);
+      const completed = {
+        ...schedule,
+        status: "completed" as const,
+        lastRunAt: ended,
+        nextRunAt: null,
+        runs: [
+          schedule.runs[0],
+          {
+            ...schedule.runs[1],
+            status,
+            endedAt: ended,
+            output: "final output",
+            error: status === "failed" ? "canceled" : null,
+          },
+        ],
+      };
+      expect(scheduleHandoffDigest(completed, activeRun)).toBe(review.digest);
+      expect(scheduleHandoffDigest({ ...completed, prompt: "changed" }, activeRun)).not.toBe(
+        review.digest,
+      );
+      expect(
+        scheduleHandoffDigest(
+          {
+            ...completed,
+            runs: [{ ...completed.runs[0], output: "changed history" }, completed.runs[1]],
+          },
+          activeRun,
+        ),
+      ).not.toBe(review.digest);
+      expect(() =>
+        scheduleHandoffDigest({ ...completed, runs: [completed.runs[0]] }, activeRun),
+      ).toThrow("reviewed heartbeat");
+      await store.update(schedule.id, () => completed);
+      const paused = await store.pauseForHandoff({
+        id: schedule.id,
+        digest: review.digest,
+        pausedAt: ended,
+        activeRun,
+      });
+      expect(paused).toEqual(completed);
+      const snapshot = captureHandoffSchedules({
+        records: [paused],
+        relativeCwds: new Map(),
+        reviews: [review],
+      });
+      expect(snapshot.schedules[0]).toMatchObject({
+        reviewDigest: review.digest,
+        status: "completed",
+        runs: completed.runs,
+      });
+      expect(() =>
+        captureHandoffSchedules({
+          records: [{ ...schedule, status: "paused", nextRunAt: null }],
+          relativeCwds: new Map(),
+          reviews: [review],
+        }),
+      ).toThrow("still active");
+    },
+  );
 
   test.skipIf(process.platform === "win32")(
     "handoff outcome repair keeps exact inputs after rename and gates later mutations on synchronization",

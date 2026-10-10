@@ -3,6 +3,8 @@ import { pluginSettings } from "./plugin-settings";
 
 export const es: TranslationResources = {
   handoff: {
+    activeHeartbeatStops:
+      "Este recordatorio está en ejecución. La preparación lo detiene y guarda su resultado antes del traslado.",
     automationPaused:
       "Los horarios y recordatorios se trasladan en pausa. Los horarios completados conservan su estado. Si cancelas, reanúdalos manualmente en el origen.",
     automationSettingsOmitted:

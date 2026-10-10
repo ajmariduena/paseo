@@ -70,6 +70,12 @@ export const HandoffScheduleReviewSchema = z.object({
   cadence: z.string().min(1).max(4096),
   digest: HandoffDigestSchema,
   runCount: z.number().int().nonnegative(),
+  activeRun: z
+    .object({
+      id: z.string().uuid(),
+      previousLastRunAt: z.string().datetime({ offset: true }).nullable(),
+    })
+    .optional(),
   omittedSettings: z.array(z.string().min(1).max(4096)).max(1000),
   omittedMcpServers: z.array(z.string().min(1).max(4096)).max(1000),
 });

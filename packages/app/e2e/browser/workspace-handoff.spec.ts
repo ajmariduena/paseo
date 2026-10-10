@@ -144,6 +144,159 @@ test.describe("workspace handoff", () => {
   test.skip(process.platform === "win32", "Ownership release requires POSIX directory durability");
 
   for (const layout of ["desktop", "compact"] as const) {
+    test(`${layout} reviews and stops an active heartbeat before moving its history`, async ({
+      page,
+    }) => {
+      test.setTimeout(120_000);
+      if (layout === "compact") await page.setViewportSize({ width: 390, height: 844 });
+      const fixtureDirectory = await mkdtemp(path.join(tmpdir(), "handoff-heartbeat-browser-"));
+      const versionCommand = path.join(fixtureDirectory, "version.cjs");
+      await writeFile(
+        versionCommand,
+        "if (process.argv[2] !== '--version') throw new Error('No real provider turns in this fixture'); console.log('2.1.295');\n",
+      );
+      const sourceConfigDir = path.join(fixtureDirectory, "source");
+      const host = await hosts(page, {
+        providerSettings: {
+          source: {
+            claude: {
+              command: { mode: "replace", argv: [process.execPath, versionCommand] },
+              env: { CLAUDE_CONFIG_DIR: sourceConfigDir },
+            },
+          },
+          destination: {
+            claude: {
+              command: { mode: "replace", argv: [process.execPath, versionCommand] },
+              env: { CLAUDE_CONFIG_DIR: path.join(fixtureDirectory, "destination") },
+            },
+          },
+        },
+      }).catch(async (error: unknown) => {
+        await rm(fixtureDirectory, { recursive: true, force: true });
+        throw error;
+      });
+      try {
+        const agent = await host.sourceClient.createAgent({
+          provider: "claude",
+          cwd: host.workspace.repoPath,
+          workspaceId: host.workspace.workspaceId,
+          title: "Conversation with an active heartbeat",
+        });
+        if (!agent.persistence) throw new Error("Missing test provider session");
+        const sessionId = agent.persistence.sessionId;
+        const project = claudeProjectDirSync(host.workspace.repoPath, {
+          configDir: sourceConfigDir,
+        });
+        await mkdir(project, { recursive: true });
+        await writeFile(
+          path.join(project, `${sessionId}.jsonl`),
+          JSON.stringify({
+            type: "user",
+            uuid: randomUUID(),
+            sessionId,
+            message: { role: "user", content: "Keep the prior workspace task" },
+          }) + "\n",
+        );
+        const created = await host.sourceClient.scheduleCreate({
+          name: "Review the ongoing task",
+          prompt: "Check progress before continuing",
+          runOnCreate: false,
+          cadence: { type: "cron", expression: "0 0 1 1 *", timezone: "UTC" },
+          target: { type: "agent", agentId: agent.id },
+        });
+        if (!created.schedule) throw new Error("Missing heartbeat");
+        const heartbeatId = created.schedule.id;
+        await host.source.holdNextClaudeTurn(agent.id);
+        const running = host.sourceClient
+          .scheduleRunOnce({ id: heartbeatId })
+          .catch((error: unknown) => error);
+        await expect
+          .poll(() =>
+            host.sourceClient.handoffPreviewSource({ workspaceId: host.workspace.workspaceId }),
+          )
+          .toMatchObject({
+            error: null,
+            result: {
+              stoppedWork: {
+                review: {
+                  schedules: [
+                    {
+                      id: heartbeatId,
+                      activeRun: {
+                        id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+                        previousLastRunAt: null,
+                      },
+                    },
+                  ],
+                },
+              },
+            },
+          });
+        await openHandoff(page);
+        await page.getByTestId("handoff-host-trigger").click();
+        await page.getByTestId(`handoff-host-${host.destination.serverId}`).click();
+        await page.getByTestId("handoff-parent").fill(host.destinationParent);
+        await page.getByTestId("handoff-submit").click();
+        const warning = page.getByTestId("handoff-active-heartbeat-review");
+        await expect(warning).toHaveText(
+          "This heartbeat is running. Preparation stops it and saves its result before moving.",
+        );
+        await warning.scrollIntoViewIfNeeded();
+        await waitForSettledPosition(warning);
+        await page.screenshot({
+          path: path.join(
+            __dirname,
+            `../../../../docs/qa-evidence/handoff-active-heartbeat-${layout}.png`,
+          ),
+        });
+        await expect(page.getByTestId("handoff-submit")).toBeEnabled();
+        await page.getByTestId("handoff-submit").click();
+        await expect(page.getByTestId("handoff-submit")).toHaveText("Move workspace", {
+          timeout: 30_000,
+        });
+        expect(await running).toMatchObject({
+          schedule: {
+            runs: [{ status: "failed", error: `Scheduled agent ${agent.id} was canceled` }],
+          },
+        });
+        const transferId = await savedTransfer(
+          page,
+          host.source.serverId,
+          host.workspace.workspaceId,
+        );
+        await page.getByTestId("handoff-submit").click();
+        await expect(page.getByTestId("handoff-submit")).toHaveText("Open destination", {
+          timeout: 30_000,
+        });
+        const status = await host.destinationClient.handoffGetDestinationStatus({ transferId });
+        if (!status.result) throw new Error("Missing activated destination");
+        expect(status.result.state).toBe("active");
+        const destinationId = status.result.agentMappings[0].destinationAgentId;
+        const movedSchedules = (await host.destinationClient.scheduleList()).schedules;
+        expect(movedSchedules).toHaveLength(1);
+        const moved = await host.destinationClient.scheduleInspect({ id: movedSchedules[0].id });
+        expect(moved.schedule).toMatchObject({
+          status: "paused",
+          target: { type: "agent", agentId: destinationId },
+          runs: [{ status: "failed", agentId: destinationId }],
+        });
+        const history = await host.destinationClient.handoffGetConversationHistory({
+          agentId: destinationId,
+        });
+        expect(history.error).toBeNull();
+        expect(history.result?.timeline.entries.map((entry) => entry.item)).toEqual([
+          expect.objectContaining({ type: "user_message", text: "Keep the prior workspace task" }),
+          expect.objectContaining({
+            type: "notification",
+            message: expect.stringContaining("Check progress before continuing"),
+          }),
+        ]);
+      } finally {
+        await host.close();
+        await rm(fixtureDirectory, { recursive: true, force: true });
+      }
+    });
+
     test(`${layout} preserves mixed conversation choices through recovery and activation`, async ({
       page,
     }, testInfo) => {

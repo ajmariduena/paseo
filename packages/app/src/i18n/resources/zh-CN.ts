@@ -3,6 +3,7 @@ import { pluginSettings } from "./plugin-settings";
 
 export const zhCN: TranslationResources = {
   handoff: {
+    activeHeartbeatStops: "此心跳任务正在运行。准备过程会停止任务并保存结果，然后再进行迁移。",
     automationPaused:
       "计划任务和提醒将以暂停状态迁移，已完成的任务保持完成。如果取消迁移，请在源主机上手动恢复。",
     automationSettingsOmitted:

@@ -30,6 +30,7 @@ import { captureWorkspace, packWorkspaceArchive, restoreWorkspaceArchive } from 
 import { ScheduleStore } from "../schedule/store.js";
 import { handoffScheduleId } from "../schedule/handoff.js";
 import { createTestLogger } from "../../test-utils/test-logger.js";
+import { createTestAgentClient, holdNextClaudeTestTurn } from "../test-utils/fake-agent-client.js";
 
 const exec = promisify(execFile);
 
@@ -87,6 +88,60 @@ async function stopHost(host: Host): Promise<void> {
   running.delete(host);
   await host.client.close();
   await host.daemon.close();
+}
+
+interface ActiveHeartbeatTestInput {
+  source: Host;
+  configDir: string;
+  agentId: string;
+  sessionId: string;
+  transcriptFile: string;
+  heartbeatId: string;
+  workspaceId: string;
+}
+
+async function startReviewedHeartbeat({
+  source,
+  configDir,
+  agentId,
+  sessionId,
+  transcriptFile,
+  heartbeatId,
+  workspaceId,
+}: ActiveHeartbeatTestInput) {
+  const manager = source.daemon.daemon.agentManager;
+  manager.registerClient(
+    "claude",
+    createTestAgentClient("claude", {
+      claudeRuntime: { configDir, cliVersion: "2.1.295" },
+    }),
+  );
+  expect((await source.client.listCommands(agentId)).error).toBeNull();
+  const session = manager.getAgent(agentId)?.session;
+  if (!session) throw new Error("Missing active heartbeat session");
+  holdNextClaudeTestTurn({ session, sessionId, transcriptFile });
+  const waiting = Promise.withResolvers<void>();
+  const wait = manager.waitForAgentEvent.bind(manager);
+  vi.spyOn(manager, "waitForAgentEvent").mockImplementation((id, options) => {
+    const result = wait(id, options);
+    waiting.resolve();
+    return result;
+  });
+  const heartbeatResult = source.client
+    .scheduleRunOnce({ id: heartbeatId })
+    .catch((error: unknown) => error);
+  await Promise.race([
+    waiting.promise,
+    heartbeatResult.then((result) => {
+      throw new Error(`Heartbeat ended before its active wait: ${JSON.stringify(result)}`);
+    }),
+  ]);
+  const fresh = (await source.client.handoffPreviewSource({ workspaceId })).result;
+  if (!fresh?.stoppedWork?.review) throw new Error("Missing fresh schedule review");
+  expect(
+    fresh.stoppedWork.review.schedules?.find((entry) => entry.id === heartbeatId)?.activeRun,
+  ).toMatchObject({ previousLastRunAt: null });
+  return { heartbeatResult, review: fresh.stoppedWork.review };
 }
 
 test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
@@ -217,10 +272,33 @@ test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
     expect((await destination.client.scheduleList()).schedules).toEqual([parent]);
     await source.client.scheduleResume({ id: periodicId });
     await source.client.scheduleResume({ id: heartbeatId });
-    const fresh = (await source.client.handoffPreviewSource({ workspaceId })).result;
-    if (!fresh?.stoppedWork?.review) throw new Error("Missing fresh schedule review");
+    const { heartbeatResult, review: activeReview } = await startReviewedHeartbeat({
+      source,
+      configDir,
+      agentId,
+      sessionId,
+      heartbeatId,
+      workspaceId,
+      transcriptFile: path.join(project, `${sessionId}.jsonl`),
+    });
     const transferId = randomUUID();
-    const staged = await prepare(transferId, fresh.stoppedWork.review);
+    const staged = await prepare(transferId, activeReview);
+    expect(await heartbeatResult).toMatchObject({
+      schedule: {
+        runs: [{ status: "failed", agentId, error: `Scheduled agent ${agentId} was canceled` }],
+      },
+    });
+    expect(source.daemon.daemon.agentManager.getAgent(agentId)).toBeNull();
+    const stoppedHeartbeat = await sourceStore.get(heartbeatId);
+    if (!stoppedHeartbeat) throw new Error("Missing stopped heartbeat");
+    await sourceStore.update(heartbeatId, (record) => ({
+      ...record,
+      runs: record.runs.map((run) => ({ ...run, output: "Changed after capture" })),
+    }));
+    expect((await source.client.handoffReleaseSource({ transferId })).error?.code).toBe(
+      "source_changed",
+    );
+    await sourceStore.update(heartbeatId, () => stoppedHeartbeat);
     const retained = await sourceStore.get(periodicId);
     if (!retained) throw new Error("Missing paused source schedule");
     await sourceStore.update(periodicId, (record) => ({ ...record, prompt: "Unreviewed change" }));
@@ -312,11 +390,37 @@ test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
         await destination.client.scheduleInspect({
           id: handoffScheduleId(staged.reservationId, heartbeatId),
         })
-      ).schedule?.target,
-    ).toEqual({ type: "agent", agentId: active.agentMappings[0].destinationAgentId });
+      ).schedule,
+    ).toMatchObject({
+      target: { type: "agent", agentId: active.agentMappings[0].destinationAgentId },
+      status: "paused",
+      runs: [
+        {
+          status: "failed",
+          agentId: active.agentMappings[0].destinationAgentId,
+          error: `Scheduled agent ${agentId} was canceled`,
+          origin: { serverId: sourceServerId, scheduleId: heartbeatId, agentId },
+        },
+      ],
+    });
     expect(
       destination.daemon.daemon.agentManager.getAgent(active.agentMappings[0].destinationAgentId),
     ).toBeNull();
+    const history = await destination.client.handoffGetConversationHistory({
+      agentId: active.agentMappings[0].destinationAgentId,
+    });
+    expect(history.error).toBeNull();
+    if (!history.result) throw new Error("Missing moved heartbeat history");
+    expect(history.result.mode).toBe(continuationMode);
+    expect(history.result.timeline.entries.map((entry) => entry.item)).toEqual([
+      expect.objectContaining({ type: "user_message", text: "Continue the scheduled task" }),
+      expect.objectContaining({
+        type: "notification",
+        level: "info",
+        messageId: `schedule:${heartbeatId}:${stoppedHeartbeat.runs[0].id}`,
+        message: expect.stringContaining("Review progress"),
+      }),
+    ]);
     await activateWorkspaceHandoff({
       transferId,
       sourceServerId,

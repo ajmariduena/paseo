@@ -3,6 +3,8 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ptBR: TranslationResources = {
   handoff: {
+    activeHeartbeatStops:
+      "Este lembrete está em execução. A preparação o interrompe e salva o resultado antes da transferência.",
     automationPaused:
       "Agendamentos e lembretes são transferidos pausados. Os concluídos mantêm seu estado. Se cancelar, retome-os manualmente na origem.",
     automationSettingsOmitted:

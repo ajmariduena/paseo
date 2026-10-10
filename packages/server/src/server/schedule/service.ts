@@ -4,7 +4,7 @@ import { stat } from "node:fs/promises";
 import path, { join } from "node:path";
 import type { Logger } from "pino";
 import type { AgentManager, WaitForAgentResult } from "../agent/agent-manager.js";
-import type { AgentSessionConfig } from "../agent/agent-sdk-types.js";
+import type { AgentSession, AgentSessionConfig } from "../agent/agent-sdk-types.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
 import { curateAgentActivity } from "../agent/activity-curator.js";
 import { ensureAgentLoaded } from "../agent/agent-loading.js";
@@ -24,7 +24,9 @@ import {
 import { HandoffDestinationError } from "../handoff/destination.js";
 import {
   captureHandoffSchedules,
+  estimateHandoffSchedules,
   reviewScheduleForHandoff,
+  type HandoffActiveRun,
   type InstallHandoffSchedulesInput,
 } from "./handoff.js";
 import {
@@ -44,6 +46,13 @@ import type {
 import type { FirstAgentContext } from "@getpaseo/protocol/messages";
 
 const SCHEDULE_TICK_INTERVAL_MS = 1000;
+
+type HandoffScheduleSource = Pick<SourceHandoffStatus, "cwd" | "agentIds" | "stoppedWorkReview">;
+interface ActiveHeartbeat {
+  activeRun: HandoffActiveRun;
+  agentId: string;
+  session: AgentSession;
+}
 
 // A run failed because its target no longer exists: the agent was deleted or
 // archived, or a new-agent cwd was removed. These are permanent, so the schedule
@@ -250,6 +259,7 @@ type ScheduleAgentManager = Pick<
     | "runAgent"
     | "waitForAgentEvent"
     | "waitForAgentClose"
+    | "annotatePrompt"
   >;
 
 interface ScheduleWorkspaceCreateInput {
@@ -277,6 +287,7 @@ export interface ScheduleServiceOptions {
 }
 
 export class ScheduleService {
+  private readonly activeHeartbeats = new Map<string, ActiveHeartbeat>();
   private readonly store: ScheduleStore;
   private readonly handoffOwnership: HandoffOwnership | null;
   private readonly isHandoffIdentityVisible: (id: string) => boolean;
@@ -424,7 +435,7 @@ export class ScheduleService {
     return this.store.list();
   }
 
-  private async schedulesForHandoff(source: Pick<SourceHandoffStatus, "cwd" | "agentIds">) {
+  private async schedulesForHandoff(source: HandoffScheduleSource) {
     const cwd = await resolveHandoffPath(source.cwd);
     const records: StoredSchedule[] = [];
     const relativeCwds = new Map<string, string>();
@@ -450,23 +461,47 @@ export class ScheduleService {
           throw new Error("A schedule targets an ancestor of the transferred workspace");
         relativeCwds.set(record.id, relativeCwd.split(path.sep).join("/") || ".");
       }
-      if (
-        record.runs.some((run) => run.status === "running") ||
-        this.runningScheduleIds.has(record.id)
-      )
-        throw new Error("A scheduled run is still active; stop or finish it before handoff");
       records.push(record);
     }
-    return { records, relativeCwds };
+    const reviews = records.map((record) => this.reviewSchedule(record, source));
+    return { records, relativeCwds, reviews };
   }
 
-  async reviewForHandoff(
-    source: Pick<SourceHandoffStatus, "cwd" | "agentIds">,
-  ): Promise<HandoffScheduleReview[]> {
-    const { records } = await this.schedulesForHandoff(source);
-    return HandoffScheduleReviewSchema.array()
-      .max(1000)
-      .parse(records.map(reviewScheduleForHandoff));
+  private reviewSchedule(
+    record: StoredSchedule,
+    source: HandoffScheduleSource,
+  ): HandoffScheduleReview {
+    const approved = source.stoppedWorkReview?.schedules?.find(
+      (entry) => entry.id === record.id,
+    )?.activeRun;
+    const running = record.runs.filter((run) => run.status === "running");
+    const tracked = this.activeHeartbeats.get(record.id);
+    if (running.length || this.runningScheduleIds.has(record.id)) {
+      if (
+        record.target.type !== "agent" ||
+        !tracked ||
+        running.length > 1 ||
+        (running.length === 1 && running[0].id !== tracked.activeRun.id)
+      )
+        throw new Error(
+          "A scheduled run is still active and cannot be stopped by this handoff; stop or finish it before handoff",
+        );
+      const currentSession = this.agentManager.getAgent(tracked.agentId)?.session;
+      if (currentSession !== tracked.session && (!approved || currentSession))
+        throw new Error("The active heartbeat runtime changed after review");
+      if (
+        approved &&
+        (approved.id !== tracked.activeRun.id ||
+          approved.previousLastRunAt !== tracked.activeRun.previousLastRunAt)
+      )
+        throw new Error("The active heartbeat execution changed after review");
+    }
+    return reviewScheduleForHandoff(record, approved ?? tracked?.activeRun);
+  }
+
+  async reviewForHandoff(source: HandoffScheduleSource): Promise<HandoffScheduleReview[]> {
+    const { reviews } = await this.schedulesForHandoff(source);
+    return HandoffScheduleReviewSchema.array().max(1000).parse(reviews);
   }
 
   async pauseForHandoff(source: SourceHandoffStatus): Promise<void> {
@@ -494,14 +529,18 @@ export class ScheduleService {
         id: record.id,
         digest: record.digest,
         pausedAt: this.now().toISOString(),
+        activeRun: record.activeRun,
       });
   }
 
-  async exportForHandoff(source: Pick<SourceHandoffStatus, "cwd" | "agentIds">) {
-    return captureHandoffSchedules(await this.schedulesForHandoff(source));
+  async exportForHandoff(source: HandoffScheduleSource) {
+    const selected = await this.schedulesForHandoff(source);
+    if (selected.records.some((record) => this.runningScheduleIds.has(record.id)))
+      throw new Error("A scheduled run is still active; wait for its outcome before handoff");
+    return captureHandoffSchedules(selected);
   }
 
-  async estimateForHandoff(source: Pick<SourceHandoffStatus, "cwd" | "agentIds">): Promise<number> {
+  async estimateForHandoff(source: HandoffScheduleSource): Promise<number> {
     const selected = await this.schedulesForHandoff(source);
     const pausedAt = this.now().toISOString();
     // Inventory records are fresh disk reads; estimating never writes the store.
@@ -512,8 +551,7 @@ export class ScheduleService {
       record.pausedAt = pausedAt;
       record.updatedAt = pausedAt;
     }
-    const snapshot = captureHandoffSchedules(selected);
-    return Buffer.byteLength(JSON.stringify(snapshot));
+    return estimateHandoffSchedules(selected);
   }
 
   async installHandoffSchedules(input: InstallHandoffSchedulesInput): Promise<void> {
@@ -943,6 +981,7 @@ export class ScheduleService {
     } finally {
       release?.();
       this.runningScheduleIds.delete(schedule.id);
+      this.activeHeartbeats.delete(schedule.id);
     }
   }
 
@@ -1087,7 +1126,8 @@ export class ScheduleService {
     runId: string,
   ): Promise<ScheduleExecutionResult> {
     if (schedule.target.type === "agent") {
-      const wrappedPrompt = formatSystemNotificationPrompt(buildScheduleFireBody(schedule, runId));
+      const message = buildScheduleFireBody(schedule, runId);
+      const wrappedPrompt = formatSystemNotificationPrompt(message);
       const record = await this.agentStorage.get(schedule.target.agentId);
       if (!record) {
         throw new ScheduleTargetGoneError(`Agent ${schedule.target.agentId} no longer exists`);
@@ -1104,9 +1144,25 @@ export class ScheduleService {
       if (this.agentManager.hasInFlightRun(agent.id)) {
         throw new Error(`Agent ${agent.id} already has an active run`);
       }
+      const session = agent.session;
+      if (!session) throw new Error(`Scheduled agent ${agent.id} has no active runtime`);
+      const messageId = `schedule:${schedule.id}:${runId}`;
+      await this.agentManager.annotatePrompt(agent.id, {
+        messageId,
+        prompt: wrappedPrompt,
+        annotation: { kind: "notification", level: "info", message },
+      });
       await startAgentRun(this.agentManager, agent.id, wrappedPrompt, this.logger, {
         replaceRunning: true,
         activeTurnBehavior: "steer",
+        runOptions: { clientMessageId: messageId },
+      });
+      if (this.agentManager.getAgent(agent.id)?.session !== session)
+        throw new Error(`Scheduled agent ${agent.id} runtime changed during dispatch`);
+      this.activeHeartbeats.set(schedule.id, {
+        activeRun: { id: runId, previousLastRunAt: schedule.lastRunAt },
+        agentId: agent.id,
+        session,
       });
       const waitResult = await this.agentManager.waitForAgentEvent(agent.id, {
         waitForActive: true,

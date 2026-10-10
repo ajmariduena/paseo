@@ -356,6 +356,127 @@ describe("ScheduleService", () => {
   }
 
   test.skipIf(process.platform === "win32")(
+    "handoff binds an active heartbeat and drains its durable outcome before paused capture",
+    async () => {
+      const { ownership, transfer } = await handoffFixture();
+      const manager = new AgentManager({
+        logger: createTestLogger(),
+        clients: createTestAgentClients(),
+        registry: agentStorage,
+      });
+      const agent = await manager.createAgent(
+        { provider: "claude", cwd: transfer.cwd },
+        undefined,
+        { workspaceId: transfer.workspaceId },
+      );
+      transfer.agentIds.push(agent.id);
+      const session = manager.getAgent(agent.id)?.session;
+      if (!session) throw new Error("Missing test session");
+      vi.spyOn(session, "startTurn").mockResolvedValue({ turnId: "held-heartbeat" });
+      const waiting = Promise.withResolvers<void>();
+      const wait = manager.waitForAgentEvent.bind(manager);
+      vi.spyOn(manager, "waitForAgentEvent").mockImplementation((id, options) => {
+        const result = wait(id, options);
+        waiting.resolve();
+        return result;
+      });
+      const options = {
+        paseoHome: tempDir,
+        handoffOwnership: ownership,
+        logger: createTestLogger(),
+        agentManager: manager,
+        agentStorage,
+        providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+        now: () => now,
+      };
+      const service = createScheduleService(options);
+      const heartbeat = await service.create({
+        prompt: "Continue",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: { type: "agent", agentId: agent.id },
+      });
+      const running = service.runOnce(heartbeat.id);
+      const outcomeStarted = Promise.withResolvers<void>();
+      const finishOutcome = Promise.withResolvers<void>();
+      const sync = atomicFile.syncFilePublication;
+      const publication = vi
+        .spyOn(atomicFile, "syncFilePublication")
+        .mockImplementation(async (...args) => {
+          if (args[0].endsWith(`${heartbeat.id}.json`)) {
+            outcomeStarted.resolve();
+            await finishOutcome.promise;
+          }
+          return sync(...args);
+        });
+      try {
+        await waiting.promise;
+        const schedules = await service.reviewForHandoff(transfer);
+        const review = schedules.find((entry) => entry.id === heartbeat.id);
+        expect(review?.activeRun).toEqual({
+          id: (await service.logs(heartbeat.id))[0].id,
+          previousLastRunAt: null,
+        });
+        expect(await service.estimateForHandoff(transfer)).toBeGreaterThan(0);
+        await expect(createScheduleService(options).reviewForHandoff(transfer)).rejects.toThrow(
+          "cannot be stopped by this handoff",
+        );
+        await expect(
+          service.reviewForHandoff({
+            ...transfer,
+            stoppedWorkReview: {
+              agents: [],
+              terminals: [],
+              setupIds: [],
+              schedules: schedules.map((entry) => ({
+                ...entry,
+                ...(entry.activeRun ? { activeRun: { ...entry.activeRun, id: randomUUID() } } : {}),
+              })),
+            },
+          }),
+        ).rejects.toThrow("execution changed after review");
+        const source = await ownership.prepare({
+          ...transfer,
+          stoppedWorkReview: { agents: [], terminals: [], setupIds: [], schedules },
+        });
+        await expect(service.exportForHandoff(source)).rejects.toThrow("still active");
+        await manager.closeAgent(agent.id);
+        await outcomeStarted.promise;
+        await expect(ownership.markReady(source.id, "a".repeat(64))).rejects.toThrow(
+          "still running",
+        );
+        finishOutcome.resolve();
+        await running;
+        await ownership.drain(source.id);
+        await service.pauseForHandoff(source);
+        const captured = await service.exportForHandoff(source);
+        const imported = captured.schedules.find((entry) => entry.id === heartbeat.id);
+        expect(imported).toMatchObject({
+          reviewDigest: review?.digest,
+          status: "paused",
+          runs: [
+            {
+              agentId: agent.id,
+              status: "failed",
+              error: `Scheduled agent ${agent.id} was canceled`,
+            },
+          ],
+        });
+        const restarted = createScheduleService(options);
+        expect(await restarted.exportForHandoff(source)).toEqual(captured);
+        await restarted.pauseForHandoff(source);
+        await ownership.cancel(source.id);
+        expect((await restarted.inspect(heartbeat.id)).status).toBe("paused");
+      } finally {
+        finishOutcome.resolve();
+        publication.mockRestore();
+        await manager.closeAgent(agent.id);
+        await running;
+        await manager.flush();
+      }
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
     "handoff automation pause survives retries, cancellation and restart until explicit resume",
     async () => {
       const runner = vi.fn(async () => ({ agentId: null, output: "resumed" }));
@@ -1052,7 +1173,7 @@ describe("ScheduleService", () => {
     expect(steerOrReplace.mock.calls[0]).toEqual([
       agent.id,
       expect.stringContaining(`Schedule fired (id=${schedule.id}, run=`),
-      undefined,
+      { clientMessageId: expect.stringContaining(`schedule:${schedule.id}:`) },
     ]);
   });
 

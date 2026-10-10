@@ -77,20 +77,51 @@ function assertRelativeCwd(cwd: string): void {
     throw new Error("Schedule directory must remain inside the transferred workspace");
 }
 
-export function scheduleHandoffDigest(record: StoredSchedule): string {
-  // A partial pause is retryable without keeping a second copy of the original
-  // definition. Everything except the pause's own state/timestamps stays bound.
+export type HandoffActiveRun = NonNullable<HandoffScheduleReview["activeRun"]>;
+
+export function scheduleHandoffDigest(
+  record: StoredSchedule,
+  activeRun?: HandoffActiveRun,
+): string {
+  if (activeRun) {
+    const run = record.runs.find((entry) => entry.id === activeRun.id);
+    if (
+      !run ||
+      record.runs.filter((entry) => entry.id === activeRun.id).length !== 1 ||
+      record.target.type !== "agent" ||
+      run.agentId !== record.target.agentId
+    )
+      throw new Error("The reviewed heartbeat execution changed");
+    const ended = run.status !== "running";
+    if (
+      (ended && (!run.endedAt || record.lastRunAt !== run.endedAt)) ||
+      (!ended &&
+        (record.lastRunAt !== activeRun.previousLastRunAt || record.status === "completed"))
+    )
+      throw new Error("The reviewed heartbeat outcome is inconsistent");
+  }
+  // Pause and the reviewed run's terminal result may change during preparation.
+  // Bind its identity, prior history and definition; release separately checks the full capture.
   const canonical = StoredScheduleSchema.parse({
     ...record,
-    status: record.status === "completed" ? "completed" : "paused",
+    status: !activeRun && record.status === "completed" ? "completed" : "paused",
     nextRunAt: null,
     pausedAt: null,
     updatedAt: record.createdAt,
+    lastRunAt: activeRun ? activeRun.previousLastRunAt : record.lastRunAt,
+    runs: record.runs.map((run) =>
+      run.id === activeRun?.id
+        ? { ...run, status: "running", endedAt: null, output: null, error: null }
+        : run,
+    ),
   });
   return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
 
-export function reviewScheduleForHandoff(record: StoredSchedule): HandoffScheduleReview {
+export function reviewScheduleForHandoff(
+  record: StoredSchedule,
+  activeRun?: HandoffActiveRun,
+): HandoffScheduleReview {
   const omittedSettings: string[] = [];
   let omittedMcpServers: string[] = [];
   if (record.target.type === "new-agent") {
@@ -110,22 +141,29 @@ export function reviewScheduleForHandoff(record: StoredSchedule): HandoffSchedul
     status: record.status,
     kind: record.target.type === "agent" ? "heartbeat" : "schedule",
     cadence,
-    digest: scheduleHandoffDigest(record),
+    digest: scheduleHandoffDigest(record, activeRun),
     runCount: record.runs.length,
+    ...(activeRun ? { activeRun } : {}),
     omittedSettings,
     omittedMcpServers,
   });
 }
 
-export function captureHandoffSchedules(input: {
+interface HandoffScheduleCaptureInput {
   records: StoredSchedule[];
   relativeCwds: ReadonlyMap<string, string>;
-}): HandoffSchedules {
-  return parseHandoffSchedules({
+  reviews?: HandoffScheduleReview[];
+}
+
+function projectHandoffSchedules(input: HandoffScheduleCaptureInput): HandoffSchedules {
+  return HandoffSchedulesSchema.parse({
     version: 1,
     schedules: input.records.map((record) => ({
       ...record,
-      reviewDigest: scheduleHandoffDigest(record),
+      reviewDigest: scheduleHandoffDigest(
+        record,
+        input.reviews?.find((review) => review.id === record.id)?.activeRun,
+      ),
       target:
         record.target.type === "agent"
           ? record.target
@@ -136,6 +174,18 @@ export function captureHandoffSchedules(input: {
             },
     })),
   });
+}
+
+export function captureHandoffSchedules(input: HandoffScheduleCaptureInput): HandoffSchedules {
+  return parseHandoffSchedules(projectHandoffSchedules(input));
+}
+
+export function estimateHandoffSchedules(input: HandoffScheduleCaptureInput): number {
+  // An active run has no final output yet; only capture may publish a portable snapshot.
+  const bytes = Buffer.byteLength(JSON.stringify(projectHandoffSchedules(input)));
+  if (bytes > HANDOFF_SCHEDULE_MAX_BYTES)
+    throw new Error("Scheduled automation exceeds the handoff byte limit");
+  return bytes;
 }
 
 export function parseHandoffSchedules(value: unknown): HandoffSchedules {

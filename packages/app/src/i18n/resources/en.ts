@@ -1,5 +1,7 @@
 export const en = {
   handoff: {
+    activeHeartbeatStops:
+      "This heartbeat is running. Preparation stops it and saves its result before moving.",
     automationPaused:
       "Schedules and heartbeats move paused. Completed schedules stay completed. If you cancel, resume source schedules manually.",
     automationSettingsOmitted:

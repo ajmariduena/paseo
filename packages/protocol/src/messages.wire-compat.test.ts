@@ -7,6 +7,7 @@ import {
   HandoffDestinationPageSchema,
   HandoffDestinationSnapshotSchema,
   HandoffStoppedWorkReviewSchema,
+  HandoffScheduleReviewSchema,
   HandoffStoppedWorkPreviewSchema,
 } from "./handoff-control.js";
 import {
@@ -57,6 +58,25 @@ test("handoff schedule review and size remain optional for older clients and dae
   };
   expect(HandoffStoppedWorkReviewSchema.parse(review)).toEqual(review);
   expect(HandoffStoppedWorkReviewSchema.parse(currentReview)).toEqual(currentReview);
+  const activeReview = {
+    ...currentReview.schedules[0],
+    kind: "heartbeat",
+    activeRun: {
+      id: "12345678-1234-4234-8234-123456789abc",
+      previousLastRunAt: null,
+    },
+  };
+  expect(HandoffScheduleReviewSchema.parse(activeReview)).toEqual(activeReview);
+  expect(HandoffScheduleReviewSchema.omit({ activeRun: true }).parse(activeReview)).toEqual({
+    ...currentReview.schedules[0],
+    kind: "heartbeat",
+  });
+  expect(() =>
+    HandoffScheduleReviewSchema.parse({
+      ...activeReview,
+      activeRun: { ...activeReview.activeRun, id: "unknown" },
+    }),
+  ).toThrow();
   expect(HandoffStoppedWorkReviewSchema.omit({ schedules: true }).parse(currentReview)).toEqual(
     review,
   );

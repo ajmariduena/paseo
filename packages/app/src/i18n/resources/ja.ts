@@ -3,6 +3,8 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ja: TranslationResources = {
   handoff: {
+    activeHeartbeatStops:
+      "このハートビートは実行中です。準備時に実行を停止し、結果を保存してから移動します。",
     automationPaused:
       "スケジュールとリマインダーは一時停止した状態で移動します。完了済みのものは完了済みのままです。キャンセルした場合は、移動元で手動で再開してください。",
     automationSettingsOmitted:

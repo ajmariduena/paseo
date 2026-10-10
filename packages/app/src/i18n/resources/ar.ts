@@ -3,6 +3,7 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ar: TranslationResources = {
   handoff: {
+    activeHeartbeatStops: "هذا التذكير قيد التشغيل. يوقفه التحضير ويحفظ نتيجته قبل النقل.",
     automationPaused:
       "تُنقل المهام المجدولة والتذكيرات بحالة الإيقاف المؤقت، وتبقى المهام المكتملة مكتملة. إذا ألغيت النقل، فاستأنفها يدويًا على المضيف المصدر.",
     automationSettingsOmitted:

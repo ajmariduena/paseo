@@ -3,6 +3,8 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ru: TranslationResources = {
   handoff: {
+    activeHeartbeatStops:
+      "Это напоминание выполняется. При подготовке оно будет остановлено, а результат сохранён перед переносом.",
     automationPaused:
       "Расписания и напоминания переносятся на паузе. Завершённые расписания остаются завершёнными. При отмене возобновите их на исходном хосте вручную.",
     automationSettingsOmitted:

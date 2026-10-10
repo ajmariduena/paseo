@@ -31,7 +31,8 @@ All 54 cases in the changed ownership file pass. The existing recovery case also
 the source fixture. Root typecheck, lint and formatting pass. No browser suite was repeated for this
 server-only change; the existing CI jobs own broader and platform verification.
 These tests use real ownership journals and files with held shutdown adapters and controlled timers.
-They do not prove provider termination, repair unknown run outcomes or enable active-run transfer.
+They do not prove provider termination or repair unknown run outcomes. The heartbeat integration
+below additionally covers a reviewed live run with a controlled provider adapter.
 
 Scheduler admission — the initial regression ran a schedule after source fencing and consumed
 its final allowed execution. Schedule controls and dispatch now admit the persisted target inside
@@ -88,9 +89,9 @@ The existing CI jobs own platform and full-suite verification; no new feature-sp
 
 Strict capture refuses running jobs, ancestor-directory schedules, outside heartbeat owners sharing
 the checkout, damaged inventory, more than 1,000 selected records or metadata beyond 32 MiB. This
-slice does not certify a running job's outcome after a crash. Active-run shutdown and recovery
-of uncertain outcomes remain open; an admitted runner can still prevent drain completion, with
-the preparation wait bounded as tested above.
+slice does not certify a running job's outcome after a crash. Jobs that create separate agents and
+recovery of uncertain outcomes remain open; an admitted runner can still prevent drain completion,
+with the preparation wait bounded as tested above.
 Completed-outcome recovery — an injected failure writing a successful run reproduced the runner
 resolving with status=failed, output=null and error="outcome publication unavailable". That replaced
 the provider's only retained result with an I/O error. Execution and publication now have separate
@@ -124,6 +125,53 @@ during shutdown. Two new service cases use the real manager and filesystem with 
 turn. The selected manager wait/closure/reload cases pass 20 cases (268 skipped), for 99 distinct
 passing cases. Server-stack build, final server build, root typecheck, lint and formatting pass.
 These are process-local outcome tests, not proof of provider termination or crash recovery.
+
+Active heartbeat transfer — review now binds the observed run and loaded provider session. The
+allowed review change is that run's terminal outcome plus the pause. Prior history, target and
+schedule definition remain bound. Capture waits for the outcome write and refuses running records;
+release compares the complete captured result, including output. Unknown or replaced executions
+refuse. A heartbeat notification is durably annotated before sending the prompt, preserving its
+readable history when the native transcript is reconstructed on the destination.
+
+The first service regression refused the running heartbeat at review. The service/store files now
+pass 95 cases, including completed/failed digest binding, unknown service ownership, changed run
+identity, an outcome synchronization held open while readiness refuses, cancellation and restart.
+The two existing native/context network cases now start a held heartbeat through scheduleRunOnce,
+prepare it through the coordinator, reject changed output after capture, restart both hosts and
+recover interrupted destination installation. Both pass with the failed/canceled run remapped and
+the notification readable on the destination. The initial network fixture lacked native prompt
+identity and ended the heartbeat before its active wait; adding the actual annotation-before-send
+path and a matching controlled transcript writer resolved that failure without relaxing timeouts.
+Wire compatibility passes 45 cases, including absence of activeRun and an older reader stripping
+that optional field. The app form and translation files pass 73 cases. Chromium desktop and compact
+pass the complete active-heartbeat flow (32.9s and 36.7s; 2 passed in 1.7m), including review copy,
+source cancellation result, destination activation, paused automation and readable notification.
+Screenshots: handoff-active-heartbeat-desktop.png and handoff-active-heartbeat-compact.png. The
+held writer is the same test adapter used by the network cases; the browser uses real daemon RPCs.
+
+Commands (each run from its owning workspace, serialized browser cases with one worker):
+  npx vitest run src/server/schedule/service.test.ts src/server/schedule/store.test.ts --bail=1
+    Test Files 2 passed (2); Tests 95 passed (95); Duration 4.96s
+  npx vitest run src/server/handoff/archive.e2e.test.ts -t 'handoff moves reviewed schedules and heartbeats paused' --bail=1
+    Test Files 1 passed (1); Tests 2 passed | 35 skipped (37); Duration 19.74s
+  npx vitest run src/messages.wire-compat.test.ts --bail=1
+    Test Files 1 passed (1); Tests 45 passed (45); Duration 1.36s
+  npx vitest run src/handoff/form-model.test.ts src/i18n/resources.test.ts --bail=1
+    Test Files 2 passed (2); Tests 73 passed (73); Duration 2.06s
+  npm run test:e2e -- e2e/browser/workspace-handoff.spec.ts --grep 'reviews and stops an active heartbeat' --workers=1 --max-failures=1
+    2 passed (1.7m)
+  npm run build:server; npm run typecheck; npm run lint; npm run format
+    All completed successfully. Lint: 0 warnings, 0 errors.
+
+Browser test development
+found three fixture mistakes: asserting inside the admission poll before review existed, omitting
+the Review button click, and asking the schedule list summary for run details. The test now polls
+the complete review response, follows the actual review action and reads runs through inspection.
+An earlier browser process was interrupted without a result; its missing handle and absent processes
+were confirmed before retry. None of these attempts relaxed an assertion or increased a timeout.
+
+These tests use synthetic transcripts and a held adapter, not authenticated provider execution or
+proof of OS process termination. Active new-agent jobs and crash outcome reconciliation remain open.
 
 Queue conservation — source handoff now holds queues before closing writers. The initial runner
 regression reproduced the pending instruction disappearing when the current turn settled under

@@ -25,6 +25,32 @@ import type { AgentPermissionRequest, AgentPermissionResponse } from "../agent/a
 import { isLikelyExternalToolName } from "@getpaseo/protocol/tool-name-normalization";
 import type { ClaudeSessionRuntime } from "../agent/providers/claude/session-runtime.js";
 
+interface HeldClaudeTestTurn {
+  session: AgentSession;
+  sessionId: string;
+  transcriptFile: string;
+}
+
+// A controlled writer for handoff transport tests, not a real provider/process boundary.
+export function holdNextClaudeTestTurn(input: HeldClaudeTestTurn): void {
+  const originalStart = input.session.startTurn.bind(input.session);
+  Object.defineProperty(input.session, "nativeMessageIds", { value: true });
+  input.session.startTurn = async (prompt, options) => {
+    input.session.startTurn = originalStart;
+    if (!options?.nativeMessageId) throw new Error("Missing native test prompt identity");
+    await appendFile(
+      input.transcriptFile,
+      JSON.stringify({
+        type: "user",
+        uuid: options.nativeMessageId,
+        sessionId: input.sessionId,
+        message: { role: "user", content: prompt },
+      }) + "\n",
+    );
+    return { turnId: randomUUID(), promptDisposition: "dispatched" };
+  };
+}
+
 const TEST_CAPABILITIES: AgentCapabilityFlags = {
   supportsStreaming: true,
   supportsSessionPersistence: true,

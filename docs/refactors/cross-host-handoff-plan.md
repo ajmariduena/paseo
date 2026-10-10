@@ -582,18 +582,22 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   until activation is durable. Interrupted installation retries without duplicate records. Completed
   schedules remain completed. Review names omitted MCP connections and warns that permissions
   and advanced provider settings need destination configuration before resume.
-  Capture refuses active runs, ancestor-directory schedules, heartbeats owned by outside conversations
-  sharing the directory, damaged inventory, more than 1,000 transferred schedules or metadata beyond
-  32 MiB. Two-daemon tests cover cancellation, source changes, restarts and interrupted installation.
+  A running heartbeat can be reviewed when its exact run and loaded session are known. Preparation
+  closes that session, joins durable outcome publication, then captures the paused automation and
+  its terminal result. Its notification is persisted before dispatch so exported history can retain
+  it. Review refuses replaced or unknown runs; capture still refuses unfinished runs, active jobs
+  that create separate agents, ancestor-directory schedules, outside heartbeat owners, damaged
+  inventory, more than 1,000 transferred schedules or metadata beyond 32 MiB. Two-daemon tests cover
+  both continuation modes, readable notifications, source changes, restarts and interrupted installation.
   Known completed outcomes now retry failed publication from immutable retained inputs, including
   a failed synchronization after rename. A storage failure cannot replace successful output with
   a failed-execution record. POSIX acknowledgement includes file and directory synchronization;
   handoff waits for pending publication to repair. These retained inputs are process-local.
   Heartbeats now retain their target identity and distinguish cancellation from successful idle,
   including after provider closure; see [lifecycle cancellation](../agent-lifecycle.md#cancellation).
-  Active-run shutdown and recovery of uncertain run outcomes after a crash remain open. An admitted
-  runner can still prevent draining, but the preparation wait now expires with ownership retained
-  under the [recovery contract](#ownership-and-recovery). See the scheduler cases in the
+  Shutdown of jobs that create separate agents and recovery of uncertain run outcomes after a crash
+  remain open. An admitted runner can still prevent draining, but the preparation wait expires with
+  ownership retained under the [recovery contract](#ownership-and-recovery). See the scheduler cases in the
   [stopped-work evidence](../qa-evidence/handoff-writers-review.txt).
   PR watches now have a reviewed stop disposition. Preparation durably removes the selected watches,
   cancels their queued notifications and joins dispatched wakes. Registration participates in source

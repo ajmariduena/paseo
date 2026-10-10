@@ -3,6 +3,8 @@ import { pluginSettings } from "./plugin-settings";
 
 export const fr: TranslationResources = {
   handoff: {
+    activeHeartbeatStops:
+      "Ce rappel est en cours. La préparation l’arrête et enregistre son résultat avant le transfert.",
     automationPaused:
       "Les tâches planifiées et les rappels sont transférés en pause. Les tâches terminées le restent. En cas d’annulation, reprenez-les manuellement sur l’hôte source.",
     automationSettingsOmitted:

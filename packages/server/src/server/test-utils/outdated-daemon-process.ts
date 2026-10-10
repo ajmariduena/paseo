@@ -3,7 +3,8 @@ import path from "node:path";
 import pino from "pino";
 import { AgentProviderRuntimeSettingsMapSchema } from "@getpaseo/protocol/provider-config";
 import { ClaudeAgentClient } from "../agent/providers/claude/agent.js";
-import { createTestAgentClients } from "./fake-agent-client.js";
+import { createTestAgentClients, holdNextClaudeTestTurn } from "./fake-agent-client.js";
+import { claudeProjectDirSync } from "../agent/providers/claude/project-dir.js";
 import { createTestPaseoDaemon } from "./paseo-daemon.js";
 import type { AgentPromptInput } from "../agent/agent-sdk-types.js";
 
@@ -40,6 +41,34 @@ async function main(): Promise<void> {
     relayConfigCapability: process.env.E2E_RELAY_CONFIG_CAPABILITY !== "0",
   });
   const serverId = (await readFile(path.join(daemon.paseoHome, "server-id"), "utf8")).trim();
+
+  process.on("message", (message: { type?: string; requestId: string; agentId: string }) => {
+    if (message.type !== "hold-next-claude-turn") return;
+    void (async () => {
+      const configDir = providerSettings?.claude?.env?.CLAUDE_CONFIG_DIR;
+      const agent = daemon.daemon.agentManager.getAgent(message.agentId);
+      const record = await daemon.daemon.agentStorage.get(message.agentId);
+      if (!configDir || !agent?.session || !record?.persistence)
+        throw new Error("A loaded fake Claude session with a configured transcript is required");
+      const sessionId = record.persistence.sessionId;
+      holdNextClaudeTestTurn({
+        session: agent.session,
+        sessionId,
+        transcriptFile: path.join(
+          claudeProjectDirSync(record.cwd, { configDir }),
+          `${sessionId}.jsonl`,
+        ),
+      });
+    })().then(
+      () => process.send?.({ type: "claude-turn-held", requestId: message.requestId }),
+      (error: unknown) =>
+        process.send?.({
+          type: "claude-turn-held",
+          requestId: message.requestId,
+          error: String(error),
+        }),
+    );
+  });
 
   // Browser fixtures seed pending work without sending a synthetic provider turn.
   process.on(

@@ -489,6 +489,11 @@ function ReviewWorkspace({
                   <Text selectable style={styles.value}>
                     {schedule.name ?? schedule.id} · {schedule.cadence}
                   </Text>
+                  {schedule.activeRun ? (
+                    <Text style={styles.text} testID="handoff-active-heartbeat-review">
+                      {t("handoff.activeHeartbeatStops")}
+                    </Text>
+                  ) : null}
                   {schedule.omittedSettings.length || schedule.omittedMcpServers.length ? (
                     <Text style={styles.text}>{t("handoff.automationSettingsOmitted")}</Text>
                   ) : null}

@@ -16,6 +16,7 @@ import {
   remapHandoffSchedules,
   scheduleHandoffDigest,
   type InstallHandoffSchedulesInput,
+  type HandoffActiveRun,
 } from "./handoff.js";
 
 function generateScheduleId(): string {
@@ -229,6 +230,7 @@ export class ScheduleStore {
     id: string;
     digest: string;
     pausedAt: string;
+    activeRun?: HandoffActiveRun;
   }): Promise<StoredSchedule> {
     HandoffScheduleIdSchema.parse(input.id);
     return this.serializeScheduleMutation(input.id, async () => {
@@ -237,7 +239,7 @@ export class ScheduleStore {
         throw new Error("Schedule is not yet active on this host");
       const bytes = await readBoundedFile(this.filePath(input.id), HANDOFF_SCHEDULE_MAX_BYTES);
       const record = StoredScheduleSchema.parse(JSON.parse(bytes.toString("utf8")));
-      if (record.id !== input.id || scheduleHandoffDigest(record) !== input.digest)
+      if (record.id !== input.id || scheduleHandoffDigest(record, input.activeRun) !== input.digest)
         throw new Error("Scheduled automation changed after handoff review");
       if (record.runs.some((run) => run.status === "running"))
         throw new Error("A scheduled run is still active; stop or finish it before handoff");
