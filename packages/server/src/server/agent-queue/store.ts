@@ -11,7 +11,7 @@ import { formatPeerMessage, parsePeerMessage } from "@getpaseo/protocol/peer-mes
 import { z } from "zod";
 
 import { syncFilePublication, writeJsonFileAtomic } from "../atomic-file.js";
-import { readBoundedFile } from "../handoff/artifacts.js";
+import { readBoundedFile, syncDirectory } from "../handoff/artifacts.js";
 import type { AgentPromptInput } from "../agent/agent-sdk-types.js";
 import { formatAgentMessage, parseAgentMessage } from "../agent/agent-messages/index.js";
 import {
@@ -51,6 +51,8 @@ const QueueFileSchema = z.object({
   agentId: z.string(),
   held: z.boolean(),
   heldReason: HeldReasonSchema.nullable(),
+  // Separate from the entry hold: a human prompt revives future wakes without draining it.
+  userStopped: z.boolean().optional(),
   entries: z.array(QueueEntrySchema),
   handoff: z.object({ reservationId: z.string(), digest: z.string() }).optional(),
 });
@@ -288,6 +290,16 @@ export class QueueFullError extends Error {
   }
 }
 
+export class QueueRestoreError extends Error {
+  constructor(
+    readonly agentId: string | null,
+    cause: unknown,
+  ) {
+    super(`Agent queue could not be restored: ${agentId ?? "directory"}`, { cause });
+    this.name = "QueueRestoreError";
+  }
+}
+
 export function previewPrompt(prompt: AgentPromptInput): {
   textPreview: string;
   attachmentCount: number;
@@ -324,6 +336,8 @@ function emptyFile(agentId: string): AgentQueueFile {
  */
 export class AgentQueueStore {
   private readonly cache = new Map<string, AgentQueueFile>();
+  private readonly loadErrors = new Map<string, QueueRestoreError>();
+  private directoryError: QueueRestoreError | null = null;
   private readonly memoryPrompts = new Map<string, AgentPromptInput>();
   private readonly tails = new Map<string, Promise<unknown>>();
 
@@ -339,24 +353,46 @@ export class AgentQueueStore {
   async load(): Promise<void> {
     const directory = this.directory;
     if (!directory) return;
+    this.loadErrors.clear();
+    this.directoryError = null;
     let names: string[];
     try {
       names = await readdir(directory);
     } catch (error) {
       if (isNotFound(error)) return;
-      throw error;
+      this.directoryError = new QueueRestoreError(null, error);
+      throw this.directoryError;
     }
     for (const name of names) {
       if (!name.endsWith(".json")) continue;
       const agentId = name.slice(0, -".json".length);
-      const file = await this.read(agentId);
-      if (file) this.cache.set(agentId, file);
-      await this.removeOrphanPrompts(agentId, file);
+      this.cache.delete(agentId);
+      try {
+        const file = await this.read(agentId);
+        if (file) this.cache.set(agentId, file);
+        await this.removeOrphanPrompts(agentId, file);
+      } catch (error) {
+        this.cache.delete(agentId);
+        this.loadErrors.set(agentId, new QueueRestoreError(agentId, error));
+      }
     }
+    if (this.loadErrors.size)
+      throw new AggregateError(this.loadErrors.values(), "Some agent queues could not be restored");
   }
 
   peek(agentId: string): AgentQueueFile | null {
     return this.cache.get(agentId) ?? null;
+  }
+
+  isHeldForUserStop(agentId: string): boolean {
+    this.assertRestored(agentId);
+    return this.peek(agentId)?.userStopped === true;
+  }
+
+  private assertRestored(agentId: string): void {
+    if (this.directoryError) throw this.directoryError;
+    const error = this.loadErrors.get(agentId);
+    if (error) throw error;
   }
 
   agentIds(): string[] {
@@ -374,6 +410,7 @@ export class AgentQueueStore {
     } = {},
   ): Promise<HandoffQueue> {
     return this.serialize(agentId, async () => {
+      this.assertRestored(agentId);
       const cached = this.cache.get(agentId) ?? null;
       const stored = this.directory ? await this.readHandoffFile(agentId) : cached;
       if (!isDeepStrictEqual(cached, stored))
@@ -521,14 +558,20 @@ export class AgentQueueStore {
         agentId,
         held: true,
         heldReason: "user_stop",
+        userStopped: true,
         entries,
         handoff: { reservationId, digest },
       };
       if (existing) {
-        if (!isDeepStrictEqual({ ...existing, heldReason: candidate.heldReason }, candidate))
+        // COMPAT(handoffQueueStop): added in v0.11.1, remove after 2027-04-10 once older private publications finish.
+        const restored = {
+          ...existing,
+          userStopped: existing.userStopped ?? true,
+          heldReason: candidate.heldReason,
+        };
+        if (!isDeepStrictEqual(restored, candidate))
           throw new Error("Destination queue changed during handoff installation");
       }
-      if (!entries.length) return;
       for (const [name, prompt] of prompts) {
         if (this.directory) {
           const filePath = this.promptPath(this.directory, agentId, name);
@@ -673,9 +716,16 @@ export class AgentQueueStore {
     return edited;
   }
 
-  /** Holds only a queue with entries: an empty queue has nothing to hold back. */
+  /** User Stop also suppresses future system messages, even when there are no entries. */
   async hold(agentId: string, reason: AgentQueueHeldReason): Promise<boolean> {
     return await this.mutate(agentId, (file) => {
+      if (reason === "user_stop") {
+        const changed = !file.userStopped;
+        file.userStopped = true;
+        file.held = true;
+        file.heldReason = reason;
+        return changed;
+      }
       if (file.entries.length === 0 || file.held) return false;
       file.held = true;
       file.heldReason = reason;
@@ -686,9 +736,16 @@ export class AgentQueueStore {
   async resume(agentId: string): Promise<boolean> {
     return await this.mutate(agentId, (file) => {
       if (!file.held) return false;
+      file.userStopped = false;
       file.held = false;
       file.heldReason = null;
       return true;
+    });
+  }
+
+  async releaseUserStop(agentId: string): Promise<void> {
+    await this.mutate(agentId, (file) => {
+      if (file.userStopped) file.userStopped = false;
     });
   }
 
@@ -701,7 +758,7 @@ export class AgentQueueStore {
       const dropped = file.entries.filter((entry) => entry.origin === "system");
       file.entries = file.entries.filter((entry) => entry.origin !== "system");
       file.held = true;
-      file.heldReason = "restart";
+      file.heldReason = file.userStopped ? "user_stop" : "restart";
       return dropped;
     });
   }
@@ -711,6 +768,7 @@ export class AgentQueueStore {
     const removed = await this.mutate(agentId, (file) => {
       const entries = file.entries;
       file.entries = [];
+      if (file.userStopped) file.userStopped = false;
       return entries;
     });
     for (const entry of removed) await this.discard(agentId, entry);
@@ -719,27 +777,31 @@ export class AgentQueueStore {
 
   private mutate<T>(agentId: string, apply: (file: AgentQueueFile) => T): Promise<T> {
     return this.serialize(agentId, async () => {
-      const file = structuredClone(
-        this.cache.get(agentId) ?? (await this.read(agentId)) ?? emptyFile(agentId),
-      );
+      this.assertRestored(agentId);
+      const previous = this.peek(agentId) ?? (await this.read(agentId)) ?? emptyFile(agentId);
+      const file = structuredClone(previous);
       const result = apply(file);
-      if (file.entries.length === 0) {
+      if (file.entries.length === 0 && !file.userStopped) {
         file.held = false;
         file.heldReason = null;
       }
-      await this.write(agentId, file);
+      const durable = file.userStopped !== undefined || previous.userStopped !== undefined;
+      await this.write(agentId, file, durable);
       return result;
     });
   }
 
-  private async write(agentId: string, file: AgentQueueFile): Promise<void> {
-    const isEmpty = file.entries.length === 0;
+  private async write(agentId: string, file: AgentQueueFile, durable: boolean): Promise<void> {
+    const isEmpty = file.entries.length === 0 && !file.userStopped;
     if (this.directory) {
       const filePath = this.filePath(this.directory, agentId);
       if (isEmpty) {
         await rm(filePath, { force: true });
+        if (durable && process.platform !== "win32") await syncDirectory(this.directory);
       } else {
         await writeJsonFileAtomic(filePath, file);
+        if (durable && process.platform !== "win32")
+          await (this.options.sync ?? syncFilePublication)(filePath, path.dirname(this.directory));
       }
     }
     if (isEmpty) {

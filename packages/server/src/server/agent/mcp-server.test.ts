@@ -274,7 +274,7 @@ function buildAgentManagerSpies() {
     emitLiveTimelineItem: vi.fn().mockResolvedValue(undefined),
     hasInFlightRun: vi.fn().mockReturnValue(false),
     getActiveRun: vi.fn().mockReturnValue(null),
-    messageQueue: { isHeldForUserStop: () => false, releaseUserStop: () => undefined },
+    messageQueue: { isHeldForUserStop: () => false, releaseUserStop: async () => undefined },
     waitForRunToSettle: vi.fn().mockResolvedValue(undefined),
     tryRunOutOfBand: vi.fn().mockResolvedValue(false),
     subscribe: vi.fn().mockReturnValue(() => {}),

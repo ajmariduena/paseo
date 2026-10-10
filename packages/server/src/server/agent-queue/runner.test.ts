@@ -1,14 +1,18 @@
 import { afterEach, expect, test } from "vitest";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { HandoffOwnership } from "../handoff/ownership.js";
 import { AgentQueueStore } from "./store.js";
+import { AgentManager } from "../agent/agent-manager.js";
+import { AgentStorage } from "../agent/agent-storage.js";
+import { syncFilePublication } from "../atomic-file.js";
 
 import {
   createControlledHost,
   createTraceRecorder,
+  ControlledAgentClient,
   type ControlledHost,
 } from "../test-utils/controlled-agent-client.js";
 import {
@@ -87,6 +91,7 @@ test.skipIf(process.platform === "win32")(
     await recovered.load();
     expect(recovered.peek(agentId)?.held).toBe(true);
     await expect(queue.resume(agentId)).rejects.toThrow("held by handoff");
+    await expect(queue.releaseUserStop(agentId)).rejects.toThrow("held by handoff");
     await expect(
       queue.enqueue(
         agentId,
@@ -265,7 +270,11 @@ test("a user Stop holds the queue so the stopped turn is not followed by the nex
   await expect(dispatches[0]?.settled).resolves.toBe("started");
 });
 
-function dispatchSystemMessage(host: ControlledHost, agentId: string, messageId: string) {
+function dispatchSystemMessage(
+  host: Pick<ControlledHost, "agentManager" | "agentStorage">,
+  agentId: string,
+  messageId: string,
+) {
   const trace = createTraceRecorder();
   const settled = dispatchAgentMessage({
     agentManager: host.agentManager,
@@ -285,6 +294,140 @@ function dispatchSystemMessage(host: ControlledHost, agentId: string, messageId:
   });
   return { settled, queued: trace.waitFor("agent.dispatch.wait_for_turn") };
 }
+
+test.for(["user_stop", "handoff_cancel", "destination"] as const)(
+  "%s with an empty queue survives a fresh manager and gates real system dispatch until resume",
+  async (scenario, { skip }) => {
+    if (process.platform === "win32" && scenario !== "user_stop") skip();
+    const { host, ownership, queueDirectory } = await createHandoffHost();
+    const agentId = await host.createAgent({ steerable: true });
+    await host.startTurn(agentId, "before restart");
+    host.session(agentId).completeTurn("done");
+    await host.agentManager.waitForRunToSettle(agentId);
+    const queue = host.agentManager.messageQueue;
+    if (scenario === "handoff_cancel") {
+      const transferId = randomUUID();
+      await ownership.prepare({
+        id: transferId,
+        cwd: host.root,
+        workspaceId: "workspace",
+        agentIds: [agentId],
+        destinationServerId: "destination",
+        reservationId: randomUUID(),
+      });
+      await queue.holdForHandoff(agentId);
+      await host.agentManager.closeAgent(agentId);
+      await ownership.cancel(transferId);
+    } else if (scenario === "destination") {
+      await queue.installHandoffQueue(agentId, "reservation", { version: 1, entries: [] });
+    } else await queue.hold(agentId, "user_stop");
+    expect(queue.isHeldForUserStop(agentId)).toBe(true);
+    host.agentManager.prepareForShutdown();
+    await host.agentManager.closeAgent(agentId);
+    await host.agentManager.flushForShutdown();
+    await host.agentStorage.flush();
+
+    const agentStorage = new AgentStorage(path.join(host.root, "agents"), host.logger);
+    await agentStorage.initialize();
+    const client = new ControlledAgentClient("codex", { steerable: true });
+    const agentManager = new AgentManager({
+      clients: { codex: client },
+      registry: agentStorage,
+      logger: host.logger,
+      messageQueueStore: new AgentQueueStore(queueDirectory),
+    });
+    try {
+      await agentManager.messageQueue.load();
+      await agentManager.messageQueue.holdAllForRestart();
+      const wake = dispatchSystemMessage({ agentManager, agentStorage }, agentId, "late-result");
+      expect(await Promise.race([wake.queued.then(() => "queued"), wake.settled])).toBe("queued");
+      expect(client.latestSession().startPrompts).toEqual([]);
+      await agentManager.messageQueue.resume(agentId);
+      await expect(wake.settled).resolves.toBe("started");
+      expect(client.latestSession().startPrompts).toEqual([
+        "<paseo-system>\nlate-result\n</paseo-system>",
+      ]);
+    } finally {
+      agentManager.prepareForShutdown();
+      for (const agent of agentManager.listAgents()) await agentManager.closeAgent(agent.id);
+      await agentManager.flushForShutdown();
+      await agentStorage.flush();
+    }
+  },
+);
+
+test("a damaged queue refuses system dispatch without hiding another agent's durable Stop", async () => {
+  handoffDirectory = await mkdtemp(path.join(os.tmpdir(), "paseo-queue-corruption-"));
+  const store = new AgentQueueStore(handoffDirectory);
+  const host = createControlledHost({ messageQueueStore: store });
+  activeHost = host;
+  const broken = await host.createAgent({ steerable: true });
+  const stopped = await host.createAgent({ steerable: true });
+  await store.hold(broken, "user_stop");
+  await store.hold(stopped, "user_stop");
+  const file = path.join(handoffDirectory, `${broken}.json`);
+  const intact = await readFile(file);
+  await writeFile(file, "{broken");
+  // Bootstrap logs restore failures and continues serving unaffected agents.
+  await expect(host.agentManager.messageQueue.load()).rejects.toThrow("could not be restored");
+  expect(host.agentManager.listAgents().map((agent) => agent.id)).toEqual([broken, stopped]);
+  await expect(dispatchSystemMessage(host, broken, "must-not-start").settled).rejects.toThrow(
+    "could not be restored",
+  );
+  expect(host.session(broken).startPrompts).toEqual([]);
+  const wake = dispatchSystemMessage(host, stopped, "must-wait");
+  expect(await Promise.race([wake.queued.then(() => "queued"), wake.settled])).toBe("queued");
+  expect(host.session(stopped).startPrompts).toEqual([]);
+  await host.agentManager.messageQueue.cancel(stopped, "must-wait");
+  await expect(wake.settled).resolves.toBe("dropped");
+  await writeFile(file, intact);
+  await host.agentManager.messageQueue.load();
+  expect(host.agentManager.messageQueue.isHeldForUserStop(broken)).toBe(true);
+});
+
+test.skipIf(process.platform === "win32")(
+  "a failed revival write cannot start a user prompt or admit a notification",
+  async () => {
+    handoffDirectory = await mkdtemp(path.join(os.tmpdir(), "paseo-queue-revival-"));
+    let fail = false;
+    const store = new AgentQueueStore(handoffDirectory, {
+      sync: async (file, directory) => {
+        if (fail) throw new Error("revival fsync failed");
+        await syncFilePublication(file, directory);
+      },
+    });
+    const host = createControlledHost({ messageQueueStore: store });
+    activeHost = host;
+    const agentId = await host.createAgent({ steerable: true });
+    const queue = host.agentManager.messageQueue;
+    await queue.hold(agentId, "user_stop");
+    const wake = dispatchSystemMessage(host, agentId, "waiting-result");
+    await wake.queued;
+    fail = true;
+    await expect(
+      dispatchAgentMessageInBackground({
+        agentManager: host.agentManager,
+        agentStorage: host.agentStorage,
+        agentId,
+        messageId: "revive",
+        policy: { intent: "auto", prompt: "carry on", steerUnavailable: "replace" },
+        logger: host.logger,
+      }),
+    ).rejects.toThrow("revival fsync failed");
+    expect(queue.isHeldForUserStop(agentId)).toBe(true);
+    expect(host.session(agentId).startPrompts).toEqual([]);
+    fail = false;
+    await queue.releaseUserStop(agentId);
+    expect(queue.isHeldForUserStop(agentId)).toBe(false);
+    expect(queue.snapshot(agentId)?.held).toBe(true);
+    await expect(dispatchSystemMessage(host, agentId, "new-result").settled).resolves.toBe(
+      "started",
+    );
+    expect(queue.entries(agentId).map((entry) => entry.id)).toEqual(["waiting-result"]);
+    await queue.cancel(agentId, "waiting-result");
+    await expect(wake.settled).resolves.toBe("dropped");
+  },
+);
 
 async function stoppedIdleAgent(): Promise<{ host: ControlledHost; agentId: string }> {
   const host = createControlledHost();

@@ -121,7 +121,7 @@ export class AgentQueueRunner {
   }
 
   agentIdsWithEntries(): string[] {
-    return this.store.agentIds();
+    return this.store.agentIds().filter((agentId) => this.entries(agentId).length > 0);
   }
 
   entries(agentId: string): AgentQueueEntry[] {
@@ -158,7 +158,7 @@ export class AgentQueueRunner {
     deliver: QueueDeliverer,
   ): Promise<QueuedMessage> {
     const entry = await this.store.enqueue(agentId, input, new Date().toISOString());
-    if (this.userStopped.has(agentId)) await this.store.hold(agentId, "user_stop");
+    if (this.isHeldForUserStop(agentId)) await this.store.hold(agentId, "user_stop");
     const settled = new Promise<MessageDisposition>((resolve, reject) => {
       this.waiters.set(waiterKey(agentId, entry.id), { deliver, resolve, reject });
     });
@@ -251,8 +251,9 @@ export class AgentQueueRunner {
   }
 
   private async resumeAdmitted(agentId: string): Promise<void> {
+    const changed = await this.store.resume(agentId);
     this.userStopped.delete(agentId);
-    if (await this.store.resume(agentId)) {
+    if (changed) {
       this.logger.info({ agentId }, "agent.queue.resumed");
       this.host.publish(agentId);
     }
@@ -260,12 +261,15 @@ export class AgentQueueRunner {
   }
 
   isHeldForUserStop(agentId: string): boolean {
-    return this.userStopped.has(agentId);
+    return this.userStopped.has(agentId) || this.store.isHeldForUserStop(agentId);
   }
 
   /** The user sent the stopped agent a message; entries already held stay held until resumed. */
-  releaseUserStop(agentId: string): void {
-    this.userStopped.delete(agentId);
+  async releaseUserStop(agentId: string): Promise<void> {
+    await this.host.withMutation(agentId, async () => {
+      await this.store.releaseUserStop(agentId);
+      this.userStopped.delete(agentId);
+    });
   }
 
   /** Boot: every queue that survived a restart waits for an explicit resume. */
@@ -282,8 +286,8 @@ export class AgentQueueRunner {
   }
 
   private async clearAdmitted(agentId: string): Promise<void> {
-    this.userStopped.delete(agentId);
     const removed = await this.store.clear(agentId);
+    this.userStopped.delete(agentId);
     for (const entry of removed) this.settleWaiter(agentId, entry.id, "skipped_archived");
     if (removed.length > 0) this.host.publish(agentId);
   }

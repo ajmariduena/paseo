@@ -711,12 +711,18 @@ One file per parent agent, because every transition (finalize a child's result, 
 
 **Path:** `$PASEO_HOME/agent-queues/{agentId}.json`, plus one prompt file per entry in `agent-queues/{agentId}/`
 
-Messages that arrived while the agent's turn was running, delivered one per settled run: delegation wakes first, then by `position`. Each `AgentQueueStore` method is one atomic write of the agent's file; the file is deleted when the queue empties, and an empty queue is never held. Schema: `packages/server/src/server/agent-queue/store.ts`.
+Messages that arrived while the agent's turn was running, delivered one per settled run: delegation wakes first, then by `position`. The queue file also owns user Stop, which must survive an empty queue and a daemon restart. Delete the file only after its entries and that stop are gone. Schema: `packages/server/src/server/agent-queue/store.ts`.
 
 - **Entry:** `origin` is `user`, `agent` (with `senderAgentId`), `delegation_wake`, or `system`. A wake entry stores only its cohort reference; its text is rendered from the delegation store at delivery, so results that joined it while it waited go out with it. User and agent entries keep their prompt in a separate file so images do not inflate the queue file, capped at 32 MiB per entry and 200 entries per agent.
-- **Hold:** `held` with `heldReason` `failure` (the turn that just ended failed), `user_stop`, or `restart`. What a hold blocks is in [agent-lifecycle.md](agent-lifecycle.md#relationships).
+- **Hold:** `held` with `heldReason` `failure` (the turn that just ended failed), `user_stop`, or `restart`. `userStopped` separately suppresses future system turns: a human prompt clears that suppression without resuming entries already held. What a hold blocks is in [agent-lifecycle.md](agent-lifecycle.md#relationships).
 
 The prompt file is written before the queue file references it and deleted after the queue file stops referencing it. `load` at boot removes prompt files nothing references.
+
+On POSIX, acknowledge a stored Stop or its removal only after synchronizing the file and its
+publication directories. Keep the previous cached state if acknowledgement fails. Ordinary Windows
+queue writes remain atomic; durable cross-host ownership is unavailable there. A damaged queue
+blocks that agent's dispatch rather than being interpreted as an empty queue. Other queues still
+load and retain their stops.
 
 Uploaded-file blocks refer to the upload store under `$PASEO_HOME/uploads/`. During handoff, the
 queue archive must carry those bytes as well as the prompt. Destination publication keeps the

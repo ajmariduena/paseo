@@ -42,7 +42,7 @@ export function asAgentManager(stub: {
       snapshot: () => null,
       hold: async () => undefined,
       isHeldForUserStop: () => false,
-      releaseUserStop: () => undefined,
+      releaseUserStop: async () => undefined,
     },
     ...stub,
   });

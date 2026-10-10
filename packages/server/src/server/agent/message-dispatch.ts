@@ -170,7 +170,7 @@ export async function dispatchAgentMessage(
       return await enqueue(params);
     }
     if (params.policy.kind === "intent" && params.policy.origin?.kind !== "agent") {
-      queue.releaseUserStop(params.agentId);
+      await queue.releaseUserStop(params.agentId);
     }
     const mode = resolveMode(params);
     switch (mode.kind) {

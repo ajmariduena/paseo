@@ -543,6 +543,7 @@ test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
         },
       ],
     });
+    expect(source.daemon.daemon.agentManager.messageQueue.isHeldForUserStop(agentId)).toBe(true);
     const staged = await prepare();
     expect(manager.getAgent(agentId)).toBeNull();
     expect(await readFile(path.join(cwd, "unfinished.txt"), "utf8")).toBe(
@@ -596,6 +597,15 @@ test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
     });
     expect(destination.daemon.daemon.agentManager.getAgent(destinationAgentId)).toBeNull();
     await expect(source.client.scheduleRunOnce({ id: scheduleId })).rejects.toThrow("handoff");
+    expect(
+      destination.daemon.daemon.agentManager.messageQueue.isHeldForUserStop(destinationAgentId),
+    ).toBe(true);
+    await stopHost(destination);
+    destination = await startHost("destination", true);
+    expect(
+      destination.daemon.daemon.agentManager.messageQueue.isHeldForUserStop(destinationAgentId),
+    ).toBe(true);
+    expect(destination.daemon.daemon.agentManager.getAgent(destinationAgentId)).toBeNull();
   },
   30_000,
 );

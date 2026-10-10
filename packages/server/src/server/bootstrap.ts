@@ -1192,8 +1192,12 @@ export async function createPaseoDaemon(
   // A damaged queue or delegation file must not keep the daemon from starting.
   await agentManager.messageQueue
     .load()
-    .then(() => restartRecovery.holdQueues())
     .catch((error: unknown) => logger.error({ err: error }, "Failed to restore agent queues"));
+  await restartRecovery
+    .holdQueues()
+    .catch((error: unknown) =>
+      logger.error({ err: error }, "Failed to hold restored agent queues"),
+    );
   await bootstrapWorkspaceRegistries({
     serverId,
     paseoHome: config.paseoHome,

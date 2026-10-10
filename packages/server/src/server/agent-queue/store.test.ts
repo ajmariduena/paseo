@@ -448,9 +448,125 @@ test("delegation wakes are delivered before user messages, then by position", as
   expect(await drainIds(store, "agent-1")).toEqual(["wake-1", "wake-2", "m1", "m2"]);
 });
 
-test("a held queue delivers nothing, keeps later entries held, and stops holding once empty", async () => {
+test("an empty user-stop hold survives restart and blocks later queued work until explicit resume", async () => {
+  const writer = new AgentQueueStore(root);
+  await writer.hold("agent-1", "user_stop");
+  const recovered = new AgentQueueStore(root);
+  await recovered.load();
+  await recovered.holdForRestart("agent-1");
+  await recovered.enqueue("agent-1", userMessage("later"), NOW);
+  expect(await recovered.dequeueNext("agent-1")).toBeNull();
+  expect(recovered.peek("agent-1")).toMatchObject({ held: true });
+  await recovered.resume("agent-1");
+  expect((await recovered.dequeueNext("agent-1"))?.prompt).toBe("text of later");
+});
+
+test("reviving future wakes preserves held entries across restart and retiring the last entry", async () => {
   const store = new AgentQueueStore(root);
-  expect(await store.hold("agent-1", "user_stop")).toBe(false);
+  await store.enqueue("agent-1", userMessage("pending"), NOW);
+  await store.hold("agent-1", "user_stop");
+  await store.releaseUserStop("agent-1");
+  const recovered = new AgentQueueStore(root);
+  await recovered.load();
+  expect(recovered.peek("agent-1")).toMatchObject({ held: true, userStopped: false });
+  expect(await recovered.dequeueNext("agent-1")).toBeNull();
+  await recovered.take("agent-1", "pending");
+  expect(recovered.peek("agent-1")).toBeNull();
+  const restarted = new AgentQueueStore(root);
+  await restarted.load();
+  expect(restarted.peek("agent-1")).toBeNull();
+});
+
+test("removing the last notification keeps user Stop, while explicit clear retires it", async () => {
+  const store = new AgentQueueStore(root);
+  await store.hold("agent-1", "user_stop");
+  await store.enqueue("agent-1", wake("wake", 1), NOW);
+  await store.take("agent-1", "wake");
+  const recovered = new AgentQueueStore(root);
+  await recovered.load();
+  expect(recovered.peek("agent-1")).toMatchObject({ userStopped: true, held: true, entries: [] });
+  await recovered.clear("agent-1");
+  const restarted = new AgentQueueStore(root);
+  await restarted.load();
+  expect(restarted.peek("agent-1")).toBeNull();
+});
+
+test.skipIf(process.platform === "win32")(
+  "an empty destination queue is durably stopped and exact installation retries cannot revive it",
+  async () => {
+    const destination = new AgentQueueStore(root);
+    const snapshot = { version: 1 as const, entries: [] };
+    await destination.installHandoffQueue("target", "reservation", snapshot);
+    const recovered = new AgentQueueStore(root);
+    await recovered.load();
+    await recovered.holdForRestart("target");
+    await recovered.installHandoffQueue("target", "reservation", snapshot);
+    expect(recovered.peek("target")).toMatchObject({ userStopped: true, held: true, entries: [] });
+    await recovered.enqueue("target", wake("late", 1), NOW);
+    expect(await recovered.dequeueNext("target")).toBeNull();
+    await expect(recovered.installHandoffQueue("target", "reservation", snapshot)).rejects.toThrow(
+      "changed during handoff installation",
+    );
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "a failed user-stop publication is not acknowledged and can be repaired without reopening work",
+  async () => {
+    let fail = true;
+    const store = new AgentQueueStore(root, {
+      sync: async (file, directory) => {
+        if (fail) throw new Error("hold fsync failed");
+        await syncFilePublication(file, directory);
+      },
+    });
+    await expect(store.hold("agent-1", "user_stop")).rejects.toThrow("hold fsync failed");
+    expect(store.peek("agent-1")).toBeNull();
+    fail = false;
+    await store.hold("agent-1", "user_stop");
+    const recovered = new AgentQueueStore(root);
+    await recovered.load();
+    expect(recovered.peek("agent-1")).toMatchObject({ userStopped: true, held: true });
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "an older private queue installation adopts Stop but a subsequently revived queue cannot be overwritten",
+  async () => {
+    const snapshot = {
+      version: 1 as const,
+      entries: [
+        {
+          id: "pending",
+          origin: "user" as const,
+          senderAgentId: null,
+          createdAt: NOW,
+          prompt: "keep this",
+        },
+      ],
+    };
+    const store = new AgentQueueStore(root);
+    await store.installHandoffQueue("target", "reservation", snapshot);
+    const legacy = structuredClone(store.peek("target"));
+    if (!legacy) throw new Error("Missing installed queue");
+    delete legacy.userStopped;
+    legacy.heldReason = "restart";
+    await writeFile(join(root, "target.json"), JSON.stringify(legacy));
+    const recovered = new AgentQueueStore(root);
+    await recovered.load();
+    await recovered.installHandoffQueue("target", "reservation", snapshot);
+    expect(recovered.isHeldForUserStop("target")).toBe(true);
+    await recovered.releaseUserStop("target");
+    await expect(recovered.installHandoffQueue("target", "reservation", snapshot)).rejects.toThrow(
+      "changed during handoff installation",
+    );
+    expect(recovered.peek("target")).toMatchObject({ held: true, userStopped: false });
+  },
+);
+
+test("a failure hold delivers nothing, keeps later entries held, and stops holding once empty", async () => {
+  const store = new AgentQueueStore(root);
+  expect(await store.hold("agent-1", "failure")).toBe(false);
 
   await store.enqueue("agent-1", userMessage("m1"), NOW);
   expect(await store.hold("agent-1", "failure")).toBe(true);

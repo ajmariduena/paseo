@@ -622,7 +622,10 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   [compact](../qa-evidence/handoff-watches-compact.png) review screenshots.
   Source queues are held before writer shutdown. Queue mutation and delivery participate in
   ownership admission; a handoff refusal restores an entry already taken for delivery with its
-  prompt intact. Cancellation leaves pending messages held until explicit resume. The queue and
+  prompt intact. Cancellation leaves pending messages held until explicit resume. Empty source and
+  destination queues retain notification suppression across restart; a human prompt clears that
+  suppression without draining already-held entries. Storage failure refuses dispatch for the
+  affected agent. The queue and
   isolated-daemon regressions are in the same stopped-work evidence. Version 4 bundles carry a
   verified queue for every conversation. Text, embedded images and typed uploaded files arrive held
   at destination;
