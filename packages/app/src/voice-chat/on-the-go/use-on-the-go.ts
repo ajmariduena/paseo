@@ -45,7 +45,7 @@ export function useOnTheGo(inCall: boolean): void {
       if (decision.active !== store.onTheGo) {
         logVoiceCallEvent("on_the_go", { active: decision.active, reason: decision.reason });
       }
-      // Hands-free there is no pill to tap, so a minimized call comes back full screen.
+      // Hands-free there is no pill to tap, so a minimized call comes back as the panel.
       if (decision.active && !store.onTheGo) store.setMinimized(false);
       store.setOnTheGo({ onTheGo: decision.active, onTheGoReason: decision.reason });
     };

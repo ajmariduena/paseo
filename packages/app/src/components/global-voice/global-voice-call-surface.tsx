@@ -11,14 +11,14 @@ import {
   resolveGlowActivity,
   type CallStatusKey,
 } from "@/components/global-voice/call-status";
-import { OnTheGoContent } from "@/components/global-voice/on-the-go-screen";
+import { OnTheGoPanel } from "@/components/global-voice/on-the-go-panel";
 import { VolumeMeter } from "@/components/volume-meter";
 import { isWeb } from "@/constants/platform";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useVoiceTelemetryOptional } from "@/contexts/voice-context";
 import type { Theme } from "@/styles/theme";
 import { useGlobalVoiceStore } from "@/voice-chat/global-voice-store";
-import { enterOnTheGo, exitOnTheGo } from "@/voice-chat/on-the-go/use-on-the-go";
+import { enterOnTheGo } from "@/voice-chat/on-the-go/use-on-the-go";
 import {
   useGlobalVoice,
   useGlobalVoiceSupervisor,
@@ -43,36 +43,29 @@ const ThemedCar = withUnistyles(Car);
 const SWITCH_ON = { checked: true };
 const SWITCH_OFF = { checked: false };
 
-/** The global voice call UI: car-mode screen on phones, a floating pill everywhere else. */
+/** The global voice call UI on phones: the car screen, or the On the go panel over the app; a floating pill everywhere else. */
 export function GlobalVoiceCallSurface() {
   const call = useGlobalVoice();
   useGlobalVoiceSupervisor(call);
   const isCompact = useIsCompactFormFactor();
   const isMinimized = useGlobalVoiceStore((state) => state.isMinimized);
+  const onTheGo = useGlobalVoiceStore((state) => state.onTheGo);
   if (!call.isActive && !call.isStarting) return null;
-  if (isCompact && !isMinimized) return <CarModeScreen call={call} />;
+  if (isCompact && !isMinimized) {
+    return onTheGo ? <OnTheGoPanel call={call} /> : <CarModeScreen call={call} />;
+  }
   return <CallPill call={call} isCompact={isCompact} />;
 }
 
 function CarModeScreen({ call }: { call: GlobalVoice }) {
   const insets = useSafeAreaInsets();
   const statusKey = resolveStatusKey(call);
-  const onTheGo = useGlobalVoiceStore((state) => state.onTheGo);
   const minimize = useCallback(() => useGlobalVoiceStore.getState().setMinimized(true), []);
 
   return (
-    <Modal
-      visible
-      animationType="slide"
-      presentationStyle="fullScreen"
-      onRequestClose={onTheGo ? exitOnTheGo : minimize}
-    >
+    <Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={minimize}>
       <View style={[styles.carScreen, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
-        {onTheGo ? (
-          <OnTheGoContent call={call} statusKey={statusKey} />
-        ) : (
-          <CarModeContent call={call} statusKey={statusKey} minimize={minimize} />
-        )}
+        <CarModeContent call={call} statusKey={statusKey} minimize={minimize} />
       </View>
     </Modal>
   );
