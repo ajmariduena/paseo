@@ -275,17 +275,37 @@ These are real Node/shell processes with injected SDK frames, not fresh authenti
 
 CI follow-up at 20e11a9f8 (run 38064594811, macOS job 114249684359): the supervisor
 suite reached a script without a shebang and exited 1 instead of 0. Darwin's posix_spawn path
-returns ENOEXEC instead of supplying execvp's shell fallback. The supervisor now invokes sh only
-for that error, after the registration gate, retaining literal argv and resolving PATH before sh
-can prefer a same-named file in cwd. Binary providers still receive their environment directly.
-The expanded script cases cover replace/supervise, absolute/PATH lookup, a shadow executable in
-cwd, spaces, quotes and shell metacharacters. All 44 spawn cases pass on Linux, including the
-existing environment, signal and tree-stop cases. Native macOS confirmation remains pending CI.
+returns ENOEXEC instead of supplying execvp's shell fallback. The first fix handled the error
+event only and passed 44 cases on Linux. At ce0bb5496, macOS job 114259971250 in run 38068150004
+again failed the absolute-path supervised wrapper (24 earlier cases passed). Its 103 filesystem
+and 278 handoff cases passed, with two handoff platform skips.
+
+Node throws ENOEXEC synchronously before returning a ChildProcess. The supervisor now routes both
+thrown and emitted errors through the same bounded retry. Only ENOEXEC permits sh, after the
+registration gate, retaining literal argv and resolving PATH before sh can prefer a same-named
+file in cwd. Binary providers still receive their environment directly.
+Source: https://github.com/nodejs/node/blob/v22.23.2/lib/internal/child_process.js#L372-L395
+
+The added regression injects one ENOEXEC at Node's native spawn-result boundary inside the
+isolated bootstrap, exercising Node's real error conversion rather than a mocked error handler.
+It first reproduced exit 1 on Linux. The control channel, shell process, script, argv and stdout
+are real. Absolute/PATH cases then pass along with the uninjected cases, cwd shadowing, spaces,
+quotes, metacharacters, environment, signals and tree stopping: all 46 cases pass. Native macOS
+confirmation of the synchronous repair remains pending CI.
 
 $ npx vitest run src/server/agent/providers/claude/agent.spawn.test.ts --bail=1
   Test Files  1 passed (1)
        Tests  44 passed (44)
     Duration  7.41s (tests 6.51s)
+
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/agent/providers/claude/agent.spawn.test.ts -t 'without a shebang.*injected' --bail=1
+  Before the synchronous repair: 1 failed, 44 skipped (bail before the second injected case).
+  AssertionError: Claude process launch failed before exec
+  Expected [0, null], received [1, null].
+$ npx vitest run --config packages/server/vitest.config.ts packages/server/src/server/agent/providers/claude/agent.spawn.test.ts --bail=1
+  Test Files  1 passed (1)
+       Tests  46 passed (46)
+    Duration  6.44s (tests 5.58s)
 
 Memory observation: three sequential samples per strategy on Linux/Node 24.21.0. The combined PSS
 increase was 16.59 MiB for this harmless Node provider. PSS apportions shared pages; RSS is also

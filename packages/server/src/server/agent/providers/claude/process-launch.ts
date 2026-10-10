@@ -59,9 +59,8 @@ control.on('end', () => {
       // macOS protected intermediaries strip DYLD_* values. Native spawn passes
       // the provider's environment directly, with this registered root retained
       // until its child exits. Its standard streams go straight to the SDK.
-      const watchTarget = (child, allowScriptFallback) => {
-        target = child;
-        child.once('error', (error) => {
+      const startTarget = (file, argv, allowScriptFallback) => {
+        const onError = (error) => {
           if (!allowScriptFallback || error.code !== 'ENOEXEC') return fail();
           if (stopping) return process.exit(1);
           // Darwin's posix_spawn does not provide execvp's ENOEXEC shell fallback.
@@ -78,15 +77,24 @@ control.on('end', () => {
             }
           }
           if (!script) return fail();
-          watchTarget(spawn('/bin/sh', [script, ...args], { env, stdio: 'inherit', shell: false }), false);
-        });
+          startTarget('/bin/sh', [script, ...args], false);
+        };
+        let child;
+        try {
+          child = spawn(file, argv, { env, stdio: 'inherit', shell: false });
+        } catch (error) {
+          // Node throws some native errors (including ENOEXEC) before returning a child.
+          return onError(error);
+        }
+        target = child;
+        child.once('error', onError);
         child.once('exit', (code, signal) => {
           for (const name of signals) process.removeAllListeners(name);
           if (signal) process.kill(process.pid, signal);
           process.exit(code ?? 1);
         });
       };
-      watchTarget(spawn(command, args, { env, stdio: 'inherit', shell: false }), true);
+      startTarget(command, args, true);
       control.destroy();
       chunks.length = 0;
     }

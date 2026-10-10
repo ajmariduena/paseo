@@ -919,18 +919,39 @@ describe("Claude spawn override", () => {
   );
 
   test.runIf(process.platform !== "win32").each([
-    { strategy: "replace" as const, lookup: "absolute" },
-    { strategy: "supervise" as const, lookup: "absolute" },
-    { strategy: "supervise" as const, lookup: "PATH" },
+    { strategy: "replace" as const, lookup: "absolute", execFormatError: "native" },
+    { strategy: "supervise" as const, lookup: "absolute", execFormatError: "native" },
+    { strategy: "supervise" as const, lookup: "PATH", execFormatError: "native" },
+    { strategy: "supervise" as const, lookup: "absolute", execFormatError: "injected" },
+    { strategy: "supervise" as const, lookup: "PATH", execFormatError: "injected" },
   ])(
-    "the $strategy launch gate preserves a script without a shebang via $lookup",
-    async ({ strategy, lookup }) => {
+    "the $strategy launch gate preserves a script without a shebang via $lookup ($execFormatError)",
+    async ({ strategy, lookup, execFormatError }) => {
       const home = await mkdtemp(path.join(tmpdir(), "paseo launch script-"));
       const script = path.join(home, "provider-fixture");
       await writeFile(script, "printf '%s' \"$1\"", { mode: 0o700 });
       const shadow = path.join(home, "shadow");
       await mkdir(shadow);
       await writeFile(path.join(shadow, "provider-fixture"), "exit 42", { mode: 0o700 });
+      if (execFormatError === "injected") {
+        const spawnProcess = spawnUtils.spawnProcess;
+        vi.spyOn(spawnUtils, "spawnProcess").mockImplementationOnce((command, args, options) => {
+          expect(args[1]).toBe("-e");
+          const patched = [...args];
+          // Exercise Node's real synchronous error conversion on Linux too; only
+          // the first native spawn result is injected. The shell and IPC are real.
+          patched[2] =
+            `
+            const ProcessHandle = process.binding('process_wrap').Process;
+            const nativeSpawn = ProcessHandle.prototype.spawn;
+            ProcessHandle.prototype.spawn = function(options) {
+              ProcessHandle.prototype.spawn = nativeSpawn;
+              return -require('node:os').constants.errno.ENOEXEC;
+            };
+          ` + args[2];
+          return spawnProcess(command, patched, options);
+        });
+      }
       const launch = spawnGatedClaudeProcess({
         strategy,
         cwd: shadow,
@@ -940,11 +961,13 @@ describe("Claude spawn override", () => {
       });
       const exited = once(launch.child, "close");
       let output = "";
+      let errors = "";
       launch.child.stdout!.on("data", (chunk: Buffer) => (output += chunk.toString()));
+      launch.child.stderr!.on("data", (chunk: Buffer) => (errors += chunk.toString()));
       try {
         await launch.ready;
         await launch.start();
-        expect(await exited).toEqual([0, null]);
+        expect(await exited, errors).toEqual([0, null]);
         expect(output).toBe('quoted " argument; $(exit 42)');
       } finally {
         launch.child.kill("SIGKILL");
