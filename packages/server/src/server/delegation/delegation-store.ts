@@ -2,10 +2,19 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 
-import { writeJsonFileAtomic } from "../atomic-file.js";
+import { writeJsonFileAtomic, syncFilePublication } from "../atomic-file.js";
+import { HandoffBlobSchema } from "@getpaseo/protocol/handoff";
 
 const DeliveryStateSchema = z.enum(["pending", "claimed", "acknowledged", "delivered", "disposed"]);
 const TaskStatusSchema = z.enum(["running", "completed", "failed", "cancelled", "interrupted"]);
+const HandoffSettlementSchema = z.object({
+  transferId: z.string().uuid(),
+  status: TaskStatusSchema.exclude(["running"]),
+  result: z.string(),
+  resultTruncated: z.boolean(),
+  history: HandoffBlobSchema,
+  pendingChildTaskIds: z.array(z.string()).max(1000),
+});
 
 const DelegationTaskSchema = z.object({
   id: z.string(),
@@ -20,6 +29,7 @@ const DelegationTaskSchema = z.object({
   status: TaskStatusSchema,
   result: z.string().nullable(),
   resultTruncated: z.boolean(),
+  handoffSettlement: HandoffSettlementSchema.optional(),
   completionDelivery: z.object({
     state: DeliveryStateSchema,
     observedByRunKey: z.string().nullable(),
@@ -63,6 +73,7 @@ export type DelegationDelivery = z.infer<typeof DeliverySchema>;
 export type DelegationCohort = z.infer<typeof CohortSchema>;
 export type DelegationFile = z.infer<typeof DelegationFileSchema>;
 export type TerminalTaskStatus = Exclude<DelegationTaskStatus, "running">;
+export type HandoffSettlement = z.infer<typeof HandoffSettlementSchema>;
 
 const FINAL_DELIVERY_STATES = new Set(["acknowledged", "delivered", "disposed"]);
 const RESULT_BYTE_LIMIT = 64 * 1024;
@@ -100,6 +111,7 @@ export interface NewDelegationTask {
 export interface TaskTerminal {
   status: TerminalTaskStatus;
   result: string;
+  resultTruncated?: boolean;
   /** False removes the task from wakes, for a child that left its parent. */
   wake: boolean;
 }
@@ -331,6 +343,35 @@ export class DelegationStore {
     return task;
   }
 
+  /** Bind the stopped execution before the agent can resume; descendants may finish later. */
+  async checkpointHandoffResults(
+    parentAgentId: string,
+    childAgentId: string,
+    settlement: HandoffSettlement,
+  ): Promise<void> {
+    const capped = capResult(settlement.result);
+    const input = HandoffSettlementSchema.parse({
+      ...settlement,
+      ...capped,
+      resultTruncated: settlement.resultTruncated || capped.resultTruncated,
+    });
+    await this.mutateExisting(
+      parentAgentId,
+      undefined,
+      (file) => {
+        for (const task of Object.values(file.tasks)) {
+          if (
+            task.childAgentId === childAgentId &&
+            task.status === "running" &&
+            !isDeliveryFinal(task)
+          )
+            task.handoffSettlement ??= input;
+        }
+      },
+      true,
+    );
+  }
+
   /** Records a running task's terminal state and plans its wake in the same write. */
   async finalizeTask(
     parentAgentId: string,
@@ -349,6 +390,7 @@ export class DelegationStore {
         completedAt: now,
         updatedAt: now,
       });
+      task.resultTruncated ||= terminal.resultTruncated === true;
       if (!terminal.wake && !isDeliveryFinal(task)) {
         setDeliveryState(task, "disposed", now);
       }
@@ -569,7 +611,7 @@ export class DelegationStore {
     return this.serialize(filePath, async () => {
       const file = (await this.read(parentAgentId)) ?? emptyFile(parentAgentId);
       const result = apply(file);
-      await writeJsonFileAtomic(filePath, file);
+      await this.writeParent(filePath, file);
       return result;
     });
   }
@@ -578,13 +620,14 @@ export class DelegationStore {
     parentAgentId: string,
     absent: T,
     apply: (file: DelegationFile) => T,
+    durable = false,
   ): Promise<T> {
     const filePath = this.filePath(parentAgentId);
     return this.serialize(filePath, async () => {
       const file = await this.read(parentAgentId);
       if (!file) return absent;
       const result = apply(file);
-      await writeJsonFileAtomic(filePath, file);
+      await this.writeParent(filePath, file, durable);
       return result;
     });
   }
@@ -596,6 +639,16 @@ export class DelegationStore {
       apply(index);
       await writeJsonFileAtomic(indexPath, index);
     });
+  }
+
+  private async writeParent(
+    filePath: string,
+    file: DelegationFile,
+    durable = false,
+  ): Promise<void> {
+    await writeJsonFileAtomic(filePath, file);
+    if (durable || Object.values(file.tasks).some((task) => task.handoffSettlement))
+      await syncFilePublication(filePath, path.dirname(this.directory));
   }
 }
 

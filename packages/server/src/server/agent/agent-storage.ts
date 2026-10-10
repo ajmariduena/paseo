@@ -133,6 +133,7 @@ const STORED_AGENT_SCHEMA = z.object({
       transferId: z.string().uuid(),
       retainedAt: z.string().datetime(),
       history: HandoffBlobSchema.optional(),
+      delegationsPending: z.boolean().optional(),
     })
     .optional(),
   runtimeGeneration: RuntimeGenerationSchema.optional(),
@@ -781,6 +782,7 @@ export class AgentStorage {
           handoffRetention: record.handoffRetention ?? {
             transferId,
             retainedAt: new Date().toISOString(),
+            delegationsPending: true,
           },
         };
       },
@@ -794,6 +796,8 @@ export class AgentStorage {
       agentId,
       (record) => {
         if (!record) throw new Error("Retained conversation is unavailable");
+        if (record.handoffRetention?.delegationsPending !== false && record.handoffRetention)
+          throw new Error("Retained delegation results must be checkpointed before continuation");
         return { ...record, handoffRetention: undefined };
       },
       this.syncPublication,
@@ -811,7 +815,37 @@ export class AgentStorage {
       (record) => {
         if (!record?.handoffRetention || record.lastStatus !== "closed")
           throw new Error("Retained history requires a stopped conversation");
-        return { ...record, handoffRetention: { ...record.handoffRetention, history: input } };
+        return {
+          ...record,
+          handoffRetention: {
+            ...record.handoffRetention,
+            history: input,
+            delegationsPending: true,
+          },
+        };
+      },
+      this.syncPublication,
+    );
+  }
+
+  async checkpointRetainedDelegations(
+    agentId: string,
+    expectedHistory: z.infer<typeof HandoffBlobSchema>,
+  ): Promise<void> {
+    await this.load();
+    await this.queueRecordMutation(
+      agentId,
+      (record) => {
+        if (
+          !record?.handoffRetention ||
+          record.lastStatus !== "closed" ||
+          !isDeepStrictEqual(record.handoffRetention.history, expectedHistory)
+        )
+          throw new Error("Retained conversation changed during delegation checkpoint");
+        return {
+          ...record,
+          handoffRetention: { ...record.handoffRetention, delegationsPending: false },
+        };
       },
       this.syncPublication,
     );

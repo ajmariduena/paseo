@@ -148,7 +148,8 @@ resume continues it. Publish that marker before stopping its runtime; snapshots 
 runtime opening refuses it, including after restart. It is separate from the workspace's lasting
 cleanup protection. A content-addressed local history checkpoint lets clients read the stopped
 conversation without opening a provider. Held system notifications append to its local queue;
-they do not belong to the transferred archive.
+they do not belong to the transferred archive. Explicit continuation waits for the
+[delegation checkpoint](#delegation-store), so a new turn cannot replace an earlier result.
 
 This seal protects records; it does not prove that all provider callbacks or OS processes stopped.
 The remaining certification requirements live in the
@@ -732,6 +733,14 @@ One file per parent agent, because every transition (finalize a child's result, 
 - **Cohort:** keyed by the parent's run key at delegation time (an in-memory token; `idle:{taskId}` when the parent was idle). It holds at most one outstanding wake. The wake's `messageId`, `wake:{parentId}:{runKey}:{generation}`, is stable so a re-delivered wake reuses its timeline row.
 
 `by-child.json` is written after the parent file. A missing entry is recoverable by scanning the parent files.
+
+For a source-retained child, bind its stopped outcome, history and outstanding child tasks to
+the parent's original task before allowing continuation. Synchronize that checkpoint and later
+writes which preserve it. Descendants may finish elsewhere while the stopped child stays held;
+their completion releases the saved result without opening its provider. New turns and new
+descendants do not change that original obligation. Recovery scans parent files rather than
+trusting the index, and refuses missing or damaged history. Ordinary delegation still waits for
+the child's aggregation turn; retaining a child is the explicit boundary that freezes its result.
 
 ---
 

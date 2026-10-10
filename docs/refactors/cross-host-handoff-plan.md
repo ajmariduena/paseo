@@ -600,6 +600,11 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   admissions drain before workspace retention is published; runners drain after their agents stop.
   Retained definitions stay paused, and retained conversations require a human prompt or explicit
   queue resume. Their stopped history remains readable after restart without opening a provider.
+  Retained delegation results now bind to that stopped history before continuation; independent
+  descendants can finish later without reloading the retained child or substituting a newer turn.
+  Controlled-provider regressions cover continuation, service recovery before and after the
+  checkpoint, damaged history and failed synchronization. See the
+  [delegation checkpoint contract](../data-model.md#delegation-store).
   Capture still refuses unfinished runs, retained conversations without a recorded Claude session,
   ancestor-directory schedules, outside heartbeat owners, damaged
   inventory, more than 1,000 reviewed schedules or metadata beyond 32 MiB. Two-daemon tests cover
@@ -613,8 +618,7 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   [lifecycle cancellation](../agent-lifecycle.md#cancellation). Job cleanup rechecks the scheduled
   source's ownership before automatic archive, including during startup recovery. A worktree outside
   that directory must remain available when the source is fenced.
-  Moving a schedule's parent directory while its job runs in a workspace outside the transfer, and
-  recovery of uncertain run outcomes after a crash, remain open. An admitted runner can still
+  Recovery of uncertain run outcomes after a crash remains open. An admitted runner can still
   prevent draining, but the preparation wait expires with
   ownership retained under the [recovery contract](#ownership-and-recovery). See the scheduler cases in the
   [stopped-work evidence](../qa-evidence/handoff-writers-review.txt).

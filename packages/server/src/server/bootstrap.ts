@@ -20,6 +20,7 @@ import { HandoffArchiveStore } from "./handoff/archive.js";
 import { createHandoffPublication } from "./handoff/publication.js";
 import { createHandoffDestination, type HandoffDestination } from "./handoff/destination.js";
 import { HandoffSource } from "./handoff/source.js";
+import { readRetainedHandoffHistory } from "./handoff/history.js";
 
 export type ListenTarget =
   | { type: "tcp"; host: string; port: number }
@@ -1110,6 +1111,7 @@ export async function createPaseoDaemon(
     });
   }
   const agentManager = new AgentManager({
+    beforeRetainedContinuation: (agentId) => delegations.checkpointRetainedResults(agentId),
     paseoHome: config.paseoHome,
     handoffOwnership,
     pluginLifecycle: pluginRuntime,
@@ -1134,6 +1136,12 @@ export async function createPaseoDaemon(
     logger,
   });
   const delegations = new DelegationService({
+    readRetainedHistory: (agentId, history) =>
+      readRetainedHandoffHistory(
+        path.join(config.paseoHome, "handoff", "source"),
+        agentId,
+        history,
+      ),
     store: new DelegationStore(path.join(config.paseoHome, "delegations")),
     agentManager,
     agentStorage,
@@ -1663,6 +1671,7 @@ export async function createPaseoDaemon(
   logger.info({ elapsed: elapsed() }, "Schedule service initialized");
   await handoffDestination.recoverActivations();
   const handoffSource = new HandoffSource({
+    delegations,
     schedules: scheduleService,
     pullRequestWatches,
     queues: agentManager.messageQueue,

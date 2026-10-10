@@ -189,6 +189,18 @@ describe("AgentStorage", () => {
       await expect(cold.beginRuntimeGeneration(retained!)).rejects.toMatchObject({
         code: "handoff_retained",
       });
+      await expect(cold.continueAfterHandoff(agent.id)).rejects.toThrow(
+        "delegation results must be checkpointed",
+      );
+      const history = { sha256: "a".repeat(64), size: 100 };
+      await cold.checkpointRetainedHistory(agent.id, history);
+      await expect(
+        cold.checkpointRetainedDelegations(agent.id, { ...history, size: 101 }),
+      ).rejects.toThrow("changed during delegation checkpoint");
+      await expect(cold.continueAfterHandoff(agent.id)).rejects.toThrow(
+        "delegation results must be checkpointed",
+      );
+      await cold.checkpointRetainedDelegations(agent.id, history);
       await cold.continueAfterHandoff(agent.id);
       await cold.applySnapshot(agent);
       expect(

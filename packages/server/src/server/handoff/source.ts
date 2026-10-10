@@ -65,14 +65,14 @@ import type { HandoffDestination } from "./destination.js";
 import type { PullRequestWatcher } from "../pull-request-watch/watcher.js";
 import type { AgentQueueRunner } from "../agent-queue/runner.js";
 import type { ScheduleService } from "../schedule/service.js";
+import type { DelegationService } from "../delegation/delegation-service.js";
 import { HANDOFF_QUEUE_MAX_BYTES, handoffQueueBytes } from "../agent-queue/store.js";
 import {
   writeHandoffHistory,
   readHandoffHistory,
   fetchHandoffHistory,
   HandoffHistorySchema,
-  HANDOFF_HISTORY_MAX_BYTES,
-  parseHandoffHistory,
+  readRetainedHandoffHistory,
 } from "./history.js";
 import type { AgentTimelineFetchOptions } from "../agent/agent-timeline-store-types.js";
 import {
@@ -124,6 +124,7 @@ const PreparedSchema = z.object({
 });
 type PreparedSource = z.infer<typeof PreparedSchema>;
 interface SourceOptions {
+  delegations: Pick<DelegationService, "checkpointRetainedResults">;
   schedules: Pick<
     ScheduleService,
     "reviewForHandoff" | "pauseForHandoff" | "exportForHandoff" | "estimateForHandoff"
@@ -721,18 +722,16 @@ export class HandoffSource {
           "stop_uncertain",
           "Retained conversation history is not ready; retry source preparation",
         );
-      const bytes = await readBoundedFile(
-        path.join(this.options.directory, "retained", `${blob.sha256}.json`),
-        HANDOFF_HISTORY_MAX_BYTES,
+      const history = await readRetainedHandoffHistory(this.options.directory, agentId, blob).catch(
+        (error: unknown) =>
+          refuse(
+            "source_changed",
+            error instanceof Error ? error.message : "Retained conversation history is unavailable",
+          ),
       );
-      if (
-        bytes.length !== blob.size ||
-        createHash("sha256").update(bytes).digest("hex") !== blob.sha256
-      )
-        refuse("source_changed", "Retained conversation history is damaged");
       return {
         record: retained,
-        timeline: fetchHandoffHistory(parseHandoffHistory(bytes, agentId), options),
+        timeline: fetchHandoffHistory(history, options),
       };
     }
     const source = this.options.ownership.forAgent(agentId);
@@ -831,7 +830,10 @@ export class HandoffSource {
     await this.stopWatches(source);
     await this.options.schedules.pauseForHandoff(source);
     for (const workspace of source.stoppedWorkReview?.retainedWorkspaces ?? []) {
-      for (const agentId of workspace.agentIds) await this.checkpointRetainedHistory(agentId);
+      for (const agentId of workspace.agentIds) {
+        await this.checkpointRetainedHistory(agentId);
+        await this.options.delegations.checkpointRetainedResults(agentId);
+      }
     }
   }
 
@@ -1216,7 +1218,10 @@ export class HandoffSource {
           if (this.options.agentManager.getAgent(agentId))
             refuse("stop_uncertain", "A retained provider runtime is still loaded");
           const record = await this.options.agents.checkpointClosedAgent(agentId);
-          if (!record.handoffRetention?.history)
+          if (
+            !record.handoffRetention?.history ||
+            record.handoffRetention.delegationsPending !== false
+          )
             refuse("stop_uncertain", "Retained history has not been checkpointed");
           await this.fetchTimeline(agentId, { direction: "tail", limit: 1 });
         }

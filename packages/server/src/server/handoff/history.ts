@@ -1,4 +1,7 @@
 import { z } from "zod";
+import { createHash } from "node:crypto";
+import path from "node:path";
+import { HandoffBlobSchema, type HandoffBlob } from "@getpaseo/protocol/handoff";
 import { PromptAnnotationCheckpointSchema } from "../agent/prompt-annotations.js";
 import { AgentTimelineItemPayloadSchema } from "@getpaseo/protocol/messages";
 import { InMemoryAgentTimelineStore } from "../agent/agent-timeline-store.js";
@@ -24,6 +27,33 @@ export const HandoffHistorySchema = z.object({
     .max(100_000),
 });
 export type HandoffHistory = z.infer<typeof HandoffHistorySchema>;
+
+export async function readRetainedHandoffHistory(
+  directory: string,
+  agentId: string,
+  history: HandoffBlob,
+): Promise<HandoffHistory> {
+  const blob = HandoffBlobSchema.parse(history);
+  const bytes = await readBoundedFile(
+    path.join(directory, "retained", `${blob.sha256}.json`),
+    HANDOFF_HISTORY_MAX_BYTES,
+  );
+  if (
+    bytes.length !== blob.size ||
+    createHash("sha256").update(bytes).digest("hex") !== blob.sha256
+  )
+    throw new Error("Retained conversation history is damaged");
+  return parseHandoffHistory(bytes, agentId);
+}
+
+export function lastHandoffAssistantMessage(history: HandoffHistory): string | null {
+  const chunks: string[] = [];
+  for (const row of history.rows.toReversed()) {
+    if (row.item.type === "assistant_message") chunks.push(row.item.text);
+    else if (chunks.length) break;
+  }
+  return chunks.length ? chunks.toReversed().join("") : null;
+}
 
 export async function writeHandoffHistory(file: string, history: HandoffHistory): Promise<void> {
   const parsed = HandoffHistorySchema.parse(history);

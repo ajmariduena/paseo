@@ -390,6 +390,7 @@ function createSourceFixture(
   });
   const captures = path.join(root, "source-captures");
   const source = new HandoffSource({
+    delegations: { checkpointRetainedResults: async () => {} },
     schedules: {
       reviewForHandoff: async () => [],
       pauseForHandoff: async () => {},

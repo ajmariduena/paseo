@@ -289,7 +289,10 @@ export interface ControlledAgentInput {
  * `codex` provider, non-steerable ones on `claude`.
  */
 export function createControlledHost(
-  options: Pick<AgentManagerOptions, "handoffOwnership" | "messageQueueStore"> = {},
+  options: Pick<
+    AgentManagerOptions,
+    "handoffOwnership" | "messageQueueStore" | "beforeRetainedContinuation"
+  > = {},
 ): ControlledHost {
   const root = mkdtempSync(join(tmpdir(), "paseo-controlled-host-"));
   const logger = createTestLogger();

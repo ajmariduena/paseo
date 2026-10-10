@@ -435,6 +435,7 @@ export interface CreateAgentOptions {
 export interface AgentManagerOptions {
   paseoHome?: string;
   handoffOwnership?: HandoffOwnership;
+  beforeRetainedContinuation?: (agentId: string) => Promise<void>;
   pluginLifecycle?: PluginLifecycle;
   clients?: ProviderClientMap;
   providerDefinitions?: ProviderEnabledMap;
@@ -1005,10 +1006,16 @@ export class AgentManager {
       providerDefinitions: options.providerDefinitions ?? {},
       clients: options.clients ?? {},
     });
-    this.messageQueue = this.createMessageQueue(options.messageQueueStore);
+    this.messageQueue = this.createMessageQueue(
+      options.messageQueueStore,
+      options.beforeRetainedContinuation,
+    );
   }
 
-  private createMessageQueue(store: AgentQueueStore | undefined): AgentQueueRunner {
+  private createMessageQueue(
+    store: AgentQueueStore | undefined,
+    beforeRetainedContinuation?: (agentId: string) => Promise<void>,
+  ): AgentQueueRunner {
     const queue = new AgentQueueRunner(
       store ?? new AgentQueueStore(null),
       {
@@ -1017,6 +1024,8 @@ export class AgentManager {
           this.withQueueMutation(agentId, operation, "retained_notification"),
         isHandoffHeld: (agentId) => Boolean(this.handoffOwnership?.holdsAgent(agentId)),
         beforeExplicitResume: async (agentId) => {
+          if ((await this.registry?.get(agentId))?.handoffRetention)
+            await beforeRetainedContinuation?.(agentId);
           await this.registry?.continueAfterHandoff(agentId);
         },
         waitForRunToSettle: (agentId) => this.waitForRunToSettle(agentId),
