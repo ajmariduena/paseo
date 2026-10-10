@@ -416,31 +416,34 @@ export async function readHandoffBundle(
   }
   return { bundle, sessions, previousSessions, queues, schedules };
   async function readQueue(conversation: HandoffBundle["conversations"][number]): Promise<void> {
-    if (conversation.queue) {
-      requireBlob(conversation.queue);
-      queueBytes += conversation.queue.size;
-      if (queueBytes > HANDOFF_QUEUE_MAX_BYTES)
-        reject("invalid_artifact", "Queued messages exceed the handoff byte limit");
-      const queue = await readHandoffQueue(
-        path.join(archive.blobsDirectory, conversation.queue.sha256),
-      );
-      assertHandoffQueueWorkspace(queue, bundle.sourceCwd);
-      for (const { blob } of queue.files ?? []) {
-        requireBlob(blob);
-        if (!queueFiles.has(blob.sha256)) queueBytes += blob.size;
-        queueFiles.add(blob.sha256);
-      }
-      if (queueBytes > HANDOFF_QUEUE_MAX_BYTES)
-        reject("invalid_artifact", "Queued messages exceed the handoff byte limit");
-      for (const entry of queue.entries) {
-        if (entry.senderAgentId && !expected.sourceAgentIds.includes(entry.senderAgentId))
-          reject(
-            "invalid_artifact",
-            "Queued message sender is outside the transferred conversations",
-          );
-      }
-      queues.set(conversation.sourceAgentId, queue);
+    // COMPAT(handoffLegacyQueue): added in v0.11.1, remove after 2027-04-10 once retained pre-v4 transfers finish.
+    if (!conversation.queue) {
+      queues.set(conversation.sourceAgentId, { version: 1, entries: [] });
+      return;
     }
+    requireBlob(conversation.queue);
+    queueBytes += conversation.queue.size;
+    if (queueBytes > HANDOFF_QUEUE_MAX_BYTES)
+      reject("invalid_artifact", "Queued messages exceed the handoff byte limit");
+    const queue = await readHandoffQueue(
+      path.join(archive.blobsDirectory, conversation.queue.sha256),
+    );
+    assertHandoffQueueWorkspace(queue, bundle.sourceCwd);
+    for (const { blob } of queue.files ?? []) {
+      requireBlob(blob);
+      if (!queueFiles.has(blob.sha256)) queueBytes += blob.size;
+      queueFiles.add(blob.sha256);
+    }
+    if (queueBytes > HANDOFF_QUEUE_MAX_BYTES)
+      reject("invalid_artifact", "Queued messages exceed the handoff byte limit");
+    for (const entry of queue.entries) {
+      if (entry.senderAgentId && !expected.sourceAgentIds.includes(entry.senderAgentId))
+        reject(
+          "invalid_artifact",
+          "Queued message sender is outside the transferred conversations",
+        );
+    }
+    queues.set(conversation.sourceAgentId, queue);
   }
   function requireBlob(blob: HandoffBlob): void {
     if (inventory.get(blob.sha256) !== blob.size)

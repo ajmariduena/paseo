@@ -116,28 +116,27 @@ export function createHandoffPublication(stores: PublicationStores): HandoffPubl
           }),
         );
         const queue = queues.get(mapping.sourceAgentId);
-        if (queue) {
-          const remapped = {
-            ...queue,
-            entries: queue.entries.map((entry) => {
-              if (!entry.senderAgentId) return entry;
-              const sender = record.agentMappings.find(
-                (item) => item.sourceAgentId === entry.senderAgentId,
-              );
-              if (!sender) throw new Error("Queued sender is outside the handoff");
-              return remapHandoffQueueEntry(entry, sender.destinationAgentId);
-            }),
-          };
-          await stores.queues.installHandoffQueue(
-            mapping.destinationAgentId,
-            record.reservationId,
-            remapped,
-            {
-              blobsDirectory: queueBlobsDirectory,
-              workspace: { sourceCwd: bundle.sourceCwd, destinationCwd: record.destinationCwd },
-            },
-          );
-        }
+        if (!queue) throw new Error("Captured conversation queue is missing");
+        const remapped = {
+          ...queue,
+          entries: queue.entries.map((entry) => {
+            if (!entry.senderAgentId) return entry;
+            const sender = record.agentMappings.find(
+              (item) => item.sourceAgentId === entry.senderAgentId,
+            );
+            if (!sender) throw new Error("Queued sender is outside the handoff");
+            return remapHandoffQueueEntry(entry, sender.destinationAgentId);
+          }),
+        };
+        await stores.queues.installHandoffQueue(
+          mapping.destinationAgentId,
+          record.reservationId,
+          remapped,
+          {
+            blobsDirectory: queueBlobsDirectory,
+            workspace: { sourceCwd: bundle.sourceCwd, destinationCwd: record.destinationCwd },
+          },
+        );
       }
       await stores.schedules.installHandoffSchedules({
         snapshot: schedules,

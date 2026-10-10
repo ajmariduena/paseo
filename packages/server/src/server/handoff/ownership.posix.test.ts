@@ -1018,6 +1018,110 @@ test.each(["native", "context"] as const)(
   },
 );
 
+test.each(["native", "context"] as const)(
+  "%s legacy activation without queue metadata stays hidden until its empty Stop is durable",
+  async (continuationMode) => {
+    let current: HandoffDestination;
+    let failSync = true;
+    const logger = createTestLogger();
+    const isVisible = (id: string) => current.isIdentityVisible(id);
+    const queueDirectory = path.join(root, "agent-queues");
+    function createStores() {
+      const projects = new FileBackedProjectRegistry(path.join(root, "projects.json"), logger, {
+        isVisible,
+      });
+      const workspaces = new FileBackedWorkspaceRegistry(
+        path.join(root, "workspaces.json"),
+        logger,
+        { isVisible },
+      );
+      const agents = new AgentStorage(path.join(root, "agents"), logger, isVisible);
+      const queues = new AgentQueueStore(queueDirectory, {
+        sync: async (file, publicationRoot) => {
+          await syncFilePublication(file, publicationRoot);
+          if (failSync) throw new Error("empty Stop acknowledgement lost");
+        },
+      });
+      const publication = createHandoffPublication({
+        projects,
+        workspaces,
+        agents,
+        queues,
+        schedules: { installHandoffSchedules: async () => {} },
+        agentManager: { publishStoredAgent: async () => {} },
+      });
+      return { projects, workspaces, agents, queues, publication };
+    }
+    const first = createStores();
+    const fixture = await nativeDestinationFixture({
+      continuationMode,
+      includeHistory: true,
+      publication: first.publication,
+    });
+    current = fixture.destination;
+    const { transferId, reservation, manifest, options } = fixture;
+    const captured = await options.archives.withVerifiedArchive(transferId, (archive) =>
+      readHandoffBundle(archive, {
+        sourceServerId,
+        sourceWorkspaceId: "source-workspace",
+        sourceAgentIds: ["source-agent"],
+        manifestDigest: manifest.entrypoint.sha256,
+      }),
+    );
+    expect(captured.bundle.version).toBe(3);
+    expect(captured.bundle.conversations[0].queue).toBeUndefined();
+    await current.stage(transferId);
+    await ownership.markReady(transferId, manifest.entrypoint.sha256);
+    const receipt = await ownership.release(
+      transferId,
+      {
+        version: 1,
+        transferId,
+        sourceServerId,
+        destinationServerId: options.serverId,
+        reservationId: reservation.reservationId,
+        manifestDigest: manifest.entrypoint.sha256,
+      },
+      async () => {},
+    );
+    await current.acceptRelease(transferId, receipt);
+    await expect(current.activate(transferId)).rejects.toThrow("empty Stop acknowledgement lost");
+    expect(await first.agents.list()).toEqual([]);
+    expect(await first.workspaces.list()).toEqual([]);
+    expect(await first.projects.list()).toEqual([]);
+
+    failSync = false;
+    const recovered = createStores();
+    await recovered.queues.load();
+    current = new HandoffDestination({ ...options, publication: recovered.publication });
+    await current.initialize();
+    await current.recoverActivations();
+    const active = await current.activate(transferId);
+    const agentId = reservation.agentMappings[0].destinationAgentId;
+    expect(active.state).toBe("active");
+    expect((await recovered.agents.list()).map((agent) => agent.id)).toEqual([agentId]);
+    const rebootedQueues = new AgentQueueStore(queueDirectory);
+    await rebootedQueues.load();
+    await rebootedQueues.holdForRestart(agentId);
+    expect(rebootedQueues.isHeldForUserStop(agentId)).toBe(true);
+    await rebootedQueues.enqueue(
+      agentId,
+      {
+        id: "late-result",
+        origin: "delegation_wake",
+        senderAgentId: null,
+        prompt: null,
+        textPreview: "Result arrived after activation",
+        wake: { cohortKey: "cohort", generation: 1 },
+      },
+      new Date().toISOString(),
+    );
+    expect(await rebootedQueues.dequeueNext(agentId)).toBeNull();
+    await rebootedQueues.resume(agentId);
+    expect((await rebootedQueues.dequeueNext(agentId))?.entry.id).toBe("late-result");
+  },
+);
+
 test.each([
   "before records",
   "partial records",

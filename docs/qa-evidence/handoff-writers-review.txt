@@ -706,6 +706,155 @@ atomic restart behavior is covered by the portable cases but was not run locally
 POSIX synchronization cases are explicitly skipped there. No browser run was needed for this
 server-only change. Queues written before this change cannot recover a stop that was never stored.
 
+Legacy activation — the next regression used a captured version 3 archive, which has no queue
+snapshot. Activation reached active without publishing any Stop and skipped an injected queue
+publication failure. The archive reader now supplies an empty queue for these older conversations;
+publication requires every conversation's queue and writes its Stop before visibility. The two
+native/context cases use real signed ownership release, archive validation, destination journals,
+registries and queue stores. Failed synchronization keeps every registry hidden. Fresh instances
+recover activation, another queue reload retains Stop, and a later wake waits for explicit resume.
+All 56 cases in the changed ownership test file passed. Root typecheck, lint and formatting passed.
+These fixtures do not launch a provider or establish physical-host continuity.
+
+Legacy activation recovery (raw command output):
+
+Pre-fix: npx vitest run src/server/handoff/ownership.posix.test.ts -t "legacy activation without queue metadata" --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/handoff/ownership.posix.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: 🛠️  run anywhere with `dotenvx run -- yourcommand`
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  override existing env vars with { override: true }
+
+ ❯ src/server/handoff/ownership.posix.test.ts (56 tests | 1 failed | 54 skipped) 147ms
+   × native legacy activation without queue metadata stays hidden until its empty Stop is durable 145ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/handoff/ownership.posix.test.ts > native legacy activation without queue metadata stays hidden until its empty Stop is durable
+AssertionError: promise resolved "{ …(22) }" instead of rejecting
+
+- Expected
++ Received
+
+- Error {
+-   "message": "rejected promise",
++ {
++   "activationAt": "2026-10-10T14:56:16.528Z",
++   "agentMappings": [
++     {
++       "destinationAgentId": "d9f5938c-d306-4efd-96b7-b60c6ff447de",
++       "sourceAgentId": "source-agent",
++     },
++   ],
++   "binding": {
++     "manifest": {
++       "blobs": [
++         {
++           "sha256": "34f89ada57a6c831fdb0b090f4de79959af2b87d242d25a30c73ce1469f7c1dd",
++           "size": 585,
++         },
++         {
++           "sha256": "b3a91f6ada38a66bf81a3eee7e8fde45373032197004163293f6e76d186f7fc5",
++           "size": 241,
++         },
++         {
++           "sha256": "c46bd1c34981925a0a136476db7d823297eb9c68f840f96ff68963bab0ee57a4",
++           "size": 35,
++         },
++         {
++           "sha256": "ccadcd4b308359481edacb878a28264bd11d00f07499ea79323be2fdbcb0ff42",
++           "size": 132,
++         },
++         {
++           "sha256": "cf23fd83a55ad4b232c8ce09f762b7bf614c91725ae0f3fe29a33029f9a48e16",
++           "size": 216,
++         },
++       ],
++       "entrypoint": {
++         "sha256": "34f89ada57a6c831fdb0b090f4de79959af2b87d242d25a30c73ce1469f7c1dd",
++         "size": 585,
++       },
++       "version": 1,
++     },
++     "publicKey": "MCowBQYDK2VwAyEAki82pH4cXCBY/A+EUgsNgBAtoll0Ki99USbjZb9TJj4=",
++   },
++   "cancellationProof": null,
++   "checkoutIdentity": {
++     "dev": "39",
++     "ino": "823235",
++   },
++   "claudeRuntime": {
++     "cliVersion": "2.1.295",
++     "configDir": "/tmp/paseo-handoff-release-DlqO1W/destination-claude",
++   },
++   "cleanupComplete": false,
++   "continuationMode": "native",
++   "conversationModes": undefined,
++   "destinationCwd": "/tmp/paseo-handoff-release-DlqO1W/paseo-wks_953bc135a13a404a",
++   "destinationParent": "/tmp/paseo-handoff-release-DlqO1W",
++   "preparedConversations": [
++     {
++       "mode": "native",
++       "runtime": {
++         "cliVersion": "2.1.295",
++         "configDir": "/tmp/paseo-handoff-release-DlqO1W/destination-claude",
++       },
++       "sessionId": "5988d18c-d8b6-4bd5-8c34-72a75f7cabb3",
++       "sourceAgentId": "source-agent",
++       "title": "Imported conversation",
++     },
++   ],
++   "projectId": "prj_62b8847dce5d5113",
++   "receipt": {
++     "destinationServerId": "destination-host",
++     "manifestDigest": "34f89ada57a6c831fdb0b090f4de79959af2b87d242d25a30c73ce1469f7c1dd",
++     "reservationId": "bd16ebd3-3992-47ec-87c0-65340f22a4e8",
++     "signature": "jzM9aEeq08fEzeBrvZS8GoQz7rPKE37kfV7b8AzC3WqSRIPmP3vLPByTv6Gd0KcwyZGHOOBxMa6JzzJdOXB3Aw==",
++     "sourceServerId": "source-host",
++     "transferId": "1bfce668-c8f0-4551-8323-e351e2fc76a4",
++     "version": 1,
++   },
++   "reservationId": "bd16ebd3-3992-47ec-87c0-65340f22a4e8",
++   "sourceAgentIds": [
++     "source-agent",
++   ],
++   "sourceServerId": "source-host",
++   "sourceWorkspaceId": "source-workspace",
++   "stagingCwd": "/tmp/paseo-handoff-release-DlqO1W/.paseo-handoff-bd16ebd3-3992-47ec-87c0-65340f22a4e8/checkout",
++   "state": "active",
++   "transferId": "1bfce668-c8f0-4551-8323-e351e2fc76a4",
++   "workspaceId": "wks_953bc135a13a404a",
+  }
+
+ ❯ src/server/handoff/ownership.posix.test.ts:1057:46
+    1055|     }, async () => {});
+    1056|     await current.acceptRelease(transferId, receipt);
+    1057|     await expect(current.activate(transferId)).rejects.toThrow("empty …
+       |                                              ^
+    1058|     expect(await first.agents.list()).toEqual([]);
+    1059|     expect(await first.workspaces.list()).toEqual([]);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 54 skipped (56)
+   Start at  16:56:14
+   Duration  1.85s (transform 1.04s, setup 40ms, import 1.54s, tests 147ms, environment 0ms)
+
+
+npx vitest run src/server/handoff/ownership.posix.test.ts --bail=1
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  56 passed (56)
+   Start at  16:57:40
+   Duration  5.84s (transform 1.79s, setup 94ms, import 2.56s, tests 3.00s, environment 0ms)
+
+
 Empty-queue recovery (raw command output):
 
 Pre-fix: npx vitest run src/server/agent-queue/store.test.ts -t "empty user-stop hold survives" --bail=1
