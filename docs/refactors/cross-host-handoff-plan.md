@@ -268,7 +268,12 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   refreshes and carried-note/context settlement; timeouts retain pending work. A handler or settlement
   fault still stops the provider but refuses a closed snapshot. Its open generation remains unresolved
   after restart and a later clean generation. Client delivery errors are isolated per subscriber.
-  This does not repair those faults or provide durable semantic obligations. The remaining manager
+  Restart recovery now retains its intent file after pending-note failures, including a declined
+  continuation. Later shutdowns preserve unresolved background notes; late continuations cannot
+  delete newer shutdown input. POSIX note acknowledgement synchronizes publication before intent
+  consumption. A dispatch receipt alone cannot clear an unsaved note. This repairs that storage
+  obligation; it does not establish native delivery or repair manager event/settlement faults.
+  Durable semantic obligations, the remaining manager
   descendants, record revision guards, presentation coverage and durable process-stop
   recovery also remain open under the
   [conversation persistence contract](#conversation-persistence-contract).

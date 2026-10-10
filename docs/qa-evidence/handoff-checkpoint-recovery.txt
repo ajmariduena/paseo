@@ -1,5 +1,27 @@
 Handoff persistence recovery foundations — 2026-10-10
 
+Restart intent retention and note repair:
+- A failed pending-note write reproduced consumption of the only recovery input. Both idle
+  agents and declined continuations now retain the intent, report the failure and retry from
+  the saved tasks. A second shutdown preserves unresolved tasks; a new storage instance
+  can save the pending note without sending a provider prompt.
+- A held continuation keeps its intent until dispatch settles. Publishing a newer shutdown
+  during that wait retains both task inventories, and the older completion cannot delete it.
+- A completed receipt for a dropped dispatch reproduced loss of its failed fallback note on
+  retry. Receipt hits now retain the note: a receipt does not prove native delivery.
+- A failed POSIX synchronization reproduced acknowledgement of an unsynchronized note.
+  The write now retains its immutable candidate and withholds acknowledgement until repair
+  synchronizes it. Intent publication also synchronizes its file and directories on POSIX.
+- The two changed owning suites pass 45 tests; one Windows-only case is skipped on Linux.
+  Note loss, shutdown overwrite, receipt ambiguity and premature synchronization
+  acknowledgement were reproduced before their fixes. Tests use real AgentStorage and intent files,
+  controlled providers and injected write/synchronization failures. No real provider prompt
+  or main daemon restart was used.
+
+This repairs transfer of restart-note input into storage. It does not prove delivery from
+native history, resolve unknown manager faults, or provide exactly-once note presentation.
+Windows continues using ordinary atomic persistence and cannot certify durable handoff.
+
 Manager runtime work and closure:
 - A held runtime-info lookup reproduced a closed publication before its final metadata
   arrived. Close and reload now join event work and tracked runtime-info/note descendants.

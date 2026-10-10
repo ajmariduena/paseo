@@ -482,23 +482,27 @@ export class AgentStorage {
     });
   }
 
-  /** Adds work to the agent's pending restart note; entries dedupe by id. */
+  /** Acknowledgement lets restart recovery consume its retry input; entries dedupe by id. */
   async addPendingRestartNote(
     agentId: string,
     work: readonly RestartCancelledWork[],
   ): Promise<void> {
     const entries = structuredClone(work);
     await this.load();
-    await this.queueRecordMutation(agentId, (existing) => {
-      if (!existing) {
-        throw new Error(`Agent ${agentId} not found`);
-      }
-      const pending = [...(existing.pendingRestartNote ?? [])];
-      for (const entry of entries) {
-        if (!pending.some((candidate) => candidate.id === entry.id)) pending.push(entry);
-      }
-      return { ...existing, pendingRestartNote: pending };
-    });
+    await this.queueRecordMutation(
+      agentId,
+      (existing) => {
+        if (!existing) {
+          throw new Error(`Agent ${agentId} not found`);
+        }
+        const pending = [...(existing.pendingRestartNote ?? [])];
+        for (const entry of entries) {
+          if (!pending.some((candidate) => candidate.id === entry.id)) pending.push(entry);
+        }
+        return { ...existing, pendingRestartNote: pending };
+      },
+      process.platform === "win32" ? undefined : this.syncPublication,
+    );
   }
 
   /** A completed turn carried the note, so the agent has heard it. */

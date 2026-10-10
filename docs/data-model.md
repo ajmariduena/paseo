@@ -653,7 +653,19 @@ Every `watch_pull_request` watch in one file; each `PullRequestWatchStore` metho
 
 **Path:** `$PASEO_HOME/runtime/restart-intents.json`
 
-Written by a graceful shutdown before agents close, because closing persists every agent as `closed` and the record no longer says which ones were mid-turn. It lists the cut runs (`agentId`, `provider`, in-memory `runKey`, `cutAt`, `stopRequested`, `outOfBand`) and the background tasks every agent held. Boot reads it, adds every agent whose record still says `running` or `initializing` (a crash writes no intents), decides continuations, moves lost background work of agents it does not continue into `pendingRestartNote`, settles delegations, and deletes the file. A continuation's prompt goes through the message receipts under `restart-continuation:{agentId}:{runKey}`, so a repeated boot does not send it twice. Schema: `packages/server/src/server/restart/restart-intent-store.ts`.
+Written by a graceful shutdown before agents close, because closing persists every agent as `closed` and the record no longer says which ones were mid-turn. It lists the cut runs (`agentId`, `provider`, in-memory `runKey`, `cutAt`, `stopRequested`, `outOfBand`) and the background tasks every agent held. Boot adds agents whose records still say `running` or `initializing` (a crash writes no intents), decides continuations and settles delegations. Lost background work for agents it does not continue goes into `pendingRestartNote`. Schema: `packages/server/src/server/restart/restart-intent-store.ts`.
+
+Keep the intent file until continuation dispatch and pending-note writes succeed. A failed write
+leaves retry input on disk; the next shutdown retains those background tasks while replacing the
+cut runs with its current snapshot. A late continuation cannot consume a newer shutdown's file.
+On POSIX, intent publication and pending-note acknowledgement synchronize the file and directories;
+Windows keeps ordinary atomic writes and remains outside durable handoff support.
+
+A continuation uses the receipt `restart-continuation:{agentId}:{runKey}` so a repeated boot does
+not send its prompt twice. That receipt does not distinguish a started dispatch from a dropped one,
+or prove note delivery. Recovery retains its background note on a receipt hit, deduplicating pending
+entries by task id. A note may be repeated after an interrupted recovery; proving delivery from
+native history belongs to the [handoff persistence contract](refactors/cross-host-handoff-plan.md#conversation-persistence-contract).
 
 ---
 

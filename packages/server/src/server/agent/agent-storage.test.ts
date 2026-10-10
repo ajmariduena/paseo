@@ -614,6 +614,33 @@ describe("AgentStorage", () => {
   });
 
   test.skipIf(process.platform === "win32")(
+    "a restart note is acknowledged only after synchronization and repairs its retained input",
+    async () => {
+      let failSync = true;
+      storage = new AgentStorage(storagePath, logger, undefined, async (file, root) => {
+        if (failSync) throw new Error("restart note sync failed");
+        await syncFilePublication(file, root);
+      });
+      const agentId = "restart-note-agent";
+      await storage.applySnapshot(createManagedAgent({ id: agentId }));
+      const note = { kind: "shell", label: "npm run dev", id: "lost-task" };
+
+      await expect(storage.addPendingRestartNote(agentId, [note])).rejects.toThrow(
+        "restart note sync failed",
+      );
+      expect((await storage.get(agentId))?.pendingRestartNote).toBeUndefined();
+      note.label = "mutated after the failed write";
+      failSync = false;
+      await storage.repairPendingPersistence(agentId);
+
+      const reloaded = new AgentStorage(storagePath, logger);
+      expect((await reloaded.get(agentId))?.pendingRestartNote).toEqual([
+        { kind: "shell", label: "npm run dev", id: "lost-task" },
+      ]);
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
     "a renamed handoff record is not acknowledged before synchronization succeeds",
     async () => {
       const record = toStoredAgentRecord(
