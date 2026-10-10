@@ -2957,6 +2957,8 @@ export class AgentManager {
     prompt: AgentPromptInput,
     options?: AgentRunOptions,
   ): Promise<AgentRunResult> {
+    // Closure removes this runtime from the map; a replacement belongs to a different run.
+    const agent = this.requireAgent(agentId);
     const events = this.streamAgent(agentId, prompt, options);
     const timeline: AgentTimelineItem[] = [];
     let finalText = "";
@@ -2977,7 +2979,6 @@ export class AgentManager {
 
     finalText = this.getLastAssistantMessageFromTimeline(timeline) ?? "";
 
-    const agent = this.requireAgent(agentId);
     const sessionId = agent.persistence?.sessionId;
     if (!sessionId) {
       throw new Error(`Agent ${agentId} has no persistence.sessionId after run completed`);

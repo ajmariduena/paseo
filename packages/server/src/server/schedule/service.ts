@@ -776,7 +776,7 @@ export class ScheduleService {
       agentId: string | null;
       runId: string;
     }> = [];
-    await this.store.update(scheduleId, (current) => {
+    const recovered = await this.store.update(scheduleId, (current) => {
       let updated = { ...current };
       let dirty = false;
 
@@ -831,7 +831,8 @@ export class ScheduleService {
       return;
     }
     try {
-      await this.archiveWorkspace(interruptedWorkspace.workspaceId);
+      const schedule = requireSchedule(recovered, scheduleId);
+      await this.archiveRunWorkspace(schedule.target, interruptedWorkspace.workspaceId);
     } catch (error) {
       this.logger.warn(
         {
@@ -1225,18 +1226,14 @@ export class ScheduleService {
         throw created.initialPromptError;
       }
       const result = await this.agentManager.runAgent(agent.id, schedule.prompt);
-      const waitResult = await this.agentManager.waitForAgentEvent(agent.id, {
-        waitForActive: true,
-      });
       if (result.canceled) {
         throw new Error(`Scheduled agent ${agent.id} was canceled`);
       }
-      assertScheduledAgentSucceeded(agent.id, waitResult);
       const timelineText = curateAgentActivity(result.timeline);
       return {
         agentId: agent.id,
         output: buildRunOutput({
-          output: waitResult.lastMessage ?? null,
+          output: null,
           timelineText,
           finalText: result.finalText,
         }),
@@ -1247,7 +1244,7 @@ export class ScheduleService {
         shouldArchiveScheduleRunWorkspace({ agentId, archiveOnFinish: config.archiveOnFinish })
       ) {
         try {
-          await this.archiveWorkspace(workspace.workspaceId);
+          await this.archiveRunWorkspace(schedule.target, workspace.workspaceId);
         } catch (error) {
           this.logger.warn(
             {
@@ -1262,6 +1259,19 @@ export class ScheduleService {
         }
       }
     }
+  }
+
+  private async archiveRunWorkspace(target: ScheduleTarget, workspaceId: string): Promise<void> {
+    // A run's worktree may be outside its scheduled directory. Re-admit cleanup
+    // against that source so a handoff cannot trigger destructive automatic archive.
+    await this.skipFencedSchedule(async () => {
+      const release = await this.acquireTargetMutation(target);
+      try {
+        await this.archiveWorkspace(workspaceId);
+      } finally {
+        release();
+      }
+    });
   }
 
   private async createScheduleRunWorkspace(

@@ -101,8 +101,10 @@ It settles the run locally (`turn_canceled`, pending permissions resolved, outpu
 abandons the turn, so a late provider event for that turn cannot revive or fail the stopped agent.
 
 Closing a runtime preserves a terminal result delivered during provider shutdown. A run still
-unsettled after shutdown is canceled, including for heartbeat history. A cancellation outcome does
-not prove that external effects were undone or clear conversation recovery obligations.
+unsettled after shutdown is canceled, including for scheduled-run history. A collected result belongs
+to that runtime even after it leaves memory; looking up the agent again can lose the result or read
+a replacement runtime. A cancellation outcome does not prove that external effects were undone or
+clear conversation recovery obligations.
 
 ## Relationships
 

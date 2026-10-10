@@ -126,6 +126,35 @@ turn. The selected manager wait/closure/reload cases pass 20 cases (268 skipped)
 passing cases. Server-stack build, final server build, root typecheck, lint and formatting pass.
 These are process-local outcome tests, not proof of provider termination or crash recovery.
 
+New-agent job closure and cleanup — closing a running job reproduced an "Unknown agent" error
+instead of its cancellation result. Closing a completed job before schedule publication reproduced
+status=failed, output=null and "Agent not found". The collected run now retains its own runtime's
+final handle and outcome; schedule publication does not query an evicted or replacement runtime.
+Cancellation retains the created agent and workspace identities. Manager cases also cover provider
+completion and failure delivered during close.
+
+A separate-worktree case then reproduced automatic archive after the scheduled source was fenced.
+Cleanup now acquires source admission again; a refused cleanup leaves the worktree available.
+The startup case publishes an interrupted-run record and installs the source fence before cleanup,
+verifying the same refusal and retained file bytes. Already-admitted cleanup still holds its lease
+until completion. The startup test does not certify the interrupted run's unknown outcome.
+
+Commands (from packages/server):
+  npx vitest run src/server/schedule/service.test.ts --bail=1
+    Test Files 1 passed (1); Tests 83 passed (83); Duration 7.69s
+  npx vitest run src/server/schedule/service.test.ts -t 'startup cleanup rechecks source ownership' --bail=1
+    Test Files 1 passed (1); Tests 1 passed | 83 skipped (84); Duration 2.40s
+  npx vitest run src/server/agent/agent-manager.test.ts -t 'runAgent|waitForAgentEvent preserves the outcome when provider close' --bail=1
+    Test Files 1 passed (1); Tests 9 passed | 282 skipped (291); Duration 1.67s
+  npm run build:server; npm run typecheck; npm run lint; npm run format (repository root)
+    All completed successfully. Lint: 0 warnings, 0 errors.
+
+These are 93 distinct passing cases: 84 service cases and 9 selected manager cases. They use the
+real manager, stores and filesystem with controlled provider sessions. The worktree fixture uses a
+registry-backed directory and an injected archive that deletes it; it does not exercise Git worktree
+creation or prove OS-process termination. Active new-agent handoff remains refused until reviewed
+shutdown and workspace disposition are implemented. Crash outcome reconciliation remains open.
+
 Active heartbeat transfer — review now binds the observed run and loaded provider session. The
 allowed review change is that run's terminal outcome plus the pause. Prior history, target and
 schedule definition remain bound. Capture waits for the outcome write and refuses running records;

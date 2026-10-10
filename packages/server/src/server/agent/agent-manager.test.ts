@@ -9000,6 +9000,78 @@ test.each(["silent", "completed", "failed"] as const)(
   },
 );
 
+test.each(["silent", "completed", "failed"] as const)(
+  "runAgent retains the terminal result when provider close is %s",
+  async (outcome) => {
+    const workdir = mkdtempSync(join(tmpdir(), "agent-manager-run-close-"));
+    const storage = new AgentStorage(join(workdir, "agents"), logger);
+    const started = deferred<void>();
+    const turnId = randomUUID();
+    class ClosingSession extends TestAgentSession {
+      override async startTurn(): Promise<{ turnId: string }> {
+        started.resolve();
+        return { turnId };
+      }
+      override async close(): Promise<void> {
+        if (outcome === "completed") {
+          this.pushEvent({
+            type: "timeline",
+            provider: "codex",
+            turnId,
+            item: { type: "assistant_message", text: "Final work saved" },
+          });
+          this.pushEvent({ type: "turn_completed", provider: "codex", turnId });
+        }
+        if (outcome === "failed")
+          this.pushEvent({
+            type: "turn_failed",
+            provider: "codex",
+            turnId,
+            error: "provider failure during close",
+          });
+      }
+    }
+    const session = new ClosingSession({ provider: "codex", cwd: workdir });
+    class ClosingClient extends TestAgentClient {
+      override async createSession(): Promise<AgentSession> {
+        return session;
+      }
+    }
+    const manager = new AgentManager({
+      clients: { codex: new ClosingClient() },
+      registry: storage,
+      logger,
+    });
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    const running = manager.runAgent(agent.id, "scheduled work").catch((error: unknown) => {
+      if (!(error instanceof Error)) throw error;
+      return error.message;
+    });
+    try {
+      await started.promise;
+      await manager.closeAgent(agent.id);
+      const expected = {
+        silent: expect.objectContaining({ sessionId: session.id, canceled: true, finalText: "" }),
+        completed: expect.objectContaining({
+          sessionId: session.id,
+          canceled: false,
+          finalText: "Final work saved",
+        }),
+        failed: expect.stringContaining("provider failure during close"),
+      };
+      expect(await running).toEqual(expected[outcome]);
+      expect(manager.getAgent(agent.id)).toBeNull();
+    } finally {
+      await manager.closeAgent(agent.id);
+      await running;
+      await manager.flush();
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  },
+);
+
 test("waitForAgentEvent does not resolve idle until foreground turn is finalized", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-wait-coherence-"));
   const storagePath = join(workdir, "agents");

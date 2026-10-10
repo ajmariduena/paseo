@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -41,7 +41,11 @@ import { ScheduleStore } from "./store.js";
 import * as atomicFile from "../atomic-file.js";
 import { randomUUID } from "node:crypto";
 import { HandoffOwnership, HandoffOwnershipError } from "../handoff/ownership.js";
-import type { ScheduleExecutionResult, StoredSchedule } from "@getpaseo/protocol/schedule/types";
+import {
+  StoredScheduleSchema,
+  type ScheduleExecutionResult,
+  type StoredSchedule,
+} from "@getpaseo/protocol/schedule/types";
 
 interface ScheduleServiceInternals {
   executeSchedule(schedule: StoredSchedule, runId: string): Promise<ScheduleExecutionResult>;
@@ -296,6 +300,22 @@ function buildAgentRecord(params: {
     internal: false,
     archivedAt: params.archivedAt ?? null,
   };
+}
+
+function holdScheduledTestRun(manager: AgentManager): Promise<string> {
+  const started = Promise.withResolvers<string>();
+  const create = manager.createAgent.bind(manager);
+  vi.spyOn(manager, "createAgent").mockImplementation(async (...args) => {
+    const snapshot = await create(...args);
+    const session = manager.getAgent(snapshot.id)?.session;
+    if (!session) throw new Error("Missing scheduled test runtime");
+    vi.spyOn(session, "startTurn").mockImplementation(async () => {
+      started.resolve(snapshot.id);
+      return { turnId: "held-scheduled-run" };
+    });
+    return snapshot;
+  });
+  return started.promise;
 }
 
 describe("ScheduleService", () => {
@@ -743,6 +763,120 @@ describe("ScheduleService", () => {
       }
       await service.tick();
       expect(runner).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "handoff retains a canceled scheduled worktree instead of archiving it behind the source fence",
+    async () => {
+      const { ownership, schedule, transfer, options, otherCwd } = await handoffFixture();
+      const manager = new AgentManager({
+        logger: createTestLogger(),
+        clients: createTestAgentClients(),
+        registry: agentStorage,
+      });
+      const started = holdScheduledTestRun(manager);
+      const workspaceDeps = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+      const unfinished = join(otherCwd, "unfinished.txt");
+      await writeFile(unfinished, "work that must remain available");
+      const archiveWorkspace = vi.fn(async () => {
+        await rm(otherCwd, { recursive: true });
+      });
+      const service = createScheduleService({
+        ...options,
+        agentManager: manager,
+        archiveWorkspace,
+        createPaseoWorktreeWorkspace: async (input) => {
+          const workspace = await workspaceDeps.createDirectoryWorkspace({
+            ...input,
+            cwd: otherCwd,
+          });
+          return {
+            workspace: {
+              ...workspace,
+              kind: "worktree",
+              branch: "scheduled-work",
+              baseBranch: "main",
+            },
+            worktree: { branchName: "scheduled-work", worktreePath: otherCwd },
+            intent: { kind: "branch-off", baseBranch: "main", branchName: "scheduled-work" },
+            repoRoot: transfer.cwd,
+            created: true,
+          };
+        },
+      });
+      await service.update({ id: schedule.id, newAgentConfig: { isolation: "worktree" } });
+      const running = service.runOnce(schedule.id);
+      const agentId = await started;
+      try {
+        expect(manager.getAgent(agentId)?.config.cwd).toBe(otherCwd);
+        await ownership.prepare(transfer);
+        await manager.closeAgent(agentId);
+        const result = await running;
+        expect(result.runs).toMatchObject([
+          { agentId, status: "failed", error: `Scheduled agent ${agentId} was canceled` },
+        ]);
+        expect(archiveWorkspace).not.toHaveBeenCalled();
+        expect(await readFile(unfinished, "utf8")).toBe("work that must remain available");
+        await ownership.drain(transfer.id);
+        await ownership.cancel(transfer.id);
+        expect(await readFile(unfinished, "utf8")).toBe("work that must remain available");
+      } finally {
+        await manager.closeAgent(agentId);
+        await running;
+        await manager.flush();
+      }
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "startup cleanup rechecks source ownership after publishing an interrupted schedule outcome",
+    async () => {
+      const { ownership, schedule, transfer, options, otherCwd } = await handoffFixture();
+      const unfinished = join(otherCwd, "unfinished.txt");
+      await writeFile(unfinished, "recover this worktree");
+      const archiveWorkspace = vi.fn(async () => {
+        await rm(otherCwd, { recursive: true });
+      });
+      const store = new ScheduleStore(join(tempDir, "schedules"), createTestLogger());
+      await store.update(schedule.id, (record) => ({
+        ...record,
+        runs: [
+          {
+            id: randomUUID(),
+            scheduledFor: now.toISOString(),
+            startedAt: now.toISOString(),
+            endedAt: null,
+            status: "running",
+            agentId: null,
+            workspaceId: "separate-worktree",
+            output: null,
+            error: null,
+          },
+        ],
+      }));
+      const write = atomicFile.writeJsonFileAtomic;
+      const publication = vi
+        .spyOn(atomicFile, "writeJsonFileAtomic")
+        .mockImplementation(async (file, value) => {
+          await write(file, value);
+          if (
+            file.endsWith(`${schedule.id}.json`) &&
+            StoredScheduleSchema.parse(value).runs[0].status === "failed"
+          )
+            await ownership.prepare(transfer);
+        });
+      const restarted = createScheduleService({ ...options, archiveWorkspace });
+      try {
+        await restarted.start();
+        expect(ownership.status(transfer.id).state).toBe("preparing");
+        expect(archiveWorkspace).not.toHaveBeenCalled();
+        expect(await readFile(unfinished, "utf8")).toBe("recover this worktree");
+        await ownership.drain(transfer.id);
+      } finally {
+        publication.mockRestore();
+        await restarted.stop();
+      }
     },
   );
 
@@ -1756,67 +1890,99 @@ describe("ScheduleService", () => {
     );
   });
 
-  test("scheduled new-agent cancellations fail the run", async () => {
+  test.each(["stop", "close"] as const)(
+    "scheduled new-agent cancellation by %s retains its result after the runtime disappears",
+    async (action) => {
+      const manager = new AgentManager({
+        logger: createTestLogger(),
+        clients: createTestAgentClients(),
+        registry: agentStorage,
+      });
+      const started = holdScheduledTestRun(manager);
+      const service = createScheduleService({
+        paseoHome: tempDir,
+        logger: createTestLogger(),
+        agentManager: manager,
+        agentStorage,
+        providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+        now: () => now,
+      });
+      const schedule = await service.create({
+        prompt: "Continue until stopped",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: {
+          type: "new-agent",
+          config: { provider: "claude", cwd: tempDir, archiveOnFinish: false },
+        },
+        runOnCreate: false,
+      });
+      const running = service.runOnce(schedule.id);
+      const agentId = await started;
+      try {
+        if (action === "stop") await manager.cancelAgentRun(agentId);
+        else await manager.closeAgent(agentId);
+        const finished = await running;
+        expect(finished.runs).toEqual([
+          expect.objectContaining({
+            status: "failed",
+            agentId,
+            workspaceId: "wks_schedule_test_1",
+            error: `Scheduled agent ${agentId} was canceled`,
+          }),
+        ]);
+      } finally {
+        await manager.closeAgent(agentId);
+        await running;
+        await manager.flush();
+      }
+    },
+  );
+
+  test("scheduled completion survives runtime eviction before the outcome is recorded", async () => {
     const manager = new AgentManager({
       logger: createTestLogger(),
       clients: createTestAgentClients(),
       registry: agentStorage,
     });
-    manager.runAgent = async () => ({
-      sessionId: "scheduled-canceled-run",
-      finalText: "",
-      timeline: [],
-      canceled: true,
+    const run = manager.runAgent.bind(manager);
+    vi.spyOn(manager, "runAgent").mockImplementation(async (...args) => {
+      const result = await run(...args);
+      await manager.closeAgent(args[0]);
+      return result;
     });
-    manager.waitForAgentEvent = async () => ({
-      status: "idle",
-      permission: null,
-      lastMessage: null,
-    });
-    manager.archiveAgent = async () => {};
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
       agentManager: manager,
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
-      createAgent: async (input) => {
-        const snapshot = {
-          id: "00000000-0000-0000-0000-000000000325",
-          provider: "claude",
-          cwd: input.cwd ?? tempDir,
-          workspaceId: input.workspaceId,
-          status: "idle",
-          lifecycle: "idle",
-        };
-        return {
-          snapshot: snapshot as Awaited<
-            ReturnType<ScheduleServiceOptions["createAgent"]>
-          >["snapshot"],
-          liveSnapshot: snapshot as Awaited<
-            ReturnType<ScheduleServiceOptions["createAgent"]>
-          >["liveSnapshot"],
-          background: true,
-          initialPromptStarted: false,
-          initialPromptError: null,
-        };
-      },
       now: () => now,
     });
-
-    const created = await service.create({
-      prompt: "cancel me",
+    const schedule = await service.create({
+      prompt: "Respond with exactly: finished before closing",
       cadence: { type: "every", everyMs: 60_000 },
-      target: { type: "new-agent", config: { provider: "claude", cwd: tempDir } },
-      maxRuns: 1,
+      target: {
+        type: "new-agent",
+        config: { provider: "claude", cwd: tempDir, archiveOnFinish: false },
+      },
+      runOnCreate: false,
     });
-    await service.tick();
-
-    const inspected = await service.inspect(created.id);
-    expect(inspected.runs[0]).toMatchObject({
-      status: "failed",
-      error: expect.stringContaining("was canceled"),
+    const finished = await service.runOnce(schedule.id);
+    expect(finished.runs).toMatchObject([
+      {
+        status: "succeeded",
+        output: "finished before closing",
+        error: null,
+      },
+    ]);
+    const agentId = finished.runs[0].agentId;
+    if (!agentId) throw new Error("Missing scheduled agent identity");
+    expect(manager.getAgent(agentId)).toBeNull();
+    expect(await agentStorage.get(agentId)).toMatchObject({
+      lastStatus: "closed",
+      lastTurnOutcome: "completed",
     });
+    await manager.flush();
   });
 
   test("failed new-agent run keeps run error when workspace archive also fails", async () => {

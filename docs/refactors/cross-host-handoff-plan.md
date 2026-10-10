@@ -593,10 +593,14 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   a failed synchronization after rename. A storage failure cannot replace successful output with
   a failed-execution record. POSIX acknowledgement includes file and directory synchronization;
   handoff waits for pending publication to repair. These retained inputs are process-local.
-  Heartbeats now retain their target identity and distinguish cancellation from successful idle,
-  including after provider closure; see [lifecycle cancellation](../agent-lifecycle.md#cancellation).
-  Shutdown of jobs that create separate agents and recovery of uncertain run outcomes after a crash
-  remain open. An admitted runner can still prevent draining, but the preparation wait expires with
+  Heartbeats and jobs that create agents retain their target identity and distinguish cancellation
+  from successful idle, including after runtime eviction; see
+  [lifecycle cancellation](../agent-lifecycle.md#cancellation). Job cleanup rechecks the scheduled
+  source's ownership before automatic archive, including during startup recovery. A worktree outside
+  that directory must remain available when the source is fenced.
+  Reviewed shutdown and workspace disposition for active jobs that create separate agents, and
+  recovery of uncertain run outcomes after a crash, remain open. An admitted runner can still
+  prevent draining, but the preparation wait expires with
   ownership retained under the [recovery contract](#ownership-and-recovery). See the scheduler cases in the
   [stopped-work evidence](../qa-evidence/handoff-writers-review.txt).
   PR watches now have a reviewed stop disposition. Preparation durably removes the selected watches,
