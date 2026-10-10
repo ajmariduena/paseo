@@ -2,7 +2,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { mkdir, readFile, truncate, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, symlink, truncate, writeFile } from "node:fs/promises";
 import { syncFilePublication } from "../atomic-file.js";
 import { FileUploadStore } from "../file-upload/index.js";
 
@@ -53,6 +53,167 @@ async function drainIds(store: AgentQueueStore, agentId: string): Promise<string
     ids.push(next.entry.id);
   }
 }
+
+test.skipIf(process.platform === "win32").each([
+  { type: "forge_change_request", mimeType: "application/paseo-forge-change-request" },
+  { type: "forge_issue", mimeType: "application/paseo-forge-issue" },
+] as const)("handoff preserves a $type attachment's remote project identity", async (kind) => {
+  const attachment = {
+    ...kind,
+    forge: "gitlab",
+    number: 42,
+    title: "Keep the nested project",
+    url: "https://gitlab.example/group/subgroup/repo/-/issues/42",
+    body: "The project name is not a local directory.",
+    projectPath: "group/subgroup/repo",
+  };
+  const source = new AgentQueueStore(join(root, "source"));
+  await source.enqueue("source", userMessage("pending", [attachment]), NOW);
+  await source.hold("source", "user_stop");
+  const snapshot = await source.exportForHandoff("source");
+  const destination = new AgentQueueStore(join(root, "destination"));
+  await destination.installHandoffQueue("target", "reservation", snapshot);
+  expect(await destination.dequeueNext("target")).toBeNull();
+  await destination.resume("target");
+  expect((await destination.dequeueNext("target"))?.prompt).toEqual([attachment]);
+});
+
+function reviewAttachment(cwd: string, mode: "base" | "uncommitted" = "uncommitted") {
+  return {
+    type: "review" as const,
+    mimeType: "application/paseo-review" as const,
+    cwd,
+    mode,
+    baseRef: mode === "base" ? "main" : null,
+    comments: [
+      {
+        filePath: "deleted.ts",
+        side: "old" as const,
+        lineNumber: 7,
+        body: `Keep this explanation of ${cwd}`,
+        context: {
+          hunkHeader: "@@ -7 +6,0 @@",
+          targetLine: {
+            oldLineNumber: 7,
+            newLineNumber: null,
+            type: "remove" as const,
+            content: "removed();",
+          },
+          lines: [
+            {
+              oldLineNumber: 7,
+              newLineNumber: null,
+              type: "remove" as const,
+              content: "removed();",
+            },
+          ],
+        },
+      },
+    ],
+  };
+}
+
+test.skipIf(process.platform === "win32").each(["base", "uncommitted"] as const)(
+  "handoff rebases a captured %s review without changing its comments or historical context",
+  async (mode) => {
+    const sourceCwd = join(root, "workspace");
+    const reviewCwd = join(sourceCwd, "nested");
+    const destinationCwd = join(root, "destination-workspace");
+    await mkdir(reviewCwd, { recursive: true });
+    await mkdir(destinationCwd);
+    const alias = join(root, "review-directory-alias");
+    await symlink(reviewCwd, alias);
+    const review = reviewAttachment(alias, mode);
+    const source = new AgentQueueStore(join(root, "source-queues"));
+    await source.enqueue("source", userMessage("pending", [review]), NOW);
+    await source.hold("source", "user_stop");
+    const snapshot = await source.exportForHandoff("source", { workspaceCwd: sourceCwd });
+    const canonicalSource = await realpath(sourceCwd);
+    const capturedReview = {
+      ...review,
+      cwd: canonicalSource,
+      comments: [{ ...review.comments[0], filePath: "nested/deleted.ts" }],
+    };
+    expect(snapshot.entries[0].prompt).toEqual([capturedReview]);
+    let destination = new AgentQueueStore(join(root, "destination-queues"));
+    const workspace = { sourceCwd: canonicalSource, destinationCwd };
+    await destination.installHandoffQueue("target", "reservation", snapshot, { workspace });
+    expect(snapshot.entries[0].prompt).toEqual([capturedReview]);
+    destination = new AgentQueueStore(join(root, "destination-queues"));
+    await destination.load();
+    await destination.installHandoffQueue("target", "reservation", snapshot, { workspace });
+    expect(await destination.dequeueNext("target")).toBeNull();
+    await destination.resume("target");
+    expect((await destination.dequeueNext("target"))?.prompt).toEqual([
+      { ...capturedReview, cwd: destinationCwd },
+    ]);
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "handoff refuses review directories outside the workspace, including symlink escapes",
+  async () => {
+    const sourceCwd = join(root, "workspace");
+    const outside = join(root, "another-workspace");
+    await mkdir(sourceCwd);
+    await mkdir(outside);
+    const alias = join(sourceCwd, "escape");
+    await symlink(outside, alias);
+    const source = new AgentQueueStore(join(root, "source-queues"));
+    for (const [index, directory] of [outside, alias].entries()) {
+      const agentId = `source-${index}`;
+      const prompt = [reviewAttachment(directory)];
+      await source.enqueue(agentId, userMessage("pending", prompt), NOW);
+      await source.hold(agentId, "user_stop");
+      await expect(source.exportForHandoff(agentId, { workspaceCwd: sourceCwd })).rejects.toThrow(
+        "different source workspace",
+      );
+      await source.resume(agentId);
+      expect((await source.dequeueNext(agentId))?.prompt).toEqual(prompt);
+    }
+  },
+);
+
+test
+  .skipIf(process.platform === "win32")
+  .each([
+    "../escape.ts",
+    "/absolute.ts",
+    "src/../../escape.ts",
+    "C:\\file.ts",
+    "C:/file.ts",
+    "src\0/file.ts",
+  ])(
+  "handoff refuses the review comment path %s without dropping the source prompt",
+  async (filePath) => {
+    const source = new AgentQueueStore(join(root, "source-queues"));
+    const review = reviewAttachment(root);
+    review.comments[0].filePath = filePath;
+    await source.enqueue("source", userMessage("pending", [review]), NOW);
+    await source.hold("source", "user_stop");
+    await expect(source.exportForHandoff("source", { workspaceCwd: root })).rejects.toThrow(
+      "relative to its workspace",
+    );
+    expect(source.peek("source")?.entries).toHaveLength(1);
+    await source.resume("source");
+    expect((await source.dequeueNext("source"))?.prompt).toEqual([review]);
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "handoff refuses a review whose working directory is a regular file",
+  async () => {
+    const reviewFile = join(root, "file.txt");
+    await writeFile(reviewFile, "data");
+    const source = new AgentQueueStore(join(root, "source-queues"));
+    await source.enqueue("source", userMessage("pending", [reviewAttachment(reviewFile)]), NOW);
+    await source.hold("source", "user_stop");
+    await expect(source.exportForHandoff("source", { workspaceCwd: root })).rejects.toThrow(
+      "not a directory",
+    );
+    expect(source.peek("source")?.entries).toHaveLength(1);
+  },
+);
 
 test.skipIf(process.platform === "win32")(
   "handoff moves queued file bytes into the destination upload store before publishing the queue",

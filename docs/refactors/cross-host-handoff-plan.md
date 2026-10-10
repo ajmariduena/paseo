@@ -578,9 +578,14 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   Uploaded files travel as verified blobs and receive stable destination upload paths; changed source
   bytes or conflicting destination files refuse completion. The queue limit and review estimate
   include file bytes.
-  Review/project-path attachments and senders outside the transfer still refuse preparation. Their
-  portability, paths already flattened into prompt text, delegation and other system-notification
-  dispositions, and uncertain delivery after a crash remain open.
+  Queued review attachments retain their captured comments, line context and baseline label. Their
+  directory is bound to the source workspace and changed to the destination; subdirectory comment
+  paths become workspace-relative. Deleted files remain reviewable through the captured snippets.
+  A baseline label is historical review data, not proof that its Git ref exists at destination; Git
+  ref fidelity remains a separate gate. Forge attachment `projectPath` values are remote repository
+  identities and travel unchanged. Reviews outside the workspace or with escaping paths refuse
+  before publication. Paths already flattened into prompt text, outside senders, delegation and
+  other system-notification dispositions, and uncertain delivery after a crash remain open.
   Twenty-nine form cases cover unavailable modes, inventory changes, lost replies, storage failures,
   exclusion pagination, duplicate submissions, closing during work, cancellation recovery and host journals advancing
   past local state, including destination lookup and selection failures. Reconstructed records retain

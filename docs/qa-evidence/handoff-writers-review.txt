@@ -48,9 +48,8 @@ Native and exported-context network cases preserve the exact prompts across sour
 restarts, reject changed prompt files before release, and keep destination agents unloaded.
 
 These queue cases use synthetic Claude artifacts and a version-only executable. They prove
-transport and held installation, not an authenticated continued turn. Review attachments,
-path-bearing project attachments, senders outside the transfer, delegation wakes and other
-system notifications require a disposition and currently refuse. Recovery of uncertain delivery
+transport and held installation, not an authenticated continued turn. Senders outside the transfer,
+delegation wakes and other system notifications require a disposition and currently refuse. Recovery of uncertain delivery
 after a crash remains open. The source retains a fenced copy until retirement is implemented.
 
 Typed uploaded-file blocks now carry their bytes in the verified archive, using queue snapshot
@@ -75,10 +74,26 @@ Unit cases include empty and binary files, Unicode names, lost synchronization a
 changed destination content, foreign source paths, size limits and symlink refusal.
 
 This covers structured uploaded-file blocks still present in pending prompts. It does not recover
-paths already flattened into opaque agent-message text or historical provider transcripts, rebase
-review/project-path attachments, or establish a continued authenticated provider turn. Upload
+paths already flattened into opaque agent-message text or historical provider transcripts,
+or establish a continued authenticated provider turn. Upload
 retention/garbage collection and stronger exclusion of concurrent external filesystem writers
 remain part of the existing delivery gates.
+
+Queued reviews and forge attachments — the initial regression reproduced a forge attachment being
+refused because its remote projectPath (group/subgroup/repo) was treated as a local directory.
+Both forge issue and change-request snapshots now retain that identity unchanged through held
+installation and delivery. A separate regression reproduced the blanket refusal of review blocks.
+Review export now resolves the review directory within the selected workspace, including aliases,
+and binds the captured paths to the workspace root. Import changes the working directory to the
+destination without changing comment bodies, line numbers, deleted-file snippets or baseline labels.
+Baseline labels remain historical data; these tests do not prove transport of a named Git ref.
+
+The native/context network cases now include a review and GitLab issue beside the binary file.
+They verify exact metadata, destination paths, both host restarts and the return transfer. Unit
+cases cover nested review directories, aliases, deleted files, both review modes, foreign workspaces,
+symlink escapes, non-directory roots, absolute paths and traversal. Source refusal keeps the original
+pending prompt. The receiver also refuses a signed queue bound to a different workspace before
+creating staging or provider files.
 
 The browser fixture uses the real queue runner through test-process IPC. Desktop and compact
 Chromium show the pending-message review warning, load the destination conversation with its held
@@ -92,7 +107,37 @@ readiness in 5.1s. The next desktop run passed in 50.2s; compact passed in 56.2s
 production daemon was not restarted. The earlier ac48ab7b1 browser runs passed in 51.5s/57.4s after
 fixing a missing required wake:null field in the fixture; their first attempt also hit startup timeout.
 
-Uploaded-file checks (151 distinct passing cases, including both browser layouts):
+Review/forge checks (77 distinct passing cases):
+
+$ npx vitest run src/server/agent-queue/store.test.ts src/server/handoff/ownership.posix.test.ts --bail=1
+  Test Files  2 passed (2)
+       Tests  73 passed (73)
+    Duration  5.51s
+  Includes 25 queue cases and 48 ownership/publication cases.
+
+$ npx vitest run src/server/handoff/archive.e2e.test.ts --bail=1 -t 'transfers queued text, images and uploaded files'
+  Test Files  1 passed (1)
+       Tests  2 passed | 33 skipped (35)
+    Duration  14.85s
+  A comment changed after capture refuses release; restoring it permits the same transfer to finish.
+
+$ npm run test:e2e -- e2e/browser/workspace-handoff.spec.ts --grep 'desktop preserves mixed conversation choices' --workers=1
+  1 passed (case: 54.6s). Exit 0.
+$ npm run test:e2e -- e2e/browser/workspace-handoff.spec.ts --grep 'compact preserves mixed conversation choices' --workers=1
+  1 passed (case: 1.0m). Independently observed npm exit status: 0.
+  Both layouts show the foreign-review error and enabled retry, with no source fence or destination
+  reservation. Removing the invalid queued review and retrying moves the file, review and forge issue.
+  The destination visibly retains three attachments and a held queue; the return trip retains all three.
+  The first compact run recorded a passed test and completed cleanup but its outer command returned
+  143. No test processes remained. Repeating the same npm command under a subprocess observer
+  recorded npm and observer exit 0. The signal's origin was not established; no harness timeout,
+  signal handler or production daemon was changed. Existing review screenshots above predate this slice.
+
+Workspace dependency/server/CLI builds, root typecheck, lint and formatting pass. The first network
+run exposed one preparation call that still passed only agent IDs to the revised queue preview;
+the corrected call passes the source workspace too. Final lint reports zero warnings/errors.
+
+Uploaded-file checks at d9f426cac (151 distinct passing cases, including both browser layouts):
 
 Workspace dependency/server/CLI builds, root typecheck, lint and formatting pass. Lint reports
 zero warnings and errors. No full local suite was run.

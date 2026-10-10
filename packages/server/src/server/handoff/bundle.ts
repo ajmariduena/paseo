@@ -16,6 +16,7 @@ import { RestartCancelledWorkSchema, type RestartCancelledWork } from "../agent/
 import {
   HANDOFF_QUEUE_MAX_BYTES,
   readHandoffQueue,
+  assertHandoffQueueWorkspace,
   type HandoffQueue,
 } from "../agent-queue/store.js";
 import {
@@ -378,6 +379,7 @@ export async function readHandoffBundle(
       const queue = await readHandoffQueue(
         path.join(archive.blobsDirectory, conversation.queue.sha256),
       );
+      assertHandoffQueueWorkspace(queue, bundle.sourceCwd);
       for (const { blob } of queue.files ?? []) {
         requireBlob(blob);
         if (!queueFiles.has(blob.sha256)) queueBytes += blob.size;

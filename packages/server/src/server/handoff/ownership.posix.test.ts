@@ -1081,6 +1081,35 @@ test("refuses a queued sender outside the transferred conversations before publi
   await expect(readdir(reservation.stagingCwd)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
+test("refuses a queued review from a different workspace before installing or staging files", async () => {
+  const { destination, transferId, reservation, claudeHome } = await nativeDestinationFixture({
+    queue: {
+      version: 1,
+      entries: [
+        {
+          id: "foreign-review",
+          origin: "user",
+          senderAgentId: null,
+          createdAt: "2026-10-10T00:00:00Z",
+          prompt: [
+            {
+              type: "review",
+              mimeType: "application/paseo-review",
+              cwd: `${cwd}-another`,
+              mode: "uncommitted",
+              comments: [],
+            },
+          ],
+        },
+      ],
+    },
+  });
+  await expect(destination.stage(transferId)).rejects.toThrow("different source workspace");
+  expect(destination.status(transferId).state).toBe("receiving");
+  await expect(readdir(claudeHome)).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(readdir(reservation.stagingCwd)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
 test.each(["conversation", "queued upload"])(
   "refuses a %s blob absent from the signed archive inventory",
   async (kind) => {

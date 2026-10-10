@@ -225,14 +225,82 @@ test.describe("workspace handoff", () => {
           bytes: uploadBytes,
         });
         if (!upload.file) throw new Error("Missing queued upload fixture");
-        await host.source.seedHeldQueue(native.id, [
+        const review = {
+          type: "review" as const,
+          mimeType: "application/paseo-review" as const,
+          cwd: host.workspace.repoPath,
+          mode: "uncommitted" as const,
+          comments: [
+            {
+              filePath: "prior-work.txt",
+              side: "new" as const,
+              lineNumber: 1,
+              body: "Keep this prior work.",
+              context: {
+                hunkHeader: "@@ -0,0 +1 @@",
+                targetLine: {
+                  oldLineNumber: null,
+                  newLineNumber: 1,
+                  type: "add" as const,
+                  content: "work from the source",
+                },
+                lines: [
+                  {
+                    oldLineNumber: null,
+                    newLineNumber: 1,
+                    type: "add" as const,
+                    content: "work from the source",
+                  },
+                ],
+              },
+            },
+          ],
+        };
+        const pendingPrompt = [
           { type: "text", text: "Keep this queued task" },
           upload.file,
-        ]);
+          review,
+          {
+            type: "forge_issue",
+            mimeType: "application/paseo-forge-issue",
+            forge: "gitlab",
+            projectPath: "group/subgroup/repo",
+            number: 42,
+            title: "Continue the review",
+            url: "https://gitlab.example/group/subgroup/repo/-/issues/42",
+          },
+        ] satisfies Parameters<typeof host.source.seedHeldQueue>[1];
+        await host.source.seedHeldQueue(native.id, [{ ...review, cwd: host.destinationParent }]);
         await openHandoff(page);
         await page.getByTestId("handoff-host-trigger").click();
         await page.getByTestId(`handoff-host-${host.destination.serverId}`).click();
         await page.getByTestId("handoff-parent").fill(host.destinationParent);
+        await page.getByTestId("handoff-submit").click();
+        await expect(page.getByTestId("handoff-error")).toContainText(
+          "Queued review belongs to a different source workspace. Remove that review before moving this workspace.",
+        );
+        await expect(page.getByTestId("handoff-submit")).toBeEnabled();
+        expect(
+          (await host.sourceClient.handoffFindSource({ workspaceId: host.workspace.workspaceId }))
+            .result,
+        ).toBeNull();
+        expect(
+          (
+            await host.destinationClient.handoffListDestination({
+              sourceServerId: host.source.serverId,
+              sourceWorkspaceId: host.workspace.workspaceId,
+            })
+          ).result?.transfers,
+        ).toEqual([]);
+        const invalidQueue = await host.sourceClient.listAgentQueue(native.id);
+        if (!invalidQueue.queue) throw new Error("Missing rejected review queue");
+        expect(invalidQueue.queue.held).toBe(true);
+        expect(invalidQueue.queue.entries).toHaveLength(1);
+        await host.sourceClient.cancelQueuedAgentMessage(
+          native.id,
+          invalidQueue.queue.entries[0].id,
+        );
+        await host.source.seedHeldQueue(native.id, pendingPrompt);
         await page.getByTestId("handoff-submit").click();
         const nativeChoice = page.getByTestId(`handoff-conversation-mode-${native.id}`);
         const contextChoice = page.getByTestId(`handoff-conversation-mode-${context.id}`);
@@ -315,7 +383,7 @@ test.describe("workspace handoff", () => {
           (await host.destinationClient.listAgentQueue(destinationAgentId)).queue,
         ).toMatchObject({
           held: true,
-          entries: [{ origin: "user", textPreview: "Keep this queued task" }],
+          entries: [{ origin: "user", textPreview: "Keep this queued task", attachmentCount: 3 }],
         });
         const destinationUploadRoot = path.join(host.destination.paseoHome, "uploads");
         const uploadDirectories = await readdir(destinationUploadRoot);
@@ -333,6 +401,7 @@ test.describe("workspace handoff", () => {
           `/h/${host.destination.serverId}/workspace/${active.result!.workspaceId}?open=${encodeURIComponent(`agent:${destinationAgentId}`)}`,
         );
         await expect(page.getByTestId("server-queue-track")).toContainText("Keep this queued task");
+        await expect(page.getByTestId("server-queue-track")).toContainText("3 attachments");
         await expect(page.getByTestId("held-queue-callout")).toBeVisible();
         await expect(page.getByTestId("held-queue-resume")).toBeEnabled();
         const returned = await inspectContinuedHistory(
@@ -349,7 +418,7 @@ test.describe("workspace handoff", () => {
         if (!returnedQueueAgentId) throw new Error("Missing returned queue mapping");
         expect((await host.sourceClient.listAgentQueue(returnedQueueAgentId)).queue).toMatchObject({
           held: true,
-          entries: [{ origin: "user", textPreview: "Keep this queued task" }],
+          entries: [{ origin: "user", textPreview: "Keep this queued task", attachmentCount: 3 }],
         });
       } catch (error) {
         await page.screenshot({ path: testInfo.outputPath("handoff-mixed-failure.png") });

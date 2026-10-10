@@ -269,7 +269,7 @@ export class HandoffSource {
     const workspace = await previewWorkspace({ cwd: inventory.cwd });
     const terminals = await this.sourceTerminals(inventory);
     const review = await this.reviewWriters(inventory, terminals);
-    const queued = await this.previewQueues(inventory.agentIds, review.pullRequestWatches ?? []);
+    const queued = await this.previewQueues(inventory, review.pullRequestWatches ?? []);
     return {
       workspaceId,
       cwd: inventory.cwd,
@@ -369,7 +369,7 @@ export class HandoffSource {
       }
       await this.requireWatchReview(input, inventory.agentIds);
       await this.previewQueues(
-        inventory.agentIds,
+        inventory,
         await this.options.pullRequestWatches.reviewForHandoff(inventory.agentIds),
       );
       this.assertReviewedIntegrations(
@@ -425,6 +425,7 @@ export class HandoffSource {
           queuePath,
           await this.options.queues.exportForHandoff(record.id, {
             blobsDirectory: queueBlobsDirectory,
+            workspaceCwd: source.cwd,
           }),
         );
         if (!record.persistence) {
@@ -635,7 +636,7 @@ export class HandoffSource {
   }
 
   private async previewQueues(
-    agentIds: string[],
+    { agentIds, cwd }: { agentIds: string[]; cwd: string },
     watches: NonNullable<HandoffStoppedWorkReview["pullRequestWatches"]>,
   ): Promise<{ count: number; bytes: number }> {
     let count = 0;
@@ -654,6 +655,7 @@ export class HandoffSource {
       const queue = await this.options.queues.exportForHandoff(agentId, {
         requireHeld: false,
         ignoreSystemIds,
+        workspaceCwd: cwd,
       });
       if (
         queue.entries.some(
@@ -944,7 +946,9 @@ export class HandoffSource {
         manifestDigest: prepared.manifest.entrypoint.sha256,
       });
       for (const agent of prepared.agents) {
-        const queue = await this.options.queues.exportForHandoff(agent.id);
+        const queue = await this.options.queues.exportForHandoff(agent.id, {
+          workspaceCwd: source.cwd,
+        });
         // COMPAT(handoffQueueCapture): added in v0.11.1, remove after 2027-04-10 once retained pre-v4 transfers finish.
         if (!isDeepStrictEqual(queue, queues.get(agent.id) ?? { version: 1, entries: [] }))
           refuse("source_changed", "Source queued messages changed after capture");

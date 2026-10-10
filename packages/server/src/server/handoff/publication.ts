@@ -128,7 +128,10 @@ export function createHandoffPublication(stores: PublicationStores): HandoffPubl
             mapping.destinationAgentId,
             record.reservationId,
             remapped,
-            { blobsDirectory: queueBlobsDirectory },
+            {
+              blobsDirectory: queueBlobsDirectory,
+              workspace: { sourceCwd: bundle.sourceCwd, destinationCwd: record.destinationCwd },
+            },
           );
         }
       }

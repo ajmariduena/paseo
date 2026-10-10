@@ -1,8 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { readdir, readFile, rm } from "node:fs/promises";
+import { readdir, readFile, realpath, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import { AgentAttachmentSchema, type UploadedFileAttachment } from "@getpaseo/protocol/messages";
+import {
+  AgentAttachmentSchema,
+  type UploadedFileAttachment,
+  type ReviewAttachment,
+} from "@getpaseo/protocol/messages";
 import { formatPeerMessage, parsePeerMessage } from "@getpaseo/protocol/peer-message";
 import { z } from "zod";
 
@@ -92,13 +96,70 @@ export function parseHandoffQueue(value: unknown): HandoffQueue {
     if (bytes > MAX_PROMPT_BYTES) throw new QueueEntryTooLargeError(bytes);
     if (typeof entry.prompt === "string") continue;
     for (const block of entry.prompt) {
-      if (block.type === "review" || ("projectPath" in block && block.projectPath))
-        throw new Error(
-          "Queued attachments with source-local files or paths need a handoff disposition",
-        );
+      if (block.type === "review") validateReviewPaths(block);
     }
   }
   return snapshot;
+}
+
+function validateReviewPaths(review: ReviewAttachment): void {
+  if (!path.posix.isAbsolute(review.cwd) || review.cwd.includes("\\") || review.cwd.includes("\0"))
+    throw new Error("Queued review needs an absolute workspace directory");
+  for (const { filePath } of review.comments) {
+    if (
+      !filePath ||
+      filePath.includes("\\") ||
+      filePath.includes("\0") ||
+      path.posix.isAbsolute(filePath) ||
+      path.win32.isAbsolute(filePath) ||
+      filePath.split("/").some((part) => part === "" || part === "." || part === "..")
+    )
+      throw new Error("Queued review file path must stay relative to its workspace");
+  }
+}
+
+function queueReviews(entries: HandoffQueue["entries"]): ReviewAttachment[] {
+  return entries.flatMap(({ prompt }) =>
+    typeof prompt === "string"
+      ? []
+      : prompt.filter((block): block is ReviewAttachment => block.type === "review"),
+  );
+}
+
+export function assertHandoffQueueWorkspace(snapshot: HandoffQueue, sourceCwd: string): void {
+  for (const review of queueReviews(snapshot.entries)) {
+    if (review.cwd !== sourceCwd)
+      throw new Error(
+        "Queued review belongs to a different source workspace. Remove that review before moving this workspace.",
+      );
+  }
+}
+
+async function captureHandoffReviews(
+  entries: HandoffQueue["entries"],
+  workspaceCwd?: string,
+): Promise<void> {
+  const reviews = queueReviews(entries);
+  if (!reviews.length) return;
+  if (!workspaceCwd) throw new Error("Queued review requires its source workspace");
+  const source = await realpath(workspaceCwd);
+  for (const review of reviews) {
+    validateReviewPaths(review);
+    const directory = await realpath(review.cwd);
+    if (!(await stat(directory)).isDirectory())
+      throw new Error("Queued review working directory is not a directory");
+    const relative = path.relative(source, directory);
+    if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
+      throw new Error(
+        "Queued review belongs to a different source workspace. Remove that review before moving this workspace.",
+      );
+    // Review snippets can describe deleted files. Resolve the review directory only;
+    // keep the comments, baseline label and captured lines as historical input.
+    review.cwd = source;
+    const prefix = relative.split(path.sep).join("/");
+    for (const comment of review.comments)
+      comment.filePath = path.posix.join(prefix, comment.filePath);
+  }
 }
 
 export function handoffQueueBytes(snapshot: HandoffQueue): number {
@@ -309,6 +370,7 @@ export class AgentQueueStore {
       requireHeld?: boolean;
       ignoreSystemIds?: readonly string[];
       blobsDirectory?: string;
+      workspaceCwd?: string;
     } = {},
   ): Promise<HandoffQueue> {
     return this.serialize(agentId, async () => {
@@ -338,6 +400,7 @@ export class AgentQueueStore {
       }
       if ((options.requireHeld ?? true) && entries.length && !stored?.held)
         throw new Error("Source queue must be held before handoff capture");
+      await captureHandoffReviews(entries, options.workspaceCwd);
       const files = await this.captureHandoffUploads(entries, options.blobsDirectory);
       return parseHandoffQueue(
         files.length ? { version: 2, entries, files } : { version: 1, entries },
@@ -399,9 +462,19 @@ export class AgentQueueStore {
     agentId: string,
     reservationId: string,
     input: HandoffQueue,
-    options: { blobsDirectory?: string } = {},
+    options: {
+      blobsDirectory?: string;
+      workspace?: { sourceCwd: string; destinationCwd: string };
+    } = {},
   ): Promise<void> {
     const snapshot = parseHandoffQueue(input);
+    if (queueReviews(snapshot.entries).length) {
+      if (!options.workspace)
+        throw new Error("Queued review requires a destination workspace mapping");
+      assertHandoffQueueWorkspace(snapshot, options.workspace.sourceCwd);
+      if (!path.isAbsolute(options.workspace.destinationCwd))
+        throw new Error("Queued review requires an absolute destination workspace");
+    }
     if (!/^[a-zA-Z0-9_-]{1,512}$/.test(agentId))
       throw new Error("Invalid destination queue identity");
     const digest = queueDigest(snapshot);
@@ -423,9 +496,11 @@ export class AgentQueueStore {
         const prompt =
           typeof remapped.prompt === "string"
             ? remapped.prompt
-            : remapped.prompt.map((block) =>
-                block.type === "uploaded_file" ? uploads.get(block.path)! : block,
-              );
+            : remapped.prompt.map((block) => {
+                if (block.type === "uploaded_file") return uploads.get(block.path)!;
+                if (block.type === "review") block.cwd = options.workspace!.destinationCwd;
+                return block;
+              });
         const promptFile = `${queueDigest([id, prompt])}.json`;
         prompts.set(promptFile, prompt);
         const preview = previewPrompt(prompt);

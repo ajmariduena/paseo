@@ -712,7 +712,7 @@ test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
   async (continuationMode) => {
     let source = await startHost("source", true);
     let destination = await startHost("destination", true);
-    const cwd = path.join(root, "transported-queue-workspace");
+    const cwd = path.join(await realpath(root), "transported-queue-workspace");
     await mkdir(cwd);
     await writeFile(path.join(cwd, "work.txt"), "Prior work");
     const created = await source.client.createWorkspace({
@@ -759,13 +759,54 @@ test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
       bytes: fileBytes,
     });
     if (!uploaded.file) throw new Error("Missing queued upload");
+    const review = {
+      type: "review" as const,
+      mimeType: "application/paseo-review" as const,
+      cwd,
+      mode: "base" as const,
+      baseRef: "main",
+      comments: [
+        {
+          filePath: "deleted.ts",
+          side: "old" as const,
+          lineNumber: 3,
+          body: "Keep the explanation even though this file was deleted.",
+          context: {
+            hunkHeader: "@@ -3 +2,0 @@",
+            targetLine: {
+              oldLineNumber: 3,
+              newLineNumber: null,
+              type: "remove" as const,
+              content: "removed();",
+            },
+            lines: [
+              {
+                oldLineNumber: 3,
+                newLineNumber: null,
+                type: "remove" as const,
+                content: "removed();",
+              },
+            ],
+          },
+        },
+      ],
+    };
+    const issue = {
+      type: "forge_issue" as const,
+      mimeType: "application/paseo-forge-issue" as const,
+      forge: "gitlab",
+      projectPath: "group/subgroup/repo",
+      number: 42,
+      title: "Continue the review",
+      url: "https://gitlab.example/group/subgroup/repo/-/issues/42",
+    };
     const prompts = [
       "Do not lose the next task",
       [
         { type: "text" as const, text: "Then inspect this image" },
         { type: "image" as const, data: "aGVsbG8=", mimeType: "image/png" },
       ],
-      [{ type: "text" as const, text: "Then read this file" }, uploaded.file],
+      [{ type: "text" as const, text: "Then read this file" }, uploaded.file, review, issue],
     ];
     for (const [index, prompt] of prompts.entries()) {
       const queued = await queue.enqueue(
@@ -814,6 +855,23 @@ test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
       (await source.client.handoffReleaseSource({ transferId: staged.transferId })).error?.code,
     ).toBe("source_changed");
     await writeFile(uploaded.file.path, fileBytes);
+    const reviewPromptFile = queue.entries(agentId)[2].promptFile;
+    if (!reviewPromptFile) throw new Error("Missing queued review prompt");
+    const reviewPromptPath = path.join(
+      source.daemon.paseoHome,
+      "agent-queues",
+      agentId,
+      reviewPromptFile,
+    );
+    const capturedReviewPrompt = await readFile(reviewPromptPath, "utf8");
+    await writeFile(
+      reviewPromptPath,
+      capturedReviewPrompt.replace(review.comments[0].body, "Changed review after capture"),
+    );
+    expect(
+      (await source.client.handoffReleaseSource({ transferId: staged.transferId })).error?.code,
+    ).toBe("source_changed");
+    await writeFile(reviewPromptPath, capturedReviewPrompt);
     await stopHost(source);
     await stopHost(destination);
     source = await startHost("source", true);
@@ -832,20 +890,22 @@ test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
       entries: [
         { origin: "user", textPreview: "Do not lose the next task", attachmentCount: 0 },
         { origin: "user", textPreview: "Then inspect this image", attachmentCount: 1 },
-        { origin: "user", textPreview: "Then read this file", attachmentCount: 1 },
+        { origin: "user", textPreview: "Then read this file", attachmentCount: 3 },
       ],
     });
     expect(destination.daemon.daemon.agentManager.getAgent(destinationAgentId)).toBeNull();
-    const imported =
-      await destination.daemon.daemon.agentManager.messageQueue.exportForHandoff(
-        destinationAgentId,
-      );
+    const imported = await destination.daemon.daemon.agentManager.messageQueue.exportForHandoff(
+      destinationAgentId,
+      { workspaceCwd: active.destinationCwd },
+    );
     expect(imported.entries.slice(0, 2).map((entry) => entry.prompt)).toEqual(prompts.slice(0, 2));
     const importedFile = imported.files?.[0].attachment;
     if (!importedFile) throw new Error("Missing destination upload");
     expect(imported.entries[2].prompt).toEqual([
       { type: "text", text: "Then read this file" },
       importedFile,
+      { ...review, cwd: active.destinationCwd },
+      issue,
     ]);
     expect(importedFile.path.startsWith(destination.daemon.paseoHome)).toBe(true);
     expect(await readFile(importedFile.path)).toEqual(fileBytes);
@@ -862,14 +922,17 @@ test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
     expect(
       await destination.daemon.daemon.agentManager.messageQueue.exportForHandoff(
         destinationAgentId,
+        { workspaceCwd: active.destinationCwd },
       ),
     ).toEqual(imported);
     expect((await destination.client.listAgentQueue(destinationAgentId)).queue.held).toBe(true);
     expect(destination.daemon.daemon.agentManager.getAgent(destinationAgentId)).toBeNull();
     expect(
-      (await source.daemon.daemon.agentManager.messageQueue.exportForHandoff(agentId)).entries.map(
-        (entry) => entry.prompt,
-      ),
+      (
+        await source.daemon.daemon.agentManager.messageQueue.exportForHandoff(agentId, {
+          workspaceCwd: cwd,
+        })
+      ).entries.map((entry) => entry.prompt),
     ).toEqual(prompts);
     const returning = await prepareWorkspaceHandoff({
       transferId: randomUUID(),
@@ -887,11 +950,18 @@ test.skipIf(process.platform === "win32").each(["native", "context"] as const)(
     });
     const returnedQueue = await source.daemon.daemon.agentManager.messageQueue.exportForHandoff(
       returned.agentMappings[0]!.destinationAgentId,
+      { workspaceCwd: returned.destinationCwd },
     );
     const returnedFile = returnedQueue.files?.[0].attachment;
     if (!returnedFile) throw new Error("Missing returned queued upload");
     expect(returnedFile.path).not.toBe(uploaded.file.path);
     expect(await readFile(returnedFile.path)).toEqual(fileBytes);
+    expect(returnedQueue.entries[2].prompt).toEqual([
+      { type: "text", text: "Then read this file" },
+      returnedFile,
+      { ...review, cwd: returned.destinationCwd },
+      issue,
+    ]);
     expect(
       (await source.client.listAgentQueue(returned.agentMappings[0]!.destinationAgentId)).queue
         .held,
