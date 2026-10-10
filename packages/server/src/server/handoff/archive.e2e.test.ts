@@ -708,6 +708,125 @@ test.skipIf(process.platform === "win32").each(["reserved", "staged"] as const)(
 );
 
 test.skipIf(process.platform === "win32")(
+  "holds source queued messages through handoff preparation, restart and cancellation",
+  async () => {
+    let source = await startHost("source", true);
+    let destination = await startHost("destination", true);
+    const cwd = path.join(root, "queued-workspace");
+    await mkdir(cwd);
+    await writeFile(path.join(cwd, "work.txt"), "Prior work");
+    const created = await source.client.createWorkspace({
+      source: { kind: "directory", path: cwd },
+    });
+    if (!created.workspace) throw new Error("Missing workspace");
+    const agentId = randomUUID();
+    const sessionId = randomUUID();
+    const configDir = path.join(root, "source", "claude");
+    const project = claudeProjectDirSync(cwd, { configDir });
+    await mkdir(project, { recursive: true });
+    await writeFile(
+      path.join(project, `${sessionId}.jsonl`),
+      JSON.stringify({
+        type: "user",
+        uuid: randomUUID(),
+        sessionId,
+        message: { role: "user", content: "Keep the prior task" },
+      }) + "\n",
+    );
+    await source.daemon.daemon.agentStorage.upsert(
+      parseStoredAgentRecord({
+        id: agentId,
+        provider: "claude",
+        cwd,
+        workspaceId: created.workspace.id,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lastStatus: "closed",
+        persistence: {
+          provider: "claude",
+          sessionId,
+          metadata: { cwd, claudeRuntime: { configDir, cliVersion: "2.1.295" } },
+        },
+      }),
+    );
+    const queue = source.daemon.daemon.agentManager.messageQueue;
+    await queue.hold(agentId, "user_stop");
+    const queued = await queue.enqueue(
+      agentId,
+      {
+        id: "next-user-task",
+        origin: "user",
+        senderAgentId: null,
+        textPreview: "",
+        prompt: "Do not lose this pending instruction",
+        wake: null,
+      },
+      async () => {
+        throw new Error("Preparation must not deliver queued work");
+      },
+    );
+    void queued.settled.catch(() => undefined);
+    const transferId = randomUUID();
+    const staged = await prepareWorkspaceHandoff({
+      transferId,
+      workspaceId: created.workspace.id,
+      destinationParent: root,
+      continuationMode: "native",
+      source: source.client,
+      destination: destination.client,
+    });
+    expect(staged.state).toBe("staged");
+    expect((await source.client.listAgentQueue(agentId)).queue).toMatchObject({
+      held: true,
+      entries: [{ id: "next-user-task", textPreview: "Do not lose this pending instruction" }],
+    });
+    await expect(source.client.resumeAgentQueue(agentId)).rejects.toThrow("held by handoff");
+    await expect(
+      source.client.editQueuedAgentMessage(agentId, "next-user-task", "changed"),
+    ).rejects.toThrow("held by handoff");
+    await expect(source.client.cancelQueuedAgentMessage(agentId, "next-user-task")).rejects.toThrow(
+      "held by handoff",
+    );
+    await stopHost(source);
+    source = await startHost("source", true);
+    expect((await source.client.listAgentQueue(agentId)).queue).toMatchObject({
+      held: true,
+      entries: [{ id: "next-user-task", textPreview: "Do not lose this pending instruction" }],
+    });
+    const cancelled = await cancelWorkspaceHandoff({
+      transferId,
+      sourceServerId: source.daemon.daemon.getServerId(),
+      getSource: () => source.client,
+      destination: destination.client,
+    });
+    expect(cancelled.state).toBe("cancelled");
+    expect((await source.client.listAgentQueue(agentId)).queue.held).toBe(true);
+    expect(
+      (
+        await source.client.editQueuedAgentMessage(
+          agentId,
+          "next-user-task",
+          "Still pending after cancellation",
+        )
+      ).accepted,
+    ).toBe(true);
+    const stored = source.daemon.daemon.agentManager.messageQueue.entries(agentId)[0];
+    if (!stored?.promptFile) throw new Error("Pending prompt was lost");
+    expect(
+      JSON.parse(
+        await readFile(
+          path.join(source.daemon.paseoHome, "agent-queues", agentId, stored.promptFile),
+          "utf8",
+        ),
+      ),
+    ).toBe("Still pending after cancellation");
+    expect(source.daemon.daemon.agentManager.getAgent(agentId)).toBeNull();
+    expect((await destination.client.fetchWorkspaces()).entries).toEqual([]);
+  },
+  30_000,
+);
+
+test.skipIf(process.platform === "win32")(
   "reviews and durably stops source PR watches before capture without restarting them on destination",
   async () => {
     let source = await startHost("source", true);

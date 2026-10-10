@@ -398,6 +398,7 @@ test("source preparation keeps ownership fenced after uncertain cleanup and retr
   const createSource = (sourceOwnership = ownership) =>
     new HandoffSource({
       pullRequestWatches: { reviewForHandoff: async () => [], stopForHandoff: async () => {} },
+      queues: { holdForHandoff: async () => {} },
       directory: captures,
       serverId: sourceServerId,
       logger: createTestLogger(),

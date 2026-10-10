@@ -309,7 +309,7 @@ export class PullRequestWatcher {
           entry.origin === "system" &&
           [...reviewed].some((id) => entry.id.startsWith(`pr-watch:${id}:`))
         )
-          await this.options.agentManager.messageQueue.cancel(agentId, entry.id);
+          await this.options.agentManager.messageQueue.cancelForHandoff(agentId, entry.id);
       }
     }
     await Promise.all([...reviewed].map((id) => this.wakesInFlight.get(id)));
@@ -590,7 +590,7 @@ export class PullRequestWatcher {
         queueAs: { origin: "system" },
         onQueued: async () => {
           if (this.options.handoffOwnership?.forAgent(watch.agentId))
-            await agentManager.messageQueue.cancel(watch.agentId, messageId);
+            await agentManager.messageQueue.cancelForHandoff(watch.agentId, messageId);
         },
       },
       logger: this.logger,

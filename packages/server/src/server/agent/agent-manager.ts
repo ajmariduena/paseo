@@ -1011,6 +1011,8 @@ export class AgentManager {
     const queue = new AgentQueueRunner(
       store ?? new AgentQueueStore(null),
       {
+        withMutation: (agentId, operation) => this.withQueueMutation(agentId, operation),
+        isHandoffHeld: (agentId) => Boolean(this.handoffOwnership?.forAgent(agentId)),
         waitForRunToSettle: (agentId) => this.waitForRunToSettle(agentId),
         subscribe: (callback) => this.subscribe(callback, { replayState: false }),
         isArchived: async (agentId) => Boolean((await this.registry?.get(agentId))?.archivedAt),
@@ -1029,6 +1031,18 @@ export class AgentManager {
   private configurePaseoTools(options: AgentManagerOptions): void {
     this.paseoToolsEnabled = options.paseoToolsEnabled ?? true;
     this.paseoToolCatalogFactory = options.paseoToolCatalogFactory ?? null;
+  }
+
+  private async withQueueMutation<T>(agentId: string, operation: () => Promise<T>): Promise<T> {
+    if (!this.handoffOwnership) return operation();
+    const agent = this.agents.get(agentId);
+    const record = agent ? null : await this.registry?.get(agentId);
+    const cwd = agent?.config.cwd ?? record?.cwd;
+    if (!cwd) throw new Error(`Cannot mutate the queue of unknown agent ${agentId}`);
+    return this.withHandoffMutation(
+      { cwd, workspaceId: agent?.workspaceId ?? record?.workspaceId, agentId },
+      operation,
+    );
   }
 
   registerClient(provider: AgentProvider, client: AgentClient): void {

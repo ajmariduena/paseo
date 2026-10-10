@@ -21,6 +21,33 @@ both journals, refusal to drop that approval and successful activation. The setu
 regression reloads the ownership journal after failed cleanup and refuses a
 replacement with the same active count. It also tests active setup blocking release.
 
+Queue conservation — source handoff now holds queues before closing writers. The initial runner
+regression reproduced the pending instruction disappearing when the current turn settled under
+the handoff fence (expected held=true, received no queue). Delivery now joins ownership admission
+before taking an entry, and a handoff refusal during delivery restores the entry and its prompt.
+Enqueue, resume, edit, reorder, cancel, promote and clear obey ownership admission. Reviewed
+process-bound notifications have a separate fenced cancellation path that rejects user messages.
+Cancelling the transfer leaves the source queue held until explicit resume.
+
+The two new runner cases use a real ownership journal, agent manager and on-disk queue. They cover
+refusal before dequeue, refusal after dequeue, exact text/image retention and cancellation/resume.
+The two-daemon case prepares, refuses queue mutation RPCs, restarts the source and cancels the
+transfer; the prompt is still editable in the held queue and no provider runtime was opened.
+All 10 runner cases, 30 watcher cases, one selected source coordinator case and two selected
+network cases pass (43 distinct cases). The watcher fixtures now give the real manager and watcher
+the same ownership service. The final selected runner/coordinator run passed 3 cases (52 skipped).
+Queue transport, paused destination installation, attachment portability, sender/delegation
+remapping and recovery of uncertain delivery after a crash remain open. This evidence does not
+claim that pending messages already travel to the destination.
+
+$ npx vitest run src/server/agent-queue/runner.test.ts --bail=1
+  Test Files  1 passed (1)
+       Tests  10 passed (10)
+
+$ npx vitest run src/server/handoff/archive.e2e.test.ts -t 'holds source queued messages|reviews and durably stops' --bail=1
+  Test Files  1 passed (1)
+       Tests  2 passed | 31 skipped (33)
+
 PR watch disposition now participates in the same review. The list includes both stored watches
 and final notifications already waiting for the agent. Preparation durably removes the approved
 watches, cancels their queued notifications and joins admitted delivery. Registration holds an
@@ -46,7 +73,7 @@ and ESM protocol modules in Playwright. The fixture now seeds the persisted watc
 for native transcripts; production continues to use the store API. Desktop passed in 46.9s and
 compact in 51.7s. This is browser viewport evidence, not native mobile validation.
 
-Current focused checks (211 distinct cases):
+PR-watch disposition focused checks (211 distinct cases):
 
 $ npx vitest run src/server/pull-request-watch/watcher.test.ts src/server/handoff/ownership.posix.test.ts src/server/restart/restart-recovery.test.ts --bail=1
   Test Files  3 passed (3)

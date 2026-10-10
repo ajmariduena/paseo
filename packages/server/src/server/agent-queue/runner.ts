@@ -4,6 +4,7 @@ import type { Logger } from "pino";
 import type { AgentManagerEvent } from "../agent/agent-manager.js";
 import type { AgentPromptInput } from "../agent/agent-sdk-types.js";
 import type { MessageDisposition } from "../agent/message-dispatch.js";
+import { HandoffOwnershipError } from "../handoff/ownership.js";
 import {
   inDeliveryOrder,
   type AgentQueueEntry,
@@ -38,6 +39,8 @@ export interface QueuedMessage {
 }
 
 export interface AgentQueueRunnerHost {
+  withMutation<T>(agentId: string, operation: () => Promise<T>): Promise<T>;
+  isHandoffHeld(agentId: string): boolean;
   waitForRunToSettle(agentId: string): Promise<void>;
   subscribe(callback: (event: AgentManagerEvent) => void): () => void;
   isArchived(agentId: string): Promise<boolean>;
@@ -129,6 +132,14 @@ export class AgentQueueRunner {
     input: NewQueueEntry,
     deliver: QueueDeliverer,
   ): Promise<QueuedMessage> {
+    return this.host.withMutation(agentId, () => this.enqueueAdmitted(agentId, input, deliver));
+  }
+
+  private async enqueueAdmitted(
+    agentId: string,
+    input: NewQueueEntry,
+    deliver: QueueDeliverer,
+  ): Promise<QueuedMessage> {
     const entry = await this.store.enqueue(agentId, input, new Date().toISOString());
     if (this.userStopped.has(agentId)) await this.store.hold(agentId, "user_stop");
     const settled = new Promise<MessageDisposition>((resolve, reject) => {
@@ -142,6 +153,30 @@ export class AgentQueueRunner {
 
   /** Removes an entry before it is delivered. Its sender sees `dropped`. */
   async cancel(agentId: string, entryId: string): Promise<AgentQueueEntry | null> {
+    return this.host.withMutation(agentId, () => this.cancelEntry(agentId, entryId));
+  }
+
+  /** The coordinator may dispose reviewed notifications after stopping ordinary queue mutations. */
+  async cancelForHandoff(agentId: string, entryId: string): Promise<AgentQueueEntry | null> {
+    this.requireHandoffFence(agentId);
+    const entry = this.entries(agentId).find((candidate) => candidate.id === entryId);
+    if (!entry) return null;
+    if (entry.origin !== "system")
+      throw new Error("Only process-bound notifications can be cancelled for handoff");
+    return this.cancelEntry(agentId, entryId);
+  }
+
+  async holdForHandoff(agentId: string): Promise<void> {
+    this.requireHandoffFence(agentId);
+    await this.hold(agentId, "user_stop");
+  }
+
+  private requireHandoffFence(agentId: string): void {
+    if (!this.host.isHandoffHeld(agentId))
+      throw new Error("Queue handoff disposition requires the source fence");
+  }
+
+  private async cancelEntry(agentId: string, entryId: string): Promise<AgentQueueEntry | null> {
     const taken = await this.store.take(agentId, entryId);
     if (!taken) return null;
     await this.store.discard(agentId, taken.entry);
@@ -156,6 +191,13 @@ export class AgentQueueRunner {
    * entry back and rethrows; a turn that ended first makes it a new turn.
    */
   async promoteToSteer(agentId: string, entryId: string): Promise<MessageDisposition | null> {
+    return this.host.withMutation(agentId, () => this.promoteAdmitted(agentId, entryId));
+  }
+
+  private async promoteAdmitted(
+    agentId: string,
+    entryId: string,
+  ): Promise<MessageDisposition | null> {
     const taken = await this.store.take(agentId, entryId);
     if (!taken) return null;
     this.host.publish(agentId);
@@ -163,15 +205,19 @@ export class AgentQueueRunner {
   }
 
   async edit(agentId: string, entryId: string, text: string): Promise<AgentQueueEntry | null> {
-    const edited = await this.store.edit(agentId, entryId, text);
-    if (edited) this.host.publish(agentId);
-    return edited;
+    return this.host.withMutation(agentId, async () => {
+      const edited = await this.store.edit(agentId, entryId, text);
+      if (edited) this.host.publish(agentId);
+      return edited;
+    });
   }
 
   async reorder(agentId: string, entryIds: readonly string[]): Promise<boolean> {
-    const reordered = await this.store.reorder(agentId, entryIds);
-    if (reordered) this.host.publish(agentId);
-    return reordered;
+    return this.host.withMutation(agentId, async () => {
+      const reordered = await this.store.reorder(agentId, entryIds);
+      if (reordered) this.host.publish(agentId);
+      return reordered;
+    });
   }
 
   /** A `user_stop` hold also covers an empty queue: what arrives later waits until resumed. */
@@ -184,6 +230,10 @@ export class AgentQueueRunner {
   }
 
   async resume(agentId: string): Promise<void> {
+    return this.host.withMutation(agentId, () => this.resumeAdmitted(agentId));
+  }
+
+  private async resumeAdmitted(agentId: string): Promise<void> {
     this.userStopped.delete(agentId);
     if (await this.store.resume(agentId)) {
       this.logger.info({ agentId }, "agent.queue.resumed");
@@ -211,6 +261,10 @@ export class AgentQueueRunner {
 
   /** Archive: nothing queued for the agent is delivered. */
   async clear(agentId: string): Promise<void> {
+    return this.host.withMutation(agentId, () => this.clearAdmitted(agentId));
+  }
+
+  private async clearAdmitted(agentId: string): Promise<void> {
     this.userStopped.delete(agentId);
     const removed = await this.store.clear(agentId);
     for (const entry of removed) this.settleWaiter(agentId, entry.id, "skipped_archived");
@@ -240,8 +294,12 @@ export class AgentQueueRunner {
         await this.drain(agentId);
       } while (this.redrain.has(agentId) && !this.closed);
     })()
-      .catch((error: unknown) => {
+      .catch(async (error: unknown) => {
         this.logger.error({ err: error, agentId }, "agent.queue.drain_failed");
+        if (error instanceof HandoffOwnershipError)
+          await this.hold(agentId, "user_stop").catch((holdError: unknown) => {
+            this.logger.error({ err: holdError, agentId }, "agent.queue.hold_failed");
+          });
       })
       .finally(() => {
         this.drains.delete(agentId);
@@ -264,18 +322,23 @@ export class AgentQueueRunner {
         return;
       }
       if (await this.host.isArchived(agentId)) return;
-      const next = await this.store.dequeueNext(agentId);
-      if (!next) return;
-      this.host.publish(agentId);
-      seenSeq = this.terminalSeq;
-      try {
-        await this.deliver(agentId, next, "start");
-      } catch (error) {
-        this.logger.error(
-          { err: error, agentId, entryId: next.entry.id },
-          "agent.queue.delivery_failed",
-        );
-      }
+      const delivered = await this.host.withMutation(agentId, async () => {
+        const next = await this.store.dequeueNext(agentId);
+        if (!next) return false;
+        this.host.publish(agentId);
+        seenSeq = this.terminalSeq;
+        try {
+          await this.deliver(agentId, next, "start");
+        } catch (error) {
+          if (error instanceof HandoffOwnershipError) throw error;
+          this.logger.error(
+            { err: error, agentId, entryId: next.entry.id },
+            "agent.queue.delivery_failed",
+          );
+        }
+        return true;
+      });
+      if (!delivered) return;
     }
   }
 
@@ -300,7 +363,7 @@ export class AgentQueueRunner {
         ? await waiter.deliver(delivery)
         : await this.deliverWithoutSender(agentId, delivery);
     } catch (error) {
-      if (mode === "steer") {
+      if (mode === "steer" || error instanceof HandoffOwnershipError) {
         await this.putBack(agentId, taken, waiter);
       } else {
         await this.store.discard(agentId, taken.entry);

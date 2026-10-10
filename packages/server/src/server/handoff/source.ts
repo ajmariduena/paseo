@@ -59,6 +59,7 @@ import { HandoffContextSchema, handoffContextDirectory } from "./context.js";
 import { HandoffHistorySegmentSchema, HANDOFF_PREVIOUS_SEGMENTS_MAX } from "./history-segments.js";
 import type { HandoffDestination } from "./destination.js";
 import type { PullRequestWatcher } from "../pull-request-watch/watcher.js";
+import type { AgentQueueRunner } from "../agent-queue/runner.js";
 import {
   writeHandoffHistory,
   readHandoffHistory,
@@ -134,6 +135,7 @@ interface SourceOptions {
   terminals: Pick<TerminalManager, "listDirectories" | "getTerminals" | "killTerminalAndWait">;
   setup: Pick<WorkspaceSetupRuntime, "stop" | "activeIds">;
   pullRequestWatches: Pick<PullRequestWatcher, "reviewForHandoff" | "stopForHandoff">;
+  queues: Pick<AgentQueueRunner, "holdForHandoff">;
   onWorkspaceChanged?: (workspaceId: string) => Promise<void>;
 }
 interface SourceRequest {
@@ -680,6 +682,7 @@ export class HandoffSource {
   }
 
   private async stopWriters(source: SourceHandoffStatus): Promise<void> {
+    for (const agentId of source.agentIds) await this.options.queues.holdForHandoff(agentId);
     const terminals = await this.sourceTerminals(source);
     this.assertReviewedWriters(
       source.stoppedWorkReview,

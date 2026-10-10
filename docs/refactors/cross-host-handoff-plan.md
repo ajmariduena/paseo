@@ -564,6 +564,12 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   See the [stopped-work evidence](../qa-evidence/handoff-writers-review.txt) and its
   [desktop](../qa-evidence/handoff-watches-desktop.png) and
   [compact](../qa-evidence/handoff-watches-compact.png) review screenshots.
+  Source queues are held before writer shutdown. Queue mutation and delivery participate in
+  ownership admission; a handoff refusal restores an entry already taken for delivery with its
+  prompt intact. Cancellation leaves pending messages held until explicit resume. The queue and
+  isolated-daemon regressions are in the same stopped-work evidence. Queue transport, paused
+  destination installation, attachment portability, sender/delegation remapping and recovery of
+  uncertain delivery after a crash remain open.
   Twenty-nine form cases cover unavailable modes, inventory changes, lost replies, storage failures,
   exclusion pagination, duplicate submissions, closing during work, cancellation recovery and host journals advancing
   past local state, including destination lookup and selection failures. Reconstructed records retain

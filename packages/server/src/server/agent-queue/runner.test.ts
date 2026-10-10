@@ -1,4 +1,10 @@
 import { afterEach, expect, test } from "vitest";
+import { randomUUID } from "node:crypto";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { HandoffOwnership } from "../handoff/ownership.js";
+import { AgentQueueStore } from "./store.js";
 
 import {
   createControlledHost,
@@ -12,11 +18,161 @@ import {
 } from "../agent/message-dispatch.js";
 
 let activeHost: ControlledHost | null = null;
+let handoffDirectory: string | null = null;
 
 afterEach(async () => {
   await activeHost?.cleanup();
   activeHost = null;
+  if (handoffDirectory) await rm(handoffDirectory, { recursive: true, force: true });
+  handoffDirectory = null;
 });
+
+async function createHandoffHost() {
+  handoffDirectory = await mkdtemp(path.join(os.tmpdir(), "paseo-queue-handoff-"));
+  const ownership = new HandoffOwnership({
+    directory: path.join(handoffDirectory, "ownership"),
+    sourceServerId: "source",
+  });
+  await ownership.initialize();
+  const queueDirectory = path.join(handoffDirectory, "queues");
+  const host = createControlledHost({
+    handoffOwnership: ownership,
+    messageQueueStore: new AgentQueueStore(queueDirectory),
+  });
+  activeHost = host;
+  return { host, ownership, queueDirectory };
+}
+
+test.skipIf(process.platform === "win32")(
+  "handoff preserves queued prompts through turn closure and only delivers after cancellation and resume",
+  async () => {
+    const { host, ownership, queueDirectory } = await createHandoffHost();
+    const agentId = await host.createAgent({ steerable: false });
+    await host.startTurn(agentId, "current task");
+    const queued = await dispatchAgentMessageInBackground({
+      agentManager: host.agentManager,
+      agentStorage: host.agentStorage,
+      agentId,
+      messageId: "pending-task",
+      policy: { intent: "queue", prompt: "do this next", steerUnavailable: "replace" },
+      logger: host.logger,
+    });
+    let outcome = "pending";
+    void queued.settled.then(
+      (result) => {
+        outcome = result;
+        return outcome;
+      },
+      () => {
+        outcome = "failed";
+        return outcome;
+      },
+    );
+    const transferId = randomUUID();
+    await ownership.prepare({
+      id: transferId,
+      cwd: host.root,
+      workspaceId: "workspace",
+      agentIds: [agentId],
+      destinationServerId: "destination",
+      reservationId: randomUUID(),
+    });
+    host.session(agentId).completeTurn("current task done");
+    const queue = host.agentManager.messageQueue;
+    await expect.poll(() => queue.snapshot(agentId)?.held).toBe(true);
+    expect(queue.entries(agentId).map((entry) => entry.id)).toEqual(["pending-task"]);
+    expect(outcome).toBe("pending");
+    expect(host.session(agentId).startPrompts).toEqual(["current task"]);
+    const recovered = new AgentQueueStore(queueDirectory);
+    await recovered.load();
+    expect(recovered.peek(agentId)?.held).toBe(true);
+    await expect(queue.resume(agentId)).rejects.toThrow("held by handoff");
+    await expect(
+      queue.enqueue(
+        agentId,
+        {
+          id: "late-task",
+          origin: "user",
+          senderAgentId: null,
+          textPreview: "",
+          prompt: "late",
+          wake: null,
+        },
+        async () => "started",
+      ),
+    ).rejects.toThrow("held by handoff");
+    await expect(queue.edit(agentId, "pending-task", "changed")).rejects.toThrow("held by handoff");
+    await expect(queue.cancel(agentId, "pending-task")).rejects.toThrow("held by handoff");
+    await expect(queue.clear(agentId)).rejects.toThrow("held by handoff");
+    await expect(queue.cancelForHandoff(agentId, "pending-task")).rejects.toThrow(
+      "Only process-bound notifications",
+    );
+    await expect(queue.reorder(agentId, ["pending-task"])).rejects.toThrow("held by handoff");
+    await expect(queue.promoteToSteer(agentId, "pending-task")).rejects.toThrow("held by handoff");
+    await ownership.cancel(transferId);
+    expect(queue.snapshot(agentId)?.held).toBe(true);
+    await queue.resume(agentId);
+    await expect(queued.settled).resolves.toBe("started");
+    expect(host.session(agentId).startPrompts).toEqual(["current task", "do this next"]);
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "a handoff arriving during queued delivery restores the exact prompt before draining admission",
+  async () => {
+    const { host, ownership, queueDirectory } = await createHandoffHost();
+    const agentId = await host.createAgent({ steerable: false });
+    await host.startTurn(agentId, "current task");
+    const queue = host.agentManager.messageQueue;
+    const entered = Promise.withResolvers<void>();
+    const proceed = Promise.withResolvers<void>();
+    const prompt = [
+      { type: "text" as const, text: "analyze this exact image" },
+      { type: "image" as const, mimeType: "image/png", data: "aGVsbG8=" },
+    ];
+    const queued = await queue.enqueue(
+      agentId,
+      {
+        id: "image-task",
+        origin: "user",
+        senderAgentId: null,
+        textPreview: "",
+        prompt,
+        wake: null,
+      },
+      async () => {
+        entered.resolve();
+        await proceed.promise;
+        return ownership.withMutation({ cwd: host.root, agentId }, async () => "started" as const);
+      },
+    );
+    void queued.settled.catch(() => undefined);
+    host.session(agentId).completeTurn("current done");
+    await entered.promise;
+    const transferId = randomUUID();
+    await ownership.prepare({
+      id: transferId,
+      cwd: host.root,
+      workspaceId: "workspace",
+      agentIds: [agentId],
+      destinationServerId: "destination",
+      reservationId: randomUUID(),
+    });
+    proceed.resolve();
+    await ownership.drain(transferId);
+    await expect.poll(() => queue.snapshot(agentId)?.held).toBe(true);
+    expect(queue.entries(agentId)).toEqual([queued.entry]);
+    if (!queued.entry.promptFile) throw new Error("Missing queued prompt");
+    expect(
+      JSON.parse(
+        await readFile(path.join(queueDirectory, agentId, queued.entry.promptFile), "utf8"),
+      ),
+    ).toEqual(prompt);
+    await ownership.cancel(transferId);
+    await queue.resume(agentId);
+    await expect(queued.settled).resolves.toBe("started");
+  },
+);
 
 async function queueBehindTurn(
   input: { steerable: boolean },

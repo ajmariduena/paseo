@@ -1647,6 +1647,7 @@ export async function createPaseoDaemon(
   await handoffDestination.recoverActivations();
   const handoffSource = new HandoffSource({
     pullRequestWatches,
+    queues: agentManager.messageQueue,
     directory: path.join(config.paseoHome, "handoff", "source"),
     serverId,
     logger,

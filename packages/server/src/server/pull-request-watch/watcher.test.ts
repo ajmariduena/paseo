@@ -1,4 +1,5 @@
-import { writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
@@ -142,6 +143,7 @@ function comment(id: string, author: string, createdAt: number, body: string) {
 }
 
 interface Scenario {
+  handoffDirectory: string;
   ownership: HandoffOwnership;
   host: ControlledHost;
   forge: FakeForge;
@@ -158,22 +160,24 @@ let scenario: Scenario | null = null;
 afterEach(async () => {
   scenario?.watcher.close();
   await scenario?.host.cleanup();
+  if (scenario) await rm(scenario.handoffDirectory, { recursive: true, force: true });
   scenario = null;
 });
 
 async function startWatching(
   options: { busy?: boolean; sync?: typeof syncFilePublication } = {},
 ): Promise<Scenario> {
-  const host = createControlledHost();
+  const handoffDirectory = await mkdtemp(join(tmpdir(), "paseo-watch-handoff-"));
+  const ownership = new HandoffOwnership({
+    directory: join(handoffDirectory, "ownership"),
+    sourceServerId: "source",
+  });
+  await ownership.initialize();
+  const host = createControlledHost({ handoffOwnership: ownership });
   const forge = createFakeForge();
   const store = new PullRequestWatchStore(join(host.root, "pull-request-watches.json"), {
     sync: options.sync,
   });
-  const ownership = new HandoffOwnership({
-    directory: join(host.root, "handoff"),
-    sourceServerId: "source",
-  });
-  await ownership.initialize();
   const clock = { now: Date.parse("2026-10-04T12:00:00Z") };
   const logs: Record<string, unknown>[] = [];
   const logger = pino(
@@ -192,7 +196,7 @@ async function startWatching(
   });
   const agentId = await host.createAgent({ steerable: false });
   if (options.busy) await host.startTurn(agentId, "agent work");
-  scenario = { host, forge, store, watcher, clock, agentId, logs, ownership };
+  scenario = { host, forge, store, watcher, clock, agentId, logs, ownership, handoffDirectory };
   return scenario;
 }
 
