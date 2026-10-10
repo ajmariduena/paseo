@@ -3759,13 +3759,14 @@ for (const continuationMode of ["native", "context"] as const) {
       await source.daemon.daemon.handoffArchives.withVerifiedArchive(
         transferId,
         async (archive) => {
-          const { bundle } = await readHandoffBundle(archive, {
+          const { bundle, schedules } = await readHandoffBundle(archive, {
             sourceServerId: source.daemon.daemon.getServerId(),
             sourceWorkspaceId: workspaceId,
             sourceAgentIds: [agentId],
             manifestDigest: archive.manifest.entrypoint.sha256,
           });
-          expect(bundle.version).toBe(4);
+          expect(bundle.version).toBe(5);
+          expect(schedules).toEqual({ version: 1, schedules: [] });
           expect(bundle.conversations[0].pendingRestartNote).toEqual(notes);
         },
       );
