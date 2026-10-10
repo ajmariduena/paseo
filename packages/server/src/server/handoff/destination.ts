@@ -747,16 +747,16 @@ export class HandoffDestination {
   }
 
   list(input: {
-    sourceServerId: string;
-    sourceWorkspaceId: string;
+    sourceServerId?: string;
+    sourceWorkspaceId?: string;
     cursor?: string;
   }): HandoffDestinationPage {
     this.assertHealthy();
     const records = [...this.records.values()]
       .filter(
         (record) =>
-          record.sourceServerId === input.sourceServerId &&
-          record.sourceWorkspaceId === input.sourceWorkspaceId &&
+          (!input.sourceServerId || record.sourceServerId === input.sourceServerId) &&
+          (!input.sourceWorkspaceId || record.sourceWorkspaceId === input.sourceWorkspaceId) &&
           !(record.state === "cancelled" && record.cleanupComplete) &&
           record.state !== "active" &&
           (!input.cursor || record.transferId > input.cursor),
@@ -768,13 +768,25 @@ export class HandoffDestination {
       });
     const transfers = records
       .slice(0, 20)
-      .map(({ transferId, destinationCwd, continuationMode, conversationModes, state }) => ({
-        transferId,
-        destinationCwd,
-        continuationMode,
-        conversationModes,
-        state,
-      }));
+      .map(
+        ({
+          transferId,
+          sourceServerId,
+          sourceWorkspaceId,
+          destinationCwd,
+          continuationMode,
+          conversationModes,
+          state,
+        }) => ({
+          transferId,
+          sourceServerId,
+          sourceWorkspaceId,
+          destinationCwd,
+          continuationMode,
+          conversationModes,
+          state,
+        }),
+      );
     return { transfers, nextCursor: records.length > 20 ? transfers[19].transferId : null };
   }
 

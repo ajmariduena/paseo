@@ -283,6 +283,9 @@ export const HandoffDestinationPageSchema = z.object({
         continuationMode: true,
         conversationModes: true,
         state: true,
+      }).extend({
+        sourceServerId: z.string().min(1).optional(),
+        sourceWorkspaceId: z.string().min(1).optional(),
       }),
     )
     .max(20),
@@ -292,8 +295,8 @@ export type HandoffDestinationPage = z.infer<typeof HandoffDestinationPageSchema
 export const HandoffListDestinationRequestSchema = z.object({
   type: z.literal("workspace.handoff.list_destination.request"),
   requestId: z.string(),
-  sourceServerId: z.string().min(1),
-  sourceWorkspaceId: z.string().min(1),
+  sourceServerId: z.string().min(1).optional(),
+  sourceWorkspaceId: z.string().min(1).optional(),
   cursor: HandoffTransferIdSchema.optional(),
 });
 export const HandoffListDestinationResponseSchema = z.object({

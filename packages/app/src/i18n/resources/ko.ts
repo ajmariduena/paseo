@@ -3,6 +3,10 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ko: TranslationResources = {
   handoff: {
+    previousTransfers: "이전 페이지",
+    nextTransfers: "다음 페이지",
+    noPendingTransfers: "미완료 전송이 없습니다.",
+    sourceUnavailable: "원본 호스트를 사용할 수 없습니다",
     unsavedFiles: "이 앱의 저장되지 않은 파일",
     saveBeforePrepare:
       "준비 과정에서 이 파일들을 먼저 저장합니다. 이동하기 전에 충돌을 해결하세요.",
@@ -87,7 +91,7 @@ export const ko: TranslationResources = {
     forward:
       "대상에서 활성화를 완료하세요. 원본의 제어가 이미 해제되었을 수 있으므로 되돌릴 수 없습니다.",
     saving: "전송 저장 중…",
-    closeNotice: "이 창을 닫고 이 워크스페이스에서 다시 열어 재개할 수 있습니다.",
+    closeNotice: "이 창을 닫고 나중에 전송을 재개할 수 있습니다.",
     connectHosts: "계속하려면 두 호스트를 연결하세요",
     updateHosts: "두 호스트를 워크스페이스 이동을 지원하는 버전으로 업데이트하세요",
   },

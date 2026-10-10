@@ -1,4 +1,5 @@
 import { QuickPromptsSection } from "@/quick-prompts/settings-section";
+import { IncomingHandoffs } from "@/handoff/incoming";
 import {
   ArrowDown,
   ArrowUp,
@@ -313,6 +314,7 @@ export function HostWorkspacesPage({ serverId }: { serverId: string }) {
   const host = useHostProfile(serverId);
   const isConnected = useHostRuntimeIsConnected(serverId);
   const supportsWorktreeStorage = useHostFeature(serverId, "worktreeStorage");
+  const supportsHandoff = useHostFeature(serverId, "workspaceHandoff");
 
   if (!host) {
     return <HostNotFound />;
@@ -321,10 +323,13 @@ export function HostWorkspacesPage({ serverId }: { serverId: string }) {
   return (
     <View>
       {isConnected ? (
-        <SettingsSection title={t("settings.hostSections.workspaces")}>
-          {supportsWorktreeStorage ? <WorktreeStorageCard serverId={serverId} /> : null}
-          <AutoArchiveMergedWorkspacesCard serverId={serverId} />
-        </SettingsSection>
+        <>
+          <SettingsSection title={t("settings.hostSections.workspaces")}>
+            {supportsWorktreeStorage ? <WorktreeStorageCard serverId={serverId} /> : null}
+            <AutoArchiveMergedWorkspacesCard serverId={serverId} />
+          </SettingsSection>
+          {supportsHandoff ? <IncomingHandoffs key={serverId} destination={host} /> : null}
+        </>
       ) : (
         <View style={[settingsStyles.card, styles.emptyCard]}>
           <Text style={styles.emptyText}>{t("settings.host.workspaces.unavailable")}</Text>

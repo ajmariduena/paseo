@@ -2,7 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useFetchQuery } from "@/data/query";
 import { useSessionStore } from "@/stores/session-store";
-import { openHandoffForm } from "./form-model";
+import { openHandoffForm, type HandoffFormInput } from "./form-model";
 import type { HandoffOrigin } from "./persistence";
 import { handoffFormPorts, loadSavedHandoff } from "./runtime";
 
@@ -32,7 +32,7 @@ export function useHandoffAvailable(origin: HandoffOrigin): boolean {
   return supported || saved.isError || Boolean(saved.data);
 }
 
-export function useHandoffForm(origin: HandoffOrigin) {
+export function useHandoffForm(origin: HandoffFormInput) {
   const queryClient = useQueryClient();
   const [model] = useState(() =>
     openHandoffForm(origin, {

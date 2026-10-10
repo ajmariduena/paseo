@@ -1,7 +1,10 @@
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import { HANDOFF_CHUNK_BASE64_CHARS } from "./handoff.js";
-import { HandoffConversationPreviewSchema } from "./handoff-control.js";
+import {
+  HandoffConversationPreviewSchema,
+  HandoffDestinationPageSchema,
+} from "./handoff-control.js";
 import {
   AgentSnapshotPayloadSchema,
   AgentTimelineItemPayloadSchema,
@@ -17,6 +20,31 @@ import {
   validateQuickPrompts,
   HandoffGetConversationHistoryResponseSchema,
 } from "./messages.js";
+
+test("handoff discovery accepts global and scoped requests while origin metadata stays optional", () => {
+  const request = { type: "workspace.handoff.list_destination.request", requestId: "discover" };
+  expect(SessionInboundMessageSchema.parse(request)).toEqual(request);
+  const scoped = { ...request, sourceServerId: "source", sourceWorkspaceId: "workspace" };
+  expect(SessionInboundMessageSchema.parse(scoped)).toEqual(scoped);
+  const transfer = {
+    transferId: "00000000-0000-4000-8000-000000000001",
+    destinationCwd: "/work/moved",
+    continuationMode: "context",
+    state: "released",
+  };
+  const legacy = { transfers: [transfer], nextCursor: null };
+  expect(HandoffDestinationPageSchema.parse(legacy)).toEqual(legacy);
+  const current = { ...transfer, sourceServerId: "source", sourceWorkspaceId: "workspace" };
+  expect(HandoffDestinationPageSchema.parse({ transfers: [current], nextCursor: null })).toEqual({
+    transfers: [current],
+    nextCursor: null,
+  });
+  const oldReader = HandoffDestinationPageSchema.shape.transfers.element.omit({
+    sourceServerId: true,
+    sourceWorkspaceId: true,
+  });
+  expect(oldReader.parse(current)).toEqual(transfer);
+});
 
 test.each([undefined, "a".repeat(64)])(
   "handoff history accepts optional segment selection: %s",

@@ -18,15 +18,14 @@ import {
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useHosts } from "@/runtime/host-runtime";
 import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
-import { handoffFormActions, type HandoffFormState } from "./form-model";
-import type { HandoffOrigin } from "./persistence";
+import { handoffFormActions, type HandoffFormState, type HandoffFormInput } from "./form-model";
 import { useHandoffForm } from "./use-handoff-form";
 import { shortenPath } from "@/utils/shorten-path";
 
 const TRANSFER_SNAP_POINTS = ["55%", "90%"];
 const REVIEW_SNAP_POINTS = ["80%", "95%"];
 
-interface Props extends HandoffOrigin {
+interface Props extends HandoffFormInput {
   visible: boolean;
   active: boolean;
   onClose: () => void;
@@ -35,7 +34,10 @@ interface Props extends HandoffOrigin {
 export function HandoffSheet(props: Props) {
   if (!props.visible || !props.active) return null;
   return (
-    <OpenHandoffSheet key={JSON.stringify([props.sourceServerId, props.workspaceId])} {...props} />
+    <OpenHandoffSheet
+      key={JSON.stringify([props.sourceServerId, props.workspaceId, props.recovery?.transferId])}
+      {...props}
+    />
   );
 }
 

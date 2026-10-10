@@ -3,6 +3,10 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ja: TranslationResources = {
   handoff: {
+    previousTransfers: "前のページ",
+    nextTransfers: "次のページ",
+    noPendingTransfers: "未完了の転送はありません。",
+    sourceUnavailable: "転送元のホストを利用できません",
     unsavedFiles: "このアプリの未保存ファイル",
     saveBeforePrepare: "準備時にまずこれらのファイルを保存します。移動前に競合を解決してください。",
     unsavedFileError: "{{path}} の変更を保存するか競合を解決してから、転送を再開してください。",
@@ -87,7 +91,7 @@ export const ja: TranslationResources = {
     forward:
       "移動先での有効化を完了してください。移動元はすでに制御を解放している可能性があり、元に戻せません。",
     saving: "転送を保存中…",
-    closeNotice: "このウィンドウを閉じ、このワークスペースから再度開いて再開できます。",
+    closeNotice: "このウィンドウを閉じて、後で転送を再開できます。",
     connectHosts: "両ホストを接続して続行してください",
     updateHosts: "両ホストをワークスペースの移動に対応したバージョンに更新してください",
   },

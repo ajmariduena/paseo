@@ -556,13 +556,16 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   completed. Other connected clients' buffers, concurrent windows and unsent conversation draft
   transfer remain open. Other workspace mutation surfaces need inventory.
   Source retirement still needs tombstones to replace broad path fences.
-  Twenty-six form cases cover unavailable modes, inventory changes, lost replies, storage failures,
+  Twenty-nine form cases cover unavailable modes, inventory changes, lost replies, storage failures,
   exclusion pagination, duplicate submissions, closing during work, cancellation recovery and host journals advancing
   past local state, including destination lookup and selection failures. Reconstructed records retain
   the reserved mode and reject mismatched host, workspace, reservation, conversation set or digest;
   a released source restores forward recovery. Selecting a destination queries its unfinished
   reservations in pages of twenty, scoped to the source host and workspace. The user chooses an
   existing transfer before resuming; discovery and selection do not prepare or publish work.
+  Destination host settings also list unfinished transfers across origins in pages of twenty.
+  Selecting a row reconstructs the same transfer without a cached source workspace or paired source
+  host. Failed lookup stays retryable; a response after closing the form does not save or activate it.
   A matching source cancellation tombstone or cancelled destination record restores cancellation
   intent. Pending cleanup offers Resume; starting a new transfer requires completed cleanup.
   The workspace menu keeps saved recovery accessible after an offline reload. A damaged local
@@ -570,7 +573,8 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   release, its authenticated journal also restores the original plan with the source offline and no
   local transfer record. Earlier phases still require source confirmation. The network regression
   discovers twenty-one reservations after destination restart,
-  verifies both scope filters and excludes completed cancellation.
+  verifies both scope filters and excludes completed cancellation. Global lookup returns origin
+  identities and discovers reservations for a removed source while the source daemon is stopped.
   The network suite covers matching/mismatched Claude versions, missing source
   history and workflow artifacts without starting a provider turn during review. The feature
   gate is checked on both hosts before preparation; only isolated test daemons advertise it.
@@ -644,10 +648,14 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   and [review](../qa-evidence/handoff-review-compact.png), [pending transfers](../qa-evidence/handoff-existing-transfers.png), [desktop](../qa-evidence/handoff-app-desktop.png) / [compact](../qa-evidence/handoff-app-compact.png)
   screenshots. The desktop recovery case now deletes local transfer state, reloads with the source
   shut down, selects the destination's accepted release and finishes activation; see the
-  [recovered delivery](../qa-evidence/handoff-release-offline.png). Destination lookup starts after
-  selecting that host from a known source workspace. Cleanup with the source offline is covered after
-  recovering and persisting the local transfer intent. Discovery when the source workspace itself
-  is absent from the app, pinned-key client persistence,
+  [recovered delivery](../qa-evidence/handoff-release-offline.png). Destination settings provide the
+  entrypoint when the source host and workspace are absent from the app. Desktop and compact browser
+  cases remove the source host, page forward and back, refuse an unreleased reservation, retry a real
+  activation conflict and verify destination bytes and navigation. See the
+  [desktop list](../qa-evidence/handoff-incoming-desktop.png),
+  [compact list](../qa-evidence/handoff-incoming-compact.png) and
+  [compact recovery](../qa-evidence/handoff-incoming-recovery-compact.png). Cleanup with the source
+  offline is covered after recovering and persisting the local transfer intent. Pinned-key client persistence,
   provider-discovered integration/resource dispositions,
   concurrent windows and other connected clients' unsaved buffers and conversation draft transfer,
   complete source mutation affordances and native-platform evidence remain open. Provider-discovered

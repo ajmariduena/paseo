@@ -143,6 +143,87 @@ async function editedForm(ports: HandoffFormPorts) {
   return model;
 }
 
+it("opens a destination-selected transfer independently of cached source workspace state", async () => {
+  const { ports, persistence } = fixture();
+  const target = { serverId: "destination", label: "VPS" };
+  ports.load = async () => {
+    throw new Error("Source workspace cache is unavailable");
+  };
+  ports.recoverDestination = async (selectedOrigin, selectedHost, id) => {
+    expect(selectedOrigin).toEqual(origin);
+    expect(selectedHost).toEqual(target);
+    expect(id).toBe(transferId);
+    return restoreReleasedHandoffRecord({
+      origin,
+      destination: target,
+      snapshot: { ...destination, state: "released" },
+    });
+  };
+  const model = openHandoffForm(
+    { ...origin, recovery: { destination: target, transferId } },
+    ports,
+  );
+  await model.load();
+  expect(model.getState()).toMatchObject({
+    kind: "transfer",
+    record: { transferId, intent: "activate" },
+  });
+  expect(await persistence.load(origin)).toMatchObject({ transferId, intent: "activate" });
+  expect(handoffFormActions(model.getState()).canCancel).toBe(false);
+  model.close();
+});
+
+it("retries the same destination selection after a recovery error without starting a transfer", async () => {
+  const { ports, calls, persistence } = fixture();
+  const target = { serverId: "destination", label: "VPS" };
+  let attempts = 0;
+  ports.recoverDestination = async (_origin, _host, id) => {
+    expect(id).toBe(transferId);
+    if (++attempts === 1) throw new Error("Destination disconnected");
+    return restoreReleasedHandoffRecord({
+      origin,
+      destination: target,
+      snapshot: { ...destination, state: "released" },
+    });
+  };
+  const model = openHandoffForm(
+    { ...origin, recovery: { destination: target, transferId } },
+    ports,
+  );
+  await model.load();
+  expect(model.getState()).toEqual({ kind: "load_error", message: "Destination disconnected" });
+  expect(await persistence.load(origin)).toBeNull();
+  await model.load();
+  expect(model.getState()).toMatchObject({ kind: "transfer", record: { transferId } });
+  expect(attempts).toBe(2);
+  expect(calls).toEqual([]);
+  model.close();
+});
+
+it("closing a selected recovery before it returns does not persist or activate it", async () => {
+  const { ports, calls, persistence } = fixture();
+  const target = { serverId: "destination", label: "VPS" };
+  const pending = deferred();
+  ports.recoverDestination = async () => {
+    await pending.promise;
+    return restoreReleasedHandoffRecord({
+      origin,
+      destination: target,
+      snapshot: { ...destination, state: "released" },
+    });
+  };
+  const model = openHandoffForm(
+    { ...origin, recovery: { destination: target, transferId } },
+    ports,
+  );
+  const loading = model.load();
+  model.close();
+  pending.resolve();
+  await loading;
+  expect(await persistence.load(origin)).toBeNull();
+  expect(calls).toEqual([]);
+});
+
 async function reviewedForm(ports: HandoffFormPorts) {
   const model = await editedForm(ports);
   await model.review();

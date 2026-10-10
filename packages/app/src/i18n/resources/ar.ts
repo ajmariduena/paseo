@@ -3,6 +3,10 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ar: TranslationResources = {
   handoff: {
+    previousTransfers: "الصفحة السابقة",
+    nextTransfers: "الصفحة التالية",
+    noPendingTransfers: "لا توجد عمليات نقل غير مكتملة.",
+    sourceUnavailable: "المضيف المصدر غير متاح",
     unsavedFiles: "ملفات غير محفوظة في هذا التطبيق",
     saveBeforePrepare: "يحفظ التحضير هذه الملفات أولاً. حلّ التعارضات قبل النقل.",
     unsavedFileError: "احفظ التغييرات في {{path}} أو حلّ التعارضات، ثم استأنف النقل.",
@@ -85,7 +89,7 @@ export const ar: TranslationResources = {
     paused: "حُفظ النقل. استأنف لفحص المضيفين والمتابعة.",
     forward: "أكمل التفعيل في الوجهة. ربما حرّر المصدر التحكم بالفعل ولا يمكن التراجع عن النقل.",
     saving: "جارٍ حفظ النقل…",
-    closeNotice: "يمكنك إغلاق هذه النافذة وإعادة فتحها من مساحة العمل لاستئناف النقل.",
+    closeNotice: "يمكنك إغلاق هذه النافذة واستئناف النقل لاحقًا.",
     connectHosts: "اربط المضيفين للمتابعة",
     updateHosts: "حدّث المضيفين إلى إصدار يدعم نقل مساحات العمل",
   },

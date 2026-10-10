@@ -11,6 +11,7 @@ import { installDaemonWebSocketGate } from "../support/helpers/daemon-websocket-
 import { wsRoutePatternForPort } from "../support/helpers/daemon-port";
 import { composerLocator } from "../support/helpers/composer";
 import { waitForSettledPosition } from "../support/helpers/sheet-layout";
+import { removeHostFromHostPage } from "../support/helpers/settings";
 import {
   handoffHosts as hosts,
   openHandoff,
@@ -18,6 +19,19 @@ import {
   forgetTransfer,
   reconnectSourceDestination,
 } from "../support/helpers/workspace-handoff";
+
+function forgetSeededHost(sourceId: string) {
+  const key = "@paseo:e2e-extra-hosts";
+  const extra: Array<{ serverId: string }> = JSON.parse(localStorage.getItem(key) ?? "[]");
+  localStorage.setItem(key, JSON.stringify(extra.filter(({ serverId }) => serverId !== sourceId)));
+}
+
+function registryIncludesHost(sourceId: string) {
+  const registry: Array<{ serverId: string }> = JSON.parse(
+    localStorage.getItem("@paseo:daemon-registry") ?? "[]",
+  );
+  return registry.some(({ serverId }) => serverId === sourceId);
+}
 
 function hasRecoveredLocalWork() {
   for (const [key, value] of Object.entries(localStorage)) {
@@ -561,6 +575,111 @@ test.describe("workspace handoff", () => {
         expect(remaining.result?.transfers.map((transfer) => transfer.transferId)).toEqual([
           firstId,
         ]);
+      } finally {
+        await host.close();
+      }
+    });
+  }
+
+  for (const layout of ["desktop", "compact"] as const) {
+    test(`${layout} discovers incoming transfers after forgetting the source host and workspace`, async ({
+      page,
+    }, testInfo) => {
+      test.setTimeout(160_000);
+      if (layout === "compact") await page.setViewportSize({ width: 390, height: 844 });
+      const host = await hosts(page);
+      try {
+        const { prepareWorkspaceHandoff, activateWorkspaceHandoff } =
+          await import("../../../client/dist/workspace-handoff.js");
+        const transferId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+        const staged = await prepareWorkspaceHandoff({
+          source: host.sourceClient,
+          destination: host.destinationClient,
+          transferId,
+          workspaceId: host.workspace.workspaceId,
+          destinationParent: host.destinationParent,
+          continuationMode: "context",
+        });
+        await mkdir(staged.destinationCwd);
+        await expect(
+          activateWorkspaceHandoff({
+            sourceServerId: host.source.serverId,
+            getSource: () => host.sourceClient,
+            destination: host.destinationClient,
+            transferId,
+          }),
+        ).rejects.toThrow("Destination checkout already exists");
+        for (let index = 1; index <= 20; index++) {
+          const result = await host.destinationClient.handoffReserveDestination({
+            sourceServerId: "unpaired-source",
+            sourceWorkspaceId: "missing-workspace",
+            transferId: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+            sourceAgentIds: [],
+            destinationParent: host.destinationParent,
+            continuationMode: "context",
+          });
+          expect(result.error).toBeNull();
+        }
+        await page.goto(`/settings/hosts/${host.source.serverId}/host`);
+        // Do not let the fixture re-pair the removed source on subsequent reloads.
+        await page.evaluate(forgetSeededHost, host.source.serverId);
+        await removeHostFromHostPage(page, host.source.serverId);
+        await host.source.close();
+        await forgetTransfer(page, host.source.serverId, host.workspace.workspaceId);
+        const gate = await installDaemonWebSocketGate(
+          page,
+          wsRoutePatternForPort(host.destination.endpoint.split(":").at(-1)!),
+        );
+        const responseType = "workspace.handoff.list_destination.response";
+        gate.holdNextServerMessage(responseType);
+        await page.goto(`/settings/hosts/${host.destination.serverId}/workspaces`);
+        await gate.waitForHeldServerMessage(responseType);
+        await expect(page.getByTestId("incoming-handoffs")).toContainText("Loading...");
+        await expect(page.getByTestId("incoming-handoffs-empty")).toHaveCount(0);
+        gate.releaseHeldServerMessage(responseType);
+        const firstId = "00000000-0000-4000-8000-000000000001";
+        await expect(page.getByTestId(`incoming-handoff-${firstId}`)).toBeVisible();
+        await expect(page.getByTestId(`incoming-handoff-${transferId}`)).toHaveCount(0);
+        expect(await page.evaluate(registryIncludesHost, host.source.serverId)).toBe(false);
+        await expect(
+          savedTransfer(page, host.source.serverId, host.workspace.workspaceId),
+        ).rejects.toThrow("No saved handoff");
+        await page.screenshot({ path: testInfo.outputPath(`handoff-incoming-${layout}.png`) });
+        // A reservation still needs its absent source; the error stays retryable in the sheet.
+        await page.getByTestId(`incoming-handoff-${firstId}`).click();
+        const recoveryError = page.getByRole("alert");
+        await expect(recoveryError).toHaveText("Connect both hosts to continue");
+        await page.getByTestId("handoff-submit").click();
+        await expect(recoveryError).toHaveText("Connect both hosts to continue");
+        await page.getByRole("button", { name: "Close", exact: true }).click();
+        await page.getByTestId("incoming-handoffs-more").click();
+        await expect(page.getByTestId(`incoming-handoff-${transferId}`)).toBeVisible();
+        await page.getByTestId("incoming-handoffs-previous").click();
+        await expect(page.getByTestId(`incoming-handoff-${firstId}`)).toBeVisible();
+        await expect(page.getByTestId(`incoming-handoff-${transferId}`)).toHaveCount(0);
+        await page.getByTestId("incoming-handoffs-more").click();
+        await page.getByTestId(`incoming-handoff-${transferId}`).click();
+        await expect(page.getByTestId("handoff-submit")).toHaveText("Resume");
+        await expect(page.getByTestId("handoff-cancel")).toHaveCount(0);
+        await page.getByTestId("handoff-submit").click();
+        await expect(page.getByTestId("handoff-error")).toHaveText(
+          "Destination checkout already exists",
+        );
+        await page.screenshot({
+          path: testInfo.outputPath(`handoff-incoming-recovery-${layout}.png`),
+        });
+        await rmdir(staged.destinationCwd);
+        await page.getByTestId("handoff-submit").click();
+        await expect(page.getByTestId("handoff-status")).toHaveText(
+          "Workspace moved. Continue on the destination host.",
+        );
+        expect(await readFile(path.join(staged.destinationCwd, "prior-work.txt"), "utf8")).toBe(
+          "work from the source\n",
+        );
+        await page.getByTestId("handoff-submit").click();
+        await expect(page).toHaveURL(
+          new RegExp(`/h/${host.destination.serverId}/workspace/${staged.workspaceId}`),
+        );
       } finally {
         await host.close();
       }

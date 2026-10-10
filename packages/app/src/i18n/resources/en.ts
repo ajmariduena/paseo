@@ -1,5 +1,9 @@
 export const en = {
   handoff: {
+    previousTransfers: "Previous page",
+    nextTransfers: "Next page",
+    noPendingTransfers: "No unfinished transfers.",
+    sourceUnavailable: "Source host unavailable",
     unsavedFiles: "Unsaved files in this app",
     saveBeforePrepare: "Preparation saves these files first. Resolve any conflicts before moving.",
     unsavedFileError: "Save or resolve changes in {{path}}, then resume the transfer.",
@@ -83,7 +87,7 @@ export const en = {
     forward:
       "Finish activation on the destination. The source may already be released and cannot be used to roll back.",
     saving: "Saving transfer…",
-    closeNotice: "You can close this window and reopen it from this workspace to resume.",
+    closeNotice: "You can close this window and resume the transfer later.",
     connectHosts: "Connect both hosts to continue",
     updateHosts: "Update both hosts to a version that supports workspace handoff",
   },

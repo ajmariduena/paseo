@@ -9,15 +9,58 @@ restarts the destination after receipt acceptance and finishes activation with t
 The browser case now shuts down the source after destination receipt acceptance, deletes the
 local transfer record, reloads the page, selects that transfer on the destination, restores its
 original identity and completes activation. Recovery exposes Resume and no cancellation action.
-The screenshot handoff-release-offline.png shows the restored plan before activation. This still
-starts from a known source workspace in the app; global discovery without that workspace is open.
+The screenshot handoff-release-offline.png shows the restored plan before activation. That earlier
+case starts from a known source workspace; destination settings now provide an independent entrypoint.
 
-The 26 form cases include released, activating and active recovery, preservation of context mode,
+Destination discovery no longer requires a source workspace in the app. The network case first
+failed because scoped list entries lacked origin identities. It now verifies global and filtered
+pagination after destination restart, including a removed source and completed-cleanup exclusion.
+The desktop and compact Chromium cases remove the source through Settings, shut down its daemon,
+clear local transfer state and find the accepted release on the second page of destination host settings.
+They check initial loading, forward/backward pages, a retryable error for an unreleased reservation,
+a real destination path conflict, activation retry, restored file bytes and destination navigation.
+Its first runs exposed test issues: the fixture removed the host before the UI action, the lookup
+error used a different selector, and compact sheet content renders outside its header. Assertions
+now use the visible alert and close button across layouts, without changing production behavior.
+Screenshot review also corrected the shared close notice so it no longer directs destination recovery back to an absent source workspace.
+
+The 29 form cases include selected destination recovery without cached source state, retry of the
+same selection, closing during lookup, released/activating/active recovery, preservation of context mode,
 and refusals for pre-release states, absent digest, wrong workspace/source or identical hosts.
 The network and browser cases use isolated Linux daemons and a workspace without conversations.
 They establish transaction and UI behavior, not authenticated-provider or physical-host continuity.
-This update ran desktop Chromium only; Electron, native mobile and MacBook/VPS remain untested.
+The earlier offline release case ran desktop Chromium only; Electron, native mobile and MacBook/VPS
+remain untested.
 The main daemon was not restarted. Workspace declarations were rebuilt; typecheck/lint/format pass.
+
+Current destination-discovery validation:
+
+$ npx vitest run src/server/handoff/archive.e2e.test.ts --testNamePattern="discovers destination-only reservations" --bail=1
+  Test Files  1 passed (1)
+       Tests  1 passed | 29 skipped (30)
+
+$ npx vitest run src/handoff/form-model.test.ts src/i18n/resources.test.ts --bail=1
+  Test Files  2 passed (2)
+       Tests  69 passed (69)
+  After the close-notice translation edit, all 40 resource cases passed again.
+
+$ npx vitest run src/messages.wire-compat.test.ts --bail=1
+  Test Files  1 passed (1)
+       Tests  40 passed (40)
+
+$ npm run test:e2e -- e2e/browser/workspace-handoff.spec.ts --grep 'desktop discovers incoming transfers' --workers=1
+  ✓ desktop discovers incoming transfers after forgetting the source host and workspace (38.9s)
+  1 passed (1.1m)
+
+$ npm run test:e2e -- e2e/browser/workspace-handoff.spec.ts --grep 'compact discovers incoming transfers' --workers=1
+  ✓  1 [browser] › e2e/browser/workspace-handoff.spec.ts:585:9 › workspace handoff › compact discovers incoming transfers after forgetting the source host and workspace (42.1s)
+  1 passed (1.3m)
+
+Screenshots: handoff-incoming-desktop.png, handoff-incoming-compact.png and
+handoff-incoming-recovery-compact.png. The compact recovery screenshot includes the corrected
+close notice. This is browser viewport evidence, not native iOS/Android validation.
+
+Earlier scoped-release validation:
 
 $ npx vitest run src/handoff/form-model.test.ts --bail=1
 

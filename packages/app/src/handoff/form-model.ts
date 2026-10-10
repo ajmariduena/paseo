@@ -16,6 +16,13 @@ interface DestinationHost {
   serverId: string;
   label: string;
 }
+export interface HandoffRecoveryTarget {
+  destination: DestinationHost;
+  transferId: string;
+}
+export interface HandoffFormInput extends HandoffOrigin {
+  recovery?: HandoffRecoveryTarget;
+}
 interface Draft {
   destination: DestinationHost | null;
   destinationParent: string;
@@ -106,7 +113,11 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function openHandoffForm(origin: HandoffOrigin, ports: HandoffFormPorts) {
+export function openHandoffForm(input: HandoffFormInput, ports: HandoffFormPorts) {
+  const origin: HandoffOrigin = {
+    sourceServerId: input.sourceServerId,
+    workspaceId: input.workspaceId,
+  };
   let state: HandoffFormState = { kind: "loading" };
   let closed = false;
   let loading = false;
@@ -218,7 +229,18 @@ export function openHandoffForm(origin: HandoffOrigin, ports: HandoffFormPorts) 
       loading = true;
       publish({ kind: "loading" });
       try {
-        const record = await ports.load(origin);
+        let record: HandoffRecord | null;
+        if (input.recovery) {
+          record = await ports.recoverDestination(
+            origin,
+            input.recovery.destination,
+            input.recovery.transferId,
+          );
+          if (closed) return;
+          await ports.save(record);
+        } else {
+          record = await ports.load(origin);
+        }
         publish(record ? { kind: "transfer", record, run: { status: "idle" } } : editingState());
       } catch (error) {
         publish({ kind: "load_error", message: message(error) });

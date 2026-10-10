@@ -3,6 +3,10 @@ import { pluginSettings } from "./plugin-settings";
 
 export const es: TranslationResources = {
   handoff: {
+    previousTransfers: "Página anterior",
+    nextTransfers: "Página siguiente",
+    noPendingTransfers: "No hay traslados pendientes.",
+    sourceUnavailable: "Host de origen no disponible",
     unsavedFiles: "Archivos sin guardar en esta app",
     saveBeforePrepare:
       "La preparación guarda estos archivos primero. Resuelve los conflictos antes de trasladar.",
@@ -89,8 +93,7 @@ export const es: TranslationResources = {
     forward:
       "Completa la activación en destino. El origen podría haber cedido ya el control y no permite revertir el traslado.",
     saving: "Guardando traslado…",
-    closeNotice:
-      "Puedes cerrar esta ventana y volver a abrirla desde este workspace para reanudar.",
+    closeNotice: "Puedes cerrar esta ventana y reanudar el traslado más tarde.",
     connectHosts: "Conecta ambos hosts para continuar",
     updateHosts: "Actualiza ambos hosts a una versión compatible con el traslado de workspaces",
   },

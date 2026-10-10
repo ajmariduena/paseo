@@ -527,6 +527,7 @@ test.skipIf(process.platform === "win32")(
     expect(last.result?.transfers).toEqual([
       {
         transferId: ids[20],
+        ...query,
         destinationCwd: (
           await destination.client.handoffGetDestinationStatus({ transferId: ids[20] })
         ).result?.destinationCwd,
@@ -563,6 +564,31 @@ test.skipIf(process.platform === "win32")(
     );
     expect(afterCancel.result?.nextCursor).toBeNull();
     expect((await destination.client.fetchWorkspaces()).entries).toEqual([]);
+    await stopHost(source);
+    const removedOrigin = {
+      sourceServerId: "removed-source",
+      sourceWorkspaceId: "removed-workspace",
+    };
+    const orphanId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+    await destination.client.handoffReserveDestination({
+      ...removedOrigin,
+      transferId: orphanId,
+      sourceAgentIds: [],
+      destinationParent: root,
+      continuationMode: "context",
+    });
+    const global = await destination.client.handoffListDestination({});
+    expect(global.error).toBeNull();
+    expect(global.result?.transfers.map(({ transferId }) => transferId)).toEqual(ids.slice(1));
+    expect(global.result?.nextCursor).toBe(ids[20]);
+    const remaining = await destination.client.handoffListDestination({ cursor: ids[20] });
+    expect(remaining.result?.transfers).toEqual([
+      expect.objectContaining({ ...removedOrigin, transferId: orphanId, state: "reserved" }),
+    ]);
+    expect(remaining.result?.nextCursor).toBeNull();
+    expect((await destination.client.handoffListDestination(removedOrigin)).result).toEqual(
+      remaining.result,
+    );
   },
   30_000,
 );

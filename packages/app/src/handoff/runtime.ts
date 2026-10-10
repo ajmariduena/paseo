@@ -72,6 +72,25 @@ export async function readSourceHandoffRecord(
 
 const persistence = createHandoffPersistence(AsyncStorage);
 export const loadSavedHandoff = persistence.load;
+
+export async function listIncomingHandoffs(serverId: string, cursor: string | null) {
+  const response = await connectedClient(serverId).handoffListDestination(cursor ? { cursor } : {});
+  if (response.error) throw new Error(response.error.message);
+  if (!response.result) throw new Error("Destination transfer list is missing");
+  const transfers = response.result.transfers.map((transfer) => {
+    if (!transfer.sourceServerId || !transfer.sourceWorkspaceId)
+      throw new Error(i18n.t("handoff.updateHosts"));
+    return {
+      ...transfer,
+      sourceServerId: transfer.sourceServerId,
+      sourceWorkspaceId: transfer.sourceWorkspaceId,
+    };
+  });
+  return { ...response.result, transfers };
+}
+export type IncomingHandoffPage = Awaited<ReturnType<typeof listIncomingHandoffs>>;
+export type IncomingHandoff = IncomingHandoffPage["transfers"][number];
+
 export const handoffFormPorts: HandoffFormPorts = {
   ...persistence,
   async listDestination(origin, host, cursor) {
@@ -91,6 +110,7 @@ export const handoffFormPorts: HandoffFormPorts = {
     if (response.error) throw new Error(response.error.message);
     if (!response.result) throw new Error("Destination handoff record is missing");
     const snapshot = response.result;
+    if (snapshot.transferId !== transferId) throw new Error(i18n.t("handoff.sourceChanged"));
     if (snapshot.state === "cancelled")
       return restoreCancelledHandoffRecord({ origin, destination, snapshot });
     if (["released", "activating", "active"].includes(snapshot.state))

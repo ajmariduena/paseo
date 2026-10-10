@@ -3,6 +3,10 @@ import { pluginSettings } from "./plugin-settings";
 
 export const zhCN: TranslationResources = {
   handoff: {
+    previousTransfers: "上一页",
+    nextTransfers: "下一页",
+    noPendingTransfers: "没有未完成的转移。",
+    sourceUnavailable: "源主机不可用",
     unsavedFiles: "此应用中尚未保存的文件",
     saveBeforePrepare: "准备时会先保存这些文件。请在迁移前解决冲突。",
     unsavedFileError: "请保存 {{path}} 的更改或解决冲突，然后继续迁移。",
@@ -82,7 +86,7 @@ export const zhCN: TranslationResources = {
     paused: "传输已保存。恢复以检查两台主机并继续。",
     forward: "请完成目标端的激活。源端可能已释放控制权，无法回退。",
     saving: "正在保存传输…",
-    closeNotice: "您可以关闭此窗口，然后从此工作区重新打开以恢复。",
+    closeNotice: "你可以关闭此窗口，稍后继续传输。",
     connectHosts: "请连接两台主机以继续",
     updateHosts: "请将两台主机更新到支持工作区迁移的版本",
   },

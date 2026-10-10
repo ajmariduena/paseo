@@ -3,6 +3,10 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ru: TranslationResources = {
   handoff: {
+    previousTransfers: "Предыдущая страница",
+    nextTransfers: "Следующая страница",
+    noPendingTransfers: "Нет незавершённых переносов.",
+    sourceUnavailable: "Исходный хост недоступен",
     unsavedFiles: "Несохранённые файлы в этом приложении",
     saveBeforePrepare:
       "При подготовке сначала сохраняются эти файлы. Разрешите конфликты перед переносом.",
@@ -89,7 +93,7 @@ export const ru: TranslationResources = {
     forward:
       "Завершите активацию назначения. Источник, возможно, уже передал владение; откат недоступен.",
     saving: "Сохранение переноса…",
-    closeNotice: "Можно закрыть окно и снова открыть его из этой рабочей области для продолжения.",
+    closeNotice: "Вы можете закрыть это окно и продолжить перенос позже.",
     connectHosts: "Подключите оба хоста, чтобы продолжить",
     updateHosts: "Обновите оба хоста до версии с поддержкой переноса рабочих областей",
   },
