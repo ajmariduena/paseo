@@ -2954,6 +2954,34 @@ export const WorkspaceMarkUnreadRequestSchema = z.object({
   requestId: z.string(),
 });
 
+export const GlanceSummaryItemSchema = z.object({
+  id: z.string(),
+  role: z.enum(["user", "assistant"]),
+  text: z.string(),
+});
+
+export const GlanceSummaryLineSchema = z.object({ id: z.string(), line: z.string() });
+
+export const GlanceSummaryPushItemSchema = z.object({
+  id: z.string(),
+  role: z.enum(["user", "assistant"]),
+  line: z.string(),
+  /** sha256 hex of `${role}\n${text}`, text trimmed and cut to 3000 characters. */
+  textHash: z.string(),
+});
+
+export const GlanceSummarizeRequestSchema = z.object({
+  type: z.literal("glance.summarize.request"),
+  requestId: z.string(),
+  agentId: z.string().optional(),
+  items: z.array(GlanceSummaryItemSchema).max(20),
+});
+
+export type GlanceSummaryItem = z.infer<typeof GlanceSummaryItemSchema>;
+export type GlanceSummaryLine = z.infer<typeof GlanceSummaryLineSchema>;
+export type GlanceSummaryPushItem = z.infer<typeof GlanceSummaryPushItemSchema>;
+export type GlanceSummarizeRequest = z.infer<typeof GlanceSummarizeRequestSchema>;
+
 export const SpeechReadAloudPrepareRequestSchema = z.object({
   type: z.literal("speech.read_aloud.prepare.request"),
   text: z.string(),
@@ -3744,6 +3772,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   CreationSubscribeRequestSchema,
   WorkspaceClearAttentionRequestSchema,
   WorkspaceMarkUnreadRequestSchema,
+  GlanceSummarizeRequestSchema,
   SpeechReadAloudPrepareRequestSchema,
   SpeechReadAloudSynthesizeRequestSchema,
   VoiceOrchestratorStartRequestSchema,
@@ -3938,6 +3967,13 @@ export const ServerCapabilityStateSchema = z.object({
   reason: z.string(),
 });
 
+export const GlanceSummaryCapabilitySchema = ServerCapabilityStateSchema.extend({
+  // COMPAT(glanceSummaryPrecompute): added in v0.11.1; absent on daemons that only summarize on request, remove optional after 2027-10-10.
+  precompute: z.boolean().optional(),
+});
+
+export type GlanceSummaryCapability = z.infer<typeof GlanceSummaryCapabilitySchema>;
+
 export const ServerVoiceCapabilitiesSchema = z.object({
   dictation: ServerCapabilityStateSchema,
   voice: ServerCapabilityStateSchema,
@@ -3971,6 +4007,8 @@ export const ServerCapabilitiesSchema = z
     voice: ServerVoiceCapabilitiesSchema.optional(),
     // COMPAT(readAloud): added in v0.10.3; absent on older daemons, remove optional after 2027-09-29.
     readAloud: ServerCapabilityStateSchema.optional(),
+    // COMPAT(glanceSummary): added in v0.11.1; absent on older daemons, remove optional after 2027-10-10.
+    glanceSummary: GlanceSummaryCapabilitySchema.optional(),
     // COMPAT(dictationSelection): added in v0.11.0; absent on older daemons, remove optional after 2027-10-04.
     dictationStt: ServerDictationSttSchema.optional(),
   })
@@ -5488,6 +5526,25 @@ export const WorkspaceMarkUnreadResponseSchema = z.object({
     error: z.string().nullable(),
   }),
 });
+
+export const GlanceSummarizeResponseSchema = z.object({
+  type: z.literal("glance.summarize.response"),
+  payload: z.object({
+    requestId: z.string(),
+    lines: z.array(GlanceSummaryLineSchema),
+    error: z.string().nullable(),
+  }),
+});
+
+export const GlanceSummaryMessageSchema = z.object({
+  type: z.literal("glance.summary"),
+  payload: z.object({
+    agentId: z.string(),
+    items: z.array(GlanceSummaryPushItemSchema),
+  }),
+});
+
+export type GlanceSummaryMessage = z.infer<typeof GlanceSummaryMessageSchema>;
 
 export const SpeechReadAloudPrepareResponseSchema = z.object({
   type: z.literal("speech.read_aloud.prepare.response"),
@@ -7756,6 +7813,8 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   CreationSubscribeResponseSchema,
   WorkspaceClearAttentionResponseSchema,
   WorkspaceMarkUnreadResponseSchema,
+  GlanceSummarizeResponseSchema,
+  GlanceSummaryMessageSchema,
   SpeechReadAloudPrepareResponseSchema,
   SpeechReadAloudSynthesizeResponseSchema,
   VoiceOrchestratorStartResponseSchema,
@@ -8433,6 +8492,7 @@ export const WSHelloMessageSchema = z.object({
       [CLIENT_CAPS.timelineReplacementInvalidation]: z.boolean().optional(),
       [CLIENT_CAPS.timelineNotifications]: z.boolean().optional(),
       [CLIENT_CAPS.browserHost]: BrowserAutomationHostCapabilitySchema.optional(),
+      [CLIENT_CAPS.glanceSummary]: z.boolean().optional(),
     })
     .passthrough()
     .optional(),

@@ -1,3 +1,4 @@
+import { GlanceSummaryService } from "./glance/service.js";
 import {
   createMessageReceiptsStub,
   createTestCreationService,
@@ -340,6 +341,7 @@ interface SessionForTestOptions {
   pluginRuntime?: SessionOptions["pluginRuntime"];
   orchestrationSkills?: SessionOptions["orchestrationSkills"];
   workspaceLabelService?: WorkspaceLabelService;
+  glanceSummary?: SessionOptions["glanceSummary"];
 }
 
 function createSessionForTest(options: SessionForTestOptions = {}): Session {
@@ -375,6 +377,7 @@ function createSessionForTest(options: SessionForTestOptions = {}): Session {
   const messages = options.messages ?? [];
 
   const sessionOptions: SessionOptions = {
+    glanceSummary: options.glanceSummary,
     messageReceipts: createMessageReceiptsStub(),
     creationService: createTestCreationService(),
     clientId: options.clientId ?? "test-client",
@@ -5962,4 +5965,94 @@ test("provider snapshots preserve versionless visibility while capabilities upda
     "plugin-provider",
   ]);
   expect(references.compactSnapshot!.entries[0]!.modes![0]!.icon).toBe("ShieldCheck");
+});
+
+describe("glance summarize requests", () => {
+  test("returns ordered lines through the session handler", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const service = new GlanceSummaryService({
+      agentManager: asAgentManager({}),
+      providerSnapshotManager: { listProviders: async () => [] },
+      getConfig: () => ({}),
+      logger: pino({ level: "silent" }),
+    });
+    const summarize = vi
+      .spyOn(service, "summarize")
+      .mockResolvedValue([{ id: "one", line: "Revisa el cambio." }]);
+    const session = createSessionForTest({
+      messages,
+      glanceSummary: service,
+      agentManager: { getAgent: vi.fn(() => ({ cwd: "/project" })) },
+    });
+    const items = [{ id: "one", role: "user" as const, text: "Revisa esto" }];
+    await session.handleMessage({
+      type: "glance.summarize.request",
+      requestId: "glance-1",
+      agentId: "agent",
+      items,
+    });
+    expect(summarize).toHaveBeenCalledWith({ items, cwd: "/project" });
+    expect(messages).toEqual([
+      {
+        type: "glance.summarize.response",
+        payload: {
+          requestId: "glance-1",
+          lines: [{ id: "one", line: "Revisa el cambio." }],
+          error: null,
+        },
+      },
+    ]);
+  });
+
+  test("returns an error and no lines on provider failure", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const service = new GlanceSummaryService({
+      agentManager: asAgentManager({}),
+      providerSnapshotManager: { listProviders: async () => [] },
+      getConfig: () => ({}),
+      logger: pino({ level: "silent" }),
+      generateStructured: async () => {
+        throw new Error("Provider failed");
+      },
+    });
+    const session = createSessionForTest({ messages, glanceSummary: service });
+    await session.handleMessage({
+      type: "glance.summarize.request",
+      requestId: "glance-2",
+      items: [{ id: "one", role: "user", text: "Revisa esto" }],
+    });
+    expect(messages).toEqual([
+      {
+        type: "glance.summarize.response",
+        payload: { requestId: "glance-2", lines: [], error: "Provider failed" },
+      },
+    ]);
+  });
+
+  test("glasses clients pair the host and only they receive pushed summaries", () => {
+    const targetedMessages: Array<{ source: object; message: SessionOutboundMessage }> = [];
+    const service = new GlanceSummaryService({
+      agentManager: asAgentManager({}),
+      providerSnapshotManager: { listProviders: async () => [] },
+      getConfig: () => ({}),
+      logger: pino({ level: "silent" }),
+    });
+    const session = createSessionForTest({ glanceSummary: service, targetedMessages });
+    const glasses = {};
+    const phone = {};
+    session.updateClientCapabilities({ selective_agent_timeline: true }, phone);
+    expect(service.isGlassesMode()).toBe(false);
+    session.updateClientCapabilities({ glance_summary: true }, glasses);
+    expect(service.isGlassesMode()).toBe(true);
+    targetedMessages.length = 0;
+
+    const payload = {
+      agentId: "agent",
+      items: [{ id: "seq:7", role: "assistant" as const, line: "Terminé.", textHash: "abc" }],
+    };
+    session.emitGlanceSummary(payload);
+    expect(targetedMessages).toEqual([
+      { source: glasses, message: { type: "glance.summary", payload } },
+    ]);
+  });
 });

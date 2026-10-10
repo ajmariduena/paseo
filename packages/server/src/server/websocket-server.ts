@@ -1,5 +1,6 @@
 import type { NoteStore } from "./notes/store.js";
 import type { HostMetricsSampler } from "./host-metrics/sampler.js";
+import type { GlanceSummaryService } from "./glance/service.js";
 import { stat } from "node:fs/promises";
 import type { CreationSnapshot } from "@getpaseo/protocol/messages";
 import { CreationService } from "./creation/index.js";
@@ -690,6 +691,7 @@ export class VoiceAssistantWebSocketServer {
     agentStop?: AgentStop | null,
     noteStore?: NoteStore,
     hostMetricsSampler?: HostMetricsSampler,
+    private readonly glanceSummaryService?: GlanceSummaryService,
   ) {
     this.logger = logger.child({ module: "websocket-server" });
     this.voiceOrchestrator = voiceOrchestrator;
@@ -1034,10 +1036,13 @@ export class VoiceAssistantWebSocketServer {
   private buildCurrentServerCapabilities(
     readiness: SpeechReadinessSnapshot | null,
   ): ServerCapabilities | undefined {
-    return buildServerCapabilities({
+    const capabilities = buildServerCapabilities({
       readiness,
       readAloud: this.readAloudService?.getCapability() ?? null,
     });
+    return this.glanceSummaryService
+      ? { ...capabilities, glanceSummary: this.glanceSummaryService.getCapability() }
+      : capabilities;
   }
 
   public updateServerCapabilities(capabilities: ServerCapabilities | null | undefined): void {
@@ -1539,6 +1544,7 @@ export class VoiceAssistantWebSocketServer {
       noteStore: this.noteStore,
       hostMetricsSampler: this.hostMetricsSampler,
       readAloud: this.readAloudService ?? undefined,
+      glanceSummary: this.glanceSummaryService,
       voiceOrchestrator: this.voiceOrchestrator,
       delegations: this.delegations,
       agentStop: this.agentStop,

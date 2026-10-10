@@ -1,3 +1,5 @@
+import type { GlanceSummaryService } from "./glance/service.js";
+import type { GlanceSummaryPush } from "./glance/precompute.js";
 import { searchTimeline } from "./agent/chat-search/index.js";
 import type { BrowserToolsBroker } from "./browser-tools/broker.js";
 import type { BrowserScreencastBroker } from "./browser-screencast/stream-broker.js";
@@ -562,6 +564,7 @@ export interface SessionOptions {
   directorySync?: DirectorySyncService;
   workspaceLabelService?: WorkspaceLabelService;
   readAloud?: ReadAloudService;
+  glanceSummary?: GlanceSummaryService;
   voiceOrchestrator?: VoiceOrchestrator | null;
   delegations?: Pick<DelegationService, "stopAll" | "disposeQueuedWake"> | null;
   /** Shared with the agent tools, which refuse calls from a run the user stopped. */
@@ -887,6 +890,7 @@ export class Session {
     WorkspaceUpdatesSubscriptionState
   >();
   private readonly workspaceLabelService: WorkspaceLabelService | null;
+  private readonly glanceSummary: GlanceSummaryService | undefined;
   private readonly readAloud: ReadAloudService | undefined;
   private readonly voiceOrchestrator: VoiceOrchestrator | null | undefined;
   private readonly delegations:
@@ -959,6 +963,7 @@ export class Session {
       directorySync,
       workspaceLabelService,
       readAloud,
+      glanceSummary,
       voiceOrchestrator,
       delegations,
       filesystem,
@@ -1040,6 +1045,7 @@ export class Session {
     this.directorySync = resolveDirectorySync(directorySync);
     this.workspaceLabelService = resolveWorkspaceLabelService(workspaceLabelService);
     this.readAloud = readAloud;
+    this.glanceSummary = glanceSummary;
     this.voiceOrchestrator = voiceOrchestrator;
     this.delegations = delegations;
     this.agentStop = resolveAgentStop(options, this.sessionLogger);
@@ -1393,6 +1399,9 @@ export class Session {
     appVersion = this.appVersion,
   ): void {
     this.clientCapabilities = parseClientCapabilities(capabilities);
+    if (this.clientCapabilities.has(CLIENT_CAPS.glanceSummary)) {
+      void this.glanceSummary?.enableGlassesMode();
+    }
     if (source) {
       this.delivery.attach(source, capabilities?.[CLIENT_CAPS.ownedSubscriptions] === true);
       this.clientSources.set(source, {
@@ -1511,6 +1520,21 @@ export class Session {
       this.timelineSubscriptions.size === 0
     )
       this.emit(message);
+  }
+
+  /** Only clients that advertised glance_summary parse this message. */
+  emitGlanceSummary(payload: GlanceSummaryPush): void {
+    const message: SessionOutboundMessage = { type: "glance.summary", payload };
+    if (!this.authorization.allowsOutbound(message)) return;
+    if (this.onMessageToSource && this.clientSources.size > 0) {
+      for (const source of this.clientSources.keys()) {
+        if (this.supportsForSource(CLIENT_CAPS.glanceSummary, source)) {
+          this.onMessageToSource(source, message);
+        }
+      }
+      return;
+    }
+    if (this.clientCapabilities.has(CLIENT_CAPS.glanceSummary)) this.onMessage(message);
   }
 
   supports(capability: ClientCapability): boolean {
@@ -2919,6 +2943,24 @@ export class Session {
     };
   }
 
+  private async handleGlanceSummarizeRequest(
+    request: Extract<SessionInboundMessage, { type: "glance.summarize.request" }>,
+  ): Promise<void> {
+    const { requestId, items, agentId } = request;
+    try {
+      if (!this.glanceSummary) throw new Error("Glance summaries are unavailable on this host");
+      const agent = agentId ? this.agentManager.getAgent(agentId) : null;
+      const lines = await this.glanceSummary.summarize({ items, cwd: agent?.cwd ?? homedir() });
+      this.emit({ type: "glance.summarize.response", payload: { requestId, lines, error: null } });
+    } catch (error) {
+      this.sessionLogger.warn({ err: error, agentId }, "Failed to summarize for glance");
+      this.emit({
+        type: "glance.summarize.response",
+        payload: { requestId, lines: [], error: getErrorMessage(error) },
+      });
+    }
+  }
+
   private async handleReadAloudPrepareRequest(
     request: Extract<SessionInboundMessage, { type: "speech.read_aloud.prepare.request" }>,
   ): Promise<void> {
@@ -3755,6 +3797,9 @@ export class Session {
     switch (msg.type) {
       case "list_commands_request":
         await this.handleListCommandsRequest(msg);
+        return;
+      case "glance.summarize.request":
+        await this.handleGlanceSummarizeRequest(msg);
         return;
       case "register_push_token":
         this.handleRegisterPushToken(msg.token);

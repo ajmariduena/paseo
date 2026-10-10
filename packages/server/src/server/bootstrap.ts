@@ -1,4 +1,7 @@
 import type { Dictionary, QuickPrompt } from "@getpaseo/protocol/messages";
+import { GlanceSummaryService } from "./glance/service.js";
+import { GlancePrecomputer } from "./glance/precompute.js";
+import { GlanceStore } from "./glance/store.js";
 import type { PluginRegistries } from "@getpaseo/protocol/plugin-registry";
 import { describeHookWorkspace } from "./plugins/lifecycle/index.js";
 import express from "express";
@@ -1799,6 +1802,23 @@ export async function createPaseoDaemon(
 
   const speechService = createDictationAwareSpeechService({ config, logger, daemonConfigStore });
   logger.info({ elapsed: elapsed() }, "Speech service created");
+  const glanceSummaryService = new GlanceSummaryService({
+    agentManager,
+    providerSnapshotManager,
+    getConfig: () => daemonConfigStore.get(),
+    logger,
+    store: GlanceStore.forPaseoHome(config.paseoHome),
+  });
+  await glanceSummaryService.load();
+  const glancePrecomputer = new GlancePrecomputer({
+    agents: agentManager,
+    service: glanceSummaryService,
+    logger,
+    publish: (push) => {
+      for (const session of wsServer?.listSessions() ?? []) session.emitGlanceSummary(push);
+    },
+  });
+  glancePrecomputer.start();
   const readAloudService = config.readAloud
     ? new ReadAloudService({
         config: config.readAloud,
@@ -1986,6 +2006,7 @@ export async function createPaseoDaemon(
               agentStop,
               noteStore,
               hostMetricsSampler,
+              glanceSummaryService,
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();
@@ -2075,6 +2096,7 @@ export async function createPaseoDaemon(
     // Freeze both ingress and registration before taking the agent closure snapshot.
     wsServer?.prepareForShutdown();
     agentManager.prepareForShutdown();
+    glancePrecomputer.stop();
     await restartRecovery
       .prepareForShutdown()
       .catch((error: unknown) => logger.error({ err: error }, "Failed to record restart intents"));
@@ -2094,6 +2116,7 @@ export async function createPaseoDaemon(
     await pluginRuntime.stopAllPlugins();
     terminalManager.killAll();
     await speechService.stop();
+    await glanceSummaryService.flush();
     await scheduleService.stop().catch(() => undefined);
     await relayRuntime?.stop().catch(() => undefined);
     if (wsServer) {
