@@ -3292,6 +3292,303 @@ test("retrying a timed-out reload waits for the original close to finish", async
   }
 });
 
+test("close joins runtime information work started by a session event", async () => {
+  const requested = deferred<void>();
+  const finished = deferred<void>();
+  const providerClosed = deferred<void>();
+  class EventRuntimeSession extends TestAgentSession {
+    hold = false;
+    override async getRuntimeInfo() {
+      const info = await super.getRuntimeInfo();
+      if (!this.hold) return info;
+      requested.resolve();
+      await finished.promise;
+      return { ...info, model: "final-model" };
+    }
+    override async close(): Promise<void> {
+      providerClosed.resolve();
+    }
+  }
+  const session = new EventRuntimeSession({ provider: "codex", cwd: process.cwd() });
+  const client = new (class extends TestAgentClient {
+    override async createSession() {
+      return session;
+    }
+  })();
+  const manager = new AgentManager({ clients: { codex: client }, logger });
+  const created = await manager.createAgent({ provider: "codex", cwd: process.cwd() }, undefined, {
+    workspaceId: undefined,
+  });
+  const states: ManagedAgent[] = [];
+  manager.subscribe(
+    (event) => {
+      if (event.type === "agent_state") states.push(event.agent);
+    },
+    { agentId: created.id, replayState: false },
+  );
+  vi.useFakeTimers();
+  try {
+    session.hold = true;
+    session.pushEvent({ type: "thread_started", provider: "codex", sessionId: session.id });
+    await requested.promise;
+    const closing = manager.closeAgent(created.id).catch((error: unknown) => error);
+    await providerClosed.promise;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(states.filter((state) => state.lifecycle === "closed")).toEqual([]);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(await closing).toMatchObject({
+      message: "Timed out draining agent runtime work; retry closing this runtime",
+    });
+    finished.resolve();
+    await manager.closeAgent(created.id);
+    await manager.flush();
+    expect(states.at(-1)).toMatchObject({
+      lifecycle: "closed",
+      runtimeInfo: { model: "final-model" },
+    });
+    expect(manager.getAgent(created.id)).toBeNull();
+  } finally {
+    finished.resolve();
+    await manager.closeAgent(created.id);
+    await manager.flush();
+    vi.useRealTimers();
+  }
+});
+
+test("a callback retained by a replaced session cannot mutate its replacement", async () => {
+  class RetainedCallbackSession extends TestAgentSession {
+    private retained: ((event: AgentStreamEvent) => void) | null = null;
+    override subscribe(callback: (event: AgentStreamEvent) => void): () => void {
+      this.retained = callback;
+      return super.subscribe(callback);
+    }
+    deliverLateEvent(event: AgentStreamEvent): void {
+      if (!this.retained) throw new Error("No retained callback");
+      this.retained(event);
+    }
+  }
+  const session = new RetainedCallbackSession({ provider: "codex", cwd: process.cwd() });
+  const client = new (class extends TestAgentClient {
+    override async createSession() {
+      return session;
+    }
+  })();
+  const manager = new AgentManager({ clients: { codex: client }, logger });
+  const created = await manager.createAgent(
+    { provider: "codex", cwd: process.cwd(), modeId: "auto" },
+    undefined,
+    {
+      workspaceId: undefined,
+    },
+  );
+  try {
+    await manager.reloadAgentSession(created.id);
+    session.deliverLateEvent({
+      type: "mode_changed",
+      provider: "codex",
+      currentModeId: "retired-mode",
+      availableModes: [],
+    });
+    await manager.flush();
+    expect(manager.getAgent(created.id)?.config.modeId).toBe("auto");
+  } finally {
+    await manager.closeAgent(created.id);
+  }
+});
+
+test("an event fault stops the provider but cannot certify closure or a later generation", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-event-fault-"));
+  const directory = join(workdir, "agents");
+  const storage = new AgentStorage(directory, logger);
+  class FaultingSession extends TestAgentSession {
+    failDescription = false;
+    closes = 0;
+    override describePersistence() {
+      if (this.failDescription) throw new Error("event persistence observation failed");
+      return super.describePersistence();
+    }
+    override async close(): Promise<void> {
+      this.closes += 1;
+    }
+  }
+  const session = new FaultingSession({ provider: "codex", cwd: workdir });
+  const client = new (class extends TestAgentClient {
+    override async createSession() {
+      return session;
+    }
+  })();
+  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+  const created = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+    workspaceId: undefined,
+  });
+  const generation = (await storage.get(created.id))?.runtimeGeneration;
+  try {
+    session.failDescription = true;
+    session.pushEvent({ type: "thread_started", provider: "codex", sessionId: session.id });
+    await manager.flush();
+    session.failDescription = false;
+    await expect(manager.closeAgent(created.id)).rejects.toThrow(
+      "event persistence observation failed",
+    );
+    expect(session.closes).toBe(1);
+    await expect(manager.closeAgent(created.id)).rejects.toThrow(
+      "event persistence observation failed",
+    );
+    expect(session.closes).toBe(2);
+    await expect(manager.reloadAgentSession(created.id)).rejects.toThrow(
+      "event persistence observation failed",
+    );
+    expect(client.resumeOverrides).toEqual([]);
+    expect((await storage.get(created.id))?.lastStatus).not.toBe("closed");
+
+    const restartedStorage = new AgentStorage(directory, logger);
+    const restartedManager = new AgentManager({
+      clients: { codex: new TestAgentClient() },
+      registry: restartedStorage,
+      logger,
+    });
+    await ensureAgentLoaded(created.id, {
+      agentManager: restartedManager,
+      agentStorage: restartedStorage,
+      logger,
+    });
+    await restartedManager.closeAgent(created.id);
+    expect((await restartedStorage.get(created.id))?.unresolvedRuntimeGenerations).toEqual([
+      generation,
+    ]);
+  } finally {
+    session.failDescription = false;
+    await manager.closeAgent(created.id).catch(() => undefined);
+    await manager.flush();
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("a throwing delivery subscriber cannot abort an event or block closure", async () => {
+  const client = new SessionRecordingAgentClient();
+  const manager = new AgentManager({ clients: { codex: client }, logger });
+  const created = await manager.createAgent({ provider: "codex", cwd: process.cwd() }, undefined, {
+    workspaceId: undefined,
+  });
+  const unsubscribe = manager.subscribe(
+    () => {
+      throw new Error("delivery unavailable");
+    },
+    { agentId: created.id, replayState: false },
+  );
+  const states: ManagedAgent[] = [];
+  manager.subscribe(
+    (event) => {
+      if (event.type === "agent_state") states.push(event.agent);
+    },
+    { agentId: created.id, replayState: false },
+  );
+  try {
+    client.sessions[0].pushEvent({
+      type: "mode_changed",
+      provider: "codex",
+      currentModeId: "changed",
+      availableModes: [],
+    });
+    await manager.flush();
+    expect(states.at(-1)?.config.modeId).toBe("changed");
+    await manager.closeAgent(created.id);
+    expect(states.at(-1)?.lifecycle).toBe("closed");
+  } finally {
+    unsubscribe();
+    await manager.closeAgent(created.id).catch(() => undefined);
+  }
+});
+
+test("failed restart-note settlement remains part of the runtime closure barrier", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-note-fault-"));
+  class FailingNoteStorage extends AgentStorage {
+    override async clearPendingRestartNote(): Promise<void> {
+      throw new Error("restart-note settlement failed");
+    }
+  }
+  const storage = new FailingNoteStorage(join(workdir, "agents"), logger);
+  const manager = new AgentManager({
+    clients: { codex: new TestAgentClient() },
+    registry: storage,
+    logger,
+  });
+  const created = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+    workspaceId: undefined,
+  });
+  const note = { kind: "task", id: "stopped-work", label: "Stopped background work" };
+  try {
+    await storage.addPendingRestartNote(created.id, [note]);
+    await manager.runAgent(created.id, "Continue");
+    await manager.flush();
+    await expect(manager.closeAgent(created.id)).rejects.toThrow("restart-note settlement failed");
+    expect((await storage.get(created.id))?.lastStatus).not.toBe("closed");
+    expect((await storage.get(created.id))?.pendingRestartNote).toEqual([note]);
+  } finally {
+    await manager.closeAgent(created.id).catch(() => undefined);
+    await manager.flush();
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("explicit close stops the provider before waiting for a blocked event handler", async () => {
+  const reading = deferred<void>();
+  const finishRead = deferred<void>();
+  class HeldTimelineStore extends RecordingTimelineStore {
+    override async getLastItem(agentId: string): Promise<AgentTimelineItem | null> {
+      reading.resolve();
+      await finishRead.promise;
+      return super.getLastItem(agentId);
+    }
+  }
+  const session = new CloseRecordingTestAgentSession({ provider: "codex", cwd: process.cwd() });
+  const client = new (class extends TestAgentClient {
+    override async createSession() {
+      return session;
+    }
+  })();
+  const manager = new AgentManager({
+    clients: { codex: client },
+    durableTimelineStore: new HeldTimelineStore(),
+    logger,
+  });
+  const created = await manager.createAgent({ provider: "codex", cwd: process.cwd() }, undefined, {
+    workspaceId: undefined,
+  });
+  const timeline: AgentTimelineItem[] = [];
+  manager.subscribe(
+    (event) => {
+      if (event.type === "agent_stream" && event.event.type === "timeline") {
+        timeline.push(event.event.item);
+      }
+    },
+    { agentId: created.id, replayState: false },
+  );
+  vi.useFakeTimers();
+  try {
+    session.pushEvent({ type: "turn_failed", provider: "codex", error: "provider failed" });
+    await reading.promise;
+    const closing = manager.closeAgent(created.id);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(session.closed).toBe(true);
+    expect(manager.getAgent(created.id)).not.toBeNull();
+    finishRead.resolve();
+    await closing;
+    expect(manager.getAgent(created.id)).toBeNull();
+    expect(timeline).toContainEqual(
+      expect.objectContaining({
+        type: "assistant_message",
+        text: expect.stringContaining("provider failed"),
+      }),
+    );
+  } finally {
+    finishRead.resolve();
+    await manager.closeAgent(created.id);
+    await manager.flush();
+    vi.useRealTimers();
+  }
+});
+
 test("failed reload retains its opening marker across a later resume", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-reload-recovery-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);
@@ -4502,7 +4799,10 @@ test("createAgent closes and rejects a provider session that cannot honor MCP se
     expect(sessionClosed).toBe(true);
     expect(promptStarted).toBe(false);
     expect(manager.getAgent(agentId)).toBeNull();
-    expect(await storage.get(agentId)).toBeNull();
+    expect(await storage.get(agentId)).toMatchObject({
+      lastStatus: "initializing",
+      runtimeGeneration: { id: expect.any(String), openedAt: expect.any(String) },
+    });
   } finally {
     rmSync(workdir, { recursive: true, force: true });
   }
@@ -4547,7 +4847,11 @@ test("resumeAgentFromPersistence closes and rejects a session that cannot honor 
 
     expect(replacement.closed).toBe(true);
     expect(manager.getAgent(agentId)).toBeNull();
-    expect(await storage.get(agentId)).toBeNull();
+    expect(await storage.get(agentId)).toMatchObject({
+      lastStatus: "initializing",
+      persistence: expect.objectContaining({ sessionId: handle.sessionId }),
+      runtimeGeneration: { id: expect.any(String), openedAt: expect.any(String) },
+    });
   } finally {
     rmSync(workdir, { recursive: true, force: true });
   }

@@ -1,5 +1,34 @@
 Handoff persistence recovery foundations — 2026-10-10
 
+Manager runtime work and closure:
+- A held runtime-info lookup reproduced a closed publication before its final metadata
+  arrived. Close and reload now join event work and tracked runtime-info/note descendants.
+  A bounded timeout leaves the same work owned; retry closes with the final metadata.
+- A callback retained after unsubscribe reproduced a mode change on the replacement.
+  Session events now retain the originating live-agent identity at admission and dequeue;
+  retired callbacks cannot mutate the replacement.
+- A failed event and a failed restart-note write each reproduced successful closure.
+  Their outcomes now remain separate from queue progress. Provider shutdown still runs,
+  but no closed snapshot is published. Retry/reload preserve the fault; reconstruction
+  and a later clean generation retain the unresolved predecessor in AgentStorage.
+- A throwing delivery subscriber reproduced lost delivery to the next subscriber.
+  Delivery faults are isolated and do not become authoritative event faults.
+- A blocked event handler reproduced a provider left running during explicit close.
+  Explicit closure now stops it before joining the handler, then publishes the received
+  error row before closing. The injected timeline store holds a real async boundary;
+  this is not certification of the optional durable timeline backend.
+- Eighty selected manager cases passed; the complete affected manager file then passed
+  all 270 cases outside the sandbox. A sandboxed Node child returned empty stdout even
+  in a standalone reproduction; the same harmless probe returned "ok" outside it.
+  No test assertions or provider behavior were bypassed. Two old MCP rejection
+  assertions now require the opening marker, including the retained resume handle.
+  The create assertion also failed at committed 5137b3795; no runtime behavior was changed
+  to satisfy those assertions.
+
+This is admission, drain and refusal coverage. It does not implement durable semantic repair,
+all manager/plugin/automation descendants, presentation coverage, process identity recovery,
+or fresh authenticated/physical-host continuity. A retained fault is not a repair proof.
+
 SDK callback ownership and permission settlement:
 - Queries retain their own admitted hooks and permission callbacks through retirement.
   The pinned SDK invokes control callbacks without awaiting them in its message reader;
@@ -86,6 +115,351 @@ repair evidence; callback quiescence and process-stop recovery; durable presenta
 coverage. The retained predecessor identities report uncertainty but do not implement
 its repair proof. A generation and lastStatus=closed are not a complete certificate.
 Internal agents and transient provider probes still need resource dispositions.
+
+Runtime-info closure regression before the fix
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/agent-manager.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  load multiple .env files with { path: ['.env.local', '.env'] }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  specify custom .env file path with { path: '/custom/path/.env' }
+
+ ❯ src/server/agent/agent-manager.test.ts (265 tests | 1 failed | 264 skipped) 41ms
+   × close joins runtime information work started by a session event 37ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/agent-manager.test.ts > close joins runtime information work started by a session event
+AssertionError: expected [ { …(35) } ] to deeply equal []
+
+- Expected
++ Received
+
+- []
++ [
++   {
++     "activeForegroundTurnId": null,
++     "activeTurnId": null,
++     "activeTurnStartedAt": null,
++     "attention": {
++       "requiresAttention": false,
++     },
++     "availableModes": [],
++     "backgroundTasks": [],
++     "bufferedPermissionResolutions": Map {},
++     "capabilities": {
++       "supportsDynamicModes": false,
++       "supportsMcpServers": false,
++       "supportsReasoningStream": false,
++       "supportsSessionListing": true,
++       "supportsSessionPersistence": false,
++       "supportsStreaming": false,
++       "supportsToolInvocations": false,
++     },
++     "config": {
++       "cwd": "/home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server",
++       "model": "gpt-5.4",
++       "provider": "codex",
++     },
++     "createdAt": 2026-10-10T00:10:29.584Z,
++     "currentModeId": null,
++     "cwd": "/home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server",
++     "finalizedForegroundTurnIds": Set {},
++     "foregroundTurnWaiters": Set {},
++     "historyPrimed": true,
++     "id": "7473648f-95c3-439d-885a-0c0b2962cffe",
++     "inFlightPermissionResponses": Set {},
++     "internal": false,
++     "labels": {},
++     "lastError": undefined,
++     "lastTurnOutcome": undefined,
++     "lastUsage": undefined,
++     "lastUserMessageAt": null,
++     "lifecycle": "closed",
++     "owner": undefined,
++     "pendingPermissions": Map {},
++     "pendingReplacement": false,
++     "persistence": {
++       "metadata": {
++         "cwd": "/home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server",
++       },
++       "provider": "codex",
++       "sessionId": "3f82688b-6051-4580-943e-7d4f981afc71",
++     },
++     "provider": "codex",
++     "runtimeGenerationId": undefined,
++     "runtimeInfo": {
++       "modeId": null,
++       "model": null,
++       "provider": "codex",
++       "sessionId": "3f82688b-6051-4580-943e-7d4f981afc71",
++     },
++     "session": null,
++     "unsubscribeSession": null,
++     "updatedAt": 2026-10-10T00:10:29.587Z,
++     "workspaceId": undefined,
++   },
++ ]
+
+ ❯ src/server/agent/agent-manager.test.ts:3330:68
+    3328|     await providerClosed.promise;
+    3329|     await vi.advanceTimersByTimeAsync(0);
+    3330|     expect(states.filter((state) => state.lifecycle === "closed")).toE…
+       |                                                                    ^
+    3331|     finished.resolve();
+    3332|     await closing;
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 264 skipped (265)
+   Start at  02:10:27
+   Duration  1.65s (transform 1.07s, setup 41ms, import 1.45s, tests 41ms, environment 0ms)
+
+
+
+Retired callback regression against the committed manager
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/agent-manager.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  write to custom object with { processEnv: myObject }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  specify custom .env file path with { path: '/custom/path/.env' }
+
+ ❯ src/server/agent/agent-manager.test.ts (266 tests | 1 failed | 265 skipped) 28ms
+   × a callback retained by a replaced session cannot mutate its replacement 25ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/agent-manager.test.ts > a callback retained by a replaced session cannot mutate its replacement
+AssertionError: expected 'retired-mode' to be 'auto' // Object.is equality
+
+Expected: "auto"
+Received: "retired-mode"
+
+ ❯ src/server/agent/agent-manager.test.ts:3368:57
+    3366|     session.deliverLateEvent({ type: "mode_changed", provider: "codex"…
+    3367|     await manager.flush();
+    3368|     expect(manager.getAgent(created.id)?.config.modeId).toBe("auto");
+       |                                                         ^
+    3369|   } finally {
+    3370|     await manager.closeAgent(created.id);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 265 skipped (266)
+   Start at  02:12:35
+   Duration  1.78s (transform 1.17s, setup 49ms, import 1.55s, tests 28ms, environment 0ms)
+
+
+
+Event failure before fault retention
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/agent-manager.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: ⚙️  write to custom object with { processEnv: myObject }
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  override existing env vars with { override: true }
+
+ ❯ src/server/agent/agent-manager.test.ts (267 tests | 1 failed | 266 skipped) 28ms
+   × an event fault stops the provider but cannot certify closure or a later generation 26ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/agent-manager.test.ts > an event fault stops the provider but cannot certify closure or a later generation
+AssertionError: promise resolved "undefined" instead of rejecting
+
+- Expected:
+Error {
+  "message": "rejected promise",
+}
+
++ Received:
+undefined
+
+ ❯ src/server/agent/agent-manager.test.ts:3399:48
+    3397|     await manager.flush();
+    3398|     session.failDescription = false;
+    3399|     await expect(manager.closeAgent(created.id)).rejects.toThrow("even…
+       |                                                ^
+    3400|     expect(session.closes).toBe(1);
+    3401|     await expect(manager.closeAgent(created.id)).rejects.toThrow("even…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 266 skipped (267)
+   Start at  02:13:16
+   Duration  1.47s (transform 962ms, setup 47ms, import 1.28s, tests 28ms, environment 0ms)
+
+
+
+Restart-note failure before task ownership
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/agent-manager.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: 🔐 encrypt with Dotenvx: https://dotenvx.com
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: 🛠️  run anywhere with `dotenvx run -- yourcommand`
+
+ ❯ src/server/agent/agent-manager.test.ts (269 tests | 1 failed | 268 skipped) 37ms
+   × failed restart-note settlement remains part of the runtime closure barrier 35ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/agent-manager.test.ts > failed restart-note settlement remains part of the runtime closure barrier
+AssertionError: promise resolved "undefined" instead of rejecting
+
+- Expected:
+Error {
+  "message": "rejected promise",
+}
+
++ Received:
+undefined
+
+ ❯ src/server/agent/agent-manager.test.ts:3456:48
+    3454|     await manager.runAgent(created.id, "Continue");
+    3455|     await manager.flush();
+    3456|     await expect(manager.closeAgent(created.id)).rejects.toThrow("rest…
+       |                                                ^
+    3457|     expect((await storage.get(created.id))?.lastStatus).not.toBe("clos…
+    3458|     expect((await storage.get(created.id))?.pendingRestartNote).toEqua…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 268 skipped (269)
+   Start at  02:14:44
+   Duration  1.70s (transform 1.10s, setup 56ms, import 1.47s, tests 37ms, environment 0ms)
+
+
+
+Delivery isolation regression before the fix
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/agent-manager.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: 🛡️ auth for agents: https://vestauth.com
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  enable debug logging with { debug: true }
+
+ ❯ src/server/agent/agent-manager.test.ts (268 tests | 1 failed | 267 skipped) 27ms
+   × a throwing delivery subscriber cannot abort an event or block closure 24ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/agent-manager.test.ts > a throwing delivery subscriber cannot abort an event or block closure
+AssertionError: expected undefined to be 'changed' // Object.is equality
+
+- Expected:
+"changed"
+
++ Received:
+undefined
+
+ ❯ src/server/agent/agent-manager.test.ts:3432:42
+    3430|     client.sessions[0].pushEvent({ type: "mode_changed", provider: "co…
+    3431|     await manager.flush();
+    3432|     expect(states.at(-1)?.config.modeId).toBe("changed");
+       |                                          ^
+    3433|     await manager.closeAgent(created.id);
+    3434|     expect(states.at(-1)?.lifecycle).toBe("closed");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 267 skipped (268)
+   Start at  02:14:07
+   Duration  1.73s (transform 1.14s, setup 51ms, import 1.50s, tests 27ms, environment 0ms)
+
+
+
+Provider stop blocked by event handler before the fix
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+stdout | src/server/agent/agent-manager.test.ts
+[dotenv@17.3.1] injecting env (0) from .env.test -- tip: 🛠️  run anywhere with `dotenvx run -- yourcommand`
+[dotenv@17.3.1] injecting env (0) from ../.env -- tip: ⚙️  specify custom .env file path with { path: '/custom/path/.env' }
+
+ ❯ src/server/agent/agent-manager.test.ts (270 tests | 1 failed | 269 skipped) 31ms
+   × explicit close stops the provider before waiting for a blocked event handler 27ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/agent/agent-manager.test.ts > explicit close stops the provider before waiting for a blocked event handler
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ src/server/agent/agent-manager.test.ts:3556:28
+    3554|     const closing = manager.closeAgent(created.id);
+    3555|     await vi.advanceTimersByTimeAsync(0);
+    3556|     expect(session.closed).toBe(true);
+       |                            ^
+    3557|     expect(manager.getAgent(created.id)).not.toBeNull();
+    3558|     finishRead.resolve();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 269 skipped (270)
+   Start at  02:19:00
+   Duration  1.89s (transform 1.18s, setup 48ms, import 1.65s, tests 31ms, environment 0ms)
+
+
+
+Final focused manager validation
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  80 passed | 190 skipped (270)
+   Start at  02:19:52
+   Duration  2.22s (transform 1.07s, setup 40ms, import 1.47s, tests 593ms, environment 0ms)
+
+
+
+Complete affected manager file, outside the subprocess sandbox
+
+ RUN  v4.1.6 /home/paseo/.paseo/worktrees/354ubo4e/juvenile-gorilla/packages/server
+
+
+ Test Files  1 passed (1)
+      Tests  270 passed (270)
+   Start at  02:23:51
+   Duration  11.37s (transform 986ms, setup 43ms, import 1.31s, tests 9.90s, environment 0ms)
+
+
+Manager barrier workspace checks
+$ npm run typecheck
+Completed successfully for all workspaces.
+
+
+> paseo@0.11.1 lint
+> oxlint
+
+Found 0 warnings and 0 errors.
+Finished in 2.9s on 5029 files with 177 rules using 4 threads.
+
+
+> paseo@0.11.1 format
+> oxfmt .
+
+Finished in 3781ms on 5374 files using 4 threads.
+
 
 Failed plan approval before callback settlement
 

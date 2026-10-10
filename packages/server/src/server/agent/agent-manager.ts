@@ -397,6 +397,7 @@ export interface ProviderAvailability {
 interface AgentManagerRescueTimeouts {
   reloadSessionCloseMs?: number;
   interruptSessionMs?: number;
+  runtimeDrainMs?: number;
 }
 
 interface ProviderEnabledFlag {
@@ -537,6 +538,11 @@ function resolveInitialAttention(input: AttentionState | undefined): AttentionSt
 interface StreamEventFlags {
   shouldDispatchEvent: boolean;
   shouldNotifyWaiters: boolean;
+}
+
+interface AgentRuntimeWork {
+  pending: Set<Promise<void>>;
+  failure: Error | null;
 }
 
 type ActiveTurnTerminalDisposition = "closed_current" | "stale" | "untracked";
@@ -885,6 +891,7 @@ export class AgentManager {
   private readonly providerSubagents = new ProviderSubagentStore();
   private readonly agentsAwaitingInitialSnapshotPersist = new Set<string>();
   private readonly sessionEventTails = new Map<string, Promise<void>>();
+  private readonly runtimeWork = new WeakMap<ActiveManagedAgent, AgentRuntimeWork>();
   private readonly steerEventBarriers = new Map<string, SteerEventBarrier>();
   private readonly foregroundMutationTails = new Map<string, Promise<void>>();
   private readonly runs = new AgentRunState();
@@ -961,11 +968,11 @@ export class AgentManager {
     this.appendSystemPrompt = options.appendSystemPrompt ?? "";
     this.logger = options.logger.child({ module: "agent", component: "agent-manager" });
     this.idleRuntimeTimeoutMs = options.idleRuntimeTimeoutMs;
+    const rescueTimeouts = options.rescueTimeouts ?? {};
     this.rescueTimeouts = {
-      reloadSessionCloseMs:
-        options.rescueTimeouts?.reloadSessionCloseMs ?? RELOAD_SESSION_CLOSE_TIMEOUT_MS,
-      interruptSessionMs:
-        options.rescueTimeouts?.interruptSessionMs ?? INTERRUPT_SESSION_TIMEOUT_MS,
+      runtimeDrainMs: rescueTimeouts.runtimeDrainMs ?? 3_000,
+      reloadSessionCloseMs: rescueTimeouts.reloadSessionCloseMs ?? RELOAD_SESSION_CLOSE_TIMEOUT_MS,
+      interruptSessionMs: rescueTimeouts.interruptSessionMs ?? INTERRUPT_SESSION_TIMEOUT_MS,
     };
     this.beforeSteerUnavailableFallback = options.beforeSteerUnavailableFallback;
     this.agentStreamCoalescer = new AgentStreamCoalescer({
@@ -1892,7 +1899,7 @@ export class AgentManager {
     try {
       // A persisted thread can have only one writer, even when its turn is idle.
       await this.closeReloadedSession(existing.session, agentId);
-      await this.drainSessionEvents(agentId);
+      await this.drainRuntimeForClosure(existing);
       this.refreshSessionPersistence(existing);
       const handle = existing.persistence;
       this.cancelRunningProviderSubagents(agentId);
@@ -2159,7 +2166,9 @@ export class AgentManager {
       },
       "agent.manager.close.start",
     );
-    await this.drainSessionEvents(agentId);
+    // Conditional eviction needs current liveness; explicit closure must stop writers
+    // even when an event handler is waiting on storage or another callback.
+    if (shouldClose) await this.drainSessionEvents(agentId);
     if (shouldClose && !shouldClose(agent)) return;
     if (beforeClose && !(await beforeClose(agent))) return;
     if (shouldClose && !shouldClose(agent)) return;
@@ -2167,7 +2176,7 @@ export class AgentManager {
     // Retain ownership until shutdown succeeds. A failed close may still own a
     // native writer, so publishing a resumable closed snapshot would orphan it.
     await agent.session.close();
-    await this.drainSessionEvents(agentId);
+    await this.drainRuntimeForClosure(agent);
     this.refreshSessionPersistence(agent);
     this.cancelRunningProviderSubagents(agentId);
     const closedAgent = this.prepareAgentForClosure(agent, "agent closed");
@@ -3199,7 +3208,7 @@ export class AgentManager {
         if (isAcceptedTurnStart || stagedEvent === stagedSubmittedPromptEcho) {
           continue;
         }
-        this.enqueueSessionEvent(agent.id, stagedEvent);
+        this.enqueueSessionEvent(agent, stagedEvent);
       }
       this.emitState(agent);
       this.logger.trace(
@@ -3242,20 +3251,30 @@ export class AgentManager {
     return pending && pending.length > 0 ? pending : null;
   }
 
-  private settleTurnNotes(agentId: string, turnId: string | undefined, completed: boolean): void {
+  private settleTurnNotes(
+    agent: ActiveManagedAgent,
+    turnId: string | undefined,
+    completed: boolean,
+  ): void {
+    const agentId = agent.id;
+    const registry = this.registry;
     if (turnId && this.handoffContextTurns.get(agentId) === turnId) {
       this.handoffContextTurns.delete(agentId);
-      if (completed && this.registry) {
-        void this.registry.completeHandoffContext(agentId).catch((error: unknown) => {
-          this.logger.warn({ err: error, agentId }, "Failed to mark handoff context delivered");
-        });
+      if (completed && registry) {
+        void this.trackRuntimeWork(agent, () => registry.completeHandoffContext(agentId)).catch(
+          (error: unknown) => {
+            this.logger.warn({ err: error, agentId }, "Failed to mark handoff context delivered");
+          },
+        );
       }
     }
     const carried = this.restartNoteTurns.get(agentId);
     if (!carried || carried.turnId !== turnId) return;
     this.restartNoteTurns.delete(agentId);
-    if (!completed || !this.registry) return;
-    void this.registry.clearPendingRestartNote(agentId, carried.work).catch((error: unknown) => {
+    if (!completed || !registry) return;
+    void this.trackRuntimeWork(agent, () =>
+      registry.clearPendingRestartNote(agentId, carried.work),
+    ).catch((error: unknown) => {
       this.logger.warn({ err: error, agentId }, "Failed to clear the pending restart note");
     });
   }
@@ -3525,7 +3544,7 @@ export class AgentManager {
           this.steerEventBarriers.delete(agent.id);
         }
         for (const event of barrier.events) {
-          this.enqueueSessionEvent(agent.id, event);
+          this.enqueueSessionEvent(agent, event);
         }
         await this.drainSessionEvents(agent.id);
       }
@@ -4579,14 +4598,21 @@ export class AgentManager {
     if (agent.unsubscribeSession) {
       return;
     }
-    const agentId = agent.id;
     const unsubscribe = agent.session.subscribe((event: AgentStreamEvent) => {
-      this.enqueueSessionEvent(agentId, event);
+      this.enqueueSessionEvent(agent, event);
     });
     agent.unsubscribeSession = unsubscribe;
   }
 
-  private enqueueSessionEvent(agentId: string, event: AgentStreamEvent): void {
+  private enqueueSessionEvent(agent: ActiveManagedAgent, event: AgentStreamEvent): void {
+    const agentId = agent.id;
+    if (this.agents.get(agentId) !== agent) {
+      this.logger.warn(
+        { agentId, eventType: event.type },
+        "Ignoring an event from a retired runtime",
+      );
+      return;
+    }
     this.logger.trace(
       {
         agentId,
@@ -4612,10 +4638,7 @@ export class AgentManager {
       .catch(() => undefined)
       .then(async () => {
         const current = this.agents.get(agentId);
-        if (!current) {
-          return;
-        }
-        if (current.session == null) {
+        if (current !== agent) {
           return;
         }
         this.logger.trace(
@@ -4628,7 +4651,7 @@ export class AgentManager {
           },
           "agent.manager.dequeue",
         );
-        await this.dispatchSessionEvent(current, event);
+        await this.trackRuntimeWork(agent, () => this.dispatchSessionEvent(current, event));
         return;
       })
       .catch((err) => {
@@ -4662,6 +4685,57 @@ export class AgentManager {
       if (this.sessionEventTails.get(agentId) === tail) {
         return;
       }
+    }
+  }
+
+  private getRuntimeWork(agent: ActiveManagedAgent): AgentRuntimeWork {
+    let work = this.runtimeWork.get(agent);
+    if (!work) {
+      work = { pending: new Set(), failure: null };
+      this.runtimeWork.set(agent, work);
+    }
+    return work;
+  }
+
+  private async trackRuntimeWork<T>(
+    agent: ActiveManagedAgent,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const work = this.getRuntimeWork(agent);
+    let complete = () => {};
+    const completion = new Promise<void>((resolveCompletion) => {
+      complete = resolveCompletion;
+    });
+    // Admit before invoking: operations can synchronously dispatch another callback.
+    work.pending.add(completion);
+    this.trackBackgroundTask(completion);
+    try {
+      return await operation();
+    } catch (error) {
+      work.failure ??= error instanceof Error ? error : new Error(String(error));
+      throw error;
+    } finally {
+      work.pending.delete(completion);
+      complete();
+    }
+  }
+
+  private async drainRuntimeWork(agent: ActiveManagedAgent): Promise<void> {
+    const work = this.getRuntimeWork(agent);
+    do {
+      await this.drainSessionEvents(agent.id);
+      await Promise.all(work.pending);
+    } while (this.sessionEventTails.has(agent.id) || work.pending.size > 0);
+    if (work.failure) throw work.failure;
+  }
+
+  private async drainRuntimeForClosure(agent: ActiveManagedAgent): Promise<void> {
+    const result = await this.waitWithTimeout({
+      operation: this.drainRuntimeWork(agent),
+      timeoutMs: this.rescueTimeouts.runtimeDrainMs,
+    });
+    if (result === "timed_out") {
+      throw new Error("Timed out draining agent runtime work; retry closing this runtime");
     }
   }
 
@@ -4829,27 +4903,31 @@ export class AgentManager {
     agent: ActiveManagedAgent,
     options?: { emit?: boolean },
   ): Promise<void> {
-    try {
-      const newInfo = await agent.session.getRuntimeInfo();
-      const changed =
-        newInfo.model !== agent.runtimeInfo?.model ||
-        newInfo.thinkingOptionId !== agent.runtimeInfo?.thinkingOptionId ||
-        newInfo.sessionId !== agent.runtimeInfo?.sessionId ||
-        newInfo.modeId !== agent.runtimeInfo?.modeId;
-      agent.runtimeInfo = newInfo;
-      if (!agent.persistence && newInfo.sessionId) {
-        agent.persistence = attachPersistenceCwd(
-          { provider: agent.provider, sessionId: newInfo.sessionId },
-          agent.cwd,
-        );
+    if (this.agents.get(agent.id) !== agent) return;
+    return this.trackRuntimeWork(agent, async () => {
+      try {
+        const newInfo = await agent.session.getRuntimeInfo();
+        if (this.agents.get(agent.id) !== agent) return;
+        const changed =
+          newInfo.model !== agent.runtimeInfo?.model ||
+          newInfo.thinkingOptionId !== agent.runtimeInfo?.thinkingOptionId ||
+          newInfo.sessionId !== agent.runtimeInfo?.sessionId ||
+          newInfo.modeId !== agent.runtimeInfo?.modeId;
+        agent.runtimeInfo = newInfo;
+        if (!agent.persistence && newInfo.sessionId) {
+          agent.persistence = attachPersistenceCwd(
+            { provider: agent.provider, sessionId: newInfo.sessionId },
+            agent.cwd,
+          );
+        }
+        // Emit state if runtimeInfo changed so clients get the updated model
+        if (changed && options?.emit !== false) {
+          this.emitState(agent);
+        }
+      } catch {
+        // Keep existing runtimeInfo if refresh fails.
       }
-      // Emit state if runtimeInfo changed so clients get the updated model
-      if (changed && options?.emit !== false) {
-        this.emitState(agent);
-      }
-    } catch {
-      // Keep existing runtimeInfo if refresh fails.
-    }
+    });
   }
 
   private async hydrateTimelineFromLegacyProviderHistory(
@@ -5362,7 +5440,7 @@ export class AgentManager {
       "agent.manager.turn.completed",
     );
     if (terminalDisposition === "stale") return;
-    this.settleTurnNotes(agent.id, eventTurnId, true);
+    this.settleTurnNotes(agent, eventTurnId, true);
     if (event.usage) {
       agent.lastUsage = { ...agent.lastUsage, ...event.usage };
     }
@@ -5413,7 +5491,7 @@ export class AgentManager {
       "handleStreamEvent: turn_failed",
     );
     if (terminalDisposition === "stale") return;
-    this.settleTurnNotes(agent.id, eventTurnId, false);
+    this.settleTurnNotes(agent, eventTurnId, false);
     if (!isForegroundEvent && !agent.activeForegroundTurnId) {
       agent.lifecycle = "error";
     }
@@ -5457,7 +5535,7 @@ export class AgentManager {
       "agent.manager.turn.canceled",
     );
     if (terminalDisposition === "stale") return;
-    this.settleTurnNotes(agent.id, eventTurnId, false);
+    this.settleTurnNotes(agent, eventTurnId, false);
     if (!isForegroundEvent && !agent.activeForegroundTurnId && !agent.pendingReplacement) {
       agent.lifecycle = "idle";
     }
@@ -5760,6 +5838,7 @@ export class AgentManager {
   }
 
   private emitState(agent: ManagedAgent, options?: { persist?: boolean }): void {
+    if (agent.lifecycle !== "closed" && this.agents.get(agent.id) !== agent) return;
     // Keep attention as an edge-triggered unread signal, not a level signal.
     this.checkAndSetAttention(agent);
     if (options?.persist !== false) {
@@ -6088,7 +6167,11 @@ export class AgentManager {
       if (!subscriber.agentId && this.eventBelongsToInternalAgent(event)) {
         continue;
       }
-      subscriber.callback(event);
+      try {
+        subscriber.callback(event);
+      } catch (error) {
+        this.logger.warn({ err: error, eventType: event.type }, "Agent event delivery failed");
+      }
     }
   }
 

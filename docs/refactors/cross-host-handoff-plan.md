@@ -263,8 +263,13 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   control requests share one query opening. Each query owns its SDK permission and hook callbacks;
   retirement cancels pending permissions and joins callbacks after SDK cleanup. Late callbacks and
   failed hook observations refuse certification. Failed or canceled plan approvals settle their
-  original SDK callback without a later approval or duplicate resolution. Manager descendants still
-  need a complete generation boundary. Record revision guards, semantic obligations and durable process-stop
+  original SDK callback without a later approval or duplicate resolution. Manager session events
+  retain their originating runtime identity. Close and reload join event handlers, runtime-info
+  refreshes and carried-note/context settlement; timeouts retain pending work. A handler or settlement
+  fault still stops the provider but refuses a closed snapshot. Its open generation remains unresolved
+  after restart and a later clean generation. Client delivery errors are isolated per subscriber.
+  This does not repair those faults or provide durable semantic obligations. The remaining manager
+  descendants, record revision guards, presentation coverage and durable process-stop
   recovery also remain open under the
   [conversation persistence contract](#conversation-persistence-contract).
 - `server/handoff/workspace.ts` and its neighboring tests cover Git and directory snapshots,

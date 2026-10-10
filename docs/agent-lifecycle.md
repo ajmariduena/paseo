@@ -31,6 +31,12 @@ retains its opening marker and the preceding session handle for retry; a later s
 does not certify that failed opening. Handoff requires recovery evidence for unresolved generations
 ([conversation persistence contract](refactors/cross-host-handoff-plan.md#conversation-persistence-contract)).
 
+A provider can be stopped while its manager work remains unfinished. Explicit closure stops the
+provider before waiting for event handlers and their admitted work; conditional idle eviction first
+checks current liveness. A drain timeout retains the work for retry. An event or note-settlement
+fault prevents a closed checkpoint, including after a later successful event. Subscriber delivery
+failures are isolated from these authoritative effects.
+
 An idle agent releases its runtime after `agents.idleRuntimeTimeoutMs` (default two hours; `0`
 disables it) when its provider opts in and confirms nothing depends on the live process. The agent
 becomes `closed`, not archived, and the next open or prompt resumes the same agent and provider
