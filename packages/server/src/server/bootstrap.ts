@@ -1104,7 +1104,10 @@ export async function createPaseoDaemon(
     clients: initialAgentManagerState.clients,
     providerDefinitions: initialAgentManagerState.providerDefinitions,
     registry: agentStorage,
-    promptAnnotations: new PromptAnnotationStore(path.join(config.paseoHome, "prompt-annotations")),
+    promptAnnotations: new PromptAnnotationStore(
+      path.join(config.paseoHome, "prompt-annotations"),
+      { records: agentStorage },
+    ),
     messageQueueStore: new AgentQueueStore(path.join(config.paseoHome, "agent-queues")),
     idleRuntimeTimeoutMs: config.idleRuntimeTimeoutMs,
     appendSystemPrompt: config.appendSystemPrompt,

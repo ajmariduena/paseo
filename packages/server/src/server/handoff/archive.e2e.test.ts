@@ -21,6 +21,7 @@ import { createTestPaseoDaemon, type TestPaseoDaemon } from "../test-utils/paseo
 import { claudeProjectDirSync } from "../agent/providers/claude/project-dir.js";
 import { HandoffArchiveStore } from "./archive.js";
 import { readHandoffBundle } from "./bundle.js";
+import { PromptAnnotationStore } from "../agent/prompt-annotations.js";
 import { parseStoredAgentRecord } from "../agent/agent-storage.js";
 import { captureWorkspace, packWorkspaceArchive, restoreWorkspaceArchive } from "./workspace.js";
 
@@ -1876,9 +1877,13 @@ for (const continuationMode of ["native", "context"] as const) {
           },
         }),
       );
-      await source.daemon.daemon.agentManager.annotatePrompt(agentId, {
+      // Seed a historical, already closed conversation without opening a provider runtime.
+      const annotationDirectory = path.join(source.daemon.paseoHome, "prompt-annotations");
+      await new PromptAnnotationStore(annotationDirectory, {
+        records: source.daemon.daemon.agentStorage,
+      }).remember(agentId, {
         messageId: "wake-1",
-        prompt: "A background task finished",
+        text: "A background task finished",
         annotation: { kind: "notification", level: "info", message: "Original notification" },
       });
       const annotationPath = path.join(
@@ -1917,15 +1922,40 @@ for (const continuationMode of ["native", "context"] as const) {
       await writeFile(annotationPath, JSON.stringify(changed));
       source = await startHost("source", true);
       destination = await startHost("destination", true);
-      expect((await source.client.handoffReleaseSource({ transferId })).error?.code).toBe(
-        "source_changed",
+      expect((await source.client.handoffReleaseSource({ transferId })).error?.message).toContain(
+        "checkpoint does not match",
       );
       expect(
         (await source.client.handoffGetSourceStatus({ transferId })).result?.source.state,
       ).toBe("ready");
       await writeFile(annotationPath, original);
-      const active = await activateWorkspaceHandoff({
+      // An out-of-band publication changes the witness even if its text has no history row.
+      // Source fencing normally prevents this; release still verifies the captured revision.
+      await new PromptAnnotationStore(annotationDirectory, {
+        records: source.daemon.daemon.agentStorage,
+      }).remember(agentId, {
+        messageId: "not-sent",
+        text: "not in the transcript",
+        annotation: { kind: "notification", level: "info", message: "Not sent" },
+      });
+      expect((await source.client.handoffReleaseSource({ transferId })).error?.code).toBe(
+        "source_changed",
+      );
+      await cancelWorkspaceHandoff({
         transferId,
+        sourceServerId: source.daemon.daemon.getServerId(),
+        getSource: () => source.client,
+        destination: destination.client,
+      });
+      const refreshedTransferId = randomUUID();
+      await prepareWorkspaceHandoff({
+        ...request,
+        transferId: refreshedTransferId,
+        source: source.client,
+        destination: destination.client,
+      });
+      const active = await activateWorkspaceHandoff({
+        transferId: refreshedTransferId,
         sourceServerId: source.daemon.daemon.getServerId(),
         getSource: () => source.client,
         destination: destination.client,

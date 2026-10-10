@@ -689,8 +689,17 @@ of the turn or delivery of carried notes.
 Keep entries until agent deletion. Refuse additional data at the 16 MiB file budget rather than
 evicting older presentation, and reserve room for each prepared attempt's final disposition before
 dispatch. POSIX writes synchronize publication before acknowledgement; Windows retains ordinary
-atomic writes. Failed publication retains the exact candidate for same-process repair. This store
-still needs the agent-record coverage witness and crash-repair contract in the
+atomic writes. The agent record owns the expected annotation revision, digest and entry count,
+plus at most one pending entry change. Persist that change before replacing the annotation file;
+advance the witness only after the file is synchronized. Recovery accepts the exact previous or
+intended file, never an unrelated suffix. Snapshots and replacement runtimes preserve this state.
+A known disposition-write failure can retry on close without another provider call; an unknown
+dispatch outcome remains unresolved.
+
+A new runtime records an empty witness before opening. Older histories adopt only their available
+prefix and retain `adopted` coverage; this does not certify lifetime presentation. Captured handoff
+history binds its witness so release detects changes even when the rendered rows are unchanged.
+Complete presentation coverage and ambiguous dispatch recovery remain in the
 [handoff plan](refactors/cross-host-handoff-plan.md#conversation-persistence-contract).
 
 ---

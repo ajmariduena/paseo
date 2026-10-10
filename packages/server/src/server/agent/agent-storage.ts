@@ -13,6 +13,13 @@ import type { ManagedAgent } from "./agent-manager.js";
 import type { AgentSessionConfig } from "./agent-sdk-types.js";
 import { AgentOwnerSchema, daemonExecutionKey, type DaemonAgentOwner } from "./agent-owner.js";
 import { HandoffContextSchema } from "../handoff/context.js";
+import {
+  initialPromptAnnotationCheckpoint,
+  PromptAnnotationCheckpointSchema,
+  PromptAnnotationPublicationSchema,
+  type PromptAnnotationCheckpoint,
+  type PromptAnnotationPublication,
+} from "./prompt-annotations.js";
 
 const SERIALIZABLE_CONFIG_SCHEMA = z
   .object({
@@ -102,6 +109,8 @@ const STORED_AGENT_SCHEMA = z.object({
   handoffContext: HandoffContextSchema.optional(),
   runtimeGeneration: RuntimeGenerationSchema.optional(),
   unresolvedRuntimeGenerations: z.array(RuntimeGenerationSchema).max(32).optional(),
+  promptAnnotations: PromptAnnotationCheckpointSchema.optional(),
+  pendingPromptAnnotationPublication: PromptAnnotationPublicationSchema.optional(),
 });
 
 export type SerializableAgentConfig = Pick<
@@ -117,6 +126,16 @@ export type SerializableAgentConfig = Pick<
 >;
 
 export type StoredAgentRecord = z.infer<typeof STORED_AGENT_SCHEMA>;
+
+function recordRecoveryState(record: StoredAgentRecord | null) {
+  return {
+    runtimeGeneration: record?.runtimeGeneration,
+    unresolvedRuntimeGenerations: record?.unresolvedRuntimeGenerations,
+    promptAnnotations: record?.promptAnnotations,
+    pendingPromptAnnotationPublication: record?.pendingPromptAnnotationPublication,
+  };
+}
+
 interface StoredAgentFile {
   record: StoredAgentRecord;
   filePath: string;
@@ -253,8 +272,7 @@ export class AgentStorage {
       this.assertRuntimeNotReopened(existing, candidate);
       return {
         ...candidate,
-        runtimeGeneration: existing?.runtimeGeneration,
-        unresolvedRuntimeGenerations: existing?.unresolvedRuntimeGenerations,
+        ...recordRecoveryState(existing),
       };
     });
   }
@@ -285,6 +303,9 @@ export class AgentStorage {
           lastStatus: "initializing",
           runtimeGeneration: generation,
           unresolvedRuntimeGenerations: unresolved.length ? unresolved : undefined,
+          promptAnnotations: existing
+            ? existing.promptAnnotations
+            : initialPromptAnnotationCheckpoint(input.persistence ? "adopted" : "from_creation"),
         };
       },
       process.platform === "win32" ? undefined : this.syncPublication,
@@ -324,12 +345,96 @@ export class AgentStorage {
           throw new Error("Handoff requires a persisted closed agent");
         if (record.unresolvedRuntimeGenerations?.length)
           throw new Error("Handoff requires recovery of unresolved runtime generations");
+        if (record.pendingPromptAnnotationPublication)
+          throw new Error("Handoff requires repair of pending prompt annotation publication");
         return record;
       },
       this.syncPublication,
     );
     if (!checkpoint) throw new Error("Handoff agent was deleted during persistence");
     return checkpoint;
+  }
+
+  async adoptPromptAnnotationCheckpoint(
+    agentId: string,
+    checkpoint: PromptAnnotationCheckpoint,
+  ): Promise<void> {
+    const input = PromptAnnotationCheckpointSchema.parse(checkpoint);
+    if (input.revision !== 0 || input.coverage !== "adopted")
+      throw new Error("Invalid annotation checkpoint adoption");
+    await this.load();
+    const committed = await this.queueRecordMutation(
+      agentId,
+      (record) => {
+        if (!record) throw new Error(`Agent ${agentId} not found`);
+        if (record.pendingPromptAnnotationPublication)
+          throw new Error("Prompt annotation publication is pending");
+        if (record.promptAnnotations && !isDeepStrictEqual(record.promptAnnotations, input))
+          throw new Error("Prompt annotation checkpoint changed");
+        return { ...record, promptAnnotations: input };
+      },
+      process.platform === "win32" ? undefined : this.syncPublication,
+    );
+    if (!committed) throw new Error("Agent was deleted during annotation publication");
+  }
+
+  async preparePromptAnnotationPublication(
+    agentId: string,
+    publication: PromptAnnotationPublication,
+  ): Promise<void> {
+    const input = PromptAnnotationPublicationSchema.parse(publication);
+    const appended = input.change.beforeDigest === null;
+    const expectedCount = input.base.entryCount + (appended ? 1 : 0);
+    if (
+      input.next.revision !== input.base.revision + 1 ||
+      input.next.entryCount !== expectedCount ||
+      input.next.coverage !== input.base.coverage
+    )
+      throw new Error("Invalid prompt annotation publication transition");
+    // The bounded annotation entry also needs its fixed checkpoint/delta envelope.
+    if (Buffer.byteLength(JSON.stringify(input)) > 16 * 1024 * 1024 + 4096)
+      throw new Error("Prompt annotation repair input exceeds capacity");
+    await this.load();
+    const committed = await this.queueRecordMutation(
+      agentId,
+      (record) => {
+        if (!record) throw new Error(`Agent ${agentId} not found`);
+        if (!isDeepStrictEqual(record.promptAnnotations, input.base))
+          throw new Error("Prompt annotation checkpoint changed");
+        if (
+          record.pendingPromptAnnotationPublication &&
+          !isDeepStrictEqual(record.pendingPromptAnnotationPublication, input)
+        )
+          throw new Error("A different prompt annotation publication is pending");
+        return { ...record, pendingPromptAnnotationPublication: input };
+      },
+      process.platform === "win32" ? undefined : this.syncPublication,
+    );
+    if (!committed) throw new Error("Agent was deleted during annotation publication");
+  }
+
+  async commitPromptAnnotationPublication(
+    agentId: string,
+    publication: PromptAnnotationPublication,
+  ): Promise<void> {
+    const input = PromptAnnotationPublicationSchema.parse(publication);
+    await this.load();
+    const committed = await this.queueRecordMutation(
+      agentId,
+      (record) => {
+        if (!record) throw new Error(`Agent ${agentId} not found`);
+        if (isDeepStrictEqual(record.promptAnnotations, input.next)) return record;
+        if (
+          !isDeepStrictEqual(record.promptAnnotations, input.base) ||
+          !isDeepStrictEqual(record.pendingPromptAnnotationPublication, input)
+        )
+          throw new Error("Prompt annotation publication does not match its prepared input");
+        const { pendingPromptAnnotationPublication: _settled, ...rest } = record;
+        return { ...rest, promptAnnotations: input.next };
+      },
+      process.platform === "win32" ? undefined : this.syncPublication,
+    );
+    if (!committed) throw new Error("Agent was deleted during annotation publication");
   }
 
   private queueRecordMutation(
@@ -453,8 +558,7 @@ export class AgentStorage {
         internal: hasInternalOverride
           ? snapshot.internal
           : (snapshot.internal ?? existing?.internal),
-        runtimeGeneration: existing?.runtimeGeneration,
-        unresolvedRuntimeGenerations: existing?.unresolvedRuntimeGenerations,
+        ...recordRecoveryState(existing),
       };
 
       // Preserve soft-delete/archive status across snapshot flushes. The

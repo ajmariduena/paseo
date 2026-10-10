@@ -8,6 +8,7 @@ import { createTestLogger } from "../../test-utils/test-logger.js";
 import { AgentStorage } from "./agent-storage.js";
 import { toStoredAgentRecord } from "./agent-projections.js";
 import { syncFilePublication } from "../atomic-file.js";
+import { PromptAnnotationStore } from "./prompt-annotations.js";
 import { buildConfigOverrides, buildSessionConfig } from "../persistence-hooks.js";
 import type { ManagedAgent } from "./agent-manager.js";
 import type {
@@ -150,6 +151,53 @@ describe("AgentStorage", () => {
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
+
+  test.skipIf(process.platform === "win32")(
+    "snapshots and replacement runtimes preserve an outstanding annotation publication",
+    async () => {
+      const agent = createManagedAgent({ id: "annotations-agent" });
+      const seed = toStoredAgentRecord(agent);
+      agent.runtimeGenerationId = await storage.beginRuntimeGeneration(seed);
+      expect((await storage.get(agent.id))?.promptAnnotations).toMatchObject({
+        revision: 0,
+        entryCount: 0,
+        coverage: "from_creation",
+      });
+      const annotations = new PromptAnnotationStore(path.join(tmpDir, "annotations"), {
+        records: storage,
+        synchronize: async () => {
+          throw new Error("annotation sync failed");
+        },
+      });
+      await expect(
+        annotations.remember(agent.id, {
+          messageId: "wake",
+          text: "wake",
+          annotation: { kind: "notification", level: "info", message: "wake" },
+        }),
+      ).rejects.toThrow("annotation sync failed");
+      const prepared = await storage.get(agent.id);
+      expect(prepared?.pendingPromptAnnotationPublication).toBeDefined();
+      await storage.applySnapshot(agent);
+      await storage.upsert({ ...seed, runtimeGeneration: prepared?.runtimeGeneration });
+      await storage.applySnapshot(
+        createManagedAgent({
+          id: agent.id,
+          lifecycle: "closed",
+          runtimeGenerationId: agent.runtimeGenerationId,
+        }),
+      );
+      await expect(storage.checkpointClosedAgent(agent.id)).rejects.toThrow(
+        "pending prompt annotation",
+      );
+      await storage.beginRuntimeGeneration(seed);
+      const reopened = await new AgentStorage(storagePath, logger).get(agent.id);
+      expect(reopened?.promptAnnotations).toEqual(prepared?.promptAnnotations);
+      expect(reopened?.pendingPromptAnnotationPublication).toEqual(
+        prepared?.pendingPromptAnnotationPublication,
+      );
+    },
+  );
 
   test("runtime generations reject late snapshots after close and after a replacement opens", async () => {
     const agent = createManagedAgent({ id: "generation-agent" });

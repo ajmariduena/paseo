@@ -272,7 +272,7 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
   continuation. Later shutdowns preserve unresolved background notes; late continuations cannot
   delete newer shutdown input. POSIX note acknowledgement synchronizes publication before intent
   consumption. A dispatch receipt alone cannot clear an unsaved note. This repairs that storage
-  obligation; it does not establish native delivery or repair manager event/settlement faults.
+  obligation; it does not establish native delivery or repair unknown manager event/settlement faults.
   Durable semantic obligations, the remaining manager
   descendants, record revision guards, presentation coverage and durable process-stop
   recovery also remain open under the
@@ -280,13 +280,15 @@ full suites in CI. The PR needs raw results plus typecheck, lint and formatting 
 - New Claude notification/origin annotations bind a prepared attempt to its native UUID before
   provider start or steer, and persist the adapter's dispatched/withdrawn result. Replay uses that
   identity across repeated text and prepended context. Handoff refuses unresolved attempts or a
-  dispatched UUID missing from captured history. Publication failures retain exact retry candidates;
-  required annotations no longer use sliding-window eviction. Annotation writes require a loaded
+  dispatched UUID missing from captured history. A durable agent-record witness detects annotation
+  rollback after restart. Its pending entry change repairs the exact previous or intended file;
+  unrelated content refuses. Known disposition-write failures retry on close without another
+  provider turn, and release compares the captured witness even when rendered rows are unchanged.
+  Required annotations no longer use sliding-window eviction. Annotation writes require a loaded
   runtime and pass the source mutation fence. See the
   [annotation store contract](../data-model.md#prompt-annotation-store) and
   [focused evidence](../qa-evidence/handoff-checkpoint-recovery.txt). This does not establish legacy
-  lifetime coverage, provide an agent-record publication witness, prove a turn's completion, or
-  repair ambiguous dispatch after a crash. Error-row reservation and other provider identities
+  lifetime coverage, prove a turn's completion, or repair ambiguous dispatch after a crash. Error-row reservation and other provider identities
   remain open. The capability stays unadvertised.
 - `server/handoff/workspace.ts` and its neighboring tests cover Git and directory snapshots,
   restoration and source rechecks. `packWorkspaceArchive` registers the manifest as an archive blob,

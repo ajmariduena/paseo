@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { withWorktreeCleanupReservation } from "../worktree-use-lock.js";
+import { syncFilePublication } from "../atomic-file.js";
 import { HandoffOwnership } from "../handoff/ownership.js";
 import { handoffContextDirectory, contextExcerpt } from "../handoff/context.js";
 import type { HandoffHistory } from "../handoff/history.js";
@@ -548,12 +549,96 @@ class TestAgentSession implements AgentSession {
   async close(): Promise<void> {}
 }
 
+test.skipIf(process.platform === "win32")(
+  "closing retries a known annotation disposition without sending another provider turn",
+  async () => {
+    const directory = mkdtempSync(join(tmpdir(), "native-annotation-repair-"));
+    const storage = new AgentStorage(join(directory, "agents"), logger);
+    let failSettlement = true;
+    const annotations = new PromptAnnotationStore(join(directory, "annotations"), {
+      records: storage,
+      synchronize: async (file, parent) => {
+        const saved = readFileSync(file, "utf8");
+        if (failSettlement && saved.includes('"state": "dispatched"'))
+          throw new Error("annotation disposition sync failed");
+        await syncFilePublication(file, parent);
+      },
+    });
+    const history: AgentStreamEvent[] = [];
+    class NativeSession extends TestAgentSession {
+      readonly nativeMessageIds = true;
+      async startTurn(
+        prompt: AgentPromptInput = "",
+        options?: AgentRunOptions,
+      ): Promise<AgentTurnStart> {
+        if (typeof prompt !== "string" || !options?.nativeMessageId)
+          throw new Error("missing identity");
+        history.push({
+          type: "timeline",
+          provider: "codex",
+          item: { type: "user_message", text: prompt, messageId: options.nativeMessageId },
+        });
+        return { turnId: "known-turn", promptDisposition: "dispatched" };
+      }
+    }
+    const session = new NativeSession({ provider: "codex", cwd: directory });
+    const started = vi.spyOn(session, "startTurn");
+    const client = new TestAgentClient();
+    vi.spyOn(client, "createSession").mockResolvedValue(session);
+    const manager = new AgentManager({
+      clients: { codex: client },
+      registry: storage,
+      promptAnnotations: annotations,
+      logger,
+    });
+    try {
+      const agent = await manager.createAgent({ provider: "codex", cwd: directory }, undefined, {
+        workspaceId: undefined,
+      });
+      await manager.annotatePrompt(agent.id, {
+        messageId: "wake",
+        prompt: "wake",
+        annotation: { kind: "notification", level: "info", message: "Finished task" },
+      });
+      await expect(
+        manager.streamAgent(agent.id, "wake", { clientMessageId: "wake" }).next(),
+      ).rejects.toThrow("annotation disposition sync failed");
+      await expect(manager.closeAgent(agent.id)).rejects.toThrow(
+        "annotation disposition sync failed",
+      );
+      expect(manager.getAgent(agent.id)).not.toBeNull();
+      await expect(storage.checkpointClosedAgent(agent.id)).rejects.toThrow();
+      failSettlement = false;
+      await manager.closeAgent(agent.id);
+      await manager.checkpointPromptAnnotations(agent.id);
+      expect(
+        (await storage.checkpointClosedAgent(agent.id)).pendingPromptAnnotationPublication,
+      ).toBeUndefined();
+      expect(started).toHaveBeenCalledTimes(1);
+      expect(manager.getAgent(agent.id)).toBeNull();
+      const projected = await manager.projectHistoryForHandoff(
+        agent.id,
+        history,
+        new Date().toISOString(),
+      );
+      expect(projected.map((row) => row.item)).toEqual([
+        { type: "notification", level: "info", message: "Finished task", messageId: "wake" },
+      ]);
+    } finally {
+      failSettlement = false;
+      for (const agent of manager.listAgents()) await manager.closeAgent(agent.id);
+      await manager.flush();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  },
+);
+
 test("native annotation dispatch is prepared before the provider and survives prepended restart notes", async () => {
   const directory = mkdtempSync(join(tmpdir(), "native-annotation-admission-"));
   const annotationDirectory = join(directory, "annotations");
   const logger = createTestLogger();
   const storage = new AgentStorage(join(directory, "agents"), logger);
-  const annotations = new PromptAnnotationStore(annotationDirectory);
+  const annotations = new PromptAnnotationStore(annotationDirectory, { records: storage });
   let agentId = "";
   class NativeSession extends TestAgentSession {
     readonly nativeMessageIds = true;

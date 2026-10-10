@@ -80,7 +80,11 @@ interface SourceOptions {
   agents: AgentStorage;
   agentManager: Pick<
     AgentManager,
-    "getAgent" | "listAgents" | "closeAgent" | "projectHistoryForHandoff"
+    | "getAgent"
+    | "listAgents"
+    | "closeAgent"
+    | "projectHistoryForHandoff"
+    | "checkpointPromptAnnotations"
   >;
   terminals: Pick<TerminalManager, "listDirectories" | "getTerminals" | "killTerminalAndWait">;
   setup: Pick<WorkspaceSetupRuntime, "stop" | "activeIds">;
@@ -300,8 +304,10 @@ export class HandoffSource {
         refuse("inventory_changed", "Source conversation set changed while draining admitted work");
       await this.stopWriters(source);
       const records: StoredAgentRecord[] = [];
-      for (const id of source.agentIds)
+      for (const id of source.agentIds) {
+        await this.options.agentManager.checkpointPromptAnnotations(id);
         records.push(await this.options.agents.checkpointClosedAgent(id));
+      }
       this.assertReviewedIntegrations(source.integrationReview, records);
       const agents = records.map((record) => this.nativeAgent(record));
       const directory = this.captureDirectory(source.id);
@@ -334,6 +340,7 @@ export class HandoffSource {
           version: 1,
           sourceAgentId: agent.id,
           epoch: source.id,
+          promptAnnotations: records[index].promptAnnotations,
           rows,
         });
         conversations.push({
@@ -599,7 +606,8 @@ export class HandoffSource {
     for (const id of source.agentIds) {
       if (this.options.agentManager.getAgent(id))
         refuse("stop_uncertain", "Source provider runtime is still loaded");
-      const record = await this.options.agents.get(id);
+      await this.options.agentManager.checkpointPromptAnnotations(id);
+      const record = await this.options.agents.checkpointClosedAgent(id);
       const captured = prepared.agents.find((agent) => agent.id === id);
       if (
         !record ||
@@ -662,7 +670,11 @@ export class HandoffSource {
         events,
         record.createdAt,
       );
-      const projected = HandoffHistorySchema.parse({ ...history, rows });
+      const projected = HandoffHistorySchema.parse({
+        ...history,
+        promptAnnotations: record.promptAnnotations,
+        rows,
+      });
       // Compare the persisted representation; optional undefined fields are absent from JSON.
       if (!isDeepStrictEqual(history, JSON.parse(JSON.stringify(projected))))
         refuse("source_changed", "Source conversation history presentation changed after capture");

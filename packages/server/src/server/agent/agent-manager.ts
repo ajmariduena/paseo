@@ -552,6 +552,7 @@ interface StreamEventFlags {
 
 interface AgentRuntimeWork {
   pending: Set<Promise<void>>;
+  annotationSettlements: Map<string, SettledNativePromptDispatch>;
   failure: Error | null;
 }
 
@@ -1441,6 +1442,10 @@ export class AgentManager {
   fetchTimeline(id: string, options?: AgentTimelineFetchOptions): AgentTimelineFetchResult {
     this.requireAgent(id);
     return this.timelineStore.fetch(id, options);
+  }
+
+  checkpointPromptAnnotations(agentId: string): Promise<void> {
+    return this.promptAnnotations.checkpointForHandoff(agentId);
   }
 
   async projectHistoryForHandoff(
@@ -3549,7 +3554,23 @@ export class AgentManager {
     agent: ActiveManagedAgent,
     input: SettledNativePromptDispatch,
   ): Promise<void> {
-    return this.trackRuntimeWork(agent, () => this.promptAnnotations.settleNativeDispatch(input));
+    const snapshot = structuredClone(input);
+    const work = this.getRuntimeWork(agent);
+    return this.trackRuntimeWork(agent, async () => {
+      work.annotationSettlements.set(snapshot.nativeMessageId, snapshot);
+      try {
+        await this.promptAnnotations.settleNativeDispatch(snapshot);
+        work.annotationSettlements.delete(snapshot.nativeMessageId);
+        return { ok: true } as const;
+      } catch (error) {
+        // A known storage effect is repairable with this exact input. Unknown runtime
+        // failures stay in work.failure and cannot be cleared by this repair.
+        return { ok: false, error } as const;
+      }
+    }).then((outcome) => {
+      if (!outcome.ok) throw outcome.error;
+      return undefined;
+    });
   }
 
   private async admitProviderStart(
@@ -4769,7 +4790,7 @@ export class AgentManager {
   private getRuntimeWork(agent: ActiveManagedAgent): AgentRuntimeWork {
     let work = this.runtimeWork.get(agent);
     if (!work) {
-      work = { pending: new Set(), failure: null };
+      work = { pending: new Set(), annotationSettlements: new Map(), failure: null };
       this.runtimeWork.set(agent, work);
     }
     return work;
@@ -4804,6 +4825,9 @@ export class AgentManager {
       await this.drainSessionEvents(agent.id);
       await Promise.all(work.pending);
     } while (this.sessionEventTails.has(agent.id) || work.pending.size > 0);
+    for (const settlement of work.annotationSettlements.values()) {
+      await this.settleNativePrompt(agent, settlement);
+    }
     if (work.failure) throw work.failure;
   }
 

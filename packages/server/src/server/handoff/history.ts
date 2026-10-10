@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PromptAnnotationCheckpointSchema } from "../agent/prompt-annotations.js";
 import { AgentTimelineItemPayloadSchema } from "@getpaseo/protocol/messages";
 import { InMemoryAgentTimelineStore } from "../agent/agent-timeline-store.js";
 import type { AgentTimelineFetchOptions } from "../agent/agent-timeline-store-types.js";
@@ -9,6 +10,7 @@ export const HandoffHistorySchema = z.object({
   version: z.literal(1),
   sourceAgentId: z.string().min(1).max(512),
   epoch: z.string().uuid(),
+  promptAnnotations: PromptAnnotationCheckpointSchema.optional(),
   rows: z
     .array(
       z.object({

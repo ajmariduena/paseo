@@ -264,6 +264,7 @@ test("source preparation keeps ownership fenced after uncertain cleanup and retr
         listAgents: () => [],
         closeAgent: async () => {},
         projectHistoryForHandoff: async () => [],
+        checkpointPromptAnnotations: async () => {},
       },
       terminals: {
         listDirectories: () => [],

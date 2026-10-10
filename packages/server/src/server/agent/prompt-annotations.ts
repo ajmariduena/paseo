@@ -7,6 +7,7 @@ import { z } from "zod";
 
 import { syncFilePublication, writeJsonFileAtomic } from "../atomic-file.js";
 import { readBoundedFile } from "../handoff/artifacts.js";
+import type { AgentStorage } from "./agent-storage.js";
 
 const MAX_FILE_BYTES = 16 * 1024 * 1024;
 const MAX_NATIVE_ATTEMPTS = 32;
@@ -52,6 +53,45 @@ const HandoffFileSchema = FileSchema.extend({
     }),
   ),
 });
+
+export const PromptAnnotationCheckpointSchema = z.object({
+  revision: z.number().int().nonnegative().safe(),
+  digest: z.string().regex(/^[a-f0-9]{64}$/),
+  entryCount: z.number().int().nonnegative().safe(),
+  coverage: z.enum(["from_creation", "adopted"]),
+});
+
+export const PromptAnnotationPublicationSchema = z.object({
+  base: PromptAnnotationCheckpointSchema,
+  next: PromptAnnotationCheckpointSchema,
+  change: z.object({
+    index: z.number().int().nonnegative(),
+    beforeDigest: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .nullable(),
+    entry: EntrySchema,
+  }),
+});
+
+export type PromptAnnotationCheckpoint = z.infer<typeof PromptAnnotationCheckpointSchema>;
+export type PromptAnnotationPublication = z.infer<typeof PromptAnnotationPublicationSchema>;
+
+export function initialPromptAnnotationCheckpoint(
+  coverage: PromptAnnotationCheckpoint["coverage"],
+): PromptAnnotationCheckpoint {
+  return annotationCheckpoint([], { revision: 0, coverage });
+}
+
+interface PromptAnnotationStoreOptions {
+  records?: AgentStorage;
+  synchronize?: typeof syncFilePublication;
+}
+
+interface PendingAnnotationWrite {
+  entries: Entry[];
+  publication?: PromptAnnotationPublication;
+}
 
 /** How a prompt the daemon sent appears in the timeline: as a notification, or with its sender. */
 export type PromptAnnotation = z.infer<typeof PromptAnnotationSchema>;
@@ -101,12 +141,17 @@ export interface HistoryAnnotationMatcher {
 export class PromptAnnotationStore {
   private readonly cache = new Map<string, Entry[]>();
   private readonly tails = new Map<string, Promise<unknown>>();
-  private readonly pending = new Map<string, Entry[]>();
+  private readonly pending = new Map<string, PendingAnnotationWrite>();
+  private readonly records: AgentStorage | undefined;
+  private readonly synchronize: typeof syncFilePublication;
 
   constructor(
     private readonly dir: string | null,
-    private readonly synchronize: typeof syncFilePublication = syncFilePublication,
-  ) {}
+    options: PromptAnnotationStoreOptions = {},
+  ) {
+    this.records = options.records;
+    this.synchronize = options.synchronize ?? syncFilePublication;
+  }
 
   remember(agentId: string, prompt: AnnotatedPrompt): Promise<void> {
     const snapshot = structuredClone(prompt);
@@ -194,15 +239,29 @@ export class PromptAnnotationStore {
   }
 
   historyMatcherForHandoff(agentId: string): Promise<HistoryAnnotationMatcher> {
+    return this.serialize(agentId, async () =>
+      createHistoryMatcher(await this.readForHandoff(agentId)),
+    );
+  }
+
+  checkpointForHandoff(agentId: string): Promise<void> {
     return this.serialize(agentId, async () => {
-      await this.publishPending(agentId);
-      if (!this.dir) return createHistoryMatcher(this.cache.get(agentId) ?? []);
-      const entries = await this.readHandoffEntries(agentId);
-      const cached = this.cache.get(agentId);
-      if (cached && !isDeepStrictEqual(cached, entries))
-        throw new Error("Prompt annotation history changed on disk; restore it before handoff");
-      return createHistoryMatcher(entries);
+      await this.readForHandoff(agentId);
     });
+  }
+
+  private async readForHandoff(agentId: string): Promise<Entry[]> {
+    await this.publishPending(agentId);
+    if (!this.dir) return this.cache.get(agentId) ?? [];
+    const entries = this.records
+      ? await this.loadCheckpointed(agentId)
+      : await this.readHandoffEntries(agentId);
+    const cached = this.cache.get(agentId);
+    if (cached && !isDeepStrictEqual(cached, entries))
+      throw new Error("Prompt annotation history changed on disk; restore it before handoff");
+    if (entries.length && process.platform !== "win32")
+      await this.synchronize(this.filePath(this.dir, agentId), path.dirname(this.dir));
+    return entries;
   }
 
   delete(agentId: string): Promise<void> {
@@ -215,6 +274,7 @@ export class PromptAnnotationStore {
 
   private async load(agentId: string): Promise<Entry[] | null> {
     await this.publishPending(agentId);
+    if (this.records && this.dir) return this.loadCheckpointed(agentId);
     const cached = this.cache.get(agentId);
     if (cached) return cached;
     const entries = await this.read(agentId);
@@ -230,20 +290,76 @@ export class PromptAnnotationStore {
     const dispositionReserve = preparedCount * ("dispatched".length - "prepared".length);
     if (bytes + dispositionReserve > MAX_FILE_BYTES)
       throw new Error("Prompt annotation storage capacity exceeded");
-    this.pending.set(agentId, structuredClone(entries));
+    let publication: PromptAnnotationPublication | undefined;
+    if (this.records && this.dir) {
+      const record = await this.records.get(agentId);
+      const base = this.cache.get(agentId);
+      if (!record?.promptAnnotations || !base)
+        throw new Error("Prompt annotation checkpoint is unavailable");
+      publication = annotationPublication(base, entries, record.promptAnnotations);
+    }
+    this.pending.set(agentId, { entries: structuredClone(entries), publication });
     await this.publishPending(agentId);
   }
 
   private async publishPending(agentId: string): Promise<void> {
-    const entries = this.pending.get(agentId);
-    if (!entries) return;
+    const pending = this.pending.get(agentId);
+    if (!pending) return;
+    const { entries, publication } = pending;
+    if (publication) {
+      if (!this.records || !this.dir)
+        throw new Error("Prompt annotation checkpoint storage is unavailable");
+      await this.records.repairPendingPersistence(agentId);
+      const record = await this.records.get(agentId);
+      if (isDeepStrictEqual(record?.promptAnnotations, publication.next)) {
+        const current = await this.readHandoffEntries(agentId);
+        assertAnnotationCheckpoint(current, publication.next);
+        this.cache.set(agentId, current);
+        this.pending.delete(agentId);
+        return;
+      }
+      await this.records.preparePromptAnnotationPublication(agentId, publication);
+      const current = await this.readHandoffEntries(agentId);
+      const repaired = restoreAnnotationPublication(current, publication);
+      if (!isDeepStrictEqual(repaired, entries))
+        throw new Error("Prompt annotation repair input does not match its candidate");
+    }
     if (this.dir) {
       const file = this.filePath(this.dir, agentId);
       await writeJsonFileAtomic(file, { version: 1, entries });
       if (process.platform !== "win32") await this.synchronize(file, path.dirname(this.dir));
     }
+    if (publication && this.records)
+      await this.records.commitPromptAnnotationPublication(agentId, publication);
     this.cache.set(agentId, entries);
     this.pending.delete(agentId);
+  }
+
+  private async loadCheckpointed(agentId: string): Promise<Entry[]> {
+    if (!this.records || !this.dir)
+      throw new Error("Prompt annotation checkpoint storage is unavailable");
+    await this.records.repairPendingPersistence(agentId);
+    const record = await this.records.get(agentId);
+    if (!record) throw new Error(`Agent ${agentId} not found`);
+    const entries = await this.readHandoffEntries(agentId);
+    const publication = record.pendingPromptAnnotationPublication;
+    if (publication) {
+      const repaired = restoreAnnotationPublication(entries, publication);
+      this.pending.set(agentId, { entries: repaired, publication });
+      await this.publishPending(agentId);
+      return repaired;
+    }
+    if (record.promptAnnotations) {
+      assertAnnotationCheckpoint(entries, record.promptAnnotations);
+    } else {
+      // Adoption preserves the available prefix, without claiming pre-upgrade lifetime coverage.
+      if (entries.length && process.platform !== "win32")
+        await this.synchronize(this.filePath(this.dir, agentId), path.dirname(this.dir));
+      const checkpoint = annotationCheckpoint(entries, { revision: 0, coverage: "adopted" });
+      await this.records.adoptPromptAnnotationCheckpoint(agentId, checkpoint);
+    }
+    this.cache.set(agentId, entries);
+    return entries;
   }
 
   private async read(agentId: string): Promise<Entry[] | null> {
@@ -342,6 +458,89 @@ function hasUniqueIdentities(entries: Entry[]): boolean {
     (entry) => entry.nativeDispatches?.map((attempt) => attempt.messageId) ?? [],
   );
   return new Set(nativeIds).size === nativeIds.length;
+}
+
+function annotationDigest(value: unknown): string {
+  const encoded = JSON.stringify(value, (_key, candidate: unknown) => {
+    if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate))
+      return candidate;
+    const keys = Object.keys(candidate).sort();
+    const fields = keys.map((key) => [key, Reflect.get(candidate, key)]);
+    return Object.fromEntries(fields);
+  });
+  return createHash("sha256").update(encoded).digest("hex");
+}
+
+function annotationCheckpoint(
+  entries: Entry[],
+  scope: Pick<PromptAnnotationCheckpoint, "revision" | "coverage">,
+): PromptAnnotationCheckpoint {
+  return {
+    ...scope,
+    digest: annotationDigest({ version: 1, entries }),
+    entryCount: entries.length,
+  };
+}
+
+function assertAnnotationCheckpoint(
+  entries: Entry[],
+  checkpoint: PromptAnnotationCheckpoint,
+): void {
+  if (!isDeepStrictEqual(annotationCheckpoint(entries, checkpoint), checkpoint))
+    throw new Error("Prompt annotation checkpoint does not match the stored history");
+}
+
+function annotationPublication(
+  before: Entry[],
+  after: Entry[],
+  base: PromptAnnotationCheckpoint,
+): PromptAnnotationPublication {
+  assertAnnotationCheckpoint(before, base);
+  const appended = after.length === before.length + 1;
+  const changed = before.flatMap((entry, index) =>
+    isDeepStrictEqual(entry, after[index]) ? [] : [index],
+  );
+  const valid = appended
+    ? changed.length === 0
+    : after.length === before.length && changed.length === 1;
+  if (!valid) throw new Error("Prompt annotation publication must change exactly one entry");
+  const index = appended ? before.length : changed[0];
+  const entry = after[index];
+  if (!appended && before[index].messageId !== entry.messageId)
+    throw new Error("Prompt annotation identity cannot change");
+  return PromptAnnotationPublicationSchema.parse({
+    base,
+    next: annotationCheckpoint(after, { revision: base.revision + 1, coverage: base.coverage }),
+    change: { index, beforeDigest: appended ? null : annotationDigest(before[index]), entry },
+  });
+}
+
+function restoreAnnotationPublication(
+  entries: Entry[],
+  publication: PromptAnnotationPublication,
+): Entry[] {
+  const observed = annotationCheckpoint(entries, publication.next);
+  if (isDeepStrictEqual(observed, publication.next)) return entries;
+  assertAnnotationCheckpoint(entries, publication.base);
+  const { change } = publication;
+  const next = structuredClone(entries);
+  if (change.beforeDigest === null) {
+    if (change.index !== next.length) throw new Error("Invalid prompt annotation append position");
+    next.push(change.entry);
+  } else {
+    const previous = next[change.index];
+    if (
+      !previous ||
+      annotationDigest(previous) !== change.beforeDigest ||
+      previous.messageId !== change.entry.messageId
+    )
+      throw new Error("Prompt annotation replacement does not match its base");
+    next[change.index] = change.entry;
+  }
+  if (!hasUniqueIdentities(next))
+    throw new Error("Duplicate prompt identity in annotation publication");
+  assertAnnotationCheckpoint(next, publication.next);
+  return next;
 }
 
 function hashText(text: string): string {
